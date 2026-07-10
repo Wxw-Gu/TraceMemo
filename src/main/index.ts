@@ -157,7 +157,7 @@ app.whenReady().then(async () => {
     ) => {
       // @ts-ignore: vite env
       const apiKey = options?.apiKey || import.meta.env.VITE_DEEPSEEK_API_KEY
-      const model = options?.model || import.meta.env.VITE_AI_MODEL || 'deepseek-chat'
+      const model = options?.model || import.meta.env.VITE_AI_MODEL || 'deepseek-v4-flash'
       const baseURL =
         options?.baseURL || import.meta.env.VITE_AI_BASE_URL || 'https://api.deepseek.com'
 

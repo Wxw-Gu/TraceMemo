@@ -8,6 +8,7 @@ import {
   GROUP_REPORT_SYSTEM_PROMPT,
   parseGroupDailyReport
 } from '../utils/group-report'
+import type { ReportMode } from '../../../shared/group-report'
 
 interface ChatWindowProps {
   contact: Contact | null
@@ -81,9 +82,12 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const [baseURL, setBaseURL] = useState(
     () => localStorage.getItem('ai_base_url') || 'https://api.deepseek.com'
   )
-  const [model, setModel] = useState(() => localStorage.getItem('ai_model') || 'deepseek-chat')
+  const [model, setModel] = useState(() => localStorage.getItem('ai_model') || 'deepseek-v4-flash')
   const [summaryDateRange, setSummaryDateRange] = useState<SummaryDateRange>('today')
   const [summaryMessageTypes, setSummaryMessageTypes] = useState<SummaryMessageType[]>(['text'])
+  const [reportMode, setReportMode] = useState<ReportMode>(
+    () => (localStorage.getItem('group_report_mode') as ReportMode) || 'compact'
+  )
 
   const handleSaveSettings = (): void => {
     if (!summaryMessageTypes.length) {
@@ -93,6 +97,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     localStorage.setItem('ai_api_key', apiKey)
     localStorage.setItem('ai_base_url', baseURL)
     localStorage.setItem('ai_model', model)
+    localStorage.setItem('group_report_mode', reportMode)
     setShowSettingsModal(false)
     AIChat()
   }
@@ -240,7 +245,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       const reportMessages = rangeMessages.filter((message) => allowedTypes.has(message.type))
       if (!reportMessages.length) throw new Error('当前条件下没有可总结的消息')
 
-      const input = buildGroupReportInput(reportMessages, contact, isGroupChat)
+      const input = await buildGroupReportInput(reportMessages, contact, isGroupChat, reportMode)
       console.log('🚀 ~ AIChat ~ input:', input)
       console.log('🚀 ~ AIChat ~ input.prompt:', input.prompt)
       const result = await window.api.aiChat(
@@ -252,7 +257,14 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       )
 
       if (!result.success || !result.data) throw new Error(result.error || 'AI 请求失败')
-      const report = parseGroupDailyReport(result.data, input.topSpeakers, input.activeTimeline)
+      const report = parseGroupDailyReport(
+        result.data,
+        input.topSpeakers,
+        input.activeTimeline,
+        input.voiceLeaderboard,
+        input.metadata,
+        input.media
+      )
       const exported = await window.api.exportGroupReport({ report, metadata: input.metadata })
       if (!exported.success || !exported.imageDataUrl || !exported.htmlPath || !exported.pngPath) {
         throw new Error(exported.error || '日报文件生成失败')
@@ -549,6 +561,31 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               </div>
             </div>
             <div className="ai-filter-section">
+              <div className="ai-filter-label">报告模式</div>
+              <div className="ai-date-options">
+                <label className={reportMode === 'compact' ? 'selected' : ''}>
+                  <input
+                    type="radio"
+                    name="report-mode"
+                    value="compact"
+                    checked={reportMode === 'compact'}
+                    onChange={() => setReportMode('compact')}
+                  />
+                  精简版（推荐）
+                </label>
+                <label className={reportMode === 'full' ? 'selected' : ''}>
+                  <input
+                    type="radio"
+                    name="report-mode"
+                    value="full"
+                    checked={reportMode === 'full'}
+                    onChange={() => setReportMode('full')}
+                  />
+                  完整版
+                </label>
+              </div>
+            </div>
+            <div className="ai-filter-section">
               <div className="ai-filter-label">消息类型</div>
               <div className="ai-type-options">
                 {SUMMARY_TYPE_OPTIONS.map((option) => (
@@ -570,7 +607,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                 onChange={(e) => setModel(e.target.value)}
                 style={{ width: '100%', padding: '8px' }}
               >
-                <option value="deepseek-chat">DeepSeek Chat</option>
+                <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
+                <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
                 <option value="gpt-4o">GPT-4o</option>
                 <option value="gpt-4o-mini">GPT-4o Mini</option>
                 <option value="gpt-4-turbo">GPT-4 Turbo</option>

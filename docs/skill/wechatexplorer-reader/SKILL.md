@@ -141,12 +141,31 @@ GET 用于读取数据,`POST /api/v1/report` 用于生成群日报(HTML + 长图
     "qa": [
       { "question": "Q", "answer": "A", "answerer": "解答人(可选)" }
     ],
+    "unresolved": [
+      { "question": "待跟进问题", "owner": "相关人(可选)", "status": "待跟进", "note": "为什么还没结束" }
+    ],
+    "storylines": [
+      { "title": "剧情线", "stages": [{ "time": "10:12", "event": "提出问题" }], "result": "可选结果" }
+    ],
+    "reversals": [
+      { "topic": "某话题", "initialView": "最初判断", "finalView": "最终判断", "note": "可选说明" }
+    ],
+    "participantChains": [
+      { "topic": "某话题", "chain": ["A 提出", "B 补充", "C 收尾"], "note": "可选说明" }
+    ],
     "analytics": {
       "topicHeat": [{ "topic": "话题1", "score": 9.5 }],
       "activeTimeline": "10:00-12:00 为最活跃时段",
-      "topSpeakers": [{ "name": "张三", "count": 58 }]
+      "topSpeakers": [{ "name": "张三", "count": 58 }],
+      "voiceLeaderboard": [{ "sender": "张三", "count": 3, "durationSec": 97 }]
     },
-    "keywords": ["高频词1", "高频词2"]
+    "keywords": ["高频词1", "高频词2"],
+    "hero": {
+      "headline": "一句抓重点的日报标题",
+      "summary": "一句概览",
+      "keyTakeaway": "最重要结论",
+      "pendingNote": "待跟进事项"
+    }
   },
   "metadata": {
     "groupName": "技术交流",

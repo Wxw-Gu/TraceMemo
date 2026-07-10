@@ -1,4 +1,35 @@
 export type ReportHeat = '高' | '中' | '低'
+export type ReportMode = 'compact' | 'full'
+export type ReportSectionKey =
+  | 'hero'
+  | 'topics'
+  | 'importantMessages'
+  | 'actions'
+  | 'moments'
+  | 'analytics'
+  | 'keywords'
+  | 'resources'
+  | 'qa'
+  | 'storylines'
+  | 'reversals'
+  | 'gallery'
+  | 'voices'
+  | 'badges'
+  | 'chains'
+
+export interface ReportSectionMeta {
+  enabled: boolean
+  importance: number
+  confidence: number
+  totalCount: number
+  displayedCount: number
+  hiddenCount?: number
+}
+
+export interface ReportTopicConclusion {
+  text: string
+  sourceMessageIds?: string[]
+}
 
 export interface ReportTopic {
   title: string
@@ -7,13 +38,21 @@ export interface ReportTopic {
   participants: string[]
   summary: string
   conclusion?: string
+  conclusions?: ReportTopicConclusion[]
   keywords: string[]
+  sourceMessageIds?: string[]
+  image?: {
+    imageUrl?: string
+    note: string
+    sourceMessageIds?: string[]
+  } | null
 }
 
 export interface ReportResource {
   title: string
   description: string
   sender?: string
+  sourceMessageIds?: string[]
 }
 
 export interface ReportImportantMessage {
@@ -21,22 +60,30 @@ export interface ReportImportantMessage {
   time: string
   content: string
   note: string
+  sourceMessageIds?: string[]
+  importance?: number
+  confidence?: number
 }
 
 export interface ReportQuoteMessage {
   sender: string
   content: string
+  sourceMessageId?: string
 }
 
 export interface ReportQuote {
   messages: ReportQuoteMessage[]
   note: string
+  sourceMessageIds?: string[]
+  importance?: number
+  confidence?: number
 }
 
 export interface ReportQuestionAnswer {
   question: string
   answer: string
   answerer?: string
+  sourceMessageIds?: string[]
 }
 
 export interface ReportTopicHeat {
@@ -49,19 +96,135 @@ export interface ReportSpeakerRank {
   count: number
 }
 
+export interface ReportHero {
+  headline: string
+  summary: string
+  keyTakeaway?: string
+  pendingNote?: string
+  statusLine?: string
+}
+
+export interface ReportMediaGalleryItem {
+  sender: string
+  time: string
+  imageUrl: string
+  note: string
+  stats?: string
+  inferenceLabel?: string
+  sourceMessageIds?: string[]
+  replyCount?: number
+}
+
+export interface ReportVoiceHighlight {
+  title: string
+  sender: string
+  note: string
+  sourceMessageIds?: string[]
+}
+
+export interface ReportVoiceLeaderboardItem {
+  sender: string
+  count: number
+  durationSec: number
+}
+
+export interface ReportFunBadge {
+  title: string
+  owner: string
+  note: string
+}
+
+export interface ReportTodoItem {
+  task: string
+  owner?: string | null
+  deadline?: string | null
+  topic?: string | null
+  note?: string
+  sourceMessageIds?: string[]
+  importance?: number
+  confidence?: number
+}
+
+export interface ReportUnresolvedItem {
+  question: string
+  owner?: string
+  status: '待跟进' | '暂未回答' | '进行中'
+  note: string
+  lastDiscussedAt?: string | null
+  sourceMessageIds?: string[]
+  importance?: number
+  confidence?: number
+}
+
+export interface ReportStorylineStage {
+  time: string
+  event: string
+  sourceMessageIds?: string[]
+}
+
+export interface ReportStoryline {
+  title: string
+  stages: ReportStorylineStage[]
+  result?: string
+  sourceMessageIds?: string[]
+}
+
+export interface ReportReversal {
+  topic: string
+  initialView: string
+  finalView: string
+  note?: string
+  sourceMessageIds?: string[]
+}
+
+export interface ReportParticipantChain {
+  topic: string
+  chain: string[]
+  note?: string
+  sourceMessageIds?: string[]
+}
+
+export interface ReportSummaryStats {
+  messageCount: number
+  activeUsers: number
+  topicCount: number
+  mediaCount: number
+  imageCount: number
+  voiceCount: number
+  stickerCount: number
+  conclusionCount: number
+  todoCount: number
+  unresolvedCount: number
+}
+
 export interface GroupDailyReport {
   overview: string
+  mode?: ReportMode
+  hero?: ReportHero
   topics: ReportTopic[]
   resources: ReportResource[]
   importantMessages: ReportImportantMessage[]
   quotes: ReportQuote[]
   qa: ReportQuestionAnswer[]
+  todos: ReportTodoItem[]
+  unresolved: ReportUnresolvedItem[]
+  storylines: ReportStoryline[]
+  reversals: ReportReversal[]
+  participantChains: ReportParticipantChain[]
   analytics: {
     topicHeat: ReportTopicHeat[]
     activeTimeline: string
     topSpeakers: ReportSpeakerRank[]
+    voiceLeaderboard: ReportVoiceLeaderboardItem[]
   }
   keywords: string[]
+  media: {
+    gallery: ReportMediaGalleryItem[]
+    voiceHighlights: ReportVoiceHighlight[]
+    funBadges: ReportFunBadge[]
+  }
+  summaryStats?: ReportSummaryStats
+  sectionMeta?: Partial<Record<ReportSectionKey, ReportSectionMeta>>
 }
 
 export interface GroupReportMetadata {
@@ -70,18 +233,19 @@ export interface GroupReportMetadata {
   dateRange: string
   messageCount: number
   activeUsers: number
+  imageCount?: number
+  voiceCount?: number
+  stickerCount?: number
+  mediaMessageCount?: number
   timeSpan: string
   generatedAt: string
   recordNote: string
   footerNote: string
   heroParticipants: string[]
   avatars: Record<string, string | undefined>
-  // === 新增(可选,向后兼容) ===
-  /** 群昵称 / wxid / md5,服务端用来反推真头像(从 getGroupSnapshot) */
+  reportMode?: ReportMode
   talker?: string
-  /** 预留,与 /api/v1/chatlog 的 time 参数同格式 */
   timeRange?: string
-  /** 服务端写回,告知 client enrich 失败/部分缺失 */
   warnings?: string[]
 }
 
