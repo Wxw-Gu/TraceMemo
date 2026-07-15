@@ -138,6 +138,29 @@ const heatClass = (heat: ReportHeat): string => {
 const replacePlaceholder = (html: string, key: string, value: string): string =>
   html.replaceAll(`{{${key}}}`, value)
 
+const modeLabel = (mode: GroupReportMetadata['reportMode']): string =>
+  mode === 'full' ? '完整版' : '精简版'
+
+const sectionMeta = (
+  request: GroupReportExportRequest,
+  key: keyof NonNullable<typeof request.report.sectionMeta>
+) => request.report.sectionMeta?.[key]
+
+const sectionClass = (
+  request: GroupReportExportRequest,
+  key: keyof NonNullable<typeof request.report.sectionMeta>,
+  hasContent: boolean
+): string => (sectionMeta(request, key)?.enabled && hasContent ? '' : 'empty-section')
+
+const overflowNote = (
+  request: GroupReportExportRequest,
+  key: keyof NonNullable<typeof request.report.sectionMeta>
+): string => {
+  const meta = sectionMeta(request, key)
+  if (request.metadata.reportMode !== 'compact' || !meta?.hiddenCount) return ''
+  return `<div class="section-more">另有 ${meta.hiddenCount} 条内容，请在完整版中查看</div>`
+}
+
 const renderReportHtml = async (request: GroupReportExportRequest): Promise<string> => {
   const { report, metadata } = request
   const avatarNames = new Set<string>(metadata.heroParticipants)
@@ -147,6 +170,9 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     quote.messages.forEach((message) => avatarNames.add(message.sender))
   )
   report.analytics.topSpeakers.forEach((speaker) => avatarNames.add(speaker.name))
+  report.media?.gallery?.forEach((item) => avatarNames.add(item.sender))
+  report.media?.voiceHighlights?.forEach((item) => avatarNames.add(item.sender))
+  report.media?.funBadges?.forEach((item) => avatarNames.add(item.owner))
 
   const avatars = new Map<string, string>()
   await Promise.all(
@@ -168,7 +194,21 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
         <div class="topic-title-row"><h3>${escapeHtml(topic.title)}</h3><span class="heat ${heatClass(topic.heat)}">${escapeHtml(topic.heat)}热</span></div>
         <div class="topic-meta">${escapeHtml(topic.timeRange)}</div>
         <p>${escapeHtml(topic.summary)}</p>
-        ${topic.conclusion ? `<p class="muted">${escapeHtml(topic.conclusion)}</p>` : ''}
+        ${
+          topic.conclusions?.length
+            ? `<div class="topic-conclusions">${topic.conclusions
+                .slice(0, 2)
+                .map((entry) => `<div class="topic-conclusion">${escapeHtml(entry.text)}</div>`)
+                .join('')}</div>`
+            : topic.conclusion
+              ? `<div class="topic-conclusions"><div class="topic-conclusion">${escapeHtml(topic.conclusion)}</div></div>`
+              : ''
+        }
+        ${
+          topic.image?.imageUrl
+            ? `<div class="topic-inline-image"><img src="${topic.image.imageUrl}" alt="热点图片"><div>${escapeHtml(topic.image.note)}</div></div>`
+            : ''
+        }
         <div class="participants">${topic.participants
           .slice(0, 5)
           .map(
@@ -213,18 +253,104 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     )
     .join('')
 
-  const qaCards = report.qa
+  const todoCards = (report.todos || [])
     .map(
-      (item) =>
-        `<div class="qa-card"><b>Q：${escapeHtml(item.question)}</b><div>A：${escapeHtml(item.answer)}${item.answerer ? ` — ${escapeHtml(item.answerer)}` : ''}</div></div>`
+      (item) => `<div class="action-card todo-card">
+        <b>${escapeHtml(item.task)}</b>
+        <div>${[item.owner || '', item.deadline || '', item.topic || ''].filter(Boolean).map(escapeHtml).join(' · ')}</div>
+        ${item.note ? `<div class="action-note">${escapeHtml(item.note)}</div>` : ''}
+      </div>`
     )
     .join('')
 
-  const maxHeat = Math.max(1, ...report.analytics.topicHeat.map((item) => item.score))
-  const heatBars = report.analytics.topicHeat
+  const unresolvedCards = (report.unresolved || [])
     .map(
-      (item) =>
-        `<div class="bar-row"><span>${escapeHtml(item.topic)}</span><div class="bar"><i style="width:${Math.max(8, Math.round((item.score / maxHeat) * 100))}%"></i></div></div>`
+      (item) => `<div class="action-card unresolved-card">
+        <b>${escapeHtml(item.question)}</b>
+        <div>${[item.owner || '', item.lastDiscussedAt || '', item.status].filter(Boolean).map(escapeHtml).join(' · ')}</div>
+        <div class="action-note">${escapeHtml(item.note)}</div>
+      </div>`
+    )
+    .join('')
+
+  const storylineCards = (report.storylines || [])
+    .map(
+      (item) => `<div class="card storyline-card">
+        <div class="topic-title-row"><h3>${escapeHtml(item.title)}</h3></div>
+        <div class="storyline-steps">${item.stages
+          .map(
+            (stage) => `<div class="storyline-step">
+              <span>${escapeHtml(stage.time || '--:--')}</span>
+              <b>${escapeHtml(stage.event)}</b>
+            </div>`
+          )
+          .join('')}</div>
+        ${item.result ? `<p class="muted">${escapeHtml(item.result)}</p>` : ''}
+      </div>`
+    )
+    .join('')
+
+  const reversalCards = (report.reversals || [])
+    .map(
+      (item) => `<div class="qa-card">
+        <b>${escapeHtml(item.topic)}</b>
+        <div>最初：${escapeHtml(item.initialView)}</div>
+        <div>后来：${escapeHtml(item.finalView)}</div>
+        ${item.note ? `<div>${escapeHtml(item.note)}</div>` : ''}
+      </div>`
+    )
+    .join('')
+
+  const chainCards = (report.participantChains || [])
+    .map(
+      (item) => `<div class="card chain-card">
+        <div class="topic-title-row"><h3>${escapeHtml(item.topic)}</h3></div>
+        <div class="chain-flow">${item.chain.map((node) => `<span>${escapeHtml(node)}</span>`).join('<i>→</i>')}</div>
+        ${item.note ? `<p class="muted">${escapeHtml(item.note)}</p>` : ''}
+      </div>`
+    )
+    .join('')
+
+  const galleryCards = (report.media?.gallery || [])
+    .map(
+      (item) => `<div class="gallery-card">
+        <img class="gallery-image" src="${item.imageUrl}" alt="群聊图片">
+        <div class="gallery-body">
+          <div class="important-meta"><b>${escapeHtml(item.sender)}</b><span>${escapeHtml(item.time)}</span></div>
+          ${item.stats ? `<div class="gallery-stats">${escapeHtml(item.stats)}</div>` : ''}
+          <div class="important-text">${escapeHtml(item.note)}</div>
+          ${item.inferenceLabel ? `<div class="topic-meta">${escapeHtml(item.inferenceLabel)}</div>` : ''}
+        </div>
+      </div>`
+    )
+    .join('')
+
+  const voiceCards = (report.media?.voiceHighlights || [])
+    .map(
+      (item) => `<div class="qa-card">
+        <b>${escapeHtml(item.title)} · ${escapeHtml(item.sender)}</b>
+        <div>${escapeHtml(item.note)}</div>
+      </div>`
+    )
+    .join('')
+
+  const voiceRankCards = (report.analytics.voiceLeaderboard || [])
+    .map(
+      (item, index) => `<div class="rank">
+        <img src="${avatar(item.sender)}" alt="">
+        <b>${index + 1}. ${escapeHtml(item.sender)}</b>
+        <span>${item.count} 条 · ${item.durationSec} 秒</span>
+      </div>`
+    )
+    .join('')
+
+  const badgeCards = (report.media?.funBadges || [])
+    .map(
+      (item) => `<div class="badge-card">
+        <span class="tag">${escapeHtml(item.title)}</span>
+        <b>${escapeHtml(item.owner)}</b>
+        <p>${escapeHtml(item.note)}</p>
+      </div>`
     )
     .join('')
 
@@ -244,31 +370,98 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     )
     .join('')
 
+  const qaCards = report.qa
+    .map(
+      (item) =>
+        `<div class="qa-card"><b>Q：${escapeHtml(item.question)}</b><div>A：${escapeHtml(item.answer)}${item.answerer ? ` — ${escapeHtml(item.answerer)}` : ''}</div></div>`
+    )
+    .join('')
+
+  const summaryStats = report.summaryStats || {
+    messageCount: metadata.messageCount,
+    activeUsers: metadata.activeUsers,
+    topicCount: report.topics.length,
+    mediaCount: metadata.mediaMessageCount || 0,
+    imageCount: metadata.imageCount || 0,
+    voiceCount: metadata.voiceCount || 0,
+    stickerCount: metadata.stickerCount || 0,
+    conclusionCount: 0,
+    todoCount: report.todos.length,
+    unresolvedCount: report.unresolved.length
+  }
+
   let html = await fs.readFile(templatePath(), 'utf8')
   const values: Record<string, string> = {
     REPORT_TITLE: escapeHtml(`${metadata.groupName}日报`),
+    REPORT_MODE_CLASS: metadata.reportMode === 'full' ? 'full' : 'compact',
     GROUP_NAME: escapeHtml(metadata.groupName),
     DATE_RANGE: escapeHtml(metadata.dateRange),
-    RECORD_NOTE: escapeHtml(`基于 WechatExplorer 加载的 ${metadata.messageCount} 条记录`),
-    OVERVIEW: escapeHtml(report.overview),
+    RECORD_NOTE: escapeHtml(metadata.recordNote),
+    REPORT_MODE_LABEL: escapeHtml(modeLabel(metadata.reportMode)),
+    HERO_HEADLINE: escapeHtml(report.hero?.headline || '今日群聊速览'),
+    HERO_SUMMARY: escapeHtml(report.hero?.summary || report.overview),
+    HERO_TAKEAWAY: escapeHtml(report.hero?.keyTakeaway || ''),
+    HERO_PENDING: escapeHtml(report.hero?.pendingNote || ''),
+    HERO_STATUS_LINE: escapeHtml(report.hero?.statusLine || ''),
+    HERO_STATUS_EMPTY_CLASS: report.hero?.statusLine ? '' : 'empty-section',
+    HERO_TAKEAWAY_EMPTY_CLASS: report.hero?.keyTakeaway ? '' : 'empty-section',
+    HERO_PENDING_EMPTY_CLASS: report.hero?.pendingNote ? '' : 'empty-section',
     HERO_AVATARS: heroAvatars,
-    MESSAGE_COUNT: String(metadata.messageCount),
-    ACTIVE_USERS: String(metadata.activeUsers),
+    MESSAGE_COUNT: String(summaryStats.messageCount),
+    ACTIVE_USERS: String(summaryStats.activeUsers),
     TIME_SPAN: escapeHtml(metadata.timeSpan || ''),
-    TOPIC_COUNT: String(report.topics.length),
+    TOPIC_COUNT: String(summaryStats.topicCount),
+    MEDIA_COUNT: String(summaryStats.mediaCount),
     TOPIC_CARDS: topicCards,
-    RESOURCES_EMPTY_CLASS: report.resources.length ? '' : 'empty-section',
+    TOPICS_EMPTY_CLASS: sectionClass(request, 'topics', report.topics.length > 0),
+    TOPICS_MORE_NOTE: overflowNote(request, 'topics'),
+    RESOURCES_EMPTY_CLASS: sectionClass(request, 'resources', report.resources.length > 0),
     RESOURCE_ITEMS: resourceItems,
-    MESSAGES_EMPTY_CLASS: report.importantMessages.length ? '' : 'empty-section',
+    RESOURCES_MORE_NOTE: overflowNote(request, 'resources'),
+    MESSAGES_EMPTY_CLASS: sectionClass(request, 'importantMessages', report.importantMessages.length > 0),
     IMPORTANT_MESSAGES: importantMessages,
-    QUOTES_EMPTY_CLASS: report.quotes.length ? '' : 'empty-section',
+    MESSAGES_MORE_NOTE: overflowNote(request, 'importantMessages'),
+    QUOTES_EMPTY_CLASS: sectionClass(request, 'moments', report.quotes.length > 0),
     QUOTE_BLOCKS: quoteBlocks,
-    QA_EMPTY_CLASS: report.qa.length ? '' : 'empty-section',
+    QUOTES_MORE_NOTE: overflowNote(request, 'moments'),
+    ACTIONS_EMPTY_CLASS: sectionClass(request, 'actions', report.todos.length + report.unresolved.length > 0),
+    TODO_EMPTY_CLASS: report.todos.length ? '' : 'empty-section',
+    TODO_CARDS: todoCards,
+    UNRESOLVED_EMPTY_CLASS: report.unresolved?.length ? '' : 'empty-section',
+    UNRESOLVED_CARDS: unresolvedCards,
+    ACTIONS_MORE_NOTE: overflowNote(request, 'actions'),
+    QA_EMPTY_CLASS: sectionClass(request, 'qa', report.qa.length > 0),
     QA_CARDS: qaCards,
-    HEAT_BARS: heatBars,
+    QA_MORE_NOTE: overflowNote(request, 'qa'),
+    STORYLINES_EMPTY_CLASS: sectionClass(request, 'storylines', report.storylines?.length > 0),
+    STORYLINE_CARDS: storylineCards,
+    STORYLINES_MORE_NOTE: overflowNote(request, 'storylines'),
+    REVERSALS_EMPTY_CLASS: sectionClass(request, 'reversals', report.reversals?.length > 0),
+    REVERSAL_CARDS: reversalCards,
+    REVERSALS_MORE_NOTE: overflowNote(request, 'reversals'),
+    CHAINS_EMPTY_CLASS: sectionClass(request, 'chains', report.participantChains?.length > 0),
+    CHAIN_CARDS: chainCards,
+    CHAINS_MORE_NOTE: overflowNote(request, 'chains'),
+    GALLERY_EMPTY_CLASS: sectionClass(request, 'gallery', report.media?.gallery?.length > 0),
+    GALLERY_CARDS: galleryCards,
+    GALLERY_MORE_NOTE: overflowNote(request, 'gallery'),
+    VOICE_EMPTY_CLASS: sectionClass(request, 'voices', report.media?.voiceHighlights?.length > 0),
+    VOICE_CARDS: voiceCards,
+    VOICE_MORE_NOTE: overflowNote(request, 'voices'),
+    VOICE_RANK_EMPTY_CLASS: sectionClass(request, 'voices', report.analytics.voiceLeaderboard?.length > 0),
+    VOICE_RANK_CARDS: voiceRankCards,
+    BADGES_EMPTY_CLASS: sectionClass(request, 'badges', report.media?.funBadges?.length > 0),
+    BADGE_CARDS: badgeCards,
+    BADGES_MORE_NOTE: overflowNote(request, 'badges'),
     RANK_ITEMS: rankItems,
     ACTIVITY_TIMELINE: escapeHtml(report.analytics.activeTimeline),
+    CONCLUSION_COUNT: String(summaryStats.conclusionCount),
+    TODO_COUNT: String(summaryStats.todoCount),
+    UNRESOLVED_COUNT: String(summaryStats.unresolvedCount),
     CLOUD_TAGS: cloudTags,
+    KEYWORDS_EMPTY_CLASS: sectionClass(request, 'keywords', report.keywords.length > 0),
+    KEYWORDS_MORE_NOTE: overflowNote(request, 'keywords'),
+    ANALYTICS_EMPTY_CLASS: sectionClass(request, 'analytics', true),
     GENERATED_AT: escapeHtml(metadata.generatedAt),
     FOOTER_NOTE: escapeHtml(metadata.footerNote)
   }
@@ -327,7 +520,7 @@ export const exportGroupReport = async (
 
     const outputDir = path.join(os.homedir(), 'Documents', '微信聊天记录')
     await fs.ensureDir(outputDir)
-    const baseName = `${sanitizeFileName(request.metadata.groupName)}日报_${request.metadata.reportDate}_可视化长图`
+    const baseName = `${sanitizeFileName(request.metadata.groupName)}日报_${request.metadata.reportDate}_${request.metadata.reportMode === 'full' ? '完整版' : '精简版'}`
     const htmlPath = path.join(outputDir, `${baseName}.html`)
     const pngPath = path.join(outputDir, `${baseName}.png`)
     const htmlStartedAt = new Date()
