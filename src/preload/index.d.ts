@@ -37,6 +37,7 @@ import type {
   ImageCandidateQuery,
   ImageInsight
 } from '../shared/image-insight'
+import type { AgentHubActionResult, AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 
 export type ParsedContent =
   | { type: 'text'; content: string }
@@ -186,6 +187,8 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          autoLogin: boolean
+          autoLoginPreferenceSet: boolean
           imageXorKey: string
           imageAesKey: string
         }
@@ -210,6 +213,8 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          autoLogin: boolean
+          autoLoginPreferenceSet: boolean
           imageXorKey: string
           imageAesKey: string
         }
@@ -222,6 +227,8 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          autoLogin: boolean
+          autoLoginPreferenceSet: boolean
           imageXorKey: string
           imageAesKey: string
         }>
@@ -232,6 +239,8 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          autoLogin: boolean
+          autoLoginPreferenceSet: boolean
           imageXorKey: string
           imageAesKey: string
         }
@@ -298,6 +307,16 @@ declare global {
         sessionId: string,
         limit?: number
       ) => Promise<{ success: boolean; insights: ImageInsight[] }>
+      getAgentHubStatus: () => Promise<AgentHubStatus>
+      getAgentHubLogs: () => Promise<AgentHubLogEntry[]>
+      clearAgentHubLogs: () => Promise<void>
+      startAgentHubLogin: () => Promise<AgentHubActionResult>
+      cancelAgentHubLogin: () => Promise<AgentHubActionResult>
+      reconnectAgentHub: () => Promise<AgentHubActionResult>
+      disconnectAgentHub: () => Promise<AgentHubActionResult>
+      selectAgentHubTestImage: () => Promise<{ canceled: boolean; path?: string }>
+      onAgentHubStatus: (callback: (status: AgentHubStatus) => void) => () => void
+      onAgentHubLog: (callback: (entry: AgentHubLogEntry) => void) => () => void
     }
   }
 }

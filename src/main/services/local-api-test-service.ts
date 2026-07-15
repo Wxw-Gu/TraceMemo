@@ -8,6 +8,7 @@ import {
 } from '../../shared/local-api-test'
 
 const REQUEST_TIMEOUT_MS = 10_000
+const GROUP_REPORT_TIMEOUT_MS = 180_000
 const MAX_BODY_SIZE = 512 * 1024
 
 function isEndpointId(value: unknown): value is LocalApiEndpointId {
@@ -122,7 +123,9 @@ export async function testLocalApiRequest(payload: unknown): Promise<LocalApiTes
         })
       }
     )
-    request.setTimeout(REQUEST_TIMEOUT_MS, () => {
+    const timeoutMs =
+      endpointId === 'agent-group-report' ? GROUP_REPORT_TIMEOUT_MS : REQUEST_TIMEOUT_MS
+    request.setTimeout(timeoutMs, () => {
       request.destroy(new Error('请求超时'))
       finish({
         ok: false,
@@ -132,7 +135,7 @@ export async function testLocalApiRequest(payload: unknown): Promise<LocalApiTes
         durationMs: Date.now() - startedAt,
         responseSize: 0,
         errorCode: 'TIMEOUT',
-        error: '请求超时（10 秒）'
+        error: `请求超时（${Math.round(timeoutMs / 1000)} 秒）`
       })
     })
     request.on('error', (error: NodeJS.ErrnoException) => {

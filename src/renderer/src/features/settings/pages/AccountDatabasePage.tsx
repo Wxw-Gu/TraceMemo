@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { AccountOverview } from '../account-database/AccountOverview'
 import { ConnectionHealthSection } from '../account-database/ConnectionHealthSection'
 import { LocalPrivacyNotice } from '../account-database/LocalPrivacyNotice'
@@ -25,6 +26,26 @@ export function AccountDatabasePage({
   onNotice: (message: string) => void
 }): React.ReactElement {
   const controller = useAccountDatabaseController({ dbKey, dbReady, selfInfo, onNotice })
+  const [autoLogin, setAutoLogin] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    void window.api.getSettings().then((result) => {
+      if (active) setAutoLogin(result.settings.autoLogin)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const changeAutoLogin = async (checked: boolean): Promise<void> => {
+    const result = await window.api.setSettings({
+      autoLogin: checked,
+      autoLoginPreferenceSet: true
+    })
+    setAutoLogin(result.settings.autoLogin)
+    onNotice(checked ? '已开启启动时自动连接' : '已关闭启动时自动连接')
+  }
   return (
     <div className="settings-page">
       <header className="settings-page-header">
@@ -58,6 +79,20 @@ export function AccountDatabasePage({
                 : undefined
             }
           />
+          <h2 className="settings-section-heading">启动行为</h2>
+          <section className="settings-card settings-auto-login-card">
+            <label>
+              <span>
+                <b>启动时自动连接数据库</b>
+                <small>使用安全存储中已保存的数据库密钥；可随时关闭。</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={autoLogin}
+                onChange={(event) => void changeAutoLogin(event.target.checked)}
+              />
+            </label>
+          </section>
         </div>
       </div>
     </div>

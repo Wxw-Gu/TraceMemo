@@ -9,6 +9,8 @@ import {
 } from './services/chat-service'
 import { exportGroupReport } from './group-report-service'
 import { GroupReportExportRequest } from '../shared/group-report'
+import { generateAgentGroupReport } from './services/agent-group-report-service'
+import { agentHubService } from './services/agent-hub-service'
 import { safeError, safeLog, safeWarn } from './safe-log'
 
 export const DEFAULT_HTTP_HOST = '127.0.0.1'
@@ -157,7 +159,9 @@ const routes: Record<string, RouteHandler> = {
     if (keyword) {
       const lower = keyword.toLowerCase()
       groups = groups.filter(
-        (c) => c.m_nsNickName.toLowerCase().includes(lower) || c.m_nsUsrName.toLowerCase().includes(lower)
+        (c) =>
+          c.m_nsNickName.toLowerCase().includes(lower) ||
+          c.m_nsUsrName.toLowerCase().includes(lower)
       )
     }
     sendJson(res, 200, { count: groups.length, chatrooms: groups })
@@ -236,13 +240,62 @@ const routes: Record<string, RouteHandler> = {
     try {
       request = JSON.parse(body) as GroupReportExportRequest
     } catch (error) {
-      return sendError(res, 400, '请求体 JSON 解析失败', error instanceof Error ? error.message : String(error))
+      return sendError(
+        res,
+        400,
+        '请求体 JSON 解析失败',
+        error instanceof Error ? error.message : String(error)
+      )
     }
     if (!request?.report || !request?.metadata) {
       return sendError(res, 400, '请求体需包含 report 和 metadata 字段')
     }
     const result = await exportGroupReport(request)
     sendJson(res, result.success ? 200 : 500, result)
+  },
+
+  '/api/v1/agent/group-report': async ({ req, res, body }) => {
+    if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
+    if (!isReady()) return sendError(res, 503, 'WechatExplorer 数据库未初始化')
+    let request: { group?: string; range?: 'today' | 'yesterday' | '7days' }
+    try {
+      request = JSON.parse(typeof body === 'string' ? body : '{}')
+    } catch {
+      return sendError(res, 400, '请求体 JSON 解析失败')
+    }
+    const result = await generateAgentGroupReport({
+      group: request.group || '',
+      range: request.range
+    })
+    sendJson(res, result.success ? 200 : 400, result)
+  },
+
+  '/api/v1/agent/status': ({ res }) => {
+    const status = agentHubService.getStatus()
+    sendJson(res, 200, {
+      ok: status.hub === 'online' && status.connector === 'online',
+      hub: status.hub,
+      connector: status.connector,
+      dataApi: status.dataApi,
+      databaseReady: status.databaseReady,
+      accountId: status.accountId
+    })
+  },
+
+  '/api/v1/agent/send': async ({ req, res, body }) => {
+    if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
+    let request: { to?: string; text?: string; media_url?: string }
+    try {
+      request = JSON.parse(typeof body === 'string' ? body : '{}')
+    } catch {
+      return sendError(res, 400, '请求体 JSON 解析失败')
+    }
+    const result = await agentHubService.testSend({
+      to: request.to,
+      text: request.text,
+      mediaUrl: request.media_url
+    })
+    sendJson(res, result.success ? 200 : result.status === 'token_expired' ? 401 : 503, result)
   }
 }
 
@@ -311,7 +364,11 @@ export interface ApiServerState {
 }
 
 let singleton: HttpServerHandle | null = null
-let singletonState: ApiServerState = { running: false, host: DEFAULT_HTTP_HOST, port: DEFAULT_HTTP_PORT }
+let singletonState: ApiServerState = {
+  running: false,
+  host: DEFAULT_HTTP_HOST,
+  port: DEFAULT_HTTP_PORT
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -326,7 +383,10 @@ export const apiServer = {
     return { ...singletonState }
   },
 
-  async start(host: string = DEFAULT_HTTP_HOST, port: number = DEFAULT_HTTP_PORT): Promise<ApiServerState> {
+  async start(
+    host: string = DEFAULT_HTTP_HOST,
+    port: number = DEFAULT_HTTP_PORT
+  ): Promise<ApiServerState> {
     if (singleton) {
       return this.getState()
     }

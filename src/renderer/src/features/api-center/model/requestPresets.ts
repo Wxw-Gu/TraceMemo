@@ -29,3 +29,15 @@ export const REPORT_REQUEST_PRESET = JSON.stringify(
   null,
   2
 )
+
+export const AGENT_GROUP_REPORT_PRESET = JSON.stringify(
+  { group: '技术交流', range: 'today' },
+  null,
+  2
+)
+
+export const AGENT_SEND_PRESET = JSON.stringify(
+  { to: '', text: 'WechatExplorer Agent Hub 发送测试' },
+  null,
+  2
+)

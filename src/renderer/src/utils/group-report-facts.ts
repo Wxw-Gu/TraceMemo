@@ -11,6 +11,14 @@ import {
   ReportVoiceLeaderboardItem
 } from '../../../shared/group-report'
 
+declare const window: {
+  api: {
+    imageListCandidates: (...args: unknown[]) => Promise<any>
+    imageAnalyze: (...args: unknown[]) => Promise<any>
+    getImage: (...args: unknown[]) => Promise<any>
+  }
+}
+
 export interface GroupReportTranscriptRow {
   id: string
   datetime: string
@@ -184,6 +192,7 @@ const buildMediaSection = async (
   warnings: string[]
 }> => {
   const warnings: string[] = []
+  const rendererApi = typeof window === 'undefined' ? null : window.api
   const rawImageCandidates = messages
     .map((message, index) => {
       if (message.contentData?.type !== 'image') return null
@@ -214,6 +223,7 @@ const buildMediaSection = async (
   // ============================================================
   let visionGallery: ReportVisionGalleryItem[] = []
   try {
+    if (!rendererApi) throw new Error('后台模式不读取 Renderer 图片')
     const sessionId = messages.find((m) => m.sessionId)?.sessionId || (contact?.md5 ?? '')
     const startTime = messages.length ? parseTimestamp(messages[0]) : 0
     const endTime = messages.length ? parseTimestamp(messages[messages.length - 1]) : 0
@@ -233,7 +243,7 @@ const buildMediaSection = async (
       }
     })
 
-    const candidatesResp = await window.api.imageListCandidates({
+    const candidatesResp = await rendererApi.imageListCandidates({
       sessionId,
       startTime,
       endTime,
@@ -249,7 +259,7 @@ const buildMediaSection = async (
         if (candidate.insight) return candidate.insight
         // 未命中:解密图片拿 base64 → 调 AI
         try {
-          const img = await window.api.getImage(
+          const img = await rendererApi.getImage(
             candidate.md5,
             candidate.datName,
             candidate.sessionId
@@ -260,7 +270,7 @@ const buildMediaSection = async (
             )
             return null
           }
-          const analyzeResp = await window.api.imageAnalyze({
+          const analyzeResp = await rendererApi.imageAnalyze({
             imageHash: candidate.imageHash,
             imageDataUrl: img.data,
             messageId: candidate.messageId,
@@ -306,7 +316,7 @@ const buildMediaSection = async (
           const orig = rawImageCandidates.find((c) => c.sourceMessageIds[0] === item.messageId)
           if (!orig) return item
           try {
-            const img = await window.api.getImage(orig.md5, orig.datName, orig.sessionId)
+            const img = await rendererApi.getImage(orig.md5, orig.datName, orig.sessionId)
             if (img.success && img.data?.startsWith('data:image/')) {
               return { ...item, imageUrl: img.data }
             }
@@ -323,9 +333,10 @@ const buildMediaSection = async (
     visionGallery = []
   }
 
-  const imageCandidates = await Promise.all(
-    rawImageCandidates.map(async (item) => {
-      const result = await window.api.getImage(item.md5, item.datName, item.sessionId)
+  const imageCandidates = rendererApi
+    ? await Promise.all(
+        rawImageCandidates.map(async (item) => {
+          const result = await rendererApi.getImage(item.md5, item.datName, item.sessionId)
       if (!result.success || !result.data?.startsWith('data:image/')) return null
       return {
         sender: item.sender,
@@ -337,9 +348,10 @@ const buildMediaSection = async (
         sourceMessageIds: item.sourceMessageIds,
         replyCount: item.replyCount,
         score: item.score
-      }
-    })
-  )
+          }
+        })
+      )
+    : []
 
   const gallery: ReportMediaGalleryItem[] = imageCandidates
     .filter((item): item is NonNullable<typeof item> => Boolean(item))

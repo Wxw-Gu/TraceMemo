@@ -11,7 +11,10 @@ export const LOCAL_API_ENDPOINTS = {
   },
   'group-snapshot': { method: 'GET', path: '/api/v1/group_snapshot', queryKeys: ['md5'] },
   resolve: { method: 'GET', path: '/api/v1/resolve', queryKeys: ['q'] },
-  report: { method: 'POST', path: '/api/v1/report', queryKeys: [] }
+  report: { method: 'POST', path: '/api/v1/report', queryKeys: [] },
+  'agent-status': { method: 'GET', path: '/api/v1/agent/status', queryKeys: [] },
+  'agent-group-report': { method: 'POST', path: '/api/v1/agent/group-report', queryKeys: [] },
+  'agent-send': { method: 'POST', path: '/api/v1/agent/send', queryKeys: [] }
 } as const
 
 export type LocalApiEndpointId = keyof typeof LOCAL_API_ENDPOINTS
