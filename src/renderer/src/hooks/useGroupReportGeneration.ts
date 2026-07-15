@@ -175,13 +175,18 @@ const applyGroupMemberNames = async (
     const member = memberMap.get(senderId)
     if (!member) return message
     const preferredNames: Record<ReportMemberNamePreference, string[]> = {
-      groupNickname: [member.groupNickname, member.wechatNickname, member.remark, member.nickname],
-      wechatNickname: [member.wechatNickname, member.groupNickname, member.remark, member.nickname],
+      // Keep the three modes semantically distinct. `member.nickname` may
+      // already be a contact remark, so it must not leak into the first two.
+      groupNickname: [member.groupNickname, member.wechatNickname],
+      wechatNickname: [member.wechatNickname, member.groupNickname],
       remark: [member.remark, member.groupNickname, member.wechatNickname, member.nickname]
     }
     const name = preferredNames[preference].find((value) => value && !isInternalName(value))
-    if (!name) return message
-    return { ...message, name, img: message.img || member.avatar }
+    return {
+      ...message,
+      name: name || (preference === 'remark' ? message.name : ''),
+      img: message.img || member.avatar
+    }
   })
 }
 
@@ -222,11 +227,12 @@ export function useGroupReportGeneration({
   const [generatedImage, setGeneratedImage] = useState<string | null>(null)
   const [reportPaths, setReportPaths] = useState<ReportPaths | null>(null)
   const [templateId, setTemplateId] = useState<ReportTemplateId>('v1')
-  const [memberNamePreference, setMemberNamePreferenceState] =
-    useState<ReportMemberNamePreference>(() => {
+  const [memberNamePreference, setMemberNamePreferenceState] = useState<ReportMemberNamePreference>(
+    () => {
       const saved = localStorage.getItem('group_report_member_name_preference')
       return saved === 'wechatNickname' || saved === 'remark' ? saved : 'groupNickname'
-    })
+    }
+  )
   const [reportTimeoutSeconds, setReportTimeoutSecondsState] = useState<number>(() => {
     const saved = Number(localStorage.getItem('group_report_timeout_seconds'))
     return Number.isFinite(saved) && saved >= 30 ? saved : 300

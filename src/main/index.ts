@@ -556,9 +556,9 @@ app.whenReady().then(async () => {
       if (!provider || !model) {
         return { success: false, error: '当前 AI 模型不存在' }
       }
-      if (!model.capabilities.vision) {
-        return { success: false, error: '当前模型不支持图片理解' }
-      }
+      // Capability metadata is stored per machine. A model verified on macOS
+      // may still be unmarked on Windows, so do not reject before making the
+      // real multimodal request. The provider response remains authoritative.
       // request 来自 renderer,imageHash 是 md5(优先)或 sha256(...),dataUrl 在内部算出
       // 这里直接调 service,dataUrl 由 renderer 通过 window.api.getImage 拿到再传进来
       return imageInsightService.analyze(request)

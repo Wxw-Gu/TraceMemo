@@ -195,6 +195,9 @@ export class AIProviderService {
       const imageError = validateVisionImage(imagePart.dataUrl)
       if (imageError) throw new Error(imageError)
       const result = await this.request(messages as AIMessage[], options)
+      if (options?.providerId && options.modelId) {
+        this.markCapabilities(options.providerId, options.modelId, { vision: true, ocr: true })
+      }
       return { success: true, ...result }
     } catch (error) {
       return { success: false, error: safeAIError(error) }
