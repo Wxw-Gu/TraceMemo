@@ -4,9 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const projectRoot = path.resolve(__dirname, '..')
-const sourceDir = process.env.WECHAT_CONNECTOR_SOURCE
-  ? path.resolve(process.env.WECHAT_CONNECTOR_SOURCE)
-  : path.join(projectRoot, 'services', 'wechat-connector')
+const sourceDir = path.join(projectRoot, 'services', 'wechat-connector')
 const outputRoot = path.join(projectRoot, 'resources', 'connectors', 'wechat')
 
 function normalizePlatform(value) {
@@ -22,32 +20,31 @@ function normalizeArch(value) {
   throw new Error(`Unsupported connector architecture: ${value}`)
 }
 
+function detectHostArch() {
+  if (process.platform !== 'darwin') return process.arch
+  try {
+    const arm64Supported = execFileSync('sysctl', ['-n', 'hw.optional.arm64'], {
+      encoding: 'utf8'
+    }).trim()
+    return arm64Supported === '1' ? 'arm64' : process.arch
+  } catch {
+    return process.arch
+  }
+}
+
 function parseTargets() {
   const platformArg = process.argv.indexOf('--platform')
   const archArg = process.argv.indexOf('--arch')
   const platforms = platformArg >= 0 ? process.argv[platformArg + 1].split(',') : [process.platform]
-  const arches = archArg >= 0 ? process.argv[archArg + 1].split(',') : [process.arch]
+  const arches = archArg >= 0 ? process.argv[archArg + 1].split(',') : [detectHostArch()]
   return platforms.flatMap((platform) =>
     arches.map((arch) => ({ goos: normalizePlatform(platform), goarch: normalizeArch(arch) }))
   )
 }
 
 if (!fs.existsSync(path.join(sourceDir, 'go.mod'))) {
-  const existingTargets = parseTargets().every((target) => {
-    const directoryName = `${target.goos === 'windows' ? 'win32' : target.goos}-${target.goarch === 'amd64' ? 'x64' : target.goarch}`
-    const executable = target.goos === 'windows' ? 'wechat-connector.exe' : 'wechat-connector'
-    return fs.existsSync(path.join(outputRoot, directoryName, executable))
-  })
-  if (existingTargets) {
-    console.log('[build-wechat-connector] source not configured; reusing existing binary')
-    process.exit(0)
-  }
-  throw new Error(
-    'Wechat connector source is not included in this repository. Set WECHAT_CONNECTOR_SOURCE to a compatible connector checkout.'
-  )
+  throw new Error(`Repository-local WeChat connector source is missing: ${sourceDir}`)
 }
-
-fs.rmSync(outputRoot, { recursive: true, force: true })
 
 for (const target of parseTargets()) {
   const directoryName = `${target.goos === 'windows' ? 'win32' : target.goos}-${target.goarch === 'amd64' ? 'x64' : target.goarch}`
@@ -56,6 +53,7 @@ for (const target of parseTargets()) {
     outputDir,
     target.goos === 'windows' ? 'wechat-connector.exe' : 'wechat-connector'
   )
+  fs.rmSync(outputDir, { recursive: true, force: true })
   fs.mkdirSync(outputDir, { recursive: true })
   execFileSync('go', ['build', '-trimpath', '-o', outputPath, '.'], {
     cwd: sourceDir,

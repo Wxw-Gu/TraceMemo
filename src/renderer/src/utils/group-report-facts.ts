@@ -10,12 +10,32 @@ import {
   ReportVoiceHighlight,
   ReportVoiceLeaderboardItem
 } from '../../../shared/group-report'
+import type {
+  ImageAnalysisRequest,
+  ImageAnalysisResponse,
+  ImageCandidate,
+  ImageCandidateQuery
+} from '../../../shared/image-insight'
+
+interface ReportImageReadResult {
+  success: boolean
+  data?: string
+  error?: string
+}
 
 declare const window: {
   api: {
-    imageListCandidates: (...args: unknown[]) => Promise<any>
-    imageAnalyze: (...args: unknown[]) => Promise<any>
-    getImage: (...args: unknown[]) => Promise<any>
+    imageListCandidates: (query: ImageCandidateQuery) => Promise<{
+      success: boolean
+      candidates: ImageCandidate[]
+      error?: string
+    }>
+    imageAnalyze: (request: ImageAnalysisRequest) => Promise<ImageAnalysisResponse>
+    getImage: (
+      imageMd5?: string,
+      imageDatNameOrThumb?: string | boolean,
+      sessionId?: string
+    ) => Promise<ReportImageReadResult>
   }
 }
 
@@ -337,17 +357,17 @@ const buildMediaSection = async (
     ? await Promise.all(
         rawImageCandidates.map(async (item) => {
           const result = await rendererApi.getImage(item.md5, item.datName, item.sessionId)
-      if (!result.success || !result.data?.startsWith('data:image/')) return null
-      return {
-        sender: item.sender,
-        time: item.time,
-        imageUrl: result.data,
-        note: item.note,
-        stats: item.stats,
-        inferenceLabel: '基于图片后的聊天上下文推断',
-        sourceMessageIds: item.sourceMessageIds,
-        replyCount: item.replyCount,
-        score: item.score
+          if (!result.success || !result.data?.startsWith('data:image/')) return null
+          return {
+            sender: item.sender,
+            time: item.time,
+            imageUrl: result.data,
+            note: item.note,
+            stats: item.stats,
+            inferenceLabel: '基于图片后的聊天上下文推断',
+            sourceMessageIds: item.sourceMessageIds,
+            replyCount: item.replyCount,
+            score: item.score
           }
         })
       )

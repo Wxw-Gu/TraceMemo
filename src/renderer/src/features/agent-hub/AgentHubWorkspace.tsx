@@ -241,7 +241,11 @@ export function AgentHubWorkspace(): React.ReactElement {
               <option value="agent-hub">Agent Hub</option>
               <option value="wechat-connector">微信连接器</option>
             </select>
-            <button type="button" onClick={() => void copyLogs()} disabled={visibleLogs.length === 0}>
+            <button
+              type="button"
+              onClick={() => void copyLogs()}
+              disabled={visibleLogs.length === 0}
+            >
               复制日志
             </button>
             <button type="button" onClick={() => void clearLogs()}>
@@ -251,7 +255,9 @@ export function AgentHubWorkspace(): React.ReactElement {
         </div>
         <div className="agent-hub-log-body" ref={logBodyRef}>
           {visibleLogs.length === 0 ? (
-            <div className="agent-hub-log-empty">暂无运行日志。收到消息后，这里会显示处理到哪一步。</div>
+            <div className="agent-hub-log-empty">
+              暂无运行日志。收到消息后，这里会显示处理到哪一步。
+            </div>
           ) : (
             visibleLogs.map((entry) => (
               <div className={`agent-hub-log-line ${entry.level}`} key={entry.id}>

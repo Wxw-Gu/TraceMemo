@@ -10,6 +10,23 @@ function setPlistValue(plistPath, key, value) {
 }
 
 exports.default = async function afterPack(context) {
+  if (context.electronPlatformName === 'win32') {
+    const koffiNative = path.join(
+      context.appOutDir,
+      'resources',
+      'app.asar.unpacked',
+      'node_modules',
+      '@koromix',
+      'koffi-win32-x64',
+      'win32_x64',
+      'koffi.node'
+    )
+    if (!existsSync(koffiNative)) {
+      throw new Error(`Missing Windows Koffi native module: ${koffiNative}`)
+    }
+    return
+  }
+
   if (context.electronPlatformName !== 'darwin') return
 
   const productName = context.packager.appInfo.productFilename

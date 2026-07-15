@@ -14,7 +14,7 @@ import type {
 } from '../../shared/agent-hub'
 import type { AppSettings } from './settings-store'
 import { generateAgentGroupReport } from './agent-group-report-service'
-import { isReady, listRecentChat } from './chat-service'
+import { isReady, listMessages, listRecentChat, resolveMd5 } from './chat-service'
 
 const execFileAsync = promisify(execFile)
 const HEALTH_INTERVAL_MS = 5_000
@@ -34,6 +34,11 @@ interface InboundMessage {
 interface GroupReportIntent {
   group: string
   range: 'today' | 'yesterday' | '7days'
+}
+
+interface ContactChatIntent {
+  contact: string
+  limit: number
 }
 
 function resolveBundledBinary(
@@ -323,6 +328,13 @@ class AgentHubService {
       return this.sendHubJson(response, 202, { status: 'generating' })
     }
 
+    const contactChatIntent = this.matchContactChatIntent(text)
+    if (contactChatIntent) {
+      if (messageId) this.processedMessages.set(messageId, Date.now())
+      await this.replyContactChat(inbound, contactChatIntent)
+      return this.sendHubJson(response, 200, { status: 'ok' })
+    }
+
     const limit = this.matchRecentChatIntent(text)
     if (limit === null) {
       this.addLog('agent-hub', 'info', '消息已忽略：没有匹配到支持的意图')
@@ -346,6 +358,50 @@ class AgentHubService {
     if (messageId) this.processedMessages.set(messageId, Date.now())
     this.addLog('agent-hub', 'info', `最近会话回复已发送（${items.length} 条）`)
     this.sendHubJson(response, 200, { status: 'ok' })
+  }
+
+  private async replyContactChat(
+    inbound: InboundMessage,
+    intent: ContactChatIntent
+  ): Promise<void> {
+    if (!isReady()) {
+      await this.sendConnector(inbound, 'WechatExplorer 本地数据库尚未连接，请连接后再试。')
+      return
+    }
+
+    const contact = resolveMd5(intent.contact)
+    if (!contact || contact.type !== 'user') {
+      this.addLog('agent-hub', 'info', `没有匹配到联系人：${intent.contact}`)
+      await this.sendConnector(inbound, `没有找到联系人“${intent.contact}”。`)
+      return
+    }
+
+    this.addLog(
+      'agent-hub',
+      'info',
+      `匹配联系人聊天查询：${contact.m_nsNickName}（最近 ${intent.limit} 条）`
+    )
+    const messages = listMessages(contact.md5, undefined, undefined, { limit: intent.limit })
+    const recent = messages.slice(-intent.limit)
+    const lines = recent.map((message) => {
+      const speaker = message.isSender ? '我' : contact.m_nsNickName
+      const content = this.describeChatMessage(message.content, message.type)
+      return `${speaker}：${content}`
+    })
+    const reply = lines.length
+      ? `我和${contact.m_nsNickName}最近聊了这些：\n${lines.join('\n')}`
+      : `暂时没有找到和${contact.m_nsNickName}的聊天记录。`
+    await this.sendConnector(inbound, reply)
+    this.addLog('agent-hub', 'info', `联系人聊天回复已发送（${recent.length} 条）`)
+  }
+
+  private describeChatMessage(content: string, type: string): string {
+    const normalized = String(content || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (normalized) return normalized.length > 100 ? `${normalized.slice(0, 100)}…` : normalized
+    const label = String(type || '消息').replace(/^普通文本$/, '消息')
+    return `[${label}]`
   }
 
   private async generateAndSendReport(
@@ -392,6 +448,24 @@ class AgentHubService {
     if (!normalized.includes('最近') || !/(消息|会话|聊天)/.test(normalized)) return null
     const limit = Number(normalized.match(/\d{1,2}/)?.[0] || 5)
     return Math.max(1, Math.min(20, limit))
+  }
+
+  private matchContactChatIntent(text: string): ContactChatIntent | null {
+    const normalized = text.replace(/\s+/g, '').replace(/[，。！？?：:]/g, '')
+    if (!normalized.includes('最近') || !/(聊|消息|会话)/.test(normalized)) return null
+
+    const patterns = [
+      /(?:看一下|看看|查一下|查询)?我和(.+?)最近(?:\d{1,2}条)?(?:聊了什么|聊什么|的聊天|的消息|聊天|消息)/,
+      /(?:看一下|看看|查一下|查询)?(?:我)?最近(?:\d{1,2}条)?和(.+?)(?:聊了什么|聊什么|的聊天|的消息|聊天|消息)/,
+      /(?:看一下|看看|查一下|查询)?和(.+?)最近(?:\d{1,2}条)?(?:聊了什么|聊什么|的聊天|的消息|聊天|消息)/
+    ]
+    const contact = patterns
+      .map((pattern) => normalized.match(pattern)?.[1]?.trim())
+      .find((value): value is string => Boolean(value))
+    if (!contact) return null
+
+    const limit = Number(normalized.match(/最近(\d{1,2})条/)?.[1] || 10)
+    return { contact, limit: Math.max(1, Math.min(20, limit)) }
   }
 
   private matchGroupReportIntent(text: string): GroupReportIntent | null {

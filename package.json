@@ -25,9 +25,9 @@
     "test:skill-install": "node scripts/test-skill-install-instruction.cjs",
     "cp:env": "node scripts/ensure-env.cjs",
     "prepare:env": "node scripts/ensure-env.cjs",
-    "predev": "node scripts/ensure-env.cjs && node scripts/build-wechat-connector.cjs",
     "start": "electron-vite preview",
-    "dev": "electron-vite dev",
+    "dev": "node scripts/ensure-env.cjs && node scripts/build-wechat-connector.cjs && electron-vite dev",
+    "test:wechat-connector": "go -C services/wechat-connector test ./... && go -C services/wechat-connector vet ./...",
     "build:wechat-connector": "node scripts/build-wechat-connector.cjs",
     "build:wechat-connector:win": "node scripts/build-wechat-connector.cjs --platform win32 --arch x64,arm64",
     "build:wechat-connector:mac": "node scripts/build-wechat-connector.cjs --platform darwin --arch x64,arm64",
@@ -42,6 +42,7 @@
     "build:linux": "electron-vite build && electron-builder --config electron-builder.yml --linux"
   },
   "dependencies": {
+    "@koromix/koffi-win32-x64": "3.1.0",
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "fs-extra": "^11.3.2",
@@ -75,6 +76,16 @@
     "vite": "^7.2.6"
   },
   "pnpm": {
+    "supportedArchitectures": {
+      "os": [
+        "current",
+        "win32"
+      ],
+      "cpu": [
+        "current",
+        "x64"
+      ]
+    },
     "onlyBuiltDependencies": [
       "electron",
       "esbuild"

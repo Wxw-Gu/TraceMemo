@@ -10,6 +10,7 @@ specifiers:
   '@electron-toolkit/preload': ^3.0.2
   '@electron-toolkit/tsconfig': ^2.0.0
   '@electron-toolkit/utils': ^4.0.0
+  '@koromix/koffi-win32-x64': 3.1.0
   '@rollup/rollup-darwin-arm64': ^4.62.2
   '@types/fs-extra': ^11.0.4
   '@types/node': ^22.19.1
@@ -38,6 +39,7 @@ specifiers:
 dependencies:
   '@electron-toolkit/preload': 3.0.2_electron@43.1.0
   '@electron-toolkit/utils': 4.0.0_electron@43.1.0
+  '@koromix/koffi-win32-x64': 3.1.0
   fs-extra: 11.3.2
   fzstd: 0.1.1
   koffi: 3.1.0
@@ -887,7 +889,6 @@ packages:
     cpu: [x64]
     os: [win32]
     dev: false
-    optional: true
 
   /@malept/cross-spawn-promise/2.0.0:
     resolution: {integrity: sha512-1DpKU0Z5ThltBwjNySMC14g0CkbyhCaz9FkhxqNsZI6uAPJXFS8cMXlBKo26FJ8ZuW6S9GCMcR9IO5k2X5/9Fg==}
