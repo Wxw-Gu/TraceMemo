@@ -81,7 +81,14 @@ const areMessagesEquivalent = (left: Message[], right: Message[]): boolean => {
 type GroupSnapshot = {
   roomId: string
   memberCount: number
-  members: { wxid: string; nickname: string; avatar: string }[]
+  members: {
+    wxid: string
+    nickname: string
+    groupNickname: string
+    wechatNickname: string
+    remark: string
+    avatar: string
+  }[]
 }
 
 type GroupMemberMeta = { nickname: string; avatar: string }
@@ -1137,6 +1144,12 @@ function App(): React.ReactElement {
           onRevealReport={reportGeneration.revealReport}
           onViewResult={openReportResult}
           hasReportResult={generatedReports.length > 0}
+          templateId={reportGeneration.templateId}
+          onTemplateIdChange={reportGeneration.setTemplateId}
+          memberNamePreference={reportGeneration.memberNamePreference}
+          onMemberNamePreferenceChange={reportGeneration.setMemberNamePreference}
+          reportTimeoutSeconds={reportGeneration.reportTimeoutSeconds}
+          onReportTimeoutSecondsChange={reportGeneration.setReportTimeoutSeconds}
         />
         <ReportTaskStatusPanel
           phase={reportGeneration.phase}

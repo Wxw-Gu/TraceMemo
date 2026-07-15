@@ -88,7 +88,7 @@ export function createProviderFromPreset(presetId = 'deepseek'): AIProviderConfi
       {
         name: preset.model || '默认模型',
         id: preset.model,
-        capabilities: { chat: true, vision: false, longContext: false }
+        capabilities: { chat: true, vision: false, ocr: false, longContext: false }
       }
     ],
     defaultModel: preset.model,

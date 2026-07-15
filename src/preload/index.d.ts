@@ -30,6 +30,13 @@ import type {
   AIVisionTestResult,
   LegacyAIConfig
 } from '../shared/ai-provider'
+import type {
+  ImageAnalysisRequest,
+  ImageAnalysisResponse,
+  ImageCandidate,
+  ImageCandidateQuery,
+  ImageInsight
+} from '../shared/image-insight'
 
 export type ParsedContent =
   | { type: 'text'; content: string }
@@ -87,7 +94,14 @@ declare global {
       getGroupSnapshot: (userMd5: string) => Promise<{
         roomId: string
         memberCount: number
-        members: { wxid: string; nickname: string; avatar: string }[]
+        members: {
+          wxid: string
+          nickname: string
+          groupNickname: string
+          wechatNickname: string
+          remark: string
+          avatar: string
+        }[]
       } | null>
       search: (keyword: string) => Promise<string | null>
       aiChat: (
@@ -270,6 +284,20 @@ declare global {
       openReaderSkillGithub: () => Promise<{ success: boolean; error?: string }>
       testLocalApiRequest: (request: LocalApiTestRequest) => Promise<LocalApiTestResponse>
       copyText: (text: string) => Promise<{ success: boolean; error?: string }>
+      // ============================================================
+      // AI 图片理解基础设施(ImageInsightService)
+      // ============================================================
+      imageListCandidates: (query: ImageCandidateQuery) => Promise<{
+        success: boolean
+        candidates: ImageCandidate[]
+        error?: string
+      }>
+      imageAnalyze: (request: ImageAnalysisRequest) => Promise<ImageAnalysisResponse>
+      getImageInsight: (imageHash: string) => Promise<{ success: boolean; insight?: ImageInsight }>
+      listImageInsights: (
+        sessionId: string,
+        limit?: number
+      ) => Promise<{ success: boolean; insights: ImageInsight[] }>
     }
   }
 }

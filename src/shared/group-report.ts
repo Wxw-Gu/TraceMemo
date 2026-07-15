@@ -13,6 +13,7 @@ export type ReportSectionKey =
   | 'storylines'
   | 'reversals'
   | 'gallery'
+  | 'vision'
   | 'voices'
   | 'badges'
   | 'chains'
@@ -45,6 +46,10 @@ export interface ReportTopic {
     imageUrl?: string
     note: string
     sourceMessageIds?: string[]
+    /** AI 图片识别缓存 key(由 visionGallery 提供,main 渲染时按此取 base64) */
+    imageHash?: string
+    /** AI 真实识别的描述(来自 ImageInsight.description) */
+    aiDescription?: string
   } | null
 }
 
@@ -113,6 +118,26 @@ export interface ReportMediaGalleryItem {
   inferenceLabel?: string
   sourceMessageIds?: string[]
   replyCount?: number
+}
+
+/**
+ * 图片 AI 理解结果(由 ImageInsightService 提供)。
+ * 与 ReportMediaGalleryItem 不同:本类型不含 imageUrl(由 main 渲染时按需注入),
+ * description 是 AI 真实识别的结果(非基于上下文的推断)。
+ */
+export interface ReportVisionGalleryItem {
+  messageId: string
+  imageHash: string
+  sender: string
+  time: string
+  description: string
+  ocrText?: string
+  tags: string[]
+  category: 'screenshot' | 'photo' | 'meme' | 'document' | 'chart' | 'other'
+  importance: 'low' | 'medium' | 'high'
+  sourceMessageIds?: string[]
+  /** 预加载好的 dataURL,render 时直接嵌进 HTML */
+  imageUrl?: string
 }
 
 export interface ReportVoiceHighlight {
@@ -220,6 +245,8 @@ export interface GroupDailyReport {
   keywords: string[]
   media: {
     gallery: ReportMediaGalleryItem[]
+    /** AI 识别的图片(由 ImageInsightService 提供),渲染时由 main 按 imageHash 取原图 */
+    visionGallery?: ReportVisionGalleryItem[]
     voiceHighlights: ReportVoiceHighlight[]
     funBadges: ReportFunBadge[]
   }
@@ -252,6 +279,8 @@ export interface GroupReportMetadata {
 export interface GroupReportExportRequest {
   report: GroupDailyReport
   metadata: GroupReportMetadata
+  /** 模板 ID:'v1' 经典 / 'v2' 当前。缺省或未知值用默认(v2) */
+  templateId?: 'v1' | 'v2'
 }
 
 export interface GroupReportExportResult {

@@ -127,7 +127,15 @@ const REPORT_MODE_CONFIG: Record<ReportMode, ReportModeConfig> = {
     maxQa: 0,
     topicSummaryLength: 100,
     noteLength: 72,
-    enabledSections: ['hero', 'topics', 'importantMessages', 'actions', 'moments', 'analytics', 'keywords']
+    enabledSections: [
+      'hero',
+      'topics',
+      'importantMessages',
+      'actions',
+      'moments',
+      'analytics',
+      'keywords'
+    ]
   },
   full: {
     maxTopics: 6,
@@ -159,6 +167,7 @@ const REPORT_MODE_CONFIG: Record<ReportMode, ReportModeConfig> = {
       'qa',
       'storylines',
       'reversals',
+      'vision',
       'gallery',
       'voices',
       'badges',
@@ -174,6 +183,14 @@ export const buildGroupReportInput = async (
   reportMode: ReportMode
 ): Promise<GroupReportInput> => {
   const facts = await buildGroupReportFacts(messages, contact, isGroup, reportMode)
+  const desiredTopicCount =
+    facts.metadata.messageCount >= 1000
+      ? '建议提炼 6-8 个互不重复的主要话题'
+      : facts.metadata.messageCount >= 500
+        ? '建议提炼 5-6 个互不重复的主要话题'
+        : facts.metadata.messageCount >= 200
+          ? '建议提炼 4-5 个互不重复的主要话题'
+          : '按实际内容提炼 1-4 个主要话题，不要为了凑数编造'
   const transcript = facts.transcriptRows
     .map((row) => `[${row.id}] ${row.datetime} ${row.sender}：${row.content}`)
     .join('\n')
@@ -185,6 +202,7 @@ export const buildGroupReportInput = async (
 消息数：${facts.metadata.messageCount}
 活跃人数：${facts.metadata.activeUsers}
 目标模式：${REPORT_MODE_LABEL[reportMode]}
+话题覆盖：${desiredTopicCount}
 完整性：仅基于当前应用已加载的记录。
 
 媒体与结构化事实（可引用行为，不可猜测图片内容）：
@@ -372,7 +390,8 @@ const parseUnresolved = (root: Record<string, unknown>): ReportUnresolvedItem[] 
         owner: item.owner ? normalizeName(item.owner) : undefined,
         status: normalizedStatus,
         note: asString(item.note),
-        lastDiscussedAt: item.lastDiscussedAt === null ? null : asNullableString(item.lastDiscussedAt),
+        lastDiscussedAt:
+          item.lastDiscussedAt === null ? null : asNullableString(item.lastDiscussedAt),
         sourceMessageIds: asStrings(item.sourceMessageIds, 8),
         importance: asNumber(item.importance),
         confidence: asNumber(item.confidence)
@@ -429,7 +448,8 @@ const parseParticipantChains = (root: Record<string, unknown>): ReportParticipan
     })
     .filter((item) => item.topic && item.chain.length)
 
-const scoreByHeat = (heat: ReportHeat): number => (heat === '高' ? 0.95 : heat === '中' ? 0.75 : 0.55)
+const scoreByHeat = (heat: ReportHeat): number =>
+  heat === '高' ? 0.95 : heat === '中' ? 0.75 : 0.55
 
 const scoreByCount = (count: number, max = 5): number => Math.min(1, Math.max(0.3, count / max))
 
@@ -483,24 +503,60 @@ const clampTopics = (topics: ReportTopic[], config: ReportModeConfig): ReportTop
     keywords: topic.keywords.slice(0, 3)
   }))
 
+const topicLimitForMessageVolume = (
+  config: ReportModeConfig,
+  messageCount: number
+): ReportModeConfig => {
+  if (messageCount >= 1000) return { ...config, maxTopics: Math.max(config.maxTopics, 8) }
+  if (messageCount >= 500) return { ...config, maxTopics: Math.max(config.maxTopics, 6) }
+  if (messageCount >= 200) return { ...config, maxTopics: Math.max(config.maxTopics, 5) }
+  if (messageCount >= 80) return { ...config, maxTopics: Math.max(config.maxTopics, 4) }
+  return config
+}
+
 const attachHighImpactImage = (
   topics: ReportTopic[],
-  gallery: GroupDailyReport['media']['gallery']
+  gallery: GroupDailyReport['media']['gallery'],
+  visionGallery?: GroupDailyReport['media']['visionGallery']
 ): ReportTopic[] => {
-  if (!gallery.length) return topics
+  if (!gallery.length && !visionGallery?.length) return topics
+  // 优先用 visionGallery(AI 真实识别的 description)
+  const firstVision = visionGallery?.find((it) => it.importance !== 'low')
   const [firstImage, ...rest] = gallery
-  const nextTopics = topics.map((topic, index) =>
-    index === 0 && firstImage.replyCount && firstImage.replyCount >= 3
-      ? {
-          ...topic,
-          image: {
-            imageUrl: firstImage.imageUrl,
-            note: `该图片引发 ${firstImage.replyCount} 条回复。${firstImage.note.startsWith('根据') ? firstImage.note : `根据图片前后对话推断，${firstImage.note}`}`,
-            sourceMessageIds: firstImage.sourceMessageIds
-          }
+  const nextTopics = topics.map((topic, index) => {
+    if (index !== 0) return topic
+    if (firstVision) {
+      // AI 真实识别路径:note 直接用 description,不带"根据推断"前缀
+      const noteParts = [firstVision.description]
+      if (firstVision.ocrText) noteParts.push(`文字:${firstVision.ocrText}`)
+      if (firstVision.tags.length) noteParts.push(`标签:${firstVision.tags.join('/')}`)
+      return {
+        ...topic,
+        image: {
+          note: noteParts.join(' · '),
+          sourceMessageIds: firstVision.sourceMessageIds
+          // 注意:不填 imageUrl,因为 unknown imageHash 等问题可能导致 main 取不到原图,
+          // 让 renderer 在 buildGroupReportFacts 阶段就把 dataUrl 预先加载好塞到 gallery 里,
+          // 这里走 gallery 路径自然带 imageUrl
         }
-      : topic
-  )
+      }
+    }
+    if (firstImage?.replyCount && firstImage.replyCount >= 3) {
+      return {
+        ...topic,
+        image: {
+          imageUrl: firstImage.imageUrl,
+          note: `该图片引发 ${firstImage.replyCount} 条回复。${firstImage.note.startsWith('根据') ? firstImage.note : `根据图片前后对话推断，${firstImage.note}`}`,
+          sourceMessageIds: firstImage.sourceMessageIds
+        }
+      }
+    }
+    return topic
+  })
+  if (firstVision) {
+    // visionGallery 用过的不再展示
+    return nextTopics
+  }
   gallery.splice(0, rest.length >= 0 ? 1 : 0)
   return nextTopics
 }
@@ -510,7 +566,7 @@ const postProcessReport = (
   mode: ReportMode,
   metadata: GroupReportMetadata
 ): GroupDailyReport => {
-  const config = REPORT_MODE_CONFIG[mode]
+  const config = topicLimitForMessageVolume(REPORT_MODE_CONFIG[mode], metadata.messageCount)
 
   const topicsScored = sortByScore(report.topics, (item) => scoreByHeat(item.heat))
   const topicsDeduped = dedupeItems(
@@ -518,8 +574,12 @@ const postProcessReport = (
     (item) => item.sourceMessageIds || [],
     (item) => createSignature(item.title, item.summary)
   )
-  let gallery = [...report.media.gallery]
-  const topics = attachHighImpactImage(clampTopics(topicsDeduped, config), gallery)
+  const gallery = [...report.media.gallery]
+  const topics = attachHighImpactImage(
+    clampTopics(topicsDeduped, config),
+    gallery,
+    report.media.visionGallery
+  )
 
   const importantMessagesRaw = sortByScore(report.importantMessages, (item) =>
     Math.max(item.importance || 0, item.confidence || 0.6)
@@ -567,11 +627,16 @@ const postProcessReport = (
     }))
 
   const quotesRaw = sortByScore(report.quotes, (item) =>
-    Math.max(item.importance || 0.55, item.confidence || 0.55, scoreByCount(item.messages.length, 4))
+    Math.max(
+      item.importance || 0.55,
+      item.confidence || 0.55,
+      scoreByCount(item.messages.length, 4)
+    )
   )
   const quotes = dedupeItems(
     quotesRaw,
-    (item) => item.sourceMessageIds || item.messages.map((message) => message.sourceMessageId || ''),
+    (item) =>
+      item.sourceMessageIds || item.messages.map((message) => message.sourceMessageId || ''),
     (item) => createSignature(item.note, item.messages.map((message) => message.content).join('|'))
   )
     .slice(0, config.maxQuotes)
@@ -611,13 +676,19 @@ const postProcessReport = (
 
   const hero = {
     headline:
-      report.hero?.headline || topics[0]?.title || `${metadata.groupName}${mode === 'compact' ? '速览' : '日报'}`,
+      report.hero?.headline ||
+      topics[0]?.title ||
+      `${metadata.groupName}${mode === 'compact' ? '速览' : '日报'}`,
     summary: truncate(
       report.hero?.summary || report.overview || '今天群里有新的讨论进展。',
       mode === 'compact' ? 84 : 120
     ),
-    keyTakeaway: report.hero?.keyTakeaway ? truncate(report.hero.keyTakeaway, config.noteLength) : undefined,
-    pendingNote: report.hero?.pendingNote ? truncate(report.hero.pendingNote, config.noteLength) : undefined,
+    keyTakeaway: report.hero?.keyTakeaway
+      ? truncate(report.hero.keyTakeaway, config.noteLength)
+      : undefined,
+    pendingNote: report.hero?.pendingNote
+      ? truncate(report.hero.pendingNote, config.noteLength)
+      : undefined,
     statusLine:
       report.hero?.statusLine ||
       `今日形成 ${summaryStats.conclusionCount} 个结论 · ${summaryStats.todoCount} 个待办 · ${summaryStats.unresolvedCount} 个问题尚未解决`
@@ -625,7 +696,13 @@ const postProcessReport = (
 
   const sectionMeta: Partial<Record<ReportSectionKey, ReportSectionMeta>> = {
     hero: buildSectionMeta(true, 1, 1, 1, 0.95),
-    topics: buildSectionMeta(config.enabledSections.includes('topics'), topics.length, report.topics.length, 0.98, 0.85),
+    topics: buildSectionMeta(
+      config.enabledSections.includes('topics'),
+      topics.length,
+      report.topics.length,
+      0.98,
+      0.85
+    ),
     importantMessages: buildSectionMeta(
       config.enabledSections.includes('importantMessages'),
       importantMessages.length,
@@ -640,17 +717,84 @@ const postProcessReport = (
       0.97,
       0.8
     ),
-    moments: buildSectionMeta(config.enabledSections.includes('moments'), quotes.length, report.quotes.length, 0.75, 0.72),
+    moments: buildSectionMeta(
+      config.enabledSections.includes('moments'),
+      quotes.length,
+      report.quotes.length,
+      0.75,
+      0.72
+    ),
     analytics: buildSectionMeta(config.enabledSections.includes('analytics'), 1, 1, 0.8, 0.95),
-    keywords: buildSectionMeta(config.enabledSections.includes('keywords'), keywords.length, report.keywords.length, 0.68, 0.9),
-    resources: buildSectionMeta(config.enabledSections.includes('resources'), resources.length, report.resources.length, 0.55, 0.75),
-    qa: buildSectionMeta(config.enabledSections.includes('qa'), qa.length, report.qa.length, 0.62, 0.78),
-    storylines: buildSectionMeta(config.enabledSections.includes('storylines'), storylines.length, report.storylines.length, 0.63, 0.74),
-    reversals: buildSectionMeta(config.enabledSections.includes('reversals'), reversals.length, report.reversals.length, 0.54, 0.72),
-    gallery: buildSectionMeta(config.enabledSections.includes('gallery'), gallery.length, report.media.gallery.length, 0.6, 0.8),
-    voices: buildSectionMeta(config.enabledSections.includes('voices'), voiceHighlights.length, report.media.voiceHighlights.length, 0.56, 0.84),
-    badges: buildSectionMeta(config.enabledSections.includes('badges'), funBadges.length, report.media.funBadges.length, 0.45, 0.65),
-    chains: buildSectionMeta(config.enabledSections.includes('chains'), participantChains.length, report.participantChains.length, 0.58, 0.71)
+    keywords: buildSectionMeta(
+      config.enabledSections.includes('keywords'),
+      keywords.length,
+      report.keywords.length,
+      0.68,
+      0.9
+    ),
+    resources: buildSectionMeta(
+      config.enabledSections.includes('resources'),
+      resources.length,
+      report.resources.length,
+      0.55,
+      0.75
+    ),
+    qa: buildSectionMeta(
+      config.enabledSections.includes('qa'),
+      qa.length,
+      report.qa.length,
+      0.62,
+      0.78
+    ),
+    storylines: buildSectionMeta(
+      config.enabledSections.includes('storylines'),
+      storylines.length,
+      report.storylines.length,
+      0.63,
+      0.74
+    ),
+    reversals: buildSectionMeta(
+      config.enabledSections.includes('reversals'),
+      reversals.length,
+      report.reversals.length,
+      0.54,
+      0.72
+    ),
+    vision: buildSectionMeta(
+      config.enabledSections.includes('vision'),
+      report.media.visionGallery?.length || 0,
+      report.media.visionGallery?.length || 0,
+      0.72,
+      0.9
+    ),
+    gallery: buildSectionMeta(
+      config.enabledSections.includes('gallery'),
+      gallery.length,
+      report.media.gallery.length,
+      0.6,
+      0.8
+    ),
+    voices: buildSectionMeta(
+      config.enabledSections.includes('voices'),
+      voiceHighlights.length,
+      report.media.voiceHighlights.length,
+      0.56,
+      0.84
+    ),
+    badges: buildSectionMeta(
+      config.enabledSections.includes('badges'),
+      funBadges.length,
+      report.media.funBadges.length,
+      0.45,
+      0.65
+    ),
+    chains: buildSectionMeta(
+      config.enabledSections.includes('chains'),
+      participantChains.length,
+      report.participantChains.length,
+      0.58,
+      0.71
+    )
   }
 
   return {
@@ -670,6 +814,7 @@ const postProcessReport = (
     keywords,
     media: {
       gallery,
+      visionGallery: report.media.visionGallery,
       voiceHighlights,
       funBadges
     },
@@ -698,7 +843,8 @@ export const parseGroupDailyReport = (
       heroRoot && Object.keys(heroRoot).length
         ? {
             headline: asString(heroRoot.headline) || topics[0]?.title || '今日群聊速览',
-            summary: asString(heroRoot.summary) || asString(root.overview) || '今天群里有新的讨论进展。',
+            summary:
+              asString(heroRoot.summary) || asString(root.overview) || '今天群里有新的讨论进展。',
             keyTakeaway: asString(heroRoot.keyTakeaway),
             pendingNote: asString(heroRoot.pendingNote),
             statusLine: asString(heroRoot.statusLine)
@@ -731,4 +877,96 @@ export const parseGroupDailyReport = (
   }
 
   return postProcessReport(report, metadata.reportMode || 'compact', metadata)
+}
+
+// ============================================================
+// main 分支兼容导出(SummaryDateRange / getSummaryDateRange 等)
+// 用于让 App.tsx / useGroupReportGeneration.ts 等 main 分支文件能继续编译
+// ============================================================
+export type SummaryDateRange = 'today' | 'yesterday' | '7days'
+export type SummaryMessageType =
+  | 'text'
+  | 'image'
+  | 'sticker'
+  | 'video'
+  | 'voice'
+  | 'share'
+  | 'system'
+
+export const SUMMARY_DATE_OPTIONS: { value: SummaryDateRange; label: string }[] = [
+  { value: 'today', label: '今天' },
+  { value: 'yesterday', label: '昨日' },
+  { value: '7days', label: '近 7 天' }
+]
+
+export const SUMMARY_TYPE_OPTIONS: {
+  value: SummaryMessageType
+  label: string
+  messageTypes: string[]
+  description: string
+}[] = [
+  {
+    value: 'text',
+    label: '文本',
+    messageTypes: ['普通文本'],
+    description: '使用文本内容、发送者和时间。'
+  },
+  {
+    value: 'image',
+    label: '图片',
+    messageTypes: ['图片'],
+    description: '图片 AI 识别结果将作为 ImageInsight 注入日报(由 ImageInsightService 提供)。'
+  },
+  {
+    value: 'sticker',
+    label: '表情包',
+    messageTypes: ['表情包'],
+    description: '不理解表情内容，仅按类型参与统计。'
+  },
+  {
+    value: 'video',
+    label: '视频',
+    messageTypes: ['视频'],
+    description: '不理解视频画面，仅按类型参与统计。'
+  },
+  {
+    value: 'voice',
+    label: '语音',
+    messageTypes: ['语音'],
+    description: '当前不转写语音，仅参与数量和活跃度统计。'
+  },
+  {
+    value: 'share',
+    label: '分享/引用',
+    messageTypes: ['分享消息', '名片', '位置', '通话'],
+    description: '使用解析到的标题、引用文本或类型信息。'
+  },
+  {
+    value: 'system',
+    label: '系统消息',
+    messageTypes: ['系统消息'],
+    description: '使用系统消息文本或类型信息。'
+  }
+]
+
+export const getSummaryDateRange = (
+  range: SummaryDateRange
+): { startTime: number; endTime: number } => {
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000
+  const endTime = Math.floor(Date.now() / 1000)
+  if (range === 'yesterday') {
+    return { startTime: startOfToday - 86400, endTime: startOfToday - 1 }
+  }
+  if (range === '7days') {
+    return { startTime: startOfToday - 6 * 86400, endTime }
+  }
+  return { startTime: startOfToday, endTime }
+}
+
+export const isInternalName = (value?: string): boolean => {
+  const text = String(value || '').trim()
+  return (
+    !text || /^wxid_/i.test(text) || /@chatroom$/i.test(text) || /^[a-z0-9_-]{18,}$/i.test(text)
+  )
 }

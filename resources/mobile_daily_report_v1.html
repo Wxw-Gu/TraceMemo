@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>{{REPORT_TITLE}}</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      ::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+      }
+      html {
+        width: 430px;
+        scrollbar-width: none;
+      }
+      body {
+        margin: 0;
+        width: 430px;
+        background: #f3f5f7;
+        color: #1f2933;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .report {
+        width: 430px;
+        margin: 0 auto;
+        padding: 22px 14px 34px;
+      }
+      .hero,
+      .card,
+      .section {
+        background: #fff;
+        border-radius: 16px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+      }
+      .hero {
+        padding: 20px;
+      }
+      .hero-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        min-width: 0;
+      }
+      .hero-top > div:first-child {
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+      .hero h1 {
+        font-size: 23px;
+        line-height: 1.2;
+        margin: 0 0 8px;
+        font-weight: 900;
+      }
+      .sub {
+        color: #667085;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .record-note {
+        color: #485465;
+        font-weight: 650;
+      }
+      .overview {
+        margin-top: 2px;
+      }
+      .avatar-grid {
+        width: 58px;
+        height: 58px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 3px;
+        flex: 0 0 auto;
+      }
+      .avatar-grid img,
+      .avatar {
+        width: 100%;
+        height: 100%;
+        border-radius: 50%;
+        object-fit: cover;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .stat {
+        background: #f7faf9;
+        border-radius: 12px;
+        padding: 10px 6px;
+        text-align: center;
+        min-width: 0;
+        overflow: hidden;
+      }
+      .stat b {
+        display: block;
+        font-size: 18px;
+        color: #07a352;
+        white-space: nowrap;
+        line-height: 1.25;
+      }
+      .stat span {
+        font-size: 11px;
+        color: #667085;
+      }
+      .section {
+        margin-top: 14px;
+        padding: 18px;
+      }
+      .section-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 18px;
+        font-weight: 900;
+        margin-bottom: 12px;
+      }
+      .section-title::before {
+        content: '';
+        width: 5px;
+        height: 20px;
+        border-radius: 99px;
+        background: #07c160;
+      }
+      .card {
+        padding: 14px;
+        margin-top: 10px;
+        box-shadow: none;
+        border: 1px solid #edf0f2;
+      }
+      .topic-title-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .topic-title-row h3 {
+        font-size: 16px;
+        line-height: 1.35;
+        margin: 0;
+        font-weight: 850;
+      }
+      .heat,
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 4px 8px;
+        background: #eef8f2;
+        color: #07a352;
+        font-size: 11px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+      .hot {
+        background: #fff4e5;
+        color: #d46b08;
+      }
+      .blue {
+        background: #eef5ff;
+        color: #1677ff;
+      }
+      .red {
+        background: #fff1f0;
+        color: #ff4d4f;
+      }
+      .topic-meta {
+        margin-top: 6px;
+        color: #8a94a6;
+        font-size: 12px;
+      }
+      .card p {
+        font-size: 13px;
+        line-height: 1.65;
+        margin: 10px 0 0;
+      }
+      .participants {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .person-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
+        background: #f6f8fa;
+        border-radius: 999px;
+        padding: 3px 8px 3px 3px;
+      }
+      .person-chip img {
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        object-fit: cover;
+      }
+      .person-chip b {
+        max-width: 58px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 11px;
+      }
+      .keywords {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 10px;
+      }
+      .keywords span {
+        font-size: 11px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: #f2f4f7;
+        color: #667085;
+      }
+      .resource {
+        padding: 11px 12px;
+        background: #f7f8fa;
+        border-radius: 12px;
+        margin-top: 8px;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .resource b {
+        color: #1677ff;
+      }
+      .important-card {
+        display: flex;
+        gap: 10px;
+        background: #f7faf9;
+        border-radius: 14px;
+        padding: 12px;
+        margin-top: 10px;
+      }
+      .important-card > .avatar {
+        width: 36px;
+        height: 36px;
+        flex: 0 0 auto;
+      }
+      .important-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 12px;
+        color: #667085;
+      }
+      .important-meta b {
+        color: #1f2933;
+      }
+      .important-text {
+        font-size: 13px;
+        line-height: 1.55;
+        margin-top: 5px;
+      }
+      .important-note {
+        margin-top: 8px;
+        padding: 7px 9px;
+        border-left: 3px solid #07c160;
+        background: #fff;
+        border-radius: 8px;
+        color: #07a352;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .chat-block {
+        background: #f0f2f5;
+        border-radius: 14px;
+        padding: 12px;
+        margin-top: 10px;
+      }
+      .chat-msg {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .chat-avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        object-fit: cover;
+      }
+      .chat-name {
+        font-size: 11px;
+        color: #667085;
+        margin-bottom: 4px;
+      }
+      .chat-bubble {
+        background: #fff;
+        border-radius: 4px 12px 12px 12px;
+        padding: 9px 10px;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .quote-note {
+        background: #fff8e1;
+        border-radius: 10px;
+        padding: 9px 10px;
+        margin-top: 10px;
+        color: #8a5a00;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .qa-card {
+        background: #f8fafc;
+        border-radius: 14px;
+        padding: 12px;
+        margin-top: 10px;
+      }
+      .qa-card b {
+        display: block;
+        color: #1f2933;
+        margin-bottom: 5px;
+      }
+      .qa-card div {
+        font-size: 13px;
+        line-height: 1.55;
+        color: #485465;
+      }
+      .bar-row {
+        display: grid;
+        grid-template-columns: 82px 1fr;
+        gap: 8px;
+        align-items: center;
+        margin-top: 9px;
+        font-size: 12px;
+      }
+      .bar {
+        height: 10px;
+        background: #edf1f5;
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .bar i {
+        display: block;
+        height: 100%;
+        background: #07c160;
+        border-radius: 999px;
+      }
+      .rank {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 9px 0;
+        border-bottom: 1px solid #eef0f2;
+      }
+      .rank img {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        object-fit: cover;
+      }
+      .rank b {
+        font-size: 13px;
+      }
+      .rank span {
+        margin-left: auto;
+        color: #8a94a6;
+        font-size: 12px;
+      }
+      .cloud-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .cloud-tags span {
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: #f2f4f7;
+        color: #485465;
+        font-weight: 800;
+      }
+      .cloud-tags .xl {
+        font-size: 20px;
+        color: #07a352;
+        background: #e9f8ef;
+      }
+      .cloud-tags .lg {
+        font-size: 17px;
+        color: #1677ff;
+        background: #eef5ff;
+      }
+      .cloud-tags .md {
+        font-size: 15px;
+        color: #d46b08;
+        background: #fff4e5;
+      }
+      .footer {
+        padding: 16px 4px 0;
+        color: #98a2b3;
+        text-align: center;
+        font-size: 11px;
+        line-height: 1.8;
+      }
+      .muted {
+        color: #8a94a6;
+      }
+      .empty-section {
+        display: none;
+      }
+      @media (max-width: 430px) {
+        html,
+        body {
+          width: 100%;
+        }
+        .report {
+          width: 100%;
+          padding-left: 12px;
+          padding-right: 12px;
+        }
+        .stats {
+          gap: 6px;
+        }
+        .stat b {
+          font-size: 16px;
+        }
+      }
+      /* AI 图片识别板块(v1 模板) */
+      .vision-card {
+        display: grid;
+        grid-template-columns: 132px 1fr;
+        gap: 14px;
+        margin-top: 10px;
+        padding: 12px;
+        background: linear-gradient(135deg, #edf9f1 0%, #f7fbf8 100%);
+        border: 1px solid #d6efde;
+        border-radius: 14px;
+      }
+      .vision-image {
+        width: 132px;
+        height: 132px;
+        border-radius: 12px;
+        object-fit: cover;
+        background: #e5e7eb;
+      }
+      .vision-description {
+        margin-top: 6px;
+        font-size: 13px;
+        line-height: 1.5;
+        color: #1f2933;
+      }
+      .vision-ocr {
+        margin-top: 6px;
+        padding: 6px 10px;
+        background: #eef5ff;
+        color: #1677ff;
+        font-size: 11px;
+        border-radius: 8px;
+        word-break: break-all;
+      }
+      .vision-tags {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .vision-tag {
+        display: inline-block;
+        padding: 3px 8px;
+        background: #07c160;
+        color: #fff;
+        font-size: 10px;
+        font-weight: 700;
+        border-radius: 999px;
+      }
+      .vision-label {
+        margin-top: 6px;
+        font-size: 10px;
+        color: #07a352;
+        font-weight: 600;
+      }
+      /* 热度条形图(v1 模板) */
+      .heat-row {
+        display: grid;
+        grid-template-columns: 80px 1fr 40px;
+        align-items: center;
+        gap: 10px;
+        margin-top: 8px;
+        font-size: 12px;
+      }
+      .heat-name {
+        color: #1f2933;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .heat-bar {
+        background: #f3f5f7;
+        border-radius: 999px;
+        height: 10px;
+        overflow: hidden;
+      }
+      .heat-bar i {
+        display: block;
+        height: 100%;
+        background: linear-gradient(90deg, #07c160 0%, #34d399 100%);
+        border-radius: 999px;
+      }
+      .heat-val {
+        color: #485465;
+        font-weight: 700;
+        font-size: 11px;
+        text-align: right;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="report">
+      <header class="hero">
+        <div class="hero-top">
+          <div>
+            <h1>{{GROUP_NAME}}日报</h1>
+            <div class="sub">
+              <div>{{DATE_RANGE}}</div>
+              <div class="record-note">{{RECORD_NOTE}}</div>
+              <div class="overview">{{OVERVIEW}}</div>
+            </div>
+          </div>
+          <div class="avatar-grid">{{HERO_AVATARS}}</div>
+        </div>
+        <div class="stats">
+          <div class="stat"><b>{{MESSAGE_COUNT}}</b><span>消息数</span></div>
+          <div class="stat"><b>{{ACTIVE_USERS}}</b><span>活跃人数</span></div>
+          <div class="stat"><b>{{TIME_SPAN}}</b><span>持续时长</span></div>
+          <div class="stat"><b>{{TOPIC_COUNT}}</b><span>主要话题</span></div>
+        </div>
+      </header>
+
+      <section class="section topics">
+        <div class="section-title">今日讨论热点</div>
+        {{TOPIC_CARDS}}
+      </section>
+
+      <section class="section vision {{VISION_EMPTY_CLASS}}">
+        <div class="section-title">{{VISION_TITLE}}</div>
+        {{VISION_CARDS}}
+      </section>
+
+      <section class="section resources {{RESOURCES_EMPTY_CLASS}}">
+        <div class="section-title">实用信息与资源</div>
+        {{RESOURCE_ITEMS}}
+      </section>
+
+      <section class="section messages {{MESSAGES_EMPTY_CLASS}}">
+        <div class="section-title">重要消息汇总</div>
+        {{IMPORTANT_MESSAGES}}
+      </section>
+
+      <section class="section quotes {{QUOTES_EMPTY_CLASS}}">
+        <div class="section-title">有趣对话或金句</div>
+        {{QUOTE_BLOCKS}}
+      </section>
+
+      <section class="section qa {{QA_EMPTY_CLASS}}">
+        <div class="section-title">问题与解答</div>
+        {{QA_CARDS}}
+      </section>
+
+      <section class="section analytics">
+        <div class="section-title">群内数据可视化</div>
+        {{HEAT_BARS}}
+        <div class="card">
+          <div class="muted" style="font-size: 12px; margin-bottom: 6px">
+            话唠榜 TOP5（基于已读取记录估算）
+          </div>
+          {{RANK_ITEMS}}
+        </div>
+        <div class="card">
+          <p><b>活跃时间线：</b>{{ACTIVITY_TIMELINE}}</p>
+        </div>
+      </section>
+
+      <section class="section cloud">
+        <div class="section-title">词云/关键词</div>
+        <div class="cloud-tags">{{CLOUD_TAGS}}</div>
+      </section>
+
+      <footer class="footer">
+        数据来源：WechatExplorer · 微信群聊记录<br />
+        生成时间：{{GENERATED_AT}}<br />
+        {{FOOTER_NOTE}}
+      </footer>
+    </main>
+  </body>
+</html>

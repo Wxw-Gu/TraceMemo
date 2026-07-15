@@ -174,13 +174,31 @@ export function AIProviderEditor({
               <input
                 type="checkbox"
                 checked={model.capabilities.vision}
+                onChange={(event) => {
+                  const vision = event.target.checked
+                  // OCR 是 vision 的派生能力:勾 vision 时自动带 OCR
+                  patchModel(index, {
+                    capabilities: {
+                      ...model.capabilities,
+                      vision,
+                      ocr: vision ? true : model.capabilities.ocr
+                    }
+                  })
+                }}
+              />
+              图片理解
+            </label>
+            <label title="图片文字识别,跟随图片理解能力">
+              <input
+                type="checkbox"
+                checked={model.capabilities.ocr}
                 onChange={(event) =>
                   patchModel(index, {
-                    capabilities: { ...model.capabilities, vision: event.target.checked }
+                    capabilities: { ...model.capabilities, ocr: event.target.checked }
                   })
                 }
               />
-              图片理解
+              图片文字识别
             </label>
             <label>
               <input
@@ -296,5 +314,5 @@ export function AIProviderEditor({
 }
 
 function emptyModel(): AIModelDefinition {
-  return { name: '', id: '', capabilities: { chat: true, vision: false, longContext: false } }
+  return { name: '', id: '', capabilities: { chat: true, vision: false, ocr: false, longContext: false } }
 }

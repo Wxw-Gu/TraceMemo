@@ -8,6 +8,13 @@ import type {
   AIVisionTestRequest,
   LegacyAIConfig
 } from '../shared/ai-provider'
+import type {
+  ImageAnalysisRequest,
+  ImageAnalysisResponse,
+  ImageCandidate,
+  ImageCandidateQuery,
+  ImageInsight
+} from '../shared/image-insight'
 
 // 渲染器的自定义 API
 const api = {
@@ -108,7 +115,24 @@ const api = {
   revealReaderSkill: () => ipcRenderer.invoke('api:revealSkill'),
   openReaderSkillGithub: () => ipcRenderer.invoke('api:openSkillGithub'),
   testLocalApiRequest: (request) => ipcRenderer.invoke('api:testLocalRequest', request),
-  copyText: (text: string) => ipcRenderer.invoke('api:copyText', text)
+  copyText: (text: string) => ipcRenderer.invoke('api:copyText', text),
+  // ============================================================
+  // AI 图片理解基础设施(ImageInsightService)
+  // ============================================================
+  imageListCandidates: (query: ImageCandidateQuery): Promise<{
+    success: boolean
+    candidates: ImageCandidate[]
+    error?: string
+  }> => ipcRenderer.invoke('image:listCandidates', query),
+  imageAnalyze: (request: ImageAnalysisRequest): Promise<ImageAnalysisResponse> =>
+    ipcRenderer.invoke('image:analyze', request),
+  getImageInsight: (imageHash: string): Promise<{ success: boolean; insight?: ImageInsight }> =>
+    ipcRenderer.invoke('image:getInsight', imageHash),
+  listImageInsights: (
+    sessionId: string,
+    limit?: number
+  ): Promise<{ success: boolean; insights: ImageInsight[] }> =>
+    ipcRenderer.invoke('image:listInsights', sessionId, limit)
 }
 
 if (process.contextIsolated) {

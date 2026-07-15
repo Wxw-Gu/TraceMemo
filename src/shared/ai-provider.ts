@@ -15,6 +15,11 @@ export interface AIProviderAuth {
 export interface AIModelCapabilities {
   chat: boolean
   vision: boolean
+  /**
+   * OCR 是 vision 能力的派生(几乎所有 vision 模型都能 OCR)。
+   * 不作为用户独立配置项,UI 上显示为"图片文字识别"标签。
+   */
+  ocr: boolean
   longContext: boolean
 }
 
@@ -66,6 +71,7 @@ export interface AIRuntimeModelConfig {
   modelName: string
   configured: boolean
   status: AIProviderSummary['status']
+  timeoutMs?: number
 }
 
 export interface LegacyAIConfig {
@@ -77,6 +83,7 @@ export interface LegacyAIConfig {
 export interface AIChatRequestOptions {
   providerId?: string
   modelId?: string
+  timeoutMs?: number
   // Legacy compatibility only. New callers must use providerId/modelId.
   apiKey?: string
   baseURL?: string

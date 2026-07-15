@@ -3,6 +3,7 @@ import { Contact } from '../../../../shared/types'
 import {
   AiModelConfig,
   RangeMessageState,
+  ReportMemberNamePreference,
   ReportGenerationPhase,
   ReportPaths
 } from '../../hooks/useGroupReportGeneration'
@@ -11,7 +12,9 @@ import { MessageTypeSelector } from './MessageTypeSelector'
 import { ModelSummary } from './ModelSummary'
 import { ReportDensitySelector } from './ReportDensitySelector'
 import { ReportRangeSelector } from './ReportRangeSelector'
+import { ReportMemberNameSelector } from './ReportMemberNameSelector'
 import { ReportSectionSelector } from './ReportSectionSelector'
+import { ReportTemplateId, ReportTemplateSelector } from './ReportTemplateSelector'
 
 interface AiReportWorkspaceProps {
   sourceContact: Contact | null
@@ -36,6 +39,12 @@ interface AiReportWorkspaceProps {
   onRevealReport: () => Promise<{ success: boolean; error?: string }>
   onViewResult: () => void
   hasReportResult: boolean
+  templateId: ReportTemplateId
+  onTemplateIdChange: (value: ReportTemplateId) => void
+  memberNamePreference: ReportMemberNamePreference
+  onMemberNamePreferenceChange: (value: ReportMemberNamePreference) => void
+  reportTimeoutSeconds: number
+  onReportTimeoutSecondsChange: (value: number) => void
 }
 
 const rangeLabel = (range: SummaryDateRange): string => {
@@ -76,7 +85,13 @@ export function AiReportWorkspace({
   onCopyImage,
   onRevealReport,
   onViewResult,
-  hasReportResult
+  hasReportResult,
+  templateId,
+  onTemplateIdChange,
+  memberNamePreference,
+  onMemberNamePreferenceChange,
+  reportTimeoutSeconds,
+  onReportTimeoutSecondsChange
 }: AiReportWorkspaceProps): React.ReactElement {
   const [actionStatus, setActionStatus] = useState('')
   const groupName = sourceContact?.m_nsNickName || sourceContact?.m_nsUsrName || '未选择群聊'
@@ -144,7 +159,35 @@ export function AiReportWorkspace({
         />
         <ReportSectionSelector />
         <ReportDensitySelector />
+        <ReportTemplateSelector
+          value={templateId}
+          onChange={onTemplateIdChange}
+          disabled={configDisabled}
+        />
+        <ReportMemberNameSelector
+          value={memberNamePreference}
+          onChange={onMemberNamePreferenceChange}
+          disabled={configDisabled}
+        />
         <ModelSummary config={modelConfig} onOpenSettings={onOpenModelSettings} />
+        <section className="report-config-section report-timeout-section">
+          <div>
+            <h3>日报生成超时</h3>
+            <p>大群聊和图片识别耗时较长，可单独设置本次日报最多等待时间。</p>
+          </div>
+          <label>
+            <input
+              type="number"
+              min={30}
+              max={1800}
+              step={30}
+              value={reportTimeoutSeconds}
+              disabled={configDisabled}
+              onChange={(event) => onReportTimeoutSecondsChange(Number(event.target.value))}
+            />
+            <span>秒</span>
+          </label>
+        </section>
         <section className="report-privacy-note">
           <h3>隐私说明</h3>
           <p>微信数据库和聊天记录默认从本机读取。</p>

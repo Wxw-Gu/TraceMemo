@@ -6,11 +6,29 @@ import {
   GroupReportExportRequest,
   GroupReportExportResult,
   GroupReportMetadata,
-  ReportHeat
+  ReportHeat,
+  ReportSectionMeta
 } from '../shared/group-report'
 import { resolveMd5, getGroupSnapshot } from './services/chat-service'
+import { imageInsightService } from './services/image-insight-service'
 
-const TEMPLATE_NAME = 'mobile_daily_report.html'
+const TEMPLATE_FILES: Record<string, string> = {
+  v1: 'mobile_daily_report_v1.html',
+  v2: 'mobile_daily_report_v2.html'
+}
+const DEFAULT_TEMPLATE = TEMPLATE_FILES.v1
+
+const templatePath = (templateId?: string): string => {
+  const name = TEMPLATE_FILES[templateId || ''] || DEFAULT_TEMPLATE
+  const candidates = [
+    path.join(process.resourcesPath, 'resources', name),
+    path.join(app.getAppPath(), 'resources', name),
+    path.join(process.cwd(), 'resources', name)
+  ]
+  const found = candidates.find((candidate) => fs.existsSync(candidate))
+  if (!found) throw new Error(`日报模板不存在: ${candidates.join(' | ')}`)
+  return found
+}
 
 const escapeHtml = (value: unknown): string =>
   String(value ?? '')
@@ -75,17 +93,6 @@ const embedAvatar = async (source: string | undefined, name: string): Promise<st
   }
 }
 
-const templatePath = (): string => {
-  const candidates = [
-    path.join(process.resourcesPath, 'resources', TEMPLATE_NAME),
-    path.join(app.getAppPath(), 'resources', TEMPLATE_NAME),
-    path.join(process.cwd(), 'resources', TEMPLATE_NAME)
-  ]
-  const found = candidates.find((candidate) => fs.existsSync(candidate))
-  if (!found) throw new Error(`日报模板不存在: ${candidates.join(' | ')}`)
-  return found
-}
-
 /**
  * 从群成员快照反推真头像,填进 metadata.avatars。
  * - 没传 talker → 跳过(向后兼容)
@@ -138,13 +145,10 @@ const heatClass = (heat: ReportHeat): string => {
 const replacePlaceholder = (html: string, key: string, value: string): string =>
   html.replaceAll(`{{${key}}}`, value)
 
-const modeLabel = (mode: GroupReportMetadata['reportMode']): string =>
-  mode === 'full' ? '完整版' : '精简版'
-
 const sectionMeta = (
   request: GroupReportExportRequest,
   key: keyof NonNullable<typeof request.report.sectionMeta>
-) => request.report.sectionMeta?.[key]
+): ReportSectionMeta | undefined => request.report.sectionMeta?.[key]
 
 const sectionClass = (
   request: GroupReportExportRequest,
@@ -205,8 +209,25 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
               : ''
         }
         ${
-          topic.image?.imageUrl
-            ? `<div class="topic-inline-image"><img src="${topic.image.imageUrl}" alt="热点图片"><div>${escapeHtml(topic.image.note)}</div></div>`
+          topic.image
+            ? (() => {
+                // 优先用已有 imageUrl;若有 imageHash(来自 visionGallery),按 hash 取原图
+                let imageUrl = topic.image.imageUrl
+                if (!imageUrl && topic.image.imageHash) {
+                  const insight = imageInsightService.getInsight(topic.image.imageHash)
+                  if (insight) {
+                    // insight 不含 imageUrl,需要按 md5/datName 重新拿;这里通过 ImageDecryptService 间接获取
+                    // 走 ImageDecryptService.findImageFile + decryptImageToBase64
+                    const decryptService = (globalThis as { __imageDecrypt?: { findImageFile: (md5?: string, dat?: string) => string | null; decryptImageToBase64: (p: string) => string | null } }).__imageDecrypt
+                    if (decryptService) {
+                      const filePath = decryptService.findImageFile(insight.md5, insight.datName)
+                      if (filePath) imageUrl = decryptService.decryptImageToBase64(filePath) || undefined
+                    }
+                  }
+                }
+                if (!imageUrl) return ''
+                return `<div class="topic-inline-image"><img src="${imageUrl}" alt="热点图片"><div>${escapeHtml(topic.image.note)}</div></div>`
+              })()
             : ''
         }
         <div class="participants">${topic.participants
@@ -325,6 +346,24 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     )
     .join('')
 
+  // AI 图片理解结果板块(ImageInsight)
+  // 内容由 ImageInsightService.analyze 生成,真实看图 + 看上下文
+  const visionCards = (report.media?.visionGallery || [])
+    .filter((item) => item.imageUrl) // 只显示加载成功的图
+    .map(
+      (item) => `<div class="vision-card">
+        <img class="vision-image" src="${item.imageUrl}" alt="AI 识别的图片">
+        <div class="vision-body">
+          <div class="important-meta"><b>${escapeHtml(item.sender)}</b><span>${escapeHtml(item.time)}</span></div>
+          <div class="vision-description">${escapeHtml(item.description)}</div>
+          ${item.ocrText ? `<div class="vision-ocr">📝 ${escapeHtml(item.ocrText)}</div>` : ''}
+          ${item.tags.length ? `<div class="vision-tags">${item.tags.map((t) => `<span class="vision-tag">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
+          <div class="vision-label">AI 图片识别</div>
+        </div>
+      </div>`
+    )
+    .join('')
+
   const voiceCards = (report.media?.voiceHighlights || [])
     .map(
       (item) => `<div class="qa-card">
@@ -362,6 +401,20 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     )
     .join('')
 
+  // v1 模板使用的水平条形热度图,渲染 top speakers 排行
+  const heatBarsHtml = report.analytics.topSpeakers
+    .slice(0, 8)
+    .map((speaker) => {
+      const count = Math.max(0, speaker.count)
+      const width = Math.min(100, count * 12)
+      return `<div class="heat-row">
+        <span class="heat-name">${escapeHtml(speaker.name)}</span>
+        <span class="heat-bar"><i style="width:${width}%"></i></span>
+        <span class="heat-val">${count}</span>
+      </div>`
+    })
+    .join('')
+
   const cloudTags = report.keywords
     .slice(0, 15)
     .map(
@@ -390,14 +443,16 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     unresolvedCount: report.unresolved.length
   }
 
-  let html = await fs.readFile(templatePath(), 'utf8')
+  let html = await fs.readFile(templatePath(request.templateId), 'utf8')
   const values: Record<string, string> = {
     REPORT_TITLE: escapeHtml(`${metadata.groupName}日报`),
     REPORT_MODE_CLASS: metadata.reportMode === 'full' ? 'full' : 'compact',
     GROUP_NAME: escapeHtml(metadata.groupName),
     DATE_RANGE: escapeHtml(metadata.dateRange),
     RECORD_NOTE: escapeHtml(metadata.recordNote),
-    REPORT_MODE_LABEL: escapeHtml(modeLabel(metadata.reportMode)),
+    // v1 模板使用的 OVERVIEW(经典版以概览段落呈现)
+    OVERVIEW: escapeHtml(report.overview || report.hero?.summary || '基于已读取聊天记录生成的群聊日报'),
+    // v2 模板使用的 hero-*
     HERO_HEADLINE: escapeHtml(report.hero?.headline || '今日群聊速览'),
     HERO_SUMMARY: escapeHtml(report.hero?.summary || report.overview),
     HERO_TAKEAWAY: escapeHtml(report.hero?.keyTakeaway || ''),
@@ -442,6 +497,14 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     CHAINS_EMPTY_CLASS: sectionClass(request, 'chains', report.participantChains?.length > 0),
     CHAIN_CARDS: chainCards,
     CHAINS_MORE_NOTE: overflowNote(request, 'chains'),
+    // AI 图片识别板块
+    VISION_EMPTY_CLASS: sectionClass(
+      request,
+      'vision',
+      (report.media?.visionGallery?.length ?? 0) > 0
+    ),
+    VISION_CARDS: visionCards,
+    VISION_TITLE: '📸 AI 识别的图片精选',
     GALLERY_EMPTY_CLASS: sectionClass(request, 'gallery', report.media?.gallery?.length > 0),
     GALLERY_CARDS: galleryCards,
     GALLERY_MORE_NOTE: overflowNote(request, 'gallery'),
@@ -463,9 +526,13 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     KEYWORDS_MORE_NOTE: overflowNote(request, 'keywords'),
     ANALYTICS_EMPTY_CLASS: sectionClass(request, 'analytics', true),
     GENERATED_AT: escapeHtml(metadata.generatedAt),
-    FOOTER_NOTE: escapeHtml(metadata.footerNote)
+    FOOTER_NOTE: escapeHtml(metadata.footerNote),
+    // v1 模板独有:从 analytics.topSpeakers 渲染水平条形热度图
+    HEAT_BARS: heatBarsHtml
   }
   for (const [key, value] of Object.entries(values)) html = replacePlaceholder(html, key, value)
+  // 清空模板中残留的未使用占位符(模板独有但 values 没提供的键)
+  html = html.replace(/\{\{[A-Z_]+\}\}/g, '')
   return html
 }
 
@@ -520,7 +587,8 @@ export const exportGroupReport = async (
 
     const outputDir = path.join(os.homedir(), 'Documents', '微信聊天记录')
     await fs.ensureDir(outputDir)
-    const baseName = `${sanitizeFileName(request.metadata.groupName)}日报_${request.metadata.reportDate}_${request.metadata.reportMode === 'full' ? '完整版' : '精简版'}`
+    const templateLabel = request.templateId === 'v1' ? '经典版' : '模板2'
+    const baseName = `${sanitizeFileName(request.metadata.groupName)}日报_${request.metadata.reportDate}_${templateLabel}`
     const htmlPath = path.join(outputDir, `${baseName}.html`)
     const pngPath = path.join(outputDir, `${baseName}.png`)
     const htmlStartedAt = new Date()
