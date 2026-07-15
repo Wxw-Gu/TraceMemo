@@ -1,6 +1,6 @@
 {
   "name": "wechatexplorer",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "macOS / Windows 微信聊天记录查看与 AI 群聊总结助手",
   "keywords": [
     "wechat",
@@ -35,10 +35,12 @@
     "build": "npm run typecheck && npm run build:native-services && electron-vite build",
     "postinstall": "electron-builder install-app-deps && node scripts/prepare-electron-runtime.cjs",
     "build:unpack": "npm run build && electron-builder --config electron-builder.yml --dir",
-    "build:win": "npm run typecheck && npm run build:wechat-connector:win && electron-vite build && electron-builder --config electron-builder.yml --win",
+    "build:win": "npm run typecheck && npm run build:wechat-connector:win && electron-vite build && electron-builder --config electron-builder.yml --win --x64",
     "build:mac:x64": "npm run typecheck && node scripts/build-wechat-connector.cjs --platform darwin --arch x64 && electron-vite build && electron-builder --config electron-builder.yml --mac --x64",
     "build:mac:arm64": "npm run typecheck && node scripts/build-wechat-connector.cjs --platform darwin --arch arm64 && electron-vite build && electron-builder --config electron-builder.yml --mac --arm64",
+    "release": "npm run release:mac && npm run release:win",
     "release:mac": "npm run typecheck && npm run build:wechat-connector:mac && electron-vite build && electron-builder --config electron-builder.yml --mac --x64 --arm64 --publish always",
+    "release:win": "npm run typecheck && npm run build:wechat-connector:win && electron-vite build && electron-builder --config electron-builder.yml --win --x64 --publish always",
     "build:linux": "electron-vite build && electron-builder --config electron-builder.yml --linux"
   },
   "dependencies": {

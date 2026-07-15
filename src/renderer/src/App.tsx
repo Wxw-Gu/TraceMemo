@@ -23,6 +23,11 @@ import { Contact, Message } from '../../shared/types'
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
 
+function getDevelopmentDatabaseKey(): string {
+  if (!import.meta.env.DEV) return ''
+  return String(import.meta.env.VITE_DB_KEY || '').trim()
+}
+
 function EyeIcon({ hidden }: { hidden: boolean }): React.ReactElement {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -154,7 +159,7 @@ const sortMessagesChronologically = (items: Message[]): Message[] =>
 function App(): React.ReactElement {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
-  const [dbKey, setDbKey] = useState(import.meta.env.VITE_DB_KEY || '')
+  const [dbKey, setDbKey] = useState(getDevelopmentDatabaseKey)
   const [contacts, setContacts] = useState<Contact[]>([])
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
@@ -370,9 +375,9 @@ function App(): React.ReactElement {
         setDbRootInput(settingsResult.settings.dbRoot)
       }
       const autoLoginEnabled = settingsResult.settings.autoLogin
-      // 优先级 1: 构建期环境变量 VITE_DB_KEY（本地开发用）
-      const envKey = String(import.meta.env.VITE_DB_KEY || '').trim()
-      // 优先级 2: 上一次保存到 safeStorage 的密钥
+      // 开发环境允许使用 VITE_DB_KEY；生产安装包只能读取目标电脑自己的 safeStorage。
+      const envKey = getDevelopmentDatabaseKey()
+      // 生产环境以及未配置开发密钥时，读取上一次保存到 safeStorage 的密钥。
       let savedKey = ''
       if (!envKey) {
         const result = await window.api.getSavedDbKey()
