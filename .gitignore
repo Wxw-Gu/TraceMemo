@@ -6,6 +6,7 @@ out
 .DS_Store
 .eslintcache
 *.log*
+resources/connectors/wechat/
 .omc
 .codex/
 docs/design/

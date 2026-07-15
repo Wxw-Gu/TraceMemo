@@ -12,6 +12,8 @@ export interface AppSettings {
   imageXorKey: string
   imageAesKey: string
   imageKeyFallbackDisabled: boolean
+  autoLogin: boolean
+  autoLoginPreferenceSet: boolean
 }
 
 function getDefaultDbRoot(): string {
@@ -118,7 +120,13 @@ const DEFAULT_SETTINGS: AppSettings = {
   imageKeyRoot: defaultDbRoot,
   imageXorKey: '',
   imageAesKey: '',
-  imageKeyFallbackDisabled: false
+  imageKeyFallbackDisabled: false,
+  autoLogin: ['1', 'true', 'yes', 'on'].includes(
+    String(import.meta.env.VITE_AUTO_LOGIN || '')
+      .trim()
+      .toLowerCase()
+  ),
+  autoLoginPreferenceSet: false
 }
 
 const SETTINGS_FILE = path.join(
@@ -138,6 +146,12 @@ export function loadSettings(): AppSettings {
     if (fs.existsSync(SETTINGS_FILE)) {
       const raw = fs.readJsonSync(SETTINGS_FILE) as Partial<AppSettings>
       cache = { ...DEFAULT_SETTINGS, ...raw }
+      if (raw.autoLogin === undefined) {
+        const hasSavedDatabaseKey = fs.existsSync(
+          path.join(app.getPath('userData'), 'wechat-db-key.bin')
+        )
+        if (hasSavedDatabaseKey) cache.autoLogin = true
+      }
       if (process.platform === 'win32' && !isUsableDbRoot(cache.dbRoot)) {
         cache.dbRoot = getDefaultDbRoot()
       }

@@ -68,6 +68,7 @@ import {
   saveCachedMessages
 } from './services/bootstrap-cache'
 import { installSafeConsole } from './safe-log'
+import { agentHubService } from './services/agent-hub-service'
 
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
@@ -698,6 +699,25 @@ app.whenReady().then(async () => {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
+  ipcMain.handle('agent-hub:getStatus', () => agentHubService.getStatus())
+  ipcMain.handle('agent-hub:getLogs', () => agentHubService.getLogs())
+  ipcMain.handle('agent-hub:clearLogs', () => agentHubService.clearLogs())
+  ipcMain.handle('agent-hub:startLogin', () => agentHubService.startLogin())
+  ipcMain.handle('agent-hub:cancelLogin', () => agentHubService.cancelLogin())
+  ipcMain.handle('agent-hub:reconnect', () => agentHubService.reconnect())
+  ipcMain.handle('agent-hub:disconnect', () => agentHubService.disconnect())
+  ipcMain.handle('agent-hub:selectTestImage', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showOpenDialog(window!, {
+      title: '选择要测试发送的图片',
+      properties: ['openFile'],
+      filters: [
+        { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    })
+    return result.canceled ? { canceled: true } : { canceled: false, path: result.filePaths[0] }
+  })
 
   createWindow()
 
@@ -706,6 +726,8 @@ app.whenReady().then(async () => {
   if (settings.apiEnabled) {
     await apiServer.start(settings.apiHost, settings.apiPort)
   }
+
+  await agentHubService.start(settings)
 
   if (TRAY_MODE) {
     app.dock?.hide()
@@ -730,6 +752,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async () => {
+  agentHubService.stop()
   chat.setChatDb(null)
   await apiServer.stop().catch(() => undefined)
   if (tray) {

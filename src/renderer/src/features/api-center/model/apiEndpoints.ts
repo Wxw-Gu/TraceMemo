@@ -62,6 +62,20 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
     name: '群聊日报导出',
     description: '通过内置模板导出群聊日报 HTML 与 PNG。',
     body: true
+  }),
+  endpoint('agent-status', {
+    name: 'Agent Hub 状态',
+    description: '检查 Agent Hub、微信连接器、本地数据 API 和数据库状态。'
+  }),
+  endpoint('agent-group-report', {
+    name: '生成群聊总结图片',
+    description: '读取指定群聊并生成今天、昨天或近 7 天的总结长图。',
+    body: true
+  }),
+  endpoint('agent-send', {
+    name: '微信发送测试',
+    description: '测试文字或本地图片发送，并区分凭证失效、连接器离线和发送成功。',
+    body: true
   })
 ]
 

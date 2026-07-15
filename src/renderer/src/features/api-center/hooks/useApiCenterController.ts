@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useReducer } from 'react'
 import type { Contact } from '../../../../../shared/types'
 import { findEndpoint } from '../model/apiEndpoints'
-import { REPORT_REQUEST_PRESET } from '../model/requestPresets'
+import {
+  AGENT_GROUP_REPORT_PRESET,
+  AGENT_SEND_PRESET,
+  REPORT_REQUEST_PRESET
+} from '../model/requestPresets'
 import { type AgentInstallTarget, type SkillInstallSource } from '../model/skillDistribution'
 import type {
   ApiResponse,
@@ -66,14 +70,23 @@ function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'loaded':
       return { ...state, settings: action.settings, service: action.service, skill: action.skill }
-    case 'endpoint':
+    case 'endpoint': {
+      const preset =
+        action.endpointId === 'report'
+          ? REPORT_REQUEST_PRESET
+          : action.endpointId === 'agent-group-report'
+            ? AGENT_GROUP_REPORT_PRESET
+            : action.endpointId === 'agent-send'
+              ? AGENT_SEND_PRESET
+              : state.body
       return {
         ...state,
         endpointId: action.endpointId,
         params: action.talker && action.endpointId === 'chatlog' ? { talker: action.talker } : {},
-        body: action.endpointId === 'report' ? state.body || REPORT_REQUEST_PRESET : state.body,
+        body: preset,
         error: ''
       }
+    }
     case 'params':
       return { ...state, params: action.params }
     case 'body':

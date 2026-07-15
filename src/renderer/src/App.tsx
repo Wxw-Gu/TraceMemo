@@ -4,6 +4,7 @@ import ChatWindow from './components/ChatWindow'
 import { AppShell } from './components/layout/AppShell'
 import { ApiWorkspace } from './features/api-center/ApiWorkspace'
 import { SettingsWorkspace } from './features/settings/SettingsWorkspace'
+import { AgentHubWorkspace } from './features/agent-hub/AgentHubWorkspace'
 import type { SettingsCategoryId } from './features/settings/model/types'
 import type { AIRuntimeModelConfig } from '../../shared/ai-provider'
 import { AppPage } from './components/layout/navigation'
@@ -21,6 +22,11 @@ import { Contact, Message } from '../../shared/types'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
+
+function getDevelopmentDatabaseKey(): string {
+  if (!import.meta.env.DEV) return ''
+  return String(import.meta.env.VITE_DB_KEY || '').trim()
+}
 
 function EyeIcon({ hidden }: { hidden: boolean }): React.ReactElement {
   return (
@@ -57,12 +63,6 @@ interface SelfInfo {
 const MAC_KEY_FAQ_URL = 'https://github.com/hicccc77/WeFlow/blob/main/docs/MAC-KEY-FAQ.md'
 const MESSAGE_MONITOR_DEBOUNCE_MS = 8000
 const VIEW_MESSAGE_LIMIT = 600
-const AUTO_LOGIN_ENABLED = ['1', 'true', 'yes', 'on'].includes(
-  String(import.meta.env.VITE_AUTO_LOGIN || '')
-    .trim()
-    .toLowerCase()
-)
-
 const getMessageIdentity = (message: Message): string => {
   if (message.localId) return `local:${message.localId}`
   if (message.id) return `id:${message.id}`
@@ -159,7 +159,7 @@ const sortMessagesChronologically = (items: Message[]): Message[] =>
 function App(): React.ReactElement {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
-  const [dbKey, setDbKey] = useState(import.meta.env.VITE_DB_KEY || '')
+  const [dbKey, setDbKey] = useState(getDevelopmentDatabaseKey)
   const [contacts, setContacts] = useState<Contact[]>([])
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
@@ -369,16 +369,15 @@ function App(): React.ReactElement {
   React.useEffect(() => {
     let active = true
     const attemptAutoConnect = async (): Promise<void> => {
+      const settingsResult = await window.api.getSettings()
       // 预填已保存的微信聊天文件路径
-      try {
-        const settings = await window.api.getSettings()
-        if (active && settings?.settings?.dbRoot) setDbRootInput(settings.settings.dbRoot)
-      } catch {
-        // 忽略读取设置失败，继续走密钥流程
+      if (active && settingsResult.settings.dbRoot) {
+        setDbRootInput(settingsResult.settings.dbRoot)
       }
-      // 优先级 1: 构建期环境变量 VITE_DB_KEY（本地开发用）
-      const envKey = String(import.meta.env.VITE_DB_KEY || '').trim()
-      // 优先级 2: 上一次保存到 safeStorage 的密钥
+      const autoLoginEnabled = settingsResult.settings.autoLogin
+      // 开发环境允许使用 VITE_DB_KEY；生产安装包只能读取目标电脑自己的 safeStorage。
+      const envKey = getDevelopmentDatabaseKey()
+      // 生产环境以及未配置开发密钥时，读取上一次保存到 safeStorage 的密钥。
       let savedKey = ''
       if (!envKey) {
         const result = await window.api.getSavedDbKey()
@@ -393,7 +392,7 @@ function App(): React.ReactElement {
         setDbKey(key)
         setAutoConnectSource(envKey ? 'env' : 'saved')
         setDbKeyStatus(
-          AUTO_LOGIN_ENABLED
+          autoLoginEnabled
             ? envKey
               ? '检测到环境变量中的密钥，正在自动连接...'
               : '已加载安全保存的密钥，正在自动连接...'
@@ -402,14 +401,17 @@ function App(): React.ReactElement {
               : '已加载安全保存的密钥，请手动点击 Connect'
         )
         setDbKeyStatusKind('normal')
-        setBootState(AUTO_LOGIN_ENABLED ? 'connecting' : 'login')
+        setBootState(autoLoginEnabled ? 'connecting' : 'login')
       }
-      if (!AUTO_LOGIN_ENABLED) return
+      if (!autoLoginEnabled) return
       try {
         const result = await window.api.initDb(key)
         if (!active) return
         const success = typeof result === 'boolean' ? result : result.success
         if (success) {
+          if (!settingsResult.settings.autoLoginPreferenceSet) {
+            void window.api.setSettings({ autoLogin: true })
+          }
           setIsNativeMonitorActive(typeof result !== 'boolean' && result.monitoring === true)
           setIsAuthenticated(true)
           setIsDatabaseConnected(true)
@@ -489,6 +491,11 @@ function App(): React.ReactElement {
         const hasBootstrapCache = await loadBootstrapCache()
         // 持久化手动输入的密钥，供下次启动继续使用
         void window.api.saveDbKey(keyToUse).catch(() => undefined)
+        void window.api.getSettings().then((current) => {
+          if (!current.settings.autoLoginPreferenceSet) {
+            void window.api.setSettings({ autoLogin: true })
+          }
+        })
         setStartupProgress({
           title: '正在加载账号信息...',
           subtitle: '即将进入 WechatExplorer',
@@ -1036,9 +1043,9 @@ function App(): React.ReactElement {
   }
 
   const renderPlaceholderPage = (
-    page: Exclude<AppPage, 'archive' | 'report'>
+    page: Exclude<AppPage, 'archive' | 'report' | 'agent-hub'>
   ): React.ReactElement => {
-    const labels: Record<Exclude<AppPage, 'archive' | 'report'>, string> = {
+    const labels: Record<Exclude<AppPage, 'archive' | 'report' | 'agent-hub'>, string> = {
       search: '检索',
       export: '导出',
       api: 'API',
@@ -1168,6 +1175,8 @@ function App(): React.ReactElement {
         return renderArchiveWorkspace()
       case 'report':
         return renderReportWorkspace()
+      case 'agent-hub':
+        return <AgentHubWorkspace />
       case 'api':
         return (
           <ApiWorkspace

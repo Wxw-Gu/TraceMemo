@@ -16,6 +16,7 @@ extraMetadata:
 asarUnpack:
   - resources/**
 extraResources:
+  # Includes the optional WeChat connector binary for the target platform.
   - from: resources
     to: resources
     filter:

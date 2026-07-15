@@ -15,6 +15,7 @@ import type {
   ImageCandidateQuery,
   ImageInsight
 } from '../shared/image-insight'
+import type { AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 
 // 渲染器的自定义 API
 const api = {
@@ -132,7 +133,27 @@ const api = {
     sessionId: string,
     limit?: number
   ): Promise<{ success: boolean; insights: ImageInsight[] }> =>
-    ipcRenderer.invoke('image:listInsights', sessionId, limit)
+    ipcRenderer.invoke('image:listInsights', sessionId, limit),
+  getAgentHubStatus: () => ipcRenderer.invoke('agent-hub:getStatus'),
+  getAgentHubLogs: () => ipcRenderer.invoke('agent-hub:getLogs'),
+  clearAgentHubLogs: () => ipcRenderer.invoke('agent-hub:clearLogs'),
+  startAgentHubLogin: () => ipcRenderer.invoke('agent-hub:startLogin'),
+  cancelAgentHubLogin: () => ipcRenderer.invoke('agent-hub:cancelLogin'),
+  reconnectAgentHub: () => ipcRenderer.invoke('agent-hub:reconnect'),
+  disconnectAgentHub: () => ipcRenderer.invoke('agent-hub:disconnect'),
+  selectAgentHubTestImage: () => ipcRenderer.invoke('agent-hub:selectTestImage'),
+  onAgentHubStatus: (callback: (status: AgentHubStatus) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: AgentHubStatus): void =>
+      callback(status)
+    ipcRenderer.on('agent-hub:status', listener)
+    return () => ipcRenderer.removeListener('agent-hub:status', listener)
+  },
+  onAgentHubLog: (callback: (entry: AgentHubLogEntry) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, entry: AgentHubLogEntry): void =>
+      callback(entry)
+    ipcRenderer.on('agent-hub:log', listener)
+    return () => ipcRenderer.removeListener('agent-hub:log', listener)
+  }
 }
 
 if (process.contextIsolated) {
