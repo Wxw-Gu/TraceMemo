@@ -32,6 +32,9 @@ export interface Wcdb4MessageQueryOptions {
 export interface Wcdb4GroupMember {
   m_nsUsrName: string
   nickname: string
+  groupNickname: string
+  wechatNickname: string
+  remark: string
   m_nsHeadImgUrl: string
 }
 
@@ -930,17 +933,24 @@ export class Wcdb4Client {
           'member_username',
           'm_nsUsrName'
         ])
-        const memberNickname = this.pickString(row, [
+        const wechatNickname = this.pickString(row, [
           'nickname',
           'nickName',
+          'wechatNickname',
+          'wechat_nickname',
+          'm_nsNickName'
+        ])
+        const remark = this.pickString(row, [
+          'remark',
+          'remarkName',
+          'remark_name',
+          'contactRemark',
+          'contact_remark'
+        ])
+        const memberNickname = this.pickString(row, [
           'displayName',
           'display_name',
-          'groupNickname',
-          'group_nickname',
-          'roomNickname',
-          'room_nickname',
-          'remark',
-          'm_nsNickName'
+          'name'
         ])
         const avatar = this.pickString(row, [
           'avatarUrl',
@@ -955,7 +965,11 @@ export class Wcdb4Client {
 
         return {
           m_nsUsrName: username,
-          nickname: groupNicknames.get(username) || memberNickname,
+          nickname:
+            groupNicknames.get(username) || remark || wechatNickname || memberNickname,
+          groupNickname: groupNicknames.get(username) || '',
+          wechatNickname: wechatNickname || memberNickname,
+          remark,
           m_nsHeadImgUrl: avatar
         }
       })
@@ -975,6 +989,8 @@ export class Wcdb4Client {
         ...member,
         nickname:
           member.nickname || this.displayNameCache.get(member.m_nsUsrName) || member.m_nsUsrName,
+        wechatNickname:
+          member.wechatNickname || this.displayNameCache.get(member.m_nsUsrName) || '',
         m_nsHeadImgUrl: member.m_nsHeadImgUrl || this.avatarCache.get(member.m_nsUsrName) || ''
       }))
     } catch {

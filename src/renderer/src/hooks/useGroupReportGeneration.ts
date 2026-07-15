@@ -10,8 +10,10 @@ import {
   SummaryDateRange,
   SummaryMessageType
 } from '../utils/group-report'
+import { ReportTemplateId } from '../components/reports/ReportTemplateSelector'
 
 const REPORT_STEP_TIMEOUT_MS = 90_000
+const REPORT_MODEL_TIMEOUT_BUFFER_MS = 10_000
 
 export type ReportGenerationPhase =
   | 'idle'
@@ -29,7 +31,10 @@ export interface AiModelConfig {
   modelName: string
   configured: boolean
   status: 'untested' | 'connected' | 'error'
+  timeoutMs?: number
 }
+
+export type ReportMemberNamePreference = 'groupNickname' | 'wechatNickname' | 'remark'
 
 export interface ReportPaths {
   htmlPath: string
@@ -84,10 +89,14 @@ export interface RangeMessageState {
   error: string
 }
 
-const withTimeout = async <T>(promise: Promise<T>, label: string): Promise<T> => {
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  label: string,
+  timeoutMs = REPORT_STEP_TIMEOUT_MS
+): Promise<T> => {
   let timer: number | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = window.setTimeout(() => reject(new Error(`${label} 超时`)), REPORT_STEP_TIMEOUT_MS)
+    timer = window.setTimeout(() => reject(new Error(`${label} 超时`)), timeoutMs)
   })
   try {
     return await Promise.race([promise, timeout])
@@ -127,14 +136,33 @@ const estimateTokenUsage = (
   }
 }
 
-const applyGroupMemberNames = async (contact: Contact, messages: Message[]): Promise<Message[]> => {
-  let memberMap = new Map<string, { nickname: string; avatar: string }>()
+const applyGroupMemberNames = async (
+  contact: Contact,
+  messages: Message[],
+  preference: ReportMemberNamePreference
+): Promise<Message[]> => {
+  let memberMap = new Map<
+    string,
+    {
+      nickname: string
+      groupNickname: string
+      wechatNickname: string
+      remark: string
+      avatar: string
+    }
+  >()
   try {
     const snapshot = await withTimeout(window.api.getGroupSnapshot(contact.md5), '读取群成员')
     memberMap = new Map(
       (snapshot?.members || []).map((member) => [
         member.wxid,
-        { nickname: member.nickname || member.wxid, avatar: member.avatar || '' }
+        {
+          nickname: member.nickname || member.wxid,
+          groupNickname: member.groupNickname || '',
+          wechatNickname: member.wechatNickname || '',
+          remark: member.remark || '',
+          avatar: member.avatar || ''
+        }
       ])
     )
   } catch (error) {
@@ -143,11 +171,17 @@ const applyGroupMemberNames = async (contact: Contact, messages: Message[]): Pro
 
   if (!memberMap.size) return messages
   return messages.map((message) => {
-    if (!isInternalName(message.name)) return message
     const senderId = String(message.senderId || message.name || '')
     const member = memberMap.get(senderId)
-    if (!member?.nickname || isInternalName(member.nickname)) return message
-    return { ...message, name: member.nickname, img: message.img || member.avatar }
+    if (!member) return message
+    const preferredNames: Record<ReportMemberNamePreference, string[]> = {
+      groupNickname: [member.groupNickname, member.wechatNickname, member.remark, member.nickname],
+      wechatNickname: [member.wechatNickname, member.groupNickname, member.remark, member.nickname],
+      remark: [member.remark, member.groupNickname, member.wechatNickname, member.nickname]
+    }
+    const name = preferredNames[preference].find((value) => value && !isInternalName(value))
+    if (!name) return message
+    return { ...message, name, img: message.img || member.avatar }
   })
 }
 
@@ -174,6 +208,12 @@ export function useGroupReportGeneration({
   closeResult: () => void
   copyImage: () => Promise<{ success: boolean; error?: string }>
   revealReport: () => Promise<{ success: boolean; error?: string }>
+  templateId: ReportTemplateId
+  setTemplateId: (value: ReportTemplateId) => void
+  memberNamePreference: ReportMemberNamePreference
+  setMemberNamePreference: (value: ReportMemberNamePreference) => void
+  reportTimeoutSeconds: number
+  setReportTimeoutSeconds: (value: number) => void
 } {
   const [phase, setPhase] = useState<ReportGenerationPhase>('idle')
   const [error, setError] = useState('')
@@ -181,10 +221,30 @@ export function useGroupReportGeneration({
   const [rangeState, setRangeState] = useState<RangeMessageState>({ status: 'idle', error: '' })
   const [generatedImage, setGeneratedImage] = useState<string | null>(null)
   const [reportPaths, setReportPaths] = useState<ReportPaths | null>(null)
+  const [templateId, setTemplateId] = useState<ReportTemplateId>('v1')
+  const [memberNamePreference, setMemberNamePreferenceState] =
+    useState<ReportMemberNamePreference>(() => {
+      const saved = localStorage.getItem('group_report_member_name_preference')
+      return saved === 'wechatNickname' || saved === 'remark' ? saved : 'groupNickname'
+    })
+  const [reportTimeoutSeconds, setReportTimeoutSecondsState] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('group_report_timeout_seconds'))
+    return Number.isFinite(saved) && saved >= 30 ? saved : 300
+  })
   const [generationMetadata, setGenerationMetadata] = useState<ReportGenerationMetadata>({
     generationLogs: []
   })
   const rangeRequestIdRef = useRef(0)
+
+  const setMemberNamePreference = useCallback((value: ReportMemberNamePreference): void => {
+    localStorage.setItem('group_report_member_name_preference', value)
+    setMemberNamePreferenceState(value)
+  }, [])
+  const setReportTimeoutSeconds = useCallback((value: number): void => {
+    const normalized = Math.max(30, Math.min(1800, Math.round(Number(value) || 300)))
+    localStorage.setItem('group_report_timeout_seconds', String(normalized))
+    setReportTimeoutSecondsState(normalized)
+  }, [])
 
   const isGenerating =
     phase === 'loadingMessages' ||
@@ -332,8 +392,12 @@ export function useGroupReportGeneration({
 
       setPhase('preparingInput')
       const input = await trackStep('整理输入', async () => {
-        const namedReportMessages = await applyGroupMemberNames(sourceContact, filteredMessages)
-        return buildGroupReportInput(namedReportMessages, sourceContact, true)
+        const namedReportMessages = await applyGroupMemberNames(
+          sourceContact,
+          filteredMessages,
+          memberNamePreference
+        )
+        return buildGroupReportInput(namedReportMessages, sourceContact, true, 'full')
       })
 
       setPhase('requestingModel')
@@ -345,9 +409,11 @@ export function useGroupReportGeneration({
         withTimeout(
           window.api.aiChat(aiMessages, {
             providerId: modelConfig.providerId,
-            modelId: modelConfig.model
+            modelId: modelConfig.model,
+            timeoutMs: reportTimeoutSeconds * 1000
           }),
-          'AI 生成日报'
+          'AI 生成日报',
+          reportTimeoutSeconds * 1000 + REPORT_MODEL_TIMEOUT_BUFFER_MS
         )
       )
       if (!result.success || !result.data) throw new Error(result.error || 'AI 请求失败')
@@ -357,11 +423,18 @@ export function useGroupReportGeneration({
           ? result.usage
           : estimateTokenUsage(aiMessages, result.data)
 
-      const report = parseGroupDailyReport(result.data, input.topSpeakers, input.activeTimeline)
+      const report = parseGroupDailyReport(
+        result.data,
+        input.topSpeakers,
+        input.activeTimeline,
+        input.voiceLeaderboard || [],
+        input.metadata,
+        input.media
+      )
 
       setPhase('exportingReport')
       const exported = await withTimeout(
-        window.api.exportGroupReport({ report, metadata: input.metadata }),
+        window.api.exportGroupReport({ report, metadata: input.metadata, templateId }),
         '日报图片导出'
       )
       if (!exported.success || !exported.imageDataUrl || !exported.htmlPath || !exported.pngPath) {
@@ -399,7 +472,16 @@ export function useGroupReportGeneration({
       setError(errorMessage(generateError))
       setPhase('error')
     }
-  }, [isGenerating, loadRangeMessages, modelConfig, sourceContact, summaryMessageTypes])
+  }, [
+    isGenerating,
+    loadRangeMessages,
+    memberNamePreference,
+    modelConfig,
+    reportTimeoutSeconds,
+    sourceContact,
+    summaryMessageTypes,
+    templateId
+  ])
 
   const clearError = useCallback((): void => {
     setError('')
@@ -437,6 +519,12 @@ export function useGroupReportGeneration({
     clearError,
     closeResult,
     copyImage,
-    revealReport
+    revealReport,
+    templateId,
+    setTemplateId,
+    memberNamePreference,
+    setMemberNamePreference,
+    reportTimeoutSeconds,
+    setReportTimeoutSeconds
   }
 }

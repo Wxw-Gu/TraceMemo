@@ -318,6 +318,39 @@ export class ImageDecryptService {
   }
 
   /**
+   * 首选 DAT 无法解密时，继续尝试同目录下属于同一图片的其他清晰度变体。
+   * 微信可能只保留 base/_h/_hd/_t 中的一部分，不能把首个文件失败等同于整张图失败。
+   */
+  decryptImageToBase64WithFallback(
+    datPath: string,
+    allowThumbnail = true
+  ): { data: string; filePath: string } | null {
+    const candidates = [datPath]
+    if (extname(datPath).toLowerCase().includes('dat')) {
+      const dir = dirname(datPath)
+      const base = this.normalizeDatBase(basename(datPath))
+      const siblings = this.buildPreferredDatNames(base)
+        .filter((name) => allowThumbnail || !this.isThumbnailName(name))
+        .map((name) => join(dir, name))
+        .filter((candidate) => existsSync(candidate))
+        .sort((left, right) => {
+          const leftThumb = this.isThumbnailName(basename(left)) ? 1 : 0
+          const rightThumb = this.isThumbnailName(basename(right)) ? 1 : 0
+          if (leftThumb !== rightThumb) return leftThumb - rightThumb
+          return statSync(right).size - statSync(left).size
+        })
+      candidates.push(...siblings)
+    }
+
+    for (const candidate of this.uniq(candidates)) {
+      const data = this.decryptImageToBase64(candidate)
+      if (data) return { data, filePath: candidate }
+    }
+    console.warn('[ImageDecrypt] all variants failed:', this.uniq(candidates))
+    return null
+  }
+
+  /**
    * 检测 DAT 文件版本
    */
   private getDatVersion(inputPath: string): number {
@@ -485,7 +518,9 @@ export class ImageDecryptService {
         })
         .sort((left, right) => right.size - left.size)
 
-    const nonThumb = toSized(paths.filter((candidate) => !this.isThumbnailName(basename(candidate))))
+    const nonThumb = toSized(
+      paths.filter((candidate) => !this.isThumbnailName(basename(candidate)))
+    )
     if (nonThumb[0]) return nonThumb[0].candidate
     if (!allowThumbnail) return null
 

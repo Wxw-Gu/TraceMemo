@@ -37,6 +37,14 @@ import type {
 import { DatabaseKeyStore } from './database-key-store'
 import { ImageKeyConfigService } from './services/image-key-config-service'
 import { AIProviderService } from './services/ai-provider-service'
+import { imageInsightService } from './services/image-insight-service'
+import type {
+  ImageAnalysisRequest,
+  ImageAnalysisResponse,
+  ImageCandidate,
+  ImageCandidateQuery,
+  ImageInsight
+} from '../shared/image-insight'
 import { KeyServiceMac } from './key-service-mac'
 import { KeyService as KeyServiceWin } from './key-service-win'
 import * as chat from './services/chat-service'
@@ -475,17 +483,105 @@ app.whenReady().then(async () => {
         return { success: false, error: force ? '未找到原图或缩略图文件' : '未找到图片文件' }
       }
 
-      const base64 = imageDecryptService.decryptImageToBase64(filePath)
-      if (!base64) {
+      const decrypted = imageDecryptService.decryptImageToBase64WithFallback(filePath, true)
+      if (!decrypted) {
         return { success: false, error: '图片解密失败' }
       }
 
       return {
         success: true,
-        data: base64,
-        isThumb: imageDecryptService.isThumbnailFile(filePath),
-        filePath
+        data: decrypted.data,
+        isThumb: imageDecryptService.isThumbnailFile(decrypted.filePath),
+        filePath: decrypted.filePath
       }
+    }
+  )
+
+  // ============================================================
+  // AI 图片理解基础设施(ImageInsightService)
+  // ============================================================
+  // 注入依赖(用闭包捕获当前 db:getImage 已经初始化过的 imageDecryptService)
+  // 同时把 imageDecryptService 暴露到 globalThis,供 group-report-service 渲染时按 imageHash 取图
+  ;(globalThis as { __imageDecrypt?: typeof imageDecryptService }).__imageDecrypt =
+    imageDecryptService
+  imageInsightService.bind({
+    providerService: aiProviderService,
+    decryptService: {
+      findImageFile: (md5, datName, opts) =>
+        imageDecryptService?.findImageFile(md5, datName, opts) ?? null,
+      decryptImageToBase64: (filePath) =>
+        imageDecryptService?.decryptImageToBase64(filePath) ?? null
+    }
+  })
+
+  /** 日报入口:取会话 Top N 热点图片 + 已缓存的 Insight */
+  ipcMain.handle(
+    'image:listCandidates',
+    async (
+      _,
+      query: ImageCandidateQuery
+    ): Promise<{ success: boolean; candidates: ImageCandidate[]; error?: string }> => {
+      console.log('[IPC] image:listCandidates query=%j', query)
+      try {
+        const inputs = (query as ImageCandidateQuery & { inputs?: unknown[] }).inputs || []
+        console.log('[IPC] image:listCandidates received %d inputs', inputs.length)
+        const candidates = await imageInsightService.listTopHotImages(query, inputs as never)
+        console.log('[IPC] image:listCandidates returned %d candidates', candidates.length)
+        return { success: true, candidates }
+      } catch (error) {
+        console.warn('[IPC] image:listCandidates failed:', error)
+        return {
+          success: false,
+          candidates: [],
+          error: error instanceof Error ? error.message : String(error)
+        }
+      }
+    }
+  )
+
+  /** 单图分析:缓存命中即返回,未命中调 AI;失败不抛 */
+  ipcMain.handle(
+    'image:analyze',
+    async (_, request: ImageAnalysisRequest): Promise<ImageAnalysisResponse> => {
+      console.log('[IPC] image:analyze hash=%s messageId=%s', request.imageHash, request.messageId)
+      // 校验 provider 是否支持 vision
+      const runtime = aiProviderService.getRuntimeConfig()
+      if (!runtime.configured) {
+        return { success: false, error: '尚未配置 AI Provider' }
+      }
+      const list = aiProviderService.list()
+      const provider = list.providers.find((p) => p.id === runtime.providerId)
+      const model = provider?.models.find((m) => m.id === runtime.model)
+      if (!provider || !model) {
+        return { success: false, error: '当前 AI 模型不存在' }
+      }
+      if (!model.capabilities.vision) {
+        return { success: false, error: '当前模型不支持图片理解' }
+      }
+      // request 来自 renderer,imageHash 是 md5(优先)或 sha256(...),dataUrl 在内部算出
+      // 这里直接调 service,dataUrl 由 renderer 通过 window.api.getImage 拿到再传进来
+      return imageInsightService.analyze(request)
+    }
+  )
+
+  /** 单图查询缓存 */
+  ipcMain.handle(
+    'image:getInsight',
+    async (_, imageHash: string): Promise<{ success: boolean; insight?: ImageInsight }> => {
+      const insight = imageInsightService.getInsight(imageHash)
+      return { success: true, insight: insight || undefined }
+    }
+  )
+
+  /** 列出某会话所有已分析的 insights */
+  ipcMain.handle(
+    'image:listInsights',
+    async (
+      _,
+      sessionId: string,
+      limit?: number
+    ): Promise<{ success: boolean; insights: ImageInsight[] }> => {
+      return { success: true, insights: imageInsightService.listBySession(sessionId, limit) }
     }
   )
 

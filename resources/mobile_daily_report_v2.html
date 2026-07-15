@@ -61,16 +61,6 @@
         font-size: 13px;
         line-height: 1.55;
       }
-      .mode-tag {
-        display: inline-flex;
-        margin-top: 10px;
-        padding: 4px 10px;
-        border-radius: 999px;
-        background: #eef8f2;
-        color: #07a352;
-        font-size: 11px;
-        font-weight: 800;
-      }
       .avatar-grid {
         width: 58px;
         height: 58px;
@@ -704,7 +694,6 @@
           <div>
             <h1>{{GROUP_NAME}}日报</h1>
             <div class="sub">{{DATE_RANGE}}<br />{{RECORD_NOTE}}</div>
-            <div class="mode-tag">{{REPORT_MODE_LABEL}}</div>
           </div>
           <div class="avatar-grid">{{HERO_AVATARS}}</div>
         </div>
@@ -831,7 +820,7 @@
       </section>
 
       <footer class="footer">
-        数据来源：微信群聊记录<br />
+        数据来源：WechatExplorer · 微信群聊记录<br />
         生成时间：{{GENERATED_AT}}<br />
         {{FOOTER_NOTE}}
       </footer>

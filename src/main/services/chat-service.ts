@@ -56,7 +56,14 @@ export interface FormattedMessage {
 export interface GroupSnapshot {
   roomId: string
   memberCount: number
-  members: { wxid: string; nickname: string; avatar: string }[]
+  members: {
+    wxid: string
+    nickname: string
+    groupNickname: string
+    wechatNickname: string
+    remark: string
+    avatar: string
+  }[]
 }
 
 const MSG_TYPE_DICT: Record<number, string> = {
@@ -292,6 +299,9 @@ export function getGroupSnapshot(userMd5: string): GroupSnapshot | null {
     .map((member) => ({
       wxid: member.m_nsUsrName,
       nickname: member.nickname || '',
+      groupNickname: member.groupNickname || '',
+      wechatNickname: member.wechatNickname || '',
+      remark: member.remark || '',
       avatar: member.m_nsHeadImgUrl || ''
     }))
 

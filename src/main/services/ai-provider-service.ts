@@ -69,7 +69,8 @@ export class AIProviderService {
       configured: Boolean(
         provider && provider.models.length && (provider.hasApiKey || !needsApiKey(provider))
       ),
-      status: provider?.status || 'untested'
+      status: provider?.status || 'untested',
+      timeoutMs: provider?.advanced.timeoutMs
     }
   }
 
@@ -169,6 +170,37 @@ export class AIProviderService {
     }
   }
 
+  /**
+   * 多模态图片理解。
+   * 输入:text + image parts 的 messages,返回 AI 文本响应。
+   * 与 testVision 区别:不校验 prompt,不写入 capability marker(供 ImageInsightService 复用)。
+   */
+  async analyzeImage(
+    messages: Array<{
+      role: string
+      content: string | Array<{ type: 'text'; text: string } | { type: 'image'; dataUrl: string }>
+    }>,
+    options?: AIChatRequestOptions
+  ): Promise<{
+    success: boolean
+    data?: string
+    usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
+    error?: string
+  }> {
+    try {
+      const imagePart = messages
+        .flatMap((message) => (typeof message.content === 'string' ? [] : message.content))
+        .find((part) => part.type === 'image')
+      if (!imagePart || imagePart.type !== 'image') throw new Error('图片识别请求缺少图片数据')
+      const imageError = validateVisionImage(imagePart.dataUrl)
+      if (imageError) throw new Error(imageError)
+      const result = await this.request(messages as AIMessage[], options)
+      return { success: true, ...result }
+    } catch (error) {
+      return { success: false, error: safeAIError(error) }
+    }
+  }
+
   async testVision(request: AIVisionTestRequest): Promise<AIVisionTestResult> {
     const startedAt = Date.now()
     const imageError = validateVisionImage(request.imageDataUrl)
@@ -215,7 +247,13 @@ export class AIProviderService {
   }> {
     if (options?.apiKey) return this.requestLegacy(messages, options)
     const resolved = this.resolveProvider(options)
-    return requestProvider(resolved.provider, resolved.key, resolved.model, messages, testing)
+    const provider = options?.timeoutMs
+      ? {
+          ...resolved.provider,
+          advanced: { ...resolved.provider.advanced, timeoutMs: options.timeoutMs }
+        }
+      : resolved.provider
+    return requestProvider(provider, resolved.key, resolved.model, messages, testing)
   }
 
   private resolveProvider(options?: { providerId?: string; modelId?: string }): {
@@ -263,12 +301,38 @@ export class AIProviderService {
   }
 
   private markVisionCapability(providerId: string, modelId: string): void {
+    this.markCapabilities(providerId, modelId, { vision: true, ocr: true })
+  }
+
+  /**
+   * 标记模型已验证的 capabilities(已存在则跳过)。
+   * OCR 跟随 vision:几乎所有 vision 模型都能 OCR,标记 vision 时同步标记 ocr。
+   */
+  private markCapabilities(
+    providerId: string,
+    modelId: string,
+    caps: { vision?: boolean; ocr?: boolean }
+  ): void {
     const data = this.readMetadata()
     const provider = data.providers.find((item) => item.id === providerId)
     const model = provider?.models.find((item) => item.id === modelId)
-    if (!provider || !model || model.capabilities.vision) return
-    model.capabilities.vision = true
-    this.writeMetadata(data)
+    if (!provider || !model) return
+    // 老配置可能没有 ocr 字段,补默认 false
+    if (typeof model.capabilities.ocr !== 'boolean') model.capabilities.ocr = false
+    let changed = false
+    if (caps.vision === true && !model.capabilities.vision) {
+      model.capabilities.vision = true
+      // vision 开启默认带 ocr(派生能力)
+      if (!model.capabilities.ocr) {
+        model.capabilities.ocr = true
+      }
+      changed = true
+    }
+    if (caps.ocr === true && !model.capabilities.ocr) {
+      model.capabilities.ocr = true
+      changed = true
+    }
+    if (changed) this.writeMetadata(data)
   }
 
   private ensureEnvironmentMigration(): void {
@@ -300,6 +364,14 @@ export class AIProviderService {
     const data = fs.readJsonSync(filePath) as AIProviderMetadataFile
     if (data.version !== 1 || !Array.isArray(data.providers))
       throw new Error('invalid provider metadata')
+    // 老配置兼容:补 capabilities.ocr 默认值(vision 派生 OCR)
+    for (const provider of data.providers) {
+      for (const model of provider.models) {
+        if (typeof model.capabilities.ocr !== 'boolean') {
+          model.capabilities.ocr = model.capabilities.vision === true
+        }
+      }
+    }
     return data
   }
 
@@ -325,7 +397,7 @@ function deepSeekProvider(baseUrl?: string, model?: string): AIProviderSummary {
       {
         name: modelId === 'deepseek-chat' ? 'DeepSeek Chat' : modelId,
         id: modelId,
-        capabilities: { chat: true, vision: false, longContext: true }
+        capabilities: { chat: true, vision: false, ocr: false, longContext: true }
       }
     ],
     defaultModel: modelId,
@@ -454,7 +526,7 @@ async function requestOpenAICompatible(
     },
     provider.advanced.timeoutMs
   )
-  const payload = (await response.json()) as OpenAIResponsePayload
+  const payload = await parseJsonResponse<OpenAIResponsePayload>(response)
   if (!response.ok) throw new Error(payload.error?.message || `AI 请求失败 (${response.status})`)
   return {
     data: String(payload.choices?.[0]?.message?.content || ''),
@@ -508,7 +580,7 @@ async function requestAnthropic(
     },
     provider.advanced.timeoutMs
   )
-  const payload = (await response.json()) as AnthropicResponsePayload
+  const payload = await parseJsonResponse<AnthropicResponsePayload>(response)
   if (!response.ok)
     throw new Error(payload.error?.message || `Anthropic 请求失败 (${response.status})`)
   return {
@@ -540,6 +612,20 @@ async function fetchWithTimeout(
     return await fetch(url, { ...init, signal: controller.signal })
   } finally {
     clearTimeout(timer)
+  }
+}
+
+async function parseJsonResponse<T>(response: Response): Promise<T> {
+  const body = await response.text()
+  try {
+    return JSON.parse(body) as T
+  } catch {
+    const looksLikeHtml = /^\s*(?:<!doctype\s+html|<html\b)/i.test(body)
+    const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`
+    if (looksLikeHtml) {
+      throw new Error(`模型服务返回了网页而不是 JSON（HTTP ${status}），请稍后重试或检查中转服务`)
+    }
+    throw new Error(`模型服务返回格式异常（HTTP ${status}）`)
   }
 }
 
