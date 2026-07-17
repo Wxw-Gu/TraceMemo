@@ -197,3 +197,9 @@ curl -G "http://127.0.0.1:6131/api/v1/resolve" \
 - [WechatMessageExplorer](https://github.com/svcvit/WechatMessageExplorer)
 - [WeFlow](https://github.com/hicccc77/WeFlow)
 - [chatlog](https://github.com/sjzar/chatlog)
+
+## 📱 交流与反馈
+
+<p align="center">
+  <img src="./public/二维码.jpg" alt="WechatExplorer 交流二维码" width="280" />
+</p>
