@@ -1,6 +1,7 @@
 import fs from 'fs-extra'
 import path from 'path'
 import os from 'os'
+import { discoverWindowsDbRoots } from './windows-db-root-discovery'
 import crypto from 'crypto'
 import { createRequire } from 'module'
 import { createConnection, Socket } from 'net'
@@ -303,14 +304,7 @@ export class Wcdb4Client {
         path.join(home, 'WeChat Files'),
         path.join(home, 'AppData', 'Roaming', 'Tencent', 'xwechat_files')
       ]
-      for (const drive of Wcdb4Client.getWindowsDrives()) {
-        candidates.push(path.join(`${drive}:\\`, 'xwechat_files'))
-        candidates.push(path.join(`${drive}:\\`, 'WeChat Files'))
-        for (const child of Wcdb4Client.listDirectories(`${drive}:\\`)) {
-          candidates.push(path.join(child, 'xwechat_files'))
-          candidates.push(path.join(child, 'WeChat Files'))
-        }
-      }
+      candidates.push(...discoverWindowsDbRoots())
       return Array.from(new Set(candidates))
     }
     return [path.join(home, 'Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files')]
@@ -333,32 +327,6 @@ export class Wcdb4Client {
       }
     }
     return candidates
-  }
-
-  private static getWindowsDrives(): string[] {
-    const drives: string[] = []
-    for (let code = 67; code <= 90; code += 1) {
-      const drive = String.fromCharCode(code)
-      if (fs.existsSync(`${drive}:\\`)) drives.push(drive)
-    }
-    return drives
-  }
-
-  private static listDirectories(root: string): string[] {
-    try {
-      return fs
-        .readdirSync(root)
-        .map((name) => path.join(root, name))
-        .filter((candidate) => {
-          try {
-            return fs.statSync(candidate).isDirectory()
-          } catch {
-            return false
-          }
-        })
-    } catch {
-      return []
-    }
   }
 
   private static hasDbStorage(candidate: string): boolean {

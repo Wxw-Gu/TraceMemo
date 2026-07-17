@@ -655,9 +655,10 @@ app.whenReady().then(async () => {
     return error ? { success: false, error } : { success: true }
   })
 
-  ipcMain.handle('db:disconnect', () => {
-    if (!chat.isReady()) return { success: false, error: '数据库当前未连接' }
-    chat.setChatDb(null)
+  ipcMain.handle('db:disconnect', (_, options?: { closeNative?: boolean }) => {
+    // 断开操作保持幂等：渲染进程可能已标记断开，或主进程连接已先行失效。
+    // 即使当前未就绪，也应让用户正常返回登录页。
+    if (options?.closeNative !== false && chat.isReady()) chat.setChatDb(null)
     return { success: true }
   })
 

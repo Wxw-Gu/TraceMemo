@@ -2,6 +2,7 @@ import { app } from 'electron'
 import fs from 'fs-extra'
 import path from 'path'
 import os from 'os'
+import { discoverWindowsDbRoots } from '../windows-db-root-discovery'
 
 export interface AppSettings {
   dbRoot: string
@@ -37,14 +38,7 @@ function getDefaultDbRootCandidates(home: string): string[] {
     path.join(os.homedir(), 'AppData', 'Roaming', 'Tencent', 'xwechat_files')
   ]
 
-  for (const drive of getWindowsDrives()) {
-    candidates.push(path.join(`${drive}:\\`, 'xwechat_files'))
-    candidates.push(path.join(`${drive}:\\`, 'WeChat Files'))
-    for (const child of listDirectories(`${drive}:\\`)) {
-      candidates.push(path.join(child, 'xwechat_files'))
-      candidates.push(path.join(child, 'WeChat Files'))
-    }
-  }
+  candidates.push(...discoverWindowsDbRoots())
 
   return unique(candidates)
 }
@@ -66,32 +60,6 @@ function getWeflowDbPathCandidates(home: string): string[] {
     }
   }
   return candidates
-}
-
-function getWindowsDrives(): string[] {
-  const drives: string[] = []
-  for (let code = 67; code <= 90; code += 1) {
-    const drive = String.fromCharCode(code)
-    if (fs.existsSync(`${drive}:\\`)) drives.push(drive)
-  }
-  return drives
-}
-
-function listDirectories(root: string): string[] {
-  try {
-    return fs
-      .readdirSync(root)
-      .map((name) => path.join(root, name))
-      .filter((candidate) => {
-        try {
-          return fs.statSync(candidate).isDirectory()
-        } catch {
-          return false
-        }
-      })
-  } catch {
-    return []
-  }
 }
 
 function unique(values: string[]): string[] {

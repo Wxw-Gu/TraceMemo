@@ -19,6 +19,7 @@ import type { GeneratedReportRecord, ReportWorkspaceView } from './components/re
 import { AiModelConfig, useGroupReportGeneration } from './hooks/useGroupReportGeneration'
 import { SummaryDateRange, SummaryMessageType } from './utils/group-report'
 import { Contact, Message } from '../../shared/types'
+import { DatabaseConnectionMode, DatabaseConnectionPage } from './components/DatabaseConnectionPage'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -26,31 +27,6 @@ const SIDEBAR_MAX_WIDTH = 380
 function getDevelopmentDatabaseKey(): string {
   if (!import.meta.env.DEV) return ''
   return String(import.meta.env.VITE_DB_KEY || '').trim()
-}
-
-function EyeIcon({ hidden }: { hidden: boolean }): React.ReactElement {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path
-        d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
-      {hidden && (
-        <path
-          d="M4 4l16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-        />
-      )}
-    </svg>
-  )
 }
 
 interface SelfInfo {
@@ -173,6 +149,9 @@ function App(): React.ReactElement {
   const [showDbKey, setShowDbKey] = useState(false)
   const [dbRootInput, setDbRootInput] = useState('')
   const [showMacKeyFaq, setShowMacKeyFaq] = useState(false)
+  const [databaseConnectionMode, setDatabaseConnectionMode] = useState<DatabaseConnectionMode>(
+    getDevelopmentDatabaseKey() ? 'manual' : 'automatic'
+  )
   const [activePage, setActivePage] = useState<AppPage>('archive')
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>('account-database')
   const [reportSourceContact, setReportSourceContact] = useState<Contact | null>(null)
@@ -256,18 +235,25 @@ function App(): React.ReactElement {
 
   const waitForPaint = (): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, 80))
 
-  const refreshSelfInfo = async (): Promise<void> => {
-    try {
-      const result = await window.api.getSelf()
-      if (result.ready) {
-        setSelfInfo(result.info)
-      } else {
-        setSelfInfo(null)
+  const refreshSelfInfo = async (attempts = 1): Promise<SelfInfo | null> => {
+    let lastError: unknown
+    for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+      try {
+        const result = await window.api.getSelf()
+        if (result.ready && result.info) {
+          setSelfInfo(result.info)
+          return result.info
+        }
+      } catch (error) {
+        lastError = error
       }
-    } catch (error) {
-      console.warn('[SelfInfo] 加载失败:', error)
-      setSelfInfo(null)
+      if (attempt + 1 < attempts) {
+        await new Promise((resolve) => window.setTimeout(resolve, 180))
+      }
     }
+    if (lastError) console.warn('[SelfInfo] 加载失败:', lastError)
+    setSelfInfo(null)
+    return null
   }
 
   const loadBootstrapCache = async (): Promise<boolean> => {
@@ -385,11 +371,15 @@ function App(): React.ReactElement {
       }
       const key = envKey || savedKey
       if (!key) {
-        if (active) setBootState('login')
+        if (active) {
+          setDatabaseConnectionMode('automatic')
+          setBootState('login')
+        }
         return
       }
       if (active) {
         setDbKey(key)
+        setDatabaseConnectionMode('manual')
         setAutoConnectSource(envKey ? 'env' : 'saved')
         setDbKeyStatus(
           autoLoginEnabled
@@ -413,12 +403,12 @@ function App(): React.ReactElement {
             void window.api.setSettings({ autoLogin: true })
           }
           setIsNativeMonitorActive(typeof result !== 'boolean' && result.monitoring === true)
-          setIsAuthenticated(true)
           setIsDatabaseConnected(true)
           setDbKeyStatus('已自动连接')
           setDbKeyStatusKind('success')
           await loadContacts()
-          void refreshSelfInfo()
+          await refreshSelfInfo(3)
+          setIsAuthenticated(true)
         } else {
           const error = typeof result === 'boolean' ? '' : result.error
           setDbKeyStatus(`自动连接失败，请重新输入${error ? `: ${error}` : ''}`)
@@ -488,7 +478,7 @@ function App(): React.ReactElement {
           detail: '正在读取本地缓存',
           percent: 25
         })
-        const hasBootstrapCache = await loadBootstrapCache()
+        await loadBootstrapCache()
         // 持久化手动输入的密钥，供下次启动继续使用
         void window.api.saveDbKey(keyToUse).catch(() => undefined)
         void window.api.getSettings().then((current) => {
@@ -499,10 +489,13 @@ function App(): React.ReactElement {
         setStartupProgress({
           title: '正在加载账号信息...',
           subtitle: '即将进入 WechatExplorer',
-          detail: '正在读取当前账号信息',
-          percent: 95
+          detail: '正在读取联系人和当前账号',
+          percent: 70
         })
-        void refreshSelfInfo()
+        // 账号识别依赖联系人数据就绪。返回登录后数据已被清空，如果先查账号，
+        // 会出现“数据库已连接，但账号未连接”的分离状态。手动连接与启动自动连接保持同一顺序。
+        await loadContacts({ waitForAvatars: false })
+        await refreshSelfInfo(3)
         setStartupProgress({
           title: '加载完成',
           subtitle: '正在进入主页面',
@@ -514,7 +507,6 @@ function App(): React.ReactElement {
         setBootState('login')
         window.setTimeout(() => {
           setStartupProgress(null)
-          if (!hasBootstrapCache) void loadContacts({ waitForAvatars: false })
         }, 500)
       } else {
         const error = typeof result === 'boolean' ? '' : result.error
@@ -619,6 +611,7 @@ function App(): React.ReactElement {
         throw new Error(result.error || '获取密钥失败')
       }
       setDbKey(result.key)
+      setDatabaseConnectionMode('manual')
       setDbKeyStatus(result.saved ? '密钥已获取并安全保存' : result.warning || '密钥已获取')
       setDbKeyStatusKind(result.saved ? 'success' : 'normal')
     } catch (error) {
@@ -634,6 +627,7 @@ function App(): React.ReactElement {
     const result = await window.api.pasteAndSaveDbKey()
     if (result.success && result.key) {
       setDbKey(result.key)
+      setDatabaseConnectionMode('manual')
       setDbKeyStatus('已从剪贴板粘贴并安全保存')
       setDbKeyStatusKind('success')
     } else {
@@ -651,6 +645,7 @@ function App(): React.ReactElement {
       return
     }
     setDbKey('')
+    setDatabaseConnectionMode('automatic')
     setDbKeyStatus('已清除保存的密钥')
     setDbKeyStatusKind('normal')
   }
@@ -659,6 +654,7 @@ function App(): React.ReactElement {
     setIsAuthenticated(false)
     setIsDatabaseConnected(false)
     setBootState('login')
+    setDatabaseConnectionMode(dbKey ? 'manual' : 'automatic')
     setActivePage('archive')
     setSettingsCategory('database-key')
     setSelectedContact(null)
@@ -1282,70 +1278,26 @@ function App(): React.ReactElement {
 
   if (!isAuthenticated) {
     return (
-      <div className="login-modal">
-        <div className="login-box">
-          <h2>Enter WeChat DB Key</h2>
-          <div className="login-input-wrapper">
-            <input
-              type={showDbKey ? 'text' : 'password'}
-              className="login-input"
-              value={dbKey}
-              onChange={(e) => setDbKey(e.target.value)}
-              placeholder="Key (e.g. 0x...)"
-            />
-            <button
-              type="button"
-              className="login-input-toggle"
-              onClick={() => setShowDbKey(!showDbKey)}
-              title={showDbKey ? '隐藏密钥' : '显示密钥'}
-            >
-              <EyeIcon hidden={showDbKey} />
-            </button>
-          </div>
-          {window.electron.process.platform === 'win32' && (
-            <div className="login-input-wrapper">
-              <input
-                type="text"
-                className="login-input"
-                value={dbRootInput}
-                onChange={(e) => setDbRootInput(e.target.value)}
-                placeholder="微信聊天文件路径 (如 D:\\Tencent\\WeChat\\xwechat_files)"
-                spellCheck={false}
-                autoComplete="off"
-              />
-            </div>
-          )}
-          <button
-            className="login-btn login-btn-secondary"
-            onClick={handleAutoGetDbKey}
-            disabled={isFetchingDbKey}
-          >
-            {isFetchingDbKey ? '正在获取...' : '自动获取密钥'}
-          </button>
-          <button className="login-btn login-btn-secondary" onClick={handlePasteAndSaveDbKey}>
-            粘贴并安全保存
-          </button>
-          <button className="login-btn" onClick={() => handleLogin()}>
-            Connect
-          </button>
-          <button className="login-clear-btn" onClick={handleClearSavedDbKey}>
-            清除已保存密钥
-          </button>
-          {dbKeyStatus && (
-            <div className={`login-key-status ${dbKeyStatusKind}`}>{dbKeyStatus}</div>
-          )}
-          {showMacKeyFaq && (
-            <a
-              className="login-key-help-link"
-              href={MAC_KEY_FAQ_URL}
-              target="_blank"
-              rel="noreferrer"
-            >
-              查看 macOS 获取密钥排障指引
-            </a>
-          )}
-        </div>
-      </div>
+      <DatabaseConnectionPage
+        platform={window.electron.process.platform}
+        mode={databaseConnectionMode}
+        dbKey={dbKey}
+        dbRoot={dbRootInput}
+        showDbKey={showDbKey}
+        isFetching={isFetchingDbKey}
+        status={dbKeyStatus}
+        statusKind={dbKeyStatusKind}
+        showMacKeyFaq={showMacKeyFaq}
+        macKeyFaqUrl={MAC_KEY_FAQ_URL}
+        onModeChange={setDatabaseConnectionMode}
+        onDbKeyChange={setDbKey}
+        onDbRootChange={setDbRootInput}
+        onToggleDbKey={() => setShowDbKey((visible) => !visible)}
+        onAutoGetKey={handleAutoGetDbKey}
+        onManualConnect={() => handleLogin()}
+        onPasteKey={handlePasteAndSaveDbKey}
+        onClearKey={handleClearSavedDbKey}
+      />
     )
   }
 

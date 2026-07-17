@@ -106,7 +106,8 @@ const api = {
   reopenWithRoot: (accountRoot: string) => ipcRenderer.invoke('db:reopenWithRoot', accountRoot),
   selectDbRoot: () => ipcRenderer.invoke('settings:selectDbRoot'),
   openAccountRoot: () => ipcRenderer.invoke('settings:openAccountRoot'),
-  disconnectDb: () => ipcRenderer.invoke('db:disconnect'),
+  disconnectDb: (options?: { closeNative?: boolean }) =>
+    ipcRenderer.invoke('db:disconnect', options),
   apiStatus: () => ipcRenderer.invoke('api:getStatus'),
   apiStart: (host?: string, port?: number) => ipcRenderer.invoke('api:start', host, port),
   apiStop: () => ipcRenderer.invoke('api:stop'),
@@ -120,7 +121,9 @@ const api = {
   // ============================================================
   // AI 图片理解基础设施(ImageInsightService)
   // ============================================================
-  imageListCandidates: (query: ImageCandidateQuery): Promise<{
+  imageListCandidates: (
+    query: ImageCandidateQuery
+  ): Promise<{
     success: boolean
     candidates: ImageCandidate[]
     error?: string

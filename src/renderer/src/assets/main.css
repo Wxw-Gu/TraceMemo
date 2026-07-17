@@ -1766,148 +1766,542 @@ body {
   line-height: 20px;
 }
 
-.login-modal {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
+.database-login-page {
+  --login-primary: #247a63;
+  --login-primary-dark: #00604c;
+  --login-border: #d7dfda;
+  --login-surface: #f7faf6;
+  --login-surface-low: #f1f4f1;
+  --login-text: #181c1b;
+  --login-muted: #5f6965;
+  width: 100vw;
+  min-width: 760px;
+  height: 100vh;
+  min-height: 560px;
+  display: grid;
+  grid-template-columns: minmax(300px, 40%) 1fr;
+  overflow: hidden;
+  color: var(--login-text);
+  background: #fff;
 }
 
-.login-box {
-  background-color: #fff;
-  padding: 20px;
-  border-radius: 8px;
-  width: 360px;
-  text-align: center;
-}
-
-.login-input {
-  width: 100%;
-  padding: 8px;
-  margin: 10px 0;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-}
-
-.login-input-wrapper {
+.database-login-brand {
   position: relative;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  padding: clamp(36px, 6vh, 72px) clamp(36px, 5vw, 72px) 28px;
+  background: var(--login-surface-low);
+  border-right: 1px solid var(--login-border);
 }
 
-.login-input-wrapper .login-input {
-  padding-right: 40px;
-  margin: 10px 0 10px 0;
+.database-login-brand-content {
+  width: min(360px, 100%);
+  margin: auto 0;
 }
 
-.login-input-toggle {
-  position: absolute;
-  right: 8px;
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 0;
-  color: #111827;
-}
-
-.login-input-toggle svg {
-  width: 20px;
-  height: 20px;
-}
-
-.login-input-toggle:hover {
-  color: #07c160;
-}
-
-.login-btn {
-  background-color: #07c160;
+.database-login-logo {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 24px;
+  border-radius: 10px;
   color: #fff;
-  border: none;
-  padding: 8px 20px;
-  border-radius: 4px;
-  cursor: pointer;
-  width: 100%;
-  margin-top: 8px;
+  background: var(--login-primary-dark);
+  box-shadow: 0 4px 12px rgba(0, 96, 76, 0.12);
 }
 
-.login-btn:hover {
-  background-color: #06ad56;
+.database-login-logo svg {
+  width: 29px;
+  height: 29px;
 }
 
-.login-btn:disabled {
-  cursor: wait;
-  opacity: 0.65;
+.database-login-brand h1 {
+  margin: 0;
+  font-size: 25px;
+  line-height: 32px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--login-primary-dark);
 }
 
-.login-btn-secondary {
-  border: 1px solid #cfd5d8;
+.database-login-tagline {
+  margin: 4px 0 26px;
+  color: var(--login-primary);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+}
+
+.database-login-description {
+  max-width: 320px;
+  margin: 0 0 30px;
+  color: var(--login-muted);
+  font-size: 13px;
+  line-height: 21px;
+}
+
+.database-login-promises {
+  display: grid;
+  gap: 10px;
+}
+
+.database-login-promises > div {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  border: 1px solid rgba(190, 201, 195, 0.62);
+  border-radius: 7px;
+  color: #35423d;
+  background: rgba(255, 255, 255, 0.42);
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.database-login-promises svg {
+  width: 18px;
+  height: 18px;
+  color: var(--login-primary);
+}
+
+.database-login-brand-footer {
+  margin-top: auto;
+  padding-top: 24px;
+  color: #78827e;
+  font-family: 'Work Sans', Inter, sans-serif;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.11em;
+}
+
+.database-login-workspace {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  padding: 48px clamp(40px, 7vw, 96px);
   background: #fff;
-  color: #30383d;
 }
 
-.login-btn-secondary:hover {
-  border-color: #07c160;
-  background: #f2fbf6;
-  color: #078f49;
+.database-login-panel {
+  width: min(520px, 100%);
 }
 
-.login-clear-btn {
-  margin-top: 10px;
+.database-login-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 28px;
+  border: 1px solid var(--login-border);
+  border-radius: 8px;
+  background: #e9eeeb;
+}
+
+.database-login-tabs button {
+  min-height: 38px;
   border: 0;
+  border-radius: 5px;
+  color: #66716c;
   background: transparent;
-  color: #8a949a;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 550;
 }
 
-.login-clear-btn:hover {
-  color: #d33b3b;
+.database-login-tabs button.active {
+  color: var(--login-primary-dark);
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(24, 28, 27, 0.08);
 }
 
-.login-key-status {
-  margin-top: 10px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: #f3f5f6;
-  color: #59636a;
+.database-login-state-card {
+  padding: 18px;
+  border: 1px solid var(--login-border);
+  border-radius: 9px;
+  background: var(--login-surface);
+}
+
+.database-login-state-card.error {
+  border-color: #efc4be;
+  border-left: 3px solid #ba1a1a;
+  background: #fff9f8;
+}
+
+.database-login-state-heading {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.database-login-state-icon {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--login-primary);
+  background: #e2f0eb;
+}
+
+.database-login-state-card.error .database-login-state-icon {
+  color: #ba1a1a;
+  background: #ffebe8;
+}
+
+.database-login-state-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.database-login-state-heading strong {
+  display: block;
+  margin: 1px 0 4px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.database-login-state-heading p {
+  margin: 0;
+  color: var(--login-muted);
   font-size: 12px;
-  line-height: 1.45;
-  text-align: left;
+  line-height: 18px;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.login-key-status.success {
-  background: #eefaf3;
-  color: #078f49;
+.database-login-diagnostics {
+  margin: 0;
+  border-top: 1px solid #e2e7e4;
 }
 
-.login-key-status.error {
-  background: #fff1f0;
-  color: #c73737;
+.database-login-diagnostics > div {
+  min-height: 43px;
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  align-items: center;
+  border-bottom: 1px solid #e2e7e4;
 }
 
-.login-key-help-link {
-  display: inline-block;
-  margin-top: 9px;
-  color: #1677ff;
+.database-login-diagnostics > div:last-child {
+  border-bottom: 0;
+}
+
+.database-login-diagnostics dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #6e7874;
+  font-family: 'Work Sans', Inter, sans-serif;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.database-login-diagnostics dd {
+  min-width: 0;
+  margin: 0;
+  color: #35423d;
   font-size: 12px;
+  text-align: right;
+}
+
+.database-login-path-input-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.database-login-diagnostics input {
+  width: 100%;
+  height: 36px;
+  padding: 7px 0;
+  border: 0;
+  outline: 0;
+  color: #4c5752;
+  background: transparent;
+  font: inherit;
+  text-align: right;
+  text-overflow: ellipsis;
+}
+
+.database-login-path-value {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 7px);
+  z-index: 25;
+  width: min(520px, calc(100vw - 48px));
+  padding: 9px 11px;
+  border: 1px solid #d7dfda;
+  border-radius: 7px;
+  color: #35423d;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(24, 28, 27, 0.13);
+  font-size: 11px;
+  line-height: 17px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.database-login-path-input-wrap:hover .database-login-path-value,
+.database-login-path-input-wrap:focus-within .database-login-path-value {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.database-login-primary,
+.database-login-secondary {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 22px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.database-login-primary {
+  border: 1px solid var(--login-primary);
+  color: #fff;
+  background: var(--login-primary);
+  box-shadow: 0 2px 5px rgba(0, 96, 76, 0.16);
+}
+
+.database-login-primary:hover:not(:disabled) {
+  border-color: var(--login-primary-dark);
+  background: var(--login-primary-dark);
+}
+
+.database-login-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  box-shadow: none;
+}
+
+.database-login-auto > a {
+  display: block;
+  margin-top: 16px;
+  color: var(--login-primary);
+  font-size: 12px;
+  text-align: center;
   text-decoration: none;
 }
 
-.login-key-help-link:hover {
-  text-decoration: underline;
+.database-login-manual {
+  padding-top: 2px;
+}
+
+.database-login-field {
+  margin-bottom: 20px;
+}
+
+.database-login-field > label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  color: #35423d;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.database-login-path-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.database-login-path-help-icon {
+  width: 15px;
+  height: 15px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid #9a6b18;
+  border-radius: 50%;
+  color: #8a5d0b;
+  background: #fff8e6;
+  cursor: help;
+  font-family: Inter, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.database-login-path-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 9px);
+  z-index: 20;
+  width: 260px;
+  padding: 9px 11px;
+  border: 1px solid #d7dfda;
+  border-radius: 7px;
+  color: #35423d;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(24, 28, 27, 0.12);
+  font-family: Inter, sans-serif;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 17px;
+  letter-spacing: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.database-login-path-help:hover .database-login-path-tooltip,
+.database-login-path-help:focus-within .database-login-path-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.database-login-field > input,
+.database-login-key-input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--login-border);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.database-login-field > input {
+  padding: 0 12px;
+  color: var(--login-text);
+  font-size: 13px;
+  outline: none;
+}
+
+.database-login-key-input {
+  display: flex;
+  align-items: center;
+}
+
+.database-login-key-input:focus-within,
+.database-login-field > input:focus {
+  border-color: var(--login-primary);
+  box-shadow: 0 0 0 3px rgba(36, 122, 99, 0.1);
+}
+
+.database-login-key-input input {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  padding: 0 4px 0 12px;
+  border: 0;
+  outline: 0;
+  color: var(--login-text);
+  background: transparent;
+  font-size: 13px;
+}
+
+.database-login-key-input button {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  color: #65706b;
+  background: transparent;
+  cursor: pointer;
+}
+
+.database-login-key-input svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.database-login-field small {
+  display: block;
+  margin-top: 7px;
+  color: #77817d;
+  font-size: 11px;
+}
+
+.database-login-message {
+  padding: 10px 12px;
+  border-radius: 7px;
+  color: #57625d;
+  background: var(--login-surface-low);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+}
+
+.database-login-message.success {
+  color: var(--login-primary-dark);
+  background: #edf7f3;
+}
+
+.database-login-message.error {
+  color: #93000a;
+  background: #fff0ee;
+}
+
+.database-login-secondary {
+  margin-top: 10px;
+  border: 1px solid var(--login-border);
+  color: #3f4945;
+  background: #fff;
+}
+
+.database-login-secondary:hover {
+  border-color: var(--login-primary);
+  color: var(--login-primary-dark);
+  background: var(--login-surface);
+}
+
+.database-login-footer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 42px;
+  padding-top: 16px;
+  border-top: 1px solid #e5e9e6;
+  color: #8a938f;
+  font-size: 11px;
+}
+
+.database-login-footer-actions button {
+  padding: 0;
+  border: 0;
+  color: #78827e;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.database-login-footer-actions button:hover {
+  color: #93000a;
+}
+
+@media (max-width: 900px), (max-height: 620px) {
+  .database-login-brand {
+    padding: 30px;
+  }
+
+  .database-login-description {
+    margin-bottom: 20px;
+  }
+
+  .database-login-workspace {
+    padding: 30px;
+  }
 }
 
 .modal-overlay {

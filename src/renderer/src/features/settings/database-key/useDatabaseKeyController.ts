@@ -191,7 +191,9 @@ export function useDatabaseKeyController({
   ])
 
   const returnToLogin = useCallback(async (): Promise<void> => {
-    const result = await window.api.disconnectDb()
+    // macOS WCDB 的 close 会关闭进程级原生运行时，返回登录时只退出 UI 连接态。
+    // 用户再次点击连接后由 db:init 复用已验证的本机连接。
+    const result = await window.api.disconnectDb({ closeNative: false })
     if (!result.success) {
       onNotice(result.error || '断开数据库连接失败')
       return

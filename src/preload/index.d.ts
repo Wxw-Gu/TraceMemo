@@ -261,7 +261,9 @@ declare global {
       }>
       selectDbRoot: () => Promise<{ canceled: boolean; path?: string }>
       openAccountRoot: () => Promise<{ success: boolean; error?: string }>
-      disconnectDb: () => Promise<{ success: boolean; error?: string }>
+      disconnectDb: (options?: {
+        closeNative?: boolean
+      }) => Promise<{ success: boolean; error?: string }>
       apiStatus: () => Promise<{
         running: boolean
         host: string
