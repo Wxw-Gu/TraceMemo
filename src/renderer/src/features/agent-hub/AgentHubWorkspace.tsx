@@ -195,8 +195,9 @@ export function AgentHubWorkspace(): React.ReactElement {
           <h2>微信数据助手</h2>
           <p>机器人通过本机 Agent Hub 调用 WechatExplorer，不向公网暴露数据库。</p>
           <div className="agent-hub-example">
-            <span>可以这样问</span>
+            <span>支持自然语言，可以这样问</span>
             <strong>“最近 5 条消息是谁？”</strong>
+            <strong>“帮我看看最近跟xx聊了些什么”</strong>
             <strong>“生成产品交流群今天的群聊总结图片”</strong>
           </div>
           <ul>
@@ -211,6 +212,10 @@ export function AgentHubWorkspace(): React.ReactElement {
             <li>
               <i />
               消息重复保护
+            </li>
+            <li>
+              <i />
+              使用已配置 AI 理解自然语言
             </li>
             <li>
               <i className={status.dataApi === 'online' ? '' : 'offline'} />

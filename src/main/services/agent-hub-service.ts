@@ -14,7 +14,15 @@ import type {
 } from '../../shared/agent-hub'
 import type { AppSettings } from './settings-store'
 import { generateAgentGroupReport } from './agent-group-report-service'
-import { isReady, listMessages, listRecentChat, resolveMd5 } from './chat-service'
+import { AIProviderService } from './ai-provider-service'
+import {
+  getGroupSnapshot,
+  isReady,
+  listContacts,
+  listMessages,
+  listRecentChat,
+  resolveMd5
+} from './chat-service'
 
 const execFileAsync = promisify(execFile)
 const HEALTH_INTERVAL_MS = 5_000
@@ -39,7 +47,23 @@ interface GroupReportIntent {
 interface ContactChatIntent {
   contact: string
   limit: number
+  summarize: boolean
 }
+
+interface GroupMemberChatIntent {
+  group: string
+  member: string
+  range: 'today' | 'yesterday' | '7days'
+  days: number
+  goal: string
+}
+
+interface NaturalLanguageResult {
+  command?: string
+  reply?: string
+}
+
+const agentAIProvider = new AIProviderService()
 
 function resolveBundledBinary(
   resourceSegments: string[],
@@ -314,6 +338,7 @@ class AgentHubService {
     this.addLog('agent-hub', 'info', `收到微信消息 message_id=${messageId || 'unknown'}`)
 
     const reportIntent = this.matchGroupReportIntent(text)
+
     if (reportIntent) {
       if (messageId) this.processedMessages.set(messageId, Date.now())
       this.addLog(
@@ -328,20 +353,39 @@ class AgentHubService {
       return this.sendHubJson(response, 202, { status: 'generating' })
     }
 
+    const groupMemberIntent = this.matchGroupMemberChatIntent(text)
+    if (groupMemberIntent) {
+      if (messageId) this.processedMessages.set(messageId, Date.now())
+      void this.summarizeGroupMemberChat(inbound, groupMemberIntent)
+      return this.sendHubJson(response, 202, { status: 'generating', mode: 'group-member-summary' })
+    }
+
     const contactChatIntent = this.matchContactChatIntent(text)
     if (contactChatIntent) {
       if (messageId) this.processedMessages.set(messageId, Date.now())
+      if (contactChatIntent.summarize) {
+        void this.summarizeContactChat(inbound, contactChatIntent)
+        return this.sendHubJson(response, 202, { status: 'generating', mode: 'contact-summary' })
+      }
       await this.replyContactChat(inbound, contactChatIntent)
       return this.sendHubJson(response, 200, { status: 'ok' })
     }
 
-    const limit = this.matchRecentChatIntent(text)
-    if (limit === null) {
+    const recentChatLimit = this.matchRecentChatIntent(text)
+    if (recentChatLimit === null && text.trim()) {
+      if (messageId) this.processedMessages.set(messageId, Date.now())
+      void this.handleNaturalLanguage(inbound, text)
+      return this.sendHubJson(response, 202, {
+        status: 'processing',
+        mode: 'natural-language'
+      })
+    }
+    if (recentChatLimit === null) {
       this.addLog('agent-hub', 'info', '消息已忽略：没有匹配到支持的意图')
       return this.sendHubJson(response, 202, { status: 'ignored', reason: 'no matching intent' })
     }
     if (!isReady()) return this.sendHubJson(response, 502, { error: 'upstream query failed' })
-    const items = listRecentChat(limit)
+    const items = listRecentChat(recentChatLimit)
     const lines = items.map((item, index) => {
       const name = item.m_nsNickName.trim() || item.m_nsUsrName.trim()
       return `${index + 1}. ${name}（${item.type === 'group' ? '群聊' : '联系人'}）`
@@ -358,6 +402,140 @@ class AgentHubService {
     if (messageId) this.processedMessages.set(messageId, Date.now())
     this.addLog('agent-hub', 'info', `最近会话回复已发送（${items.length} 条）`)
     this.sendHubJson(response, 200, { status: 'ok' })
+  }
+
+  private async handleNaturalLanguage(inbound: InboundMessage, text: string): Promise<void> {
+    try {
+      const result = await this.resolveNaturalLanguage(text)
+      if (result.reply) {
+        await this.sendConnector(inbound, this.formatAIReply(result.reply))
+        this.addLog('agent-hub', 'info', '自然语言回复已发送')
+        return
+      }
+      if (!result.command) {
+        await this.sendConnector(inbound, '暂时没有理解你的意思，可以换一种说法再试。')
+        return
+      }
+
+      this.addLog('agent-hub', 'info', `自然语言已理解为：${result.command}`)
+      const reportIntent = this.matchGroupReportIntent(result.command)
+      if (reportIntent) {
+        await this.sendConnector(inbound, '收到！正在生成群聊总结，请等待…').catch(() => undefined)
+        await this.generateAndSendReport(inbound, reportIntent)
+        return
+      }
+
+      const groupMemberIntent = this.matchGroupMemberChatIntent(result.command)
+      if (groupMemberIntent) {
+        await this.summarizeGroupMemberChat(inbound, groupMemberIntent)
+        return
+      }
+
+      const contactIntent = this.matchContactChatIntent(result.command)
+      if (contactIntent) {
+        if (contactIntent.summarize) await this.summarizeContactChat(inbound, contactIntent)
+        else await this.replyContactChat(inbound, contactIntent)
+        return
+      }
+
+      const recentLimit = this.matchRecentChatIntent(result.command)
+      if (recentLimit !== null) {
+        await this.replyRecentChats(inbound, recentLimit)
+        return
+      }
+      await this.sendConnector(inbound, '暂时没有理解你的意思，可以换一种说法再试。')
+    } catch (error) {
+      this.addLog('agent-hub', 'error', `自然语言处理失败：${this.errorMessage(error)}`)
+      await this.sendConnector(inbound, `处理失败：${this.errorMessage(error)}`).catch(
+        () => undefined
+      )
+    }
+  }
+
+  private async replyRecentChats(inbound: InboundMessage, limit: number): Promise<void> {
+    if (!isReady()) {
+      await this.sendConnector(inbound, 'WechatExplorer 本地数据库尚未连接，请连接后再试。')
+      return
+    }
+    const items = listRecentChat(limit)
+    const lines = items.map((item, index) => {
+      const name = item.m_nsNickName.trim() || item.m_nsUsrName.trim()
+      return `${index + 1}. ${name}（${item.type === 'group' ? '群聊' : '联系人'}）`
+    })
+    await this.sendConnector(
+      inbound,
+      lines.length ? `最近 ${items.length} 个会话：\n${lines.join('\n')}` : '暂时没有找到最近会话。'
+    )
+    this.addLog('agent-hub', 'info', `最近会话回复已发送（${items.length} 条）`)
+  }
+
+  private async resolveNaturalLanguage(text: string): Promise<NaturalLanguageResult> {
+    const result = await agentAIProvider.chat([
+      {
+        role: 'system',
+        content: `你是 WechatExplorer 微信机器人的意图理解器。只能输出一行 JSON，不要 Markdown。
+支持的工具：
+1. recent：查看最近会话，参数 limit 为 1-20。
+2. contact：查看我与某个联系人的最近聊天，参数 contact 和 limit。
+3. report：生成某个群的群聊总结图片，参数 group 和 range（today、yesterday、7days）。
+4. group_member：分析某个群里某位成员的发言，参数 group、member、range（today、yesterday、7days）、days（1-30）和 goal（保留用户希望总结、研究人物、提取观点等完整目标）。只要用户同时提到群聊和群成员，应优先使用 group_member，不能识别成 contact。
+5. chat：不需要工具的普通对话，reply 用简洁中文直接回答。
+输出格式：{"type":"recent|contact|report|group_member|chat","limit":5,"contact":"","group":"","member":"","range":"today","days":3,"goal":"","reply":""}
+不要声称已经读取未调用的聊天记录，不要执行电脑控制、文件操作、付款或发送给其他联系人。`
+      },
+      { role: 'user', content: text.slice(0, 1000) }
+    ])
+    if (!result.success || !result.data) {
+      this.addLog('agent-hub', 'warn', `自然语言理解不可用：${result.error || 'AI 未返回内容'}`)
+      return {}
+    }
+
+    try {
+      const json = result.data.match(/\{[\s\S]*\}/)?.[0]
+      if (!json) return {}
+      const parsed = JSON.parse(json) as Record<string, unknown>
+      const limit = Math.max(1, Math.min(20, Number(parsed['limit']) || 5))
+      if (parsed['type'] === 'recent') return { command: `最近${limit}条消息` }
+      if (parsed['type'] === 'contact' && String(parsed['contact'] || '').trim()) {
+        return { command: `我和${String(parsed['contact']).trim()}最近${limit}条聊了什么` }
+      }
+      if (parsed['type'] === 'report' && String(parsed['group'] || '').trim()) {
+        const range =
+          parsed['range'] === '7days'
+            ? '最近7天'
+            : parsed['range'] === 'yesterday'
+              ? '昨天'
+              : '今天'
+        return { command: `生成${String(parsed['group']).trim()}${range}的群聊总结图片` }
+      }
+      if (
+        parsed['type'] === 'group_member' &&
+        String(parsed['group'] || '').trim() &&
+        String(parsed['member'] || '').trim()
+      ) {
+        const range =
+          parsed['range'] === 'yesterday'
+            ? '昨天'
+            : parsed['range'] === 'today'
+              ? '今天'
+              : '最近7天'
+        const group = String(parsed['group'] || '')
+          .trim()
+          .replace(/(?:群聊|群)+$/g, '')
+        const days = Math.max(1, Math.min(30, Number(parsed['days']) || 7))
+        const goal = String(parsed['goal'] || '总结发言').trim()
+        return {
+          command: `看看${group}群里${String(parsed['member']).trim()}${range === '最近7天' ? `最近${days}天` : range}说了什么，${goal}`
+        }
+      }
+      if (parsed['type'] === 'chat') {
+        const reply = String(parsed['reply'] || '').trim()
+        return reply ? { reply: reply.slice(0, 1500) } : {}
+      }
+    } catch (error) {
+      this.addLog('agent-hub', 'warn', `自然语言结果解析失败：${this.errorMessage(error)}`)
+    }
+    return {}
   }
 
   private async replyContactChat(
@@ -395,6 +573,180 @@ class AgentHubService {
     this.addLog('agent-hub', 'info', `联系人聊天回复已发送（${recent.length} 条）`)
   }
 
+  private async summarizeContactChat(
+    inbound: InboundMessage,
+    intent: ContactChatIntent
+  ): Promise<void> {
+    try {
+      if (!isReady()) {
+        await this.sendConnector(inbound, 'WechatExplorer 本地数据库尚未连接，请连接后再试。')
+        return
+      }
+      const contact = resolveMd5(intent.contact)
+      if (!contact || contact.type !== 'user') {
+        await this.sendConnector(inbound, `没有找到联系人“${intent.contact}”。`)
+        return
+      }
+
+      await this.sendConnector(
+        inbound,
+        `收到！正在整理和${contact.m_nsNickName}的近期聊天，请等待…`
+      )
+      const endTime = Math.floor(Date.now() / 1000)
+      const startTime = endTime - 7 * 24 * 60 * 60
+      const messages = listMessages(contact.md5, startTime, endTime, { limit: 300 }).slice(-300)
+      if (!messages.length) {
+        await this.sendConnector(inbound, `最近 7 天没有找到和${contact.m_nsNickName}的聊天记录。`)
+        return
+      }
+
+      const transcript = messages
+        .map((message) => {
+          const speaker = message.isSender ? '我' : contact.m_nsNickName
+          return `[${message.datetime}] ${speaker}：${this.describeChatMessage(message.content, message.type)}`
+        })
+        .join('\n')
+      const summary = await agentAIProvider.chat([
+        {
+          role: 'system',
+          content:
+            '你是私人聊天记录总结助手。仅根据提供的记录总结，不编造。按日期或主题整理关键进展、双方观点、决定、待办和未解决问题；忽略无意义表情，保留重要数字与事实。使用适合微信阅读的简洁中文。'
+        },
+        {
+          role: 'user',
+          content: `请总结我和“${contact.m_nsNickName}”最近 7 天聊了什么。\n\n聊天记录：\n${transcript}`
+        }
+      ])
+      if (!summary.success || !summary.data?.trim()) {
+        throw new Error(summary.error || 'AI 未返回总结')
+      }
+      await this.sendConnector(
+        inbound,
+        this.formatAIReply(
+          `和${contact.m_nsNickName}最近聊天总结（近 7 天，共 ${messages.length} 条）：\n\n${summary.data.trim().slice(0, 3500)}`
+        )
+      )
+      this.addLog('agent-hub', 'info', `联系人聊天总结已发送（${messages.length} 条）`)
+    } catch (error) {
+      this.addLog('agent-hub', 'error', `联系人聊天总结失败：${this.errorMessage(error)}`)
+      await this.sendConnector(inbound, `聊天总结失败：${this.errorMessage(error)}`).catch(
+        () => undefined
+      )
+    }
+  }
+
+  private async summarizeGroupMemberChat(
+    inbound: InboundMessage,
+    intent: GroupMemberChatIntent
+  ): Promise<void> {
+    try {
+      if (!isReady()) {
+        await this.sendConnector(inbound, 'WechatExplorer 本地数据库尚未连接，请连接后再试。')
+        return
+      }
+      const group = this.resolveGroup(intent.group)
+      if (!group) {
+        await this.sendConnector(inbound, `没有找到群聊“${intent.group}”。`)
+        return
+      }
+      const snapshot = getGroupSnapshot(group.md5)
+      const memberQuery = intent.member.trim().toLowerCase()
+      const member = snapshot?.members.find((item) =>
+        [item.groupNickname, item.wechatNickname, item.remark, item.nickname, item.wxid].some(
+          (name) =>
+            String(name || '')
+              .trim()
+              .toLowerCase() === memberQuery
+        )
+      )
+      if (!member) {
+        await this.sendConnector(
+          inbound,
+          `没有在“${group.m_nsNickName}”找到成员“${intent.member}”。`
+        )
+        return
+      }
+
+      const displayName =
+        member.groupNickname || member.wechatNickname || member.remark || member.nickname
+      await this.sendConnector(
+        inbound,
+        `收到！正在整理${displayName}在“${group.m_nsNickName}”的近期发言，请等待…`
+      )
+      const now = new Date()
+      const todayStart = Math.floor(
+        new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000
+      )
+      const startTime =
+        intent.range === 'today'
+          ? todayStart
+          : intent.range === 'yesterday'
+            ? todayStart - 24 * 60 * 60
+            : Math.floor(Date.now() / 1000) - intent.days * 24 * 60 * 60
+      const endTime = intent.range === 'yesterday' ? todayStart - 1 : Math.floor(Date.now() / 1000)
+      const aliases = new Set(
+        [member.groupNickname, member.wechatNickname, member.remark, member.nickname]
+          .map((name) =>
+            String(name || '')
+              .trim()
+              .toLowerCase()
+          )
+          .filter(Boolean)
+      )
+      const messages = listMessages(group.md5, startTime, endTime, { limit: 10_000 })
+        .filter(
+          (message) =>
+            String(message.senderId || '').trim() === member.wxid ||
+            aliases.has(
+              String(message.name || '')
+                .trim()
+                .toLowerCase()
+            )
+        )
+        .slice(-1000)
+      if (!messages.length) {
+        await this.sendConnector(
+          inbound,
+          `所选时间范围没有找到${displayName}在“${group.m_nsNickName}”的发言。`
+        )
+        return
+      }
+
+      const transcript = messages
+        .map(
+          (message) =>
+            `[${message.datetime}] ${this.describeChatMessage(message.content, message.type)}`
+        )
+        .join('\n')
+      const summary = await agentAIProvider.chat([
+        {
+          role: 'system',
+          content:
+            '你是擅长分析微信群聊的助手。严格依据提供的发言完成用户的原始要求，输出结构和侧重点由内容决定，不套固定模板。可以归纳人物特征、兴趣、表达习惯和群内角色，但必须区分事实与推测，为推测说明依据和不确定性，不得编造。使用适合微信阅读的中文。'
+        },
+        {
+          role: 'user',
+          content: `用户原始要求：${intent.goal}\n分析对象：“${displayName}”在群聊“${group.m_nsNickName}”中的发言。\n时间范围：${intent.range === 'today' ? '今天' : intent.range === 'yesterday' ? '昨天' : `最近 ${intent.days} 天`}。\n共提供 ${messages.length} 条发言。\n\n发言记录：\n${transcript}`
+        }
+      ])
+      if (!summary.success || !summary.data?.trim()) {
+        throw new Error(summary.error || 'AI 未返回总结')
+      }
+      await this.sendConnector(
+        inbound,
+        this.formatAIReply(
+          `${displayName}在“${group.m_nsNickName}”的发言总结（共 ${messages.length} 条）：\n\n${summary.data.trim().slice(0, 3500)}`
+        )
+      )
+      this.addLog('agent-hub', 'info', `群成员发言总结已发送（${messages.length} 条）`)
+    } catch (error) {
+      this.addLog('agent-hub', 'error', `群成员发言总结失败：${this.errorMessage(error)}`)
+      await this.sendConnector(inbound, `群成员发言总结失败：${this.errorMessage(error)}`).catch(
+        () => undefined
+      )
+    }
+  }
+
   private describeChatMessage(content: string, type: string): string {
     const normalized = String(content || '')
       .replace(/\s+/g, ' ')
@@ -402,6 +754,15 @@ class AgentHubService {
     if (normalized) return normalized.length > 100 ? `${normalized.slice(0, 100)}…` : normalized
     const label = String(type || '消息').replace(/^普通文本$/, '消息')
     return `[${label}]`
+  }
+
+  private formatAIReply(content: string): string {
+    return content
+      .replace(/\r\n?/g, '\n')
+      .replace(/[ \t]*•[ \t]*/g, '\n• ')
+      .replace(/[ \t]+(?=\d+[.、][ \t])/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
   }
 
   private async generateAndSendReport(
@@ -465,7 +826,62 @@ class AgentHubService {
     if (!contact) return null
 
     const limit = Number(normalized.match(/最近(\d{1,2})条/)?.[1] || 10)
-    return { contact, limit: Math.max(1, Math.min(20, limit)) }
+    const summarize = /(聊了什么|聊什么|说了什么|谈了什么|总结)/.test(normalized)
+    return { contact, limit: Math.max(1, Math.min(20, limit)), summarize }
+  }
+
+  private matchGroupMemberChatIntent(text: string): GroupMemberChatIntent | null {
+    const normalized = text.trim().replace(/[，。！？?：:]/g, '')
+    const timePattern = '(今天|今日|昨天|昨日|最近\\d{1,2}天|近\\d{1,2}天|最近|近来|这几天)'
+    const actionPattern = '(?:说了什么|聊了什么|发言|说过什么|都聊什么|都说什么|干了什么)'
+    const patterns = [
+      new RegExp(
+        `(?:看一下|看看|看下|查一下|总结一下)?(.+?群(?:聊)?)[\\s，,]+(.+?)${timePattern}${actionPattern}`
+      ),
+      new RegExp(
+        `(?:看一下|看看|看下|查一下|总结一下)?(.+?群(?:聊)?)(?:里|中的)(.+?)${timePattern}${actionPattern}`
+      )
+    ]
+    for (const pattern of patterns) {
+      const match = normalized.match(pattern)
+      if (match?.[1]?.trim() && match[2]?.trim()) {
+        const range = /昨天|昨日/.test(match[3] || '')
+          ? 'yesterday'
+          : /今天|今日/.test(match[3] || '')
+            ? 'today'
+            : '7days'
+        const days = Math.max(1, Math.min(30, Number((match[3] || '').match(/\d{1,2}/)?.[0]) || 7))
+        return {
+          group: match[1].trim(),
+          member: match[2].trim(),
+          range,
+          days,
+          goal: normalized
+        }
+      }
+    }
+    return null
+  }
+
+  private resolveGroup(query: string): ReturnType<typeof resolveMd5> {
+    const normalize = (value: string): string =>
+      value
+        .trim()
+        .toLowerCase()
+        .replace(/[\s，,。！？?：:、“”'‘’]/g, '')
+        .replace(/(?:群聊|群)+$/g, '')
+    const target = normalize(query)
+    if (!target) return null
+
+    const groups = listContacts().filter((contact) => contact.type === 'group')
+    return (
+      groups.find((contact) => normalize(contact.m_nsNickName) === target) ||
+      groups.find((contact) => {
+        const name = normalize(contact.m_nsNickName)
+        return name.includes(target) || target.includes(name)
+      }) ||
+      null
+    )
   }
 
   private matchGroupReportIntent(text: string): GroupReportIntent | null {

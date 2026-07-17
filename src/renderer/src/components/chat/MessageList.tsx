@@ -1,4 +1,5 @@
 import React from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { Contact, Message } from '../../../../shared/types'
 import { MessageGroup } from './MessageGroup'
 import { buildMessageGroups } from './messageGrouping'
@@ -29,6 +30,16 @@ export function MessageList({
   onImageClick
 }: MessageListProps): React.ReactElement {
   const groups = React.useMemo(() => buildMessageGroups(messages), [messages])
+  // TanStack Virtual intentionally exposes mutable measurement methods.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: groups.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 96,
+    getItemKey: (index) => groups[index]?.id || index,
+    overscan: 8
+  })
+  const virtualItems = virtualizer.getVirtualItems()
 
   return (
     <div className="message-list wechat-message-list" ref={listRef} onScroll={onScroll}>
@@ -40,16 +51,29 @@ export function MessageList({
           </div>
         </div>
       )}
-      {groups.map((group) => (
-        <MessageGroup
-          key={group.id}
-          group={group}
-          contact={contact}
-          isGroupChat={isGroupChat}
-          showAvatar={showAvatar}
-          onImageClick={onImageClick}
-        />
-      ))}
+      <div className="virtual-message-list" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+        {virtualItems.map((virtualItem) => {
+          const group = groups[virtualItem.index]
+          if (!group) return null
+          return (
+            <div
+              key={virtualItem.key}
+              ref={virtualizer.measureElement}
+              data-index={virtualItem.index}
+              className="virtual-message-group"
+              style={{ transform: `translateY(${virtualItem.start}px)` }}
+            >
+              <MessageGroup
+                group={group}
+                contact={contact}
+                isGroupChat={isGroupChat}
+                showAvatar={showAvatar}
+                onImageClick={onImageClick}
+              />
+            </div>
+          )
+        })}
+      </div>
       <div ref={bottomRef} />
     </div>
   )

@@ -4,6 +4,11 @@ import crypto from 'crypto'
 import os from 'os'
 import { Wcdb4Client } from './wcdb4-client'
 
+const imageDecryptDebugEnabled = process.env['WECHATEXPLORER_DEBUG_IMAGE'] === '1'
+const imageDecryptLog = (...args: unknown[]): void => {
+  if (imageDecryptDebugEnabled) console.log(...args)
+}
+
 export class ImageDecryptService {
   private readonly defaultV1AesKey = 'cfcd208495d565ef'
 
@@ -41,7 +46,7 @@ export class ImageDecryptService {
     )
 
     if (!existsSync(accountRoot)) {
-      console.log('[ImageDecrypt] account root not found:', accountRoot)
+      imageDecryptLog('[ImageDecrypt] account root not found:', accountRoot)
       return null
     }
 
@@ -61,7 +66,7 @@ export class ImageDecryptService {
       .sort((a, b) => b.mtime - a.mtime)
 
     if (accounts.length === 0) {
-      console.log('[ImageDecrypt] no accounts found')
+      imageDecryptLog('[ImageDecrypt] no accounts found')
       return null
     }
 
@@ -83,7 +88,7 @@ export class ImageDecryptService {
 
     const normalizedMd5 = this.normalizeDatBase(md5 || '')
     const normalizedDatName = this.normalizeDatBase(imageDatName || '')
-    console.log('[ImageDecrypt] findImageFile:', {
+    imageDecryptLog('[ImageDecrypt] findImageFile:', {
       md5: normalizedMd5,
       imageDatName: normalizedDatName,
       accountDir,
@@ -96,7 +101,7 @@ export class ImageDecryptService {
       if (fullPath && existsSync(fullPath)) {
         const selected = this.getPreferredDatVariantPath(fullPath, allowThumbnail)
         if (allowThumbnail || !this.isThumbnailName(basename(selected))) {
-          console.log('[ImageDecrypt] hardlink hit:', selected)
+          imageDecryptLog('[ImageDecrypt] hardlink hit:', selected)
           return selected
         }
       }
@@ -105,7 +110,7 @@ export class ImageDecryptService {
     // 尝试 WechatExplorer 的目录结构: msg/attach/{hash}/{YYYY-MM}/Img/
     const attachDir = join(accountDir, 'msg', 'attach')
     if (!existsSync(attachDir)) {
-      console.log('[ImageDecrypt] attach dir not found:', attachDir)
+      imageDecryptLog('[ImageDecrypt] attach dir not found:', attachDir)
       return this.findImageFileInLegacyDirs(accountDir, normalizedMd5 || normalizedDatName)
     }
 
@@ -120,7 +125,7 @@ export class ImageDecryptService {
     const legacyHit = this.findImageFileInLegacyDirs(accountDir, searchKeys[0], allowThumbnail)
     if (legacyHit) return legacyHit
 
-    console.log('[ImageDecrypt] findImageFile miss for:', searchKeys)
+    imageDecryptLog('[ImageDecrypt] findImageFile miss for:', searchKeys)
     return null
   }
 
@@ -146,7 +151,7 @@ export class ImageDecryptService {
         ]
         const found = this.getLargestExistingPath(candidates, allowThumbnail)
         if (found) {
-          console.log('[ImageDecrypt] prefix path hit:', found)
+          imageDecryptLog('[ImageDecrypt] prefix path hit:', found)
           return found
         }
       }
@@ -175,14 +180,14 @@ export class ImageDecryptService {
               allowThumbnail
             )
             if (found) {
-              console.log('[ImageDecrypt] found at:', found)
+              imageDecryptLog('[ImageDecrypt] found at:', found)
               return found
             }
           }
         }
       }
     } catch (e) {
-      console.log('[ImageDecrypt]遍历目录失败:', e)
+      imageDecryptLog('[ImageDecrypt]遍历目录失败:', e)
     }
 
     return null
@@ -229,7 +234,7 @@ export class ImageDecryptService {
         const fullPath = join(dir, entry)
         const stat = statSync(fullPath)
         if (stat.isFile() && variants.has(entry.toLowerCase())) {
-          console.log('[ImageDecrypt] legacy path hit:', fullPath)
+          imageDecryptLog('[ImageDecrypt] legacy path hit:', fullPath)
           return fullPath
         }
       }
@@ -252,13 +257,13 @@ export class ImageDecryptService {
    */
   decryptImage(datPath: string): Buffer | null {
     if (!existsSync(datPath)) {
-      console.log('[ImageDecrypt] file not found:', datPath)
+      imageDecryptLog('[ImageDecrypt] file not found:', datPath)
       return null
     }
 
     try {
       const version = this.getDatVersion(datPath)
-      console.log(
+      imageDecryptLog(
         '[ImageDecrypt] dat version:',
         version,
         'file:',
@@ -269,25 +274,25 @@ export class ImageDecryptService {
 
       let decrypted: Buffer
       if (version === 1) {
-        console.log('[ImageDecrypt] using V1 (default AES key)')
+        imageDecryptLog('[ImageDecrypt] using V1 (default AES key)')
         const key = Buffer.from(this.defaultV1AesKey, 'ascii')
         decrypted = this.decryptDatV4(datPath, key)
       } else if (version === 2) {
-        console.log('[ImageDecrypt] using V2 (user AES key)')
+        imageDecryptLog('[ImageDecrypt] using V2 (user AES key)')
         if (!this.aesKey) {
-          console.log('[ImageDecrypt] no AES key configured')
+          imageDecryptLog('[ImageDecrypt] no AES key configured')
           return null
         }
         const key = Buffer.from(this.aesKey, 'ascii').slice(0, 16)
         decrypted = this.decryptDatV4(datPath, key)
       } else {
-        console.log('[ImageDecrypt] unsupported dat version:', version)
+        imageDecryptLog('[ImageDecrypt] unsupported dat version:', version)
         return null
       }
 
       return decrypted
     } catch (error) {
-      console.error('[ImageDecrypt] decrypt error:', error)
+      imageDecryptLog('[ImageDecrypt] decrypt error:', error)
       return null
     }
   }
@@ -309,7 +314,7 @@ export class ImageDecryptService {
     const unwrapped = this.unwrapWxgf(decrypted)
     const ext = this.detectImageExtension(unwrapped)
     if (!ext) {
-      console.log('[ImageDecrypt] unknown image format')
+      imageDecryptLog('[ImageDecrypt] unknown image format')
       return null
     }
 
@@ -346,7 +351,7 @@ export class ImageDecryptService {
       const data = this.decryptImageToBase64(candidate)
       if (data) return { data, filePath: candidate }
     }
-    console.warn('[ImageDecrypt] all variants failed:', this.uniq(candidates))
+    imageDecryptLog('[ImageDecrypt] all variants failed:', this.uniq(candidates))
     return null
   }
 

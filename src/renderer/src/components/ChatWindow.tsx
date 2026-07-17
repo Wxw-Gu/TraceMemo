@@ -20,7 +20,6 @@ interface ChatWindowProps {
   isAiLoading?: boolean
 }
 
-const MAX_RENDERED_MESSAGES = 600
 const DATE_RANGE_LABELS: Record<string, string> = {
   today: '今天',
   yesterday: '昨日',
@@ -242,12 +241,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       return typeMatch && contentMatch
     })
   }, [messages, contentFilter])
-  const hiddenMessageCount = Math.max(0, filteredMessages.length - MAX_RENDERED_MESSAGES)
-  const renderedMessages = React.useMemo(
-    () => filteredMessages.slice(-MAX_RENDERED_MESSAGES),
-    [filteredMessages]
-  )
-
   if (!contact) return <EmptyConversationState />
 
   const dateRangeLabel = getChatHeaderRangeLabel(dateRange)
@@ -272,8 +265,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       <DataTrustBar messageCount={messages.length} />
       <MessageList
         contact={contact}
-        messages={renderedMessages}
-        hiddenMessageCount={hiddenMessageCount}
+        messages={filteredMessages}
+        hiddenMessageCount={0}
         isLoadingMessages={isLoadingMessages}
         isGroupChat={isGroupChat}
         showAvatar={showAvatar}
@@ -283,7 +276,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         onImageClick={openImagePreview}
       />
       <ChatStatusBar
-        count={renderedMessages.length}
+        count={filteredMessages.length}
         showAvatar={showAvatar}
         isAtLatest={isAtLatest}
         onShowAvatarChange={setShowAvatar}

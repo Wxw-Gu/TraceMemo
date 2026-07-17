@@ -1143,6 +1143,20 @@ body {
   background: #f0f2ef;
 }
 
+.virtual-message-list {
+  position: relative;
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+.virtual-message-group {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flow-root;
+  width: 100%;
+}
+
 .wechat-message-row {
   margin-bottom: 14px;
 }
@@ -7061,7 +7075,9 @@ body {
   border: 1.5px solid var(--wxex-border);
   border-radius: 12px;
   background: #fff;
-  transition: border-color 0.2s, background 0.2s;
+  transition:
+    border-color 0.2s,
+    background 0.2s;
 }
 
 .report-template-item.active {
@@ -7114,7 +7130,10 @@ body {
   background: #fff;
   color: var(--wxex-text-primary, #1f2933);
   cursor: pointer;
-  transition: background 0.2s, color 0.2s, border-color 0.2s;
+  transition:
+    background 0.2s,
+    color 0.2s,
+    border-color 0.2s;
 }
 
 .report-template-preview-btn:hover {
