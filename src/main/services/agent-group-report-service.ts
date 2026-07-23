@@ -5,6 +5,7 @@ import { AIProviderService } from './ai-provider-service'
 import {
   buildGroupReportInput,
   getSummaryDateRange,
+  GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT,
   GROUP_REPORT_SYSTEM_PROMPT,
   isInternalName,
   parseGroupDailyReport,
@@ -68,14 +69,39 @@ export async function generateAgentGroupReport(
     { role: 'user', content: input.prompt }
   ])
   if (!ai.success || !ai.data) return { success: false, error: ai.error || 'AI 总结失败' }
-  const report = parseGroupDailyReport(
-    ai.data,
-    input.topSpeakers,
-    input.activeTimeline,
-    input.voiceLeaderboard,
-    input.metadata,
-    input.media
-  )
+  const parseReport = (raw: string): ReturnType<typeof parseGroupDailyReport> =>
+    parseGroupDailyReport(
+      raw,
+      input.topSpeakers,
+      input.activeTimeline,
+      input.voiceLeaderboard,
+      input.metadata,
+      input.media
+    )
+  let report: ReturnType<typeof parseGroupDailyReport>
+  try {
+    report = parseReport(ai.data)
+  } catch (parseError) {
+    const repaired = await aiProvider.chat([
+      { role: 'system', content: GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT },
+      { role: 'user', content: ai.data }
+    ])
+    if (!repaired.success || !repaired.data) {
+      const cause = parseError instanceof Error ? parseError.message : String(parseError)
+      return {
+        success: false,
+        error: `${repaired.error || 'AI 修复日报 JSON 失败'}（原始错误：${cause}）`
+      }
+    }
+    try {
+      report = parseReport(repaired.data)
+    } catch (repairError) {
+      return {
+        success: false,
+        error: repairError instanceof Error ? repairError.message : String(repairError)
+      }
+    }
+  }
   const exported = await exportGroupReport({ report, metadata: input.metadata })
   if (!exported.success || !exported.pngPath) {
     return { success: false, error: exported.error || '总结图片生成失败' }

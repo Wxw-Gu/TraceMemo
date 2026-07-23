@@ -37,10 +37,7 @@ export function ReportViewer({
     return () => window.cancelAnimationFrame(frame)
   }, [report?.id])
 
-  const title = useMemo(
-    () => (report ? `${report.contactName} 群聊日报` : 'AI 日报'),
-    [report]
-  )
+  const title = useMemo(() => (report ? `${report.contactName} 群聊日报` : 'AI 日报'), [report])
 
   const fitWidth = (): void => {
     const viewport = viewportRef.current
@@ -108,10 +105,16 @@ export function ReportViewer({
               }}
               onLoad={(event) => {
                 const image = event.currentTarget
-                setNaturalSize({
+                const nextSize = {
                   width: image.naturalWidth,
                   height: image.naturalHeight
-                })
+                }
+                setNaturalSize(nextSize)
+                const viewport = viewportRef.current
+                if (viewport && nextSize.width > viewport.clientWidth - 48) {
+                  const fittedZoom = Math.max(0.25, (viewport.clientWidth - 48) / nextSize.width)
+                  setZoom(Number(fittedZoom.toFixed(2)))
+                }
               }}
               onError={() => {
                 setImageError('日报图片加载失败')

@@ -3,6 +3,7 @@ import { Contact, Message } from '../../../shared/types'
 import {
   buildGroupReportInput,
   getSummaryDateRange,
+  GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT,
   GROUP_REPORT_SYSTEM_PROMPT,
   isInternalName,
   parseGroupDailyReport,
@@ -160,6 +161,16 @@ const estimateTokenUsage = (
     estimated: true
   }
 }
+
+const mergeTokenUsage = (
+  first: NonNullable<ReportGenerationMetadata['tokenUsage']>,
+  second: NonNullable<ReportGenerationMetadata['tokenUsage']>
+): NonNullable<ReportGenerationMetadata['tokenUsage']> => ({
+  input: (first.input || 0) + (second.input || 0),
+  output: (first.output || 0) + (second.output || 0),
+  total: (first.total || 0) + (second.total || 0),
+  estimated: Boolean(first.estimated || second.estimated)
+})
 
 const applyGroupMemberNames = async (
   contact: Contact,
@@ -469,12 +480,12 @@ export function useGroupReportGeneration({
         usage: result.usage
       })
 
-      const tokenUsage =
+      let tokenUsage =
         result.usage && result.usage.total
           ? result.usage
           : estimateTokenUsage(aiMessages, result.data)
 
-      let report
+      let report: ReturnType<typeof parseGroupDailyReport>
       try {
         report = parseGroupDailyReport(
           result.data,
@@ -485,8 +496,57 @@ export function useGroupReportGeneration({
           input.media
         )
       } catch (parseError) {
-        writeReportLog('error', '日报 JSON 解析失败', jsonErrorContext(result.data, parseError))
-        throw parseError
+        writeReportLog('warn', '本地修复日报 JSON 失败，尝试由模型纠正', {
+          ...jsonErrorContext(result.data, parseError),
+          retry: 1
+        })
+        const repairMessages = [
+          {
+            role: 'system',
+            content: GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT
+          },
+          { role: 'user', content: result.data }
+        ]
+        const repairResult = await trackStep('AI 修复 JSON', () =>
+          withTimeout(
+            window.api.aiChat(repairMessages, {
+              providerId: modelConfig.providerId,
+              modelId: modelConfig.model,
+              timeoutMs: reportTimeoutSeconds * 1000
+            }),
+            'AI 修复日报 JSON',
+            reportTimeoutSeconds * 1000 + REPORT_MODEL_TIMEOUT_BUFFER_MS
+          )
+        )
+        if (!repairResult.success || !repairResult.data) {
+          throw new Error(repairResult.error || 'AI 修复日报 JSON 失败', { cause: parseError })
+        }
+        const repairUsage =
+          repairResult.usage && repairResult.usage.total
+            ? repairResult.usage
+            : estimateTokenUsage(repairMessages, repairResult.data)
+        tokenUsage = mergeTokenUsage(tokenUsage, repairUsage)
+        try {
+          report = parseGroupDailyReport(
+            repairResult.data,
+            input.topSpeakers,
+            input.activeTimeline,
+            input.voiceLeaderboard || [],
+            input.metadata,
+            input.media
+          )
+          writeReportLog('info', '模型已纠正日报 JSON', {
+            retry: 1,
+            outputLength: repairResult.data.length
+          })
+        } catch (retryParseError) {
+          writeReportLog(
+            'error',
+            '日报 JSON 重试后仍解析失败',
+            jsonErrorContext(repairResult.data, retryParseError)
+          )
+          throw retryParseError
+        }
       }
 
       setPhase('exportingReport')

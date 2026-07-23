@@ -7244,17 +7244,17 @@ body {
 }
 
 .report-viewer-stage {
-  display: flex;
+  display: block;
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
-  justify-content: center;
   overflow: auto;
   padding: 22px;
 }
 
 .report-canvas {
-  align-self: flex-start;
+  width: max-content;
+  margin: 0 auto;
   padding: 0;
   background: #fff;
   box-shadow: 0 8px 24px rgba(32, 39, 36, 0.14);

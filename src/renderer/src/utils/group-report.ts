@@ -19,6 +19,7 @@ import {
   ReportVoiceLeaderboardItem
 } from '../../../shared/group-report'
 import { Contact, Message } from '../../../shared/types'
+import { jsonrepair } from 'jsonrepair'
 import { buildGroupReportFacts } from './group-report-facts'
 
 export const GROUP_REPORT_SYSTEM_PROMPT = `你是微信群聊日报编辑。请仅根据用户提供的聊天记录生成结构化中文日报。
@@ -72,6 +73,9 @@ JSON 结构必须为：
 - 精简版：热点最多4个、重要消息最多4条、待办最多5条、未解决最多3条、名场面最多2组、每组最多4条、关键词最多12个。
 - 完整版：可以保留更多候选项，但仍要去重和排序。
 - 如果某个字段不确定，请返回 null 或空数组，不要猜。`
+
+export const GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT =
+  '你是 JSON 格式修复器。只修复输入中的 JSON 语法，不改写、删减或新增任何业务内容。只输出一个可被 JSON.parse 解析的 JSON 对象，不要输出 Markdown 或解释。'
 
 export interface GroupReportInput {
   prompt: string
@@ -259,7 +263,19 @@ const extractJson = (raw: string): unknown => {
   const start = cleaned.indexOf('{')
   const end = cleaned.lastIndexOf('}')
   if (start < 0 || end <= start) throw new Error('AI 未返回可解析的日报 JSON')
-  return JSON.parse(cleaned.slice(start, end + 1))
+  const json = cleaned.slice(start, end + 1)
+  try {
+    return JSON.parse(json)
+  } catch (strictError) {
+    try {
+      return JSON.parse(jsonrepair(json))
+    } catch (repairError) {
+      throw new Error(
+        `日报 JSON 自动修复失败：${repairError instanceof Error ? repairError.message : String(repairError)}`,
+        { cause: strictError }
+      )
+    }
+  }
 }
 
 const createSignature = (...parts: Array<string | null | undefined>): string =>
