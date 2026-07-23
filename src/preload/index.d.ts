@@ -38,6 +38,7 @@ import type {
   ImageInsight
 } from '../shared/image-insight'
 import type { AgentHubActionResult, AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
+import type { AppLogEntry } from '../shared/app-log'
 
 export type ParsedContent =
   | { type: 'text'; content: string }
@@ -71,6 +72,9 @@ declare global {
   interface Window {
     electron: ElectronAPI
     api: {
+      writeAppLog: (entry: AppLogEntry) => Promise<void>
+      getAppLogPath: () => Promise<string>
+      revealAppLog: () => Promise<void>
       initDb: (
         key: string
       ) => Promise<boolean | { success: boolean; error?: string; monitoring?: boolean }>

@@ -108,6 +108,31 @@ const withTimeout = async <T>(
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
 
+const writeReportLog = (
+  level: 'info' | 'warn' | 'error',
+  message: string,
+  details?: Record<string, unknown>
+): void => {
+  void window.api
+    .writeAppLog({ level, scope: 'group-report', message, details })
+    .catch(() => undefined)
+}
+
+const jsonErrorContext = (raw: string, error: unknown): Record<string, unknown> => {
+  const message = errorMessage(error)
+  const position = Number(/\bposition\s+(\d+)/i.exec(message)?.[1])
+  const safePosition = Number.isFinite(position) ? Math.max(0, Math.min(raw.length, position)) : 0
+  return {
+    error: message,
+    outputLength: raw.length,
+    position: Number.isFinite(position) ? position : undefined,
+    context:
+      raw.length && Number.isFinite(position)
+        ? raw.slice(Math.max(0, safePosition - 300), Math.min(raw.length, safePosition + 300))
+        : raw.slice(0, 600)
+  }
+}
+
 const isGroupContact = (contact: Contact | null): boolean =>
   Boolean(contact?.type === 'group' || contact?.m_nsUsrName?.endsWith('@chatroom'))
 
@@ -358,6 +383,7 @@ export function useGroupReportGeneration({
     }
 
     const startGenerateTime = Date.now()
+    let failedAt = '初始化'
     const logs: ReportGenerationLog[] = []
     const pushLog = (log: ReportGenerationLog): void => {
       logs.push(log)
@@ -388,15 +414,29 @@ export function useGroupReportGeneration({
       modelName: modelConfig.model,
       generationLogs: []
     })
+    writeReportLog('info', '开始生成群聊日报', {
+      groupName: sourceContact.m_nsNickName || sourceContact.m_nsUsrName,
+      dateRange: summaryDateRange,
+      selectedMessageTypes: summaryMessageTypes,
+      providerName: modelConfig.providerName,
+      model: modelConfig.model,
+      templateId
+    })
 
     try {
+      failedAt = '读取聊天记录'
       const sourceMessages = await trackStep('读取聊天记录', () => loadRangeMessages(true))
 
       const selectedTypes = selectedMessageTypeSet(summaryMessageTypes)
       const filteredMessages = sourceMessages.filter((message) => selectedTypes.has(message.type))
       if (!filteredMessages.length) throw new Error('当前范围没有可总结消息')
+      writeReportLog('info', '聊天记录读取完成', {
+        sourceMessageCount: sourceMessages.length,
+        filteredMessageCount: filteredMessages.length
+      })
 
       setPhase('preparingInput')
+      failedAt = '整理日报输入'
       const input = await trackStep('整理输入', async () => {
         const namedReportMessages = await applyGroupMemberNames(
           sourceContact,
@@ -407,6 +447,7 @@ export function useGroupReportGeneration({
       })
 
       setPhase('requestingModel')
+      failedAt = '调用模型生成内容'
       const aiMessages = [
         { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
         { role: 'user', content: input.prompt }
@@ -423,22 +464,33 @@ export function useGroupReportGeneration({
         )
       )
       if (!result.success || !result.data) throw new Error(result.error || 'AI 请求失败')
+      writeReportLog('info', '模型响应完成', {
+        outputLength: result.data.length,
+        usage: result.usage
+      })
 
       const tokenUsage =
         result.usage && result.usage.total
           ? result.usage
           : estimateTokenUsage(aiMessages, result.data)
 
-      const report = parseGroupDailyReport(
-        result.data,
-        input.topSpeakers,
-        input.activeTimeline,
-        input.voiceLeaderboard || [],
-        input.metadata,
-        input.media
-      )
+      let report
+      try {
+        report = parseGroupDailyReport(
+          result.data,
+          input.topSpeakers,
+          input.activeTimeline,
+          input.voiceLeaderboard || [],
+          input.metadata,
+          input.media
+        )
+      } catch (parseError) {
+        writeReportLog('error', '日报 JSON 解析失败', jsonErrorContext(result.data, parseError))
+        throw parseError
+      }
 
       setPhase('exportingReport')
+      failedAt = '导出 HTML 与 PNG'
       const exported = await withTimeout(
         window.api.exportGroupReport({ report, metadata: input.metadata, templateId }),
         '日报图片导出'
@@ -474,8 +526,19 @@ export function useGroupReportGeneration({
         generationLogs: [...logs]
       })
       setPhase('success')
+      writeReportLog('info', '群聊日报生成成功', {
+        durationMs: Date.now() - startGenerateTime,
+        htmlPath: exported.htmlPath,
+        pngPath: exported.pngPath
+      })
     } catch (generateError) {
-      setError(errorMessage(generateError))
+      const message = errorMessage(generateError)
+      writeReportLog('error', '群聊日报生成失败', {
+        error: message,
+        failedAt,
+        durationMs: Date.now() - startGenerateTime
+      })
+      setError(message)
       setPhase('error')
     }
   }, [
@@ -485,6 +548,7 @@ export function useGroupReportGeneration({
     modelConfig,
     reportTimeoutSeconds,
     sourceContact,
+    summaryDateRange,
     summaryMessageTypes,
     templateId
   ])

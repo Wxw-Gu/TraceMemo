@@ -69,6 +69,8 @@ import {
 } from './services/bootstrap-cache'
 import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
+import { appLogger } from './app-logger'
+import type { AppLogEntry } from '../shared/app-log'
 
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
@@ -141,6 +143,31 @@ function createWindow(): void {
 // 鏌愪簺 API 鍙兘鍦ㄦ浜嬩欢鍙戠敓鍚庝娇鐢?
 app.whenReady().then(async () => {
   console.log(`WechatExplorer main build: ${BUILD_MARK}`)
+  appLogger.write({
+    level: 'info',
+    scope: 'lifecycle',
+    message: 'WechatExplorer 启动',
+    details: { build: BUILD_MARK, platform: process.platform, version: app.getVersion() }
+  })
+  process.on('uncaughtException', (error) => {
+    appLogger.write({
+      level: 'error',
+      scope: 'main-process',
+      message: error.message,
+      details: { stack: error.stack }
+    })
+  })
+  process.on('unhandledRejection', (reason) => {
+    appLogger.write({
+      level: 'error',
+      scope: 'main-process',
+      message: reason instanceof Error ? reason.message : 'Promise 未处理拒绝',
+      details: {
+        stack: reason instanceof Error ? reason.stack : undefined,
+        reason: reason instanceof Error ? undefined : String(reason)
+      }
+    })
+  })
 
   // WCDB's Windows runtime returns -1006 if wcdb_init is called more than once
   // per process. Bootstrap native once here so any later Wcdb4Client instance
@@ -166,6 +193,9 @@ app.whenReady().then(async () => {
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
+  ipcMain.handle('app-log:write', (_, entry: AppLogEntry) => appLogger.write(entry))
+  ipcMain.handle('app-log:getPath', () => appLogger.logPath)
+  ipcMain.handle('app-log:reveal', () => appLogger.reveal())
 
   ipcMain.handle('db:init', async (_, key: string) => {
     if (dbInitInFlight) return dbInitInFlight

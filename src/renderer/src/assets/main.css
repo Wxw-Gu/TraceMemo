@@ -3854,6 +3854,18 @@ body {
   margin: 4px 0 10px;
 }
 
+.report-task-error button + button {
+  margin-left: 8px;
+}
+
+.report-task-log-path {
+  display: block;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+  color: var(--wxex-text-secondary);
+  font: 11px/16px var(--wxex-font);
+}
+
 @media (max-width: 1120px) {
   .report-page {
     grid-template-columns: 268px minmax(360px, 1fr) 280px;

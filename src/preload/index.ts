@@ -16,9 +16,13 @@ import type {
   ImageInsight
 } from '../shared/image-insight'
 import type { AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
+import type { AppLogEntry } from '../shared/app-log'
 
 // 渲染器的自定义 API
 const api = {
+  writeAppLog: (entry: AppLogEntry) => ipcRenderer.invoke('app-log:write', entry),
+  getAppLogPath: () => ipcRenderer.invoke('app-log:getPath'),
+  revealAppLog: () => ipcRenderer.invoke('app-log:reveal'),
   initDb: (key: string) => ipcRenderer.invoke('db:init', key),
   getBootstrapCache: () => ipcRenderer.invoke('db:getBootstrapCache'),
   getContacts: (filter?: string) => ipcRenderer.invoke('db:getContacts', filter),

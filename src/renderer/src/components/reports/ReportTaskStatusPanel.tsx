@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { ReportGenerationPhase } from '../../hooks/useGroupReportGeneration'
 
 interface ReportTaskStatusPanelProps {
@@ -27,6 +27,14 @@ export function ReportTaskStatusPanel({
 }: ReportTaskStatusPanelProps): React.ReactElement {
   const activeIndex = phaseIndex(phase)
   const completedAll = phase === 'success'
+  const [logPath, setLogPath] = useState('')
+
+  useEffect(() => {
+    void window.api
+      .getAppLogPath()
+      .then(setLogPath)
+      .catch(() => undefined)
+  }, [])
 
   return (
     <aside className="report-task-panel">
@@ -70,6 +78,10 @@ export function ReportTaskStatusPanel({
           <button type="button" onClick={onRetry}>
             重试
           </button>
+          <button type="button" onClick={() => void window.api.revealAppLog()}>
+            打开诊断日志
+          </button>
+          {logPath && <small className="report-task-log-path">{logPath}</small>}
         </div>
       )}
       {phase === 'success' && (
