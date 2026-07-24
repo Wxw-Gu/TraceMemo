@@ -54,6 +54,15 @@ type ImageContent = {
   aeskey?: string
   encrypVer?: number
 }
+type VideoContent = {
+  type: 'video'
+  md5?: string
+  newMd5?: string
+  rawMd5?: string
+  duration?: number
+  width?: number
+  height?: number
+}
 type StickerContent = {
   type: 'sticker'
   md5?: string
@@ -94,6 +103,7 @@ export type ParsedContent =
   | ShareContent
   | VoipContent
   | ImageContent
+  | VideoContent
   | StickerContent
   | QuoteContent
   | SystemContent

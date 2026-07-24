@@ -24,6 +24,15 @@ type ImageContent = {
   aeskey?: string
   encrypVer?: number
 }
+type VideoContent = {
+  type: 'video'
+  md5?: string
+  newMd5?: string
+  rawMd5?: string
+  duration?: number
+  width?: number
+  height?: number
+}
 type StickerContent = {
   type: 'sticker'
   md5?: string
@@ -64,6 +73,7 @@ export type ParsedContent =
   | ShareContent
   | VoipContent
   | ImageContent
+  | VideoContent
   | StickerContent
   | QuoteContent
   | SystemContent
@@ -81,6 +91,8 @@ export function parseMessageContent(content: string, messageType: number): Parse
       return parseImageMessage(normalized)
     case 42:
       return parseCardMessage(normalized)
+    case 43:
+      return parseVideoMessage(normalized)
     case 47:
       return parseStickerMessage(normalized)
     case 48:
@@ -95,6 +107,19 @@ export function parseMessageContent(content: string, messageType: number): Parse
     default:
       return { type: 'text', content: normalized }
   }
+}
+
+function parseVideoMessage(content: string): ParsedContent {
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const md5 = normalizeMd5(extractXmlAttribute(decoded, 'videomsg', 'md5'))
+  const newMd5 = normalizeMd5(extractXmlAttribute(decoded, 'videomsg', 'newmd5'))
+  const rawMd5 = normalizeMd5(extractXmlAttribute(decoded, 'videomsg', 'rawmd5'))
+  if (!md5 && !newMd5 && !rawMd5) return { type: 'unknown', raw: content }
+
+  const duration = Number(extractXmlAttribute(decoded, 'videomsg', 'playlength')) || undefined
+  const width = Number(extractXmlAttribute(decoded, 'videomsg', 'cdnthumbwidth')) || undefined
+  const height = Number(extractXmlAttribute(decoded, 'videomsg', 'cdnthumbheight')) || undefined
+  return { type: 'video', md5, newMd5, rawMd5, duration, width, height }
 }
 
 function parseSystemMessage(content: string): ParsedContent {
@@ -498,7 +523,10 @@ function extractXmlValue(xml: string, tagName: string): string {
 }
 
 function extractXmlAttribute(xml: string, tagName: string, attrName: string): string {
-  const pattern = new RegExp(`<${tagName}[^>]*${attrName}=["']([^"']*)["']`, 'i')
+  const pattern = new RegExp(
+    `<${tagName}\\b[^>]*?(?:\\s|^)${attrName}\\s*=\\s*["']([^"']*)["']`,
+    'i'
+  )
   const match = xml.match(pattern)
   return match ? match[1].trim() : ''
 }

@@ -49,6 +49,15 @@ export type ParsedContent =
   | { type: 'voip'; duration?: number; status: string; roomType?: number }
   | { type: 'image'; md5?: string; datName?: string; aeskey?: string; encrypVer?: number }
   | {
+      type: 'video'
+      md5?: string
+      newMd5?: string
+      rawMd5?: string
+      duration?: number
+      width?: number
+      height?: number
+    }
+  | {
       type: 'sticker'
       md5?: string
       url?: string
@@ -151,6 +160,9 @@ declare global {
         isThumb?: boolean
         filePath?: string
       }>
+      getVideo: (
+        hashes: string[]
+      ) => Promise<{ success: boolean; url?: string; poster?: string; error?: string }>
       getSticker: (
         cdnUrl?: string,
         md5?: string

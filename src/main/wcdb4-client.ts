@@ -51,6 +51,11 @@ export interface Wcdb4ImageHardlink {
   [key: string]: unknown
 }
 
+export interface Wcdb4VideoHardlink {
+  resolved_md5?: string
+  [key: string]: unknown
+}
+
 type KoffiModule = {
   load: (libraryPath: string) => KoffiLibrary
   decode: (ptr: unknown, type: string, length: number) => string
@@ -222,6 +227,9 @@ export class Wcdb4Client {
     | null = null
   private wcdbResolveImageHardlink:
     | ((handle: number, md5: string, accountDir: string, outJson: WcdbVoidOut) => number)
+    | null = null
+  private wcdbResolveVideoHardlink:
+    | ((handle: number, md5: string, dbPath: string, outJson: WcdbVoidOut) => number)
     | null = null
   private wcdbGetEmoticonCdnUrl:
     | ((handle: number, dbPath: string, md5: string, outUrl: WcdbVoidOut) => number)
@@ -1239,6 +1247,23 @@ export class Wcdb4Client {
     }
   }
 
+  resolveVideoHardlink(md5: string, dbPath: string): Wcdb4VideoHardlink | null {
+    if (!this.wcdbResolveVideoHardlink) return null
+    const normalizedMd5 = String(md5 || '')
+      .trim()
+      .toLowerCase()
+    if (!/^[a-f0-9]{32}$/.test(normalizedMd5) || !dbPath) return null
+
+    try {
+      return this.callJson<Wcdb4VideoHardlink>((handle, outJson) =>
+        this.wcdbResolveVideoHardlink!(handle, normalizedMd5, dbPath, outJson)
+      )
+    } catch (error) {
+      console.warn('[WCDB4] resolve video hardlink failed:', error)
+      return null
+    }
+  }
+
   resolveEmoticonCdnUrl(md5: string): string | undefined {
     if (!this.wcdbGetEmoticonCdnUrl) {
       console.warn(`[WCDB4] wcdb_get_emoticon_cdn_url unavailable for md5=${md5}`)
@@ -1450,6 +1475,14 @@ export class Wcdb4Client {
       ) as (handle: number, md5: string, accountDir: string, outJson: WcdbVoidOut) => number
     } catch {
       this.wcdbResolveImageHardlink = null
+    }
+
+    try {
+      this.wcdbResolveVideoHardlink = lib.func(
+        'int32 wcdb_resolve_video_hardlink_md5(int64 handle, const char* md5, const char* dbPath, _Out_ void** outJson)'
+      ) as (handle: number, md5: string, dbPath: string, outJson: WcdbVoidOut) => number
+    } catch {
+      this.wcdbResolveVideoHardlink = null
     }
 
     try {

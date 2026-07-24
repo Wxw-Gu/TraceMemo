@@ -225,7 +225,7 @@ function listSourceMessages(
       /<appmsg\b|<refermsg\b|&lt;appmsg\b|&lt;refermsg\b/i.test(content)
         ? 49
         : msgType
-    if ([3, 42, 47, 48, 49, 50, 10000, 10002].includes(inferredMsgType)) {
+    if ([3, 42, 43, 47, 48, 49, 50, 10000, 10002].includes(inferredMsgType)) {
       try {
         const parsed =
           inferredMsgType === 47
