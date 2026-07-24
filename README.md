@@ -192,6 +192,16 @@ curl -G "http://127.0.0.1:6131/api/v1/resolve" \
 
 本项目仅供学习和研究使用。请勿用于非法用途。开发者不对使用本项目造成的任何后果负责。请遵守相关法律法规和微信使用协议。
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=Wxw-Gu%2FWechatExplorer&type=date&legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Wxw-Gu/WechatExplorer&type=date&theme=dark&legend=top-left&sealed_token=cSQi7zyyCJXEyry3kvUhQJUB3RY8PjpgsI4KKZMH7m06AzRJU0EtAtKHcHtmhhgWoOU5lOjCBh-mZGzX4j50AaKL2krLbHLA7Ip7P1MWWolL9_TPXin1kg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Wxw-Gu/WechatExplorer&type=date&legend=top-left&sealed_token=cSQi7zyyCJXEyry3kvUhQJUB3RY8PjpgsI4KKZMH7m06AzRJU0EtAtKHcHtmhhgWoOU5lOjCBh-mZGzX4j50AaKL2krLbHLA7Ip7P1MWWolL9_TPXin1kg" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Wxw-Gu/WechatExplorer&type=date&legend=top-left&sealed_token=cSQi7zyyCJXEyry3kvUhQJUB3RY8PjpgsI4KKZMH7m06AzRJU0EtAtKHcHtmhhgWoOU5lOjCBh-mZGzX4j50AaKL2krLbHLA7Ip7P1MWWolL9_TPXin1kg" />
+  </picture>
+</a>
+
 ## 🔗 参考致谢
 
 - [WechatMessageExplorer](https://github.com/svcvit/WechatMessageExplorer)
