@@ -1,4 +1,4 @@
-﻿import './preload-env'
+import './preload-env'
 import {
   app,
   shell,
@@ -8,10 +8,12 @@ import {
   clipboard,
   Menu,
   Tray,
-  dialog
+  dialog,
+  protocol
 } from 'electron'
 import { join } from 'path'
-import { existsSync } from 'fs'
+import { existsSync, promises as fsPromises } from 'fs'
+import { extname } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { WechatDb } from './wechat-db'
@@ -71,6 +73,8 @@ import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
 import { appLogger } from './app-logger'
 import type { AppLogEntry } from '../shared/app-log'
+import { configureRecallArchive, RecallArchiveMonitor } from './services/recall-archive-service'
+import { VideoAssetService } from './video-asset-service'
 
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
@@ -80,15 +84,24 @@ installSafeConsole()
 let voiceService: VoiceService | null = null
 let imageDecryptService: ImageDecryptService | null = null
 let stickerService: StickerService | null = null
+let videoAssetService: VideoAssetService | null = null
 const databaseKeyStore = new DatabaseKeyStore()
 const imageKeyConfigService = new ImageKeyConfigService()
 const aiProviderService = new AIProviderService()
 const keyServiceMac = new KeyServiceMac()
 const keyServiceWin = new KeyServiceWin()
 let tray: Tray | null = null
+let recallArchiveMonitor: RecallArchiveMonitor | null = null
 
 const packagedIconPath = join(process.resourcesPath, 'resources', 'icon.png')
 const appIconPath = existsSync(packagedIconPath) ? packagedIconPath : icon
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'wxe-media',
+    privileges: { secure: true, standard: true, stream: true, supportFetchAPI: true }
+  }
+])
 
 // WCDB's Windows runtime checks the host application name during wcdb_init.
 // Mirroring WeFlow's name unblocks the -1006 init failure on Windows.
@@ -107,8 +120,65 @@ function getConfiguredImageKeys(): { xorKey: string; aesKey: string } {
   }
 }
 
+async function createLocalMediaResponse(request: Request, filePath: string): Promise<Response> {
+  const { size } = await fsPromises.stat(filePath)
+  const mimeType = extname(filePath).toLowerCase() === '.mp4' ? 'video/mp4' : 'image/jpeg'
+  const commonHeaders = {
+    'Accept-Ranges': 'bytes',
+    'Content-Type': mimeType,
+    'Cache-Control': 'private, max-age=300'
+  }
+  const range = request.headers.get('range')
+
+  if (!range) {
+    const body =
+      request.method === 'HEAD' ? null : Uint8Array.from(await fsPromises.readFile(filePath))
+    return new Response(body, {
+      status: 200,
+      headers: { ...commonHeaders, 'Content-Length': String(size) }
+    })
+  }
+
+  const match = /^bytes=(\d+)-(\d*)$/i.exec(range.trim())
+  if (!match) {
+    return new Response(null, {
+      status: 416,
+      headers: { ...commonHeaders, 'Content-Range': `bytes */${size}` }
+    })
+  }
+  const start = Number(match[1])
+  const requestedEnd = match[2] ? Number(match[2]) : size - 1
+  const end = Math.min(requestedEnd, size - 1)
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size) {
+    return new Response(null, {
+      status: 416,
+      headers: { ...commonHeaders, 'Content-Range': `bytes */${size}` }
+    })
+  }
+
+  const length = end - start + 1
+  let body: Buffer | null = null
+  if (request.method !== 'HEAD') {
+    const handle = await fsPromises.open(filePath, 'r')
+    try {
+      body = Buffer.allocUnsafe(length)
+      await handle.read(body, 0, length, start)
+    } finally {
+      await handle.close()
+    }
+  }
+  return new Response(body ? Uint8Array.from(body) : null, {
+    status: 206,
+    headers: {
+      ...commonHeaders,
+      'Content-Length': String(length),
+      'Content-Range': `bytes ${start}-${end}/${size}`
+    }
+  })
+}
+
 function createWindow(): void {
-  // 鍒涘缓娴忚鍣ㄧ獥鍙?
+  // 创建浏览器窗口
   const mainWindow = new BrowserWindow({
     width: 1400,
     height: 800,
@@ -130,8 +200,8 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  // 鍩轰簬 electron-vite cli 鐨勬覆鏌撳櫒 HMR
-  // 鍔犺浇寮€鍙戠幆澧冪殑杩滅▼ URL 鎴栫敓浜х幆澧冪殑鏈湴 html 鏂囦欢
+  // 基于 electron-vite CLI 的渲染器热更新
+  // 加载开发环境的远程 URL，或生产环境的本地 HTML 文件
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -139,9 +209,20 @@ function createWindow(): void {
   }
 }
 
-// 褰?Electron 瀹屾垚鍒濆鍖栧苟鍑嗗濂藉垱寤烘祻瑙堝櫒绐楀彛鏃讹紝灏嗚皟鐢ㄦ鏂规硶
-// 鏌愪簺 API 鍙兘鍦ㄦ浜嬩欢鍙戠敓鍚庝娇鐢?
+// Electron 初始化完成并准备创建浏览器窗口后，将调用此方法
+// 某些 API 只能在此事件发生后使用
 app.whenReady().then(async () => {
+  protocol.handle('wxe-media', async (request) => {
+    const token = new URL(request.url).pathname.replace(/^\/+/, '')
+    const filePath = videoAssetService?.pathForToken(token)
+    if (!filePath) return new Response('Not found', { status: 404 })
+    try {
+      return await createLocalMediaResponse(request, filePath)
+    } catch (error) {
+      console.warn('[Video] local media request failed:', error)
+      return new Response('Media unavailable', { status: 500 })
+    }
+  })
   console.log(`WechatExplorer main build: ${BUILD_MARK}`)
   appLogger.write({
     level: 'info',
@@ -179,14 +260,14 @@ app.whenReady().then(async () => {
     console.error('[WCDB4] bootstrap failed at whenReady top:', bootstrapError)
   }
 
-  // 涓虹獥鍙ｈ缃簲鐢ㄧ▼搴忕敤鎴锋ā鍨?ID
+  // 设置应用程序用户模型 ID
   electronApp.setAppUserModelId('com.wechatexplorer.app')
 
   if (process.platform === 'darwin') app.dock?.setIcon(appIconPath)
 
-  // 鍦ㄥ紑鍙戠幆澧冧腑榛樿鎸?F12 鎵撳紑鎴栧叧闂?DevTools
-  // 鍦ㄧ敓浜х幆澧冧腑蹇界暐 CommandOrControl + R
-  // 鍙傝 https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
+  // 开发环境中默认使用 F12 打开或关闭 DevTools
+  // 生产环境中忽略 CommandOrControl + R
+  // 参见 https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
@@ -220,9 +301,42 @@ app.whenReady().then(async () => {
         }
         chat.setChatDb(nextWechatDb)
         const wcdb4Client = nextWechatDb.getWcdb4Client()
+        configureRecallArchive(resolvedRoot)
+        recallArchiveMonitor?.stop()
+        recallArchiveMonitor = new RecallArchiveMonitor(
+          () =>
+            wcdb4Client.getSessions().map((session) => ({
+              md5: wcdb4Client.md5(session.username),
+              m_nsUsrName: session.username,
+              type: session.username.endsWith('@chatroom') ? 'group' : 'user',
+              activityKey: [
+                session.raw['last_timestamp'],
+                session.raw['sort_timestamp'],
+                session.raw['last_msg_locald_id'],
+                session.raw['last_msg_type'],
+                session.raw['summary']
+              ].join(':')
+            })),
+          (sessionMd5) =>
+            chat.listMessages(sessionMd5, Math.floor(Date.now() / 1000) - 10 * 60, undefined, {
+              limit: 500
+            })
+        )
+        recallArchiveMonitor.seedAll()
+        setTimeout(() => {
+          const result = wcdb4Client.installRecallJournal(
+            wcdb4Client.getSessions().map((session) => session.username)
+          )
+          console.log(
+            `[WCDB4] recall journal ready installed=${result.installed} failed=${result.failed}`
+          )
+        }, 0)
         voiceService = new VoiceService(wcdb4Client)
         stickerService = new StickerService(wcdb4Client)
+        videoAssetService = new VideoAssetService(wcdb4Client)
         const monitoring = wcdb4Client.startMonitor((type, json) => {
+          wcdb4Client.invalidateSessionCache()
+          recallArchiveMonitor?.handleDatabaseChange(json)
           for (const window of BrowserWindow.getAllWindows()) {
             if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
           }
@@ -623,6 +737,15 @@ app.whenReady().then(async () => {
     return stickerService.resolveSticker(cdnUrl, md5)
   })
 
+  ipcMain.handle('db:getVideo', async (_, hashes: string[]) => {
+    if (!videoAssetService) {
+      const client = chat.getChatDb()?.getWcdb4Client()
+      if (!client) return { success: false, error: '数据库尚未连接' }
+      videoAssetService = new VideoAssetService(client)
+    }
+    return videoAssetService.resolve(Array.isArray(hashes) ? hashes : [])
+  })
+
   // -------- Settings & API service --------
 
   ipcMain.handle('settings:get', () => ({
@@ -752,7 +875,7 @@ app.whenReady().then(async () => {
 
   createWindow()
 
-  // 鍚姩鏈湴 HTTP API(鏍规嵁 settings.apiEnabled 鎺у埗)
+  // 启动本地 HTTP API（由 settings.apiEnabled 控制）
   const settings = loadSettings()
   if (settings.apiEnabled) {
     await apiServer.start(settings.apiHost, settings.apiPort)
@@ -766,15 +889,15 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', function () {
-    // 鍦?macOS 涓婏紝褰撶偣鍑?dock 鍥炬爣涓旀病鏈夊叾浠栫獥鍙ｆ墦寮€鏃讹紝
-    // 閫氬父浼氬湪搴旂敤绋嬪簭涓噸鏂板垱寤轰竴涓獥鍙ｃ€?
+    // 在 macOS 上点击 Dock 图标且没有其他窗口打开时，
+    // 通常会在应用程序中重新创建一个窗口。
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
-// 褰撴墍鏈夌獥鍙ｅ叧闂椂閫€鍑猴紝闄や簡 macOS銆傚湪閭ｉ噷锛?
-// 搴旂敤绋嬪簭鍙婂叾鑿滃崟鏍忛€氬父浼氫繚鎸佹椿鍔ㄧ姸鎬侊紝鐩村埌鐢ㄦ埛
-// 鏄惧紡浣跨敤 Cmd + Q 閫€鍑恒€?
+// 除 macOS 外，所有窗口关闭时退出应用。在 macOS 上，
+// 应用程序及其菜单栏通常会保持活动状态，直到用户
+// 明确使用 Cmd + Q 退出。
 app.on('window-all-closed', () => {
   if (TRAY_MODE) return
   if (process.platform !== 'darwin') {

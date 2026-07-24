@@ -3,6 +3,7 @@ import { Contact, Message } from '../../../../shared/types'
 import { ImageBubble } from '../ImageBubble'
 import { RichMessageBubble } from '../RichMessageBubble'
 import { VoicePlayer } from '../VoicePlayer'
+import { VideoBubble } from '../VideoBubble'
 import { renderWechatEmojiText } from '../../utils/wechatEmojiText'
 import { formatMessageTime } from './messageGrouping'
 
@@ -27,6 +28,7 @@ export function MessageBubble({
 }: MessageBubbleProps): React.ReactElement {
   const isVoice = message.type === '语音'
   const isImage = message.type === '图片'
+  const isVideo = message.type === '视频'
   const isRichMedia = RICH_MESSAGE_TYPES.includes(message.type)
   const hoverTime = formatMessageTime(message)
 
@@ -35,7 +37,7 @@ export function MessageBubble({
       <div
         className={`message-bubble ${isVoice ? 'voice-bubble' : ''} ${
           isImage ? 'image-message-bubble' : ''
-        }`}
+        } ${isVideo ? 'video-message-bubble' : ''}`}
       >
         {isVoice && message.sessionId ? (
           <VoicePlayer
@@ -50,12 +52,24 @@ export function MessageBubble({
             sessionId={message.sessionId}
             onImageClick={onImageClick}
           />
+        ) : isVideo && message.contentData && message.contentData.type === 'video' ? (
+          <VideoBubble
+            md5={message.contentData.md5}
+            newMd5={message.contentData.newMd5}
+            rawMd5={message.contentData.rawMd5}
+            duration={message.contentData.duration}
+          />
         ) : isRichMedia && message.contentData ? (
           <RichMessageBubble contentData={message.contentData} />
         ) : (
           <div className="message-text">{renderWechatEmojiText(message.content)}</div>
         )}
       </div>
+      {message.recalled && (
+        <span className="message-recalled-status" title={message.recalledBy || undefined}>
+          消息已撤回
+        </span>
+      )}
       <span className="message-hover-time">{hoverTime}</span>
       {!isGroupChat && !isMine && contact.m_nsNickName && (
         <span className="message-accessible-sender">{contact.m_nsNickName}</span>

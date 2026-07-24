@@ -16,6 +16,7 @@ export interface Wcdb4Session {
 
 export interface Wcdb4Message {
   mesLocalID: string
+  serverId?: string
   mesDes: number
   messageType: string
   msgCreateTime: string
@@ -30,6 +31,11 @@ export interface Wcdb4MessageQueryOptions {
   limit?: number
 }
 
+type Wcdb4MessageStore = {
+  tableName: string
+  dbPath: string
+}
+
 export interface Wcdb4GroupMember {
   m_nsUsrName: string
   nickname: string
@@ -42,6 +48,11 @@ export interface Wcdb4GroupMember {
 export interface Wcdb4ImageHardlink {
   file_name?: string
   full_path?: string
+  [key: string]: unknown
+}
+
+export interface Wcdb4VideoHardlink {
+  resolved_md5?: string
   [key: string]: unknown
 }
 
@@ -217,6 +228,9 @@ export class Wcdb4Client {
   private wcdbResolveImageHardlink:
     | ((handle: number, md5: string, accountDir: string, outJson: WcdbVoidOut) => number)
     | null = null
+  private wcdbResolveVideoHardlink:
+    | ((handle: number, md5: string, dbPath: string, outJson: WcdbVoidOut) => number)
+    | null = null
   private wcdbGetEmoticonCdnUrl:
     | ((handle: number, dbPath: string, md5: string, outUrl: WcdbVoidOut) => number)
     | null = null
@@ -307,7 +321,9 @@ export class Wcdb4Client {
       candidates.push(...discoverWindowsDbRoots())
       return Array.from(new Set(candidates))
     }
-    return [path.join(home, 'Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files')]
+    return [
+      path.join(home, 'Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files')
+    ]
   }
 
   private static getWeflowDbPathCandidates(home: string): string[] {
@@ -331,7 +347,9 @@ export class Wcdb4Client {
 
   private static hasDbStorage(candidate: string): boolean {
     try {
-      return fs.statSync(candidate).isDirectory() && fs.existsSync(path.join(candidate, 'db_storage'))
+      return (
+        fs.statSync(candidate).isDirectory() && fs.existsSync(path.join(candidate, 'db_storage'))
+      )
     } catch {
       return false
     }
@@ -588,6 +606,11 @@ export class Wcdb4Client {
     return this.cachedSessions
   }
 
+  invalidateSessionCache(): void {
+    this.cachedSessions = null
+    this.cachedChatTables = null
+  }
+
   getChatTables(): { name: string; db_number: string }[] {
     if (this.cachedChatTables) return this.cachedChatTables
     const sessions =
@@ -616,10 +639,12 @@ export class Wcdb4Client {
     try {
       const cursorMessages = this.getMessagesByCursor(username, startTime, endTime, maxRows)
       if (cursorMessages) {
+        const recoveredMessages = this.readRecallJournal(username, startTime, endTime)
+        const mergedMessages = this.mergeMessageRows(cursorMessages, recoveredMessages, maxRows)
         console.log(
-          `[WCDB4] getMessages cursor ok username=${username} rows=${cursorMessages.length} cost=${Date.now() - startedAt}ms`
+          `[WCDB4] getMessages cursor ok username=${username} rows=${mergedMessages.length} recovered=${recoveredMessages.length} cost=${Date.now() - startedAt}ms`
         )
-        return cursorMessages
+        return mergedMessages
       }
     } catch (error) {
       console.warn(`[WCDB4] cursor messages failed username=${username}:`, error)
@@ -648,10 +673,7 @@ export class Wcdb4Client {
           this.wcdbGetMessages!(handle, username, limit, offset, outJson)
         )
       } catch (error) {
-        console.warn(
-          `[WCDB4] get_messages failed username=${username} offset=${offset}:`,
-          error
-        )
+        console.warn(`[WCDB4] get_messages failed username=${username} offset=${offset}:`, error)
         break
       }
       const batch = Array.isArray(rows) ? rows : []
@@ -694,17 +716,9 @@ export class Wcdb4Client {
   ): Wcdb4Message[] {
     if (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery) return []
 
-    let tables: { tableName: string; dbPath: string }[] = []
+    let tables: Wcdb4MessageStore[] = []
     try {
-      const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
-        this.wcdbGetMessageTableStats!(handle, username, outJson)
-      )
-      tables = (Array.isArray(rows) ? rows : [])
-        .map((row) => ({
-          tableName: this.pickString(row, ['table_name', 'tableName', 'name']),
-          dbPath: this.pickString(row, ['db_path', 'dbPath', 'path'])
-        }))
-        .filter((row) => row.tableName && row.dbPath)
+      tables = this.listMessageStores(username)
     } catch (error) {
       console.warn(`[WCDB4] message table stats failed username=${username}:`, error)
       return []
@@ -737,6 +751,172 @@ export class Wcdb4Client {
     }
 
     return this.finalizeMessages(username, allRows, startTime, endTime, limit)
+  }
+
+  installRecallJournal(usernames: string[]): { installed: number; failed: number } {
+    const stores = new Map<string, Wcdb4MessageStore>()
+    for (const username of this.uniq(usernames)) {
+      try {
+        for (const store of this.listMessageStores(username)) {
+          stores.set(`${store.dbPath}\u0000${store.tableName}`, store)
+        }
+      } catch (error) {
+        console.warn(`[WCDB4] recall journal table discovery failed username=${username}:`, error)
+      }
+    }
+
+    let installed = 0
+    let failed = 0
+    for (const store of stores.values()) {
+      try {
+        const columns = this.readMessageColumns(store)
+        if (columns.length === 0) throw new Error('消息表没有可归档列')
+        this.ensureRecallJournalTable(store, columns)
+        this.createRecallJournalTrigger(store, columns)
+        installed += 1
+      } catch (error) {
+        failed += 1
+        console.warn(
+          `[WCDB4] recall journal install failed db=${store.dbPath} table=${store.tableName}:`,
+          error
+        )
+      }
+    }
+    return { installed, failed }
+  }
+
+  private listMessageStores(username: string): Wcdb4MessageStore[] {
+    if (!this.wcdbGetMessageTableStats) return []
+    const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+      this.wcdbGetMessageTableStats!(handle, username, outJson)
+    )
+    return (Array.isArray(rows) ? rows : [])
+      .map((row) => ({
+        tableName: this.pickString(row, ['table_name', 'tableName', 'name']),
+        dbPath: this.pickString(row, ['db_path', 'dbPath', 'path'])
+      }))
+      .filter((row) => row.tableName && row.dbPath)
+  }
+
+  private executeMessageSql(store: Wcdb4MessageStore, sql: string): Record<string, unknown>[] {
+    if (!this.wcdbExecQuery) throw new Error('当前 WCDB 数据服务不支持 SQL 通道')
+    const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+      this.wcdbExecQuery!(handle, 'message', store.dbPath, sql, outJson)
+    )
+    return Array.isArray(rows) ? rows : []
+  }
+
+  private readMessageColumns(store: Wcdb4MessageStore): { name: string; declaration: string }[] {
+    const rows = this.executeMessageSql(
+      store,
+      `PRAGMA table_info(${this.quoteSqlIdentifier(store.tableName)})`
+    )
+    return rows
+      .map((row) => {
+        const name = this.pickString(row, ['name'])
+        const type = this.pickString(row, ['type']).toUpperCase()
+        const declaration = /^(INTEGER|REAL|TEXT|BLOB|NUMERIC)$/.test(type) ? type : 'BLOB'
+        return { name, declaration }
+      })
+      .filter((column) => column.name)
+  }
+
+  private ensureRecallJournalTable(
+    store: Wcdb4MessageStore,
+    columns: { name: string; declaration: string }[]
+  ): void {
+    const journal = this.quoteSqlIdentifier(this.recallJournalTableName(store.tableName))
+    const definitions = columns
+      .map((column) => `${this.quoteSqlIdentifier(column.name)} ${column.declaration}`)
+      .join(', ')
+    this.executeMessageSql(
+      store,
+      `CREATE TABLE IF NOT EXISTS ${journal} (${definitions}, "_wxe_source_table" TEXT NOT NULL, "_wxe_captured_at" INTEGER NOT NULL)`
+    )
+  }
+
+  private createRecallJournalTrigger(
+    store: Wcdb4MessageStore,
+    columns: { name: string; declaration: string }[]
+  ): void {
+    const table = this.quoteSqlIdentifier(store.tableName)
+    const triggerName = this.quoteSqlIdentifier(
+      `_wxe_capture_${crypto.createHash('sha1').update(store.tableName).digest('hex').slice(0, 16)}`
+    )
+    const journal = this.quoteSqlIdentifier(this.recallJournalTableName(store.tableName))
+    const targetColumns = [
+      ...columns.map((column) => this.quoteSqlIdentifier(column.name)),
+      '"_wxe_source_table"',
+      '"_wxe_captured_at"'
+    ].join(', ')
+    const sourceValues = [
+      ...columns.map((column) => `OLD.${this.quoteSqlIdentifier(column.name)}`),
+      `'${store.tableName.replace(/'/g, "''")}'`,
+      `CAST(strftime('%s', 'now') AS INTEGER)`
+    ].join(', ')
+    this.executeMessageSql(
+      store,
+      `CREATE TRIGGER IF NOT EXISTS ${triggerName} BEFORE DELETE ON ${table} BEGIN INSERT INTO ${journal} (${targetColumns}) VALUES (${sourceValues}); END`
+    )
+  }
+
+  private readRecallJournal(
+    username: string,
+    startTime?: number,
+    endTime?: number
+  ): Wcdb4Message[] {
+    const recoveredRows: Record<string, unknown>[] = []
+    for (const store of this.listMessageStores(username)) {
+      try {
+        const begin = this.normalizeTimestamp(startTime || 0)
+        const end = this.normalizeTimestamp(endTime || 0)
+        const where = [
+          `"_wxe_source_table" = '${store.tableName.replace(/'/g, "''")}'`,
+          begin > 0 ? `"create_time" >= ${begin}` : '',
+          end > 0 ? `"create_time" <= ${end}` : ''
+        ].filter(Boolean)
+        const rows = this.executeMessageSql(
+          store,
+          `SELECT *, 1 AS "_wxe_recovered" FROM ${this.quoteSqlIdentifier(this.recallJournalTableName(store.tableName))} WHERE ${where.join(' AND ')} ORDER BY "create_time" ASC LIMIT 500`
+        )
+        recoveredRows.push(...rows)
+      } catch {
+        // The journal is optional until installation has completed for this store.
+      }
+    }
+    return this.finalizeMessages(username, recoveredRows, startTime, endTime)
+  }
+
+  private mergeMessageRows(
+    current: Wcdb4Message[],
+    recovered: Wcdb4Message[],
+    limit?: number
+  ): Wcdb4Message[] {
+    const merged = new Map<string, Wcdb4Message>()
+    for (const message of [...recovered, ...current]) {
+      const recoveredRow = Boolean(message.raw?.['_wxe_recovered'])
+      const identity = message.mesLocalID
+        ? `local:${message.mesLocalID}`
+        : message.serverId
+          ? `server:${message.serverId}`
+          : `${message.msgCreateTime}:${message.msgContent}`
+      const key = recoveredRow ? `recovered:${identity}` : identity
+      merged.set(key, message)
+    }
+    const messages = Array.from(merged.values()).sort(
+      (left, right) =>
+        Number(left.msgCreateTime || 0) - Number(right.msgCreateTime || 0) ||
+        Number(left.mesLocalID || 0) - Number(right.mesLocalID || 0)
+    )
+    return limit && messages.length > limit ? messages.slice(-limit) : messages
+  }
+
+  private recallJournalTableName(messageTableName: string): string {
+    return `_wxe_recall_journal_${crypto
+      .createHash('sha1')
+      .update(messageTableName)
+      .digest('hex')
+      .slice(0, 16)}`
   }
 
   getMyAvatarUrl(): string | undefined {
@@ -856,26 +1036,25 @@ export class Wcdb4Client {
 
     const visibleMessages = limit && sorted.length > limit ? sorted.slice(-limit) : sorted
 
-    return visibleMessages
-      .map((message) => {
-        if (!message.sender) return message
-        const senderNickname = this.displayNameCache.get(message.sender) || message.senderNickname
-        const senderAvatar = this.avatarCache.get(message.sender) || message.senderAvatar
-        const shouldPrefixSender =
-          username.endsWith('@chatroom') &&
-          message.mesDes === 1 &&
-          message.sender &&
-          message.msgContent &&
-          !message.msgContent.startsWith(`${message.sender}:`)
-        return {
-          ...message,
-          senderNickname,
-          senderAvatar,
-          msgContent: shouldPrefixSender
-            ? `${message.sender}:\n${message.msgContent}`
-            : message.msgContent
-        }
-      })
+    return visibleMessages.map((message) => {
+      if (!message.sender) return message
+      const senderNickname = this.displayNameCache.get(message.sender) || message.senderNickname
+      const senderAvatar = this.avatarCache.get(message.sender) || message.senderAvatar
+      const shouldPrefixSender =
+        username.endsWith('@chatroom') &&
+        message.mesDes === 1 &&
+        message.sender &&
+        message.msgContent &&
+        !message.msgContent.startsWith(`${message.sender}:`)
+      return {
+        ...message,
+        senderNickname,
+        senderAvatar,
+        msgContent: shouldPrefixSender
+          ? `${message.sender}:\n${message.msgContent}`
+          : message.msgContent
+      }
+    })
   }
 
   private normalizeMessageLimit(limit?: number): number | undefined {
@@ -915,11 +1094,7 @@ export class Wcdb4Client {
           'contactRemark',
           'contact_remark'
         ])
-        const memberNickname = this.pickString(row, [
-          'displayName',
-          'display_name',
-          'name'
-        ])
+        const memberNickname = this.pickString(row, ['displayName', 'display_name', 'name'])
         const avatar = this.pickString(row, [
           'avatarUrl',
           'avatar_url',
@@ -933,8 +1108,7 @@ export class Wcdb4Client {
 
         return {
           m_nsUsrName: username,
-          nickname:
-            groupNicknames.get(username) || remark || wechatNickname || memberNickname,
+          nickname: groupNicknames.get(username) || remark || wechatNickname || memberNickname,
           groupNickname: groupNicknames.get(username) || '',
           wechatNickname: wechatNickname || memberNickname,
           remark,
@@ -1069,6 +1243,23 @@ export class Wcdb4Client {
       )
     } catch (error) {
       console.warn('[WCDB4] resolve image hardlink failed:', error)
+      return null
+    }
+  }
+
+  resolveVideoHardlink(md5: string, dbPath: string): Wcdb4VideoHardlink | null {
+    if (!this.wcdbResolveVideoHardlink) return null
+    const normalizedMd5 = String(md5 || '')
+      .trim()
+      .toLowerCase()
+    if (!/^[a-f0-9]{32}$/.test(normalizedMd5) || !dbPath) return null
+
+    try {
+      return this.callJson<Wcdb4VideoHardlink>((handle, outJson) =>
+        this.wcdbResolveVideoHardlink!(handle, normalizedMd5, dbPath, outJson)
+      )
+    } catch (error) {
+      console.warn('[WCDB4] resolve video hardlink failed:', error)
       return null
     }
   }
@@ -1284,6 +1475,14 @@ export class Wcdb4Client {
       ) as (handle: number, md5: string, accountDir: string, outJson: WcdbVoidOut) => number
     } catch {
       this.wcdbResolveImageHardlink = null
+    }
+
+    try {
+      this.wcdbResolveVideoHardlink = lib.func(
+        'int32 wcdb_resolve_video_hardlink_md5(int64 handle, const char* md5, const char* dbPath, _Out_ void** outJson)'
+      ) as (handle: number, md5: string, dbPath: string, outJson: WcdbVoidOut) => number
+    } catch {
+      this.wcdbResolveVideoHardlink = null
     }
 
     try {
@@ -1520,6 +1719,19 @@ export class Wcdb4Client {
       'mesLocalID',
       'id'
     ])
+    const serverId = this.pickString(row, [
+      'server_id',
+      'serverId',
+      'svr_id',
+      'svrId',
+      'msg_svr_id',
+      'msgSvrId',
+      'message_id',
+      'messageId',
+      'new_msg_id',
+      'newMsgId',
+      'WCDB_CT_server_id'
+    ])
     const messageType = this.pickString(row, [
       'local_type',
       'localType',
@@ -1541,6 +1753,7 @@ export class Wcdb4Client {
 
     return {
       mesLocalID: localId || `${createTime}-${this.md5(JSON.stringify(row))}`,
+      serverId: serverId || undefined,
       mesDes: isSend ? 0 : 1,
       messageType: messageType || '1',
       msgCreateTime: String(createTime),

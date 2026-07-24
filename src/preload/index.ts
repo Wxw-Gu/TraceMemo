@@ -59,6 +59,7 @@ const api = {
     sessionId?: string,
     options?: { force?: boolean }
   ) => ipcRenderer.invoke('db:getImage', imageMd5, imageDatNameOrThumb, sessionId, options),
+  getVideo: (hashes: string[]) => ipcRenderer.invoke('db:getVideo', hashes),
   getSticker: (cdnUrl?: string, md5?: string) => ipcRenderer.invoke('db:getSticker', cdnUrl, md5),
   exportGroupReport: (request: GroupReportExportRequest) =>
     ipcRenderer.invoke('report:export', request),

@@ -8,6 +8,7 @@ import type {
   DatabaseKeyValidationCode,
   DatabaseKeyValidationResult
 } from '../../shared/database-key'
+import { mergeRecallArchiveMessages, recordRecallArchiveMessages } from './recall-archive-service'
 
 export function getCurrentKey(): string {
   if (!dbRef) return ''
@@ -49,8 +50,11 @@ export interface FormattedMessage {
   voiceDataUrl?: string
   voiceDuration?: number
   localId?: number
+  serverId?: string
   createTime?: number
   sessionId?: string
+  recalled?: boolean
+  recalledBy?: string
 }
 
 export interface GroupSnapshot {
@@ -163,7 +167,7 @@ export function getContactAvatars(usernames: string[]): Record<string, string> {
   return dbRef.getWcdb4Client().getAvatarUrls(normalized)
 }
 
-export function listMessages(
+function listSourceMessages(
   userMd5: string,
   startTime?: number,
   endTime?: number,
@@ -221,7 +225,7 @@ export function listMessages(
       /<appmsg\b|<refermsg\b|&lt;appmsg\b|&lt;refermsg\b/i.test(content)
         ? 49
         : msgType
-    if ([3, 42, 47, 48, 49, 50, 10000, 10002].includes(inferredMsgType)) {
+    if ([3, 42, 43, 47, 48, 49, 50, 10000, 10002].includes(inferredMsgType)) {
       try {
         const parsed =
           inferredMsgType === 47
@@ -264,8 +268,12 @@ export function listMessages(
 
     if (msgType === 34) content = '[语音消息]'
 
+    const recoveredFromRecallJournal = Boolean(msg['_wxe_recovered'] || msg.raw?.['_wxe_recovered'])
+
     return {
-      id: msg.mesLocalID || Math.random().toString(),
+      id: recoveredFromRecallJournal
+        ? `recovered:${msg.mesLocalID || msg.serverId || createTime}`
+        : msg.mesLocalID || Math.random().toString(),
       from: contentData?.type === 'system' ? 'system' : isMine ? 'assistant' : 'user',
       isSender: isMine,
       type: displayType,
@@ -276,7 +284,9 @@ export function listMessages(
       senderId,
       sessionId: username,
       localId,
+      serverId: typeof msg.serverId === 'string' ? msg.serverId : undefined,
       createTime,
+      recoveredFromRecallJournal,
       contentData
     }
   })
@@ -285,6 +295,19 @@ export function listMessages(
     `[ChatService] listMessages end md5=${userMd5} formatted=${formatted.length} cost=${Date.now() - startedAt}ms`
   )
   return formatted
+}
+
+export function listMessages(
+  userMd5: string,
+  startTime?: number,
+  endTime?: number,
+  options?: { limit?: number }
+): FormattedMessage[] {
+  const sourceMessages = listSourceMessages(userMd5, startTime, endTime, options)
+  if (!dbRef) return sourceMessages
+  const username = dbRef.getWcdb4Client().getUsernameByMd5(userMd5) || ''
+  recordRecallArchiveMessages(userMd5, username, sourceMessages)
+  return mergeRecallArchiveMessages(userMd5, sourceMessages, startTime, endTime, options?.limit)
 }
 
 export function getGroupSnapshot(userMd5: string): GroupSnapshot | null {

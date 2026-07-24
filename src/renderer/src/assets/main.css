@@ -1296,6 +1296,15 @@ body {
   font-size: 12px;
 }
 
+.message-recalled-status {
+  align-self: flex-end;
+  margin-top: 3px;
+  color: #c63c32;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
 .message-hover-time {
   position: absolute;
   top: 50%;
@@ -1364,6 +1373,54 @@ body {
 
 .image-message-bubble::before {
   display: none;
+}
+
+.video-message-bubble {
+  padding: 0;
+  overflow: hidden;
+  background: #101412;
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+.wechat-message-row.mine .video-message-bubble {
+  background: #101412;
+}
+
+.video-message {
+  position: relative;
+  width: min(320px, 48vw);
+  min-height: 140px;
+  background: #101412;
+}
+
+.video-content {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  background: #101412;
+}
+
+.video-duration {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.video-placeholder {
+  display: grid;
+  place-items: center;
+  width: min(260px, 44vw);
+  min-height: 120px;
+  padding: 16px;
+  color: rgba(255, 255, 255, 0.78);
+  text-align: center;
 }
 
 .image-bubble {

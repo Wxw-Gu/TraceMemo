@@ -20,8 +20,12 @@ export interface Message {
   voiceDataUrl?: string
   voiceDuration?: number
   localId?: number
+  serverId?: string
   createTime?: number
   sessionId?: string
+  recalled?: boolean
+  recalledBy?: string
+  recoveredFromRecallJournal?: boolean
 }
 
 type TextContent = { type: 'text'; content: string }
@@ -50,6 +54,15 @@ type ImageContent = {
   aeskey?: string
   encrypVer?: number
 }
+type VideoContent = {
+  type: 'video'
+  md5?: string
+  newMd5?: string
+  rawMd5?: string
+  duration?: number
+  width?: number
+  height?: number
+}
 type StickerContent = {
   type: 'sticker'
   md5?: string
@@ -67,7 +80,19 @@ type QuoteContent = {
   quotedSender?: string
   quotedType?: string
 }
-type SystemContent = { type: 'system'; content: string; raw?: string }
+type SystemContent = {
+  type: 'system'
+  content: string
+  raw?: string
+  recall?: {
+    targetId?: string
+    targetIds?: string[]
+    replacement: string
+    actor?: string
+    sessionId?: string
+    recallTime?: number
+  }
+}
 type UnknownContent = { type: 'unknown'; raw: string }
 
 export type ParsedContent =
@@ -78,6 +103,7 @@ export type ParsedContent =
   | ShareContent
   | VoipContent
   | ImageContent
+  | VideoContent
   | StickerContent
   | QuoteContent
   | SystemContent
