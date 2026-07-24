@@ -9,12 +9,13 @@ macOS / Windows 微信聊天记录查看，AI 一键生成群聊总结。
 
 在微信 4.0 数据库解析、解密思路上，项目参考了 [WeFlow](https://github.com/hicccc77/WeFlow) 等开源项目的实现方式；此项目围绕我自己的使用场景做的定制化工具，重点放在本地聊天记录查看、群聊总结和个人工作流集成上。
 
-> 当前版本：`v2.1.2`。macOS 支持相对稳定；Windows 已初步支持微信 4.0 数据库连接、自动获取密钥和聊天记录查看，仍在持续兼容不同微信版本与本地目录结构。
+> 当前版本：`v2.1.4`。macOS 支持相对稳定；Windows 可能会遇到性能 卡顿问题, 仍在持续兼容不同微信版本与本地目录结构。
 
 ## ✨ 功能特性
 
 - **聊天记录查看**: 浏览微信好友和群聊的聊天记录，支持头像显示。
 - **全局搜索**: 快速搜索聊天内容。
+- **消息防撤回**: 高亮查看对方已撤回消息
 - **AI 智能总结**: 支持多模型服务配置（DeepSeek/GPT-4o/Claude/Moonshot），一键总结群聊精华内容，生成话题报告。
 - **群聊日报生成**: 支持围绕群聊内容生成日报，通常会覆盖以下模块中的部分或全部内容：
   - **今日讨论热点**: 梳理群内主要话题，支持热度标签。
@@ -51,42 +52,21 @@ macOS / Windows 微信聊天记录查看，AI 一键生成群聊总结。
 
 ## [点击这里下载](https://github.com/Wxw-Gu/WechatExplorer/releases)
 
-## 📦 安装说明
+## 📖 使用方法
 
-### macOS 版本已测 4.1.8
+安装、获取数据库密钥、连接微信数据及常见问题，请查看：
 
-> 微信 macOS `4.1.8.100` 下载地址：[wechat-versions v4.1.8.100](https://github.com/zsbai/wechat-versions/releases/tag/4.1.8.100)
+### [👉 WechatExplorer 完整使用教程](./docs/user-guide/getting-started.md)
 
-1. 下载 Releases 中的 `xxx.dmg` 文件。
-2. 打开 DMG 并将应用拖动到 **Applications** (应用程序) 文件夹。
-3. 如果遇到“无法打开，因为开发者无法验证”的提示，请前往：
-   `系统设置 -> 隐私与安全性 -> 仍要打开`。
-4. 打开微信登录界面不要登录，然后点击获取密钥，提示登录 然后点击登录 自动获取密钥
+教程包含 macOS 与 Windows 的分步截图，以及数据目录、SIP、图片解密密钥和自动获取失败的排查方法。
 
-### Windows 版本已测 4.1.9
+> 微信 4.0+ 在 macOS / Windows 上已支持部分能力，目前仍在持续适配。如需其他成熟方案，也可参考 [WeFlow](https://github.com/hicccc77/WeFlow) 和 [Chatlog](https://github.com/sjzar/chatlog)。
 
-> 微信 Windows `4.1.9.57` 下载地址：[wechat-win-archive v4.1.9.57](https://github.com/iibob/wechat-win-archive/releases#release-v4.1.9.57)
+## 🛠️ 开发配置（可选）
 
-1. 下载 Releases 中的 `xxx-setup.exe` 安装包。
-2. 双击安装，可按安装向导选择安装目录。
-3. 打开微信登录界面不要登录，然后点击获取密钥，提示登录 然后点击登录 自动获取密钥。
+本地开发需要 Node.js（推荐 v16+）和 pnpm 7。
 
-> Windows 支持仍处于初步阶段。软件会有些卡顿, 如果自动获取密钥失败，请先确认微信客户端已登录并保持运行；不同微信安装路径、数据目录和权限环境可能仍需要继续适配。
-
-## 🚀 快速开始
-
-### 使用前置要求
-
-- **微信版本**:
-  - 微信 4.0+: macOS / Windows 已支持部分能力，仍在持续迭代与兼容性验证中；如需更成熟的完整方案，推荐使用 [WeFlow](https://github.com/hicccc77/WeFlow) [Chatlog](https://github.com/sjzar/chatlog)
-- **macOS 自动获取密钥**: 需要先关闭 SIP，操作方式见 [macOS 关闭 SIP 教程](./docs/mac-disable-sip.md)；关闭 SIP 会降低系统安全性，使用完成后建议重新开启。
-- 如无法获取本地数据库密码，则无法使用当前项目
-- Node.js (推荐 v16+)
-- pnpm@7
-- 解密后的微信数据库文件 (`.db`) 和对应的密钥
-- AI API Key（支持 OpenAI 兼容 API，可选 DeepSeek/GPT/Claude/Moonshot 等）
-
-### 环境变量配置 (.env)
+### 环境变量
 
 可选配置项，可在 `.env` 文件中设置；本地开发时运行 `pnpm dev` 会在 `.env` 不存在时自动从 `.env.example` 复制一份。成品用户也可以直接在软件“设置”里填写或自动获取图片解密密钥。
 
@@ -99,20 +79,6 @@ macOS / Windows 微信聊天记录查看，AI 一键生成群聊总结。
 | `VITE_AI_BASE_URL`      | AI API 地址                 | `https://api.deepseek.com`  |
 | `VITE_AI_MODEL`         | AI 模型                     | `deepseek-chat`             |
 | `VITE_FILTER_MSG_TYPES` | 过滤的消息类型              | `分享消息,图片,表情包,视频` |
-
-#### 图片解密密钥说明
-
-微信 4.0+ 的图片以 `.dat` 文件存储，需要密钥解密：
-
-- **XOR Key**: 单字节 hex 值（如 `0x40`），用于简单的字节异或解密
-- **AES Key**: 16字符字符串，用于 AES-128-ECB 解密
-
-这两个密钥可以通过以下方式获取：
-
-1. 在应用登录界面点击“自动获取密钥”
-2. 从 WeFlow/Chatlog 设置中导出
-3. 在软件“设置 -> 图片解密密钥”中自动获取或手动填写
-4. 如自动获取失败，可手动粘贴已获取的密钥
 
 ## 🤖 AI 集成（本地 HTTP API）
 
