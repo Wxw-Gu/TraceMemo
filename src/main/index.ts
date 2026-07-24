@@ -71,6 +71,7 @@ import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
 import { appLogger } from './app-logger'
 import type { AppLogEntry } from '../shared/app-log'
+import { configureRecallArchive, RecallArchiveMonitor } from './services/recall-archive-service'
 
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
@@ -86,6 +87,7 @@ const aiProviderService = new AIProviderService()
 const keyServiceMac = new KeyServiceMac()
 const keyServiceWin = new KeyServiceWin()
 let tray: Tray | null = null
+let recallArchiveMonitor: RecallArchiveMonitor | null = null
 
 const packagedIconPath = join(process.resourcesPath, 'resources', 'icon.png')
 const appIconPath = existsSync(packagedIconPath) ? packagedIconPath : icon
@@ -220,9 +222,41 @@ app.whenReady().then(async () => {
         }
         chat.setChatDb(nextWechatDb)
         const wcdb4Client = nextWechatDb.getWcdb4Client()
+        configureRecallArchive(resolvedRoot)
+        recallArchiveMonitor?.stop()
+        recallArchiveMonitor = new RecallArchiveMonitor(
+          () =>
+            wcdb4Client.getSessions().map((session) => ({
+              md5: wcdb4Client.md5(session.username),
+              m_nsUsrName: session.username,
+              type: session.username.endsWith('@chatroom') ? 'group' : 'user',
+              activityKey: [
+                session.raw['last_timestamp'],
+                session.raw['sort_timestamp'],
+                session.raw['last_msg_locald_id'],
+                session.raw['last_msg_type'],
+                session.raw['summary']
+              ].join(':')
+            })),
+          (sessionMd5) =>
+            chat.listMessages(sessionMd5, Math.floor(Date.now() / 1000) - 10 * 60, undefined, {
+              limit: 500
+            })
+        )
+        recallArchiveMonitor.seedAll()
+        setTimeout(() => {
+          const result = wcdb4Client.installRecallJournal(
+            wcdb4Client.getSessions().map((session) => session.username)
+          )
+          console.log(
+            `[WCDB4] recall journal ready installed=${result.installed} failed=${result.failed}`
+          )
+        }, 0)
         voiceService = new VoiceService(wcdb4Client)
         stickerService = new StickerService(wcdb4Client)
         const monitoring = wcdb4Client.startMonitor((type, json) => {
+          wcdb4Client.invalidateSessionCache()
+          recallArchiveMonitor?.handleDatabaseChange(json)
           for (const window of BrowserWindow.getAllWindows()) {
             if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
           }

@@ -41,7 +41,19 @@ type QuoteContent = {
   quotedSender?: string
   quotedType?: string
 }
-type SystemContent = { type: 'system'; content: string; raw?: string }
+type SystemContent = {
+  type: 'system'
+  content: string
+  raw?: string
+  recall?: {
+    targetId?: string
+    targetIds?: string[]
+    replacement: string
+    actor?: string
+    sessionId?: string
+    recallTime?: number
+  }
+}
 type UnknownContent = { type: 'unknown'; raw: string }
 
 export type ParsedContent =
@@ -88,6 +100,15 @@ export function parseMessageContent(content: string, messageType: number): Parse
 function parseSystemMessage(content: string): ParsedContent {
   const stripped = stripChatroomPrefix(content)
   const decoded = decodeXmlEntities(stripped)
+  const recall = extractRecallMessage(decoded)
+  if (recall) {
+    return {
+      type: 'system',
+      content: recall.replacement,
+      raw: content,
+      recall
+    }
+  }
   const delChatroomMemberText = extractDelChatroomMemberText(decoded)
   if (delChatroomMemberText) {
     return {
@@ -110,6 +131,50 @@ function parseSystemMessage(content: string): ParsedContent {
     type: 'system',
     content: normalized || '[系统消息]',
     raw: content
+  }
+}
+
+function extractRecallMessage(xml: string):
+  | {
+      targetId?: string
+      targetIds?: string[]
+      replacement: string
+      actor?: string
+      sessionId?: string
+      recallTime?: number
+    }
+  | undefined {
+  if (!/<revokemsg\b/i.test(xml)) return undefined
+
+  const replacement = normalizeSystemText(
+    extractXmlValue(xml, 'replacemsg') ||
+      extractXmlNodeText(xml, 'replacemsg') ||
+      extractXmlValue(xml, 'content') ||
+      extractXmlNodeText(xml, 'content')
+  )
+  if (!replacement) return undefined
+
+  const actorMatch =
+    /^["“](.+?)["”]\s*撤回了一条消息/.exec(replacement) ||
+    /^(.+?)\s*撤回了一条消息/.exec(replacement)
+
+  const targetIds = Array.from(
+    new Set(
+      [
+        extractXmlValue(xml, 'newmsgid'),
+        extractXmlValue(xml, 'msgid'),
+        extractXmlValue(xml, 'clientmsgid')
+      ].filter(Boolean)
+    )
+  )
+
+  return {
+    targetId: targetIds[0] || undefined,
+    targetIds,
+    replacement,
+    actor: actorMatch?.[1]?.trim() || undefined,
+    sessionId: extractXmlValue(xml, 'session') || undefined,
+    recallTime: Number(extractXmlValue(xml, 'revoketime')) || undefined
   }
 }
 

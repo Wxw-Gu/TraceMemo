@@ -56,6 +56,11 @@ export function MessageBubble({
           <div className="message-text">{renderWechatEmojiText(message.content)}</div>
         )}
       </div>
+      {message.recalled && (
+        <span className="message-recalled-status" title={message.recalledBy || undefined}>
+          消息已撤回
+        </span>
+      )}
       <span className="message-hover-time">{hoverTime}</span>
       {!isGroupChat && !isMine && contact.m_nsNickName && (
         <span className="message-accessible-sender">{contact.m_nsNickName}</span>

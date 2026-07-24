@@ -20,8 +20,12 @@ export interface Message {
   voiceDataUrl?: string
   voiceDuration?: number
   localId?: number
+  serverId?: string
   createTime?: number
   sessionId?: string
+  recalled?: boolean
+  recalledBy?: string
+  recoveredFromRecallJournal?: boolean
 }
 
 type TextContent = { type: 'text'; content: string }
@@ -67,7 +71,19 @@ type QuoteContent = {
   quotedSender?: string
   quotedType?: string
 }
-type SystemContent = { type: 'system'; content: string; raw?: string }
+type SystemContent = {
+  type: 'system'
+  content: string
+  raw?: string
+  recall?: {
+    targetId?: string
+    targetIds?: string[]
+    replacement: string
+    actor?: string
+    sessionId?: string
+    recallTime?: number
+  }
+}
 type UnknownContent = { type: 'unknown'; raw: string }
 
 export type ParsedContent =
