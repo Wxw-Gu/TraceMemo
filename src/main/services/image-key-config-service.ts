@@ -92,9 +92,10 @@ export class ImageKeyConfigService {
     if (!result.success || !result.entry) {
       return { ...this.getEmptyConfig(), error: result.error || '图片密钥保存失败' }
     }
+    // 注意：normalized.resourceRoot 不再写回 imageKeyRoot。
+    // 下方的"图片资源目录"输入框仅用于本次手动测试，不再污染状态面板上方显示。
     saveSettings({
       ...settings,
-      imageKeyRoot: normalized.resourceRoot,
       imageXorKey: '',
       imageAesKey: '',
       imageKeyFallbackDisabled: false
@@ -106,7 +107,9 @@ export class ImageKeyConfigService {
       encryptionAvailable: true,
       source: 'secure-storage',
       accountId: context.accountId,
-      resourceRoot: normalized.resourceRoot,
+      // 返回的 resourceRoot 始终是识别到的默认目录，与状态面板一致；
+      // 不返回 normalized.resourceRoot，避免把用户输入的测试目录当成状态写回。
+      resourceRoot: context.resourceRoot,
       xorKey: result.entry.xorKey,
       aesKey: result.entry.aesKey,
       updatedAt: result.entry.updatedAt

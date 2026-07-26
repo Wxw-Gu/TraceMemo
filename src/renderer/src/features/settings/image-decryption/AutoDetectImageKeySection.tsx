@@ -45,6 +45,10 @@ export function AutoDetectImageKeySection({
             {state.status.platform === 'darwin'
               ? '扫描本机微信缓存并通过图片模板验证候选密钥。'
               : '扫描微信进程内存并通过本地图片模板验证候选密钥。'}
+            <br />
+            <small className="image-auto-scope-hint">
+              仅支持 WeChat 4.0，V3 及以下无法解析
+            </small>
           </p>
         </div>
         <button
