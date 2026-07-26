@@ -10,8 +10,6 @@ const imageDecryptLog = (...args: unknown[]): void => {
 }
 
 export class ImageDecryptService {
-  private readonly defaultV1AesKey = 'cfcd208495d565ef'
-
   private xorKey: number = 0
   private aesKey: string = ''
   private wcdb4Client: Wcdb4Client | null = null
@@ -80,9 +78,11 @@ export class ImageDecryptService {
   findImageFile(
     md5?: string,
     imageDatName?: string,
-    options?: { allowThumbnail?: boolean }
+    options?: { allowThumbnail?: boolean; accountDir?: string }
   ): string | null {
-    const accountDir = this.getAccountDir()
+    // 测试场景下可显式指定根目录；不传则维持原 getAccountDir() 行为
+    const accountDir =
+      options?.accountDir && existsSync(options.accountDir) ? options.accountDir : this.getAccountDir()
     if (!accountDir) return null
     const allowThumbnail = options?.allowThumbnail !== false
 
@@ -273,12 +273,9 @@ export class ImageDecryptService {
       )
 
       let decrypted: Buffer
-      if (version === 1) {
-        imageDecryptLog('[ImageDecrypt] using V1 (default AES key)')
-        const key = Buffer.from(this.defaultV1AesKey, 'ascii')
-        decrypted = this.decryptDatV4(datPath, key)
-      } else if (version === 2) {
-        imageDecryptLog('[ImageDecrypt] using V2 (user AES key)')
+      if (version === 2) {
+        // WeChat 4.0 标准 dat 头: 07 08 56 32 08 07
+        imageDecryptLog('[ImageDecrypt] using WeChat 4.0 (user AES key)')
         if (!this.aesKey) {
           imageDecryptLog('[ImageDecrypt] no AES key configured')
           return null
@@ -286,7 +283,8 @@ export class ImageDecryptService {
         const key = Buffer.from(this.aesKey, 'ascii').slice(0, 16)
         decrypted = this.decryptDatV4(datPath, key)
       } else {
-        imageDecryptLog('[ImageDecrypt] unsupported dat version:', version)
+        // 仅支持 WeChat 4.0：版本不匹配直接返回 null，不做 V3/老版本兜底。
+        imageDecryptLog('[ImageDecrypt] unsupported dat version (WeChat 4.0 only):', version)
         return null
       }
 
@@ -356,7 +354,8 @@ export class ImageDecryptService {
   }
 
   /**
-   * 检测 DAT 文件版本
+   * 检测 DAT 文件版本（仅识别 WeChat 4.0 头 V2）。
+   * 老 V1 头（V3 及以下）直接返回 0，由调用方走"不支持"分支。
    */
   private getDatVersion(inputPath: string): number {
     const bytes = readFileSync(inputPath)
@@ -365,9 +364,6 @@ export class ImageDecryptService {
     }
 
     const signature = bytes.subarray(0, 6)
-    if (this.compareBytes(signature, Buffer.from([0x07, 0x08, 0x56, 0x31, 0x08, 0x07]))) {
-      return 1
-    }
     if (this.compareBytes(signature, Buffer.from([0x07, 0x08, 0x56, 0x32, 0x08, 0x07]))) {
       return 2
     }
