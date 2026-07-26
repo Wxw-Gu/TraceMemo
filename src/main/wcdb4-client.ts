@@ -311,11 +311,10 @@ export class Wcdb4Client {
   private static getDefaultRootCandidates(): string[] {
     const home = os.homedir()
     if (process.platform === 'win32') {
+      // 仅支持 WeChat 4.0：只认 xwechat_files，V3 时代的 "WeChat Files" 不再加入候选
       const candidates = [
         ...Wcdb4Client.getWeflowDbPathCandidates(home),
-        path.join(home, 'Documents', 'WeChat Files'),
         path.join(home, 'Documents', 'xwechat_files'),
-        path.join(home, 'WeChat Files'),
         path.join(home, 'AppData', 'Roaming', 'Tencent', 'xwechat_files')
       ]
       candidates.push(...discoverWindowsDbRoots())

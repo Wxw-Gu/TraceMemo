@@ -1,7 +1,8 @@
 import fs from 'fs-extra'
 import path from 'path'
 
-const DB_ROOT_NAMES = new Set(['xwechat_files', 'wechat files'])
+// 仅支持 WeChat 4.0：只扫描 xwechat_files；旧 V3 时代的 "WeChat Files" 不再纳入候选
+const DB_ROOT_NAMES = new Set(['xwechat_files'])
 const SKIPPED_DIRECTORY_NAMES = new Set([
   '$recycle.bin',
   'system volume information',
