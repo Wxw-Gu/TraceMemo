@@ -236,9 +236,27 @@ function listSourceMessages(
         : msgType
     if ([3, 42, 43, 47, 48, 49, 50, 10000, 10002].includes(inferredMsgType)) {
       try {
-        const parsed =
-          inferredMsgType === 47
+        const isQuotePayload = /<refermsg\b/i.test(content)
+        const hasStickerHints =
+          /<(?:emoji|sticker|emoticon)\b/i.test(content) ||
+          [
+            'emoji_md5',
+            'emojiMd5',
+            'emoji_cdn_url',
+            'emojiCdnUrl',
+            'packed_info_data',
+            'packed_info',
+            'reserved0',
+            'Reserved0',
+            'WCDB_CT_reserved0'
+          ].some((key) => Boolean(msg[key]))
+        const rowSticker =
+          inferredMsgType === 47 || (inferredMsgType === 49 && !isQuotePayload && hasStickerHints)
             ? parseStickerMessageFromRow(msg, content)
+            : undefined
+        const parsed =
+          rowSticker?.type === 'sticker'
+            ? rowSticker
             : parseMessageContent(content, inferredMsgType)
         if (parsed.type === 'system') {
           content = parsed.content

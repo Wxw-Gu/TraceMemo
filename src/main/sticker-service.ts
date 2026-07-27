@@ -21,6 +21,18 @@ export class StickerService {
     const normalizedMd5 = this.normalizeMd5(md5)
     let url = String(cdnUrl || '').trim()
 
+    const cacheKey =
+      normalizedMd5 || (url ? crypto.createHash('md5').update(url).digest('hex') : '')
+    if (cacheKey) {
+      const cached = await this.readCached(cacheKey)
+      if (cached) return { success: true, data: cached }
+    }
+
+    if (normalizedMd5 && this.wcdb4Client) {
+      const wechatCached = await this.readWechatEmoticonCache(normalizedMd5)
+      if (wechatCached) return { success: true, data: wechatCached }
+    }
+
     if (!url && normalizedMd5 && this.wcdb4Client) {
       url = this.wcdb4Client.resolveEmoticonCdnUrl(normalizedMd5) || ''
       if (!url) {
@@ -32,30 +44,26 @@ export class StickerService {
       return { success: false, error: '未找到表情包 CDN URL' }
     }
 
-    const cacheKey = normalizedMd5 || crypto.createHash('md5').update(url).digest('hex')
-    const cached = await this.readCached(cacheKey)
-    if (cached) return { success: true, data: cached }
+    const resolvedCacheKey = cacheKey || crypto.createHash('md5').update(url).digest('hex')
 
-    if (normalizedMd5 && this.wcdb4Client) {
-      const wechatCached = await this.readWechatEmoticonCache(normalizedMd5)
-      if (wechatCached) return { success: true, data: wechatCached }
-    }
-
-    const pending = downloadCache.get(cacheKey)
+    const pending = downloadCache.get(resolvedCacheKey)
     if (pending) return pending
 
-    const task = this.downloadToDataUrl(url, cacheKey)
-    downloadCache.set(cacheKey, task)
+    const task = this.downloadToDataUrl(url, resolvedCacheKey)
+    downloadCache.set(resolvedCacheKey, task)
     try {
       return await task
     } finally {
-      downloadCache.delete(cacheKey)
+      downloadCache.delete(resolvedCacheKey)
     }
   }
 
   private async readCached(cacheKey: string): Promise<string | null> {
     const extensions = ['.gif', '.png', '.webp', '.jpg', '.jpeg']
-    const cacheDirs = [this.cacheDir, path.join(os.homedir(), 'Documents', 'WechatExplorer', 'Emojis')]
+    const cacheDirs = [
+      this.cacheDir,
+      path.join(os.homedir(), 'Documents', 'WechatExplorer', 'Emojis')
+    ]
     for (const cacheDir of cacheDirs) {
       for (const ext of extensions) {
         const filePath = path.join(cacheDir, `${cacheKey}${ext}`)
