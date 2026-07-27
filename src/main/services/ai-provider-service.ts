@@ -337,13 +337,6 @@ export class AIProviderService {
     if (changed) this.writeMetadata(data)
   }
 
-  private ensureEnvironmentMigration(): void {
-    // 已禁用：内置环境变量 Key 自动迁移策略。
-    // 安全要求：发布给最终用户的版本不应携带任何内置 API Key，
-    // 必须由用户自己在 UI 里手动配置（或者通过自己的 .env.local 注入）。
-    // 保留此方法作为占位，方便后续重新评估。
-  }
-
   private toSummary(
     provider: Omit<AIProviderSummary, 'hasApiKey' | 'isDefault'>,
     defaultProviderId?: string
