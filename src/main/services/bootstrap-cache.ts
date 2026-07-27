@@ -11,6 +11,19 @@ export interface CachedSelfInfo {
   accountRoot: string
 }
 
+export interface CachedGroupSnapshot {
+  roomId: string
+  memberCount: number
+  members: {
+    wxid: string
+    nickname: string
+    groupNickname: string
+    wechatNickname: string
+    remark: string
+    avatar: string
+  }[]
+}
+
 interface CachedMessageBucket {
   updatedAt: number
   startTime?: number
@@ -26,11 +39,12 @@ interface BootstrapCacheFile {
   self?: CachedSelfInfo
   contacts?: Contact[]
   messages?: Record<string, CachedMessageBucket>
+  groupSnapshots?: Record<string, { updatedAt: number; snapshot: CachedGroupSnapshot }>
 }
 
 const CACHE_VERSION = 1
-const MAX_MESSAGE_BUCKETS = 24
-const MAX_MESSAGES_PER_BUCKET = 1200
+const MAX_MESSAGE_BUCKETS = 768
+const MAX_MESSAGES_PER_BUCKET = 120
 const WRITE_DEBOUNCE_MS = 300
 const memoryCache = new Map<string, BootstrapCacheFile>()
 const writeTimers = new Map<string, NodeJS.Timeout>()
@@ -73,7 +87,9 @@ function readCacheFile(accountRoot?: string): BootstrapCacheFile | null {
       updatedAt: Number(raw.updatedAt) || 0,
       self: raw.self,
       contacts: Array.isArray(raw.contacts) ? raw.contacts : [],
-      messages: raw.messages && typeof raw.messages === 'object' ? raw.messages : {}
+      messages: raw.messages && typeof raw.messages === 'object' ? raw.messages : {},
+      groupSnapshots:
+        raw.groupSnapshots && typeof raw.groupSnapshots === 'object' ? raw.groupSnapshots : {}
     }
     memoryCache.set(file, result)
     return result
@@ -122,7 +138,8 @@ function loadOrCreate(accountRoot?: string): BootstrapCacheFile | null {
     accountRoot: normalizedRoot,
     updatedAt: Date.now(),
     contacts: [],
-    messages: {}
+    messages: {},
+    groupSnapshots: {}
   }
   memoryCache.set(getCacheFile(normalizedRoot), created)
   return created
@@ -130,6 +147,12 @@ function loadOrCreate(accountRoot?: string): BootstrapCacheFile | null {
 
 function messageBucketKey(userMd5: string, startTime?: number, endTime?: number): string {
   return `${userMd5}:${startTime ?? ''}:${endTime ?? ''}`
+}
+
+function cachedMessageIdentity(message: Message): string {
+  if (message.localId) return `local:${message.localId}`
+  if (message.serverId) return `server:${message.serverId}`
+  return `id:${message.id}`
 }
 
 function pruneMessageBuckets(messages: Record<string, CachedMessageBucket>): void {
@@ -258,6 +281,71 @@ export function getCachedMessages(
   const cache = readCacheFile(accountRoot)
   const bucket = cache?.messages?.[messageBucketKey(userMd5, startTime, endTime)]
   return bucket?.items || []
+}
+
+export function getCachedMessagePage(
+  accountRoot: string,
+  userMd5: string,
+  startTime?: number,
+  endTime?: number
+): { hit: boolean; messages: Message[]; groupSnapshot?: CachedGroupSnapshot } {
+  const cache = readCacheFile(accountRoot)
+  const key = messageBucketKey(userMd5, startTime, endTime)
+  let bucket = cache?.messages?.[key]
+  if (!bucket && cache?.messages && startTime === undefined && endTime === undefined) {
+    const merged = new Map<string, Message>()
+    for (const [cachedKey, candidate] of Object.entries(cache.messages)) {
+      if (!cachedKey.startsWith(`${userMd5}:`)) continue
+      for (const message of candidate.items || []) {
+        merged.set(cachedMessageIdentity(message), message)
+      }
+    }
+    const migratedMessages = Array.from(merged.values())
+      .sort((left, right) => (left.createTime || 0) - (right.createTime || 0))
+      .slice(-MAX_MESSAGES_PER_BUCKET)
+    if (migratedMessages.length > 0) {
+      bucket = {
+        updatedAt: Date.now(),
+        items: migratedMessages
+      }
+      cache.messages[key] = bucket
+      cache.updatedAt = Date.now()
+      pruneMessageBuckets(cache.messages)
+      writeCacheFile(cache)
+    }
+  }
+  return {
+    hit: Boolean(bucket),
+    messages: bucket?.items || [],
+    groupSnapshot: cache?.groupSnapshots?.[userMd5]?.snapshot
+  }
+}
+
+export function saveCachedGroupSnapshot(
+  accountRoot: string,
+  userMd5: string,
+  snapshot: CachedGroupSnapshot
+): void {
+  const cache = loadOrCreate(accountRoot)
+  if (!cache) return
+  cache.groupSnapshots ||= {}
+  cache.groupSnapshots[userMd5] = { updatedAt: Date.now(), snapshot }
+  cache.updatedAt = Date.now()
+  writeCacheFile(cache)
+}
+
+export function flushBootstrapCacheWritesSync(): void {
+  for (const [file, cache] of memoryCache) {
+    const timer = writeTimers.get(file)
+    if (timer) clearTimeout(timer)
+    writeTimers.delete(file)
+    try {
+      fs.ensureDirSync(path.dirname(file))
+      fs.writeFileSync(file, JSON.stringify(cache), 'utf8')
+    } catch (error) {
+      console.warn('[BootstrapCache] flush failed:', error)
+    }
+  }
 }
 
 export function saveCachedMessages(

@@ -1,6 +1,45 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import type { JSX, MouseEvent } from 'react'
 
+type CachedImage = { data: string; isThumbnail: boolean }
+
+const MAX_IMAGE_CACHE_ENTRIES = 80
+const imageDataUrlCache = new Map<string, CachedImage>()
+
+function imageCacheKeys(imageMd5?: string, imageDatName?: string): string[] {
+  return [imageMd5 ? `md5:${imageMd5}` : '', imageDatName ? `dat:${imageDatName}` : ''].filter(
+    Boolean
+  )
+}
+
+function getCachedImage(imageMd5?: string, imageDatName?: string): CachedImage | undefined {
+  for (const key of imageCacheKeys(imageMd5, imageDatName)) {
+    const cached = imageDataUrlCache.get(key)
+    if (cached) {
+      imageDataUrlCache.delete(key)
+      imageDataUrlCache.set(key, cached)
+      return cached
+    }
+  }
+  return undefined
+}
+
+function cacheImage(
+  imageMd5: string | undefined,
+  imageDatName: string | undefined,
+  cached: CachedImage
+): void {
+  for (const key of imageCacheKeys(imageMd5, imageDatName)) {
+    imageDataUrlCache.delete(key)
+    imageDataUrlCache.set(key, cached)
+  }
+  while (imageDataUrlCache.size > MAX_IMAGE_CACHE_ENTRIES) {
+    const oldestKey = imageDataUrlCache.keys().next().value
+    if (!oldestKey) break
+    imageDataUrlCache.delete(oldestKey)
+  }
+}
+
 interface ImageBubbleProps {
   imageMd5?: string
   imageDatName?: string
@@ -16,11 +55,12 @@ export function ImageBubble({
   isThumb = false,
   onImageClick
 }: ImageBubbleProps): JSX.Element {
-  const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const initialCachedImage = getCachedImage(imageMd5, imageDatName)
+  const [imageUrl, setImageUrl] = useState<string | null>(initialCachedImage?.data || null)
   const [loading, setLoading] = useState(false)
   const [upgrading, setUpgrading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [isThumbnail, setIsThumbnail] = useState(false)
+  const [isThumbnail, setIsThumbnail] = useState(Boolean(initialCachedImage?.isThumbnail))
   const containerRef = useRef<HTMLDivElement>(null)
 
   const loadImage = useCallback(async () => {
@@ -34,6 +74,10 @@ export function ImageBubble({
     try {
       const result = await window.api.getImage(imageMd5, imageDatName || isThumb, sessionId)
       if (result.success && result.data?.startsWith('data:image/')) {
+        cacheImage(imageMd5, imageDatName, {
+          data: result.data,
+          isThumbnail: Boolean(result.isThumb)
+        })
         setImageUrl(result.data)
         setIsThumbnail(Boolean(result.isThumb))
         setError(null)
@@ -92,6 +136,10 @@ export function ImageBubble({
         force: true
       })
       if (result.success && result.data?.startsWith('data:image/')) {
+        cacheImage(imageMd5, imageDatName, {
+          data: result.data,
+          isThumbnail: Boolean(result.isThumb)
+        })
         setImageUrl(result.data)
         setIsThumbnail(Boolean(result.isThumb))
         setError(null)

@@ -19,8 +19,6 @@ export interface ConversationSidebarProps {
   onSearch: (keyword: string) => void
   onContentFilter: (keyword: string) => void
   width: number
-  dateRange: string
-  onDateRangeChange: (range: string) => void
   selfInfo: SelfInfo | null
   dbReady: boolean
   onOpenSettings: () => void
@@ -37,8 +35,6 @@ export function ConversationSidebar({
   onSelectContact,
   onSearch,
   width,
-  dateRange,
-  onDateRangeChange,
   selfInfo,
   dbReady,
   onOpenSettings
@@ -83,9 +79,7 @@ export function ConversationSidebar({
       <ConversationSidebarHeader
         totalCount={contacts.length}
         searchValue={searchTerm}
-        dateRange={dateRange}
         onSearchChange={handleSearchChange}
-        onDateRangeChange={onDateRangeChange}
       />
       <div ref={listRef} className="conversation-list" aria-label="会话列表">
         <div className="conversation-virtual-content" style={{ height: `${virtualizer.getTotalSize()}px` }}>

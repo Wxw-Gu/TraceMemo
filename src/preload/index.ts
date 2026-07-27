@@ -26,10 +26,13 @@ const api = {
   revealAppLog: () => ipcRenderer.invoke('app-log:reveal'),
   initDb: (key: string) => ipcRenderer.invoke('db:init', key),
   getBootstrapCache: () => ipcRenderer.invoke('db:getBootstrapCache'),
+  getStartupCache: () => ipcRenderer.invoke('db:getStartupCache'),
   getContacts: (filter?: string) => ipcRenderer.invoke('db:getContacts', filter),
   getContactAvatars: (usernames: string[]) => ipcRenderer.invoke('db:getContactAvatars', usernames),
   getCachedMessages: (userMd5: string, startTime?: number, endTime?: number) =>
     ipcRenderer.invoke('db:getCachedMessages', userMd5, startTime, endTime),
+  getCachedMessagePage: (userMd5: string, startTime?: number, endTime?: number) =>
+    ipcRenderer.invoke('db:getCachedMessagePage', userMd5, startTime, endTime),
   getMessages: (
     userMd5: string,
     startTime?: number,

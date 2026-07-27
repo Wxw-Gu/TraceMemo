@@ -93,6 +93,11 @@ declare global {
         contacts: Contact[]
         updatedAt: number
       } | null>
+      getStartupCache: () => Promise<{
+        self?: { wxid: string; nickname: string; avatar?: string; accountRoot: string }
+        contacts: Contact[]
+        updatedAt: number
+      } | null>
       getContacts: (filter?: string) => Promise<Contact[]>
       getContactAvatars: (usernames: string[]) => Promise<Record<string, string>>
       getCachedMessages: (
@@ -100,6 +105,26 @@ declare global {
         startTime?: number,
         endTime?: number
       ) => Promise<Message[]>
+      getCachedMessagePage: (
+        userMd5: string,
+        startTime?: number,
+        endTime?: number
+      ) => Promise<{
+        hit: boolean
+        messages: Message[]
+        groupSnapshot?: {
+          roomId: string
+          memberCount: number
+          members: {
+            wxid: string
+            nickname: string
+            groupNickname: string
+            wechatNickname: string
+            remark: string
+            avatar: string
+          }[]
+        }
+      }>
       getMessages: (
         userMd5: string,
         startTime?: number,

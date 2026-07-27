@@ -17,7 +17,7 @@ import { extname } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { WechatDb } from './wechat-db'
-import { bootstrapWcdbNative, Wcdb4Client } from './wcdb4-client'
+import { bootstrapWcdbNativeAsync, Wcdb4Client } from './wcdb4-client'
 import { VoiceService } from './voice-service'
 import { StickerService } from './sticker-service'
 import { parseMessageContent } from './message-parser'
@@ -61,12 +61,15 @@ import {
 import type { SaveImageKeyRequest, TestImageDecryptionRequest } from '../shared/image-decryption'
 import { loadSettings, saveSettings, getSettingsPath, AppSettings } from './services/settings-store'
 import {
+  flushBootstrapCacheWritesSync,
   getBootstrapCache,
+  getCachedMessagePage,
   getCachedMessages,
   mergeBootstrapAvatars,
   mergeCachedContactAvatars,
   saveBootstrapContacts,
   saveBootstrapSelf,
+  saveCachedGroupSnapshot,
   saveCachedMessages
 } from './services/bootstrap-cache'
 import { installSafeConsole } from './safe-log'
@@ -95,16 +98,23 @@ const keyServiceWin = new KeyServiceWin()
 let tray: Tray | null = null
 let recallArchiveMonitor: RecallArchiveMonitor | null = null
 let recallProtectionGeneration = 0
+let recallJournalTimer: NodeJS.Timeout | null = null
+let wcdbBootstrapPromise: Promise<unknown> | null = null
 
 function configureRecallProtection(
   wcdb4Client: Wcdb4Client,
   accountRoot: string,
-  enabled: boolean
+  enabled: boolean,
+  installJournal = false
 ): void {
   recallProtectionGeneration += 1
   const generation = recallProtectionGeneration
   recallArchiveMonitor?.stop()
   recallArchiveMonitor = null
+  if (recallJournalTimer) {
+    clearTimeout(recallJournalTimer)
+    recallJournalTimer = null
+  }
   configureRecallArchive(enabled ? accountRoot : '')
   if (!enabled) return
 
@@ -128,8 +138,19 @@ function configureRecallProtection(
       })
   )
   recallArchiveMonitor = monitor
-  monitor.seedAll()
-  setTimeout(() => {
+  // Session indexing is not required to open the UI. Defer it so large databases
+  // do not make db:init wait for every conversation to be enumerated.
+  setImmediate(() => {
+    if (generation === recallProtectionGeneration && recallArchiveMonitor === monitor) {
+      monitor.seedAll()
+    }
+  })
+  if (!installJournal) return
+  // Creating recall triggers scans every message table and runs synchronously in
+  // the main process. Only do this after the user explicitly enables protection;
+  // existing installations remain active without repeating the scan at startup.
+  recallJournalTimer = setTimeout(() => {
+    recallJournalTimer = null
     if (generation !== recallProtectionGeneration || recallArchiveMonitor !== monitor) return
     const result = wcdb4Client.installRecallJournal(
       wcdb4Client.getSessions().map((session) => session.username)
@@ -137,7 +158,7 @@ function configureRecallProtection(
     console.log(
       `[WCDB4] recall journal ready installed=${result.installed} failed=${result.failed}`
     )
-  }, 0)
+  }, 30_000)
 }
 
 const packagedIconPath = join(process.resourcesPath, 'resources', 'icon.png')
@@ -305,15 +326,11 @@ app.whenReady().then(async () => {
     })
   })
 
-  // WCDB's Windows runtime returns -1006 if wcdb_init is called more than once
-  // per process. Bootstrap native once here so any later Wcdb4Client instance
-  // reuses the already-initialized library and skips wcdb_init.
-  try {
-    bootstrapWcdbNative()
-    console.log('[WCDB4] bootstrap complete at whenReady top')
-  } catch (bootstrapError) {
-    console.error('[WCDB4] bootstrap failed at whenReady top:', bootstrapError)
-  }
+  // Create the renderer before native WCDB bootstrap so startup progress is visible immediately.
+  createWindow()
+  wcdbBootstrapPromise = bootstrapWcdbNativeAsync().then(() => {
+    console.log('[WCDB4] async bootstrap complete')
+  })
 
   // 设置应用程序用户模型 ID
   electronApp.setAppUserModelId('com.wechatexplorer.app')
@@ -338,6 +355,7 @@ app.whenReady().then(async () => {
 
     dbInitInFlight = (async () => {
       try {
+        if (wcdbBootstrapPromise) await wcdbBootstrapPromise
         const trimmedKey = String(key || '').trim()
         console.log(`db:init build=${BUILD_MARK} keyLength=${trimmedKey.length}`)
         const settings = loadSettings()
@@ -371,6 +389,13 @@ app.whenReady().then(async () => {
           for (const window of BrowserWindow.getAllWindows()) {
             if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
           }
+        })
+        setImmediate(() => {
+          const recentSession = wcdb4Client.getSessions()[0]
+          if (!recentSession?.username) return
+          void wcdb4Client
+            .getMessagesAsync(recentSession.username, undefined, undefined, { limit: 1 })
+            .catch((error) => console.warn('[WCDB4] message cursor warmup failed:', error))
         })
         imageDecryptService = null
         return { success: true, monitoring }
@@ -512,11 +537,26 @@ app.whenReady().then(async () => {
     return getBootstrapCache(chat.getCurrentAccountRoot())
   })
 
+  ipcMain.handle('db:getStartupCache', () => {
+    const settings = loadSettings()
+    return settings.dbRoot ? getBootstrapCache(settings.dbRoot) : null
+  })
+
   ipcMain.handle(
     'db:getCachedMessages',
     (_, userMd5: string, startTime?: number, endTime?: number) => {
-      if (!chat.isReady()) return []
-      return getCachedMessages(chat.getCurrentAccountRoot(), userMd5, startTime, endTime)
+      const accountRoot = chat.isReady() ? chat.getCurrentAccountRoot() : loadSettings().dbRoot
+      return accountRoot ? getCachedMessages(accountRoot, userMd5, startTime, endTime) : []
+    }
+  )
+
+  ipcMain.handle(
+    'db:getCachedMessagePage',
+    (_, userMd5: string, startTime?: number, endTime?: number) => {
+      const accountRoot = chat.isReady() ? chat.getCurrentAccountRoot() : loadSettings().dbRoot
+      return accountRoot
+        ? getCachedMessagePage(accountRoot, userMd5, startTime, endTime)
+        : { hit: false, messages: [] }
     }
   )
 
@@ -539,8 +579,8 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(
     'db:getMessages',
-    (_, userMd5: string, startTime?: number, endTime?: number, options?: { limit?: number }) => {
-      const messages = chat.listMessages(userMd5, startTime, endTime, options)
+    async (_, userMd5: string, startTime?: number, endTime?: number, options?: { limit?: number }) => {
+      const messages = await chat.listMessagesAsync(userMd5, startTime, endTime, options)
       if (chat.isReady()) {
         saveCachedMessages(chat.getCurrentAccountRoot(), userMd5, startTime, endTime, messages)
       }
@@ -548,7 +588,13 @@ app.whenReady().then(async () => {
     }
   )
 
-  ipcMain.handle('db:getGroupSnapshot', (_, userMd5: string) => chat.getGroupSnapshot(userMd5))
+  ipcMain.handle('db:getGroupSnapshot', async (_, userMd5: string) => {
+    const snapshot = await chat.getGroupSnapshotAsync(userMd5)
+    if (snapshot && chat.isReady()) {
+      saveCachedGroupSnapshot(chat.getCurrentAccountRoot(), userMd5, snapshot)
+    }
+    return snapshot
+  })
 
   ipcMain.handle('db:search', (_, keyword: string) => chat.searchMessages(keyword))
 
@@ -824,7 +870,8 @@ app.whenReady().then(async () => {
         configureRecallProtection(
           currentDb.getWcdb4Client(),
           chat.getCurrentAccountRoot(),
-          nextSettings.recallProtectionEnabled
+          nextSettings.recallProtectionEnabled,
+          nextSettings.recallProtectionEnabled && !before.recallProtectionEnabled
         )
       }
     }
@@ -938,8 +985,6 @@ app.whenReady().then(async () => {
     return result.canceled ? { canceled: true } : { canceled: false, path: result.filePaths[0] }
   })
 
-  createWindow()
-
   // 启动本地 HTTP API（由 settings.apiEnabled 控制）
   const settings = loadSettings()
   if (settings.apiEnabled) {
@@ -972,6 +1017,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', async () => {
   agentHubService.stop()
+  flushBootstrapCacheWritesSync()
   chat.setChatDb(null)
   await apiServer.stop().catch(() => undefined)
   if (tray) {

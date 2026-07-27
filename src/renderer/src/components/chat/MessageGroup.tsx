@@ -57,7 +57,7 @@ export function MessageGroup({
         )}
         {!isMine && !shouldShowAvatar && <div className="message-avatar-spacer" aria-hidden />}
         <div className="message-stack">
-          {!isMine && isGroupChat && shouldShowAvatar && (
+          {!isMine && isGroupChat && (
             <div className="message-sender-name">{displayName}</div>
           )}
           {group.messages.map((message, index) => (

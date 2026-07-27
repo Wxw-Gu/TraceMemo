@@ -35,20 +35,12 @@ export interface GroupMemberInfo {
 export class WechatDb {
   private wcdb4Client: Wcdb4Client
   private chatMd5ToUsername = new Map<string, string>()
+  private chatTableMappingLoaded = false
 
   static async create(rawKey: string, accountRoot?: string): Promise<WechatDb> {
-    // WCDB native init must run on the Electron main process; worker threads
-    // get -1006 from wcdb_init. Initialize the client synchronously here
-    // (and keep create() async for callers that already await it).
-    return new Promise((resolve, reject) => {
-      try {
-        const client = new Wcdb4Client(rawKey, accountRoot)
-        client.open()
-        resolve(new WechatDb(rawKey, accountRoot, client))
-      } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)))
-      }
-    })
+    const client = new Wcdb4Client(rawKey, accountRoot)
+    await client.openAsync()
+    return new WechatDb(rawKey, accountRoot, client)
   }
 
   constructor(
@@ -61,11 +53,22 @@ export class WechatDb {
     const client = clientOverride || new Wcdb4Client(rawKey, accountRoot)
     if (!clientOverride) client.open()
     this.wcdb4Client = client
-    for (const table of initialChatTables || client.getChatTables()) {
+    for (const table of initialChatTables || []) {
       if (table.name.startsWith('Chat_')) {
         this.chatMd5ToUsername.set(table.name.substring(5), table.db_number)
       }
     }
+    this.chatTableMappingLoaded = Boolean(initialChatTables)
+  }
+
+  private ensureChatTableMapping(): void {
+    if (this.chatTableMappingLoaded) return
+    for (const table of this.wcdb4Client.getChatTables()) {
+      if (table.name.startsWith('Chat_')) {
+        this.chatMd5ToUsername.set(table.name.substring(5), table.db_number)
+      }
+    }
+    this.chatTableMappingLoaded = true
   }
 
   public getUserList(nicknameFilter?: string): UserContact[] {
@@ -112,6 +115,7 @@ export class WechatDb {
   }
 
   public getGroupMembersForChat(userMd5: string): Record<string, string> {
+    this.ensureChatTableMapping()
     const username = this.chatMd5ToUsername.get(userMd5)
     if (!username || !username.endsWith('@chatroom')) return {}
 
@@ -154,12 +158,31 @@ export class WechatDb {
     endTime?: number,
     options?: Wcdb4MessageQueryOptions
   ): WechatMessage[] {
+    this.ensureChatTableMapping()
     const username = this.chatMd5ToUsername.get(userMd5)
     if (!username) return []
     return this.wcdb4Client.getMessages(username, startTime, endTime, options).map((message) => ({
       ...message,
       ...message.raw
     }))
+  }
+
+  public async getUserMessagesAsync(
+    userMd5: string,
+    startTime?: number,
+    endTime?: number,
+    options?: Wcdb4MessageQueryOptions
+  ): Promise<WechatMessage[]> {
+    this.ensureChatTableMapping()
+    const username = this.chatMd5ToUsername.get(userMd5)
+    if (!username) return []
+    const messages = await this.wcdb4Client.getMessagesAsync(
+      username,
+      startTime,
+      endTime,
+      options
+    )
+    return messages.map((message) => ({ ...message, ...message.raw }))
   }
 
   public searchAllMessages(keyword: string): string | null {

@@ -6,7 +6,6 @@ import { AiIcon, MoreIcon, RefreshIcon, SearchIcon } from './icons'
 interface ChatHeaderProps {
   contact: Contact
   isGroupChat: boolean
-  dateRangeLabel: string
   loadedCount: number
   filteredCount: number
   contentFilter: string
@@ -20,7 +19,6 @@ interface ChatHeaderProps {
 export function ChatHeader({
   contact,
   isGroupChat,
-  dateRangeLabel,
   loadedCount,
   filteredCount,
   contentFilter,
@@ -65,7 +63,6 @@ export function ChatHeader({
           <h2>{displayName}</h2>
           <div className="chat-title-meta">
             <span>{typeLabel}</span>
-            <span>{dateRangeLabel}</span>
             <span>{visibleCount} 条消息</span>
           </div>
         </div>

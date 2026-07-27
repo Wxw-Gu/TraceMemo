@@ -1803,6 +1803,41 @@ body {
   accent-color: var(--wxex-brand);
 }
 
+.chat-avatar-note {
+  max-width: 320px;
+  color: var(--wxex-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-avatar-reload {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.chat-avatar-reload svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.chat-avatar-reload svg.is-spinning {
+  animation: chat-avatar-spin 0.8s linear infinite;
+}
+
+@keyframes chat-avatar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .chat-status-separator {
   width: 1px;
   height: 14px;
@@ -1825,6 +1860,12 @@ body {
 .chat-status-actions button:disabled {
   color: var(--wxex-text-muted);
   cursor: default;
+}
+
+@media (max-width: 1120px) {
+  .chat-avatar-note {
+    display: none;
+  }
 }
 
 .empty-conversation-state {

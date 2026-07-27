@@ -68,6 +68,8 @@ type KoffiModule = {
 // library reference for every Wcdb4Client instance.
 let wcdbBootstrapLib: KoffiLibrary | null = null
 
+let wcdbBootstrapAsyncPromise: Promise<KoffiLibrary> | null = null
+
 export function bootstrapWcdbNative(libPath?: string, libDirOverride?: string): KoffiLibrary {
   if (wcdbBootstrapLib) return wcdbBootstrapLib
 
@@ -141,8 +143,82 @@ export function bootstrapWcdbNative(libPath?: string, libDirOverride?: string): 
   return lib
 }
 
+export function bootstrapWcdbNativeAsync(
+  libPath?: string,
+  libDirOverride?: string
+): Promise<KoffiLibrary> {
+  if (wcdbBootstrapLib) return Promise.resolve(wcdbBootstrapLib)
+  if (wcdbBootstrapAsyncPromise) return wcdbBootstrapAsyncPromise
+
+  wcdbBootstrapAsyncPromise = (async () => {
+    const koffi = nodeRequire('koffi') as KoffiModule
+    const resolvedLibPath = libPath || Wcdb4Client.resolveNativeLibrary()
+    const libDir = libDirOverride || path.dirname(resolvedLibPath)
+    for (const name of process.platform === 'win32'
+      ? ['WCDB.dll', 'SDL2.dll']
+      : process.platform === 'darwin'
+        ? ['libWCDB.dylib']
+        : []) {
+      const preloadPath = path.join(libDir, name)
+      if (!fs.existsSync(preloadPath)) continue
+      try {
+        koffi.load(preloadPath)
+      } catch {
+        // The main library may still resolve its dependencies through the loader.
+      }
+    }
+    const lib = koffi.load(resolvedLibPath)
+    const initProtection = lib.func('int32 InitProtection(const char* resourcePath)') as (
+      resourcePath: string
+    ) => number
+    const resourceRoots = Array.from(
+      new Set(
+        [libDir, path.dirname(libDir), process.env.WCDB_RESOURCES_PATH || '', ...getResourceRoots()].filter(
+          Boolean
+        )
+      )
+    )
+    let initOk = false
+    for (const resourceRoot of resourceRoots) {
+      try {
+        if (Number(initProtection(resourceRoot)) === 0) {
+          initOk = true
+          break
+        }
+      } catch {
+        // Try the next resource root.
+      }
+    }
+    if (initOk) {
+      const wcdbInit = lib.func('int32 wcdb_init()') as KoffiAsyncFunction
+      await new Promise<void>((resolve, reject) => {
+        wcdbInit.async((error: unknown, result: unknown) => {
+          if (error) {
+            reject(error)
+            return
+          }
+          if (Number(result) !== 0) {
+            console.warn(`[WCDB4] async wcdb_init rc=${Number(result)}`)
+          }
+          resolve()
+        })
+      })
+    }
+    wcdbBootstrapLib = lib
+    return lib
+  })().catch((error) => {
+    wcdbBootstrapAsyncPromise = null
+    throw error
+  })
+  return wcdbBootstrapAsyncPromise
+}
+
 type KoffiLibrary = {
-  func: (signature: string) => (...args: unknown[]) => unknown
+  func: (signature: string) => KoffiAsyncFunction
+}
+
+type KoffiAsyncFunction = ((...args: unknown[]) => unknown) & {
+  async: (...args: unknown[]) => void
 }
 
 type WcdbVoidOut = [unknown]
@@ -170,6 +246,7 @@ export class Wcdb4Client {
   private wcdbOpenAccount:
     | ((sessionDbPath: string, key: string, handleOut: WcdbHandleOut) => number)
     | null = null
+  private wcdbOpenAccountAsync: KoffiAsyncFunction | null = null
   private wcdbSetMyWxid: ((handle: number, wxid: string) => number) | null = null
   private wcdbFreeString: ((ptr: unknown) => void) | null = null
   private wcdbGetSessions: ((handle: number, outJson: WcdbVoidOut) => number) | null = null
@@ -418,6 +495,39 @@ export class Wcdb4Client {
       )
     }
 
+    this.handle = handleOut[0]
+    if (this.wcdbSetMyWxid) {
+      try {
+        this.wcdbSetMyWxid(this.handle, this.wxid)
+      } catch {
+        // Optional helper. Failure does not block message reads.
+      }
+    }
+  }
+
+  async openAsync(): Promise<void> {
+    this.loadNativeLibrary()
+    if (!this.wcdbOpenAccountAsync) {
+      throw new Error('WCDB 4.0 native open async interface unavailable')
+    }
+
+    const handleOut: WcdbHandleOut = [0]
+    const openResult = await new Promise<number>((resolve, reject) => {
+      this.wcdbOpenAccountAsync!.async(
+        this.sessionDbPath,
+        this.key,
+        handleOut,
+        (error: unknown, result: unknown) => {
+          if (error) reject(error)
+          else resolve(Number(result))
+        }
+      )
+    })
+    if (openResult !== 0 || handleOut[0] <= 0) {
+      throw new Error(
+        `wcdb_open_account failed, code=${openResult}; sessionDb=${this.sessionDbPath}; accountRoot=${this.accountRoot}; wxid=${this.wxid}; keyLength=${this.key.length}`
+      )
+    }
     this.handle = handleOut[0]
     if (this.wcdbSetMyWxid) {
       try {
@@ -695,6 +805,21 @@ export class Wcdb4Client {
     const messages = this.finalizeMessages(username, allRows, startTime, endTime, maxRows)
     console.log(
       `[WCDB4] getMessages direct ok username=${username} rows=${messages.length} cost=${Date.now() - startedAt}ms`
+    )
+    return messages
+  }
+
+  async getMessagesAsync(
+    username: string,
+    startTime?: number,
+    endTime?: number,
+    options: Wcdb4MessageQueryOptions = {}
+  ): Promise<Wcdb4Message[]> {
+    const startedAt = Date.now()
+    const maxRows = this.normalizeMessageLimit(options.limit)
+    const messages = await this.getMessagesByCursorAsync(username, startTime, endTime, maxRows)
+    console.log(
+      `[WCDB4] getMessages async username=${username} rows=${messages.length} cost=${Date.now() - startedAt}ms`
     )
     return messages
   }
@@ -1139,6 +1264,140 @@ export class Wcdb4Client {
     }
   }
 
+  private async getMessagesByCursorAsync(
+    username: string,
+    startTime?: number,
+    endTime?: number,
+    limit?: number
+  ): Promise<Wcdb4Message[]> {
+    if (!this.wcdbOpenMessageCursor || !this.wcdbFetchMessageBatch) return []
+
+    const handle = this.ensureHandle()
+    const batchSize = limit ? Math.min(500, limit) : 1000
+    const cursorOut: WcdbHandleOut = [0]
+    const begin = this.normalizeTimestamp(startTime || 0)
+    const end = this.normalizeTimestamp(endTime || 0)
+    const ascending = limit ? 0 : 1
+    const openResult = await this.callAsyncCode(
+      this.wcdbOpenMessageCursor as unknown as KoffiAsyncFunction,
+      handle,
+      username,
+      batchSize,
+      ascending,
+      begin,
+      end,
+      cursorOut
+    )
+    if (openResult !== 0 || cursorOut[0] <= 0) return []
+
+    const cursor = cursorOut[0]
+    const allRows: Record<string, unknown>[] = []
+    try {
+      while (true) {
+        const outJson: WcdbVoidOut = [null]
+        const outHasMore: [number] = [0]
+        const fetchResult = await this.callAsyncCode(
+          this.wcdbFetchMessageBatch as unknown as KoffiAsyncFunction,
+          handle,
+          cursor,
+          outJson,
+          outHasMore
+        )
+        if (fetchResult !== 0 || !outJson[0]) break
+        try {
+          const json = this.koffi!.decode(outJson[0], 'char', -1)
+          const batch = JSON.parse(json) as Record<string, unknown>[]
+          if (Array.isArray(batch)) allRows.push(...batch)
+        } finally {
+          this.wcdbFreeString?.(outJson[0])
+        }
+        if (!outHasMore[0] || (limit && allRows.length >= limit)) break
+      }
+    } finally {
+      try {
+        this.wcdbCloseMessageCursor?.(handle, cursor)
+      } catch {
+        // Best-effort cursor cleanup.
+      }
+    }
+    return this.finalizeMessages(username, allRows, startTime, endTime, limit)
+  }
+
+  async getGroupMembersAsync(chatroomId: string): Promise<Wcdb4GroupMember[]> {
+    if (!this.wcdbGetGroupMembers || !chatroomId) return []
+
+    try {
+      const groupNicknames = await this.getGroupNicknamesAsync(chatroomId)
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbGetGroupMembers as unknown as KoffiAsyncFunction,
+        chatroomId
+      )
+      const members = (Array.isArray(rows) ? rows : []).map((row) => {
+        const username = this.pickString(row, [
+          'username',
+          'userName',
+          'user_name',
+          'member_username',
+          'm_nsUsrName'
+        ])
+        const wechatNickname = this.pickString(row, [
+          'nickname',
+          'nickName',
+          'wechatNickname',
+          'wechat_nickname',
+          'm_nsNickName'
+        ])
+        const remark = this.pickString(row, [
+          'remark',
+          'remarkName',
+          'remark_name',
+          'contactRemark',
+          'contact_remark'
+        ])
+        const memberNickname = this.pickString(row, ['displayName', 'display_name', 'name'])
+        const avatar = this.pickString(row, [
+          'avatarUrl',
+          'avatar_url',
+          'headImgUrl',
+          'm_nsHeadImgUrl'
+        ])
+        if (username && avatar) this.avatarCache.set(username, avatar)
+        return {
+          m_nsUsrName: username,
+          nickname: groupNicknames.get(username) || remark || wechatNickname || memberNickname,
+          groupNickname: groupNicknames.get(username) || '',
+          wechatNickname: wechatNickname || memberNickname,
+          remark,
+          m_nsHeadImgUrl: avatar
+        }
+      })
+
+      const missingNames = members
+        .filter((member) => !member.nickname)
+        .map((member) => member.m_nsUsrName)
+        .filter(Boolean)
+      const missingAvatars = members
+        .filter((member) => !member.m_nsHeadImgUrl)
+        .map((member) => member.m_nsUsrName)
+        .filter(Boolean)
+      await Promise.all([
+        this.hydrateDisplayNamesAsync(missingNames),
+        this.hydrateAvatarUrlsAsync(missingAvatars)
+      ])
+      return members.map((member) => ({
+        ...member,
+        nickname:
+          member.nickname || this.displayNameCache.get(member.m_nsUsrName) || member.m_nsUsrName,
+        wechatNickname:
+          member.wechatNickname || this.displayNameCache.get(member.m_nsUsrName) || '',
+        m_nsHeadImgUrl: member.m_nsHeadImgUrl || this.avatarCache.get(member.m_nsUsrName) || ''
+      }))
+    } catch (error) {
+      console.warn(`[WCDB4] async group members failed chatroom=${chatroomId}:`, error)
+      return []
+    }
+  }
+
   getGroupNicknames(chatroomId: string): Map<string, string> {
     const cached = this.groupNicknameCache.get(chatroomId)
     if (cached) return cached
@@ -1164,6 +1423,28 @@ export class Wcdb4Client {
       console.warn(`[WCDB4] failed to get group nicknames for ${chatroomId}:`, error)
     }
 
+    return nicknames
+  }
+
+  private async getGroupNicknamesAsync(chatroomId: string): Promise<Map<string, string>> {
+    const cached = this.groupNicknameCache.get(chatroomId)
+    if (cached) return cached
+    const nicknames = new Map<string, string>()
+    if (!this.wcdbGetGroupNicknames || !chatroomId) return nicknames
+
+    const rows = await this.callJsonAsync<
+      Record<string, string> | Record<string, unknown>[]
+    >(this.wcdbGetGroupNicknames as unknown as KoffiAsyncFunction, chatroomId)
+    this.readStringMap(rows, [
+      'nickname',
+      'nickName',
+      'displayName',
+      'display_name',
+      'groupNickname',
+      'group_nickname',
+      'name'
+    ]).forEach((nickname, username) => nicknames.set(username, nickname))
+    this.groupNicknameCache.set(chatroomId, nicknames)
     return nicknames
   }
 
@@ -1354,9 +1635,11 @@ export class Wcdb4Client {
     }
 
     this.wcdbShutdown = lib.func('int32 wcdb_shutdown()') as () => number
-    this.wcdbOpenAccount = lib.func(
+    const openAccount = lib.func(
       'int32 wcdb_open_account(const char* path, const char* key, _Out_ int64* handle)'
     ) as (sessionDbPath: string, key: string, handleOut: WcdbHandleOut) => number
+    this.wcdbOpenAccount = openAccount
+    this.wcdbOpenAccountAsync = openAccount as unknown as KoffiAsyncFunction
     this.wcdbFreeString = lib.func('void wcdb_free_string(void* ptr)') as (ptr: unknown) => void
     this.wcdbGetSessions = lib.func(
       'int32 wcdb_get_sessions(int64 handle, _Out_ void** outJson)'
@@ -1646,6 +1929,41 @@ export class Wcdb4Client {
     }
   }
 
+  private callJsonAsync<T>(fn: KoffiAsyncFunction, ...args: unknown[]): Promise<T> {
+    const handle = this.ensureHandle()
+    const outJson: WcdbVoidOut = [null]
+    return new Promise<T>((resolve, reject) => {
+      fn.async(handle, ...args, outJson, (error: unknown, result: unknown) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        const code = Number(result)
+        if (code !== 0 || !outJson[0]) {
+          reject(new Error(`WCDB async call failed, code: ${code}`))
+          return
+        }
+        try {
+          const json = this.koffi!.decode(outJson[0], 'char', -1)
+          resolve(JSON.parse(json) as T)
+        } catch (decodeError) {
+          reject(decodeError)
+        } finally {
+          this.wcdbFreeString?.(outJson[0])
+        }
+      })
+    })
+  }
+
+  private callAsyncCode(fn: KoffiAsyncFunction, ...args: unknown[]): Promise<number> {
+    return new Promise<number>((resolve, reject) => {
+      fn.async(...args, (error: unknown, result: unknown) => {
+        if (error) reject(error)
+        else resolve(Number(result))
+      })
+    })
+  }
+
   private ensureHandle(): number {
     if (!this.handle) throw new Error('微信 4.0 数据库未打开')
     return this.handle
@@ -1810,6 +2128,26 @@ export class Wcdb4Client {
     }
   }
 
+  private async hydrateDisplayNamesAsync(usernames: string[]): Promise<void> {
+    if (!this.wcdbGetDisplayNames) return
+    const missing = this.uniq(usernames).filter((username) => !this.displayNameCache.has(username))
+    if (missing.length === 0) return
+    try {
+      const rows = await this.callJsonAsync<
+        Record<string, string> | Record<string, unknown>[]
+      >(this.wcdbGetDisplayNames as unknown as KoffiAsyncFunction, JSON.stringify(missing))
+      this.readStringMap(rows, [
+        'nickname',
+        'displayName',
+        'display_name',
+        'remark',
+        'name'
+      ]).forEach((name, username) => this.displayNameCache.set(username, name))
+    } catch {
+      // Names are optional; usernames remain usable.
+    }
+  }
+
   private hydrateAvatarUrls(usernames: string[]): void {
     const missing = this.uniq(usernames).filter((username) => !this.avatarCache.has(username))
     if (missing.length === 0) return
@@ -1839,6 +2177,27 @@ export class Wcdb4Client {
       this.readContactAvatarUrls(stillMissing).forEach((avatar, username) =>
         this.avatarCache.set(username, avatar)
       )
+    } catch {
+      // Avatars are optional.
+    }
+  }
+
+  private async hydrateAvatarUrlsAsync(usernames: string[]): Promise<void> {
+    if (!this.wcdbGetAvatarUrls) return
+    const missing = this.uniq(usernames).filter((username) => !this.avatarCache.has(username))
+    if (missing.length === 0) return
+    try {
+      const rows = await this.callJsonAsync<
+        Record<string, string> | Record<string, unknown>[]
+      >(this.wcdbGetAvatarUrls as unknown as KoffiAsyncFunction, JSON.stringify(missing))
+      this.readStringMap(rows, [
+        'avatarUrl',
+        'avatar_url',
+        'headImgUrl',
+        'm_nsHeadImgUrl',
+        'big_head_img_url',
+        'small_head_img_url'
+      ]).forEach((avatar, username) => this.avatarCache.set(username, avatar))
     } catch {
       // Avatars are optional.
     }

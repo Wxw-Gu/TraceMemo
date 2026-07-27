@@ -40,12 +40,78 @@ interface SelfInfo {
 
 const MAC_KEY_FAQ_URL = 'https://github.com/hicccc77/WeFlow/blob/main/docs/MAC-KEY-FAQ.md'
 const MESSAGE_MONITOR_DEBOUNCE_MS = 8000
+const INITIAL_MESSAGE_COUNT = 20
 const MESSAGE_PAGE_SIZE = 100
+const MESSAGE_PREFETCH_COUNT = INITIAL_MESSAGE_COUNT + MESSAGE_PAGE_SIZE
 const EXPORT_PREVIEW_LIMIT = 20
 const getMessageIdentity = (message: Message): string => {
   if (message.localId) return `local:${message.localId}`
   if (message.id) return `id:${message.id}`
   return `${message.createTime || 0}:${message.from}:${message.type}:${message.content}`
+}
+
+const normalizeQuotedText = (value: string | undefined): string =>
+  String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const isInternalReferenceSender = (value: string | undefined): boolean => {
+  const sender = String(value || '').trim()
+  return (
+    !sender ||
+    sender.endsWith('@chatroom') ||
+    sender.startsWith('wxid_') ||
+    /^[a-z0-9_@.-]{12,}$/i.test(sender)
+  )
+}
+
+const enrichQuotedMessages = (messages: Message[], referenceMessages: Message[]): Message[] => {
+  const imageDatNameByMd5 = new Map<string, string>()
+  const messagesByContent = new Map<string, Message[]>()
+
+  for (const message of referenceMessages) {
+    if (
+      message.contentData?.type === 'image' &&
+      message.contentData.md5 &&
+      message.contentData.datName
+    ) {
+      imageDatNameByMd5.set(message.contentData.md5, message.contentData.datName)
+    }
+    const content = normalizeQuotedText(message.content)
+    if (!content) continue
+    const candidates = messagesByContent.get(content) || []
+    candidates.push(message)
+    messagesByContent.set(content, candidates)
+  }
+
+  return messages.map((message) => {
+    if (message.contentData?.type !== 'quote') return message
+    const quote = message.contentData
+    let quotedImageDatName = quote.quotedImageDatName
+    if (!quotedImageDatName && quote.quotedImageMd5) {
+      quotedImageDatName = imageDatNameByMd5.get(quote.quotedImageMd5)
+    }
+
+    let quotedSender = quote.quotedSender
+    if (isInternalReferenceSender(quotedSender)) {
+      const candidates = messagesByContent.get(normalizeQuotedText(quote.quotedContent)) || []
+      const source = candidates
+        .filter((candidate) => (candidate.createTime || 0) <= (message.createTime || Infinity))
+        .sort((left, right) => (right.createTime || 0) - (left.createTime || 0))[0]
+      if (source?.name && !isInternalReferenceSender(source.name)) quotedSender = source.name
+    }
+
+    if (
+      quotedSender === quote.quotedSender &&
+      quotedImageDatName === quote.quotedImageDatName
+    ) {
+      return message
+    }
+    return {
+      ...message,
+      contentData: { ...quote, quotedSender, quotedImageDatName }
+    }
+  })
 }
 
 const areMessagesEquivalent = (left: Message[], right: Message[]): boolean => {
@@ -79,7 +145,7 @@ type StartupProgress = {
 }
 
 const formatGroupMemberName = (member: GroupSnapshot['members'][number]): string =>
-  member.nickname || member.wxid
+  member.groupNickname || member.nickname || member.remark || member.wechatNickname || member.wxid
 
 const buildSyntheticGroupMessages = (
   previous: GroupSnapshot | null,
@@ -150,7 +216,6 @@ function App(): React.ReactElement {
   const [messages, setMessages] = useState<Message[]>([])
   const [isMessagesLoading, setIsMessagesLoading] = useState(false)
   const [filteredContacts, setFilteredContacts] = useState<Contact[]>([])
-  const [dateRange, setDateRange] = useState('today') // 默认今天
   const [contentFilter, setContentFilter] = useState('')
   const [isFetchingDbKey, setIsFetchingDbKey] = useState(false)
   const [dbKeyStatus, setDbKeyStatus] = useState('')
@@ -195,6 +260,10 @@ function App(): React.ReactElement {
   const currentGroupSnapshotRef = React.useRef<GroupSnapshot | null>(null)
   const syntheticGroupMessagesRef = React.useRef<Record<string, Message[]>>({})
   const groupMemberMetaRef = React.useRef<Record<string, Map<string, GroupMemberMeta>>>({})
+  const messageHistoryRef = React.useRef<Message[]>([])
+  const messagesRef = React.useRef<Message[]>([])
+  const messagePrefetchRef = React.useRef<Promise<void> | null>(null)
+  messagesRef.current = messages
   React.useEffect(() => {
     if (!reportNotice) return
     const timer = window.setTimeout(() => setReportNotice(''), 3200)
@@ -486,7 +555,32 @@ function App(): React.ReactElement {
       }
       if (!autoLoginEnabled) return
       try {
-        const result = await window.api.initDb(key)
+        const startupCacheReady = await loadStartupCache()
+        const initPromise = window.api.initDb(key)
+        if (startupCacheReady) {
+          setIsAuthenticated(true)
+          setIsDatabaseConnected(false)
+          setBootState('login')
+          void initPromise.then(async (result) => {
+            const success = typeof result === 'boolean' ? result : result.success
+            if (!success) {
+              const error = typeof result === 'boolean' ? '' : result.error
+              setDbKeyStatus(`后台连接失败${error ? `: ${error}` : ''}`)
+              setDbKeyStatusKind('error')
+              return
+            }
+            setIsNativeMonitorActive(typeof result !== 'boolean' && result.monitoring === true)
+            setIsDatabaseConnected(true)
+            setDbKeyStatus('已连接数据库')
+            // Cached contacts/self info are enough for startup. Native refresh is
+            // intentionally user-triggered so it cannot freeze the first session.
+          }).catch((error) => {
+            console.warn('[Startup] background database init failed:', error)
+            setDbKeyStatusKind('error')
+          })
+          return
+        }
+        const result = await initPromise
         if (!active) return
         const success = typeof result === 'boolean' ? result : result.success
         if (success) {
@@ -497,9 +591,13 @@ function App(): React.ReactElement {
           setIsDatabaseConnected(true)
           setDbKeyStatus('已自动连接')
           setDbKeyStatusKind('success')
-          await loadContacts()
-          await refreshSelfInfo(3)
-          setIsAuthenticated(true)
+          const hasBootstrap = await loadBootstrapCache()
+          if (hasBootstrap) {
+            setIsAuthenticated(true)
+          } else {
+            await Promise.all([loadContacts(), refreshSelfInfo(3)])
+            setIsAuthenticated(true)
+          }
         } else {
           const error = typeof result === 'boolean' ? '' : result.error
           setDbKeyStatus(`自动连接失败，请重新输入${error ? `: ${error}` : ''}`)
@@ -569,7 +667,7 @@ function App(): React.ReactElement {
           detail: '正在读取本地缓存',
           percent: 25
         })
-        await loadBootstrapCache()
+        const hasBootstrap = await loadBootstrapCache()
         // 持久化手动输入的密钥，供下次启动继续使用
         void window.api.saveDbKey(keyToUse).catch(() => undefined)
         void window.api.getSettings().then((current) => {
@@ -585,15 +683,28 @@ function App(): React.ReactElement {
         })
         // 账号识别依赖联系人数据就绪。返回登录后数据已被清空，如果先查账号，
         // 会出现“数据库已连接，但账号未连接”的分离状态。手动连接与启动自动连接保持同一顺序。
-        await loadContacts({ waitForAvatars: false })
-        await refreshSelfInfo(3)
+        if (hasBootstrap) {
+          // Cached contacts are sufficient for the first paint. Refresh native data in the background.
+          setIsAuthenticated(true)
+          void Promise.all([
+            loadContacts({ waitForAvatars: false }),
+            refreshSelfInfo(3)
+          ]).catch((error) => {
+            console.warn('[Startup] background refresh failed:', error)
+          })
+        } else {
+          await Promise.all([
+            loadContacts({ waitForAvatars: false }),
+            refreshSelfInfo(3)
+          ])
+          setIsAuthenticated(true)
+        }
         setStartupProgress({
           title: '加载完成',
           subtitle: '正在进入主页面',
           detail: '联系人和头像已准备好',
           percent: 100
         })
-        setIsAuthenticated(true)
         setIsDatabaseConnected(true)
         setBootState('login')
         window.setTimeout(() => {
@@ -646,10 +757,14 @@ function App(): React.ReactElement {
   const applyGroupMemberMeta = React.useCallback(
     (contact: Contact | null, baseMessages: Message[]): Message[] => {
       if (!contact || contact.type !== 'group') return baseMessages
+      const enrichedMessages = enrichQuotedMessages(baseMessages, [
+        ...messageHistoryRef.current,
+        ...baseMessages
+      ])
       const memberMap = groupMemberMetaRef.current[contact.md5]
-      if (!memberMap || memberMap.size === 0) return baseMessages
+      if (!memberMap || memberMap.size === 0) return enrichedMessages
 
-      return baseMessages.map((message) => {
+      return enrichedMessages.map((message) => {
         const senderId = String(message.senderId || message.name || '').trim()
         if (!senderId) return message
         const member = memberMap.get(senderId)
@@ -672,22 +787,56 @@ function App(): React.ReactElement {
     []
   )
 
+  const storeGroupMemberMeta = React.useCallback(
+    (contact: Contact, snapshot: GroupSnapshot): void => {
+      currentGroupSnapshotRef.current = snapshot
+      groupMemberMetaRef.current[contact.md5] = new Map(
+        snapshot.members.map((member) => [
+          member.wxid,
+          { nickname: formatGroupMemberName(member), avatar: member.avatar || '' }
+        ])
+      )
+    },
+    []
+  )
+
   const loadGroupMemberMeta = React.useCallback(
     async (contact: Contact | null): Promise<GroupSnapshot | null> => {
       if (!contact || contact.type !== 'group') return null
       const snapshot = await logGroupSnapshot(contact, 'load-member-meta')
       if (!snapshot) return null
-      currentGroupSnapshotRef.current = snapshot
-      groupMemberMetaRef.current[contact.md5] = new Map(
-        snapshot.members.map((member) => [
-          member.wxid,
-          { nickname: member.nickname || member.wxid, avatar: member.avatar || '' }
-        ])
-      )
+      storeGroupMemberMeta(contact, snapshot)
       return snapshot
     },
-    [logGroupSnapshot]
+    [logGroupSnapshot, storeGroupMemberMeta]
   )
+
+  const handleReloadCurrentAvatars = React.useCallback(async (): Promise<void> => {
+    const contact = selectedContact
+    if (!contact) return
+
+    try {
+      const avatars = await window.api.getContactAvatars([contact.m_nsUsrName])
+      const avatar = avatars[contact.m_nsUsrName]
+      if (avatar) {
+        const updateContact = (item: Contact): Contact =>
+          item.md5 === contact.md5 ? { ...item, avatar } : item
+        setContacts((current) => current.map(updateContact))
+        setFilteredContacts((current) => current.map(updateContact))
+        setSelectedContact((current) =>
+          current?.md5 === contact.md5 ? updateContact(current) : current
+        )
+      }
+    } catch (error) {
+      console.warn('[Contacts] current avatar reload failed:', error)
+    }
+
+    const snapshot = await loadGroupMemberMeta(contact)
+    if (!snapshot || selectedContactMd5Ref.current !== contact.md5) return
+    setMessages((current) =>
+      applyGroupMemberMeta(contact, mergeSyntheticMessages(contact, current, snapshot.roomId))
+    )
+  }, [applyGroupMemberMeta, loadGroupMemberMeta, mergeSyntheticMessages, selectedContact])
 
   const handleAutoGetDbKey = async (): Promise<void> => {
     if (isFetchingDbKey) return
@@ -761,65 +910,57 @@ function App(): React.ReactElement {
     setStartupProgress(null)
   }
 
-  const getDateRangeParams = (
-    range: string
-  ): { startTime: number | undefined; endTime: number | undefined } => {
-    const now = new Date()
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000
-
-    let startTime: number | undefined
-    let endTime: number | undefined
-
-    switch (range) {
-      case 'today':
-        startTime = startOfToday
-        break
-      case 'yesterday':
-        startTime = startOfToday - 86400
-        endTime = startOfToday - 1 // 昨天结束
-        break
-      case '7':
-        startTime = Math.floor(Date.now() / 1000) - 7 * 86400
-        break
-      case '30':
-        startTime = Math.floor(Date.now() / 1000) - 30 * 86400
-        break
-      case 'all':
-        startTime = undefined
-        break
-      default:
-        startTime = startOfToday
-    }
-    return { startTime, endTime }
-  }
-
-  const handleSelectContact = async (contact: Contact): Promise<void> => {
+  const handleSelectContact = async (contact: Contact, forceLive = false): Promise<void> => {
     setSelectedContact(contact)
     selectedContactMd5Ref.current = contact.md5
     currentGroupSnapshotRef.current = null
     setIsMessagesLoading(true)
-    const { startTime, endTime } = getDateRangeParams(dateRange)
-    const cachedMsgs = await window.api.getCachedMessages(contact.md5, startTime, endTime)
+    const cachedPage = await window.api.getCachedMessagePage(contact.md5)
+    const cachedMsgs = cachedPage.messages
     if (selectedContactMd5Ref.current !== contact.md5) return
-    if (cachedMsgs.length) {
-      setMessages(
-        applyGroupMemberMeta(
-          contact,
-          mergeSyntheticMessages(contact, cachedMsgs.slice(-MESSAGE_PAGE_SIZE))
-        )
-      )
-    } else {
-      setMessages([])
+    if (cachedPage.groupSnapshot) {
+      storeGroupMemberMeta(contact, cachedPage.groupSnapshot)
     }
+    messageHistoryRef.current = cachedMsgs
+    setMessages(
+      applyGroupMemberMeta(
+        contact,
+        mergeSyntheticMessages(contact, cachedMsgs.slice(-INITIAL_MESSAGE_COUNT))
+      )
+    )
+    const needsLivePage =
+      forceLive || (isDatabaseConnected && cachedMsgs.length < MESSAGE_PREFETCH_COUNT)
+    if (!needsLivePage) {
+      setIsMessagesLoading(false)
+      if (contact.type === 'group' && cachedMsgs.length > 0 && !cachedPage.groupSnapshot) {
+        window.setTimeout(() => {
+          void loadGroupMemberMeta(contact).then((snapshot) => {
+            if (!snapshot || selectedContactMd5Ref.current !== contact.md5) return
+            setMessages((current) =>
+              applyGroupMemberMeta(
+                contact,
+                mergeSyntheticMessages(contact, current, snapshot.roomId)
+              )
+            )
+          })
+        }, 0)
+      }
+      return
+    }
+    if (cachedMsgs.length >= INITIAL_MESSAGE_COUNT) setIsMessagesLoading(false)
     await waitForPaint()
-    try {
-      const msgs = await window.api.getMessages(contact.md5, startTime, endTime, {
-        limit: MESSAGE_PAGE_SIZE
+    const loadLivePage = async (): Promise<void> => {
+      const msgs = await window.api.getMessages(contact.md5, undefined, undefined, {
+        limit: MESSAGE_PREFETCH_COUNT
       })
       if (selectedContactMd5Ref.current !== contact.md5) return
-      const cachedMessages = applyGroupMemberMeta(contact, mergeSyntheticMessages(contact, msgs))
-      setMessages(cachedMessages)
-      if (contact.type === 'group') {
+      messageHistoryRef.current = msgs
+      const visibleMessages = applyGroupMemberMeta(
+        contact,
+        mergeSyntheticMessages(contact, msgs.slice(-INITIAL_MESSAGE_COUNT))
+      )
+      setMessages(visibleMessages)
+      if (contact.type === 'group' && visibleMessages.length > 0) {
         window.setTimeout(() => {
           void loadGroupMemberMeta(contact).then((snapshot) => {
             if (selectedContactMd5Ref.current !== contact.md5) return
@@ -833,28 +974,79 @@ function App(): React.ReactElement {
           })
         }, 120)
       }
+    }
+    const prefetchPromise = loadLivePage()
+    messagePrefetchRef.current = prefetchPromise
+    try {
+      await prefetchPromise
     } finally {
+      if (messagePrefetchRef.current === prefetchPromise) messagePrefetchRef.current = null
       if (selectedContactMd5Ref.current === contact.md5) setIsMessagesLoading(false)
+    }
+  }
+
+  React.useEffect(() => {
+    if (!isDatabaseConnected || !selectedContact || messages.length > 0) return
+    // The first live page uses async native cursors, so a cache miss can be filled
+    // without blocking the Electron main thread.
+    void handleSelectContact(selectedContact)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDatabaseConnected])
+
+  const loadStartupCache = async (): Promise<boolean> => {
+    try {
+      const cache = await window.api.getStartupCache()
+      if (!cache?.contacts.length) return false
+      setContacts(cache.contacts)
+      setFilteredContacts(cache.contacts)
+      if (cache.self) setSelfInfo(cache.self)
+      return true
+    } catch (error) {
+      console.warn('[StartupCache] load failed:', error)
+      return false
     }
   }
 
   const handleLoadOlderMessages = async (): Promise<void> => {
     const contact = selectedContact
-    if (!contact || isMessagesLoading || messages.length === 0) return
-    const oldestTime = messages[0]?.createTime
+    if (!contact || messagesRef.current.length === 0) return
+    if (messagePrefetchRef.current) await messagePrefetchRef.current
+    if (selectedContactMd5Ref.current !== contact.md5) return
+    const currentMessages = messagesRef.current
+    const historyMessages = messageHistoryRef.current
+    const firstVisibleIndex = historyMessages.findIndex(
+      (message) => getMessageIdentity(message) === getMessageIdentity(currentMessages[0])
+    )
+    if (firstVisibleIndex > 0) {
+      const inMemoryOlder = historyMessages.slice(
+        Math.max(0, firstVisibleIndex - MESSAGE_PAGE_SIZE),
+        firstVisibleIndex
+      )
+      setMessages((current) =>
+        applyGroupMemberMeta(
+          contact,
+          mergeSyntheticMessages(contact, mergeMessagePages(inMemoryOlder, current))
+        )
+      )
+      return
+    }
+    const oldestTime = currentMessages[0]?.createTime
     if (!oldestTime) return
-    const { startTime } = getDateRangeParams(dateRange)
-    if (startTime && oldestTime <= startTime) return
 
     setIsMessagesLoading(true)
     try {
-      const olderMessages = await window.api.getMessages(
+      const cachedPage = await window.api.getCachedMessagePage(
         contact.md5,
-        startTime,
-        oldestTime - 1,
-        { limit: MESSAGE_PAGE_SIZE }
+        undefined,
+        oldestTime - 1
       )
+      const olderMessages = cachedPage.hit
+        ? cachedPage.messages
+        : await window.api.getMessages(contact.md5, undefined, oldestTime - 1, {
+            limit: MESSAGE_PAGE_SIZE
+          })
       if (selectedContactMd5Ref.current !== contact.md5) return
+      messageHistoryRef.current = mergeMessagePages(olderMessages, historyMessages)
       setMessages((current) =>
         applyGroupMemberMeta(contact, mergeSyntheticMessages(contact, mergeMessagePages(olderMessages, current)))
       )
@@ -878,40 +1070,6 @@ function App(): React.ReactElement {
     }
   }
 
-  const handleDateRangeChange = (range: string): void => {
-    setDateRange(range)
-    if (selectedContact) {
-      const { startTime, endTime } = getDateRangeParams(range)
-      window.api
-        .getCachedMessages(selectedContact.md5, startTime, endTime)
-        .then((cachedMessages) => {
-          if (!cachedMessages.length) return
-          setMessages(
-            applyGroupMemberMeta(
-              selectedContact,
-              mergeSyntheticMessages(selectedContact, cachedMessages.slice(-MESSAGE_PAGE_SIZE))
-            )
-          )
-        })
-      setIsMessagesLoading(true)
-      window.api
-        .getMessages(selectedContact.md5, startTime, endTime, { limit: MESSAGE_PAGE_SIZE })
-        .then((nextMessages) => {
-          setMessages(
-            applyGroupMemberMeta(
-              selectedContact,
-              mergeSyntheticMessages(selectedContact, nextMessages)
-            )
-          )
-          setIsMessagesLoading(false)
-        })
-        .catch((error) => {
-          console.warn('[Messages] date range load failed:', error)
-          setIsMessagesLoading(false)
-        })
-    }
-  }
-
   React.useEffect(() => {
     if (!isAuthenticated || !selectedContact || !isNativeMonitorActive) return
 
@@ -928,12 +1086,11 @@ function App(): React.ReactElement {
       }
       refreshInFlight = true
       try {
-        const range = getDateRangeParams(dateRange)
         const latestMessages = await window.api.getMessages(
           contactMd5,
-          range.startTime,
-          range.endTime,
-          { limit: MESSAGE_PAGE_SIZE }
+          undefined,
+          undefined,
+          { limit: INITIAL_MESSAGE_COUNT }
         )
         const nextMessages = applyGroupMemberMeta(
           selectedContact,
@@ -975,7 +1132,6 @@ function App(): React.ReactElement {
       unsubscribe()
     }
   }, [
-    dateRange,
     isAuthenticated,
     isNativeMonitorActive,
     selectedContact,
@@ -1201,8 +1357,6 @@ function App(): React.ReactElement {
         onSearch={handleSearchContacts}
         onContentFilter={setContentFilter}
         width={sidebarWidth}
-        dateRange={dateRange}
-        onDateRangeChange={handleDateRangeChange}
         selfInfo={selfInfo}
         dbReady={isDatabaseConnected}
         onOpenSettings={openSettings}
@@ -1214,11 +1368,11 @@ function App(): React.ReactElement {
         messages={messages}
         isLoadingMessages={isMessagesLoading}
         contentFilter={contentFilter}
-        dateRange={dateRange}
         onContentFilterChange={setContentFilter}
-        onRefresh={() => selectedContact && handleSelectContact(selectedContact)}
+        onRefresh={() => selectedContact && handleSelectContact(selectedContact, true)}
         onRefreshData={loadContacts}
-        onLoadOlderMessages={() => void handleLoadOlderMessages()}
+        onReloadAvatars={handleReloadCurrentAvatars}
+        onLoadOlderMessages={handleLoadOlderMessages}
         onCreateGroupReport={handleOpenReportWorkspace}
         isAiLoading={reportGeneration.isGenerating}
       />

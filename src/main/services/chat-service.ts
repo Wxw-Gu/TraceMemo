@@ -143,25 +143,29 @@ export function listContacts(filter?: string): FormattedContact[] {
     })
   }
 
-  const chatTables = dbRef.getAllChatTables()
-  for (const table of chatTables) {
-    if (!table.name.startsWith('Chat_')) continue
-    const md5 = table.name.substring(5)
-    if (existingMd5s.has(md5)) continue
-    if (groupContacts[md5]) {
-      contacts.push({
-        m_nsUsrName: `Group_${md5}`,
-        m_nsNickName: groupContacts[md5],
-        md5,
-        type: 'group'
-      })
-    } else {
-      contacts.push({
-        m_nsUsrName: `Unknown_${md5}`,
-        m_nsNickName: `Chat_${md5}`,
-        md5,
-        type: 'user'
-      })
+  // The session list already covers normal conversations. Only scan Chat_*
+  // tables as a recovery fallback when the session query returned nothing.
+  if (userList.length === 0) {
+    const chatTables = dbRef.getAllChatTables()
+    for (const table of chatTables) {
+      if (!table.name.startsWith('Chat_')) continue
+      const md5 = table.name.substring(5)
+      if (existingMd5s.has(md5)) continue
+      if (groupContacts[md5]) {
+        contacts.push({
+          m_nsUsrName: `Group_${md5}`,
+          m_nsNickName: groupContacts[md5],
+          md5,
+          type: 'group'
+        })
+      } else {
+        contacts.push({
+          m_nsUsrName: `Unknown_${md5}`,
+          m_nsNickName: `Chat_${md5}`,
+          md5,
+          type: 'user'
+        })
+      }
     }
   }
   return contacts
@@ -180,7 +184,8 @@ function listSourceMessages(
   userMd5: string,
   startTime?: number,
   endTime?: number,
-  options?: { limit?: number }
+  options?: { limit?: number },
+  rawMessagesOverride?: WechatMessage[]
 ): FormattedMessage[] {
   if (!dbRef) return []
 
@@ -191,7 +196,8 @@ function listSourceMessages(
   console.log(
     `[ChatService] listMessages begin md5=${userMd5} username=${username || ''} start=${startTime || 0} end=${endTime || 0} limit=${options?.limit || 0}`
   )
-  const rawMessages = dbRef.getUserMessages(userMd5, startTime, endTime, options)
+  const rawMessages =
+    rawMessagesOverride ?? dbRef.getUserMessages(userMd5, startTime, endTime, options)
   console.log(
     `[ChatService] listMessages native done md5=${userMd5} raw=${rawMessages.length} cost=${Date.now() - startedAt}ms`
   )
@@ -350,6 +356,26 @@ export function listMessages(
   return mergeRecallArchiveMessages(userMd5, sourceMessages, startTime, endTime, options?.limit)
 }
 
+export async function listMessagesAsync(
+  userMd5: string,
+  startTime?: number,
+  endTime?: number,
+  options?: { limit?: number }
+): Promise<FormattedMessage[]> {
+  if (!dbRef) return []
+  const rawMessages = await dbRef.getUserMessagesAsync(userMd5, startTime, endTime, options)
+  const sourceMessages = listSourceMessages(
+    userMd5,
+    startTime,
+    endTime,
+    options,
+    rawMessages
+  )
+  const username = dbRef.getWcdb4Client().getUsernameByMd5(userMd5) || ''
+  recordRecallArchiveMessages(userMd5, username, sourceMessages)
+  return mergeRecallArchiveMessages(userMd5, sourceMessages, startTime, endTime, options?.limit)
+}
+
 export function getGroupSnapshot(userMd5: string): GroupSnapshot | null {
   if (!dbRef) return null
   const wcdb4Client = dbRef.getWcdb4Client()
@@ -368,6 +394,25 @@ export function getGroupSnapshot(userMd5: string): GroupSnapshot | null {
       avatar: member.m_nsHeadImgUrl || ''
     }))
 
+  return { roomId, memberCount: members.length, members }
+}
+
+export async function getGroupSnapshotAsync(userMd5: string): Promise<GroupSnapshot | null> {
+  if (!dbRef) return null
+  const wcdb4Client = dbRef.getWcdb4Client()
+  const roomId = wcdb4Client.getUsernameByMd5(userMd5)
+  if (!roomId || !roomId.endsWith('@chatroom')) return null
+
+  const members = (await wcdb4Client.getGroupMembersAsync(roomId))
+    .filter((member) => member?.m_nsUsrName)
+    .map((member) => ({
+      wxid: member.m_nsUsrName,
+      nickname: member.nickname || '',
+      groupNickname: member.groupNickname || '',
+      wechatNickname: member.wechatNickname || '',
+      remark: member.remark || '',
+      avatar: member.m_nsHeadImgUrl || ''
+    }))
   return { roomId, memberCount: members.length, members }
 }
 

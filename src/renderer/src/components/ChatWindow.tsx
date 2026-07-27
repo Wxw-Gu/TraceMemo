@@ -11,51 +11,13 @@ interface ChatWindowProps {
   messages: Message[]
   isLoadingMessages?: boolean
   contentFilter?: string
-  dateRange?: string
   onContentFilterChange?: (keyword: string) => void
   onRefresh?: () => void
   onRefreshData?: () => void
-  onLoadOlderMessages?: () => void
+  onReloadAvatars?: () => Promise<void>
+  onLoadOlderMessages?: () => Promise<void>
   onCreateGroupReport?: () => void
   isAiLoading?: boolean
-}
-
-const DATE_RANGE_LABELS: Record<string, string> = {
-  today: '今天',
-  yesterday: '昨日',
-  '7': '7 天',
-  '30': '30 天',
-  all: '全部'
-}
-
-const formatClock = (date: Date): string =>
-  `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
-
-const formatRangeDate = (date: Date, now: Date): string => {
-  const clock = formatClock(date)
-  if (date.getFullYear() === now.getFullYear()) {
-    return `${date.getMonth() + 1} 月 ${date.getDate()} 日 ${clock}`
-  }
-  return `${date.getFullYear()} 年 ${date.getMonth() + 1} 月 ${date.getDate()} 日 ${clock}`
-}
-
-const getChatHeaderRangeLabel = (range: string): string => {
-  const now = new Date()
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const endOfYesterday = new Date(startOfToday.getTime() - 60_000)
-
-  if (range === 'today') return `今天 00:00—现在`
-  if (range === 'yesterday') return `昨天 00:00—${formatClock(endOfYesterday)}`
-  if (range === '7') {
-    const start = new Date(Date.now() - 7 * 86400000)
-    return `${formatRangeDate(start, now)}—现在`
-  }
-  if (range === '30') {
-    const start = new Date(Date.now() - 30 * 86400000)
-    return `${formatRangeDate(start, now)}—现在`
-  }
-  if (range === 'all') return '全部记录'
-  return DATE_RANGE_LABELS[range] || '当前范围'
 }
 
 const ChatWindow: React.FC<ChatWindowProps> = ({
@@ -63,10 +25,10 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   messages,
   isLoadingMessages,
   contentFilter,
-  dateRange = 'today',
   onContentFilterChange,
   onRefresh,
   onRefreshData,
+  onReloadAvatars,
   onLoadOlderMessages,
   onCreateGroupReport,
   isAiLoading = false
@@ -86,6 +48,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   )
   const [showAvatar, setShowAvatar] = useState(true)
   const [isAtLatest, setIsAtLatest] = useState(true)
+  const [isReloadingAvatars, setIsReloadingAvatars] = useState(false)
+  const previousScrollTopRef = useRef(0)
 
   const scrollToBottom = useCallback((): void => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' })
@@ -95,14 +59,33 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const handleMessageListScroll = useCallback((event: React.UIEvent<HTMLDivElement>): void => {
     const target = event.currentTarget
     const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight
-    setIsAtLatest(distanceToBottom <= 24)
+    if (distanceToBottom <= 24) {
+      setIsAtLatest(true)
+    } else if (target.scrollTop < previousScrollTopRef.current - 1) {
+      setIsAtLatest(false)
+    }
+    previousScrollTopRef.current = target.scrollTop
   }, [])
+
+  useEffect(() => {
+    previousScrollTopRef.current = 0
+    setIsAtLatest(true)
+  }, [contact?.md5])
 
   useEffect(() => {
     if (!isAtLatest) return
     const frame = window.requestAnimationFrame(() => scrollToBottom())
     return () => window.cancelAnimationFrame(frame)
   }, [isAtLatest, messages, scrollToBottom])
+
+  useEffect(() => {
+    if (!isAtLatest) return
+    const content = messageListRef.current?.querySelector('.virtual-message-list')
+    if (!content) return
+    const observer = new ResizeObserver(() => scrollToBottom())
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [contact?.md5, isAtLatest, scrollToBottom])
 
   const openImagePreview = (imageUrl: string): void => {
     setPreviewImage(imageUrl)
@@ -155,6 +138,16 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     imageDragRef.current = null
   }
 
+  const handleReloadAvatars = async (): Promise<void> => {
+    if (!onReloadAvatars || isReloadingAvatars) return
+    setIsReloadingAvatars(true)
+    try {
+      await onReloadAvatars()
+    } finally {
+      setIsReloadingAvatars(false)
+    }
+  }
+
   useEffect(() => {
     if (!previewImage) return
 
@@ -186,14 +179,11 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   }, [messages, contentFilter])
   if (!contact) return <EmptyConversationState />
 
-  const dateRangeLabel = getChatHeaderRangeLabel(dateRange)
-
   return (
     <div className="chat-window">
       <ChatHeader
         contact={contact}
         isGroupChat={isGroupChat}
-        dateRangeLabel={dateRangeLabel}
         loadedCount={messages.length}
         filteredCount={filteredMessages.length}
         contentFilter={contentFilter || ''}
@@ -221,7 +211,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         count={filteredMessages.length}
         showAvatar={showAvatar}
         isAtLatest={isAtLatest}
+        isReloadingAvatars={isReloadingAvatars}
         onShowAvatarChange={setShowAvatar}
+        onReloadAvatars={() => void handleReloadAvatars()}
         onJumpToLatest={scrollToBottom}
       />
 

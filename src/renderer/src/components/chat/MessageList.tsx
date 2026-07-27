@@ -14,7 +14,7 @@ interface MessageListProps {
   listRef: React.RefObject<HTMLDivElement | null>
   bottomRef: React.RefObject<HTMLDivElement | null>
   onScroll: (event: React.UIEvent<HTMLDivElement>) => void
-  onReachTop?: () => void
+  onReachTop?: () => Promise<void>
   onImageClick: (imageUrl: string) => void
 }
 
@@ -32,6 +32,9 @@ export function MessageList({
   onImageClick
 }: MessageListProps): React.ReactElement {
   const groups = React.useMemo(() => buildMessageGroups(messages), [messages])
+  const groupsRef = React.useRef(groups)
+  const loadingOlderRef = React.useRef(false)
+  groupsRef.current = groups
   // TanStack Virtual intentionally exposes mutable measurement methods.
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
@@ -45,7 +48,54 @@ export function MessageList({
 
   const handleScroll = (event: React.UIEvent<HTMLDivElement>): void => {
     onScroll(event)
-    if (event.currentTarget.scrollTop < 120) onReachTop?.()
+    const scrollElement = event.currentTarget
+    if (
+      scrollElement.scrollTop >= 48 ||
+      loadingOlderRef.current ||
+      isLoadingMessages ||
+      !onReachTop
+    ) {
+      return
+    }
+
+    loadingOlderRef.current = true
+    const previousGroupCount = groups.length
+    const previousScrollTop = scrollElement.scrollTop
+    const previousScrollHeight = scrollElement.scrollHeight
+    const anchorMessageId = groups[0]?.messages[0]?.id
+    void (async () => {
+      try {
+        await onReachTop()
+        for (let frame = 0; frame < 8; frame += 1) {
+          if (groupsRef.current.length > previousGroupCount) break
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+        }
+        if (!anchorMessageId) return
+        const anchorIndex = groupsRef.current.findIndex((group) =>
+          group.messages.some((message) => message.id === anchorMessageId)
+        )
+        if (anchorIndex <= 0) return
+        virtualizer.measure()
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+        const addedHeight = scrollElement.scrollHeight - previousScrollHeight
+        if (addedHeight > 0) {
+          scrollElement.scrollTop = previousScrollTop + addedHeight
+        } else {
+          virtualizer.scrollToIndex(anchorIndex, { align: 'start' })
+        }
+
+        // Variable-height groups can finish measuring one frame later. Preserve
+        // the same message anchor after that final measurement as well.
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+        if (scrollElement.scrollTop < 48) {
+          virtualizer.scrollToIndex(anchorIndex, { align: 'start' })
+        }
+      } finally {
+        window.setTimeout(() => {
+          loadingOlderRef.current = false
+        }, 250)
+      }
+    })()
   }
 
   return (
