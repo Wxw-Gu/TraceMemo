@@ -889,7 +889,8 @@ export class KeyService {
       const dirName = normalized.split(/[\\/]/).pop() ?? ''
       if (dirName.startsWith('wxid_')) pushUnique(dirName)
 
-      const marker = normalized.match(/[\\/]xwechat_files/i) || normalized.match(/[\\/]WeChat Files/i)
+      // 仅支持 WeChat 4.0：路径识别只匹配 xwechat_files
+      const marker = normalized.match(/[\\/]xwechat_files/i)
       if (marker) {
         const root = normalized.slice(0, marker.index! + marker[0].length)
         try {
@@ -934,15 +935,49 @@ export class KeyService {
       onProgress?.('正在查找模板文件...')
       let result = await this._findTemplateData(userDir, 32)
       let { ciphertext, xorKey } = result
-      
+      const firstDiag = (this as { _imageTemplateDiag?: {
+        userDir: string; totalTFiles: number; v2Count: number; nonV2Count: number
+      } })._imageTemplateDiag
+
       // 如果找不到密钥，尝试扫描更多文件
       if (ciphertext && xorKey === null) {
         onProgress?.('未找到有效密钥，尝试扫描更多文件...')
         result = await this._findTemplateData(userDir, 100)
         xorKey = result.xorKey
       }
-      
-      if (!ciphertext) return { success: false, error: '未找到 V2 模板文件，请先在微信中查看几张图片' }
+
+      if (!ciphertext) {
+        // 用诊断信息给具体提示
+        const diag = (this as { _imageTemplateDiag?: {
+          userDir: string; totalTFiles: number; v2Count: number; nonV2Count: number
+        } })._imageTemplateDiag || firstDiag
+        if (!diag || diag.totalTFiles === 0) {
+          return {
+            success: false,
+            error:
+              '在账号目录下未找到任何 _t.dat 图片文件。\n' +
+              `扫描路径：${diag?.userDir || userDir || '(空)'}\n` +
+              '原因：微信没在本地生成缩略图。\n' +
+              '请让用户在微信里打开任意聊天的图片大图（等"原图"按钮可点击），然后再试。'
+          }
+        }
+        if (diag.v2Count === 0 && diag.nonV2Count > 0) {
+          return {
+            success: false,
+            error:
+              `找到 ${diag.totalTFiles} 个 _t.dat，但都不是 V2 头（可能图片尚未解密到本地，或微信版本不同）。\n` +
+              `扫描路径：${diag.userDir}\n` +
+              '请让用户在微信里打开 2-3 张不同的图片大图，等"原图"按钮可点击后再试。'
+          }
+        }
+        return {
+          success: false,
+          error:
+            `找到 ${diag.totalTFiles} 个 _t.dat，其中 ${diag.v2Count} 个是 V2 头，但没有长度 ≥ 0x1F 的有效模板。\n` +
+            `扫描路径：${diag.userDir}\n` +
+            '请在微信中查看更多图片后再试。'
+        }
+      }
       if (xorKey === null) return { success: false, error: '未能从模板文件中计算出有效的 XOR 密钥，请确保在微信中查看了多张不同的图片' }
 
       onProgress?.(`XOR 密钥: 0x${xorKey.toString(16).padStart(2, '0')}，正在查找微信进程...`)
@@ -1005,6 +1040,8 @@ export class KeyService {
 
     let ciphertext: Buffer | null = null
     const tailCounts: Record<string, number> = {}
+    let v2Count = 0
+    let nonV2Count = 0
 
     for (const f of files.slice(0, 32)) {
       try {
@@ -1013,8 +1050,11 @@ export class KeyService {
 
         // 统计末尾两字节用于 XOR 密钥
         if (data.subarray(0, 6).equals(V2_MAGIC) && data.length >= 2) {
+          v2Count++
           const key = `${data[data.length - 2]}_${data[data.length - 1]}`
           tailCounts[key] = (tailCounts[key] ?? 0) + 1
+        } else {
+          nonV2Count++
         }
 
         // 提取密文（取第一个有效的）
@@ -1030,6 +1070,15 @@ export class KeyService {
     for (const [key, count] of Object.entries(tailCounts)) {
       if (count > maxCount) { maxCount = count; const [x, y] = key.split('_').map(Number); const k = x ^ 0xFF; if (k === (y ^ 0xD9)) xorKey = k }
     }
+
+    // 诊断信息：远程排查时让 UI 直接告诉用户搜到了什么
+    const diag = {
+      userDir,
+      totalTFiles: files.length,
+      v2Count,
+      nonV2Count
+    }
+    ;(this as { _imageTemplateDiag?: unknown })._imageTemplateDiag = diag
 
     return { ciphertext, xorKey }
   }

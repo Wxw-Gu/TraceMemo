@@ -53,7 +53,7 @@ export type ImageDecryptionAction =
       contacts: Contact[]
     }
   | { type: 'LOAD_ERROR'; error: string }
-  | { type: 'EDIT'; field: 'resourceRoot' | 'xorKey' | 'aesKey'; value: string }
+  | { type: 'EDIT'; field: 'xorKey' | 'aesKey'; value: string }
   | { type: 'SELECT_CHAT'; userMd5: string }
   | { type: 'TEST_START' }
   | { type: 'TEST_DONE'; result: ImageDecryptionTestResult }
@@ -80,7 +80,7 @@ export interface ImageDecryptionController {
   pageStatus: 'configured' | 'unconfigured' | 'partial'
   busy: boolean
   canSave: boolean
-  edit: (field: 'resourceRoot' | 'xorKey' | 'aesKey', value: string) => void
+  edit: (field: 'xorKey' | 'aesKey', value: string) => void
   selectChat: (userMd5: string) => void
   test: () => Promise<void>
   save: () => Promise<void>

@@ -7,19 +7,10 @@ export function ImageKeyConfiguration({
 }: {
   state: ImageDecryptionState
   disabled: boolean
-  onEdit: (field: 'resourceRoot' | 'xorKey' | 'aesKey', value: string) => void
+  onEdit: (field: 'xorKey' | 'aesKey', value: string) => void
 }): React.ReactElement {
   return (
     <section className="settings-card image-key-editor">
-      <label>
-        <span>图片资源目录</span>
-        <input
-          value={state.resourceRoot}
-          disabled={disabled}
-          title={state.resourceRoot}
-          onChange={(event) => onEdit('resourceRoot', event.target.value)}
-        />
-      </label>
       <div className="image-key-grid">
         <label>
           <span>XOR Key</span>

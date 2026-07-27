@@ -17,7 +17,9 @@ import { isWechatRunning } from './wechat-process-status'
 export async function inspectImageDecryptionStatus(
   config: ImageKeyConfigResult
 ): Promise<ImageDecryptionStatus> {
-  const accountRoot = chat.getCurrentAccountRoot() || config.resourceRoot
+  // 状态面板的"图片资源目录"始终等于当前识别到的微信账号根目录；
+  // 仅在微信未连接时回退到上次配置中的 resourceRoot，避免空白。
+  const accountRoot = chat.getCurrentAccountRoot() || config.resourceRoot || ''
   const imageDirectoryFound = hasImageDirectory(accountRoot)
   const stickerCacheFound =
     fs.existsSync(path.join(accountRoot, 'cache')) ||
@@ -65,7 +67,10 @@ export function testImageDecryption(
       .reverse()
       .find((message) => message.contentData?.type === 'image')
     if (!imageMessage || imageMessage.contentData?.type !== 'image') {
-      return failure('NO_IMAGE_MESSAGE', '所选聊天最近没有可测试的图片消息')
+      return failure(
+        'NO_IMAGE_MESSAGE',
+        '所选聊天最近 300 条消息内没有可测试的图片，请换一个含图片的会话'
+      )
     }
 
     const service = new ImageDecryptService(
@@ -74,26 +79,51 @@ export function testImageDecryption(
       chat.getChatDb()?.getWcdb4Client()
     )
     const image = imageMessage.contentData
-    let filePath = service.findImageFile(image.md5, image.datName, { allowThumbnail: false })
+    // 测试时优先使用用户在下方"图片资源目录"输入框填写的目录；
+    // 找不到再退回默认 accountDir。
+    const testAccountDir = normalized.resourceRoot || undefined
+    let filePath = service.findImageFile(image.md5, image.datName, {
+      allowThumbnail: false,
+      accountDir: testAccountDir
+    })
     if (!filePath)
-      filePath = service.findImageFile(image.md5, image.datName, { allowThumbnail: true })
+      filePath = service.findImageFile(image.md5, image.datName, {
+        allowThumbnail: true,
+        accountDir: testAccountDir
+      })
     if (!filePath) return failure('FILE_NOT_FOUND', '图片文件不存在')
 
     const data = service.decryptImageToBase64(filePath)
     if (!data) {
+      // 三步联动：解密失败 → fileFound/decrypted/readable 都为 false。
       return {
-        ...failure('DECRYPT_FAILED', '无法解析媒体文件'),
-        fileFound: true
+        success: false,
+        code: 'DECRYPT_FAILED',
+        error: '无法解析媒体文件',
+        fileFound: false,
+        decrypted: false,
+        readable: false
       }
     }
     const readable = data.startsWith('data:image/')
+    if (!readable) {
+      // 三步联动：解密成功但字节流不可读 → 前一步打勾（确实找到了 dat），
+      // 但 decrypted/readable 全为 false，让 UI 表达"找到但解析失败"。
+      return {
+        success: false,
+        code: 'DECRYPT_FAILED',
+        error: '图片解密结果不可读取',
+        fileFound: true,
+        decrypted: false,
+        readable: false,
+        isThumbnail: service.isThumbnailFile(filePath)
+      }
+    }
     return {
-      success: readable,
-      code: readable ? undefined : 'DECRYPT_FAILED',
-      error: readable ? undefined : '图片解密结果不可读取',
+      success: true,
       fileFound: true,
       decrypted: true,
-      readable,
+      readable: true,
       isThumbnail: service.isThumbnailFile(filePath)
     }
   } catch {

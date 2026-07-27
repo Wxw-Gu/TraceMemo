@@ -41,7 +41,6 @@ export class AIProviderService {
   constructor(private readonly keyStore = new AIProviderKeyStore()) {}
 
   list(): AIProviderListResult {
-    this.ensureEnvironmentMigration()
     try {
       const data = this.readMetadata()
       return {
@@ -339,15 +338,10 @@ export class AIProviderService {
   }
 
   private ensureEnvironmentMigration(): void {
-    const data = this.readMetadata()
-    if (data.providers.length) return
-    const apiKey = String(import.meta.env.VITE_DEEPSEEK_API_KEY || '').trim()
-    if (!apiKey) return
-    this.migrateLegacy({
-      apiKey,
-      baseUrl: String(import.meta.env.VITE_AI_BASE_URL || ''),
-      model: String(import.meta.env.VITE_AI_MODEL || '')
-    })
+    // 已禁用：内置环境变量 Key 自动迁移策略。
+    // 安全要求：发布给最终用户的版本不应携带任何内置 API Key，
+    // 必须由用户自己在 UI 里手动配置（或者通过自己的 .env.local 注入）。
+    // 保留此方法作为占位，方便后续重新评估。
   }
 
   private toSummary(

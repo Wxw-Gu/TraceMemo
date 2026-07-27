@@ -33,7 +33,7 @@ export function useImageDecryptionController({
     })
   }, [refresh])
 
-  const edit = useCallback((field: 'resourceRoot' | 'xorKey' | 'aesKey', value: string): void => {
+  const edit = useCallback((field: 'xorKey' | 'aesKey', value: string): void => {
     dispatch({ type: 'EDIT', field, value })
   }, [])
 
@@ -84,12 +84,17 @@ export function useImageDecryptionController({
     dispatch({ type: 'AUTO_START' })
     const result = await window.api.autoGetImageKey({ save: false })
     if (!result.success || !result.aesKey || !result.verified) {
-      dispatch({
-        type: 'AUTO_ERROR',
-        error: result.success
-          ? '获取到候选密钥，但未通过图片验证'
-          : sanitizeImageError(result.error)
-      })
+      // 自动获取链路：原文透传后端错误信息，不要走 sanitizeImageError。
+      // sanitizeImageError 是给"测试图片解析"设计的字典，会把
+      // "未找到 V2 模板文件 / 微信进程未运行 / 60 秒未扫描到密钥" 等
+      // 完全合法的扫描阶段错误强制翻成"无法解析媒体文件"。
+      const rawError = (result.error || '').toString().trim()
+      const errorMessage = !result.success
+        ? rawError || '自动获取图片密钥失败'
+        : !result.aesKey
+          ? '自动获取未返回 AES 密钥'
+          : '获取到候选密钥，但未通过图片验证'
+      dispatch({ type: 'AUTO_ERROR', error: errorMessage })
       return
     }
     dispatch({

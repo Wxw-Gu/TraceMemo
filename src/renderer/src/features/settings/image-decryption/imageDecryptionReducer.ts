@@ -27,7 +27,11 @@ export function imageDecryptionReducer(
         config: action.config,
         status: action.status,
         contacts: action.contacts,
-        resourceRoot: action.config.resourceRoot,
+        // 下方"图片资源目录"跟随状态面板的默认目录同步；
+        // 一旦用户手动编辑过（dirty），就不再被刷新覆盖。
+        resourceRoot: state.dirty && state.resourceRoot
+          ? state.resourceRoot
+          : action.status.resourceRoot || action.config.resourceRoot,
         xorKey: action.config.xorKey || '0x40',
         aesKey: action.config.aesKey || '',
         error: action.config.success ? undefined : action.config.error,
@@ -126,7 +130,7 @@ export function imageDecryptionReducer(
         config: action.config,
         status: action.status,
         contacts: state.contacts,
-        resourceRoot: action.config.resourceRoot
+        resourceRoot: action.status.resourceRoot || action.config.resourceRoot
       }
     default:
       return state

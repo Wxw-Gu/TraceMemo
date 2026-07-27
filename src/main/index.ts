@@ -297,7 +297,12 @@ app.whenReady().then(async () => {
         const nextWechatDb = await WechatDb.create(key, settings.dbRoot)
         const resolvedRoot = nextWechatDb.getWcdb4Client().getAccountRoot()
         if (resolvedRoot && resolvedRoot !== settings.dbRoot) {
-          saveSettings({ ...settings, dbRoot: resolvedRoot })
+          // 同步更新 imageKeyRoot，避免自动获取图片密钥时扫描到错误目录
+          saveSettings({
+            ...settings,
+            dbRoot: resolvedRoot,
+            imageKeyRoot: resolvedRoot
+          })
         }
         chat.setChatDb(nextWechatDb)
         const wcdb4Client = nextWechatDb.getWcdb4Client()
@@ -411,7 +416,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('key:autoGetImageKey', async (event, options?: { save?: boolean }) => {
     const settings = loadSettings()
     const self = chat.getSelfAccountInfo()
-    const accountRoot = settings.imageKeyRoot || self?.accountRoot || settings.dbRoot
+    // 优先级：chat 真实识别到的根 → self.accountRoot → settings.imageKeyRoot → settings.dbRoot
+    // 必须先看 chat.getCurrentAccountRoot()，否则 settings 缓存漂移会导致扫错目录。
+    const accountRoot =
+      chat.getCurrentAccountRoot() ||
+      self?.accountRoot ||
+      settings.imageKeyRoot ||
+      settings.dbRoot
     const wxid = self?.wxid
     const onStatus = (message: string): void => {
       if (!event.sender.isDestroyed()) event.sender.send('key:imageKeyStatus', { message })
@@ -788,6 +799,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('db:reopenWithRoot', (_, accountRoot: string) => {
     const ok = chat.reopenWithRoot(accountRoot)
     if (!ok) return { success: false, error: '数据库未初始化或重新打开失败' }
+    // 同步 imageKeyRoot，避免自动获取扫描到旧目录
+    const settings = loadSettings()
+    if (accountRoot && accountRoot !== settings.imageKeyRoot) {
+      saveSettings({ ...settings, imageKeyRoot: accountRoot })
+    }
     const info = chat.getSelfAccountInfo()
     return { success: true, info }
   })
