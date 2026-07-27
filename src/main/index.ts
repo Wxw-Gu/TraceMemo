@@ -17,7 +17,7 @@ import { extname } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { WechatDb } from './wechat-db'
-import { bootstrapWcdbNative } from './wcdb4-client'
+import { bootstrapWcdbNative, Wcdb4Client } from './wcdb4-client'
 import { VoiceService } from './voice-service'
 import { StickerService } from './sticker-service'
 import { parseMessageContent } from './message-parser'
@@ -94,6 +94,51 @@ const keyServiceMac = new KeyServiceMac()
 const keyServiceWin = new KeyServiceWin()
 let tray: Tray | null = null
 let recallArchiveMonitor: RecallArchiveMonitor | null = null
+let recallProtectionGeneration = 0
+
+function configureRecallProtection(
+  wcdb4Client: Wcdb4Client,
+  accountRoot: string,
+  enabled: boolean
+): void {
+  recallProtectionGeneration += 1
+  const generation = recallProtectionGeneration
+  recallArchiveMonitor?.stop()
+  recallArchiveMonitor = null
+  configureRecallArchive(enabled ? accountRoot : '')
+  if (!enabled) return
+
+  const monitor = new RecallArchiveMonitor(
+    () =>
+      wcdb4Client.getSessions().map((session) => ({
+        md5: wcdb4Client.md5(session.username),
+        m_nsUsrName: session.username,
+        type: session.username.endsWith('@chatroom') ? 'group' : 'user',
+        activityKey: [
+          session.raw['last_timestamp'],
+          session.raw['sort_timestamp'],
+          session.raw['last_msg_locald_id'],
+          session.raw['last_msg_type'],
+          session.raw['summary']
+        ].join(':')
+      })),
+    (sessionMd5) =>
+      chat.listMessages(sessionMd5, Math.floor(Date.now() / 1000) - 10 * 60, undefined, {
+        limit: 500
+      })
+  )
+  recallArchiveMonitor = monitor
+  monitor.seedAll()
+  setTimeout(() => {
+    if (generation !== recallProtectionGeneration || recallArchiveMonitor !== monitor) return
+    const result = wcdb4Client.installRecallJournal(
+      wcdb4Client.getSessions().map((session) => session.username)
+    )
+    console.log(
+      `[WCDB4] recall journal ready installed=${result.installed} failed=${result.failed}`
+    )
+  }, 0)
+}
 
 const packagedIconPath = join(process.resourcesPath, 'resources', 'icon.png')
 const appIconPath = existsSync(packagedIconPath) ? packagedIconPath : icon
@@ -316,36 +361,7 @@ app.whenReady().then(async () => {
         }
         chat.setChatDb(nextWechatDb)
         const wcdb4Client = nextWechatDb.getWcdb4Client()
-        configureRecallArchive(resolvedRoot)
-        recallArchiveMonitor?.stop()
-        recallArchiveMonitor = new RecallArchiveMonitor(
-          () =>
-            wcdb4Client.getSessions().map((session) => ({
-              md5: wcdb4Client.md5(session.username),
-              m_nsUsrName: session.username,
-              type: session.username.endsWith('@chatroom') ? 'group' : 'user',
-              activityKey: [
-                session.raw['last_timestamp'],
-                session.raw['sort_timestamp'],
-                session.raw['last_msg_locald_id'],
-                session.raw['last_msg_type'],
-                session.raw['summary']
-              ].join(':')
-            })),
-          (sessionMd5) =>
-            chat.listMessages(sessionMd5, Math.floor(Date.now() / 1000) - 10 * 60, undefined, {
-              limit: 500
-            })
-        )
-        recallArchiveMonitor.seedAll()
-        setTimeout(() => {
-          const result = wcdb4Client.installRecallJournal(
-            wcdb4Client.getSessions().map((session) => session.username)
-          )
-          console.log(
-            `[WCDB4] recall journal ready installed=${result.installed} failed=${result.failed}`
-          )
-        }, 0)
+        configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
         voiceService = new VoiceService(wcdb4Client)
         stickerService = new StickerService(wcdb4Client)
         videoAssetService = new VideoAssetService(wcdb4Client)
@@ -796,13 +812,21 @@ app.whenReady().then(async () => {
     const xorKey = patch.imageXorKey ?? current.xorKey ?? '0x40'
     const aesKey = patch.imageAesKey ?? current.aesKey ?? ''
     const includesImageKey = 'imageXorKey' in patch || 'imageAesKey' in patch
+    const nextSettings = saveSettings({ ...before, ...patch, imageXorKey: '', imageAesKey: '' })
     if (includesImageKey) {
-      saveSettings({ ...before, ...patch, imageXorKey: '', imageAesKey: '' })
       if (aesKey) imageKeyConfigService.save({ resourceRoot, xorKey, aesKey })
       else imageKeyConfigService.clear()
       imageDecryptService = null
-    } else {
-      saveSettings({ ...before, ...patch, imageXorKey: '', imageAesKey: '' })
+    }
+    if ('recallProtectionEnabled' in patch && chat.isReady()) {
+      const currentDb = chat.getChatDb()
+      if (currentDb) {
+        configureRecallProtection(
+          currentDb.getWcdb4Client(),
+          chat.getCurrentAccountRoot(),
+          nextSettings.recallProtectionEnabled
+        )
+      }
     }
     return {
       settings: imageKeyConfigService.getLegacySettingsView(),

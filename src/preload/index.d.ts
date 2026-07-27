@@ -208,6 +208,7 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          recallProtectionEnabled: boolean
           autoLogin: boolean
           autoLoginPreferenceSet: boolean
           imageXorKey: string
@@ -234,6 +235,7 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          recallProtectionEnabled: boolean
           autoLogin: boolean
           autoLoginPreferenceSet: boolean
           imageXorKey: string
@@ -248,6 +250,7 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          recallProtectionEnabled: boolean
           autoLogin: boolean
           autoLoginPreferenceSet: boolean
           imageXorKey: string
@@ -260,6 +263,7 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          recallProtectionEnabled: boolean
           autoLogin: boolean
           autoLoginPreferenceSet: boolean
           imageXorKey: string

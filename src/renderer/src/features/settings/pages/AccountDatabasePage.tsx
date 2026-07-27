@@ -27,11 +27,14 @@ export function AccountDatabasePage({
 }): React.ReactElement {
   const controller = useAccountDatabaseController({ dbKey, dbReady, selfInfo, onNotice })
   const [autoLogin, setAutoLogin] = useState(false)
+  const [recallProtectionEnabled, setRecallProtectionEnabled] = useState(false)
 
   useEffect(() => {
     let active = true
     void window.api.getSettings().then((result) => {
-      if (active) setAutoLogin(result.settings.autoLogin)
+      if (!active) return
+      setAutoLogin(result.settings.autoLogin)
+      setRecallProtectionEnabled(result.settings.recallProtectionEnabled)
     })
     return () => {
       active = false
@@ -45,6 +48,12 @@ export function AccountDatabasePage({
     })
     setAutoLogin(result.settings.autoLogin)
     onNotice(checked ? '已开启启动时自动连接' : '已关闭启动时自动连接')
+  }
+
+  const changeRecallProtection = async (checked: boolean): Promise<void> => {
+    const result = await window.api.setSettings({ recallProtectionEnabled: checked })
+    setRecallProtectionEnabled(result.settings.recallProtectionEnabled)
+    onNotice(checked ? '已开启防撤回' : '已关闭防撤回')
   }
   return (
     <div className="settings-page">
@@ -92,6 +101,26 @@ export function AccountDatabasePage({
                 onChange={(event) => void changeAutoLogin(event.target.checked)}
               />
             </label>
+          </section>
+          <h2 className="settings-section-heading">数据读取</h2>
+          <section className="settings-card settings-recall-card">
+            <div className="settings-recall-grid">
+              <label className="settings-recall-option">
+                <span>
+                  <b>开启防撤回</b>
+                  <small>尽量保留已撤回的聊天内容，方便后续查看。</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={recallProtectionEnabled}
+                  onChange={(event) => void changeRecallProtection(event.target.checked)}
+                />
+              </label>
+              <aside className="settings-recall-notice">
+                <strong>性能提示</strong>
+                <span>开启后会为消息表增加监听，数据库较大或磁盘较慢时可能让加载变慢。</span>
+              </aside>
+            </div>
           </section>
         </div>
       </div>

@@ -2,7 +2,6 @@ import { app } from 'electron'
 import fs from 'fs-extra'
 import path from 'path'
 import os from 'os'
-import { discoverWindowsDbRoots } from '../windows-db-root-discovery'
 
 /**
  * 把 V3 时代的 "...\\Documents\\WeChat Files" 路径重定向到
@@ -29,6 +28,7 @@ export interface AppSettings {
   imageXorKey: string
   imageAesKey: string
   imageKeyFallbackDisabled: boolean
+  recallProtectionEnabled: boolean
   autoLogin: boolean
   autoLoginPreferenceSet: boolean
 }
@@ -54,8 +54,6 @@ function getDefaultDbRootCandidates(home: string): string[] {
     path.join(home, 'Documents', 'xwechat_files'),
     path.join(os.homedir(), 'AppData', 'Roaming', 'Tencent', 'xwechat_files')
   ]
-
-  candidates.push(...discoverWindowsDbRoots())
 
   return unique(candidates)
 }
@@ -106,6 +104,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   imageXorKey: '',
   imageAesKey: '',
   imageKeyFallbackDisabled: false,
+  recallProtectionEnabled: false,
   autoLogin: ['1', 'true', 'yes', 'on'].includes(
     String(import.meta.env.VITE_AUTO_LOGIN || '')
       .trim()

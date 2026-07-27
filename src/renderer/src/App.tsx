@@ -317,7 +317,7 @@ function App(): React.ReactElement {
       usernames.length ? 55 : 90
     )
     let loadedCount = 0
-    const chunkSize = 32
+    const chunkSize = 128
     for (let index = 0; index < usernames.length; index += chunkSize) {
       if (runId !== contactAvatarHydrationRunRef.current) return
       const chunk = usernames.slice(index, index + chunkSize)
@@ -348,7 +348,7 @@ function App(): React.ReactElement {
       } catch (error) {
         console.warn('[Contacts] avatar hydrate failed:', error)
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 50))
+      await new Promise((resolve) => window.setTimeout(resolve, 20))
     }
     if (usernames.length) onProgress?.('头像加载完成', 90)
   }

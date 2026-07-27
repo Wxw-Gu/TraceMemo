@@ -1,7 +1,6 @@
 import fs from 'fs-extra'
 import path from 'path'
 import os from 'os'
-import { discoverWindowsDbRoots } from './windows-db-root-discovery'
 import crypto from 'crypto'
 import { createRequire } from 'module'
 import { createConnection, Socket } from 'net'
@@ -319,7 +318,6 @@ export class Wcdb4Client {
         path.join(home, 'Documents', 'xwechat_files'),
         path.join(home, 'AppData', 'Roaming', 'Tencent', 'xwechat_files')
       ]
-      candidates.push(...discoverWindowsDbRoots())
       return Array.from(new Set(candidates))
     }
     return [

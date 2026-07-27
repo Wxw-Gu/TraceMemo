@@ -6239,6 +6239,15 @@ body {
   .settings-page-header {
     padding: 20px 24px;
   }
+  .settings-recall-grid {
+    grid-template-columns: 1fr;
+  }
+  .settings-recall-notice {
+    padding-top: 10px;
+    padding-left: 0;
+    border-top: 2px solid #e5b45f;
+    border-left: 0;
+  }
   .settings-account-overview {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 18px;
@@ -7787,6 +7796,55 @@ body {
   width: 18px;
   height: 18px;
   accent-color: var(--wxex-brand);
+}
+.settings-recall-card {
+  padding: 18px 20px;
+}
+.settings-recall-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.8fr);
+  gap: 18px;
+  align-items: center;
+}
+.settings-recall-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-width: 0;
+  cursor: pointer;
+}
+.settings-recall-option span {
+  display: grid;
+  gap: 4px;
+}
+.settings-recall-option b {
+  color: var(--wxex-text-primary);
+  font: 700 13px/19px var(--wxex-font);
+}
+.settings-recall-option small {
+  color: var(--wxex-text-secondary);
+  font: 12px/18px var(--wxex-font);
+}
+.settings-recall-option input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  accent-color: var(--wxex-brand);
+}
+.settings-recall-notice {
+  display: grid;
+  gap: 3px;
+  padding-left: 14px;
+  border-left: 2px solid #e5b45f;
+  color: #765326;
+  font: 12px/18px var(--wxex-font);
+}
+.settings-recall-notice strong {
+  font-weight: 700;
+}
+.settings-recall-notice span {
+  color: #8a6a3e;
 }
 .api-upload-test-row {
   display: flex;
