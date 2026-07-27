@@ -39,6 +39,7 @@ import type {
 } from '../shared/image-insight'
 import type { AgentHubActionResult, AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 import type { AppLogEntry } from '../shared/app-log'
+import type { ExportRequest, ExportJobProgress, ExportResult } from '../shared/export'
 
 export type ParsedContent =
   | { type: 'text'; content: string }
@@ -167,6 +168,10 @@ declare global {
         cdnUrl?: string,
         md5?: string
       ) => Promise<{ success: boolean; data?: string; error?: string }>
+      startExport: (request: ExportRequest) => Promise<ExportResult>
+      cancelExport: (jobId: string) => Promise<{ success: boolean }>
+      revealExport: (path: string) => Promise<{ success: boolean; error?: string }>
+      onExportProgress: (callback: (progress: ExportJobProgress) => void) => () => void
       exportGroupReport: (request: GroupReportExportRequest) => Promise<GroupReportExportResult>
       listGeneratedReports: () => Promise<ReportHistoryResult>
       saveGeneratedReport: (

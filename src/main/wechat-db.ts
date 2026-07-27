@@ -4,6 +4,8 @@ export interface UserContact {
   m_nsUsrName: string
   nickname: string
   avatar?: string
+  wechatNickname?: string
+  remark?: string
 }
 
 export interface WechatMessage {
@@ -56,8 +58,7 @@ export class WechatDb {
     initialChatTables?: { name: string; db_number: string }[]
   ) {
     console.log(`Initializing WechatDb with key length: ${rawKey.trim().length}`)
-    const client =
-      clientOverride || new Wcdb4Client(rawKey, accountRoot)
+    const client = clientOverride || new Wcdb4Client(rawKey, accountRoot)
     if (!clientOverride) client.open()
     this.wcdb4Client = client
     for (const table of initialChatTables || client.getChatTables()) {
@@ -74,7 +75,9 @@ export class WechatDb {
       .map((session) => ({
         m_nsUsrName: session.username,
         nickname: session.nickname || session.username,
-        avatar: session.avatar
+        avatar: session.avatar,
+        wechatNickname: session.wechatNickname,
+        remark: session.remark
       }))
       .filter((contact) => {
         if (!keyword) return true
@@ -124,9 +127,8 @@ export class WechatDb {
   public getGroupMember(wxid: string, chatroomId?: string): GroupMemberInfo | null {
     if (!chatroomId) return null
     return (
-      this.wcdb4Client
-        .getGroupMembers(chatroomId)
-        .find((member) => member.m_nsUsrName === wxid) || null
+      this.wcdb4Client.getGroupMembers(chatroomId).find((member) => member.m_nsUsrName === wxid) ||
+      null
     )
   }
 

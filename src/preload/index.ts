@@ -17,6 +17,7 @@ import type {
 } from '../shared/image-insight'
 import type { AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 import type { AppLogEntry } from '../shared/app-log'
+import type { ExportRequest, ExportJobProgress } from '../shared/export'
 
 // 渲染器的自定义 API
 const api = {
@@ -61,6 +62,15 @@ const api = {
   ) => ipcRenderer.invoke('db:getImage', imageMd5, imageDatNameOrThumb, sessionId, options),
   getVideo: (hashes: string[]) => ipcRenderer.invoke('db:getVideo', hashes),
   getSticker: (cdnUrl?: string, md5?: string) => ipcRenderer.invoke('db:getSticker', cdnUrl, md5),
+  startExport: (request: ExportRequest) => ipcRenderer.invoke('export:start', request),
+  cancelExport: (jobId: string) => ipcRenderer.invoke('export:cancel', jobId),
+  revealExport: (path: string) => ipcRenderer.invoke('export:reveal', path),
+  onExportProgress: (callback: (progress: ExportJobProgress) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: ExportJobProgress): void =>
+      callback(progress)
+    ipcRenderer.on('export:progress', listener)
+    return () => ipcRenderer.removeListener('export:progress', listener)
+  },
   exportGroupReport: (request: GroupReportExportRequest) =>
     ipcRenderer.invoke('report:export', request),
   listGeneratedReports: () => ipcRenderer.invoke('report:listGenerated'),

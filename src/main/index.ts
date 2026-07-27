@@ -75,6 +75,8 @@ import { appLogger } from './app-logger'
 import type { AppLogEntry } from '../shared/app-log'
 import { configureRecallArchive, RecallArchiveMonitor } from './services/recall-archive-service'
 import { VideoAssetService } from './video-asset-service'
+import { cancelExport, revealExport, runExport } from './export-service'
+import type { ExportRequest } from '../shared/export'
 
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
@@ -105,7 +107,15 @@ protocol.registerSchemesAsPrivileged([
 
 // WCDB's Windows runtime checks the host application name during wcdb_init.
 // Mirroring WeFlow's name unblocks the -1006 init failure on Windows.
-app.setName(process.platform === 'win32' ? 'WeFlow' : 'WechatExplorer')
+app.setName(
+  process.platform === 'win32'
+    ? 'WeFlow'
+    : process.env['WXE_USER_DATA']
+      ? 'WechatExplorer Dev'
+      : 'WechatExplorer'
+)
+const isolatedUserData = process.env['WXE_USER_DATA']
+if (isolatedUserData) app.setPath('userData', isolatedUserData)
 let dbInitInFlight: Promise<{ success: boolean; monitoring?: boolean; error?: string }> | null =
   null
 const BUILD_MARK = 'wechat4-local-http-api-2026-07-03'
@@ -419,10 +429,7 @@ app.whenReady().then(async () => {
     // 优先级：chat 真实识别到的根 → self.accountRoot → settings.imageKeyRoot → settings.dbRoot
     // 必须先看 chat.getCurrentAccountRoot()，否则 settings 缓存漂移会导致扫错目录。
     const accountRoot =
-      chat.getCurrentAccountRoot() ||
-      self?.accountRoot ||
-      settings.imageKeyRoot ||
-      settings.dbRoot
+      chat.getCurrentAccountRoot() || self?.accountRoot || settings.imageKeyRoot || settings.dbRoot
     const wxid = self?.wxid
     const onStatus = (message: string): void => {
       if (!event.sender.isDestroyed()) event.sender.send('key:imageKeyStatus', { message })
@@ -566,6 +573,24 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('report:export', async (_, request: GroupReportExportRequest) => {
     return exportGroupReport(request)
+  })
+
+  ipcMain.handle('export:start', async (event, request: ExportRequest) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!window) return { success: false, error: '窗口不可用' }
+    return runExport(request, window)
+  })
+  ipcMain.handle('export:cancel', (_, jobId: string) => {
+    cancelExport(jobId)
+    return { success: true }
+  })
+  ipcMain.handle('export:reveal', async (_, path: string) => {
+    try {
+      await revealExport(path)
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
   })
 
   ipcMain.handle('report:listGenerated', async () => {

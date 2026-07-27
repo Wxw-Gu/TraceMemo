@@ -4,7 +4,6 @@ import { ChatHeader } from './chat/ChatHeader'
 import { ChatStatusBar } from './chat/ChatStatusBar'
 import { DataTrustBar } from './chat/DataTrustBar'
 import { EmptyConversationState } from './chat/EmptyConversationState'
-import { ExportRange } from './chat/ExportMenu'
 import { MessageList } from './chat/MessageList'
 
 interface ChatWindowProps {
@@ -171,65 +170,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   }, [previewImage])
 
-  const handleExport = (days: ExportRange): void => {
-    if (!messages.length) return
-
-    let filtered = messages
-    if (days !== 'all') {
-      const now = new Date()
-      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-
-      filtered = messages.filter((m) => {
-        const parsed = new Date(m.datetime).getTime()
-        if (isNaN(parsed)) return true
-
-        if (days === 0) {
-          // 今天
-          return parsed >= startOfDay
-        } else if (days === 1) {
-          // 昨天
-          const startOfYesterday = startOfDay - 86400000
-          return parsed >= startOfYesterday && parsed < startOfDay
-        } else if (days === 7) {
-          // 过去 7 天
-          const startOf7DaysAgo = startOfDay - 7 * 86400000
-          return parsed >= startOf7DaysAgo
-        } else if (days === 30) {
-          // 过去 30 天
-          const startOf30DaysAgo = startOfDay - 30 * 86400000
-          return parsed >= startOf30DaysAgo
-        }
-        return true
-      })
-    }
-
-    const headers = ['发送者', '类型', '时间', '内容']
-    const csvContent = [
-      headers.join(','),
-      ...filtered.map((m) => {
-        let prefix = ''
-        if (isGroupChat) {
-          prefix = m.name ? `${m.name}: ` : ''
-        } else {
-          const name = m.from === 'user' ? contact?.m_nsNickName || '未知' : '我'
-          prefix = `${name}: `
-        }
-        const fullContent = `${prefix}${m.content}`
-        const content = fullContent.replace(/"/g, '""').replace(/\n/g, ' ')
-        return `"${m.from}","${m.type}","${m.datetime}","${content}"`
-      })
-    ].join('\n')
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.setAttribute('download', `${contact?.m_nsNickName || 'chat'}_export.csv`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-  }
-
   const filteredMessages = React.useMemo(() => {
     return messages.filter((msg) => {
       const filterTypes = (import.meta.env.VITE_FILTER_MSG_TYPES || '')
@@ -255,11 +195,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         filteredCount={filteredMessages.length}
         contentFilter={contentFilter || ''}
         isAiLoading={isAiLoading}
-        canExport={messages.length > 0}
         onContentFilterChange={onContentFilterChange || (() => undefined)}
         onRefresh={onRefresh}
         onRefreshData={onRefreshData}
-        onExport={handleExport}
         onOpenAiSettings={onCreateGroupReport || (() => undefined)}
       />
       <DataTrustBar messageCount={messages.length} />

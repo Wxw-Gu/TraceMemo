@@ -2,14 +2,21 @@ import { ParsedContent } from '../../../shared/types'
 import { useEffect, useState } from 'react'
 import type { JSX, MouseEvent } from 'react'
 import { renderWechatEmojiText } from '../utils/wechatEmojiText'
+import { ImageBubble } from './ImageBubble'
 
 const stickerDataUrlCache = new Map<string, string>()
 
 interface RichMessageBubbleProps {
   contentData: ParsedContent
+  sessionId?: string
+  onImageClick?: (imageUrl: string) => void
 }
 
-export function RichMessageBubble({ contentData }: RichMessageBubbleProps): JSX.Element {
+export function RichMessageBubble({
+  contentData,
+  sessionId,
+  onImageClick
+}: RichMessageBubbleProps): JSX.Element {
   switch (contentData.type) {
     case 'location':
       return <LocationBubble data={contentData} />
@@ -22,7 +29,7 @@ export function RichMessageBubble({ contentData }: RichMessageBubbleProps): JSX.
     case 'sticker':
       return <StickerBubble data={contentData} />
     case 'quote':
-      return <QuoteBubble data={contentData} />
+      return <QuoteBubble data={contentData} sessionId={sessionId} onImageClick={onImageClick} />
     case 'system':
       return <SystemBubble data={contentData} />
     case 'unknown':
@@ -201,7 +208,15 @@ function StickerBubble({
   )
 }
 
-function QuoteBubble({ data }: { data: Extract<ParsedContent, { type: 'quote' }> }): JSX.Element {
+function QuoteBubble({
+  data,
+  sessionId,
+  onImageClick
+}: {
+  data: Extract<ParsedContent, { type: 'quote' }>
+  sessionId?: string
+  onImageClick?: (imageUrl: string) => void
+}): JSX.Element {
   const quotedText = data.quotedContent || data.content || '[引用消息]'
   const replyText = data.content || data.title || ''
   const quotedSender = data.quotedSender || data.sender || ''
@@ -210,7 +225,17 @@ function QuoteBubble({ data }: { data: Extract<ParsedContent, { type: 'quote' }>
     <div className="quote-message">
       <div className="quoted-message">
         {quotedSender && <span className="quoted-sender">{quotedSender}</span>}
-        <span className="quoted-text">{renderWechatEmojiText(quotedText, 18)}</span>
+        {data.quotedImageMd5 || data.quotedImageDatName ? (
+          <ImageBubble
+            imageMd5={data.quotedImageMd5}
+            imageDatName={data.quotedImageDatName}
+            sessionId={sessionId}
+            isThumb
+            onImageClick={onImageClick}
+          />
+        ) : (
+          <span className="quoted-text">{renderWechatEmojiText(quotedText, 18)}</span>
+        )}
       </div>
       {replyText && <div className="quote-reply">{renderWechatEmojiText(replyText)}</div>}
     </div>

@@ -4,6 +4,8 @@ export interface Contact {
   md5: string
   type: 'user' | 'group'
   avatar?: string
+  wechatNickname?: string
+  remark?: string
 }
 
 export interface Message {
@@ -26,6 +28,11 @@ export interface Message {
   recalled?: boolean
   recalledBy?: string
   recoveredFromRecallJournal?: boolean
+  exportMediaUrl?: string
+  exportMediaType?: 'image' | 'video' | 'sticker'
+  exportShowAvatar?: boolean
+  exportMediaError?: string
+  exportAvatarUrl?: string
 }
 
 type TextContent = { type: 'text'; content: string }
@@ -79,6 +86,8 @@ type QuoteContent = {
   quotedContent?: string
   quotedSender?: string
   quotedType?: string
+  quotedImageMd5?: string
+  quotedImageDatName?: string
 }
 type SystemContent = {
   type: 'system'

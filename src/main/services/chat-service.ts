@@ -34,6 +34,8 @@ export interface FormattedContact {
   md5: string
   type: 'user' | 'group'
   avatar?: string
+  wechatNickname?: string
+  remark?: string
 }
 
 export interface FormattedMessage {
@@ -49,6 +51,11 @@ export interface FormattedMessage {
   contentData?: ReturnType<typeof parseMessageContent>
   voiceDataUrl?: string
   voiceDuration?: number
+  exportMediaUrl?: string
+  exportMediaType?: 'image' | 'video' | 'sticker'
+  exportShowAvatar?: boolean
+  exportMediaError?: string
+  exportAvatarUrl?: string
   localId?: number
   serverId?: string
   createTime?: number
@@ -130,7 +137,9 @@ export function listContacts(filter?: string): FormattedContact[] {
       m_nsNickName: user.nickname || '未知用户',
       md5,
       type: isGroup ? 'group' : 'user',
-      avatar: typeof user.avatar === 'string' ? user.avatar : undefined
+      avatar: typeof user.avatar === 'string' ? user.avatar : undefined,
+      wechatNickname: user.wechatNickname,
+      remark: user.remark
     })
   }
 
@@ -249,6 +258,8 @@ function listSourceMessages(
         if (inferredMsgType !== msgType || rawMsgType !== msgType) {
           displayType = MSG_TYPE_DICT[inferredMsgType] || displayType
         }
+        if (parsed.type === 'quote') displayType = '引用消息'
+        if (parsed.type === 'sticker') displayType = '表情包'
       } catch {
         // ignore parse errors
       }

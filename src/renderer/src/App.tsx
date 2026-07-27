@@ -20,6 +20,7 @@ import { AiModelConfig, useGroupReportGeneration } from './hooks/useGroupReportG
 import { SummaryDateRange, SummaryMessageType } from './utils/group-report'
 import { Contact, Message } from '../../shared/types'
 import { DatabaseConnectionMode, DatabaseConnectionPage } from './components/DatabaseConnectionPage'
+import { ExportWorkspace } from './components/export/ExportWorkspace'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -1201,8 +1202,19 @@ function App(): React.ReactElement {
           />
         )
       case 'search':
-      case 'export':
         return renderPlaceholderPage(activePage)
+      case 'export':
+        return (
+          <ExportWorkspace
+            contacts={contacts}
+            selectedContact={selectedContact}
+            previewMessages={messages}
+            selfInfo={selfInfo}
+            dbReady={isDatabaseConnected}
+            onSelectContact={handleSelectContact}
+            onOpenSettings={openSettings}
+          />
+        )
     }
   }
 

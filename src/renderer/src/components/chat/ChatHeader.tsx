@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Contact } from '../../../../shared/types'
 import { ConversationContentSearch } from './ConversationContentSearch'
-import { ExportMenu, ExportRange } from './ExportMenu'
 import { AiIcon, MoreIcon, RefreshIcon, SearchIcon } from './icons'
 
 interface ChatHeaderProps {
@@ -12,11 +11,9 @@ interface ChatHeaderProps {
   filteredCount: number
   contentFilter: string
   isAiLoading: boolean
-  canExport: boolean
   onContentFilterChange: (value: string) => void
   onRefresh?: () => void
   onRefreshData?: () => void
-  onExport: (range: ExportRange) => void
   onOpenAiSettings: () => void
 }
 
@@ -28,11 +25,9 @@ export function ChatHeader({
   filteredCount,
   contentFilter,
   isAiLoading,
-  canExport,
   onContentFilterChange,
   onRefresh,
   onRefreshData,
-  onExport,
   onOpenAiSettings
 }: ChatHeaderProps): React.ReactElement {
   const [searchOpen, setSearchOpen] = useState(Boolean(contentFilter))
@@ -96,7 +91,6 @@ export function ChatHeader({
         <button type="button" className="chat-icon-button" onClick={onRefresh} title="刷新聊天记录">
           <RefreshIcon />
         </button>
-        <ExportMenu disabled={!canExport} onExport={onExport} />
         <div className="chat-menu" ref={moreRef}>
           <button
             type="button"

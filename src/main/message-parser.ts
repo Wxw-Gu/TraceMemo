@@ -49,6 +49,8 @@ type QuoteContent = {
   quotedContent?: string
   quotedSender?: string
   quotedType?: string
+  quotedImageMd5?: string
+  quotedImageDatName?: string
 }
 type SystemContent = {
   type: 'system'
@@ -391,6 +393,10 @@ function parseLocationMessage(content: string): ParsedContent {
 
 function parseShareMessage(content: string): ParsedContent {
   const appMsgType = extractAppMsgType(content)
+  if (appMsgType === '47' || /<(?:emoji|sticker|emoticon)\b/i.test(content)) {
+    const sticker = parseStickerMessage(content)
+    if (sticker.type === 'sticker') return sticker
+  }
   if (appMsgType === '57' || content.includes('<refermsg>')) {
     const quote = parseQuoteMessage(content)
     const title = extractXmlValue(content, 'title') || undefined
@@ -400,7 +406,9 @@ function parseShareMessage(content: string): ParsedContent {
       content: title,
       quotedContent: quote.content || '[引用消息]',
       quotedSender: quote.sender,
-      quotedType: quote.type
+      quotedType: quote.type,
+      quotedImageMd5: quote.imageMd5,
+      quotedImageDatName: quote.imageDatName
     }
   }
 
@@ -417,7 +425,13 @@ function parseShareMessage(content: string): ParsedContent {
   return { type: 'share', title, des, url, appname, typeVal }
 }
 
-function parseQuoteMessage(content: string): { content?: string; sender?: string; type?: string } {
+function parseQuoteMessage(content: string): {
+  content?: string
+  sender?: string
+  type?: string
+  imageMd5?: string
+  imageDatName?: string
+} {
   const referMsgStart = content.indexOf('<refermsg>')
   const referMsgEnd = content.indexOf('</refermsg>')
   if (referMsgStart === -1 || referMsgEnd === -1) return {}
@@ -433,8 +447,16 @@ function parseQuoteMessage(content: string): { content?: string; sender?: string
   switch (referType) {
     case '1':
       return { sender, content: sanitizeQuotedContent(referContent), type: referType }
-    case '3':
-      return { sender, content: '[图片]', type: referType }
+    case '3': {
+      const image = parseImageMessage(referContent)
+      return {
+        sender,
+        content: '[图片]',
+        type: referType,
+        imageMd5: image.type === 'image' ? image.md5 : undefined,
+        imageDatName: image.type === 'image' ? image.datName : undefined
+      }
+    }
     case '34':
       return { sender, content: '[语音]', type: referType }
     case '43':

@@ -11,6 +11,8 @@ export interface Wcdb4Session {
   username: string
   nickname: string
   avatar?: string
+  wechatNickname?: string
+  remark?: string
   raw: Record<string, unknown>
 }
 
@@ -1672,7 +1674,21 @@ export class Wcdb4Client {
       'remark',
       'name'
     ])
-    return { username, nickname, raw: row }
+    const wechatNickname = this.pickString(row, [
+      'wechatNickname',
+      'wechat_nickname',
+      'nickname',
+      'nickName',
+      'name'
+    ])
+    const remark = this.pickString(row, [
+      'remark',
+      'remarkName',
+      'remark_name',
+      'contactRemark',
+      'contact_remark'
+    ])
+    return { username, nickname, wechatNickname, remark, raw: row }
   }
 
   private normalizeMessage(row: Record<string, unknown>): Wcdb4Message {
