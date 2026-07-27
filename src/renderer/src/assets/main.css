@@ -482,8 +482,20 @@ body {
 .conversation-list {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: auto;
   padding: 8px 8px 12px;
+}
+
+.conversation-virtual-content {
+  position: relative;
+  width: 100%;
+}
+
+.conversation-virtual-row {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
 }
 
 .conversation-section + .conversation-section {
@@ -541,9 +553,25 @@ body {
 }
 
 .conversation-section-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  position: relative;
+  overflow: visible;
+}
+
+.export-config-scroll > .export-section:not(.export-format-top):has(.export-format-grid) {
+  display: none;
+}
+
+.conversation-section-virtual-content {
+  position: relative;
+  width: 100%;
+}
+
+.conversation-section-virtual-row {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 58px;
 }
 
 .conversation-section-empty {
@@ -4702,6 +4730,17 @@ body {
   overflow: hidden;
   background: #fafbfa;
 }
+
+.settings-page-panel {
+  display: none;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.settings-page-panel.active {
+  display: flex;
+}
 .settings-sidebar {
   width: 294px;
   flex: 0 0 294px;
@@ -8209,6 +8248,25 @@ body {
   height: 16px;
   accent-color: var(--wxex-brand);
 }
+.export-check-row.unsupported {
+  color: var(--wxex-text-muted);
+  cursor: not-allowed;
+}
+.export-check-row.unsupported input {
+  cursor: not-allowed;
+}
+.export-unsupported-hint {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border: 1px solid #c57923;
+  border-radius: 50%;
+  color: #a85e13;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
 .export-name-mode-grid {
   display: flex;
   gap: 8px;
@@ -8440,10 +8498,15 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin-bottom: 15px;
+  width: min(100%, 620px);
+  margin: 0 auto 15px;
 }
 .export-preview-message.mine {
   flex-direction: row-reverse;
+}
+.export-preview-message.system {
+  justify-content: center;
+  flex-direction: row;
 }
 .export-preview-avatar {
   width: 30px;
@@ -8464,6 +8527,23 @@ body {
 .export-preview-message.mine .export-preview-bubble {
   background: #95ec69;
 }
+.export-preview-message.system .export-preview-avatar {
+  display: none;
+}
+.export-preview-message.system .export-preview-bubble {
+  max-width: 92%;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: #e9eeeb;
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+  text-align: center;
+  box-shadow: none;
+}
+.export-preview-message.system .export-preview-bubble small {
+  display: none;
+}
 .export-preview-bubble small {
   display: block;
   margin-bottom: 3px;
@@ -8476,6 +8556,95 @@ body {
   gap: 12px;
   padding: 18px;
   border-top: 1px solid var(--wxex-border);
+}
+
+.export-task-center-button {
+  align-self: flex-start;
+  margin: 0 0 12px;
+  border: 1px solid var(--wxex-border);
+  border-radius: 6px;
+  background: var(--wxex-bg-elevated);
+  color: var(--wxex-brand);
+  cursor: pointer;
+  padding: 7px 11px;
+  font: 600 12px/18px var(--wxex-font);
+}
+
+.export-task-center {
+  margin: 0 0 18px;
+  padding: 12px;
+  border: 1px solid var(--wxex-border);
+  border-radius: 8px;
+  background: var(--wxex-bg-elevated);
+}
+
+.export-task-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--wxex-border);
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+}
+
+.export-task-row:first-of-type {
+  margin-top: 8px;
+}
+
+.export-task-row span:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.export-task-row strong,
+.export-task-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-task-row strong {
+  color: var(--wxex-text-primary);
+}
+
+.export-task-progress {
+  position: relative;
+  width: 110px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--wxex-border);
+}
+
+.export-task-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--wxex-brand);
+}
+
+.export-task-progress b {
+  position: absolute;
+  top: 10px;
+  right: 0;
+  color: var(--wxex-text-muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.export-task-row button {
+  border: 1px solid var(--wxex-border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--wxex-text-secondary);
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.export-preview-panel .export-preview-stats:not(.export-preview-real-stats) {
+  display: none;
 }
 .export-preview-stats span,
 .export-complete-summary span {

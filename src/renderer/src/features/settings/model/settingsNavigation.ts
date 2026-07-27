@@ -18,7 +18,6 @@ export const SETTINGS_NAVIGATION: SettingsNavigationGroup[] = [
     label: '智能能力',
     items: [
       { id: 'ai-model', label: 'AI 模型' },
-      { id: 'local-api', label: '本地 API' }
     ]
   },
   {
@@ -31,6 +30,7 @@ export const SETTINGS_NAVIGATION: SettingsNavigationGroup[] = [
   {
     label: '应用',
     items: [
+      { id: 'recall-protection', label: '防撤回' },
       { id: 'appearance', label: '外观与行为' },
       { id: 'advanced', label: '高级' },
       { id: 'about', label: '关于' }

@@ -5,6 +5,7 @@ import type {
   ExportMessageKind,
   ExportNameMode
 } from '../../../../shared/export'
+import type { ExportRequest, ExportResult, ExportTaskRecord } from '../../../../shared/export'
 
 type ExportRange = 'today' | 'threeDays' | 'sevenDays' | 'custom'
 type ExportFormat = 'html' | 'csv' | 'json' | 'markdown'
@@ -34,6 +35,9 @@ interface ExportWorkspaceProps {
   dbReady: boolean
   onSelectContact: (contact: Contact) => void
   onOpenSettings: () => void
+  exportTasks: ExportTaskRecord[]
+  onStartExport: (request: ExportRequest) => Promise<ExportResult>
+  onCancelExport: (jobId: string) => Promise<void>
 }
 
 const messageKinds = [
@@ -53,6 +57,7 @@ const formatLabels: Record<ExportFormat, { label: string; hint?: string }> = {
   json: { label: 'JSON' },
   markdown: { label: 'Markdown' }
 }
+const formatOrder: ExportFormat[] = ['csv', 'html', 'json', 'markdown']
 
 function displayName(contact: Contact | null): string {
   return contact?.m_nsNickName || contact?.m_nsUsrName || '未选择会话'
@@ -73,7 +78,10 @@ export function ExportWorkspace({
   selfInfo,
   dbReady,
   onSelectContact,
-  onOpenSettings
+  onOpenSettings,
+  exportTasks,
+  onStartExport,
+  onCancelExport
 }: ExportWorkspaceProps): React.ReactElement {
   const [contactFilter, setContactFilter] = useState('')
   const [contactType, setContactType] = useState<'all' | 'group' | 'user'>('all')
@@ -88,12 +96,13 @@ export function ExportWorkspace({
   const [preferOriginal, setPreferOriginal] = useState(true)
   const [fallbackThumbnail, setFallbackThumbnail] = useState(true)
   const [keepMissing, setKeepMissing] = useState(false)
-  const [format, setFormat] = useState<ExportFormat>('html')
+  const [format, setFormat] = useState<ExportFormat>('csv')
   const [zip, setZip] = useState(false)
   const [fileName, setFileName] = useState('')
   const [status, setStatus] = useState<ExportStatus>('idle')
   const [jobId, setJobId] = useState('')
   const [progress, setProgress] = useState<ExportJobProgress | null>(null)
+  const [taskCenterOpen, setTaskCenterOpen] = useState(false)
 
   const filteredContacts = useMemo(() => {
     const keyword = contactFilter.trim().toLowerCase()
@@ -107,8 +116,17 @@ export function ExportWorkspace({
   }, [contactFilter, contactType, contacts])
 
   const activeContact = selectedContact || filteredContacts[0] || contacts[0] || null
+  const currentTask = exportTasks.find((task) => task.contactId === activeContact?.md5)
+  const taskCount = exportTasks.filter((task) => task.status === 'running').length
   const activeName = displayName(activeContact)
   const preview = previewMessages.slice(-20)
+  const previewMediaCount = preview.filter((message) =>
+    ['image', 'video', 'voice', 'sticker'].includes(message.contentData?.type || '')
+  ).length
+  const previewBytes = preview.reduce(
+    (total, message) => total + (message.content?.length || 0) * 2 + (message.img ? 1024 : 0),
+    0
+  )
   const outputName = fileName.trim() || `${activeName}_聊天档案`
   const nameOptions: { value: ExportNameMode; label: string }[] =
     activeContact?.type === 'group'
@@ -156,21 +174,31 @@ export function ExportWorkspace({
     return map
   }, [activeContact, groupMembers, selfInfo])
 
+  const previewName = (message: Message): string =>
+    (message.senderId && nameMap[message.senderId]) ||
+    message.name ||
+    (message.isSender ? selfInfo?.nickname : undefined) ||
+    (message.isSender ? '我' : '联系人')
+  const previewAvatar = (message: Message): string | undefined =>
+    (message.senderId && avatarUrls[message.senderId]) ||
+    message.img ||
+    (message.isSender ? selfInfo?.avatar : undefined)
+  const previewItems = preview.map((message) => ({
+    ...message,
+    name: previewName(message),
+    img: previewAvatar(message)
+  }))
+
   React.useEffect(() => {
     setNameMode(activeContact?.type === 'group' ? 'groupNickname' : 'remark')
-    let cancelled = false
-    if (!activeContact || activeContact.type !== 'group') {
-      setGroupMembers([])
-      return () => {
-        cancelled = true
-      }
-    }
-    void window.api.getGroupSnapshot(activeContact.md5).then((snapshot) => {
-      if (!cancelled) setGroupMembers((snapshot?.members || []) as GroupMemberName[])
-    })
-    return () => {
-      cancelled = true
-    }
+    setGroupMembers([])
+    if (!activeContact || activeContact.type !== 'group') return
+    const timer = window.setTimeout(() => {
+      void window.api.getGroupSnapshot(activeContact.md5).then((snapshot) => {
+        setGroupMembers((snapshot?.members || []) as GroupMemberName[])
+      })
+    }, 300)
+    return () => window.clearTimeout(timer)
   }, [activeContact])
 
   const toggleKind = (value: string): void => {
@@ -188,6 +216,24 @@ export function ExportWorkspace({
     setJobId(nextJobId)
     setProgress(null)
     setStatus('running')
+    let exportNameMap = nameMap
+    let exportAvatarUrls = avatarUrls
+    if (activeContact.type === 'group') {
+      const snapshot = await window.api.getGroupSnapshot(activeContact.md5)
+      const members = (snapshot?.members || []) as GroupMemberName[]
+      setGroupMembers(members)
+      exportNameMap = { ...nameMap }
+      exportAvatarUrls = { ...avatarUrls }
+      for (const member of members) {
+        exportNameMap[member.wxid] =
+          nameMode === 'groupNickname'
+            ? member.groupNickname || member.nickname || member.wxid
+            : nameMode === 'remark'
+              ? member.remark || member.wechatNickname || member.wxid
+              : member.wechatNickname || member.wxid
+        if (member.avatar) exportAvatarUrls[member.wxid] = member.avatar
+      }
+    }
     const now = new Date()
     const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
     const days = range === 'today' ? 1 : range === 'threeDays' ? 3 : range === 'sevenDays' ? 7 : 0
@@ -213,13 +259,25 @@ export function ExportWorkspace({
       kinds: Array.from(selectedKinds) as ExportMessageKind[],
       includeMedia,
       includeAvatars,
-      avatarUrls,
+      avatarUrls: exportAvatarUrls,
       nameMode,
-      nameMap,
+      nameMap: exportNameMap,
       zip
     }
-    const result = await window.api.startExport(request)
-    if (!result.success && result.error !== '已取消') setStatus('idle')
+    const result = await onStartExport(request)
+    if (result.success) {
+      setProgress((current) => ({
+        ...(current || { jobId: nextJobId, processed: result.messageCount || 0 }),
+        phase: 'completed',
+        processed: result.messageCount ?? current?.processed ?? 0,
+        total: result.messageCount ?? current?.total,
+        percent: 100,
+        outputPath: result.outputPath
+      }))
+      setStatus('completed')
+    } else if (result.error !== '已取消') {
+      setStatus('idle')
+    }
   }
 
   React.useEffect(
@@ -232,6 +290,19 @@ export function ExportWorkspace({
       }),
     [jobId]
   )
+
+  React.useEffect(() => {
+    if (!currentTask) return
+    setJobId(currentTask.jobId)
+    setProgress(currentTask.progress)
+    setStatus(
+      currentTask.status === 'running'
+        ? 'running'
+        : currentTask.status === 'completed'
+          ? 'completed'
+          : 'idle'
+    )
+  }, [currentTask])
 
   const targetPath =
     format === 'html'
@@ -318,6 +389,21 @@ export function ExportWorkspace({
 
       <main className="export-config-panel">
         <div className="export-config-scroll">
+          <button type="button" className="export-task-center-button" onClick={() => setTaskCenterOpen((open) => !open)}>
+            任务中心{taskCount > 0 ? ` (${taskCount})` : ''}
+          </button>
+          {taskCenterOpen && (
+            <section className="export-task-center">
+              <div className="export-section-heading"><h3>导出任务</h3><span>{exportTasks.length} 条记录</span></div>
+              {exportTasks.length === 0 ? <p>暂无导出记录</p> : exportTasks.map((task) => (
+                <div className="export-task-row" key={task.jobId}>
+                  <span><strong>{task.contactName}</strong><small>{task.format.toUpperCase()} · {task.progress.phase}</small></span>
+                  <span className="export-task-progress"><i style={{ width: `${task.progress.percent ?? 0}%` }} /><b>{task.progress.percent ?? 0}%</b></span>
+                  {task.status === 'running' && <button type="button" onClick={() => void onCancelExport(task.jobId)}>取消</button>}
+                </div>
+              ))}
+            </section>
+          )}
           <header className="export-config-header">
             <span className="export-chat-avatar">
               {activeContact?.avatar ? (
@@ -334,6 +420,29 @@ export function ExportWorkspace({
               </p>
             </span>
           </header>
+
+          <section className="export-section export-format-top">
+            <h3>导出格式</h3>
+            <div className="export-format-grid">
+              {formatOrder.map((value) => (
+                <button key={value} type="button" className={format === value ? 'active' : ''} onClick={() => setFormat(value)}>
+                  <strong>{formatLabels[value].label}</strong>
+                  {formatLabels[value].hint && <small>{formatLabels[value].hint}</small>}
+                </button>
+              ))}
+            </div>
+            <p className="export-helper-text">CSV 默认最快；HTML 会包含图片、引用和其他媒体，导出时间可能较长。</p>
+            {format === 'html' && (
+              <div className="export-html-options">
+                <label>
+                  <input type="radio" name="html-package-top" checked={!zip} onChange={() => setZip(false)} /> HTML 资源包
+                </label>
+                <label>
+                  <input type="radio" name="html-package-top" checked={zip} onChange={() => setZip(true)} /> HTML 资源包并压缩为 ZIP
+                </label>
+              </div>
+            )}
+          </section>
 
           <section className="export-section">
             <div className="export-section-heading">
@@ -396,13 +505,19 @@ export function ExportWorkspace({
             <h3>消息内容</h3>
             <div className="export-kind-grid">
               {messageKinds.map(([value, label]) => (
-                <label key={value} className="export-check-row">
+                <label key={value} className={`export-check-row ${value === 'video' ? 'unsupported' : ''}`}>
                   <input
                     type="checkbox"
-                    checked={selectedKinds.has(value)}
+                    checked={value !== 'video' && selectedKinds.has(value)}
+                    disabled={value === 'video'}
                     onChange={() => toggleKind(value)}
                   />
                   <span>{label}</span>
+                  {value === 'video' && (
+                    <span className="export-unsupported-hint" title="当前版本暂不支持视频导出" aria-label="当前版本暂不支持视频导出">
+                      !
+                    </span>
+                  )}
                 </label>
               ))}
             </div>
@@ -431,16 +546,17 @@ export function ExportWorkspace({
               <span>包含图片、视频、语音及动态表情</span>
               <input
                 type="checkbox"
-                checked={includeMedia}
+                  checked={includeMedia}
+                  disabled={format !== 'html'}
                 onChange={(event) => setIncludeMedia(event.target.checked)}
               />
             </label>
-            <div className={`export-media-options ${includeMedia ? '' : 'disabled'}`}>
+            <div className={`export-media-options ${includeMedia && format === 'html' ? '' : 'disabled'}`}>
               <label className="export-check-row">
                 <input
                   type="checkbox"
                   checked={preferOriginal}
-                  disabled={!includeMedia}
+                  disabled={!includeMedia || format !== 'html'}
                   onChange={(event) => setPreferOriginal(event.target.checked)}
                 />
                 <span>优先导出原图</span>
@@ -449,7 +565,7 @@ export function ExportWorkspace({
                 <input
                   type="checkbox"
                   checked={fallbackThumbnail}
-                  disabled={!includeMedia}
+                  disabled={!includeMedia || format !== 'html'}
                   onChange={(event) => setFallbackThumbnail(event.target.checked)}
                 />
                 <span>原图缺失时使用缩略图</span>
@@ -458,12 +574,13 @@ export function ExportWorkspace({
                 <input
                   type="checkbox"
                   checked={keepMissing}
-                  disabled={!includeMedia}
+                  disabled={!includeMedia || format !== 'html'}
                   onChange={(event) => setKeepMissing(event.target.checked)}
                 />
                 <span>媒体缺失时保留占位说明</span>
               </label>
             </div>
+            <p className="export-helper-text">资源文件仅在 HTML 导出中生效，CSV、JSON 和 Markdown 只保留文本内容。</p>
             <div className="export-resource-statuses">
               <span>图片解密：已就绪</span>
               <span>视频资源：可用</span>
@@ -484,7 +601,7 @@ export function ExportWorkspace({
           <section className="export-section">
             <h3>导出格式</h3>
             <div className="export-format-grid">
-              {(Object.keys(formatLabels) as ExportFormat[]).map((value) => (
+              {formatOrder.map((value) => (
                 <button
                   key={value}
                   type="button"
@@ -570,8 +687,8 @@ export function ExportWorkspace({
             </div>
             <div className="export-message-preview">
               <div className="export-preview-date">最近消息</div>
-              {(preview.length
-                ? preview
+              {(previewItems.length
+                ? previewItems
                 : [
                     {
                       id: 'empty',
@@ -585,11 +702,13 @@ export function ExportWorkspace({
               ).map((message) => (
                 <div
                   key={message.id}
-                  className={`export-preview-message ${message.isSender ? 'mine' : ''}`}
+                  className={`export-preview-message ${message.isSender ? 'mine' : ''} ${
+                    message.contentData?.type === 'system' && message.contentData.pat ? 'system' : ''
+                  }`}
                 >
                   <span className="export-preview-avatar">
                     {message.img || (message.isSender && selfInfo?.avatar) ? (
-                      <img src={message.isSender ? selfInfo?.avatar : message.img} alt="" />
+                      <img src={message.img || selfInfo?.avatar} alt="" />
                     ) : (
                       (message.isSender ? '我' : message.name || '友').slice(0, 1)
                     )}
@@ -603,6 +722,17 @@ export function ExportWorkspace({
                   </span>
                 </div>
               ))}
+            </div>
+            <div className="export-preview-stats export-preview-real-stats">
+              <span>
+                预览消息<strong>{previewItems.length}</strong>
+              </span>
+              <span>
+                媒体预览<strong>{previewMediaCount}</strong>
+              </span>
+              <span>
+                预估文本大小<strong>{previewBytes < 1024 ? `${previewBytes} B` : `${(previewBytes / 1024).toFixed(1)} KB`}</strong>
+              </span>
             </div>
             <div className="export-preview-stats">
               <span>

@@ -21,6 +21,7 @@ import { SummaryDateRange, SummaryMessageType } from './utils/group-report'
 import { Contact, Message } from '../../shared/types'
 import { DatabaseConnectionMode, DatabaseConnectionPage } from './components/DatabaseConnectionPage'
 import { ExportWorkspace } from './components/export/ExportWorkspace'
+import type { ExportJobProgress, ExportRequest, ExportTaskRecord } from '../../shared/export'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -39,7 +40,8 @@ interface SelfInfo {
 
 const MAC_KEY_FAQ_URL = 'https://github.com/hicccc77/WeFlow/blob/main/docs/MAC-KEY-FAQ.md'
 const MESSAGE_MONITOR_DEBOUNCE_MS = 8000
-const VIEW_MESSAGE_LIMIT = 600
+const MESSAGE_PAGE_SIZE = 100
+const EXPORT_PREVIEW_LIMIT = 20
 const getMessageIdentity = (message: Message): string => {
   if (message.localId) return `local:${message.localId}`
   if (message.id) return `id:${message.id}`
@@ -133,6 +135,12 @@ const sortMessagesChronologically = (items: Message[]): Message[] =>
     return getMessageIdentity(left).localeCompare(getMessageIdentity(right))
   })
 
+const mergeMessagePages = (older: Message[], current: Message[]): Message[] => {
+  const merged = new Map<string, Message>()
+  for (const message of [...older, ...current]) merged.set(getMessageIdentity(message), message)
+  return sortMessagesChronologically(Array.from(merged.values()))
+}
+
 function App(): React.ReactElement {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
@@ -173,6 +181,14 @@ function App(): React.ReactElement {
   })
   const [selfInfo, setSelfInfo] = useState<SelfInfo | null>(null)
   const [isNativeMonitorActive, setIsNativeMonitorActive] = useState(false)
+  const [exportTasks, setExportTasks] = useState<ExportTaskRecord[]>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('wxe_export_tasks') || '[]')
+      return Array.isArray(stored) ? (stored as ExportTaskRecord[]).slice(0, 20) : []
+    } catch {
+      return []
+    }
+  })
   const [bootState, setBootState] = useState<'loading' | 'connecting' | 'login'>('loading')
   const [autoConnectSource, setAutoConnectSource] = useState<'env' | 'saved' | null>(null)
   const [startupProgress, setStartupProgress] = useState<StartupProgress | null>(null)
@@ -216,6 +232,80 @@ function App(): React.ReactElement {
     modelConfig: aiModelConfig
   })
   const lastCapturedReportKeyRef = React.useRef('')
+
+  React.useEffect(() => {
+    const unsubscribe = window.api.onExportProgress((progress: ExportJobProgress) => {
+      setExportTasks((current) =>
+        current.map((task) => {
+          if (task.jobId !== progress.jobId) return task
+          const status =
+            progress.phase === 'completed'
+              ? 'completed'
+              : progress.phase === 'cancelled'
+                ? 'cancelled'
+                : progress.phase === 'failed'
+                  ? 'failed'
+                  : 'running'
+          return { ...task, status, progress }
+        })
+      )
+    })
+    return unsubscribe
+  }, [])
+
+  React.useEffect(() => {
+    localStorage.setItem('wxe_export_tasks', JSON.stringify(exportTasks.slice(0, 20)))
+  }, [exportTasks])
+
+  const handleStartExport = async (request: ExportRequest): Promise<import('../../shared/export').ExportResult> => {
+    const task: ExportTaskRecord = {
+      jobId: request.jobId,
+      contactId: request.userMd5,
+      contactName: request.name,
+      format: request.format,
+      status: 'running',
+      progress: { jobId: request.jobId, phase: 'reading', processed: 0, percent: 0 },
+      createdAt: Date.now()
+    }
+    setExportTasks((current) => [task, ...current.filter((item) => item.jobId !== task.jobId)].slice(0, 20))
+    const result = await window.api.startExport(request)
+    setExportTasks((current) =>
+      current.map((item) =>
+        item.jobId === request.jobId
+          ? result.success
+            ? {
+                ...item,
+                status: 'completed',
+                progress: {
+                  ...item.progress,
+                  phase: 'completed',
+                  processed: result.messageCount ?? item.progress.processed,
+                  total: result.messageCount ?? item.progress.total,
+                  percent: 100,
+                  outputPath: result.outputPath
+                }
+              }
+            : {
+                ...item,
+                status: 'failed',
+                progress: { ...item.progress, phase: 'failed', error: result.error }
+              }
+          : item
+      )
+    )
+    return result
+  }
+
+  const handleCancelExport = async (jobId: string): Promise<void> => {
+    await window.api.cancelExport(jobId)
+    setExportTasks((current) =>
+      current.map((task) =>
+        task.jobId === jobId
+          ? { ...task, status: 'cancelled', progress: { ...task.progress, phase: 'cancelled' } }
+          : task
+      )
+    )
+  }
 
   const loadGeneratedReports = React.useCallback(async (): Promise<void> => {
     try {
@@ -715,7 +805,7 @@ function App(): React.ReactElement {
       setMessages(
         applyGroupMemberMeta(
           contact,
-          mergeSyntheticMessages(contact, cachedMsgs.slice(-VIEW_MESSAGE_LIMIT))
+          mergeSyntheticMessages(contact, cachedMsgs.slice(-MESSAGE_PAGE_SIZE))
         )
       )
     } else {
@@ -724,7 +814,7 @@ function App(): React.ReactElement {
     await waitForPaint()
     try {
       const msgs = await window.api.getMessages(contact.md5, startTime, endTime, {
-        limit: VIEW_MESSAGE_LIMIT
+        limit: MESSAGE_PAGE_SIZE
       })
       if (selectedContactMd5Ref.current !== contact.md5) return
       const cachedMessages = applyGroupMemberMeta(contact, mergeSyntheticMessages(contact, msgs))
@@ -748,6 +838,46 @@ function App(): React.ReactElement {
     }
   }
 
+  const handleLoadOlderMessages = async (): Promise<void> => {
+    const contact = selectedContact
+    if (!contact || isMessagesLoading || messages.length === 0) return
+    const oldestTime = messages[0]?.createTime
+    if (!oldestTime) return
+    const { startTime } = getDateRangeParams(dateRange)
+    if (startTime && oldestTime <= startTime) return
+
+    setIsMessagesLoading(true)
+    try {
+      const olderMessages = await window.api.getMessages(
+        contact.md5,
+        startTime,
+        oldestTime - 1,
+        { limit: MESSAGE_PAGE_SIZE }
+      )
+      if (selectedContactMd5Ref.current !== contact.md5) return
+      setMessages((current) =>
+        applyGroupMemberMeta(contact, mergeSyntheticMessages(contact, mergeMessagePages(olderMessages, current)))
+      )
+    } catch (error) {
+      console.warn('[Messages] older page load failed:', error)
+    } finally {
+      if (selectedContactMd5Ref.current === contact.md5) setIsMessagesLoading(false)
+    }
+  }
+
+  const loadExportPreview = async (contact: Contact): Promise<void> => {
+    setSelectedContact(contact)
+    selectedContactMd5Ref.current = contact.md5
+    try {
+      const previewMessages = await window.api.getMessages(contact.md5, undefined, undefined, {
+        limit: EXPORT_PREVIEW_LIMIT
+      })
+      if (selectedContactMd5Ref.current === contact.md5) setMessages(previewMessages)
+    } catch (error) {
+      console.warn('[Export] preview load failed:', error)
+    }
+  }
+
   const handleDateRangeChange = (range: string): void => {
     setDateRange(range)
     if (selectedContact) {
@@ -759,13 +889,13 @@ function App(): React.ReactElement {
           setMessages(
             applyGroupMemberMeta(
               selectedContact,
-              mergeSyntheticMessages(selectedContact, cachedMessages.slice(-VIEW_MESSAGE_LIMIT))
+              mergeSyntheticMessages(selectedContact, cachedMessages.slice(-MESSAGE_PAGE_SIZE))
             )
           )
         })
       setIsMessagesLoading(true)
       window.api
-        .getMessages(selectedContact.md5, startTime, endTime, { limit: VIEW_MESSAGE_LIMIT })
+        .getMessages(selectedContact.md5, startTime, endTime, { limit: MESSAGE_PAGE_SIZE })
         .then((nextMessages) => {
           setMessages(
             applyGroupMemberMeta(
@@ -803,7 +933,7 @@ function App(): React.ReactElement {
           contactMd5,
           range.startTime,
           range.endTime,
-          { limit: VIEW_MESSAGE_LIMIT }
+          { limit: MESSAGE_PAGE_SIZE }
         )
         const nextMessages = applyGroupMemberMeta(
           selectedContact,
@@ -828,7 +958,10 @@ function App(): React.ReactElement {
       }
     }
 
-    const unsubscribe = window.api.onWcdbChange(() => {
+    const unsubscribe = window.api.onWcdbChange(({ json }) => {
+      const eventText = String(json || '').toLowerCase()
+      const targetIds = [contactMd5, selectedContact.m_nsUsrName].filter(Boolean).map((value) => value.toLowerCase())
+      if (!targetIds.some((targetId) => eventText.includes(targetId))) return
       if (refreshTimer) window.clearTimeout(refreshTimer)
       refreshTimer = window.setTimeout(() => {
         refreshTimer = null
@@ -870,6 +1003,8 @@ function App(): React.ReactElement {
 
   const handlePageChange = (page: AppPage): void => {
     setActivePage(page)
+    if (page === 'archive' && selectedContact) void handleSelectContact(selectedContact)
+    if (page === 'export' && selectedContact) void loadExportPreview(selectedContact)
     if (page === 'settings') setSettingsCategory('account-database')
     if (page === 'report' && isGroupContact(selectedContact) && !reportSourceContact) {
       setReportSourceContact(selectedContact)
@@ -1083,6 +1218,7 @@ function App(): React.ReactElement {
         onContentFilterChange={setContentFilter}
         onRefresh={() => selectedContact && handleSelectContact(selectedContact)}
         onRefreshData={loadContacts}
+        onLoadOlderMessages={() => void handleLoadOlderMessages()}
         onCreateGroupReport={handleOpenReportWorkspace}
         isAiLoading={reportGeneration.isGenerating}
       />
@@ -1211,8 +1347,11 @@ function App(): React.ReactElement {
             previewMessages={messages}
             selfInfo={selfInfo}
             dbReady={isDatabaseConnected}
-            onSelectContact={handleSelectContact}
+            onSelectContact={loadExportPreview}
             onOpenSettings={openSettings}
+            exportTasks={exportTasks}
+            onStartExport={handleStartExport}
+            onCancelExport={handleCancelExport}
           />
         )
     }

@@ -3,6 +3,7 @@ export type SettingsCategoryId =
   | 'database-key'
   | 'image-key'
   | 'ai-model'
+  | 'recall-protection'
   | 'local-api'
   | 'storage-export'
   | 'cache-cleanup'

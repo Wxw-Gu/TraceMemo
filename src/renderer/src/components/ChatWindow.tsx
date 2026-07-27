@@ -15,6 +15,7 @@ interface ChatWindowProps {
   onContentFilterChange?: (keyword: string) => void
   onRefresh?: () => void
   onRefreshData?: () => void
+  onLoadOlderMessages?: () => void
   onCreateGroupReport?: () => void
   isAiLoading?: boolean
 }
@@ -66,6 +67,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   onContentFilterChange,
   onRefresh,
   onRefreshData,
+  onLoadOlderMessages,
   onCreateGroupReport,
   isAiLoading = false
 }) => {
@@ -97,9 +99,10 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   }, [])
 
   useEffect(() => {
+    if (!isAtLatest) return
     const frame = window.requestAnimationFrame(() => scrollToBottom())
     return () => window.cancelAnimationFrame(frame)
-  }, [messages, scrollToBottom])
+  }, [isAtLatest, messages, scrollToBottom])
 
   const openImagePreview = (imageUrl: string): void => {
     setPreviewImage(imageUrl)
@@ -211,6 +214,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         listRef={messageListRef}
         bottomRef={messagesEndRef}
         onScroll={handleMessageListScroll}
+        onReachTop={onLoadOlderMessages}
         onImageClick={openImagePreview}
       />
       <ChatStatusBar

@@ -40,6 +40,16 @@ export interface ExportJobProgress {
   error?: string
 }
 
+export interface ExportTaskRecord {
+  jobId: string
+  contactId: string
+  contactName: string
+  format: ExportFormat
+  status: 'running' | 'completed' | 'cancelled' | 'failed'
+  progress: ExportJobProgress
+  createdAt: number
+}
+
 export interface ExportResult {
   success: boolean
   outputPath?: string

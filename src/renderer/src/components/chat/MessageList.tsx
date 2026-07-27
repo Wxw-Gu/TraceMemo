@@ -14,6 +14,7 @@ interface MessageListProps {
   listRef: React.RefObject<HTMLDivElement | null>
   bottomRef: React.RefObject<HTMLDivElement | null>
   onScroll: (event: React.UIEvent<HTMLDivElement>) => void
+  onReachTop?: () => void
   onImageClick: (imageUrl: string) => void
 }
 
@@ -27,6 +28,7 @@ export function MessageList({
   listRef,
   bottomRef,
   onScroll,
+  onReachTop,
   onImageClick
 }: MessageListProps): React.ReactElement {
   const groups = React.useMemo(() => buildMessageGroups(messages), [messages])
@@ -41,8 +43,13 @@ export function MessageList({
   })
   const virtualItems = virtualizer.getVirtualItems()
 
+  const handleScroll = (event: React.UIEvent<HTMLDivElement>): void => {
+    onScroll(event)
+    if (event.currentTarget.scrollTop < 120) onReachTop?.()
+  }
+
   return (
-    <div className="message-list wechat-message-list" ref={listRef} onScroll={onScroll}>
+    <div className="message-list wechat-message-list" ref={listRef} onScroll={handleScroll}>
       {isLoadingMessages && <div className="message-loading-pill">正在加载聊天记录...</div>}
       {hiddenMessageCount > 0 && (
         <div className="wechat-system-message-row">

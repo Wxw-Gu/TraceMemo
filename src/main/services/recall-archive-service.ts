@@ -408,6 +408,9 @@ export class RecallArchiveMonitor {
   }
 
   handleDatabaseChange(payload: string): void {
+    // Ordinary message inserts are already visible in the main reader. The
+    // archive scan is only needed when the native event indicates a recall.
+    if (!/(recall|revoke|revokemsg|撤回)/i.test(String(payload || ''))) return
     const groups = this.conversationContacts()
     const knownMd5 = new Set(groups.map((contact) => contact.md5.toLowerCase()))
     const payloadTargets = extractChangedConversationMd5(payload).filter((md5) => knownMd5.has(md5))

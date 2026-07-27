@@ -81,6 +81,7 @@ async function readAvatarAsset(
 }
 const kindOf = (message: Message): ExportMessageKind => {
   const type = message.contentData?.type
+  if (type === 'system' && message.contentData?.pat) return 'text'
   if (
     type === 'image' ||
     type === 'video' ||

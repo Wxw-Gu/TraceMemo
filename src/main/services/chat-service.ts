@@ -229,12 +229,23 @@ function listSourceMessages(
 
     let contentData: ReturnType<typeof parseMessageContent> | undefined
     let displayType = MSG_TYPE_DICT[msgType] || msg.messageType
+    const isPatMessage = /<patMsg\b|拍了拍|拍一拍/i.test(String(content || ''))
+    if (isPatMessage) {
+      const system = parseMessageContent(content, 10000)
+      const patContent =
+        system.type === 'system'
+          ? { ...system, pat: true }
+          : { type: 'system' as const, content: String(content || '').replace(/<[^>]+>/g, '').trim(), pat: true }
+      contentData = patContent
+      content = patContent.content
+      displayType = '系统消息'
+    }
     const inferredMsgType =
       typeof content === 'string' &&
       /<appmsg\b|<refermsg\b|&lt;appmsg\b|&lt;refermsg\b/i.test(content)
         ? 49
         : msgType
-    if ([3, 42, 43, 47, 48, 49, 50, 10000, 10002].includes(inferredMsgType)) {
+    if (!isPatMessage && [3, 42, 43, 47, 48, 49, 50, 10000, 10002].includes(inferredMsgType)) {
       try {
         const isQuotePayload = /<refermsg\b/i.test(content)
         const hasStickerHints =

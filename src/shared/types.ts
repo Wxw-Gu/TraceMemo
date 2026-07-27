@@ -93,6 +93,7 @@ type SystemContent = {
   type: 'system'
   content: string
   raw?: string
+  pat?: boolean
   recall?: {
     targetId?: string
     targetIds?: string[]

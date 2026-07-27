@@ -6,6 +6,7 @@ import { AccountDatabasePage } from './pages/AccountDatabasePage'
 import { DatabaseKeyPage } from './pages/DatabaseKeyPage'
 import { ImageDecryptionPage } from './pages/ImageDecryptionPage'
 import { AIModelPage } from './pages/AIModelPage'
+import { RecallProtectionPage } from './pages/RecallProtectionPage'
 import type { Contact } from '../../../../shared/types'
 import type { AIRuntimeModelConfig } from '../../../../shared/ai-provider'
 
@@ -49,14 +50,10 @@ export function SettingsWorkspace({
         dbReady={dbReady}
         onOpenSettings={onOpenSettings}
       />
-      {selectedCategory === 'account-database' ? (
-        <AccountDatabasePage
-          dbKey={dbKey}
-          dbReady={dbReady}
-          selfInfo={selfInfo}
-          onNotice={onNotice}
-        />
-      ) : selectedCategory === 'database-key' ? (
+      <div className={`settings-page-panel ${selectedCategory === 'account-database' ? 'active' : ''}`}>
+        <AccountDatabasePage dbKey={dbKey} dbReady={dbReady} selfInfo={selfInfo} onNotice={onNotice} />
+      </div>
+      <div className={`settings-page-panel ${selectedCategory === 'database-key' ? 'active' : ''}`}>
         <DatabaseKeyPage
           dbKey={dbKey}
           dbReady={dbReady}
@@ -69,12 +66,20 @@ export function SettingsWorkspace({
           onReturnToLogin={onReturnToLogin}
           onNotice={onNotice}
         />
-      ) : selectedCategory === 'image-key' ? (
+      </div>
+      <div className={`settings-page-panel ${selectedCategory === 'image-key' ? 'active' : ''}`}>
         <ImageDecryptionPage selfInfo={selfInfo} onNotice={onNotice} />
-      ) : selectedCategory === 'ai-model' ? (
+      </div>
+      <div className={`settings-page-panel ${selectedCategory === 'ai-model' ? 'active' : ''}`}>
         <AIModelPage onRuntimeChange={onAIRuntimeChange} onNotice={onNotice} />
-      ) : (
-        <SettingsEmptyState label={SETTINGS_CATEGORY_LABELS[selectedCategory]} />
+      </div>
+      <div className={`settings-page-panel ${selectedCategory === 'recall-protection' ? 'active' : ''}`}>
+        <RecallProtectionPage onNotice={onNotice} />
+      </div>
+      {!['account-database', 'database-key', 'image-key', 'ai-model', 'recall-protection'].includes(selectedCategory) && (
+        <div className="settings-page-panel active">
+          <SettingsEmptyState label={SETTINGS_CATEGORY_LABELS[selectedCategory]} />
+        </div>
       )}
     </div>
   )
