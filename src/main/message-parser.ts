@@ -16,6 +16,22 @@ type ShareContent = {
   appname?: string
   typeVal?: string
 }
+type MiniProgramContent = {
+  type: 'miniProgram'
+  title: string
+  description?: string
+  appName?: string
+  iconUrl?: string
+  thumbMd5?: string
+  thumbDatName?: string
+  thumbDataUrl?: string
+}
+type RedPacketContent = {
+  type: 'redPacket'
+  title: string
+  description?: string
+  url?: string
+}
 type VoipContent = { type: 'voip'; duration?: number; status: string; roomType?: number }
 type ImageContent = {
   type: 'image'
@@ -74,6 +90,8 @@ export type ParsedContent =
   | LocationContent
   | CardContent
   | ShareContent
+  | MiniProgramContent
+  | RedPacketContent
   | VoipContent
   | ImageContent
   | VideoContent
@@ -413,6 +431,31 @@ function parseShareMessage(content: string): ParsedContent {
     }
   }
 
+  if (appMsgType === '33' || appMsgType === '36') {
+    return {
+      type: 'miniProgram',
+      title: extractXmlValue(content, 'title') || '小程序',
+      description: extractXmlValue(content, 'des') || undefined,
+      appName:
+        extractXmlValue(content, 'sourcedisplayname') ||
+        extractXmlValue(content, 'appname') ||
+        '小程序',
+      iconUrl: decodeXmlUrl(extractXmlValue(content, 'weappiconurl')) || undefined,
+      thumbMd5: normalizeMd5(
+        extractXmlValue(content, 'cdnthumbmd5') || extractXmlValue(content, 'md5')
+      )
+    }
+  }
+
+  if (appMsgType === '2001') {
+    return {
+      type: 'redPacket',
+      title: extractXmlValue(content, 'title') || '微信红包',
+      description: extractXmlValue(content, 'des') || '恭喜发财，大吉大利',
+      url: decodeXmlUrl(extractXmlValue(content, 'url')) || undefined
+    }
+  }
+
   const title = extractXmlValue(content, 'title') || ''
   const des = extractXmlValue(content, 'des') || extractXmlValue(content, 'desc') || ''
   const url = extractXmlValue(content, 'url') || ''
@@ -485,6 +528,10 @@ function extractAppMsgType(content: string): string {
   const inner = appmsgMatch[1]
     .replace(/<refermsg[\s\S]*?<\/refermsg>/gi, '')
     .replace(/<patMsg[\s\S]*?<\/patMsg>/gi, '')
+    .replace(/<weappinfo[\s\S]*?<\/weappinfo>/gi, '')
+    .replace(/<appattach[\s\S]*?<\/appattach>/gi, '')
+    .replace(/<wcpayinfo[\s\S]*?<\/wcpayinfo>/gi, '')
+    .replace(/<findernamecard[\s\S]*?<\/findernamecard>/gi, '')
   const typeMatch = /<type>([\s\S]*?)<\/type>/i.exec(inner)
   return typeMatch?.[1]?.trim() || ''
 }
@@ -664,6 +711,71 @@ export function parseImageDatNameFromRow(row: Record<string, unknown>): string |
   if (match?.[1]) return match[1].toLowerCase()
   const hexMatch = /([0-9a-fA-F]{16,})/.exec(text)
   return hexMatch?.[1]?.toLowerCase()
+}
+
+export function parseImageBufferDataUrlFromRow(
+  row: Record<string, unknown>
+): string | undefined {
+  const raw = pickRowString(row, [
+    'ImgBuf',
+    'imgBuf',
+    'img_buf',
+    'imageBuffer',
+    'image_buffer',
+    'thumbBuffer',
+    'thumb_buffer',
+    'WCDB_CT_img_buf',
+    'WCDB_CT_ImgBuf'
+  ])
+  const buffer = decodeInlineImageBuffer(raw)
+  if (!buffer || buffer.length === 0) return undefined
+  const mime = detectImageMime(buffer)
+  return mime ? `data:${mime};base64,${buffer.toString('base64')}` : undefined
+}
+
+function decodeInlineImageBuffer(raw: unknown): Buffer | null {
+  if (!raw) return null
+  if (Buffer.isBuffer(raw)) return raw
+  if (raw instanceof Uint8Array) return Buffer.from(raw)
+  if (Array.isArray(raw)) return Buffer.from(raw)
+  if (typeof raw === 'object') {
+    const record = raw as { buffer?: unknown; data?: unknown }
+    return decodeInlineImageBuffer(record.buffer ?? record.data)
+  }
+  if (typeof raw !== 'string') return null
+  const value = raw.trim()
+  const dataUrl = /^data:image\/[a-z0-9.+-]+;base64,(.+)$/i.exec(value)
+  const encoded = dataUrl?.[1] || value
+  if (!/^[a-z0-9+/]+={0,2}$/i.test(encoded)) return null
+  try {
+    return Buffer.from(encoded, 'base64')
+  } catch {
+    return null
+  }
+}
+
+function detectImageMime(buffer: Buffer): string | undefined {
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg'
+  }
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer.subarray(1, 4).toString('ascii') === 'PNG'
+  ) {
+    return 'image/png'
+  }
+  if (buffer.length >= 6 && /^GIF8[79]a$/.test(buffer.subarray(0, 6).toString('ascii'))) {
+    return 'image/gif'
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'image/webp'
+  }
+  return undefined
 }
 
 function pickRowString(row: Record<string, unknown>, keys: string[]): unknown {

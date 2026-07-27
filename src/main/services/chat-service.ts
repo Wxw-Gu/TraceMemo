@@ -1,5 +1,6 @@
 import { WechatDb, WechatMessage } from '../wechat-db'
 import {
+  parseImageBufferDataUrlFromRow,
   parseImageDatNameFromRow,
   parseMessageContent,
   parseStickerMessageFromRow
@@ -235,7 +236,10 @@ function listSourceMessages(
 
     let contentData: ReturnType<typeof parseMessageContent> | undefined
     let displayType = MSG_TYPE_DICT[msgType] || msg.messageType
-    const isPatMessage = /<patMsg\b|拍了拍|拍一拍/i.test(String(content || ''))
+    const rawContent = String(content || '')
+    const isPatMessage =
+      /<patinfo\b|<type>\s*62\s*<\/type>/i.test(rawContent) ||
+      ([10000, 10002].includes(msgType) && /拍了拍/i.test(rawContent))
     if (isPatMessage) {
       const system = parseMessageContent(content, 10000)
       const patContent =
@@ -254,27 +258,40 @@ function listSourceMessages(
     if (!isPatMessage && [3, 42, 43, 47, 48, 49, 50, 10000, 10002].includes(inferredMsgType)) {
       try {
         const isQuotePayload = /<refermsg\b/i.test(content)
-        const hasStickerHints =
+        const hasStickerPayload =
           /<(?:emoji|sticker|emoticon)\b/i.test(content) ||
-          [
-            'emoji_md5',
-            'emojiMd5',
-            'emoji_cdn_url',
-            'emojiCdnUrl',
-            'packed_info_data',
-            'packed_info',
-            'reserved0',
-            'Reserved0',
-            'WCDB_CT_reserved0'
-          ].some((key) => Boolean(msg[key]))
+          /<type>\s*47\s*<\/type>/i.test(content)
         const rowSticker =
-          inferredMsgType === 47 || (inferredMsgType === 49 && !isQuotePayload && hasStickerHints)
+          inferredMsgType === 47 ||
+          (inferredMsgType === 49 && !isQuotePayload && hasStickerPayload)
             ? parseStickerMessageFromRow(msg, content)
             : undefined
-        const parsed =
-          rowSticker?.type === 'sticker'
-            ? rowSticker
-            : parseMessageContent(content, inferredMsgType)
+        const parsedContent = parseMessageContent(content, inferredMsgType)
+        const rowStickerUrl = rowSticker?.type === 'sticker' ? String(rowSticker.url || '') : ''
+        const parsedShareUrl = parsedContent.type === 'share' ? parsedContent.url : ''
+        const redPacketUrl = rowStickerUrl || parsedShareUrl
+        const isRedPacketFallback =
+          (parsedContent.type === 'share' && parsedContent.typeVal === '2001') ||
+          /wxapp\.tenpay\.com\/mmpayhb/i.test(redPacketUrl)
+        const parsed: ReturnType<typeof parseMessageContent> =
+          parsedContent.type === 'miniProgram' || parsedContent.type === 'redPacket'
+            ? parsedContent
+            : isRedPacketFallback
+              ? {
+                  type: 'redPacket',
+                  title:
+                    parsedContent.type === 'share' && parsedContent.title
+                      ? parsedContent.title
+                      : '微信红包',
+                  description:
+                    parsedContent.type === 'share' && parsedContent.des
+                      ? parsedContent.des
+                      : '恭喜发财，大吉大利',
+                  url: redPacketUrl || undefined
+                }
+              : rowSticker?.type === 'sticker'
+                ? rowSticker
+                : parsedContent
         if (parsed.type === 'system') {
           content = parsed.content
           contentData = parsed
@@ -284,6 +301,13 @@ function listSourceMessages(
         if (parsed.type === 'image') {
           const imageDatName = parseImageDatNameFromRow(msg)
           contentData = { ...parsed, datName: parsed.datName || imageDatName }
+        } else if (parsed.type === 'miniProgram') {
+          contentData = {
+            ...parsed,
+            thumbDatName: parsed.thumbDatName || parseImageDatNameFromRow(msg),
+            thumbDataUrl:
+              parsed.thumbDataUrl || parseImageBufferDataUrlFromRow(msg.raw || msg)
+          }
         } else if (parsed.type !== 'system') {
           if (parsed.type === 'sticker' && !parsed.url && parsed.md5) {
             parsed.url = wcdb4Client.resolveEmoticonCdnUrl(parsed.md5)
@@ -295,6 +319,15 @@ function listSourceMessages(
         }
         if (parsed.type === 'quote') displayType = '引用消息'
         if (parsed.type === 'sticker') displayType = '表情包'
+        if (parsed.type === 'miniProgram') displayType = '小程序'
+        if (parsed.type === 'redPacket') displayType = '微信红包'
+        if (parsed.type === 'share') {
+          if (parsed.typeVal === '5') displayType = '公众号链接'
+          if (parsed.typeVal === '6') displayType = '文件'
+          if (parsed.typeVal === '74') displayType = '文件发送中'
+          if (parsed.typeVal === '51') displayType = '视频号'
+          if (parsed.typeVal === '2000') displayType = '转账'
+        }
       } catch {
         // ignore parse errors
       }

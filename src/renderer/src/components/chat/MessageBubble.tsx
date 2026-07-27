@@ -16,7 +16,22 @@ interface MessageBubbleProps {
   onImageClick: (imageUrl: string) => void
 }
 
-const RICH_MESSAGE_TYPES = ['名片', '位置', '分享消息', '引用消息', '通话', '表情包', '系统消息']
+const RICH_MESSAGE_TYPES = [
+  '名片',
+  '位置',
+  '分享消息',
+  '小程序',
+  '微信红包',
+  '公众号链接',
+  '文件',
+  '文件发送中',
+  '视频号',
+  '转账',
+  '引用消息',
+  '通话',
+  '表情包',
+  '系统消息'
+]
 
 export function MessageBubble({
   message,

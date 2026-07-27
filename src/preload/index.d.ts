@@ -46,7 +46,25 @@ export type ParsedContent =
   | { type: 'voice'; duration?: number }
   | { type: 'location'; poiname?: string; label?: string; lat: number; lng: number }
   | { type: 'card'; username: string; nickname: string; avatarUrl?: string }
-  | { type: 'share'; title: string; des?: string; url: string; appname?: string; type?: string }
+  | {
+      type: 'share'
+      title: string
+      des?: string
+      url: string
+      appname?: string
+      typeVal?: string
+    }
+  | {
+      type: 'miniProgram'
+      title: string
+      description?: string
+      appName?: string
+      iconUrl?: string
+      thumbMd5?: string
+      thumbDatName?: string
+      thumbDataUrl?: string
+    }
+  | { type: 'redPacket'; title: string; description?: string; url?: string }
   | { type: 'voip'; duration?: number; status: string; roomType?: number }
   | { type: 'image'; md5?: string; datName?: string; aeskey?: string; encrypVer?: number }
   | {

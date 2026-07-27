@@ -53,6 +53,22 @@ type ShareContent = {
   appname?: string
   typeVal?: string
 }
+type MiniProgramContent = {
+  type: 'miniProgram'
+  title: string
+  description?: string
+  appName?: string
+  iconUrl?: string
+  thumbMd5?: string
+  thumbDatName?: string
+  thumbDataUrl?: string
+}
+type RedPacketContent = {
+  type: 'redPacket'
+  title: string
+  description?: string
+  url?: string
+}
 type VoipContent = { type: 'voip'; duration?: number; status: string; roomType?: number }
 type ImageContent = {
   type: 'image'
@@ -111,6 +127,8 @@ export type ParsedContent =
   | LocationContent
   | CardContent
   | ShareContent
+  | MiniProgramContent
+  | RedPacketContent
   | VoipContent
   | ImageContent
   | VideoContent

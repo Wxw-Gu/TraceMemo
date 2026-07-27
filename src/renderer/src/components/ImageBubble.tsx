@@ -45,6 +45,7 @@ interface ImageBubbleProps {
   imageDatName?: string
   sessionId?: string
   isThumb?: boolean
+  fallbackUrl?: string
   onImageClick?: (imageUrl: string) => void
 }
 
@@ -53,6 +54,7 @@ export function ImageBubble({
   imageDatName,
   sessionId,
   isThumb = false,
+  fallbackUrl,
   onImageClick
 }: ImageBubbleProps): JSX.Element {
   const initialCachedImage = getCachedImage(imageMd5, imageDatName)
@@ -61,11 +63,18 @@ export function ImageBubble({
   const [upgrading, setUpgrading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isThumbnail, setIsThumbnail] = useState(Boolean(initialCachedImage?.isThumbnail))
+  const [usingFallback, setUsingFallback] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const loadImage = useCallback(async () => {
     if (imageUrl || loading) return
     if (!imageMd5 && !imageDatName) {
+      if (fallbackUrl) {
+        setImageUrl(fallbackUrl)
+        setUsingFallback(true)
+        setError(null)
+        return
+      }
       setError('缺少图片标识')
       return
     }
@@ -79,17 +88,30 @@ export function ImageBubble({
           isThumbnail: Boolean(result.isThumb)
         })
         setImageUrl(result.data)
+        setUsingFallback(false)
         setIsThumbnail(Boolean(result.isThumb))
         setError(null)
       } else {
-        setError(result.error || '加载图片失败')
+        if (fallbackUrl) {
+          setImageUrl(fallbackUrl)
+          setUsingFallback(true)
+          setError(null)
+        } else {
+          setError(result.error || '加载图片失败')
+        }
       }
     } catch {
-      setError('加载图片失败')
+      if (fallbackUrl) {
+        setImageUrl(fallbackUrl)
+        setUsingFallback(true)
+        setError(null)
+      } else {
+        setError('加载图片失败')
+      }
     } finally {
       setLoading(false)
     }
-  }, [imageMd5, imageDatName, sessionId, isThumb, imageUrl, loading])
+  }, [fallbackUrl, imageMd5, imageDatName, sessionId, isThumb, imageUrl, loading])
 
   useEffect(() => {
     if (imageUrl || loading || error) return
@@ -141,6 +163,7 @@ export function ImageBubble({
           isThumbnail: Boolean(result.isThumb)
         })
         setImageUrl(result.data)
+        setUsingFallback(false)
         setIsThumbnail(Boolean(result.isThumb))
         setError(null)
         onImageClick?.(result.data)
@@ -184,7 +207,11 @@ export function ImageBubble({
 
   return (
     <div className="image-bubble image-loaded" onClick={handleClick}>
-      <img src={imageUrl} alt="图片" className="image-content" />
+      <img
+        src={imageUrl}
+        alt="图片"
+        className={`image-content ${usingFallback ? 'image-fallback' : ''}`}
+      />
       {(upgrading || isThumbnail) && (
         <div className="image-quality-badge">{upgrading ? '正在查找原图' : '缩略图'}</div>
       )}

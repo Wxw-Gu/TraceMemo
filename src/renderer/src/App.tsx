@@ -263,6 +263,7 @@ function App(): React.ReactElement {
   const messageHistoryRef = React.useRef<Message[]>([])
   const messagesRef = React.useRef<Message[]>([])
   const messagePrefetchRef = React.useRef<Promise<void> | null>(null)
+  const pendingLiveRefreshMd5Ref = React.useRef('')
   messagesRef.current = messages
   React.useEffect(() => {
     if (!reportNotice) return
@@ -922,6 +923,7 @@ function App(): React.ReactElement {
       storeGroupMemberMeta(contact, cachedPage.groupSnapshot)
     }
     messageHistoryRef.current = cachedMsgs
+    pendingLiveRefreshMd5Ref.current = cachedPage.hit ? '' : contact.md5
     setMessages(
       applyGroupMemberMeta(
         contact,
@@ -929,7 +931,9 @@ function App(): React.ReactElement {
       )
     )
     const needsLivePage =
-      forceLive || (isDatabaseConnected && cachedMsgs.length < MESSAGE_PREFETCH_COUNT)
+      forceLive ||
+      (isDatabaseConnected &&
+        (!cachedPage.hit || cachedMsgs.length < MESSAGE_PREFETCH_COUNT))
     if (!needsLivePage) {
       setIsMessagesLoading(false)
       if (contact.type === 'group' && cachedMsgs.length > 0 && !cachedPage.groupSnapshot) {
@@ -955,6 +959,7 @@ function App(): React.ReactElement {
       })
       if (selectedContactMd5Ref.current !== contact.md5) return
       messageHistoryRef.current = msgs
+      pendingLiveRefreshMd5Ref.current = ''
       const visibleMessages = applyGroupMemberMeta(
         contact,
         mergeSyntheticMessages(contact, msgs.slice(-INITIAL_MESSAGE_COUNT))
@@ -986,7 +991,9 @@ function App(): React.ReactElement {
   }
 
   React.useEffect(() => {
-    if (!isDatabaseConnected || !selectedContact || messages.length > 0) return
+    if (!isDatabaseConnected || !selectedContact) return
+    const needsPendingRefresh = pendingLiveRefreshMd5Ref.current === selectedContact.md5
+    if (messages.length > 0 && !needsPendingRefresh) return
     // The first live page uses async native cursors, so a cache miss can be filled
     // without blocking the Electron main thread.
     void handleSelectContact(selectedContact)

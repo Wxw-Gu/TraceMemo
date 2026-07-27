@@ -2837,6 +2837,143 @@ body {
   text-overflow: ellipsis;
 }
 
+.mini-program-message {
+  width: min(280px, 48vw);
+  overflow: hidden;
+  color: var(--wxex-text-primary);
+}
+
+.mini-program-title {
+  margin-bottom: 8px;
+  font-size: 14px;
+  line-height: 20px;
+  word-break: break-word;
+}
+
+.mini-program-description {
+  margin: -4px 0 8px;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.mini-program-preview .image-bubble,
+.mini-program-preview .image-content {
+  width: 100%;
+  max-width: 100%;
+  max-height: 220px;
+  border-radius: 4px;
+}
+
+.mini-program-preview .image-content {
+  object-fit: cover;
+}
+
+.mini-program-inline-image {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  border-radius: 4px;
+  object-fit: cover;
+  cursor: zoom-in;
+}
+
+.mini-program-preview .image-content.image-fallback {
+  width: 64px;
+  height: 64px;
+  margin: 28px auto;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.mini-program-preview .image-actions {
+  display: none;
+}
+
+.mini-program-icon {
+  display: block;
+  width: 52px;
+  height: 52px;
+  margin: 8px 0;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.mini-program-footer {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--wxex-border);
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.red-packet-message {
+  width: min(280px, 48vw);
+  overflow: hidden;
+  border-radius: 6px;
+  background: #fa9d3b;
+  color: #fff;
+}
+
+.red-packet-message.is-clickable {
+  cursor: pointer;
+}
+
+.red-packet-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 72px;
+  padding: 12px 14px;
+}
+
+.red-packet-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  place-items: center;
+  border: 2px solid rgba(255, 239, 170, 0.92);
+  border-radius: 50%;
+  color: #fff1a8;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.red-packet-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.red-packet-copy strong {
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 21px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.red-packet-copy small {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.red-packet-footer {
+  padding: 5px 14px;
+  background: #fff;
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
 .voip-message {
   display: flex;
   align-items: center;

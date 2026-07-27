@@ -155,6 +155,27 @@ function cachedMessageIdentity(message: Message): string {
   return `id:${message.id}`
 }
 
+function containsLegacyMisparsedAppMessage(items: Message[]): boolean {
+  return items.some((message) => {
+    const content = message.contentData
+    if (content?.type === 'system' && content.raw) {
+      return (
+        /<weappinfo\b/i.test(content.raw) &&
+        /<type>\s*(?:33|36|2001)\s*<\/type>/i.test(content.raw)
+      )
+    }
+    if (
+      content?.type === 'share' &&
+      ((content.typeVal === '3' && !content.url) || content.typeVal === '2001')
+    ) {
+      return true
+    }
+    if (content?.type !== 'sticker') return false
+    const url = String(content.url || content.thumbUrl || '')
+    return /wxapp\.tenpay\.com\/mmpayhb|mp\.weixin\.qq\.com\/mp\/waerrpage/i.test(url)
+  })
+}
+
 function pruneMessageBuckets(messages: Record<string, CachedMessageBucket>): void {
   const entries = Object.entries(messages)
   if (entries.length <= MAX_MESSAGE_BUCKETS) return
@@ -315,7 +336,7 @@ export function getCachedMessagePage(
     }
   }
   return {
-    hit: Boolean(bucket),
+    hit: Boolean(bucket) && !containsLegacyMisparsedAppMessage(bucket?.items || []),
     messages: bucket?.items || [],
     groupSnapshot: cache?.groupSnapshots?.[userMd5]?.snapshot
   }

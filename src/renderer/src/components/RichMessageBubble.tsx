@@ -24,6 +24,16 @@ export function RichMessageBubble({
       return <CardBubble data={contentData} />
     case 'share':
       return <ShareBubble data={contentData} />
+    case 'miniProgram':
+      return (
+        <MiniProgramBubble
+          data={contentData}
+          sessionId={sessionId}
+          onImageClick={onImageClick}
+        />
+      )
+    case 'redPacket':
+      return <RedPacketBubble data={contentData} />
     case 'voip':
       return <VoipBubble data={contentData} />
     case 'sticker':
@@ -113,6 +123,83 @@ function ShareBubble({ data }: { data: Extract<ParsedContent, { type: 'share' }>
       <div className="share-title">{title || '链接'}</div>
       {des && <div className="share-desc">{des}</div>}
       {urlHost && <div className="share-url">{urlHost}</div>}
+    </div>
+  )
+}
+
+function MiniProgramBubble({
+  data,
+  sessionId,
+  onImageClick
+}: {
+  data: Extract<ParsedContent, { type: 'miniProgram' }>
+  sessionId?: string
+  onImageClick?: (imageUrl: string) => void
+}): JSX.Element {
+  return (
+    <div className="mini-program-message">
+      <div className="mini-program-title">{data.title}</div>
+      {data.description && <div className="mini-program-description">{data.description}</div>}
+      {data.thumbDataUrl ? (
+        <div className="mini-program-preview">
+          <img
+            className="mini-program-inline-image"
+            src={data.thumbDataUrl}
+            alt={data.title}
+            onClick={() => onImageClick?.(data.thumbDataUrl || '')}
+          />
+        </div>
+      ) : data.thumbMd5 ? (
+        <div className="mini-program-preview">
+          <ImageBubble
+            imageMd5={data.thumbMd5}
+            imageDatName={data.thumbDatName}
+            sessionId={sessionId}
+            isThumb
+            fallbackUrl={data.iconUrl}
+            onImageClick={onImageClick}
+          />
+        </div>
+      ) : data.iconUrl ? (
+        <img
+          className="mini-program-icon"
+          src={data.iconUrl}
+          alt=""
+          referrerPolicy="no-referrer"
+        />
+      ) : null}
+      <div className="mini-program-footer">
+        <span aria-hidden>⌁</span>
+        <span>{data.appName || '小程序'}</span>
+      </div>
+    </div>
+  )
+}
+
+function RedPacketBubble({
+  data
+}: {
+  data: Extract<ParsedContent, { type: 'redPacket' }>
+}): JSX.Element {
+  const handleClick = (): void => {
+    if (data.url) window.open(data.url, '_blank')
+  }
+
+  return (
+    <div
+      className={`red-packet-message ${data.url ? 'is-clickable' : ''}`}
+      onClick={data.url ? handleClick : undefined}
+    >
+      <div className="red-packet-main">
+        <span className="red-packet-icon" aria-hidden>
+          ¥
+        </span>
+        <span className="red-packet-copy">
+          <strong>{data.title}</strong>
+          <small>{data.description || '恭喜发财，大吉大利'}</small>
+        </span>
+      </div>
+      <div className="red-packet-footer">微信红包</div>
     </div>
   )
 }
