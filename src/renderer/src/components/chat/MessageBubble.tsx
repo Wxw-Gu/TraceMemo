@@ -14,6 +14,7 @@ interface MessageBubbleProps {
   isMine: boolean
   showAvatarSpace: boolean
   onImageClick: (imageUrl: string) => void
+  isJumpTarget?: boolean
 }
 
 const RICH_MESSAGE_TYPES = [
@@ -39,7 +40,8 @@ export function MessageBubble({
   isGroupChat,
   isMine,
   showAvatarSpace,
-  onImageClick
+  onImageClick,
+  isJumpTarget
 }: MessageBubbleProps): React.ReactElement {
   const isVoice = message.type === '语音'
   const isImage = message.type === '图片'
@@ -48,7 +50,9 @@ export function MessageBubble({
   const hoverTime = formatMessageTime(message)
 
   return (
-    <div className={`message-bubble-wrap ${showAvatarSpace ? '' : 'is-followup'}`}>
+    <div
+      className={`message-bubble-wrap ${showAvatarSpace ? '' : 'is-followup'} ${isJumpTarget ? 'archive-jump-message' : ''}`}
+    >
       <div
         className={`message-bubble ${isVoice ? 'voice-bubble' : ''} ${
           isImage ? 'image-message-bubble' : ''

@@ -29,6 +29,7 @@ export interface AppSettings {
   imageAesKey: string
   imageKeyFallbackDisabled: boolean
   recallProtectionEnabled: boolean
+  debugEnabled: boolean
   autoLogin: boolean
   autoLoginPreferenceSet: boolean
 }
@@ -105,6 +106,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   imageAesKey: '',
   imageKeyFallbackDisabled: false,
   recallProtectionEnabled: false,
+  debugEnabled: false,
   autoLogin: ['1', 'true', 'yes', 'on'].includes(
     String(import.meta.env.VITE_AUTO_LOGIN || '')
       .trim()

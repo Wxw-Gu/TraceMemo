@@ -9,6 +9,7 @@ interface MessageGroupProps {
   isGroupChat: boolean
   showAvatar: boolean
   onImageClick: (imageUrl: string) => void
+  jumpTargetMessageId?: string
 }
 
 export function MessageGroup({
@@ -16,7 +17,8 @@ export function MessageGroup({
   contact,
   isGroupChat,
   showAvatar,
-  onImageClick
+  onImageClick,
+  jumpTargetMessageId
 }: MessageGroupProps): React.ReactElement {
   const firstMessage = group.messages[0]
 
@@ -57,9 +59,7 @@ export function MessageGroup({
         )}
         {!isMine && !shouldShowAvatar && <div className="message-avatar-spacer" aria-hidden />}
         <div className="message-stack">
-          {!isMine && isGroupChat && (
-            <div className="message-sender-name">{displayName}</div>
-          )}
+          {!isMine && isGroupChat && <div className="message-sender-name">{displayName}</div>}
           {group.messages.map((message, index) => (
             <MessageBubble
               key={message.id}
@@ -69,6 +69,7 @@ export function MessageGroup({
               isMine={isMine}
               showAvatarSpace={index === 0}
               onImageClick={onImageClick}
+              isJumpTarget={message.id === jumpTargetMessageId}
             />
           ))}
         </div>

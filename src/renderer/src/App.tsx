@@ -21,6 +21,7 @@ import { SummaryDateRange, SummaryMessageType } from './utils/group-report'
 import { Contact, Message } from '../../shared/types'
 import { DatabaseConnectionMode, DatabaseConnectionPage } from './components/DatabaseConnectionPage'
 import { ExportWorkspace } from './components/export/ExportWorkspace'
+import { AISearchWorkspace } from './components/search/AISearchWorkspace'
 import type { ExportJobProgress, ExportRequest, ExportTaskRecord } from '../../shared/export'
 
 const SIDEBAR_MIN_WIDTH = 260
@@ -101,10 +102,7 @@ const enrichQuotedMessages = (messages: Message[], referenceMessages: Message[])
       if (source?.name && !isInternalReferenceSender(source.name)) quotedSender = source.name
     }
 
-    if (
-      quotedSender === quote.quotedSender &&
-      quotedImageDatName === quote.quotedImageDatName
-    ) {
+    if (quotedSender === quote.quotedSender && quotedImageDatName === quote.quotedImageDatName) {
       return message
     }
     return {
@@ -227,6 +225,7 @@ function App(): React.ReactElement {
     getDevelopmentDatabaseKey() ? 'manual' : 'automatic'
   )
   const [activePage, setActivePage] = useState<AppPage>('archive')
+  const [archiveJumpTime, setArchiveJumpTime] = useState<number | null>(null)
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>('account-database')
   const [reportSourceContact, setReportSourceContact] = useState<Contact | null>(null)
   const [reportWorkspaceView, setReportWorkspaceView] = useState<ReportWorkspaceView>('result')
@@ -326,7 +325,9 @@ function App(): React.ReactElement {
     localStorage.setItem('wxe_export_tasks', JSON.stringify(exportTasks.slice(0, 20)))
   }, [exportTasks])
 
-  const handleStartExport = async (request: ExportRequest): Promise<import('../../shared/export').ExportResult> => {
+  const handleStartExport = async (
+    request: ExportRequest
+  ): Promise<import('../../shared/export').ExportResult> => {
     const task: ExportTaskRecord = {
       jobId: request.jobId,
       contactId: request.userMd5,
@@ -336,7 +337,9 @@ function App(): React.ReactElement {
       progress: { jobId: request.jobId, phase: 'reading', processed: 0, percent: 0 },
       createdAt: Date.now()
     }
-    setExportTasks((current) => [task, ...current.filter((item) => item.jobId !== task.jobId)].slice(0, 20))
+    setExportTasks((current) =>
+      [task, ...current.filter((item) => item.jobId !== task.jobId)].slice(0, 20)
+    )
     const result = await window.api.startExport(request)
     setExportTasks((current) =>
       current.map((item) =>
@@ -561,23 +564,25 @@ function App(): React.ReactElement {
           setIsAuthenticated(true)
           setIsDatabaseConnected(false)
           setBootState('login')
-          void initPromise.then(async (result) => {
-            const success = typeof result === 'boolean' ? result : result.success
-            if (!success) {
-              const error = typeof result === 'boolean' ? '' : result.error
-              setDbKeyStatus(`后台连接失败${error ? `: ${error}` : ''}`)
+          void initPromise
+            .then(async (result) => {
+              const success = typeof result === 'boolean' ? result : result.success
+              if (!success) {
+                const error = typeof result === 'boolean' ? '' : result.error
+                setDbKeyStatus(`后台连接失败${error ? `: ${error}` : ''}`)
+                setDbKeyStatusKind('error')
+                return
+              }
+              setIsNativeMonitorActive(typeof result !== 'boolean' && result.monitoring === true)
+              setIsDatabaseConnected(true)
+              setDbKeyStatus('已连接数据库')
+              // Cached contacts/self info are enough for startup. Native refresh is
+              // intentionally user-triggered so it cannot freeze the first session.
+            })
+            .catch((error) => {
+              console.warn('[Startup] background database init failed:', error)
               setDbKeyStatusKind('error')
-              return
-            }
-            setIsNativeMonitorActive(typeof result !== 'boolean' && result.monitoring === true)
-            setIsDatabaseConnected(true)
-            setDbKeyStatus('已连接数据库')
-            // Cached contacts/self info are enough for startup. Native refresh is
-            // intentionally user-triggered so it cannot freeze the first session.
-          }).catch((error) => {
-            console.warn('[Startup] background database init failed:', error)
-            setDbKeyStatusKind('error')
-          })
+            })
           return
         }
         const result = await initPromise
@@ -686,17 +691,13 @@ function App(): React.ReactElement {
         if (hasBootstrap) {
           // Cached contacts are sufficient for the first paint. Refresh native data in the background.
           setIsAuthenticated(true)
-          void Promise.all([
-            loadContacts({ waitForAvatars: false }),
-            refreshSelfInfo(3)
-          ]).catch((error) => {
-            console.warn('[Startup] background refresh failed:', error)
-          })
+          void Promise.all([loadContacts({ waitForAvatars: false }), refreshSelfInfo(3)]).catch(
+            (error) => {
+              console.warn('[Startup] background refresh failed:', error)
+            }
+          )
         } else {
-          await Promise.all([
-            loadContacts({ waitForAvatars: false }),
-            refreshSelfInfo(3)
-          ])
+          await Promise.all([loadContacts({ waitForAvatars: false }), refreshSelfInfo(3)])
           setIsAuthenticated(true)
         }
         setStartupProgress({
@@ -911,6 +912,7 @@ function App(): React.ReactElement {
   }
 
   const handleSelectContact = async (contact: Contact, forceLive = false): Promise<void> => {
+    setArchiveJumpTime(null)
     setSelectedContact(contact)
     selectedContactMd5Ref.current = contact.md5
     currentGroupSnapshotRef.current = null
@@ -984,6 +986,26 @@ function App(): React.ReactElement {
     }
   }
 
+  const handleOpenSearchEvidence = async (contact: Contact, createTime?: number): Promise<void> => {
+    setActivePage('archive')
+    await handleSelectContact(contact)
+    if (!createTime || selectedContactMd5Ref.current !== contact.md5) return
+
+    try {
+      const windowStart = Math.max(0, createTime - 12 * 3600)
+      const windowEnd = createTime + 12 * 3600
+      const nearbyMessages = await window.api.getMessages(contact.md5, windowStart, windowEnd)
+      if (selectedContactMd5Ref.current !== contact.md5) return
+      const focusedMessages = sortMessagesChronologically(nearbyMessages)
+      messageHistoryRef.current = focusedMessages
+      setMessages(applyGroupMemberMeta(contact, mergeSyntheticMessages(contact, focusedMessages)))
+      setArchiveJumpTime(createTime)
+    } catch (error) {
+      console.warn('[Search] evidence context load failed:', error)
+      setReportNotice('证据所在时间段加载失败，请在档案中手动查看')
+    }
+  }
+
   React.useEffect(() => {
     if (!isDatabaseConnected || !selectedContact) return
     void handleSelectContact(selectedContact)
@@ -1045,7 +1067,10 @@ function App(): React.ReactElement {
       if (selectedContactMd5Ref.current !== contact.md5) return
       messageHistoryRef.current = mergeMessagePages(olderMessages, historyMessages)
       setMessages((current) =>
-        applyGroupMemberMeta(contact, mergeSyntheticMessages(contact, mergeMessagePages(olderMessages, current)))
+        applyGroupMemberMeta(
+          contact,
+          mergeSyntheticMessages(contact, mergeMessagePages(olderMessages, current))
+        )
       )
     } catch (error) {
       console.warn('[Messages] older page load failed:', error)
@@ -1083,12 +1108,9 @@ function App(): React.ReactElement {
       }
       refreshInFlight = true
       try {
-        const latestMessages = await window.api.getMessages(
-          contactMd5,
-          undefined,
-          undefined,
-          { limit: INITIAL_MESSAGE_COUNT }
-        )
+        const latestMessages = await window.api.getMessages(contactMd5, undefined, undefined, {
+          limit: INITIAL_MESSAGE_COUNT
+        })
         const nextMessages = applyGroupMemberMeta(
           selectedContact,
           mergeSyntheticMessages(selectedContact, latestMessages)
@@ -1114,7 +1136,9 @@ function App(): React.ReactElement {
 
     const unsubscribe = window.api.onWcdbChange(({ json }) => {
       const eventText = String(json || '').toLowerCase()
-      const targetIds = [contactMd5, selectedContact.m_nsUsrName].filter(Boolean).map((value) => value.toLowerCase())
+      const targetIds = [contactMd5, selectedContact.m_nsUsrName]
+        .filter(Boolean)
+        .map((value) => value.toLowerCase())
       if (!targetIds.some((targetId) => eventText.includes(targetId))) return
       if (refreshTimer) window.clearTimeout(refreshTimer)
       refreshTimer = window.setTimeout(() => {
@@ -1327,24 +1351,6 @@ function App(): React.ReactElement {
     return { success: true }
   }
 
-  const renderPlaceholderPage = (
-    page: Exclude<AppPage, 'archive' | 'report' | 'agent-hub'>
-  ): React.ReactElement => {
-    const labels: Record<Exclude<AppPage, 'archive' | 'report' | 'agent-hub'>, string> = {
-      search: '检索',
-      export: '导出',
-      api: 'API',
-      settings: '设置'
-    }
-    return (
-      <div className="app-page-placeholder">
-        <div className="app-page-placeholder-eyebrow">WechatExplorer</div>
-        <h2>{labels[page]}</h2>
-        <p>这个工作区会在后续 UI 重构阶段接入真实功能。</p>
-      </div>
-    )
-  }
-
   const renderArchiveWorkspace = (): React.ReactElement => (
     <div className="app-container">
       <Sidebar
@@ -1372,6 +1378,7 @@ function App(): React.ReactElement {
         onLoadOlderMessages={handleLoadOlderMessages}
         onCreateGroupReport={handleOpenReportWorkspace}
         isAiLoading={reportGeneration.isGenerating}
+        jumpToTime={archiveJumpTime}
       />
     </div>
   )
@@ -1489,7 +1496,20 @@ function App(): React.ReactElement {
           />
         )
       case 'search':
-        return renderPlaceholderPage(activePage)
+        return (
+          <AISearchWorkspace
+            contacts={contacts}
+            selectedContact={selectedContact}
+            dbReady={isDatabaseConnected}
+            aiModelConfig={aiModelConfig}
+            onSelectContact={(contact) => void handleSelectContact(contact)}
+            onOpenEvidence={(contact, createTime) =>
+              void handleOpenSearchEvidence(contact, createTime)
+            }
+            onOpenAISettings={openModelSettings}
+            onNotice={setReportNotice}
+          />
+        )
       case 'export':
         return (
           <ExportWorkspace

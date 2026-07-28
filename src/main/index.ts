@@ -579,7 +579,13 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(
     'db:getMessages',
-    async (_, userMd5: string, startTime?: number, endTime?: number, options?: { limit?: number }) => {
+    async (
+      _,
+      userMd5: string,
+      startTime?: number,
+      endTime?: number,
+      options?: { limit?: number }
+    ) => {
       const messages = await chat.listMessagesAsync(userMd5, startTime, endTime, options)
       if (chat.isReady()) {
         saveCachedMessages(chat.getCurrentAccountRoot(), userMd5, startTime, endTime, messages)
@@ -654,7 +660,6 @@ app.whenReady().then(async () => {
       return { success: false, error: String(error) }
     }
   })
-
   ipcMain.handle('report:listGenerated', async () => {
     return listGeneratedReports()
   })

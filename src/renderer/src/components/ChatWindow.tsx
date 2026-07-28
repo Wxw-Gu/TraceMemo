@@ -18,6 +18,7 @@ interface ChatWindowProps {
   onLoadOlderMessages?: () => Promise<void>
   onCreateGroupReport?: () => void
   isAiLoading?: boolean
+  jumpToTime?: number | null
 }
 
 const ChatWindow: React.FC<ChatWindowProps> = ({
@@ -31,7 +32,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   onReloadAvatars,
   onLoadOlderMessages,
   onCreateGroupReport,
-  isAiLoading = false
+  isAiLoading = false,
+  jumpToTime
 }) => {
   const isGroupChat = Boolean(
     contact?.type === 'group' || contact?.m_nsUsrName?.endsWith('@chatroom')
@@ -73,19 +75,23 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   }, [contact?.md5])
 
   useEffect(() => {
-    if (!isAtLatest) return
-    const frame = window.requestAnimationFrame(() => scrollToBottom())
-    return () => window.cancelAnimationFrame(frame)
-  }, [isAtLatest, messages, scrollToBottom])
+    if (jumpToTime !== undefined && jumpToTime !== null) setIsAtLatest(false)
+  }, [jumpToTime])
 
   useEffect(() => {
-    if (!isAtLatest) return
+    if (!isAtLatest || (jumpToTime !== undefined && jumpToTime !== null)) return
+    const frame = window.requestAnimationFrame(() => scrollToBottom())
+    return () => window.cancelAnimationFrame(frame)
+  }, [isAtLatest, jumpToTime, messages, scrollToBottom])
+
+  useEffect(() => {
+    if (!isAtLatest || (jumpToTime !== undefined && jumpToTime !== null)) return
     const content = messageListRef.current?.querySelector('.virtual-message-list')
     if (!content) return
     const observer = new ResizeObserver(() => scrollToBottom())
     observer.observe(content)
     return () => observer.disconnect()
-  }, [contact?.md5, isAtLatest, scrollToBottom])
+  }, [contact?.md5, isAtLatest, jumpToTime, scrollToBottom])
 
   const openImagePreview = (imageUrl: string): void => {
     setPreviewImage(imageUrl)
@@ -206,6 +212,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         onScroll={handleMessageListScroll}
         onReachTop={onLoadOlderMessages}
         onImageClick={openImagePreview}
+        jumpToTime={jumpToTime}
       />
       <ChatStatusBar
         count={filteredMessages.length}

@@ -16,6 +16,7 @@ interface MessageListProps {
   onScroll: (event: React.UIEvent<HTMLDivElement>) => void
   onReachTop?: () => Promise<void>
   onImageClick: (imageUrl: string) => void
+  jumpToTime?: number | null
 }
 
 export function MessageList({
@@ -29,14 +30,13 @@ export function MessageList({
   bottomRef,
   onScroll,
   onReachTop,
-  onImageClick
+  onImageClick,
+  jumpToTime
 }: MessageListProps): React.ReactElement {
   const groups = React.useMemo(() => buildMessageGroups(messages), [messages])
   const groupsRef = React.useRef(groups)
   const loadingOlderRef = React.useRef(false)
   groupsRef.current = groups
-  // TanStack Virtual intentionally exposes mutable measurement methods.
-  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: groups.length,
     getScrollElement: () => listRef.current,
@@ -45,11 +45,29 @@ export function MessageList({
     overscan: 8
   })
   const virtualItems = virtualizer.getVirtualItems()
+  const jumpTarget = React.useMemo(() => {
+    if (jumpToTime === undefined || jumpToTime === null) return null
+    const groupIndex = groups.findIndex((group) =>
+      group.messages.some((message) => (message.createTime || 0) >= jumpToTime)
+    )
+    if (groupIndex < 0) return null
+    const message = groups[groupIndex].messages.find((item) => (item.createTime || 0) >= jumpToTime)
+    return { groupIndex, messageId: message?.id }
+  }, [groups, jumpToTime])
+
+  React.useEffect(() => {
+    if (!jumpTarget) return
+    const frame = window.requestAnimationFrame(() => {
+      virtualizer.scrollToIndex(jumpTarget.groupIndex, { align: 'center' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [jumpTarget, virtualizer])
 
   const handleScroll = (event: React.UIEvent<HTMLDivElement>): void => {
     onScroll(event)
     const scrollElement = event.currentTarget
     if (
+      (jumpToTime !== undefined && jumpToTime !== null) ||
       scrollElement.scrollTop >= 48 ||
       loadingOlderRef.current ||
       isLoadingMessages ||
@@ -117,7 +135,7 @@ export function MessageList({
               key={virtualItem.key}
               ref={virtualizer.measureElement}
               data-index={virtualItem.index}
-              className="virtual-message-group"
+              className={`virtual-message-group ${jumpTarget?.groupIndex === virtualItem.index ? 'archive-jump-target-group' : ''}`}
               style={{ transform: `translateY(${virtualItem.start}px)` }}
             >
               <MessageGroup
@@ -126,6 +144,7 @@ export function MessageList({
                 isGroupChat={isGroupChat}
                 showAvatar={showAvatar}
                 onImageClick={onImageClick}
+                jumpTargetMessageId={jumpTarget?.messageId}
               />
             </div>
           )
