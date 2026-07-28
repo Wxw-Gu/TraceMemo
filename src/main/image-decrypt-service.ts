@@ -9,10 +9,23 @@ const imageDecryptLog = (...args: unknown[]): void => {
   if (imageDecryptDebugEnabled) console.log(...args)
 }
 
+type DecodedImage = {
+  data: string
+  filePath: string
+  isThumbnail: boolean
+}
+
+const MAX_DECODED_IMAGE_CACHE_BYTES = 48 * 1024 * 1024
+
 export class ImageDecryptService {
   private xorKey: number = 0
   private aesKey: string = ''
   private wcdb4Client: Wcdb4Client | null = null
+  private accountDirResolved = false
+  private cachedAccountDir: string | null = null
+  private imagePathCache = new Map<string, string>()
+  private decodedImageCache = new Map<string, DecodedImage>()
+  private decodedImageCacheBytes = 0
 
   constructor(xorKey: string, aesKey: string, wcdb4Client?: Wcdb4Client | null) {
     // 解析 XOR Key (支持 0x40 或 64 格式)
@@ -32,9 +45,13 @@ export class ImageDecryptService {
    * 获取账号目录
    */
   private getAccountDir(): string | null {
+    if (this.accountDirResolved) return this.cachedAccountDir
+    this.accountDirResolved = true
+
     const wcdbAccountRoot = this.wcdb4Client?.getAccountRoot()
     if (wcdbAccountRoot && existsSync(wcdbAccountRoot)) {
-      return wcdbAccountRoot
+      this.cachedAccountDir = wcdbAccountRoot
+      return this.cachedAccountDir
     }
 
     const homeDir = os.homedir()
@@ -69,7 +86,8 @@ export class ImageDecryptService {
     }
 
     // 返回最新的账号目录
-    return join(accountRoot, accounts[0].name)
+    this.cachedAccountDir = join(accountRoot, accounts[0].name)
+    return this.cachedAccountDir
   }
 
   /**
@@ -78,16 +96,32 @@ export class ImageDecryptService {
   findImageFile(
     md5?: string,
     imageDatName?: string,
-    options?: { allowThumbnail?: boolean; accountDir?: string }
+    options?: { allowThumbnail?: boolean; accountDir?: string; preferThumbnail?: boolean }
   ): string | null {
-    // 测试场景下可显式指定根目录；不传则维持原 getAccountDir() 行为
-    const accountDir =
-      options?.accountDir && existsSync(options.accountDir) ? options.accountDir : this.getAccountDir()
-    if (!accountDir) return null
     const allowThumbnail = options?.allowThumbnail !== false
-
     const normalizedMd5 = this.normalizeDatBase(md5 || '')
     const normalizedDatName = this.normalizeDatBase(imageDatName || '')
+    const pathCacheKey = [
+      normalizedMd5,
+      normalizedDatName,
+      allowThumbnail ? 'thumb' : 'original',
+      options?.preferThumbnail ? 'prefer-thumb' : 'prefer-original',
+      options?.accountDir || ''
+    ].join('|')
+    const cachedPath = this.imagePathCache.get(pathCacheKey)
+    if (cachedPath && existsSync(cachedPath)) return cachedPath
+
+    const rememberPath = (path: string | null): string | null => {
+      if (path) this.imagePathCache.set(pathCacheKey, path)
+      return path
+    }
+
+    // 测试场景下可显式指定根目录；不传则维持原 getAccountDir() 行为
+    const accountDir =
+      options?.accountDir && existsSync(options.accountDir)
+        ? options.accountDir
+        : this.getAccountDir()
+    if (!accountDir) return null
     imageDecryptLog('[ImageDecrypt] findImageFile:', {
       md5: normalizedMd5,
       imageDatName: normalizedDatName,
@@ -99,10 +133,14 @@ export class ImageDecryptService {
       const hardlink = this.wcdb4Client?.resolveImageHardlink(key)
       const fullPath = typeof hardlink?.full_path === 'string' ? hardlink.full_path : ''
       if (fullPath && existsSync(fullPath)) {
-        const selected = this.getPreferredDatVariantPath(fullPath, allowThumbnail)
+        const selected = this.getPreferredDatVariantPath(
+          fullPath,
+          allowThumbnail,
+          options?.preferThumbnail
+        )
         if (allowThumbnail || !this.isThumbnailName(basename(selected))) {
           imageDecryptLog('[ImageDecrypt] hardlink hit:', selected)
-          return selected
+          return rememberPath(selected)
         }
       }
     }
@@ -111,28 +149,75 @@ export class ImageDecryptService {
     const attachDir = join(accountDir, 'msg', 'attach')
     if (!existsSync(attachDir)) {
       imageDecryptLog('[ImageDecrypt] attach dir not found:', attachDir)
-      return this.findImageFileInLegacyDirs(accountDir, normalizedMd5 || normalizedDatName)
+      return rememberPath(
+        this.findImageFileInLegacyDirs(
+          accountDir,
+          normalizedMd5 || normalizedDatName,
+          allowThumbnail,
+          options?.preferThumbnail
+        )
+      )
     }
 
     const searchKeys = this.uniq([normalizedMd5, normalizedDatName])
     if (searchKeys.length === 0) return null
 
     for (const key of searchKeys) {
-      const directHit = this.fastProbabilisticSearch(attachDir, key, allowThumbnail)
-      if (directHit) return directHit
+      const directHit = this.fastProbabilisticSearch(
+        attachDir,
+        key,
+        allowThumbnail,
+        options?.preferThumbnail
+      )
+      if (directHit) return rememberPath(directHit)
     }
 
-    const legacyHit = this.findImageFileInLegacyDirs(accountDir, searchKeys[0], allowThumbnail)
-    if (legacyHit) return legacyHit
+    const legacyHit = this.findImageFileInLegacyDirs(
+      accountDir,
+      searchKeys[0],
+      allowThumbnail,
+      options?.preferThumbnail
+    )
+    if (legacyHit) return rememberPath(legacyHit)
 
     imageDecryptLog('[ImageDecrypt] findImageFile miss for:', searchKeys)
     return null
   }
 
+  getCachedDecodedImage(key: string): DecodedImage | null {
+    const cached = this.decodedImageCache.get(key)
+    if (!cached) return null
+    this.decodedImageCache.delete(key)
+    this.decodedImageCache.set(key, cached)
+    return cached
+  }
+
+  cacheDecodedImage(key: string, image: DecodedImage): void {
+    const size = image.data.length * 2
+    const previous = this.decodedImageCache.get(key)
+    if (previous) {
+      this.decodedImageCacheBytes -= previous.data.length * 2
+      this.decodedImageCache.delete(key)
+    }
+    this.decodedImageCache.set(key, image)
+    this.decodedImageCacheBytes += size
+    while (
+      this.decodedImageCacheBytes > MAX_DECODED_IMAGE_CACHE_BYTES &&
+      this.decodedImageCache.size > 1
+    ) {
+      const oldestKey = this.decodedImageCache.keys().next().value
+      if (!oldestKey) break
+      const oldest = this.decodedImageCache.get(oldestKey)
+      this.decodedImageCache.delete(oldestKey)
+      this.decodedImageCacheBytes -= oldest?.data.length ? oldest.data.length * 2 : 0
+    }
+  }
+
   private fastProbabilisticSearch(
     attachDir: string,
     datName: string,
-    allowThumbnail = true
+    allowThumbnail = true,
+    preferThumbnail = false
   ): string | null {
     const normalized = this.normalizeDatBase(datName)
     if (!normalized) return null
@@ -149,7 +234,7 @@ export class ImageDecryptService {
           join(attachDir, dir1, dir2, 'Image', variant),
           join(attachDir, dir1, dir2, 'image', variant)
         ]
-        const found = this.getLargestExistingPath(candidates, allowThumbnail)
+        const found = this.getLargestExistingPath(candidates, allowThumbnail, preferThumbnail)
         if (found) {
           imageDecryptLog('[ImageDecrypt] prefix path hit:', found)
           return found
@@ -177,7 +262,8 @@ export class ImageDecryptService {
 
             const found = this.getLargestExistingPath(
               variants.map((variant) => join(imgDir, variant)),
-              allowThumbnail
+              allowThumbnail,
+              preferThumbnail
             )
             if (found) {
               imageDecryptLog('[ImageDecrypt] found at:', found)
@@ -196,7 +282,8 @@ export class ImageDecryptService {
   private findImageFileInLegacyDirs(
     accountDir: string,
     datName: string,
-    allowThumbnail = true
+    allowThumbnail = true,
+    preferThumbnail = false
   ): string | null {
     const normalized = this.normalizeDatBase(datName)
     if (!normalized) return null
@@ -208,7 +295,7 @@ export class ImageDecryptService {
     ].filter((root) => existsSync(root))
 
     for (const root of roots) {
-      const found = this.recursiveFindDat(root, normalized, 5, allowThumbnail)
+      const found = this.recursiveFindDat(root, normalized, 5, allowThumbnail, preferThumbnail)
       if (found) return found
     }
 
@@ -219,30 +306,52 @@ export class ImageDecryptService {
     dir: string,
     datName: string,
     depth: number,
-    allowThumbnail = true
+    allowThumbnail = true,
+    preferThumbnail = false
   ): string | null {
     if (depth < 0) return null
 
     try {
+      const variantNames = this.buildPreferredDatNames(datName).filter(
+        (name) => allowThumbnail || !this.isThumbnailName(name)
+      )
       const variants = new Set(
-        this.buildPreferredDatNames(datName).filter(
-          (name) => allowThumbnail || !this.isThumbnailName(name)
-        )
+        preferThumbnail
+          ? [
+              ...variantNames.filter((name) => this.isThumbnailName(name)),
+              ...variantNames.filter((name) => !this.isThumbnailName(name))
+            ]
+          : variantNames
       )
       const entries = readdirSync(dir)
+      const matchingFiles: string[] = []
       for (const entry of entries) {
         const fullPath = join(dir, entry)
         const stat = statSync(fullPath)
         if (stat.isFile() && variants.has(entry.toLowerCase())) {
-          imageDecryptLog('[ImageDecrypt] legacy path hit:', fullPath)
-          return fullPath
+          matchingFiles.push(fullPath)
         }
+      }
+      const preferredFile = this.getLargestExistingPath(
+        matchingFiles,
+        allowThumbnail,
+        preferThumbnail
+      )
+      if (preferredFile) {
+        imageDecryptLog('[ImageDecrypt] legacy path hit:', preferredFile)
+        return preferredFile
       }
 
       for (const entry of entries) {
         const fullPath = join(dir, entry)
         if (!statSync(fullPath).isDirectory()) continue
-        const found = this.recursiveFindDat(fullPath, datName, depth - 1, allowThumbnail)
+        const found = this.recursiveFindDat(
+          fullPath,
+          datName,
+          depth - 1,
+          allowThumbnail,
+          preferThumbnail
+        )
         if (found) return found
       }
     } catch {
@@ -491,7 +600,11 @@ export class ImageDecryptService {
     ]
   }
 
-  private getPreferredDatVariantPath(inputPath: string, allowThumbnail: boolean): string {
+  private getPreferredDatVariantPath(
+    inputPath: string,
+    allowThumbnail: boolean,
+    preferThumbnail = false
+  ): string {
     const actualDir = dirname(inputPath)
     const base = this.normalizeDatBase(basename(inputPath))
     const variants = this.buildPreferredDatNames(base)
@@ -500,13 +613,18 @@ export class ImageDecryptService {
       : variants.filter((name) => !this.isThumbnailName(name))
     const largest = this.getLargestExistingPath(
       ordered.map((variant) => join(actualDir, variant)),
-      allowThumbnail
+      allowThumbnail,
+      preferThumbnail
     )
     if (largest) return largest
     return inputPath
   }
 
-  private getLargestExistingPath(paths: string[], allowThumbnail: boolean): string | null {
+  private getLargestExistingPath(
+    paths: string[],
+    allowThumbnail: boolean,
+    preferThumbnail = false
+  ): string | null {
     const toSized = (candidates: string[]): { candidate: string; size: number }[] =>
       candidates
         .filter((candidate) => existsSync(candidate))
@@ -519,6 +637,10 @@ export class ImageDecryptService {
         })
         .sort((left, right) => right.size - left.size)
 
+    const thumbnail = toSized(
+      paths.filter((candidate) => this.isThumbnailName(basename(candidate)))
+    )
+    if (preferThumbnail && thumbnail[0]) return thumbnail[0].candidate
     const nonThumb = toSized(
       paths.filter((candidate) => !this.isThumbnailName(basename(candidate)))
     )

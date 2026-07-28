@@ -702,7 +702,7 @@ app.whenReady().then(async () => {
       imageMd5?: string,
       imageDatNameOrThumb?: string | boolean,
       _sessionId?: string,
-      options?: { force?: boolean }
+      options?: { force?: boolean; preferThumbnail?: boolean }
     ) => {
       void _sessionId
       if (!imageDecryptService) {
@@ -719,12 +719,28 @@ app.whenReady().then(async () => {
 
       const imageDatName = typeof imageDatNameOrThumb === 'string' ? imageDatNameOrThumb : undefined
       const force = options?.force === true
+      const preferThumbnail = options?.preferThumbnail === true
+      const imageCacheKey = [
+        imageMd5 || '',
+        imageDatName || '',
+        force ? 'original' : preferThumbnail ? 'thumbnail' : 'auto'
+      ].join('|')
+      const cachedImage = imageDecryptService.getCachedDecodedImage(imageCacheKey)
+      if (cachedImage) {
+        return {
+          success: true,
+          data: cachedImage.data,
+          isThumb: cachedImage.isThumbnail,
+          filePath: cachedImage.filePath
+        }
+      }
       let filePath = force
         ? imageDecryptService.findImageFile(imageMd5, imageDatName, { allowThumbnail: false })
         : null
       if (!filePath) {
         filePath = imageDecryptService.findImageFile(imageMd5, imageDatName, {
-          allowThumbnail: true
+          allowThumbnail: true,
+          preferThumbnail
         })
       }
       if (!filePath) {
@@ -736,12 +752,18 @@ app.whenReady().then(async () => {
         return { success: false, error: '图片解密失败' }
       }
 
-      return {
+      const result = {
         success: true,
         data: decrypted.data,
         isThumb: imageDecryptService.isThumbnailFile(decrypted.filePath),
         filePath: decrypted.filePath
       }
+      imageDecryptService.cacheDecodedImage(imageCacheKey, {
+        data: result.data,
+        filePath: result.filePath,
+        isThumbnail: result.isThumb
+      })
+      return result
     }
   )
 

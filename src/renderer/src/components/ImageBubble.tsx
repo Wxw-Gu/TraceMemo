@@ -1,44 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import type { JSX, MouseEvent } from 'react'
-
-type CachedImage = { data: string; isThumbnail: boolean }
-
-const MAX_IMAGE_CACHE_ENTRIES = 80
-const imageDataUrlCache = new Map<string, CachedImage>()
-
-function imageCacheKeys(imageMd5?: string, imageDatName?: string): string[] {
-  return [imageMd5 ? `md5:${imageMd5}` : '', imageDatName ? `dat:${imageDatName}` : ''].filter(
-    Boolean
-  )
-}
-
-function getCachedImage(imageMd5?: string, imageDatName?: string): CachedImage | undefined {
-  for (const key of imageCacheKeys(imageMd5, imageDatName)) {
-    const cached = imageDataUrlCache.get(key)
-    if (cached) {
-      imageDataUrlCache.delete(key)
-      imageDataUrlCache.set(key, cached)
-      return cached
-    }
-  }
-  return undefined
-}
-
-function cacheImage(
-  imageMd5: string | undefined,
-  imageDatName: string | undefined,
-  cached: CachedImage
-): void {
-  for (const key of imageCacheKeys(imageMd5, imageDatName)) {
-    imageDataUrlCache.delete(key)
-    imageDataUrlCache.set(key, cached)
-  }
-  while (imageDataUrlCache.size > MAX_IMAGE_CACHE_ENTRIES) {
-    const oldestKey = imageDataUrlCache.keys().next().value
-    if (!oldestKey) break
-    imageDataUrlCache.delete(oldestKey)
-  }
-}
+import { getCachedLoadedImage, requestImage } from './image-loader'
 
 interface ImageBubbleProps {
   imageMd5?: string
@@ -53,11 +15,12 @@ export function ImageBubble({
   imageMd5,
   imageDatName,
   sessionId,
-  isThumb = false,
   fallbackUrl,
   onImageClick
 }: ImageBubbleProps): JSX.Element {
-  const initialCachedImage = getCachedImage(imageMd5, imageDatName)
+  const initialCachedImage = getCachedLoadedImage(imageMd5, imageDatName, {
+    preferThumbnail: true
+  })
   const [imageUrl, setImageUrl] = useState<string | null>(initialCachedImage?.data || null)
   const [loading, setLoading] = useState(false)
   const [upgrading, setUpgrading] = useState(false)
@@ -65,6 +28,26 @@ export function ImageBubble({
   const [isThumbnail, setIsThumbnail] = useState(Boolean(initialCachedImage?.isThumbnail))
   const [usingFallback, setUsingFallback] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const mountedRef = useRef(true)
+  const backgroundUpgradeRef = useRef(false)
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  const upgradeOriginalInBackground = useCallback(() => {
+    if (!isThumbnail || backgroundUpgradeRef.current || (!imageMd5 && !imageDatName)) return
+    backgroundUpgradeRef.current = true
+    void requestImage(imageMd5, imageDatName, sessionId, { force: true }, 1)
+      .then((original) => {
+        if (!mountedRef.current) return
+        setImageUrl(original.data)
+        setIsThumbnail(false)
+      })
+      .catch(() => undefined)
+  }, [imageDatName, imageMd5, isThumbnail, sessionId])
 
   const loadImage = useCallback(async () => {
     if (imageUrl || loading) return
@@ -81,37 +64,42 @@ export function ImageBubble({
 
     setLoading(true)
     try {
-      const result = await window.api.getImage(imageMd5, imageDatName || isThumb, sessionId)
-      if (result.success && result.data?.startsWith('data:image/')) {
-        cacheImage(imageMd5, imageDatName, {
-          data: result.data,
-          isThumbnail: Boolean(result.isThumb)
-        })
-        setImageUrl(result.data)
-        setUsingFallback(false)
-        setIsThumbnail(Boolean(result.isThumb))
-        setError(null)
-      } else {
-        if (fallbackUrl) {
-          setImageUrl(fallbackUrl)
-          setUsingFallback(true)
-          setError(null)
-        } else {
-          setError(result.error || '加载图片失败')
-        }
-      }
-    } catch {
+      const result = await requestImage(
+        imageMd5,
+        imageDatName,
+        sessionId,
+        { preferThumbnail: true },
+        0
+      )
+      setImageUrl(result.data)
+      setUsingFallback(false)
+      setIsThumbnail(result.isThumbnail)
+      setError(null)
+      if (result.isThumbnail) upgradeOriginalInBackground()
+    } catch (error) {
       if (fallbackUrl) {
         setImageUrl(fallbackUrl)
         setUsingFallback(true)
         setError(null)
       } else {
-        setError('加载图片失败')
+        setError(error instanceof Error ? error.message : '加载图片失败')
       }
     } finally {
       setLoading(false)
     }
-  }, [fallbackUrl, imageMd5, imageDatName, sessionId, isThumb, imageUrl, loading])
+  }, [
+    fallbackUrl,
+    imageDatName,
+    imageMd5,
+    imageUrl,
+    loading,
+    sessionId,
+    upgradeOriginalInBackground
+  ])
+
+  useEffect(() => {
+    if (initialCachedImage?.isThumbnail) upgradeOriginalInBackground()
+  }, [initialCachedImage?.isThumbnail, upgradeOriginalInBackground])
 
   useEffect(() => {
     if (imageUrl || loading || error) return
@@ -154,17 +142,11 @@ export function ImageBubble({
 
     setUpgrading(true)
     try {
-      const result = await window.api.getImage(imageMd5, imageDatName || isThumb, sessionId, {
-        force: true
-      })
-      if (result.success && result.data?.startsWith('data:image/')) {
-        cacheImage(imageMd5, imageDatName, {
-          data: result.data,
-          isThumbnail: Boolean(result.isThumb)
-        })
+      const result = await requestImage(imageMd5, imageDatName, sessionId, { force: true }, 0)
+      if (result.data.startsWith('data:image/')) {
         setImageUrl(result.data)
         setUsingFallback(false)
-        setIsThumbnail(Boolean(result.isThumb))
+        setIsThumbnail(result.isThumbnail)
         setError(null)
         onImageClick?.(result.data)
         return
