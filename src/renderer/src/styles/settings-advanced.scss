@@ -1,0 +1,46 @@
+.settings-debug-card {
+  display: grid;
+  gap: 14px;
+
+  > label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+
+    > span {
+      display: grid;
+      gap: 5px;
+    }
+  }
+
+  b {
+    color: var(--wxex-text-primary);
+    font-size: 13px;
+  }
+
+  small {
+    color: var(--wxex-text-secondary);
+    font-size: 11px;
+    line-height: 18px;
+  }
+}
+
+.settings-debug-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--wxex-border);
+
+  button {
+    padding: 7px 10px;
+    border: 1px solid var(--wxex-border);
+    border-radius: var(--wxex-radius-sm);
+    background: var(--wxex-bg-elevated);
+    color: var(--wxex-brand);
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+  }
+}

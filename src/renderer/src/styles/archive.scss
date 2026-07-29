@@ -1,0 +1,30 @@
+.archive-jump-target-group {
+  z-index: 2;
+
+  .archive-jump-message {
+    z-index: 1;
+    animation: archive-jump-flash 0.72s ease-in-out 2;
+  }
+}
+
+@keyframes archive-jump-flash {
+  0%,
+  100% {
+    filter: none;
+  }
+
+  22%,
+  58% {
+    filter: drop-shadow(0 0 0.45rem rgba(38, 128, 103, 0.68));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .archive-jump-target-group {
+    .archive-jump-message {
+      outline: 3px solid rgba(38, 128, 103, 0.58);
+      outline-offset: 5px;
+      animation: none;
+    }
+  }
+}

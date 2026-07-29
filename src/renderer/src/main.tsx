@@ -1,11 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
-import './styles/tokens.css'
-import './assets/main.css'
-import './styles/search.css'
-import './styles/archive.css'
-import './styles/settings-advanced.css'
+import './styles/index.scss'
 
 window.addEventListener('error', (event) => {
   void window.api

@@ -1,75 +1,21 @@
 import React, { useMemo, useState } from 'react'
-import type { Contact, Message } from '../../../../shared/types'
+import type { Message } from '../../../../shared/types'
 import type {
   ExportJobProgress,
   ExportMessageKind,
   ExportNameMode
 } from '../../../../shared/export'
-import type { ExportRequest, ExportResult, ExportTaskRecord } from '../../../../shared/export'
-
-type ExportRange = 'today' | 'threeDays' | 'sevenDays' | 'custom'
-type ExportFormat = 'html' | 'csv' | 'json' | 'markdown'
-type ExportStatus = 'idle' | 'running' | 'completed'
-
-interface GroupMemberName {
-  wxid: string
-  nickname: string
-  groupNickname: string
-  wechatNickname: string
-  remark: string
-  avatar: string
-}
-
-interface SelfInfo {
-  wxid: string
-  nickname: string
-  avatar?: string
-  accountRoot: string
-}
-
-interface ExportWorkspaceProps {
-  contacts: Contact[]
-  selectedContact: Contact | null
-  previewMessages: Message[]
-  selfInfo: SelfInfo | null
-  dbReady: boolean
-  onSelectContact: (contact: Contact) => void
-  onOpenSettings: () => void
-  exportTasks: ExportTaskRecord[]
-  onStartExport: (request: ExportRequest) => Promise<ExportResult>
-  onCancelExport: (jobId: string) => Promise<void>
-}
-
-const messageKinds = [
-  ['text', '文字'],
-  ['image', '图片'],
-  ['video', '视频'],
-  ['voice', '语音'],
-  ['sticker', '表情包'],
-  ['share', '链接与分享'],
-  ['location', '位置'],
-  ['system', '系统消息']
-] as const
-
-const formatLabels: Record<ExportFormat, { label: string; hint?: string }> = {
-  html: { label: 'HTML', hint: '推荐' },
-  csv: { label: 'CSV' },
-  json: { label: 'JSON' },
-  markdown: { label: 'Markdown' }
-}
-const formatOrder: ExportFormat[] = ['csv', 'html', 'json', 'markdown']
-
-function displayName(contact: Contact | null): string {
-  return contact?.m_nsNickName || contact?.m_nsUsrName || '未选择会话'
-}
-
-function formatPreviewTime(message: Message): string {
-  if (!message.createTime) return message.datetime || ''
-  return new Date(message.createTime * 1000).toLocaleTimeString('zh-CN', {
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
+import { ExportContactPanel } from './ExportContactPanel'
+import { ExportPreviewPanel } from './ExportPreviewPanel'
+import { ExportTaskCenter } from './ExportTaskCenter'
+import type {
+  ExportFormat,
+  ExportRange,
+  ExportStatus,
+  ExportWorkspaceProps,
+  GroupMemberName
+} from './exportTypes'
+import { displayName, formatLabels, formatOrder, messageKinds } from './exportUtils'
 
 export function ExportWorkspace({
   contacts,
@@ -313,97 +259,29 @@ export function ExportWorkspace({
 
   return (
     <div className="export-workspace">
-      <aside className="export-contact-panel">
-        <div className="export-panel-header">
-          <div className="export-panel-title-row">
-            <h2>选择聊天</h2>
-            <span className="export-count-badge">共 {contacts.length.toLocaleString()} 个</span>
-          </div>
-          <label className="export-search-field">
-            <span aria-hidden>⌕</span>
-            <input
-              value={contactFilter}
-              onChange={(event) => setContactFilter(event.target.value)}
-              placeholder="搜索群聊、联系人或 wxid"
-              aria-label="搜索聊天"
-            />
-          </label>
-          <div className="export-filter-tabs" role="tablist" aria-label="聊天类型">
-            {(
-              [
-                ['all', '全部'],
-                ['group', '群聊'],
-                ['user', '联系人']
-              ] as const
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                className={contactType === value ? 'active' : ''}
-                onClick={() => setContactType(value)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="export-contact-list">
-          {filteredContacts.map((contact) => {
-            const name = displayName(contact)
-            return (
-              <button
-                key={contact.md5}
-                type="button"
-                className={`export-contact-item ${activeContact?.md5 === contact.md5 ? 'active' : ''}`}
-                onClick={() => onSelectContact(contact)}
-              >
-                <span className="export-contact-avatar">
-                  {contact.avatar ? <img src={contact.avatar} alt="" /> : name.slice(0, 1)}
-                </span>
-                <span className="export-contact-copy">
-                  <strong>{name}</strong>
-                  <small>{contact.type === 'group' ? '群聊' : '联系人'}</small>
-                </span>
-              </button>
-            )
-          })}
-        </div>
-
-        <button type="button" className="export-account-summary" onClick={onOpenSettings}>
-          <span className="export-account-avatar">
-            {selfInfo?.avatar ? (
-              <img src={selfInfo.avatar} alt="" />
-            ) : (
-              (selfInfo?.nickname || '我').slice(0, 1)
-            )}
-          </span>
-          <span>
-            <strong>{selfInfo?.nickname || '当前账号'}</strong>
-            <small className={dbReady ? 'ready' : ''}>
-              {dbReady ? '数据库已连接' : '数据库未连接'}
-            </small>
-          </span>
-        </button>
-      </aside>
+      <ExportContactPanel
+        contacts={contacts}
+        filteredContacts={filteredContacts}
+        activeContact={activeContact}
+        selfInfo={selfInfo}
+        dbReady={dbReady}
+        contactFilter={contactFilter}
+        contactType={contactType}
+        onContactFilterChange={setContactFilter}
+        onContactTypeChange={setContactType}
+        onSelectContact={onSelectContact}
+        onOpenSettings={onOpenSettings}
+      />
 
       <main className="export-config-panel">
         <div className="export-config-scroll">
-          <button type="button" className="export-task-center-button" onClick={() => setTaskCenterOpen((open) => !open)}>
-            任务中心{taskCount > 0 ? ` (${taskCount})` : ''}
-          </button>
-          {taskCenterOpen && (
-            <section className="export-task-center">
-              <div className="export-section-heading"><h3>导出任务</h3><span>{exportTasks.length} 条记录</span></div>
-              {exportTasks.length === 0 ? <p>暂无导出记录</p> : exportTasks.map((task) => (
-                <div className="export-task-row" key={task.jobId}>
-                  <span><strong>{task.contactName}</strong><small>{task.format.toUpperCase()} · {task.progress.phase}</small></span>
-                  <span className="export-task-progress"><i style={{ width: `${task.progress.percent ?? 0}%` }} /><b>{task.progress.percent ?? 0}%</b></span>
-                  {task.status === 'running' && <button type="button" onClick={() => void onCancelExport(task.jobId)}>取消</button>}
-                </div>
-              ))}
-            </section>
-          )}
+          <ExportTaskCenter
+            open={taskCenterOpen}
+            taskCount={taskCount}
+            tasks={exportTasks}
+            onToggle={() => setTaskCenterOpen((open) => !open)}
+            onCancel={(taskJobId) => void onCancelExport(taskJobId)}
+          />
           <header className="export-config-header">
             <span className="export-chat-avatar">
               {activeContact?.avatar ? (
@@ -678,145 +556,20 @@ export function ExportWorkspace({
         </footer>
       </main>
 
-      <aside className={`export-preview-panel ${status !== 'idle' ? `status-${status}` : ''}`}>
-        {status === 'idle' && (
-          <>
-            <div className="export-preview-heading">
-              <strong>导出预览</strong>
-              <span>仅预览最近 20 条</span>
-            </div>
-            <div className="export-message-preview">
-              <div className="export-preview-date">最近消息</div>
-              {(previewItems.length
-                ? previewItems
-                : [
-                    {
-                      id: 'empty',
-                      from: 'user',
-                      content: '导出预览将在这里显示',
-                      type: '文字',
-                      datetime: '',
-                      isSender: false
-                    }
-                  ]
-              ).map((message) => (
-                <div
-                  key={message.id}
-                  className={`export-preview-message ${message.isSender ? 'mine' : ''} ${
-                    message.contentData?.type === 'system' && message.contentData.pat ? 'system' : ''
-                  }`}
-                >
-                  <span className="export-preview-avatar">
-                    {message.img || (message.isSender && selfInfo?.avatar) ? (
-                      <img src={message.img || selfInfo?.avatar} alt="" />
-                    ) : (
-                      (message.isSender ? '我' : message.name || '友').slice(0, 1)
-                    )}
-                  </span>
-                  <span className="export-preview-bubble">
-                    <small>
-                      {message.name || (message.isSender ? '我' : '联系人')} ·{' '}
-                      {formatPreviewTime(message)}
-                    </small>
-                    {message.content || `[${message.type}]`}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <div className="export-preview-stats export-preview-real-stats">
-              <span>
-                预览消息<strong>{previewItems.length}</strong>
-              </span>
-              <span>
-                媒体预览<strong>{previewMediaCount}</strong>
-              </span>
-              <span>
-                预估文本大小<strong>{previewBytes < 1024 ? `${previewBytes} B` : `${(previewBytes / 1024).toFixed(1)} KB`}</strong>
-              </span>
-            </div>
-            <div className="export-preview-stats">
-              <span>
-                消息总数<strong>待统计</strong>
-              </span>
-              <span>
-                媒体文件<strong>待统计</strong>
-              </span>
-              <span>
-                预计大小<strong>待统计</strong>
-              </span>
-            </div>
-          </>
-        )}
-        {status === 'running' && (
-          <div className="export-job-state">
-            <h2>正在导出</h2>
-            <p>导出任务在后台运行，不影响档案浏览。</p>
-            <ol>
-              <li className="done">准备导出</li>
-              <li className="current">
-                {progress?.phase === 'writing' ? '生成档案' : '分批读取聊天记录'}
-              </li>
-              <li>解析消息内容</li>
-              <li>处理媒体资源</li>
-              <li>生成档案</li>
-            </ol>
-            <div className="export-progress-bar" aria-label="导出进度">
-              <span style={{ width: `${progress?.percent ?? 0}%` }} />
-            </div>
-            <strong>
-              {progress?.phase === 'writing'
-                ? `正在写入 ${progress.processed.toLocaleString()} 条消息... ${progress.percent ?? 0}%`
-                : `正在读取消息... ${progress?.percent ?? 0}%`}
-            </strong>
-            <button
-              type="button"
-              className="export-cancel-button"
-              onClick={() => {
-                void window.api.cancelExport(jobId)
-                setStatus('idle')
-              }}
-            >
-              取消导出
-            </button>
-          </div>
-        )}
-        {status === 'completed' && (
-          <div className="export-job-state completed">
-            <div className="export-success-icon">✓</div>
-            <h2>导出完成</h2>
-            <p>聊天档案已成功保存。</p>
-            <div className="export-complete-summary">
-              <span>
-                导出消息<strong>{progress?.processed.toLocaleString() || '已完成'}</strong>
-              </span>
-              <span>
-                媒体资源<strong>按设置处理</strong>
-              </span>
-              <span>
-                输出位置<strong>已保存</strong>
-              </span>
-            </div>
-            <button
-              type="button"
-              className="export-primary-button"
-              onClick={() =>
-                progress?.outputPath && void window.api.revealExport(progress.outputPath)
-              }
-            >
-              打开档案
-            </button>
-            <button
-              type="button"
-              className="export-open-folder-button"
-              onClick={() =>
-                progress?.outputPath && void window.api.revealExport(progress.outputPath)
-              }
-            >
-              在文件夹中显示
-            </button>
-          </div>
-        )}
-      </aside>
+      <ExportPreviewPanel
+        status={status}
+        previewItems={previewItems}
+        previewMediaCount={previewMediaCount}
+        previewBytes={previewBytes}
+        selfInfo={selfInfo}
+        progress={progress}
+        jobId={jobId}
+        onCancel={(exportJobId) => {
+          void window.api.cancelExport(exportJobId)
+          setStatus('idle')
+        }}
+        onReveal={(path) => void window.api.revealExport(path)}
+      />
     </div>
   )
 }
