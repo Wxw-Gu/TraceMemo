@@ -76,6 +76,9 @@ import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
 import { appLogger } from './app-logger'
 import type { AppLogEntry } from '../shared/app-log'
+import { appUpdateService } from './services/app-update-service'
+import { clearCache, getCacheSummary } from './services/cache-service'
+import type { CacheClearScope } from './services/cache-service'
 import { configureRecallArchive, RecallArchiveMonitor } from './services/recall-archive-service'
 import { VideoAssetService } from './video-asset-service'
 import { cancelExport, revealExport, runExport } from './export-service'
@@ -349,6 +352,17 @@ app.whenReady().then(async () => {
   ipcMain.handle('app-log:write', (_, entry: AppLogEntry) => appLogger.write(entry))
   ipcMain.handle('app-log:getPath', () => appLogger.logPath)
   ipcMain.handle('app-log:reveal', () => appLogger.reveal())
+  ipcMain.handle('app-update:getState', () => appUpdateService.getState())
+  ipcMain.handle('app-update:check', () => appUpdateService.check())
+  ipcMain.handle('app-update:download', () => appUpdateService.download())
+  ipcMain.handle('app-update:install', () => appUpdateService.install())
+  ipcMain.handle('cache:getSummary', () => getCacheSummary())
+  ipcMain.handle('cache:clear', async (_, scope: CacheClearScope) => {
+    const allowedScopes: CacheClearScope[] = ['bootstrap', 'electron', 'all']
+    if (!allowedScopes.includes(scope)) return getCacheSummary()
+    imageDecryptService = null
+    return clearCache(scope)
+  })
 
   ipcMain.handle('db:init', async (_, key: string) => {
     if (dbInitInFlight) return dbInitInFlight

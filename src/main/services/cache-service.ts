@@ -1,0 +1,73 @@
+import { app, session } from 'electron'
+import fs from 'fs-extra'
+import path from 'path'
+import { clearBootstrapCache } from './bootstrap-cache'
+import type { CacheClearScope, CacheSummary, CacheSummaryItem } from '../../shared/cache'
+
+export type { CacheClearScope } from '../../shared/cache'
+
+const BOOTSTRAP_CACHE_DIR = path.join(app.getPath('userData'), 'cache', 'bootstrap')
+
+function inspectDirectory(directory: string): { sizeBytes: number; fileCount: number } {
+  if (!fs.existsSync(directory)) return { sizeBytes: 0, fileCount: 0 }
+  let sizeBytes = 0
+  let fileCount = 0
+  const visit = (current: string): void => {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const target = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        visit(target)
+      } else if (entry.isFile()) {
+        try {
+          sizeBytes += fs.statSync(target).size
+          fileCount += 1
+        } catch {
+          // A cache file can disappear while it is being inspected.
+        }
+      }
+    }
+  }
+  visit(directory)
+  return { sizeBytes, fileCount }
+}
+
+export function getCacheSummary(): CacheSummary {
+  const bootstrap = inspectDirectory(BOOTSTRAP_CACHE_DIR)
+  const electron = inspectDirectory(path.join(app.getPath('userData'), 'Cache'))
+  const items: CacheSummaryItem[] = [
+    {
+      id: 'bootstrap',
+      label: '启动与聊天缓存',
+      description: '联系人、头像、群成员和最近聊天记录的本地副本。',
+      ...bootstrap
+    },
+    {
+      id: 'electron',
+      label: '应用临时缓存',
+      description: 'Electron 页面资源缓存，清理后会自动重新生成。',
+      ...electron
+    }
+  ]
+  return {
+    items,
+    totalBytes: items.reduce((total, item) => total + item.sizeBytes, 0),
+    updatedAt: Date.now()
+  }
+}
+
+export async function clearCache(scope: CacheClearScope): Promise<CacheSummary> {
+  if (scope === 'bootstrap' || scope === 'all') {
+    clearBootstrapCache()
+    await fs.remove(BOOTSTRAP_CACHE_DIR)
+  }
+  if (scope === 'electron' || scope === 'all') {
+    await session.defaultSession.clearCache()
+  }
+  return getCacheSummary()
+}

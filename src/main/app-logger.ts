@@ -2,6 +2,7 @@ import { app, shell } from 'electron'
 import fs from 'fs-extra'
 import path from 'path'
 import type { AppLogEntry } from '../shared/app-log'
+import { isPackagedRuntime } from './runtime-mode'
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024
 const REDACTED_KEY = /(?:api[-_]?key|authorization|token|secret|password|database[-_]?key)/i
@@ -52,14 +53,14 @@ export class AppLogger {
       this.rotateIfNeeded()
       const record = {
         timestamp: new Date().toISOString(),
-        mode: app.isPackaged ? 'packaged' : 'development',
+        mode: isPackagedRuntime() ? 'packaged' : 'development',
         level: entry.level,
         scope: String(entry.scope || 'app').slice(0, 80),
         message: String(entry.message || '').slice(0, 500),
         details: sanitize(entry.details || {})
       }
       fs.appendFileSync(this.logPath, `${JSON.stringify(record)}\n`, { encoding: 'utf8' })
-      if (!app.isPackaged) {
+      if (!isPackagedRuntime()) {
         const method =
           entry.level === 'error'
             ? console.error

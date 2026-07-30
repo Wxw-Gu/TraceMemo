@@ -39,6 +39,8 @@ import type {
 } from '../shared/image-insight'
 import type { AgentHubActionResult, AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 import type { AppLogEntry } from '../shared/app-log'
+import type { AppUpdateCheckResult, AppUpdateState } from '../shared/app-update'
+import type { CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress, ExportResult } from '../shared/export'
 
 export type ParsedContent =
@@ -103,6 +105,13 @@ declare global {
       writeAppLog: (entry: AppLogEntry) => Promise<void>
       getAppLogPath: () => Promise<string>
       revealAppLog: () => Promise<void>
+      getAppUpdateState: () => Promise<AppUpdateState>
+      checkAppUpdate: () => Promise<AppUpdateCheckResult>
+      downloadAppUpdate: () => Promise<AppUpdateCheckResult>
+      installAppUpdate: () => Promise<{ success: boolean; error?: string }>
+      onAppUpdateState: (callback: (state: AppUpdateState) => void) => () => void
+      getCacheSummary: () => Promise<CacheSummary>
+      clearCache: (scope: 'bootstrap' | 'electron' | 'all') => Promise<CacheSummary>
       initDb: (
         key: string
       ) => Promise<boolean | { success: boolean; error?: string; monitoring?: boolean }>
@@ -255,6 +264,9 @@ declare global {
           debugEnabled: boolean
           autoLogin: boolean
           autoLoginPreferenceSet: boolean
+          appearanceTheme: 'system' | 'light' | 'dark'
+          compactMode: boolean
+          showStartupProgress: boolean
           imageXorKey: string
           imageAesKey: string
         }
@@ -283,6 +295,9 @@ declare global {
           debugEnabled: boolean
           autoLogin: boolean
           autoLoginPreferenceSet: boolean
+          appearanceTheme: 'system' | 'light' | 'dark'
+          compactMode: boolean
+          showStartupProgress: boolean
           imageXorKey: string
           imageAesKey: string
         }
@@ -299,6 +314,9 @@ declare global {
           debugEnabled: boolean
           autoLogin: boolean
           autoLoginPreferenceSet: boolean
+          appearanceTheme: 'system' | 'light' | 'dark'
+          compactMode: boolean
+          showStartupProgress: boolean
           imageXorKey: string
           imageAesKey: string
         }>
@@ -313,6 +331,9 @@ declare global {
           debugEnabled: boolean
           autoLogin: boolean
           autoLoginPreferenceSet: boolean
+          appearanceTheme: 'system' | 'light' | 'dark'
+          compactMode: boolean
+          showStartupProgress: boolean
           imageXorKey: string
           imageAesKey: string
         }

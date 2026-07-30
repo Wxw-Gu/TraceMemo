@@ -8,6 +8,9 @@ import { ImageDecryptionPage } from './pages/ImageDecryptionPage'
 import { AIModelPage } from './pages/AIModelPage'
 import { RecallProtectionPage } from './pages/RecallProtectionPage'
 import { AdvancedPage } from './pages/AdvancedPage'
+import { CacheCleanupPage } from './pages/CacheCleanupPage'
+import { AppearancePage } from './pages/AppearancePage'
+import { AboutPage } from './pages/AboutPage'
 import type { Contact } from '../../../../shared/types'
 import type { AIRuntimeModelConfig } from '../../../../shared/ai-provider'
 
@@ -25,7 +28,8 @@ export function SettingsWorkspace({
   onReturnToLogin,
   onAIRuntimeChange,
   onNotice,
-  onOpenSettings
+  onOpenSettings,
+  onAppearanceChange
 }: {
   selectedCategory: SettingsCategoryId
   onCategoryChange: (id: SettingsCategoryId) => void
@@ -41,6 +45,7 @@ export function SettingsWorkspace({
   onAIRuntimeChange: (config: AIRuntimeModelConfig) => void
   onNotice: (message: string) => void
   onOpenSettings: () => void
+  onAppearanceChange: (settings: { theme: 'system' | 'light' | 'dark'; compactMode: boolean }) => void
 }): React.ReactElement {
   return (
     <div className="settings-workspace">
@@ -89,13 +94,25 @@ export function SettingsWorkspace({
       <div className={`settings-page-panel ${selectedCategory === 'advanced' ? 'active' : ''}`}>
         <AdvancedPage onNotice={onNotice} />
       </div>
+      <div className={`settings-page-panel ${selectedCategory === 'cache-cleanup' ? 'active' : ''}`}>
+        <CacheCleanupPage onNotice={onNotice} />
+      </div>
+      <div className={`settings-page-panel ${selectedCategory === 'appearance' ? 'active' : ''}`}>
+        <AppearancePage onNotice={onNotice} onAppearanceChange={onAppearanceChange} />
+      </div>
+      <div className={`settings-page-panel ${selectedCategory === 'about' ? 'active' : ''}`}>
+        <AboutPage onNotice={onNotice} />
+      </div>
       {![
         'account-database',
         'database-key',
         'image-key',
         'ai-model',
         'recall-protection',
-        'advanced'
+        'advanced',
+        'cache-cleanup',
+        'appearance',
+        'about'
       ].includes(selectedCategory) && (
         <div className="settings-page-panel active">
           <SettingsEmptyState label={SETTINGS_CATEGORY_LABELS[selectedCategory]} />

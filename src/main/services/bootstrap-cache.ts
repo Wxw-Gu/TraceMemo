@@ -369,6 +369,13 @@ export function flushBootstrapCacheWritesSync(): void {
   }
 }
 
+export function clearBootstrapCache(): void {
+  for (const timer of writeTimers.values()) clearTimeout(timer)
+  writeTimers.clear()
+  writeQueues.clear()
+  memoryCache.clear()
+}
+
 export function saveCachedMessages(
   accountRoot: string,
   userMd5: string,

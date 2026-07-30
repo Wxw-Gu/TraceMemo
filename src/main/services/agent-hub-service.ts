@@ -15,6 +15,7 @@ import type {
 import type { AppSettings } from './settings-store'
 import { generateAgentGroupReport } from './agent-group-report-service'
 import { AIProviderService } from './ai-provider-service'
+import { isPackagedRuntime } from '../runtime-mode'
 import {
   getGroupSnapshot,
   isReady,
@@ -68,7 +69,7 @@ const agentAIProvider = new AIProviderService()
 function resolveBundledBinary(
   resourceSegments: string[],
   executable: string,
-  packaged = app.isPackaged,
+  packaged = isPackagedRuntime(),
   platform = process.platform,
   arch = process.arch
 ): string {
@@ -80,7 +81,7 @@ function resolveBundledBinary(
 }
 
 export function resolveWechatConnectorBinaryPath(
-  packaged = app.isPackaged,
+  packaged = isPackagedRuntime(),
   platform = process.platform,
   arch = process.arch
 ): string {

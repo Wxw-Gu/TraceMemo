@@ -17,6 +17,8 @@ import type {
 } from '../shared/image-insight'
 import type { AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 import type { AppLogEntry } from '../shared/app-log'
+import type { AppUpdateState } from '../shared/app-update'
+import type { CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress } from '../shared/export'
 
 // 渲染器的自定义 API
@@ -24,6 +26,19 @@ const api = {
   writeAppLog: (entry: AppLogEntry) => ipcRenderer.invoke('app-log:write', entry),
   getAppLogPath: () => ipcRenderer.invoke('app-log:getPath'),
   revealAppLog: () => ipcRenderer.invoke('app-log:reveal'),
+  getAppUpdateState: (): Promise<AppUpdateState> => ipcRenderer.invoke('app-update:getState'),
+  checkAppUpdate: () => ipcRenderer.invoke('app-update:check'),
+  downloadAppUpdate: () => ipcRenderer.invoke('app-update:download'),
+  installAppUpdate: () => ipcRenderer.invoke('app-update:install'),
+  onAppUpdateState: (callback: (state: AppUpdateState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: AppUpdateState): void =>
+      callback(state)
+    ipcRenderer.on('app-update:state', listener)
+    return () => ipcRenderer.removeListener('app-update:state', listener)
+  },
+  getCacheSummary: (): Promise<CacheSummary> => ipcRenderer.invoke('cache:getSummary'),
+  clearCache: (scope: 'bootstrap' | 'electron' | 'all'): Promise<CacheSummary> =>
+    ipcRenderer.invoke('cache:clear', scope),
   initDb: (key: string) => ipcRenderer.invoke('db:init', key),
   getBootstrapCache: () => ipcRenderer.invoke('db:getBootstrapCache'),
   getStartupCache: () => ipcRenderer.invoke('db:getStartupCache'),

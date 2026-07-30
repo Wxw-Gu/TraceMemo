@@ -32,6 +32,9 @@ export interface AppSettings {
   debugEnabled: boolean
   autoLogin: boolean
   autoLoginPreferenceSet: boolean
+  appearanceTheme: 'system' | 'light' | 'dark'
+  compactMode: boolean
+  showStartupProgress: boolean
 }
 
 function getDefaultDbRoot(): string {
@@ -112,7 +115,10 @@ const DEFAULT_SETTINGS: AppSettings = {
       .trim()
       .toLowerCase()
   ),
-  autoLoginPreferenceSet: false
+  autoLoginPreferenceSet: false,
+  appearanceTheme: 'system',
+  compactMode: false,
+  showStartupProgress: true
 }
 
 const SETTINGS_FILE = path.join(

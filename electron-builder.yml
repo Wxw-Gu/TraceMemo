@@ -68,4 +68,4 @@ publish:
   provider: github
   owner: Wxw-Gu
   repo: WechatExplorer
-  releaseType: draft
+  releaseType: release

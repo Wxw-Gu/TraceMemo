@@ -256,6 +256,17 @@ function App(): React.ReactElement {
   const [bootState, setBootState] = useState<'loading' | 'connecting' | 'login'>('loading')
   const [autoConnectSource, setAutoConnectSource] = useState<'env' | 'saved' | null>(null)
   const [startupProgress, setStartupProgress] = useState<StartupProgress | null>(null)
+  const [appearanceSettings, setAppearanceSettings] = React.useState<{
+    theme: 'system' | 'light' | 'dark'
+    compactMode: boolean
+    showStartupProgress: boolean
+  }>({ theme: 'system', compactMode: false, showStartupProgress: true })
+  const handleAppearanceChange = React.useCallback(
+    (settings: { theme: 'system' | 'light' | 'dark'; compactMode: boolean }) => {
+      setAppearanceSettings((current) => ({ ...current, ...settings }))
+    },
+    []
+  )
   const currentGroupSnapshotRef = React.useRef<GroupSnapshot | null>(null)
   const syntheticGroupMessagesRef = React.useRef<Record<string, Message[]>>({})
   const groupMemberMetaRef = React.useRef<Record<string, Map<string, GroupMemberMeta>>>({})
@@ -268,6 +279,15 @@ function App(): React.ReactElement {
     const timer = window.setTimeout(() => setReportNotice(''), 3200)
     return () => window.clearTimeout(timer)
   }, [reportNotice])
+  React.useEffect(() => {
+    void window.api.getSettings().then((result) => {
+      setAppearanceSettings({
+        theme: result.settings.appearanceTheme,
+        compactMode: result.settings.compactMode,
+        showStartupProgress: result.settings.showStartupProgress
+      })
+    })
+  }, [])
   React.useEffect(() => {
     const loadAIConfig = async (): Promise<void> => {
       try {
@@ -1493,6 +1513,7 @@ function App(): React.ReactElement {
             onAIRuntimeChange={(config: AIRuntimeModelConfig) => setAiModelConfig(config)}
             onNotice={setReportNotice}
             onOpenSettings={openSettings}
+            onAppearanceChange={handleAppearanceChange}
           />
         )
       case 'search':
@@ -1579,7 +1600,7 @@ function App(): React.ReactElement {
           : '使用上次安全保存的密钥'
         : 'WechatExplorer')
     return (
-      <div className="boot-splash">
+      <div className={`boot-splash ${appearanceSettings.showStartupProgress ? '' : 'is-quiet'}`}>
         <div className="boot-splash-spinner" aria-hidden />
         <div className="boot-splash-title">{title}</div>
         <div className="boot-splash-subtitle">{subtitle}</div>
@@ -1630,6 +1651,8 @@ function App(): React.ReactElement {
       dbReady={isDatabaseConnected}
       onPageChange={handlePageChange}
       onOpenSettings={openSettings}
+      appearanceTheme={appearanceSettings.theme}
+      compactMode={appearanceSettings.compactMode}
     >
       {reportNotice && <div className="app-toast">{reportNotice}</div>}
       {renderCurrentWorkspace()}

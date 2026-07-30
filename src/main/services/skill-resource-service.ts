@@ -1,6 +1,7 @@
 import { app, shell } from 'electron'
 import { existsSync, promises as fs } from 'fs'
 import { dirname, join } from 'path'
+import { isPackagedRuntime } from '../runtime-mode'
 
 const SKILL_RELATIVE_PATH = join('skill', 'wechatexplorer-reader', 'SKILL.md')
 const GITHUB_URL =
@@ -23,7 +24,7 @@ function getSkillCandidates(): { path: string; source: 'development' | 'bundled'
     join(dirname(app.getAppPath()), SKILL_RELATIVE_PATH),
     join(dirname(process.execPath), 'resources', SKILL_RELATIVE_PATH)
   ]
-  return app.isPackaged
+  return isPackagedRuntime()
     ? bundledPaths.map((path) => ({ path, source: 'bundled' as const }))
     : [
         { path: developmentPath, source: 'development' as const },

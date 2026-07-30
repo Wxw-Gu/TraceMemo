@@ -1,0 +1,259 @@
+@mixin dark-theme {
+  --wxex-bg-app: #171b1a;
+  --wxex-bg-main: #1e2422;
+  --wxex-bg-sidebar: #202925;
+  --wxex-bg-elevated: #27302d;
+  --wxex-text-primary: #edf4f0;
+  --wxex-text-secondary: #b2c0b9;
+  --wxex-text-muted: #81918a;
+  --wxex-border: #394640;
+  --wxex-brand-soft: #26483c;
+
+  .conversation-section-header:hover,
+  .conversation-item:hover,
+  .report-source-item:hover,
+  .report-history-item:hover {
+    background: var(--wxex-brand-soft);
+  }
+
+  .chat-window,
+  .chat-archive-header,
+  .chat-status-bar,
+  .ai-report-workspace,
+  .ai-report-footer,
+  .report-viewer,
+  .settings-workspace,
+  .settings-page-header,
+  .api-center-layout,
+  .export-workspace,
+  .ai-search-workspace {
+    background: var(--wxex-bg-main);
+    color: var(--wxex-text-primary);
+  }
+
+  .data-trust-bar {
+    background: var(--wxex-bg-sidebar);
+  }
+
+  .wechat-message-list {
+    background: #161c19;
+  }
+
+  .message-bubble,
+  .wechat-message-row.other .quoted-message,
+  .message-loading-pill {
+    border-color: var(--wxex-border);
+    background: var(--wxex-bg-elevated);
+    color: var(--wxex-text-primary);
+  }
+
+  .wechat-system-message {
+    background: rgba(39, 48, 45, 0.9);
+    color: var(--wxex-text-secondary);
+  }
+
+  .wechat-system-message-meta,
+  .message-sender-name,
+  .message-hover-time,
+  .message-accessible-sender {
+    color: var(--wxex-text-muted);
+  }
+
+  .wechat-message-row.mine .message-bubble {
+    border-color: rgba(80, 190, 151, 0.3);
+    background: #24513f;
+    color: #f2faf6;
+  }
+
+  .wechat-message-row.mine .quoted-message {
+    background: rgba(12, 26, 21, 0.32);
+    color: #d7e7df;
+  }
+
+  .message-bubble a,
+  .message-bubble code,
+  .message-bubble pre {
+    color: inherit;
+  }
+
+  .settings-sidebar,
+  .settings-sidebar-account,
+  .report-source-sidebar,
+  .report-history-sidebar {
+    background: var(--wxex-bg-sidebar);
+    border-color: var(--wxex-border);
+  }
+
+  .settings-sidebar header,
+  .settings-page-header,
+  .report-source-header,
+  .report-history-header,
+  .report-settings-panel header,
+  .report-viewer-header {
+    border-color: var(--wxex-border);
+  }
+
+  .settings-sidebar header h1,
+  .settings-sidebar-list button,
+  .settings-sidebar-list button.active,
+  .settings-page-header h1,
+  .settings-section-heading,
+  .settings-card,
+  .settings-card strong,
+  .settings-cache-item h3,
+  .settings-toggle-row b,
+  .settings-choice b,
+  .settings-workspace h1,
+  .settings-workspace h2,
+  .settings-workspace h3,
+  .settings-workspace h4,
+  .settings-workspace strong,
+  .settings-workspace b,
+  .settings-workspace button,
+  .settings-workspace label,
+  .settings-workspace dt,
+  .settings-workspace dd,
+  .settings-workspace span,
+  .settings-workspace p,
+  .settings-workspace small,
+  .settings-workspace code,
+  .settings-workspace a {
+    color: var(--wxex-text-primary);
+  }
+
+  .settings-workspace p,
+  .settings-workspace small,
+  .settings-workspace span,
+  .settings-workspace code,
+  .settings-workspace .settings-inline-note,
+  .settings-workspace .settings-footnote {
+    color: var(--wxex-text-secondary);
+  }
+
+  .settings-workspace .settings-card,
+  .settings-workspace .settings-choice,
+  .settings-workspace .settings-search,
+  .settings-workspace input,
+  .settings-workspace textarea,
+  .settings-workspace select,
+  .settings-workspace .settings-sidebar-list button.active {
+    border-color: var(--wxex-border);
+    background: var(--wxex-bg-elevated);
+    color: var(--wxex-text-primary);
+  }
+
+  .settings-workspace input::placeholder,
+  .settings-workspace textarea::placeholder {
+    color: var(--wxex-text-muted);
+  }
+
+  .settings-workspace .settings-choice.active,
+  .settings-workspace .settings-status-badge,
+  .settings-workspace .settings-privacy-notice,
+  .settings-workspace .settings-inline-note {
+    background: var(--wxex-brand-soft);
+  }
+
+  .settings-workspace .settings-privacy-notice,
+  .settings-workspace .settings-privacy-notice strong,
+  .settings-workspace .settings-privacy-notice p,
+  .settings-workspace .settings-privacy-notice svg {
+    color: #c5eadb;
+    stroke: #72d0af;
+  }
+
+  .settings-workspace .settings-connection-text.success,
+  .settings-workspace [class*='success'],
+  .settings-workspace [class*='success'] * {
+    color: #72d0af !important;
+  }
+
+  .settings-workspace [class*='error'],
+  .settings-workspace [class*='error'] * {
+    color: #ff9b96 !important;
+  }
+
+  .report-settings-panel {
+    background: var(--wxex-bg-sidebar);
+    color: var(--wxex-text-primary);
+  }
+
+  .report-settings-section,
+  .report-settings-section h3,
+  .report-settings-section p,
+  .report-settings-section code,
+  .report-export-list div,
+  .report-generation-log li,
+  .report-generation-log b,
+  .report-generation-log small,
+  .report-info-panel {
+    color: var(--wxex-text-primary);
+  }
+
+  .report-settings-section p,
+  .report-settings-section code,
+  .report-export-list div,
+  .report-generation-log li,
+  .report-generation-log small {
+    color: var(--wxex-text-secondary);
+  }
+
+  .report-settings-section code,
+  .report-timeout-section input,
+  .report-check-row,
+  .report-readonly-modules span,
+  .report-result-preview {
+    border-color: var(--wxex-border);
+    background: var(--wxex-bg-elevated);
+    color: var(--wxex-text-primary);
+  }
+
+  .report-result-preview {
+    background: #161c19;
+  }
+
+  .report-history-item,
+  .report-source-item,
+  .report-history-text b,
+  .report-history-text small,
+  .report-history-text em {
+    color: var(--wxex-text-primary);
+  }
+
+  .report-history-text small,
+  .report-history-text em,
+  .report-history-list-title,
+  .report-history-group h3 {
+    color: var(--wxex-text-muted);
+  }
+
+  .search-workspace,
+  .ai-search-scope-panel,
+  .ai-search-main,
+  .ai-search-evidence-panel,
+  .export-config-panel,
+  .export-preview-panel,
+  .api-main,
+  .api-runtime-panel {
+    background: var(--wxex-bg-main);
+    color: var(--wxex-text-primary);
+  }
+
+  .ai-search-scope-panel,
+  .ai-search-evidence-panel,
+  .export-config-panel,
+  .export-preview-panel,
+  .api-runtime-panel {
+    border-color: var(--wxex-border);
+  }
+}
+
+.app-shell.theme-dark {
+  @include dark-theme;
+}
+
+@media (prefers-color-scheme: dark) {
+  .app-shell.theme-system {
+    @include dark-theme;
+  }
+}

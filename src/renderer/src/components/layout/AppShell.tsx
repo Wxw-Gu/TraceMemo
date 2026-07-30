@@ -17,6 +17,8 @@ interface AppShellProps {
   dbReady: boolean
   onPageChange: (page: AppPage) => void
   onOpenSettings: () => void
+  appearanceTheme?: 'system' | 'light' | 'dark'
+  compactMode?: boolean
   children: React.ReactNode
 }
 
@@ -34,12 +36,14 @@ export function AppShell({
   dbReady,
   onPageChange,
   onOpenSettings,
+  appearanceTheme = 'system',
+  compactMode = false,
   children
 }: AppShellProps): React.ReactElement {
   const activeItem = PRIMARY_NAV_ITEMS.find((item) => item.id === activePage)
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell theme-${appearanceTheme} ${compactMode ? 'is-compact' : ''}`}>
       <aside className="app-primary-rail">
         <BrandLogo />
         <PrimaryNavigation activePage={activePage} onPageChange={onPageChange} />

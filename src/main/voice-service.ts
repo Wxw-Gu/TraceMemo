@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { Wcdb4Client } from './wcdb4-client'
+import { isPackagedRuntime } from './runtime-mode'
 
 export class VoiceService {
   private wcdb4Client: Wcdb4Client
@@ -101,7 +102,7 @@ export class VoiceService {
   private async decodeSilkToPcm(silkData: Buffer, sampleRate: number): Promise<Buffer | null> {
     try {
       let wasmPath: string
-      if (app.isPackaged) {
+      if (isPackagedRuntime()) {
         wasmPath = join(
           process.resourcesPath,
           'app.asar.unpacked',
