@@ -1178,15 +1178,106 @@
 }
 
 .database-login-workspace {
+  box-sizing: border-box;
   display: grid;
-  place-items: center;
+  align-items: start;
+  justify-items: center;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
   padding: 48px clamp(40px, 7vw, 96px);
   background: #fff;
 }
 
 .database-login-panel {
   width: min(520px, 100%);
+  margin: auto 0;
+}
+
+.database-login-start {
+  margin-bottom: 22px;
+
+  h2 {
+    margin: 0;
+    color: var(--login-text);
+    font-size: 22px;
+    line-height: 29px;
+    letter-spacing: -0.02em;
+  }
+
+  > p:not(.database-login-eyebrow) {
+    margin: 7px 0 18px;
+    color: var(--login-muted);
+    font-size: 12px;
+    line-height: 18px;
+  }
+
+  ol {
+    display: grid;
+    gap: 9px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  li {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    color: #35423d;
+
+    > span {
+      width: 20px;
+      height: 20px;
+      flex: 0 0 20px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: var(--login-primary-dark);
+      background: #e2f0eb;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    strong,
+    small {
+      display: block;
+    }
+
+    strong {
+      font-size: 12px;
+      line-height: 17px;
+    }
+
+    small {
+      margin-top: 1px;
+      color: var(--login-muted);
+      font-size: 11px;
+      line-height: 16px;
+    }
+  }
+}
+
+.database-login-eyebrow {
+  margin: 0 0 5px;
+  color: var(--login-primary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.database-login-guide-link {
+  display: inline-block;
+  margin-top: 15px;
+  color: var(--login-primary);
+  font-size: 11px;
+  line-height: 17px;
+  text-decoration: none;
+}
+
+.database-login-guide-link:hover {
+  text-decoration: underline;
 }
 
 .database-login-tabs {
@@ -1215,6 +1306,16 @@
   color: var(--login-primary-dark);
   background: #fff;
   box-shadow: 0 1px 3px rgba(24, 28, 27, 0.08);
+}
+
+.database-login-tabs .database-login-manual-tab {
+  color: #7a8580;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.database-login-tabs .database-login-manual-tab.active {
+  color: #58645f;
 }
 
 .database-login-state-card {
@@ -1394,6 +1495,33 @@
   font-size: 12px;
   text-align: center;
   text-decoration: none;
+}
+
+.database-login-platform-note {
+  margin: 12px 0 0;
+  color: #77817d;
+  font-size: 11px;
+  line-height: 17px;
+  text-align: center;
+}
+
+.database-login-platform-note a {
+  color: var(--login-primary);
+  text-decoration: none;
+}
+
+.database-login-platform-note a:hover {
+  text-decoration: underline;
+}
+
+.database-login-manual-note {
+  margin: 0 0 20px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  color: #65706b;
+  background: var(--login-surface-low);
+  font-size: 11px;
+  line-height: 17px;
 }
 
 .database-login-manual {

@@ -20,6 +20,7 @@ import { AiModelConfig, useGroupReportGeneration } from './hooks/useGroupReportG
 import { SummaryDateRange, SummaryMessageType } from './utils/group-report'
 import { Contact, Message } from '../../shared/types'
 import { DatabaseConnectionMode, DatabaseConnectionPage } from './components/DatabaseConnectionPage'
+import { FirstUseWelcome } from './components/FirstUseWelcome'
 import { ExportWorkspace } from './components/export/ExportWorkspace'
 import { AISearchWorkspace } from './components/search/AISearchWorkspace'
 import type { ExportJobProgress, ExportRequest, ExportTaskRecord } from '../../shared/export'
@@ -39,7 +40,8 @@ interface SelfInfo {
   accountRoot: string
 }
 
-const MAC_KEY_FAQ_URL = 'https://github.com/hicccc77/WeFlow/blob/main/docs/MAC-KEY-FAQ.md'
+const MAC_KEY_FAQ_URL = 'https://github.com/Wxw-Gu/WechatExplorer/blob/main/docs/mac-disable-sip.md'
+const FIRST_USE_WELCOME_SEEN_KEY = 'wxe_first_use_welcome_seen'
 const MESSAGE_MONITOR_DEBOUNCE_MS = 8000
 const INITIAL_MESSAGE_COUNT = 20
 const MESSAGE_PAGE_SIZE = 100
@@ -256,6 +258,7 @@ function App(): React.ReactElement {
   const [bootState, setBootState] = useState<'loading' | 'connecting' | 'login'>('loading')
   const [autoConnectSource, setAutoConnectSource] = useState<'env' | 'saved' | null>(null)
   const [startupProgress, setStartupProgress] = useState<StartupProgress | null>(null)
+  const [showFirstUseWelcome, setShowFirstUseWelcome] = useState(false)
   const [appearanceSettings, setAppearanceSettings] = React.useState<{
     theme: 'system' | 'light' | 'dark'
     compactMode: boolean
@@ -728,6 +731,7 @@ function App(): React.ReactElement {
         })
         setIsDatabaseConnected(true)
         setBootState('login')
+        maybeShowFirstUseWelcome()
         window.setTimeout(() => {
           setStartupProgress(null)
         }, 500)
@@ -1222,6 +1226,45 @@ function App(): React.ReactElement {
     setActivePage('settings')
   }
 
+  const dismissFirstUseWelcome = (): void => {
+    try {
+      localStorage.setItem(FIRST_USE_WELCOME_SEEN_KEY, '1')
+    } catch {
+      // The welcome prompt is optional and should not interrupt normal use.
+    }
+    setShowFirstUseWelcome(false)
+  }
+
+  const maybeShowFirstUseWelcome = (): void => {
+    try {
+      if (localStorage.getItem(FIRST_USE_WELCOME_SEEN_KEY) === '1') return
+    } catch {
+      // If localStorage is unavailable, still show the one-time prompt for this session.
+    }
+    setShowFirstUseWelcome(true)
+  }
+
+  const openFirstUseSearch = (): void => {
+    dismissFirstUseWelcome()
+    setActivePage('search')
+  }
+
+  const openFirstUseReport = (): void => {
+    dismissFirstUseWelcome()
+    setReportWorkspaceView('configure')
+    setSelectedReportId(null)
+    setActivePage('report')
+  }
+
+  const openFirstUseAISettings = (): void => {
+    dismissFirstUseWelcome()
+    openModelSettings()
+  }
+
+  const openFirstUseGuide = (): void => {
+    setShowFirstUseWelcome(true)
+  }
+
   const openReport = (reportId: string): void => {
     setSelectedReportId(reportId)
     setReportWorkspaceView('result')
@@ -1651,10 +1694,19 @@ function App(): React.ReactElement {
       dbReady={isDatabaseConnected}
       onPageChange={handlePageChange}
       onOpenSettings={openSettings}
+      onOpenGuide={openFirstUseGuide}
       appearanceTheme={appearanceSettings.theme}
       compactMode={appearanceSettings.compactMode}
     >
       {reportNotice && <div className="app-toast">{reportNotice}</div>}
+      {showFirstUseWelcome && (
+        <FirstUseWelcome
+          onDismiss={dismissFirstUseWelcome}
+          onOpenSearch={openFirstUseSearch}
+          onOpenReport={openFirstUseReport}
+          onOpenAISettings={openFirstUseAISettings}
+        />
+      )}
       {renderCurrentWorkspace()}
     </AppShell>
   )

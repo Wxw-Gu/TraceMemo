@@ -7,7 +7,7 @@ export interface NavigationItem {
 
 export const PRIMARY_NAV_ITEMS: NavigationItem[] = [
   { id: 'archive', label: '档案' },
-  { id: 'search', label: '检索' },
+  { id: 'search', label: '问问微信' },
   { id: 'report', label: '日报' },
   { id: 'agent-hub', label: 'Agent' },
   { id: 'export', label: '导出' },

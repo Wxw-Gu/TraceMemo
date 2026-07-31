@@ -144,6 +144,56 @@ body {
   -webkit-app-region: no-drag;
 }
 
+.app-guide-launcher {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 52px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  margin: 0 0 8px;
+  padding: 5px 0;
+  border: 0;
+  border-radius: var(--wxex-radius-md);
+  color: var(--wxex-text-secondary);
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--wxex-font);
+  -webkit-app-region: no-drag;
+
+  &:hover {
+    color: var(--wxex-brand);
+    background: var(--wxex-brand-soft);
+  }
+}
+
+.app-guide-launcher-icon {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+
+  svg {
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+}
+
+.app-guide-launcher-label {
+  font-size: 11px;
+  line-height: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .account-summary {
   box-sizing: border-box;
   width: 100%;

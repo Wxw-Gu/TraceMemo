@@ -17,6 +17,7 @@ interface AppShellProps {
   dbReady: boolean
   onPageChange: (page: AppPage) => void
   onOpenSettings: () => void
+  onOpenGuide: () => void
   appearanceTheme?: 'system' | 'light' | 'dark'
   compactMode?: boolean
   children: React.ReactNode
@@ -36,6 +37,7 @@ export function AppShell({
   dbReady,
   onPageChange,
   onOpenSettings,
+  onOpenGuide,
   appearanceTheme = 'system',
   compactMode = false,
   children
@@ -47,6 +49,19 @@ export function AppShell({
       <aside className="app-primary-rail">
         <BrandLogo />
         <PrimaryNavigation activePage={activePage} onPageChange={onPageChange} />
+        <button
+          type="button"
+          className="app-guide-launcher"
+          onClick={onOpenGuide}
+          title="重新打开新手引导"
+        >
+          <span className="app-guide-launcher-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M12 3 14.2 9.8 21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2L12 3Z" />
+            </svg>
+          </span>
+          <span className="app-guide-launcher-label">新手引导</span>
+        </button>
         <div className="app-rail-account">
           <AccountSummary selfInfo={selfInfo} dbReady={dbReady} compact onClick={onOpenSettings} />
         </div>

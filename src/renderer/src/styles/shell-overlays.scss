@@ -137,6 +137,244 @@
   transition: width 0.18s ease-out;
 }
 
+/* 首次连接成功后的下一步引导 */
+.first-use-welcome-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(16, 27, 23, 0.42);
+  backdrop-filter: blur(4px);
+  animation: settings-fade-in 0.16s ease-out;
+}
+
+.first-use-welcome {
+  position: relative;
+  width: min(520px, 100%);
+  padding: 34px;
+  border: 1px solid rgba(203, 222, 214, 0.9);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(16, 35, 28, 0.24);
+  animation: settings-pop-in 0.18s ease-out;
+}
+
+.first-use-welcome-close {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 50%;
+  color: #7c8882;
+  background: transparent;
+  cursor: pointer;
+  font-size: 23px;
+  line-height: 1;
+}
+
+.first-use-welcome-close:hover {
+  color: #26342d;
+  background: #f0f4f1;
+}
+
+.first-use-welcome-mark {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 18px;
+  border-radius: 13px;
+  color: #fff;
+  background: linear-gradient(135deg, #176b57, #42a27f);
+  box-shadow: 0 7px 16px rgba(23, 107, 87, 0.22);
+  font-size: 22px;
+}
+
+.first-use-welcome-eyebrow {
+  margin: 0 0 5px;
+  color: #247a63;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.first-use-welcome h2 {
+  margin: 0;
+  color: #1f2c26;
+  font-size: 25px;
+  line-height: 34px;
+  letter-spacing: -0.025em;
+}
+
+.first-use-welcome-lead {
+  margin: 8px 0 24px;
+  color: #66756d;
+  font-size: 13px;
+  line-height: 21px;
+}
+
+.first-use-welcome-actions {
+  display: grid;
+  gap: 9px;
+}
+
+.first-use-welcome-feature {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: 100%;
+  padding: 17px 16px;
+  border: 1px solid #247a63;
+  border-radius: 12px;
+  color: #fff;
+  background: linear-gradient(135deg, #247a63, #176b57);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    transform 0.15s ease;
+
+  &:hover {
+    border-color: #00604c;
+    background: linear-gradient(135deg, #176b57, #00604c);
+    transform: translateY(-1px);
+  }
+}
+
+.first-use-welcome-feature-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: #176b57;
+  background: #fff;
+  font-size: 18px;
+}
+
+.first-use-welcome-feature-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.first-use-welcome-feature-arrow {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.first-use-welcome-feature-copy strong,
+.first-use-welcome-feature-copy small {
+  display: block;
+}
+
+.first-use-welcome-feature-copy strong {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.first-use-welcome-feature-copy small {
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.first-use-welcome-secondary-actions {
+  display: flex;
+  gap: 22px;
+  margin: 16px 0 22px;
+}
+
+.first-use-welcome-secondary-actions button {
+  padding: 0;
+  border: 0;
+  color: #53645b;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.first-use-welcome-secondary-actions button:hover {
+  color: #247a63;
+  text-decoration: underline;
+}
+
+.first-use-welcome-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 23px;
+  padding-top: 16px;
+  border-top: 1px solid #edf1ef;
+
+  span,
+  button,
+  a {
+    color: #68766f;
+    background: transparent;
+    font-size: 11px;
+    text-decoration: none;
+  }
+
+  button {
+    padding: 0;
+    border: 0;
+    cursor: pointer;
+  }
+
+  button:hover,
+  a:hover {
+    color: #247a63;
+    text-decoration: underline;
+  }
+}
+
+@media (max-width: 640px), (max-height: 560px) {
+  .first-use-welcome-overlay {
+    display: block;
+    overflow: auto;
+    padding: 18px;
+  }
+
+  .first-use-welcome {
+    width: auto;
+    margin: 0 auto;
+    padding: 26px 22px 22px;
+  }
+
+  .first-use-welcome h2 {
+    font-size: 22px;
+    line-height: 29px;
+  }
+
+  .first-use-welcome-feature {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .first-use-welcome-feature-arrow {
+    width: 100%;
+    margin-left: 44px;
+  }
+
+  .first-use-welcome-footer {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 9px;
+  }
+}
+
 /* 设置面板 */
 .settings-overlay {
   position: fixed;

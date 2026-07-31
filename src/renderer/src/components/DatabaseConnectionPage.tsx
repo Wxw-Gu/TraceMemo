@@ -1,5 +1,8 @@
 import React from 'react'
 
+const GUIDE_URL =
+  'https://github.com/Wxw-Gu/WechatExplorer/blob/main/docs/user-guide/getting-started.md'
+
 export type DatabaseConnectionMode = 'automatic' | 'manual'
 export type DatabaseConnectionStatusKind = 'normal' | 'success' | 'error'
 
@@ -116,9 +119,9 @@ export function DatabaseConnectionPage({
             <LineIcon name="database" />
           </div>
           <h1>WechatExplorer</h1>
-          <p className="database-login-tagline">你的本地微信聊天档案</p>
+          <p className="database-login-tagline">让 AI 读懂你的微信</p>
           <p className="database-login-description">
-            连接本机微信数据库，开始检索、整理和分析聊天记录。
+            连接成功后，你可以搜索聊天记录、生成群聊日报，并按需使用 AI 分析。
           </p>
           <div className="database-login-promises">
             <div>
@@ -131,7 +134,7 @@ export function DatabaseConnectionPage({
             </div>
             <div>
               <LineIcon name="cloud" />
-              <span>不会上传</span>
+              <span>AI 按需启用</span>
             </div>
           </div>
         </div>
@@ -140,6 +143,42 @@ export function DatabaseConnectionPage({
 
       <section className="database-login-workspace" aria-label="数据库连接">
         <div className="database-login-panel">
+          <div className="database-login-start">
+            <p className="database-login-eyebrow">第一次使用</p>
+            <h2>开始连接微信</h2>
+            <p>跟着下面 3 步操作，通常几分钟即可完成连接。</p>
+            <ol>
+              <li>
+                <span>1</span>
+                <div>
+                  <strong>确认微信数据目录</strong>
+                  <small>没有自动找到时，可在设置中手动选择</small>
+                </div>
+              </li>
+              <li>
+                <span>2</span>
+                <div>
+                  <strong>让微信停在登录页面</strong>
+                  <small>不要在获取密钥前完成登录</small>
+                </div>
+              </li>
+              <li>
+                <span>3</span>
+                <div>
+                  <strong>点击自动获取密钥</strong>
+                  <small>提示可以登录后，再回到微信完成登录</small>
+                </div>
+              </li>
+            </ol>
+            <a
+              className="database-login-guide-link"
+              href={GUIDE_URL}
+              target="_blank"
+              rel="noreferrer"
+            >
+              查看 5 分钟上手教程 →
+            </a>
+          </div>
           <div className="database-login-tabs" role="tablist" aria-label="连接方式">
             <button
               type="button"
@@ -148,16 +187,16 @@ export function DatabaseConnectionPage({
               className={mode === 'automatic' ? 'active' : ''}
               onClick={() => onModeChange('automatic')}
             >
-              自动获取
+              开始连接
             </button>
             <button
               type="button"
               role="tab"
               aria-selected={mode === 'manual'}
-              className={mode === 'manual' ? 'active' : ''}
+              className={`database-login-manual-tab ${mode === 'manual' ? 'active' : ''}`}
               onClick={() => onModeChange('manual')}
             >
-              手动输入
+              高级用户：已有数据库密钥？手动连接
             </button>
           </div>
 
@@ -219,20 +258,31 @@ export function DatabaseConnectionPage({
                 onClick={onAutoGetKey}
                 disabled={isFetching}
               >
-                {isFetching
-                  ? '正在获取密钥…'
-                  : statusKind === 'error'
-                    ? '重新检测'
-                    : '自动获取密钥'}
+                {isFetching ? '正在获取密钥…' : statusKind === 'error' ? '重新检测' : '开始获取'}
               </button>
-              {showMacKeyFaq && (
+              <p className="database-login-platform-note">
+                {isMac ? (
+                  <>
+                    macOS 首次获取密钥需要关闭 SIP。{' '}
+                    <a href={macKeyFaqUrl} target="_blank" rel="noreferrer">
+                      查看说明
+                    </a>
+                  </>
+                ) : (
+                  'Windows 已完整支持，不需要关闭 SIP。'
+                )}
+              </p>
+              {showMacKeyFaq && isMac && (
                 <a href={macKeyFaqUrl} target="_blank" rel="noreferrer">
-                  查看详情 · 连接帮助
+                  获取失败？查看连接排查
                 </a>
               )}
             </div>
           ) : (
             <div className="database-login-manual" role="tabpanel">
+              <p className="database-login-manual-note">
+                仅适用于已经通过其他方式获得当前微信账号数据库密钥的高级用户。第一次使用请返回“开始连接”。
+              </p>
               <div className="database-login-field">
                 <label htmlFor="database-login-key">数据库密钥</label>
                 <div className="database-login-key-input">
