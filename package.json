@@ -1,6 +1,6 @@
 {
   "name": "wechatexplorer",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "description": "macOS / Windows 微信聊天记录查看与 AI 群聊总结助手",
   "keywords": [
     "wechat",
@@ -41,9 +41,12 @@
     "release": "npm run release:mac && npm run release:win",
     "release:mac": "npm run typecheck && npm run build:wechat-connector:mac && electron-vite build && electron-builder --config electron-builder.yml --mac --x64 --arm64 --publish always",
     "release:win": "npm run typecheck && npm run build:wechat-connector:win && electron-vite build && electron-builder --config electron-builder.yml --win --x64 --publish always",
+    "release:beta": "cross-env RELEASE_TYPE=prerelease npm run release",
+    "release:stable": "cross-env RELEASE_TYPE=release npm run release",
     "build:linux": "electron-vite build && electron-builder --config electron-builder.yml --linux"
   },
   "dependencies": {
+    "cross-env": "^10.1.0",
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@koromix/koffi-win32-x64": "3.1.0",
