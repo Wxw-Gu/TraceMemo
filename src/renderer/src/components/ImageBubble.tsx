@@ -25,7 +25,6 @@ export function ImageBubble({
   const [loading, setLoading] = useState(false)
   const [upgrading, setUpgrading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [isThumbnail, setIsThumbnail] = useState(Boolean(initialCachedImage?.isThumbnail))
   const [usingFallback, setUsingFallback] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const mountedRef = useRef(true)
@@ -75,7 +74,6 @@ export function ImageBubble({
         if (!mountedRef.current) return
         setImageUrl(result.data)
         setUsingFallback(false)
-        setIsThumbnail(result.isThumbnail)
         setError(null)
       } catch (error) {
         if (!mountedRef.current) return
@@ -145,7 +143,6 @@ export function ImageBubble({
       if (result.data.startsWith('data:image/') || result.data.startsWith('wxe-media://')) {
         setImageUrl(result.data)
         setUsingFallback(false)
-        setIsThumbnail(result.isThumbnail)
         setError(null)
         onImageClick?.(result.data)
         return
@@ -193,9 +190,7 @@ export function ImageBubble({
         alt="图片"
         className={`image-content ${usingFallback ? 'image-fallback' : ''}`}
       />
-      {(upgrading || isThumbnail) && (
-        <div className="image-quality-badge">{upgrading ? '正在查找原图' : '缩略图'}</div>
-      )}
+      {upgrading && <div className="image-quality-badge">正在查找原图</div>}
       <div className="image-actions">
         <button className="image-action-btn" onClick={handleCopy} title="复制图片">
           复制

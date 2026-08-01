@@ -20,6 +20,7 @@ import type { AppLogEntry } from '../shared/app-log'
 import type { AppUpdateState } from '../shared/app-update'
 import type { CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress } from '../shared/export'
+import type { ImageDecoderSelectionResult, ImageDecoderStatus } from '../shared/image-decryption'
 
 // 渲染器的自定义 API
 const api = {
@@ -105,6 +106,12 @@ const api = {
     ipcRenderer.invoke('key:autoGetImageKey', options),
   getImageKeyConfig: () => ipcRenderer.invoke('image:getConfig'),
   getImageDecryptionStatus: () => ipcRenderer.invoke('image:getStatus'),
+  selectImageDecoder: (): Promise<ImageDecoderSelectionResult> =>
+    ipcRenderer.invoke('image:selectDecoder'),
+  getImageDecoderStatus: (): Promise<ImageDecoderStatus> =>
+    ipcRenderer.invoke('image:getDecoderStatus'),
+  openImageDecoderDownload: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('image:openDecoderDownload'),
   saveImageKeyConfig: (request) => ipcRenderer.invoke('image:saveConfig', request),
   testImageDecryption: (request) => ipcRenderer.invoke('image:testConfig', request),
   clearImageKeyConfig: () => ipcRenderer.invoke('image:clearConfig'),

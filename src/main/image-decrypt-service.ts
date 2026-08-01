@@ -3,7 +3,10 @@ import { existsSync, readFileSync, statSync, readdirSync, promises as fsPromises
 import crypto from 'crypto'
 import os from 'os'
 import { app } from 'electron'
+import { execFile } from 'child_process'
 import { Worker } from 'worker_threads'
+import type { ImageDecoderSource, ImageDecoderStatus } from '../shared/image-decryption'
+import { loadSettings } from './services/settings-store'
 import { Wcdb4Client } from './wcdb4-client'
 
 const imageDecryptDebugEnabled = process.env['WECHATEXPLORER_DEBUG_IMAGE'] === '1'
@@ -42,9 +45,111 @@ interface PersistentImageMeta {
   isThumbnail: boolean
 }
 
+type FfmpegCandidate = { executable: string; source: ImageDecoderSource }
+
+function getFfmpegCandidates(selectedPath = loadSettings().ffmpegPath): FfmpegCandidate[] {
+  const selected = String(selectedPath || '').trim()
+  const environment = String(process.env['FFMPEG_BIN'] || '').trim()
+  const executable = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  const candidates: FfmpegCandidate[] = [
+    ...(selected ? [{ executable: selected, source: 'selected' as const }] : []),
+    ...(environment ? [{ executable: environment, source: 'environment' as const }] : []),
+    {
+      executable: join(process.resourcesPath, 'ffmpeg', executable),
+      source: 'bundled'
+    },
+    {
+      executable: join(process.cwd(), 'resources', 'ffmpeg', executable),
+      source: 'bundled'
+    },
+    { executable: process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg', source: 'system' }
+  ]
+
+  return candidates.filter(
+    (candidate, index) =>
+      candidates.findIndex(
+        (other) => other.executable.toLowerCase() === candidate.executable.toLowerCase()
+      ) === index
+  )
+}
+
+function resolveFfmpegExecutable(): string {
+  for (const candidate of getFfmpegCandidates()) {
+    if (candidate.source === 'environment' || candidate.source === 'system') {
+      return candidate.executable
+    }
+    if (existsSync(candidate.executable)) return candidate.executable
+  }
+  return process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+}
+
+function runImageDecoderCommand(
+  executable: string,
+  args: string[]
+): Promise<{ success: boolean; output: string }> {
+  return new Promise((resolveValidation) => {
+    execFile(
+      executable,
+      args,
+      { timeout: 7_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        resolveValidation({ success: !error, output: `${stdout}\n${stderr}` })
+      }
+    )
+  })
+}
+
+export async function inspectImageDecoderExecutable(
+  executable: string
+): Promise<{ installed: boolean; supportsHevc: boolean }> {
+  const version = await runImageDecoderCommand(executable, ['-hide_banner', '-version'])
+  if (!version.success || !/ffmpeg version/i.test(version.output)) {
+    return { installed: false, supportsHevc: false }
+  }
+
+  const decoders = await runImageDecoderCommand(executable, ['-hide_banner', '-decoders'])
+  return {
+    installed: true,
+    supportsHevc:
+      decoders.success && /^\s*[A-Z.]{6}\s+hevc\s/im.test(decoders.output)
+  }
+}
+
+async function resolveImageDecoderPath(executable: string): Promise<string | undefined> {
+  if (existsSync(executable)) return resolve(executable)
+  const locator = process.platform === 'win32' ? 'where.exe' : 'which'
+  const located = await runImageDecoderCommand(locator, [executable])
+  if (!located.success) return undefined
+  return located.output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && existsSync(line))
+}
+
+export async function inspectImageDecoderStatus(
+  selectedPath = loadSettings().ffmpegPath
+): Promise<ImageDecoderStatus> {
+  for (const candidate of getFfmpegCandidates(selectedPath)) {
+    const inspection = await inspectImageDecoderExecutable(candidate.executable)
+    if (inspection.installed) {
+      const resolvedPath = await resolveImageDecoderPath(candidate.executable)
+      return {
+        installed: true,
+        available: inspection.supportsHevc,
+        source: candidate.source,
+        selected: candidate.source === 'selected',
+        directory: resolvedPath ? dirname(resolvedPath) : undefined
+      }
+    }
+  }
+  return { installed: false, available: false, source: 'none', selected: false }
+}
+
 const IMAGE_DECRYPT_WORKER_SOURCE = String.raw`
 const crypto = require('node:crypto')
+const childProcess = require('node:child_process')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const { parentPort, workerData } = require('node:worker_threads')
 
@@ -105,7 +210,7 @@ function strictRemovePadding(buffer) {
   return buffer.subarray(0, buffer.length - paddingLength)
 }
 
-function unwrapWxgf(buffer) {
+function unwrapWxgf(buffer, ffmpegPath) {
   if (
     buffer.length < 20 ||
     buffer[0] !== 0x77 ||
@@ -128,10 +233,55 @@ function unwrapWxgf(buffer) {
       return buffer.subarray(index)
     }
   }
-  return buffer
+
+  let hevcOffset = -1
+  for (let index = 4; index < Math.min(buffer.length - 4, 4096); index += 1) {
+    if (
+      buffer[index] === 0x00 &&
+      buffer[index + 1] === 0x00 &&
+      buffer[index + 2] === 0x00 &&
+      buffer[index + 3] === 0x01
+    ) {
+      hevcOffset = index
+      break
+    }
+  }
+  if (hevcOffset < 0 || !ffmpegPath) return buffer
+
+  const nonce = process.pid + '-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex')
+  const tempBase = path.join(os.tmpdir(), 'wxe-wxgf-' + nonce)
+  const inputPath = tempBase + '.hevc'
+  const outputPath = tempBase + '.png'
+  try {
+    fs.writeFileSync(inputPath, buffer.subarray(hevcOffset))
+    childProcess.execFileSync(
+      ffmpegPath,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-f',
+        'hevc',
+        '-i',
+        inputPath,
+        '-frames:v',
+        '1',
+        outputPath
+      ],
+      { timeout: 20_000, windowsHide: true, stdio: 'ignore' }
+    )
+    const converted = fs.readFileSync(outputPath)
+    return detectImageExtension(converted) ? converted : buffer
+  } catch {
+    return buffer
+  } finally {
+    try { fs.rmSync(inputPath, { force: true }) } catch {}
+    try { fs.rmSync(outputPath, { force: true }) } catch {}
+  }
 }
 
-function decryptCandidate(filePath, aesKey, xorKey) {
+function decryptCandidate(filePath, aesKey, xorKey, ffmpegPath) {
   const bytes = fs.readFileSync(filePath)
   if (!path.extname(filePath).toLowerCase().includes('dat')) {
     const extension = detectImageExtension(bytes) || path.extname(filePath).toLowerCase()
@@ -176,7 +326,7 @@ function decryptCandidate(filePath, aesKey, xorKey) {
     xorPlain[index] = xorData[index] ^ xorKey
   }
 
-  const image = unwrapWxgf(Buffer.concat([unpadded, rawData, xorPlain]))
+  const image = unwrapWxgf(Buffer.concat([unpadded, rawData, xorPlain]), ffmpegPath)
   const extension = detectImageExtension(image)
   if (!extension) return null
   return {
@@ -204,7 +354,12 @@ function collectCandidates(datPath, allowThumbnail) {
 let result = null
 for (const candidate of collectCandidates(workerData.datPath, workerData.allowThumbnail)) {
   try {
-    result = decryptCandidate(candidate, workerData.aesKey, workerData.xorKey)
+    result = decryptCandidate(
+      candidate,
+      workerData.aesKey,
+      workerData.xorKey,
+      workerData.ffmpegPath
+    )
     if (result) break
   } catch {
     // Try the next local quality variant.
@@ -1163,7 +1318,8 @@ export class ImageDecryptService {
           datPath,
           allowThumbnail,
           xorKey: this.xorKey,
-          aesKey: this.aesKey
+          aesKey: this.aesKey,
+          ffmpegPath: resolveFfmpegExecutable()
         }
       })
       const timeout = setTimeout(() => {

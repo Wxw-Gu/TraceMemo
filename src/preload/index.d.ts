@@ -14,6 +14,8 @@ import type {
   DatabaseKeyValidationResult
 } from '../shared/database-key'
 import type {
+  ImageDecoderSelectionResult,
+  ImageDecoderStatus,
   ImageDecryptionStatus,
   ImageDecryptionTestResult,
   ImageKeyConfigResult,
@@ -260,6 +262,7 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          ffmpegPath: string
           recallProtectionEnabled: boolean
           debugEnabled: boolean
           autoLogin: boolean
@@ -273,6 +276,9 @@ declare global {
       }>
       getImageKeyConfig: () => Promise<ImageKeyConfigResult>
       getImageDecryptionStatus: () => Promise<ImageDecryptionStatus>
+      selectImageDecoder: () => Promise<ImageDecoderSelectionResult>
+      getImageDecoderStatus: () => Promise<ImageDecoderStatus>
+      openImageDecoderDownload: () => Promise<{ success: boolean; error?: string }>
       saveImageKeyConfig: (request: SaveImageKeyRequest) => Promise<ImageKeyConfigResult>
       testImageDecryption: (
         request: TestImageDecryptionRequest
@@ -291,6 +297,7 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          ffmpegPath: string
           recallProtectionEnabled: boolean
           debugEnabled: boolean
           autoLogin: boolean
@@ -310,6 +317,7 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          ffmpegPath: string
           recallProtectionEnabled: boolean
           debugEnabled: boolean
           autoLogin: boolean
@@ -327,6 +335,7 @@ declare global {
           apiHost: string
           apiPort: number
           imageKeyRoot: string
+          ffmpegPath: string
           recallProtectionEnabled: boolean
           debugEnabled: boolean
           autoLogin: boolean

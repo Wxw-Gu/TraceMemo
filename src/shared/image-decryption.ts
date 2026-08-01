@@ -1,5 +1,21 @@
 export type ImageKeySource = 'secure-storage' | 'legacy-settings' | 'environment' | 'none'
 export type ImageResourceState = 'available' | 'unavailable' | 'unknown'
+export type ImageDecoderSource = 'selected' | 'environment' | 'bundled' | 'system' | 'none'
+
+export interface ImageDecoderStatus {
+  installed: boolean
+  available: boolean
+  source: ImageDecoderSource
+  selected: boolean
+  directory?: string
+}
+
+export interface ImageDecoderSelectionResult {
+  success: boolean
+  canceled: boolean
+  status?: ImageDecoderStatus
+  error?: string
+}
 
 export interface ImageKeyConfigResult {
   success: boolean
@@ -33,6 +49,7 @@ export interface ImageDecryptionStatus {
   wechatRunning: boolean
   accountIdentified: boolean
   cacheState: 'normal' | 'unavailable'
+  decoder: ImageDecoderStatus
   resources: {
     imageIndex: ImageResourceCheck
     imageDirectory: ImageResourceCheck

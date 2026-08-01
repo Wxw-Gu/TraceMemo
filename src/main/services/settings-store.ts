@@ -28,6 +28,7 @@ export interface AppSettings {
   imageXorKey: string
   imageAesKey: string
   imageKeyFallbackDisabled: boolean
+  ffmpegPath: string
   recallProtectionEnabled: boolean
   debugEnabled: boolean
   autoLogin: boolean
@@ -108,6 +109,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   imageXorKey: '',
   imageAesKey: '',
   imageKeyFallbackDisabled: false,
+  ffmpegPath: '',
   recallProtectionEnabled: false,
   debugEnabled: false,
   autoLogin: ['1', 'true', 'yes', 'on'].includes(

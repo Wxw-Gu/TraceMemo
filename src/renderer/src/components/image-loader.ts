@@ -59,6 +59,12 @@ function getCachedImage(
   for (const key of keys) {
     const cached = imageCache.get(key)
     if (!cached) continue
+    if (options.force && cached.isThumbnail) {
+      imageCache.delete(key)
+      imageCacheBytes -= imageCacheSizes.get(key) || 0
+      imageCacheSizes.delete(key)
+      continue
+    }
     imageCache.delete(key)
     imageCache.set(key, cached)
     return cached
@@ -81,6 +87,10 @@ function cacheImage(
   options: ImageLoadOptions,
   image: LoadedImage
 ): void {
+  // A forced original request may temporarily fall back to a thumbnail. Do not
+  // let that fallback prevent a later retry after WeChat downloads the original.
+  if (options.force && image.isThumbnail) return
+
   const keys = cacheKeys(imageMd5, imageDatName, options)
   const size = image.data.length * 2
   for (const key of keys) {

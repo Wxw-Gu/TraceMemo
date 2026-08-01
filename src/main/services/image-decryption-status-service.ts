@@ -9,7 +9,7 @@ import type {
   ImageResourceCheck,
   TestImageDecryptionRequest
 } from '../../shared/image-decryption'
-import { ImageDecryptService } from '../image-decrypt-service'
+import { ImageDecryptService, inspectImageDecoderStatus } from '../image-decrypt-service'
 import * as chat from './chat-service'
 import { validateImageKeyRequest } from './image-key-config-service'
 import { isWechatRunning } from './wechat-process-status'
@@ -25,6 +25,10 @@ export async function inspectImageDecryptionStatus(
     fs.existsSync(path.join(accountRoot, 'cache')) ||
     fs.existsSync(path.join(os.homedir(), 'Documents', 'WechatExplorer', 'Emojis'))
   const dbConnected = chat.isReady()
+  const [wechatRunning, decoder] = await Promise.all([
+    isWechatRunning(),
+    inspectImageDecoderStatus()
+  ])
 
   return {
     configured: config.configured,
@@ -36,9 +40,10 @@ export async function inspectImageDecryptionStatus(
     updatedAt: config.updatedAt,
     platform: process.platform,
     autoDetectSupported: process.platform === 'win32' || process.platform === 'darwin',
-    wechatRunning: await isWechatRunning(),
+    wechatRunning,
     accountIdentified: Boolean(chat.getSelfAccountInfo()?.wxid),
     cacheState: canUseCacheRoot() ? 'normal' : 'unavailable',
+    decoder,
     resources: {
       imageIndex: check(dbConnected, dbConnected ? '可用' : '数据库尚未连接'),
       imageDirectory: check(imageDirectoryFound, imageDirectoryFound ? '已找到' : '未找到'),

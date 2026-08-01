@@ -11,7 +11,7 @@ import {
   dialog,
   protocol
 } from 'electron'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { existsSync, promises as fsPromises } from 'fs'
 import { extname } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -21,7 +21,12 @@ import { bootstrapWcdbNativeAsync, Wcdb4Client } from './wcdb4-client'
 import { VoiceService } from './voice-service'
 import { StickerService } from './sticker-service'
 import { parseMessageContent } from './message-parser'
-import { ImageDecryptService, type DecodedImage } from './image-decrypt-service'
+import {
+  ImageDecryptService,
+  inspectImageDecoderExecutable,
+  inspectImageDecoderStatus,
+  type DecodedImage
+} from './image-decrypt-service'
 import { exportGroupReport } from './group-report-service'
 import {
   deleteGeneratedReport,
@@ -659,6 +664,67 @@ app.whenReady().then(async () => {
     return result
   })
 
+  ipcMain.handle('image:selectDecoder', async (event) => {
+    const settings = loadSettings()
+    const owner = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showOpenDialog(owner!, {
+      title: '选择 FFmpeg 解压或安装目录',
+      defaultPath: settings.ffmpegPath ? dirname(settings.ffmpegPath) : app.getPath('downloads'),
+      properties: ['openDirectory']
+    })
+    if (result.canceled) return { success: false, canceled: true }
+
+    const selectedDirectory = result.filePaths[0]
+    if (!selectedDirectory) return { success: false, canceled: true }
+
+    const executable = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+    const candidates = [
+      join(selectedDirectory, executable),
+      join(selectedDirectory, 'bin', executable)
+    ]
+    let selectedPath = ''
+    for (const candidate of candidates) {
+      if (!existsSync(candidate)) continue
+      const inspection = await inspectImageDecoderExecutable(candidate)
+      if (inspection.installed) {
+        selectedPath = candidate
+        break
+      }
+    }
+
+    if (!selectedPath) {
+      return {
+        success: false,
+        canceled: false,
+        error: '所选目录中没有找到 FFmpeg，请选择解压后的文件夹或其中的 bin 文件夹。'
+      }
+    }
+
+    saveSettings({ ...settings, ffmpegPath: selectedPath })
+    return {
+      success: true,
+      canceled: false,
+      status: await inspectImageDecoderStatus(selectedPath)
+    }
+  })
+
+  ipcMain.handle('image:getDecoderStatus', () => inspectImageDecoderStatus())
+
+  ipcMain.handle('image:openDecoderDownload', async () => {
+    const url =
+      process.platform === 'win32'
+        ? 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+        : process.platform === 'darwin'
+          ? 'https://brew.sh/'
+          : 'https://ffmpeg.org/download.html'
+    try {
+      await shell.openExternal(url)
+      return { success: true }
+    } catch {
+      return { success: false, error: '无法打开下载页面，请检查系统默认浏览器设置。' }
+    }
+  })
+
   ipcMain.handle('db:getBootstrapCache', () => {
     if (!chat.isReady()) return null
     return getBootstrapCache(chat.getCurrentAccountRoot())
@@ -865,7 +931,7 @@ app.whenReady().then(async () => {
       const cachedImage = await service.getCachedDecodedImage(imageCacheKey, {
         includeData: !mediaService
       })
-      if (cachedImage) {
+      if (cachedImage && (!force || !cachedImage.isThumbnail)) {
         return buildImageResponse(cachedImage)
       }
 
@@ -894,7 +960,9 @@ app.whenReady().then(async () => {
         const queuedCacheHit = await coldService.getCachedDecodedImage(imageCacheKey, {
           includeData: !queuedMediaService
         })
-        if (queuedCacheHit) return buildImageResponse(queuedCacheHit)
+        if (queuedCacheHit && (!force || !queuedCacheHit.isThumbnail)) {
+          return buildImageResponse(queuedCacheHit)
+        }
 
         let filePath = force
           ? await coldService.findImageFileAsync(imageMd5, imageDatName, {

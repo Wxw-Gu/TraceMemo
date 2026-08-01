@@ -1,6 +1,7 @@
 import type { SettingsSelfInfo } from '../model/types'
 import { AutoDetectImageKeySection } from '../image-decryption/AutoDetectImageKeySection'
 import { DangerZone } from '../image-decryption/DangerZone'
+import { ImageDecoderRequirementNotice } from '../image-decryption/ImageDecoderRequirementNotice'
 import { ImageDecryptStatus } from '../image-decryption/ImageDecryptStatus'
 import { ImageKeyConfiguration } from '../image-decryption/ImageKeyConfiguration'
 import { ImageTestSection } from '../image-decryption/ImageTestSection'
@@ -54,6 +55,11 @@ export function ImageDecryptionPage({
               <p>WechatExplorer 不会上传您的微信图片。所有图片解析和缓存处理均在本地完成。</p>
             </div>
           </section>
+
+          <ImageDecoderRequirementNotice
+            status={controller.state.status?.decoder}
+            onNotice={onNotice}
+          />
 
           <h2 className="settings-section-heading">图片解密状态</h2>
           <ImageDecryptStatus
