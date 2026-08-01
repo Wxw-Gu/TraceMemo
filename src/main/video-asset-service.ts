@@ -10,6 +10,7 @@ type VideoAsset = {
 
 export class VideoAssetService {
   private readonly urlTokens = new Map<string, string>()
+  private readonly fileTokens = new Map<string, string>()
   private index: Map<string, VideoAsset> | null = null
 
   constructor(private readonly client: Wcdb4Client) {}
@@ -48,8 +49,8 @@ export class VideoAssetService {
       if (!asset) continue
       return {
         success: true,
-        url: this.createUrl(asset.filePath),
-        poster: asset.posterPath ? this.createUrl(asset.posterPath) : undefined
+        url: this.createLocalMediaUrl(asset.filePath),
+        poster: asset.posterPath ? this.createLocalMediaUrl(asset.posterPath) : undefined
       }
     }
     return { success: false, error: '本地未找到该视频文件' }
@@ -61,12 +62,33 @@ export class VideoAssetService {
     return filePath
   }
 
-  private createUrl(filePath: string): string {
+  pathForUrl(url: string): string | undefined {
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol !== 'wxe-media:' || parsed.hostname !== 'local') return undefined
+      return this.pathForToken(parsed.pathname.replace(/^\/+/, ''))
+    } catch {
+      return undefined
+    }
+  }
+
+  createLocalMediaUrl(filePath: string): string {
+    const normalizedPath = path.resolve(filePath)
+    const existingToken = this.fileTokens.get(normalizedPath)
+    if (existingToken && this.urlTokens.get(existingToken) === normalizedPath) {
+      return `wxe-media://local/${existingToken}`
+    }
+
     const token = crypto.randomBytes(18).toString('hex')
-    this.urlTokens.set(token, filePath)
-    if (this.urlTokens.size > 500) {
-      const first = this.urlTokens.keys().next().value
-      if (first) this.urlTokens.delete(first)
+    this.urlTokens.set(token, normalizedPath)
+    this.fileTokens.set(normalizedPath, token)
+    if (this.urlTokens.size > 2048) {
+      const oldestToken = this.urlTokens.keys().next().value
+      if (oldestToken) {
+        const oldestPath = this.urlTokens.get(oldestToken)
+        this.urlTokens.delete(oldestToken)
+        if (oldestPath) this.fileTokens.delete(oldestPath)
+      }
     }
     return `wxe-media://local/${token}`
   }

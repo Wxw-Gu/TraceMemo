@@ -24,135 +24,364 @@ export interface CachedGroupSnapshot {
   }[]
 }
 
-interface CachedMessageBucket {
+interface StartupCacheFile {
+  version: 2
+  platform: NodeJS.Platform
+  accountRoot: string
+  updatedAt: number
+  self?: CachedSelfInfo
+  contacts: Contact[]
+}
+
+interface CachedMessageBucketFile {
+  version: 2
+  platform: NodeJS.Platform
+  accountRoot: string
+  cacheKey: string
   updatedAt: number
   startTime?: number
   endTime?: number
   items: Message[]
 }
 
-interface BootstrapCacheFile {
-  version: 1
+interface CachedGroupSnapshotFile {
+  version: 2
   platform: NodeJS.Platform
   accountRoot: string
+  userMd5: string
   updatedAt: number
-  self?: CachedSelfInfo
-  contacts?: Contact[]
-  messages?: Record<string, CachedMessageBucket>
-  groupSnapshots?: Record<string, { updatedAt: number; snapshot: CachedGroupSnapshot }>
+  snapshot: CachedGroupSnapshot
 }
 
-const CACHE_VERSION = 1
+interface ScheduledWrite {
+  value: unknown
+  revision: number
+  generation: number
+  cleanupFile?: string
+  prune?: { directory: string; maxFiles: number }
+}
+
+interface AccountCachePaths {
+  root: string
+  startup: string
+  messages: string
+  groups: string
+  legacy: string
+}
+
+const CACHE_VERSION = 2
 const MAX_MESSAGE_BUCKETS = 768
+const MAX_GROUP_SNAPSHOTS = 768
 const MAX_MESSAGES_PER_BUCKET = 120
+const MAX_MEMORY_MESSAGE_BUCKETS = 32
+const MAX_MEMORY_GROUP_SNAPSHOTS = 32
 const WRITE_DEBOUNCE_MS = 300
-const memoryCache = new Map<string, BootstrapCacheFile>()
+const PRUNE_INTERVAL_MS = 30_000
+
+const startupMemory = new Map<string, StartupCacheFile>()
+const messageMemory = new Map<string, CachedMessageBucketFile>()
+const groupMemory = new Map<string, CachedGroupSnapshotFile>()
 const writeTimers = new Map<string, NodeJS.Timeout>()
 const writeQueues = new Map<string, Promise<void>>()
+const scheduledWrites = new Map<string, ScheduledWrite>()
+const writeRevisions = new Map<string, number>()
+const lastPrunedAt = new Map<string, number>()
+let cacheGeneration = 0
 
 function normalizeRoot(accountRoot?: string): string {
   return String(accountRoot || '').trim()
 }
 
-function getCacheFile(accountRoot?: string): string {
-  const normalizedRoot = normalizeRoot(accountRoot) || 'default'
-  const hash = crypto
-    .createHash('sha1')
-    .update(`${process.platform}:${normalizedRoot}`)
-    .digest('hex')
-    .slice(0, 16)
-  return path.join(
-    app.getPath('userData'),
-    'cache',
-    'bootstrap',
-    `${process.platform}-${hash}.json`
-  )
+function digest(value: string): string {
+  return crypto.createHash('sha1').update(value).digest('hex').slice(0, 24)
 }
 
-function readCacheFile(accountRoot?: string): BootstrapCacheFile | null {
+function getAccountCachePaths(accountRoot: string): AccountCachePaths {
   const normalizedRoot = normalizeRoot(accountRoot)
-  if (!normalizedRoot) return null
-  const file = getCacheFile(normalizedRoot)
-  const cached = memoryCache.get(file)
-  if (cached) return cached
-  try {
-    if (!fs.existsSync(file)) return null
-    const raw = fs.readJsonSync(file) as Partial<BootstrapCacheFile>
-    if (raw.version !== CACHE_VERSION || raw.platform !== process.platform) return null
-    if (normalizeRoot(raw.accountRoot) !== normalizedRoot) return null
-    const result: BootstrapCacheFile = {
-      version: CACHE_VERSION,
-      platform: process.platform,
-      accountRoot: normalizedRoot,
-      updatedAt: Number(raw.updatedAt) || 0,
-      self: raw.self,
-      contacts: Array.isArray(raw.contacts) ? raw.contacts : [],
-      messages: raw.messages && typeof raw.messages === 'object' ? raw.messages : {},
-      groupSnapshots:
-        raw.groupSnapshots && typeof raw.groupSnapshots === 'object' ? raw.groupSnapshots : {}
-    }
-    memoryCache.set(file, result)
-    return result
-  } catch (error) {
-    console.warn('[BootstrapCache] read failed:', error)
-    return null
+  const accountKey = digest(`${process.platform}:${normalizedRoot}`)
+  const bootstrapRoot = path.join(app.getPath('userData'), 'cache', 'bootstrap')
+  const root = path.join(bootstrapRoot, `${process.platform}-${accountKey}`)
+  return {
+    root,
+    startup: path.join(root, 'startup.json'),
+    messages: path.join(root, 'messages'),
+    groups: path.join(root, 'groups'),
+    legacy: path.join(bootstrapRoot, `${process.platform}-${accountKey.slice(0, 16)}.json`)
   }
-}
-
-function writeCacheFile(cache: BootstrapCacheFile): void {
-  const file = getCacheFile(cache.accountRoot)
-  memoryCache.set(file, cache)
-  const existingTimer = writeTimers.get(file)
-  if (existingTimer) clearTimeout(existingTimer)
-  writeTimers.set(
-    file,
-    setTimeout(() => {
-      writeTimers.delete(file)
-      const serialized = JSON.stringify(memoryCache.get(file) || cache)
-      const previous = writeQueues.get(file) || Promise.resolve()
-      const next = previous
-        .catch(() => undefined)
-        .then(async () => {
-          await fs.ensureDir(path.dirname(file))
-          await fs.writeFile(file, serialized, 'utf8')
-        })
-        .catch((error) => {
-          console.warn('[BootstrapCache] write failed:', error)
-        })
-        .finally(() => {
-          if (writeQueues.get(file) === next) writeQueues.delete(file)
-        })
-      writeQueues.set(file, next)
-    }, WRITE_DEBOUNCE_MS)
-  )
-}
-
-function loadOrCreate(accountRoot?: string): BootstrapCacheFile | null {
-  const normalizedRoot = normalizeRoot(accountRoot)
-  if (!normalizedRoot) return null
-  const existing = readCacheFile(normalizedRoot)
-  if (existing) return existing
-  const created: BootstrapCacheFile = {
-    version: CACHE_VERSION,
-    platform: process.platform,
-    accountRoot: normalizedRoot,
-    updatedAt: Date.now(),
-    contacts: [],
-    messages: {},
-    groupSnapshots: {}
-  }
-  memoryCache.set(getCacheFile(normalizedRoot), created)
-  return created
 }
 
 function messageBucketKey(userMd5: string, startTime?: number, endTime?: number): string {
   return `${userMd5}:${startTime ?? ''}:${endTime ?? ''}`
 }
 
-function cachedMessageIdentity(message: Message): string {
-  if (message.localId) return `local:${message.localId}`
-  if (message.serverId) return `server:${message.serverId}`
-  return `id:${message.id}`
+function getMessageCacheFile(accountRoot: string, cacheKey: string): string {
+  return path.join(getAccountCachePaths(accountRoot).messages, `${digest(cacheKey)}.json`)
+}
+
+function getGroupCacheFile(accountRoot: string, userMd5: string): string {
+  return path.join(getAccountCachePaths(accountRoot).groups, `${digest(userMd5)}.json`)
+}
+
+function readScheduledValue<T>(file: string): T | null {
+  const scheduled = scheduledWrites.get(file)
+  return scheduled ? (scheduled.value as T) : null
+}
+
+function touchMemory<T>(memory: Map<string, T>, file: string, value: T, maxEntries: number): void {
+  memory.delete(file)
+  memory.set(file, value)
+  while (memory.size > maxEntries) {
+    const oldest = memory.keys().next().value
+    if (!oldest) break
+    memory.delete(oldest)
+  }
+}
+
+function isCurrentAccountFile(
+  value: {
+    version?: number
+    platform?: NodeJS.Platform
+    accountRoot?: string
+  },
+  accountRoot: string
+): boolean {
+  return (
+    value.version === CACHE_VERSION &&
+    value.platform === process.platform &&
+    normalizeRoot(value.accountRoot) === normalizeRoot(accountRoot)
+  )
+}
+
+function readStartupCacheFile(accountRoot: string): StartupCacheFile | null {
+  const normalizedRoot = normalizeRoot(accountRoot)
+  if (!normalizedRoot) return null
+  const file = getAccountCachePaths(normalizedRoot).startup
+  const scheduled = readScheduledValue<StartupCacheFile>(file)
+  if (scheduled) return scheduled
+  const memory = startupMemory.get(file)
+  if (memory) return memory
+
+  try {
+    if (!fs.existsSync(file)) return null
+    const raw = fs.readJsonSync(file) as Partial<StartupCacheFile>
+    if (!isCurrentAccountFile(raw, normalizedRoot)) return null
+    const result: StartupCacheFile = {
+      version: CACHE_VERSION,
+      platform: process.platform,
+      accountRoot: normalizedRoot,
+      updatedAt: Number(raw.updatedAt) || 0,
+      self: raw.self,
+      contacts: Array.isArray(raw.contacts) ? raw.contacts : []
+    }
+    startupMemory.set(file, result)
+    return result
+  } catch (error) {
+    console.warn('[BootstrapCache] startup read failed:', error)
+    return null
+  }
+}
+
+function readMessageBucketFile(
+  accountRoot: string,
+  cacheKey: string
+): CachedMessageBucketFile | null {
+  const normalizedRoot = normalizeRoot(accountRoot)
+  if (!normalizedRoot) return null
+  const file = getMessageCacheFile(normalizedRoot, cacheKey)
+  const scheduled = readScheduledValue<CachedMessageBucketFile>(file)
+  if (scheduled) return scheduled
+  const memory = messageMemory.get(file)
+  if (memory) {
+    touchMemory(messageMemory, file, memory, MAX_MEMORY_MESSAGE_BUCKETS)
+    return memory
+  }
+
+  try {
+    if (!fs.existsSync(file)) return null
+    const raw = fs.readJsonSync(file) as Partial<CachedMessageBucketFile>
+    if (!isCurrentAccountFile(raw, normalizedRoot) || raw.cacheKey !== cacheKey) return null
+    const result: CachedMessageBucketFile = {
+      version: CACHE_VERSION,
+      platform: process.platform,
+      accountRoot: normalizedRoot,
+      cacheKey,
+      updatedAt: Number(raw.updatedAt) || 0,
+      startTime: raw.startTime,
+      endTime: raw.endTime,
+      items: Array.isArray(raw.items) ? raw.items : []
+    }
+    touchMemory(messageMemory, file, result, MAX_MEMORY_MESSAGE_BUCKETS)
+    return result
+  } catch (error) {
+    console.warn('[BootstrapCache] message read failed:', error)
+    return null
+  }
+}
+
+function readGroupSnapshotFile(
+  accountRoot: string,
+  userMd5: string
+): CachedGroupSnapshotFile | null {
+  const normalizedRoot = normalizeRoot(accountRoot)
+  if (!normalizedRoot) return null
+  const file = getGroupCacheFile(normalizedRoot, userMd5)
+  const scheduled = readScheduledValue<CachedGroupSnapshotFile>(file)
+  if (scheduled) return scheduled
+  const memory = groupMemory.get(file)
+  if (memory) {
+    touchMemory(groupMemory, file, memory, MAX_MEMORY_GROUP_SNAPSHOTS)
+    return memory
+  }
+
+  try {
+    if (!fs.existsSync(file)) return null
+    const raw = fs.readJsonSync(file) as Partial<CachedGroupSnapshotFile>
+    if (!isCurrentAccountFile(raw, normalizedRoot) || raw.userMd5 !== userMd5 || !raw.snapshot) {
+      return null
+    }
+    const result: CachedGroupSnapshotFile = {
+      version: CACHE_VERSION,
+      platform: process.platform,
+      accountRoot: normalizedRoot,
+      userMd5,
+      updatedAt: Number(raw.updatedAt) || 0,
+      snapshot: raw.snapshot
+    }
+    touchMemory(groupMemory, file, result, MAX_MEMORY_GROUP_SNAPSHOTS)
+    return result
+  } catch (error) {
+    console.warn('[BootstrapCache] group snapshot read failed:', error)
+    return null
+  }
+}
+
+async function pruneCacheDirectory(directory: string, maxFiles: number): Promise<void> {
+  const now = Date.now()
+  if (now - (lastPrunedAt.get(directory) || 0) < PRUNE_INTERVAL_MS) return
+  lastPrunedAt.set(directory, now)
+
+  try {
+    const names = (await fs.readdir(directory)).filter((name) => name.endsWith('.json'))
+    if (names.length <= maxFiles) return
+    const entries = await Promise.all(
+      names.map(async (name) => {
+        const file = path.join(directory, name)
+        const stat = await fs.stat(file)
+        return { file, modifiedAt: stat.mtimeMs }
+      })
+    )
+    const expired = entries
+      .sort((left, right) => right.modifiedAt - left.modifiedAt)
+      .slice(maxFiles)
+    await Promise.all(
+      expired.map(async ({ file }) => {
+        messageMemory.delete(file)
+        groupMemory.delete(file)
+        await fs.remove(file)
+      })
+    )
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn('[BootstrapCache] prune failed:', error)
+    }
+  }
+}
+
+function queueWrite(file: string): void {
+  const scheduled = scheduledWrites.get(file)
+  if (!scheduled) return
+  const previous = writeQueues.get(file) || Promise.resolve()
+  const next = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const current = scheduledWrites.get(file)
+      if (
+        !current ||
+        current.revision !== scheduled.revision ||
+        current.generation !== cacheGeneration
+      ) {
+        return
+      }
+
+      const tempFile = `${file}.${process.pid}.${scheduled.revision}.tmp`
+      await fs.ensureDir(path.dirname(file))
+      await fs.writeFile(tempFile, JSON.stringify(current.value), 'utf8')
+      const latest = scheduledWrites.get(file)
+      if (
+        !latest ||
+        latest.revision !== scheduled.revision ||
+        latest.generation !== cacheGeneration
+      ) {
+        await fs.remove(tempFile)
+        return
+      }
+      await fs.move(tempFile, file, { overwrite: true })
+      const completed = scheduledWrites.get(file)
+      if (
+        completed?.revision === scheduled.revision &&
+        completed.generation === scheduled.generation
+      ) {
+        scheduledWrites.delete(file)
+      }
+      if (current.cleanupFile) await fs.remove(current.cleanupFile)
+      if (current.prune) {
+        void pruneCacheDirectory(current.prune.directory, current.prune.maxFiles)
+      }
+    })
+    .catch((error) => {
+      console.warn('[BootstrapCache] write failed:', error)
+    })
+    .finally(() => {
+      if (writeQueues.get(file) === next) writeQueues.delete(file)
+    })
+  writeQueues.set(file, next)
+}
+
+function scheduleWrite(
+  file: string,
+  value: unknown,
+  options?: { cleanupFile?: string; prune?: { directory: string; maxFiles: number } }
+): void {
+  const existingTimer = writeTimers.get(file)
+  if (existingTimer) clearTimeout(existingTimer)
+  const revision = (writeRevisions.get(file) || 0) + 1
+  writeRevisions.set(file, revision)
+  scheduledWrites.set(file, {
+    value,
+    revision,
+    generation: cacheGeneration,
+    cleanupFile: options?.cleanupFile,
+    prune: options?.prune
+  })
+  writeTimers.set(
+    file,
+    setTimeout(() => {
+      writeTimers.delete(file)
+      queueWrite(file)
+    }, WRITE_DEBOUNCE_MS)
+  )
+}
+
+function loadOrCreateStartupCache(accountRoot: string): StartupCacheFile | null {
+  const normalizedRoot = normalizeRoot(accountRoot)
+  if (!normalizedRoot) return null
+  const existing = readStartupCacheFile(normalizedRoot)
+  if (existing) return existing
+  const created: StartupCacheFile = {
+    version: CACHE_VERSION,
+    platform: process.platform,
+    accountRoot: normalizedRoot,
+    updatedAt: Date.now(),
+    contacts: []
+  }
+  startupMemory.set(getAccountCachePaths(normalizedRoot).startup, created)
+  return created
+}
+
+function writeStartupCache(cache: StartupCacheFile): void {
+  const paths = getAccountCachePaths(cache.accountRoot)
+  startupMemory.set(paths.startup, cache)
+  scheduleWrite(paths.startup, cache, { cleanupFile: paths.legacy })
 }
 
 function containsLegacyMisparsedAppMessage(items: Message[]): boolean {
@@ -160,8 +389,7 @@ function containsLegacyMisparsedAppMessage(items: Message[]): boolean {
     const content = message.contentData
     if (content?.type === 'system' && content.raw) {
       return (
-        /<weappinfo\b/i.test(content.raw) &&
-        /<type>\s*(?:33|36|2001)\s*<\/type>/i.test(content.raw)
+        /<weappinfo\b/i.test(content.raw) && /<type>\s*(?:33|36|2001)\s*<\/type>/i.test(content.raw)
       )
     }
     if (
@@ -176,27 +404,16 @@ function containsLegacyMisparsedAppMessage(items: Message[]): boolean {
   })
 }
 
-function pruneMessageBuckets(messages: Record<string, CachedMessageBucket>): void {
-  const entries = Object.entries(messages)
-  if (entries.length <= MAX_MESSAGE_BUCKETS) return
-  entries
-    .sort((left, right) => (right[1].updatedAt || 0) - (left[1].updatedAt || 0))
-    .slice(MAX_MESSAGE_BUCKETS)
-    .forEach(([key]) => {
-      delete messages[key]
-    })
-}
-
 export function getBootstrapCache(accountRoot?: string): {
   self?: CachedSelfInfo
   contacts: Contact[]
   updatedAt: number
 } | null {
-  const cache = readCacheFile(accountRoot)
+  const cache = readStartupCacheFile(normalizeRoot(accountRoot))
   if (!cache) return null
   return {
     self: cache.self,
-    contacts: cache.contacts || [],
+    contacts: cache.contacts,
     updatedAt: cache.updatedAt
   }
 }
@@ -212,8 +429,8 @@ function isRawContactName(contact: Contact): boolean {
 }
 
 export function mergeCachedContactAvatars(accountRoot: string, contacts: Contact[]): Contact[] {
-  const cache = readCacheFile(accountRoot)
-  if (!cache?.contacts?.length) return contacts
+  const cache = readStartupCacheFile(accountRoot)
+  if (!cache?.contacts.length) return contacts
   const avatarByUsername = new Map(
     cache.contacts
       .filter((contact) => contact.m_nsUsrName && contact.avatar)
@@ -241,23 +458,23 @@ export function mergeCachedContactAvatars(accountRoot: string, contacts: Contact
 }
 
 export function saveBootstrapSelf(accountRoot: string, self: CachedSelfInfo): void {
-  const cache = loadOrCreate(accountRoot)
+  const cache = loadOrCreateStartupCache(accountRoot)
   if (!cache) return
   cache.self = self
   cache.updatedAt = Date.now()
-  writeCacheFile(cache)
+  writeStartupCache(cache)
 }
 
 export function saveBootstrapContacts(accountRoot: string, contacts: Contact[]): void {
-  const cache = loadOrCreate(accountRoot)
+  const cache = loadOrCreateStartupCache(accountRoot)
   if (!cache) return
   const avatarByUsername = new Map(
-    (cache.contacts || [])
+    cache.contacts
       .filter((contact) => contact.m_nsUsrName && contact.avatar)
       .map((contact) => [contact.m_nsUsrName, contact.avatar as string])
   )
   const nameByUsername = new Map(
-    (cache.contacts || [])
+    cache.contacts
       .filter(
         (contact) => contact.m_nsUsrName && contact.m_nsNickName && !isRawContactName(contact)
       )
@@ -275,12 +492,12 @@ export function saveBootstrapContacts(accountRoot: string, contacts: Contact[]):
         : nameByUsername.get(contact.m_nsUsrName) || contact.m_nsNickName
   }))
   cache.updatedAt = Date.now()
-  writeCacheFile(cache)
+  writeStartupCache(cache)
 }
 
 export function mergeBootstrapAvatars(accountRoot: string, avatars: Record<string, string>): void {
-  const cache = loadOrCreate(accountRoot)
-  if (!cache || !cache.contacts?.length) return
+  const cache = loadOrCreateStartupCache(accountRoot)
+  if (!cache?.contacts.length) return
   let changed = false
   cache.contacts = cache.contacts.map((contact) => {
     const avatar = avatars[contact.m_nsUsrName]
@@ -290,7 +507,7 @@ export function mergeBootstrapAvatars(accountRoot: string, avatars: Record<strin
   })
   if (!changed) return
   cache.updatedAt = Date.now()
-  writeCacheFile(cache)
+  writeStartupCache(cache)
 }
 
 export function getCachedMessages(
@@ -299,9 +516,9 @@ export function getCachedMessages(
   startTime?: number,
   endTime?: number
 ): Message[] {
-  const cache = readCacheFile(accountRoot)
-  const bucket = cache?.messages?.[messageBucketKey(userMd5, startTime, endTime)]
-  return bucket?.items || []
+  return (
+    readMessageBucketFile(accountRoot, messageBucketKey(userMd5, startTime, endTime))?.items || []
+  )
 }
 
 export function getCachedMessagePage(
@@ -310,35 +527,12 @@ export function getCachedMessagePage(
   startTime?: number,
   endTime?: number
 ): { hit: boolean; messages: Message[]; groupSnapshot?: CachedGroupSnapshot } {
-  const cache = readCacheFile(accountRoot)
-  const key = messageBucketKey(userMd5, startTime, endTime)
-  let bucket = cache?.messages?.[key]
-  if (!bucket && cache?.messages && startTime === undefined && endTime === undefined) {
-    const merged = new Map<string, Message>()
-    for (const [cachedKey, candidate] of Object.entries(cache.messages)) {
-      if (!cachedKey.startsWith(`${userMd5}:`)) continue
-      for (const message of candidate.items || []) {
-        merged.set(cachedMessageIdentity(message), message)
-      }
-    }
-    const migratedMessages = Array.from(merged.values())
-      .sort((left, right) => (left.createTime || 0) - (right.createTime || 0))
-      .slice(-MAX_MESSAGES_PER_BUCKET)
-    if (migratedMessages.length > 0) {
-      bucket = {
-        updatedAt: Date.now(),
-        items: migratedMessages
-      }
-      cache.messages[key] = bucket
-      cache.updatedAt = Date.now()
-      pruneMessageBuckets(cache.messages)
-      writeCacheFile(cache)
-    }
-  }
+  const bucket = readMessageBucketFile(accountRoot, messageBucketKey(userMd5, startTime, endTime))
+  const messages = bucket?.items || []
   return {
-    hit: Boolean(bucket) && !containsLegacyMisparsedAppMessage(bucket?.items || []),
-    messages: bucket?.items || [],
-    groupSnapshot: cache?.groupSnapshots?.[userMd5]?.snapshot
+    hit: Boolean(bucket) && !containsLegacyMisparsedAppMessage(messages),
+    messages,
+    groupSnapshot: readGroupSnapshotFile(accountRoot, userMd5)?.snapshot
   }
 }
 
@@ -347,33 +541,22 @@ export function saveCachedGroupSnapshot(
   userMd5: string,
   snapshot: CachedGroupSnapshot
 ): void {
-  const cache = loadOrCreate(accountRoot)
-  if (!cache) return
-  cache.groupSnapshots ||= {}
-  cache.groupSnapshots[userMd5] = { updatedAt: Date.now(), snapshot }
-  cache.updatedAt = Date.now()
-  writeCacheFile(cache)
-}
-
-export function flushBootstrapCacheWritesSync(): void {
-  for (const [file, cache] of memoryCache) {
-    const timer = writeTimers.get(file)
-    if (timer) clearTimeout(timer)
-    writeTimers.delete(file)
-    try {
-      fs.ensureDirSync(path.dirname(file))
-      fs.writeFileSync(file, JSON.stringify(cache), 'utf8')
-    } catch (error) {
-      console.warn('[BootstrapCache] flush failed:', error)
-    }
+  const normalizedRoot = normalizeRoot(accountRoot)
+  if (!normalizedRoot || !userMd5) return
+  const paths = getAccountCachePaths(normalizedRoot)
+  const file = getGroupCacheFile(normalizedRoot, userMd5)
+  const value: CachedGroupSnapshotFile = {
+    version: CACHE_VERSION,
+    platform: process.platform,
+    accountRoot: normalizedRoot,
+    userMd5,
+    updatedAt: Date.now(),
+    snapshot
   }
-}
-
-export function clearBootstrapCache(): void {
-  for (const timer of writeTimers.values()) clearTimeout(timer)
-  writeTimers.clear()
-  writeQueues.clear()
-  memoryCache.clear()
+  touchMemory(groupMemory, file, value, MAX_MEMORY_GROUP_SNAPSHOTS)
+  scheduleWrite(file, value, {
+    prune: { directory: paths.groups, maxFiles: MAX_GROUP_SNAPSHOTS }
+  })
 }
 
 export function saveCachedMessages(
@@ -383,17 +566,52 @@ export function saveCachedMessages(
   endTime: number | undefined,
   messages: Message[]
 ): void {
-  const cache = loadOrCreate(accountRoot)
-  if (!cache) return
-  const nextMessages = cache.messages || {}
-  nextMessages[messageBucketKey(userMd5, startTime, endTime)] = {
+  const normalizedRoot = normalizeRoot(accountRoot)
+  if (!normalizedRoot || !userMd5) return
+  const cacheKey = messageBucketKey(userMd5, startTime, endTime)
+  const paths = getAccountCachePaths(normalizedRoot)
+  const file = getMessageCacheFile(normalizedRoot, cacheKey)
+  const value: CachedMessageBucketFile = {
+    version: CACHE_VERSION,
+    platform: process.platform,
+    accountRoot: normalizedRoot,
+    cacheKey,
     updatedAt: Date.now(),
     startTime,
     endTime,
     items: messages.slice(-MAX_MESSAGES_PER_BUCKET)
   }
-  pruneMessageBuckets(nextMessages)
-  cache.messages = nextMessages
-  cache.updatedAt = Date.now()
-  writeCacheFile(cache)
+  touchMemory(messageMemory, file, value, MAX_MEMORY_MESSAGE_BUCKETS)
+  scheduleWrite(file, value, {
+    prune: { directory: paths.messages, maxFiles: MAX_MESSAGE_BUCKETS }
+  })
+}
+
+export function flushBootstrapCacheWritesSync(): void {
+  for (const timer of writeTimers.values()) clearTimeout(timer)
+  writeTimers.clear()
+  const writes = Array.from(scheduledWrites.entries())
+  scheduledWrites.clear()
+  for (const [file, scheduled] of writes) {
+    try {
+      fs.ensureDirSync(path.dirname(file))
+      fs.writeFileSync(file, JSON.stringify(scheduled.value), 'utf8')
+      if (scheduled.cleanupFile) fs.removeSync(scheduled.cleanupFile)
+    } catch (error) {
+      console.warn('[BootstrapCache] flush failed:', error)
+    }
+  }
+}
+
+export function clearBootstrapCache(): void {
+  cacheGeneration += 1
+  for (const timer of writeTimers.values()) clearTimeout(timer)
+  writeTimers.clear()
+  scheduledWrites.clear()
+  writeQueues.clear()
+  writeRevisions.clear()
+  lastPrunedAt.clear()
+  startupMemory.clear()
+  messageMemory.clear()
+  groupMemory.clear()
 }

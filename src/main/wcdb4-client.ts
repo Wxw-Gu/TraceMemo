@@ -241,6 +241,8 @@ export class Wcdb4Client {
   private groupNicknameCache = new Map<string, Map<string, string>>()
   private cachedSessions: Wcdb4Session[] | null = null
   private cachedChatTables: { name: string; db_number: string }[] | null = null
+  private sessionsInFlight: Promise<Wcdb4Session[]> | null = null
+  private sessionCacheGeneration = 0
 
   private wcdbShutdown: (() => number) | null = null
   private wcdbOpenAccount:
@@ -531,7 +533,11 @@ export class Wcdb4Client {
     this.handle = handleOut[0]
     if (this.wcdbSetMyWxid) {
       try {
-        this.wcdbSetMyWxid(this.handle, this.wxid)
+        await this.callAsyncCode(
+          this.wcdbSetMyWxid as unknown as KoffiAsyncFunction,
+          this.handle,
+          this.wxid
+        )
       } catch {
         // Optional helper. Failure does not block message reads.
       }
@@ -557,14 +563,16 @@ export class Wcdb4Client {
     this.groupNicknameCache.clear()
   }
 
-  startMonitor(callback: (type: string, json: string) => void): boolean {
+  async startMonitor(callback: (type: string, json: string) => void): Promise<boolean> {
     if (!this.wcdbStartMonitorPipe || !this.wcdbGetMonitorPipeName || !this.koffi) return false
 
     this.stopMonitor()
     this.monitorCallback = callback
 
     try {
-      const startResult = this.wcdbStartMonitorPipe()
+      const startResult = await this.callAsyncCode(
+        this.wcdbStartMonitorPipe as unknown as KoffiAsyncFunction
+      )
       if (startResult !== 0) {
         this.monitorCallback = null
         console.warn(`[WCDB4] wcdb_start_monitor_pipe 失败，错误码: ${startResult}`)
@@ -573,7 +581,10 @@ export class Wcdb4Client {
       this.monitorStarted = true
 
       const outName: WcdbVoidOut = [null]
-      const nameResult = this.wcdbGetMonitorPipeName(outName)
+      const nameResult = await this.callAsyncCode(
+        this.wcdbGetMonitorPipeName as unknown as KoffiAsyncFunction,
+        outName
+      )
       if (nameResult !== 0 || !outName[0]) {
         console.warn(`[WCDB4] wcdb_get_monitor_pipe_name 失败，错误码: ${nameResult}`)
         this.stopMonitor()
@@ -715,9 +726,45 @@ export class Wcdb4Client {
     return this.cachedSessions
   }
 
+  async getSessionsAsync(): Promise<Wcdb4Session[]> {
+    if (this.cachedSessions) return this.cachedSessions
+    if (this.sessionsInFlight) return this.sessionsInFlight
+    if (!this.wcdbGetSessions) return []
+
+    const generation = this.sessionCacheGeneration
+    const request = (async (): Promise<Wcdb4Session[]> => {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbGetSessions as unknown as KoffiAsyncFunction
+      )
+      const sessions = (Array.isArray(rows) ? rows : [])
+        .map((row) => this.normalizeSession(row))
+        .filter((session) => session.username)
+      await this.hydrateDisplayNamesAsync(
+        sessions
+          .filter((session) => this.shouldHydrateSessionDisplayName(session))
+          .map((session) => session.username)
+      )
+      const hydrated = sessions.map((session) => ({
+        ...session,
+        nickname:
+          this.displayNameCache.get(session.username) || session.nickname || session.username
+      }))
+      if (generation === this.sessionCacheGeneration) this.cachedSessions = hydrated
+      return hydrated
+    })()
+    this.sessionsInFlight = request
+    try {
+      return await request
+    } finally {
+      if (this.sessionsInFlight === request) this.sessionsInFlight = null
+    }
+  }
+
   invalidateSessionCache(): void {
+    this.sessionCacheGeneration += 1
     this.cachedSessions = null
     this.cachedChatTables = null
+    this.sessionsInFlight = null
   }
 
   getChatTables(): { name: string; db_number: string }[] {
@@ -1523,6 +1570,25 @@ export class Wcdb4Client {
       )
     } catch (error) {
       console.warn('[WCDB4] resolve image hardlink failed:', error)
+      return null
+    }
+  }
+
+  async resolveImageHardlinkAsync(md5: string): Promise<Wcdb4ImageHardlink | null> {
+    if (!this.wcdbResolveImageHardlink) return null
+    const normalizedMd5 = String(md5 || '')
+      .trim()
+      .toLowerCase()
+    if (!normalizedMd5) return null
+
+    try {
+      return await this.callJsonAsync<Wcdb4ImageHardlink>(
+        this.wcdbResolveImageHardlink as unknown as KoffiAsyncFunction,
+        normalizedMd5,
+        this.accountRoot
+      )
+    } catch (error) {
+      console.warn('[WCDB4] async image hardlink resolve failed:', error)
       return null
     }
   }

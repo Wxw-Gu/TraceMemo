@@ -21,7 +21,7 @@ import { bootstrapWcdbNativeAsync, Wcdb4Client } from './wcdb4-client'
 import { VoiceService } from './voice-service'
 import { StickerService } from './sticker-service'
 import { parseMessageContent } from './message-parser'
-import { ImageDecryptService } from './image-decrypt-service'
+import { ImageDecryptService, type DecodedImage } from './image-decrypt-service'
 import { exportGroupReport } from './group-report-service'
 import {
   deleteGeneratedReport,
@@ -103,6 +103,71 @@ let recallArchiveMonitor: RecallArchiveMonitor | null = null
 let recallProtectionGeneration = 0
 let recallJournalTimer: NodeJS.Timeout | null = null
 let wcdbBootstrapPromise: Promise<unknown> | null = null
+type ColdImageLoadItem = {
+  priority: number
+  sequence: number
+  run: () => Promise<unknown>
+  resolve: (value: unknown) => void
+  reject: (reason: unknown) => void
+}
+const coldImageLoadQueue: ColdImageLoadItem[] = []
+let activeColdImageLoads = 0
+let coldImageLoadSequence = 0
+let coldImageLoadTimer: NodeJS.Timeout | null = null
+let nextColdImageLoadAt = 0
+
+const COLD_IMAGE_LOAD_GAP_MS = 100
+const MAX_CONCURRENT_COLD_IMAGE_LOADS = 2
+
+function pumpColdImageLoads(): void {
+  if (
+    activeColdImageLoads >= MAX_CONCURRENT_COLD_IMAGE_LOADS ||
+    coldImageLoadQueue.length === 0
+  ) {
+    return
+  }
+
+  const waitMs = Math.max(0, nextColdImageLoadAt - Date.now())
+  if (waitMs > 0) {
+    if (!coldImageLoadTimer) {
+      coldImageLoadTimer = setTimeout(() => {
+        coldImageLoadTimer = null
+        pumpColdImageLoads()
+      }, waitMs)
+    }
+    return
+  }
+
+  coldImageLoadQueue.sort(
+    (left, right) => left.priority - right.priority || left.sequence - right.sequence
+  )
+  const item = coldImageLoadQueue.shift()
+  if (!item) return
+
+  activeColdImageLoads += 1
+  nextColdImageLoadAt = Date.now() + COLD_IMAGE_LOAD_GAP_MS
+  void item
+    .run()
+    .then(item.resolve, item.reject)
+    .finally(() => {
+      activeColdImageLoads -= 1
+      pumpColdImageLoads()
+    })
+  pumpColdImageLoads()
+}
+
+function enqueueColdImageLoad<T>(task: () => Promise<T> | T, priority = 0): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    coldImageLoadQueue.push({
+      priority,
+      sequence: coldImageLoadSequence++,
+      run: async () => task(),
+      resolve: (value) => resolve(value as T),
+      reject
+    })
+    pumpColdImageLoads()
+  })
+}
 
 function configureRecallProtection(
   wcdb4Client: Wcdb4Client,
@@ -199,9 +264,58 @@ function getConfiguredImageKeys(): { xorKey: string; aesKey: string } {
   }
 }
 
+function getImageMediaService(): VideoAssetService | null {
+  if (videoAssetService) return videoAssetService
+  const client = chat.getChatDb()?.getWcdb4Client()
+  if (!client) return null
+  videoAssetService = new VideoAssetService(client)
+  return videoAssetService
+}
+
+function getLocalMediaMimeType(filePath: string): string {
+  switch (extname(filePath).toLowerCase()) {
+    case '.mp4':
+      return 'video/mp4'
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg'
+    case '.png':
+      return 'image/png'
+    case '.gif':
+      return 'image/gif'
+    case '.webp':
+      return 'image/webp'
+    case '.bmp':
+      return 'image/bmp'
+    default:
+      return 'application/octet-stream'
+  }
+}
+
+function buildImageResponse(image: DecodedImage): {
+  success: true
+  data: string
+  isThumb: boolean
+  filePath: string
+  mimeType?: string
+} {
+  const mediaService = image.cacheFilePath ? getImageMediaService() : null
+  const data =
+    mediaService && image.cacheFilePath && existsSync(image.cacheFilePath)
+      ? mediaService.createLocalMediaUrl(image.cacheFilePath)
+      : image.data
+  return {
+    success: true,
+    data,
+    isThumb: image.isThumbnail,
+    filePath: image.filePath,
+    mimeType: image.mimeType
+  }
+}
+
 async function createLocalMediaResponse(request: Request, filePath: string): Promise<Response> {
   const { size } = await fsPromises.stat(filePath)
-  const mimeType = extname(filePath).toLowerCase() === '.mp4' ? 'video/mp4' : 'image/jpeg'
+  const mimeType = getLocalMediaMimeType(filePath)
   const commonHeaders = {
     'Accept-Ranges': 'bytes',
     'Content-Type': mimeType,
@@ -292,8 +406,7 @@ function createWindow(): void {
 // 某些 API 只能在此事件发生后使用
 app.whenReady().then(async () => {
   protocol.handle('wxe-media', async (request) => {
-    const token = new URL(request.url).pathname.replace(/^\/+/, '')
-    const filePath = videoAssetService?.pathForToken(token)
+    const filePath = videoAssetService?.pathForUrl(request.url)
     if (!filePath) return new Response('Not found', { status: 404 })
     try {
       return await createLocalMediaResponse(request, filePath)
@@ -393,24 +506,24 @@ app.whenReady().then(async () => {
         }
         chat.setChatDb(nextWechatDb)
         const wcdb4Client = nextWechatDb.getWcdb4Client()
+        const sessions = await wcdb4Client.getSessionsAsync()
         configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
         voiceService = new VoiceService(wcdb4Client)
         stickerService = new StickerService(wcdb4Client)
         videoAssetService = new VideoAssetService(wcdb4Client)
-        const monitoring = wcdb4Client.startMonitor((type, json) => {
+        const monitoring = await wcdb4Client.startMonitor((type, json) => {
           wcdb4Client.invalidateSessionCache()
           recallArchiveMonitor?.handleDatabaseChange(json)
           for (const window of BrowserWindow.getAllWindows()) {
             if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
           }
         })
-        setImmediate(() => {
-          const recentSession = wcdb4Client.getSessions()[0]
-          if (!recentSession?.username) return
+        const recentSession = sessions[0]
+        if (recentSession?.username) {
           void wcdb4Client
             .getMessagesAsync(recentSession.username, undefined, undefined, { limit: 1 })
             .catch((error) => console.warn('[WCDB4] message cursor warmup failed:', error))
-        })
+        }
         imageDecryptService = null
         return { success: true, monitoring }
       } catch (error) {
@@ -574,11 +687,11 @@ app.whenReady().then(async () => {
     }
   )
 
-  ipcMain.handle('db:getContacts', (_, filter?: string) => {
+  ipcMain.handle('db:getContacts', async (_, filter?: string) => {
     const accountRoot = chat.getCurrentAccountRoot()
     const contacts = accountRoot
-      ? mergeCachedContactAvatars(accountRoot, chat.listContacts(filter))
-      : chat.listContacts(filter)
+      ? mergeCachedContactAvatars(accountRoot, await chat.listContactsAsync(filter))
+      : await chat.listContactsAsync(filter)
     if (!filter && chat.isReady() && accountRoot) {
       saveBootstrapContacts(accountRoot, contacts)
     }
@@ -643,9 +756,15 @@ app.whenReady().then(async () => {
     aiProviderService.migrateLegacy(config)
   )
 
-  ipcMain.handle('copy-image', async (_, base64String) => {
+  ipcMain.handle('copy-image', async (_, imageSource: unknown) => {
     try {
-      const image = nativeImage.createFromDataURL(base64String)
+      if (typeof imageSource !== 'string' || !imageSource) {
+        return { success: false, error: 'Image source is empty' }
+      }
+      const image = imageSource.startsWith('wxe-media://')
+        ? nativeImage.createFromPath(getImageMediaService()?.pathForUrl(imageSource) || '')
+        : nativeImage.createFromDataURL(imageSource)
+      if (image.isEmpty()) return { success: false, error: 'Image source is invalid' }
       clipboard.writeImage(image)
       return { success: true }
     } catch (error: unknown) {
@@ -716,68 +835,100 @@ app.whenReady().then(async () => {
       imageMd5?: string,
       imageDatNameOrThumb?: string | boolean,
       _sessionId?: string,
-      options?: { force?: boolean; preferThumbnail?: boolean }
+      options?: { force?: boolean; preferThumbnail?: boolean; priority?: number }
     ) => {
-      void _sessionId
-      if (!imageDecryptService) {
+      let service = imageDecryptService
+      if (!service) {
         const { xorKey, aesKey } = getConfiguredImageKeys()
-        if (!aesKey) {
-          return { success: false, error: '未配置图片解密密钥' }
-        }
-        imageDecryptService = new ImageDecryptService(
+        // Reading an already-decoded cache entry does not require the AES key.
+        // Before db:init resolves the account identity, secure storage may not
+        // expose that key yet, so keep this cache-only service local.
+        service = new ImageDecryptService(
           xorKey,
           aesKey,
-          chat.getChatDb()?.getWcdb4Client()
+          chat.getChatDb()?.getWcdb4Client(),
+          loadSettings().dbRoot
         )
+        if (aesKey) imageDecryptService = service
       }
 
       const imageDatName = typeof imageDatNameOrThumb === 'string' ? imageDatNameOrThumb : undefined
       const force = options?.force === true
       const preferThumbnail = options?.preferThumbnail === true
+      const priority = Number.isFinite(options?.priority) ? Number(options?.priority) : 0
       const imageCacheKey = [
         imageMd5 || '',
         imageDatName || '',
         force ? 'original' : preferThumbnail ? 'thumbnail' : 'auto'
       ].join('|')
-      const cachedImage = imageDecryptService.getCachedDecodedImage(imageCacheKey)
-      if (cachedImage) {
-        return {
-          success: true,
-          data: cachedImage.data,
-          isThumb: cachedImage.isThumbnail,
-          filePath: cachedImage.filePath
-        }
-      }
-      let filePath = force
-        ? imageDecryptService.findImageFile(imageMd5, imageDatName, { allowThumbnail: false })
-        : null
-      if (!filePath) {
-        filePath = imageDecryptService.findImageFile(imageMd5, imageDatName, {
-          allowThumbnail: true,
-          preferThumbnail
-        })
-      }
-      if (!filePath) {
-        return { success: false, error: force ? '未找到原图或缩略图文件' : '未找到图片文件' }
-      }
-
-      const decrypted = imageDecryptService.decryptImageToBase64WithFallback(filePath, true)
-      if (!decrypted) {
-        return { success: false, error: '图片解密失败' }
-      }
-
-      const result = {
-        success: true,
-        data: decrypted.data,
-        isThumb: imageDecryptService.isThumbnailFile(decrypted.filePath),
-        filePath: decrypted.filePath
-      }
-      imageDecryptService.cacheDecodedImage(imageCacheKey, {
-        data: result.data,
-        filePath: result.filePath,
-        isThumbnail: result.isThumb
+      const mediaService = getImageMediaService()
+      const cachedImage = await service.getCachedDecodedImage(imageCacheKey, {
+        includeData: !mediaService
       })
-      return result
+      if (cachedImage) {
+        return buildImageResponse(cachedImage)
+      }
+
+      return enqueueColdImageLoad(async () => {
+        // Disk cache was already checked without waiting for database startup.
+        // Only a real miss needs the initialized WCDB client and hardlink index.
+        if (dbInitInFlight) {
+          await dbInitInFlight.catch(() => undefined)
+        }
+
+        let coldService = imageDecryptService
+        if (!coldService) {
+          const { xorKey, aesKey } = getConfiguredImageKeys()
+          if (!aesKey) return { success: false, error: '未配置图片解密密钥' }
+          coldService = new ImageDecryptService(
+            xorKey,
+            aesKey,
+            chat.getChatDb()?.getWcdb4Client(),
+            loadSettings().dbRoot
+          )
+          imageDecryptService = coldService
+        }
+
+        // A previous queued request may have populated the cache while this one waited.
+        const queuedMediaService = getImageMediaService()
+        const queuedCacheHit = await coldService.getCachedDecodedImage(imageCacheKey, {
+          includeData: !queuedMediaService
+        })
+        if (queuedCacheHit) return buildImageResponse(queuedCacheHit)
+
+        let filePath = force
+          ? await coldService.findImageFileAsync(imageMd5, imageDatName, {
+              allowThumbnail: false,
+              sessionId: _sessionId
+            })
+          : null
+        if (!filePath) {
+          filePath = await coldService.findImageFileAsync(imageMd5, imageDatName, {
+            allowThumbnail: true,
+            preferThumbnail,
+            sessionId: _sessionId
+          })
+        }
+        if (!filePath) {
+          return {
+            success: false,
+            error: force ? '未找到原图或缩略图文件' : '未找到图片文件'
+          }
+        }
+
+        const decrypted = await coldService.decryptImageToBase64WithFallbackAsync(filePath, true)
+        if (!decrypted) {
+          return { success: false, error: '图片解密失败' }
+        }
+
+        const decodedImage: DecodedImage = {
+          data: decrypted.data,
+          filePath: decrypted.filePath,
+          isThumbnail: coldService.isThumbnailFile(decrypted.filePath)
+        }
+        await coldService.cacheDecodedImage(imageCacheKey, decodedImage)
+        return buildImageResponse(decodedImage)
+      }, priority)
     }
   )
 

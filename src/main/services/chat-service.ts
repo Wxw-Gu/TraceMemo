@@ -172,6 +172,12 @@ export function listContacts(filter?: string): FormattedContact[] {
   return contacts
 }
 
+export async function listContactsAsync(filter?: string): Promise<FormattedContact[]> {
+  if (!dbRef) return []
+  await dbRef.getWcdb4Client().getSessionsAsync()
+  return listContacts(filter)
+}
+
 export function getContactAvatars(usernames: string[]): Record<string, string> {
   if (!dbRef) return {}
   const normalized = Array.from(

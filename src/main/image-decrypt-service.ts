@@ -1,7 +1,9 @@
-import { basename, dirname, extname, join } from 'path'
-import { existsSync, readFileSync, statSync, readdirSync } from 'fs'
+import { basename, dirname, extname, join, resolve } from 'path'
+import { existsSync, readFileSync, statSync, readdirSync, promises as fsPromises } from 'fs'
 import crypto from 'crypto'
 import os from 'os'
+import { app } from 'electron'
+import { Worker } from 'worker_threads'
 import { Wcdb4Client } from './wcdb4-client'
 
 const imageDecryptDebugEnabled = process.env['WECHATEXPLORER_DEBUG_IMAGE'] === '1'
@@ -9,13 +11,207 @@ const imageDecryptLog = (...args: unknown[]): void => {
   if (imageDecryptDebugEnabled) console.log(...args)
 }
 
-type DecodedImage = {
+export type DecodedImage = {
   data: string
   filePath: string
   isThumbnail: boolean
+  cacheFilePath?: string
+  mimeType?: string
+}
+
+type ImageFindOptions = {
+  allowThumbnail?: boolean
+  accountDir?: string
+  preferThumbnail?: boolean
+  sessionId?: string
 }
 
 const MAX_DECODED_IMAGE_CACHE_BYTES = 48 * 1024 * 1024
+const MAX_PERSISTENT_IMAGE_CACHE_BYTES = 512 * 1024 * 1024
+const MAX_PERSISTENT_IMAGE_CACHE_FILES = 512
+const PERSISTENT_IMAGE_CACHE_VERSION = 2
+
+interface PersistentImageMeta {
+  version: number
+  sourcePath: string
+  sourceSize: number
+  sourceMtimeMs: number
+  fileName: string
+  cacheSize: number
+  mimeType: string
+  isThumbnail: boolean
+}
+
+const IMAGE_DECRYPT_WORKER_SOURCE = String.raw`
+const crypto = require('node:crypto')
+const fs = require('node:fs')
+const path = require('node:path')
+const { parentPort, workerData } = require('node:worker_threads')
+
+function normalizeDatBase(value) {
+  const lower = String(value || '').trim().toLowerCase()
+  if (!lower) return ''
+  const file = lower.split('/').pop().split('\\').pop()
+  const withoutDat = file.endsWith('.dat') ? file.slice(0, -4) : file
+  return withoutDat.replace(/(_thumb|\.thumb|_hd|\.hd|_h|\.h|_t|\.t|_c|\.c)$/i, '')
+}
+
+function isThumbnailName(fileName) {
+  const lower = fileName.toLowerCase()
+  return lower.includes('_t.dat') || lower.includes('_thumb.dat') || lower.includes('.thumb.dat')
+}
+
+function buildPreferredDatNames(baseName) {
+  const base = normalizeDatBase(baseName)
+  if (!base) return []
+  return [
+    base + '.dat',
+    base + '_hd.dat',
+    base + '_h.dat',
+    base + '_b.dat',
+    base + '_w.dat',
+    base + '_c.dat',
+    base + '_t.dat',
+    base + '.thumb.dat',
+    base + '_thumb.dat'
+  ]
+}
+
+function detectImageExtension(buffer) {
+  if (buffer.length < 4) return null
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return '.jpg'
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return '.png'
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) return '.gif'
+  if (buffer[0] === 0x42 && buffer[1] === 0x4d) return '.bmp'
+  if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) return '.webp'
+  return null
+}
+
+function getMimeType(extension) {
+  if (extension === '.png') return 'image/png'
+  if (extension === '.gif') return 'image/gif'
+  if (extension === '.bmp') return 'image/bmp'
+  if (extension === '.webp') return 'image/webp'
+  return 'image/jpeg'
+}
+
+function strictRemovePadding(buffer) {
+  if (buffer.length === 0) return buffer
+  const paddingLength = buffer[buffer.length - 1]
+  if (paddingLength <= 0 || paddingLength > 16 || paddingLength > buffer.length) return buffer
+  for (let index = buffer.length - paddingLength; index < buffer.length; index += 1) {
+    if (buffer[index] !== paddingLength) return buffer
+  }
+  return buffer.subarray(0, buffer.length - paddingLength)
+}
+
+function unwrapWxgf(buffer) {
+  if (
+    buffer.length < 20 ||
+    buffer[0] !== 0x77 ||
+    buffer[1] !== 0x78 ||
+    buffer[2] !== 0x67 ||
+    buffer[3] !== 0x66
+  ) {
+    return buffer
+  }
+  for (let index = 4; index < Math.min(buffer.length - 12, 4096); index += 1) {
+    if (buffer[index] === 0xff && buffer[index + 1] === 0xd8 && buffer[index + 2] === 0xff) {
+      return buffer.subarray(index)
+    }
+    if (
+      buffer[index] === 0x89 &&
+      buffer[index + 1] === 0x50 &&
+      buffer[index + 2] === 0x4e &&
+      buffer[index + 3] === 0x47
+    ) {
+      return buffer.subarray(index)
+    }
+  }
+  return buffer
+}
+
+function decryptCandidate(filePath, aesKey, xorKey) {
+  const bytes = fs.readFileSync(filePath)
+  if (!path.extname(filePath).toLowerCase().includes('dat')) {
+    const extension = detectImageExtension(bytes) || path.extname(filePath).toLowerCase()
+    return { data: 'data:' + getMimeType(extension) + ';base64,' + bytes.toString('base64'), filePath }
+  }
+  if (
+    bytes.length < 15 ||
+    bytes[0] !== 0x07 ||
+    bytes[1] !== 0x08 ||
+    bytes[2] !== 0x56 ||
+    bytes[3] !== 0x32 ||
+    bytes[4] !== 0x08 ||
+    bytes[5] !== 0x07 ||
+    !aesKey
+  ) {
+    return null
+  }
+
+  const payload = bytes.subarray(15)
+  const aesSize = bytes.readInt32LE(6)
+  const xorSize = bytes.readInt32LE(10)
+  const remainder = ((aesSize % 16) + 16) % 16
+  const alignedAesSize = aesSize + (16 - remainder)
+  if (alignedAesSize > payload.length) return null
+
+  const aesData = payload.subarray(0, alignedAesSize)
+  let unpadded = Buffer.alloc(0)
+  if (aesData.length > 0) {
+    const key = Buffer.from(aesKey, 'ascii').subarray(0, 16)
+    const decipher = crypto.createDecipheriv('aes-128-ecb', key, null)
+    decipher.setAutoPadding(false)
+    unpadded = strictRemovePadding(Buffer.concat([decipher.update(aesData), decipher.final()]))
+  }
+
+  const remaining = payload.subarray(alignedAesSize)
+  if (xorSize < 0 || xorSize > remaining.length) return null
+  const rawLength = remaining.length - xorSize
+  const rawData = remaining.subarray(0, rawLength)
+  const xorData = remaining.subarray(rawLength)
+  const xorPlain = Buffer.allocUnsafe(xorData.length)
+  for (let index = 0; index < xorData.length; index += 1) {
+    xorPlain[index] = xorData[index] ^ xorKey
+  }
+
+  const image = unwrapWxgf(Buffer.concat([unpadded, rawData, xorPlain]))
+  const extension = detectImageExtension(image)
+  if (!extension) return null
+  return {
+    data: 'data:' + getMimeType(extension) + ';base64,' + image.toString('base64'),
+    filePath
+  }
+}
+
+function collectCandidates(datPath, allowThumbnail) {
+  const candidates = [datPath]
+  if (!path.extname(datPath).toLowerCase().includes('dat')) return candidates
+  const directory = path.dirname(datPath)
+  const base = normalizeDatBase(path.basename(datPath))
+  const siblings = buildPreferredDatNames(base)
+    .filter((name) => allowThumbnail || !isThumbnailName(name))
+    .map((name) => path.join(directory, name))
+    .filter((candidate) => fs.existsSync(candidate))
+    .sort((left, right) => {
+      const thumbnailOrder = Number(isThumbnailName(path.basename(left))) - Number(isThumbnailName(path.basename(right)))
+      return thumbnailOrder || fs.statSync(right).size - fs.statSync(left).size
+    })
+  return Array.from(new Set(candidates.concat(siblings)))
+}
+
+let result = null
+for (const candidate of collectCandidates(workerData.datPath, workerData.allowThumbnail)) {
+  try {
+    result = decryptCandidate(candidate, workerData.aesKey, workerData.xorKey)
+    if (result) break
+  } catch {
+    // Try the next local quality variant.
+  }
+}
+parentPort.postMessage(result)
+`
 
 export class ImageDecryptService {
   private xorKey: number = 0
@@ -26,8 +222,15 @@ export class ImageDecryptService {
   private imagePathCache = new Map<string, string>()
   private decodedImageCache = new Map<string, DecodedImage>()
   private decodedImageCacheBytes = 0
+  private persistentCachePrunePromise: Promise<void> | null = null
+  private persistentCachePrunePending = false
 
-  constructor(xorKey: string, aesKey: string, wcdb4Client?: Wcdb4Client | null) {
+  constructor(
+    xorKey: string,
+    aesKey: string,
+    wcdb4Client?: Wcdb4Client | null,
+    configuredAccountDir?: string
+  ) {
     // 解析 XOR Key (支持 0x40 或 64 格式)
     const xorHex = xorKey.trim().toLowerCase()
     if (xorHex.startsWith('0x')) {
@@ -39,6 +242,12 @@ export class ImageDecryptService {
     // AES Key 直接使用
     this.aesKey = aesKey.trim()
     this.wcdb4Client = wcdb4Client || null
+
+    const accountDir = this.wcdb4Client?.getAccountRoot() || configuredAccountDir
+    if (accountDir && existsSync(accountDir)) {
+      this.cachedAccountDir = accountDir
+      this.accountDirResolved = true
+    }
   }
 
   /**
@@ -96,17 +305,19 @@ export class ImageDecryptService {
   findImageFile(
     md5?: string,
     imageDatName?: string,
-    options?: { allowThumbnail?: boolean; accountDir?: string; preferThumbnail?: boolean }
+    options?: ImageFindOptions
   ): string | null {
     const allowThumbnail = options?.allowThumbnail !== false
     const normalizedMd5 = this.normalizeDatBase(md5 || '')
     const normalizedDatName = this.normalizeDatBase(imageDatName || '')
+    const sessionDirectory = this.getSessionDirectoryName(options?.sessionId)
     const pathCacheKey = [
       normalizedMd5,
       normalizedDatName,
       allowThumbnail ? 'thumb' : 'original',
       options?.preferThumbnail ? 'prefer-thumb' : 'prefer-original',
-      options?.accountDir || ''
+      options?.accountDir || '',
+      sessionDirectory
     ].join('|')
     const cachedPath = this.imagePathCache.get(pathCacheKey)
     if (cachedPath && existsSync(cachedPath)) return cachedPath
@@ -126,8 +337,29 @@ export class ImageDecryptService {
       md5: normalizedMd5,
       imageDatName: normalizedDatName,
       accountDir,
-      allowThumbnail
+      allowThumbnail,
+      sessionDirectory
     })
+
+    const attachDir = join(accountDir, 'msg', 'attach')
+    // The attach directory stores DAT filenames, while the message MD5 often
+    // identifies the original image rather than the local file.
+    const searchKeys = this.uniq([normalizedDatName, normalizedMd5])
+
+    // Message rows already identify their conversation. Prefer that small,
+    // deterministic directory before consulting the native hardlink database.
+    if (sessionDirectory && existsSync(attachDir)) {
+      for (const key of searchKeys) {
+        const scopedHit = this.fastProbabilisticSearch(
+          attachDir,
+          key,
+          allowThumbnail,
+          options?.preferThumbnail,
+          sessionDirectory
+        )
+        if (scopedHit) return rememberPath(scopedHit)
+      }
+    }
 
     for (const key of this.uniq([normalizedMd5, normalizedDatName])) {
       const hardlink = this.wcdb4Client?.resolveImageHardlink(key)
@@ -146,7 +378,6 @@ export class ImageDecryptService {
     }
 
     // 尝试 WechatExplorer 的目录结构: msg/attach/{hash}/{YYYY-MM}/Img/
-    const attachDir = join(accountDir, 'msg', 'attach')
     if (!existsSync(attachDir)) {
       imageDecryptLog('[ImageDecrypt] attach dir not found:', attachDir)
       return rememberPath(
@@ -159,17 +390,18 @@ export class ImageDecryptService {
       )
     }
 
-    const searchKeys = this.uniq([normalizedMd5, normalizedDatName])
     if (searchKeys.length === 0) return null
 
-    for (const key of searchKeys) {
-      const directHit = this.fastProbabilisticSearch(
-        attachDir,
-        key,
-        allowThumbnail,
-        options?.preferThumbnail
-      )
-      if (directHit) return rememberPath(directHit)
+    if (!sessionDirectory) {
+      for (const key of searchKeys) {
+        const directHit = this.fastProbabilisticSearch(
+          attachDir,
+          key,
+          allowThumbnail,
+          options?.preferThumbnail
+        )
+        if (directHit) return rememberPath(directHit)
+      }
     }
 
     const legacyHit = this.findImageFileInLegacyDirs(
@@ -184,15 +416,41 @@ export class ImageDecryptService {
     return null
   }
 
-  getCachedDecodedImage(key: string): DecodedImage | null {
+  async getCachedDecodedImage(
+    key: string,
+    options: { includeData?: boolean } = {}
+  ): Promise<DecodedImage | null> {
     const cached = this.decodedImageCache.get(key)
-    if (!cached) return null
-    this.decodedImageCache.delete(key)
-    this.decodedImageCache.set(key, cached)
-    return cached
+    if (cached) {
+      this.decodedImageCache.delete(key)
+      this.decodedImageCache.set(key, cached)
+      return cached
+    }
+
+    const persistent = await this.getPersistentDecodedImage(key, options.includeData !== false)
+    if (!persistent) return null
+    if (persistent.data) this.putDecodedImageInMemory(key, persistent)
+    return persistent
   }
 
-  cacheDecodedImage(key: string, image: DecodedImage): void {
+  async cacheDecodedImage(key: string, image: DecodedImage): Promise<void> {
+    this.putDecodedImageInMemory(key, image)
+
+    try {
+      const persisted = await this.writePersistentDecodedImage(key, image)
+      if (persisted) {
+        const current = this.decodedImageCache.get(key)
+        if (current) {
+          current.cacheFilePath = persisted.cacheFilePath
+          current.mimeType = persisted.mimeType
+        }
+      }
+    } catch (error) {
+      imageDecryptLog('[ImageDecrypt] persistent cache write failed:', error)
+    }
+  }
+
+  private putDecodedImageInMemory(key: string, image: DecodedImage): void {
     const size = image.data.length * 2
     const previous = this.decodedImageCache.get(key)
     if (previous) {
@@ -213,11 +471,436 @@ export class ImageDecryptService {
     }
   }
 
+  private getPersistentCacheDir(): string | null {
+    try {
+      return join(app.getPath('userData'), 'cache', 'images')
+    } catch (error) {
+      imageDecryptLog('[ImageDecrypt] persistent cache path unavailable:', error)
+      return null
+    }
+  }
+
+  private getPersistentCacheKey(key: string): string {
+    const accountDir = this.getAccountDir() || this.wcdb4Client?.getAccountRoot() || ''
+    const resolvedAccountDir = accountDir ? resolve(accountDir) : ''
+    const accountScope =
+      process.platform === 'win32'
+        ? resolvedAccountDir.replace(/\\/g, '/').toLowerCase()
+        : resolvedAccountDir
+    const scope = JSON.stringify({
+      version: PERSISTENT_IMAGE_CACHE_VERSION,
+      accountDir: accountScope,
+      key
+    })
+    return crypto.createHash('sha256').update(scope).digest('hex')
+  }
+
+  private async getPersistentDecodedImage(
+    key: string,
+    includeData: boolean
+  ): Promise<DecodedImage | null> {
+    const cacheDir = this.getPersistentCacheDir()
+    if (!cacheDir) return null
+
+    const cacheKey = this.getPersistentCacheKey(key)
+    const metadataPath = join(cacheDir, `${cacheKey}.json`)
+    let metadata: PersistentImageMeta | null = null
+
+    try {
+      metadata = JSON.parse(await fsPromises.readFile(metadataPath, 'utf8')) as PersistentImageMeta
+      if (!this.isValidPersistentImageMeta(metadata, cacheKey)) {
+        throw new Error('invalid persistent image metadata')
+      }
+
+      const sourceStat = await fsPromises.stat(metadata.sourcePath)
+      if (
+        !sourceStat.isFile() ||
+        sourceStat.size !== metadata.sourceSize ||
+        Math.trunc(sourceStat.mtimeMs) !== Math.trunc(metadata.sourceMtimeMs)
+      ) {
+        throw new Error('persistent image source changed')
+      }
+
+      const cacheFilePath = join(cacheDir, metadata.fileName)
+      const cacheStat = await fsPromises.stat(cacheFilePath)
+      if (!cacheStat.isFile() || cacheStat.size <= 0 || cacheStat.size !== metadata.cacheSize) {
+        throw new Error('persistent image payload changed')
+      }
+
+      const payload = includeData
+        ? await fsPromises.readFile(cacheFilePath)
+        : await this.readImageSignature(cacheFilePath)
+      const extension = this.detectImageExtension(payload)
+      if (!extension || this.getMimeType(extension) !== metadata.mimeType) {
+        throw new Error('persistent image payload is invalid')
+      }
+
+      const now = new Date()
+      void Promise.all([
+        fsPromises.utimes(cacheFilePath, now, now),
+        fsPromises.utimes(metadataPath, now, now)
+      ]).catch(() => undefined)
+
+      return {
+        data: includeData ? `data:${metadata.mimeType};base64,${payload.toString('base64')}` : '',
+        filePath: metadata.sourcePath,
+        isThumbnail: metadata.isThumbnail,
+        cacheFilePath,
+        mimeType: metadata.mimeType
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        imageDecryptLog('[ImageDecrypt] persistent cache miss:', error)
+      }
+      await this.removePersistentCacheEntry(cacheDir, cacheKey, metadata?.fileName)
+      return null
+    }
+  }
+
+  private async writePersistentDecodedImage(
+    key: string,
+    image: DecodedImage
+  ): Promise<{ cacheFilePath: string; mimeType: string } | null> {
+    const cacheDir = this.getPersistentCacheDir()
+    if (!cacheDir || !image.filePath) return null
+
+    const payload = await this.getDecodedImagePayload(image)
+    if (!payload) return null
+
+    const extension = this.detectImageExtension(payload)
+    if (!extension) return null
+
+    const sourceStat = await fsPromises.stat(image.filePath)
+    if (!sourceStat.isFile()) return null
+
+    const cacheKey = this.getPersistentCacheKey(key)
+    const fileName = `${cacheKey}${extension}`
+    const cacheFilePath = join(cacheDir, fileName)
+    const metadataPath = join(cacheDir, `${cacheKey}.json`)
+    const mimeType = this.getMimeType(extension)
+    const nonce = `${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
+    const payloadTempPath = join(cacheDir, `${cacheKey}.${nonce}.tmp`)
+    const metadataTempPath = join(cacheDir, `${cacheKey}.${nonce}.json.tmp`)
+    const metadata: PersistentImageMeta = {
+      version: PERSISTENT_IMAGE_CACHE_VERSION,
+      sourcePath: image.filePath,
+      sourceSize: sourceStat.size,
+      sourceMtimeMs: sourceStat.mtimeMs,
+      fileName,
+      cacheSize: payload.length,
+      mimeType,
+      isThumbnail: image.isThumbnail
+    }
+
+    await fsPromises.mkdir(cacheDir, { recursive: true })
+    try {
+      await fsPromises.writeFile(payloadTempPath, payload)
+      await this.replaceFileAtomically(payloadTempPath, cacheFilePath)
+      await fsPromises.writeFile(metadataTempPath, JSON.stringify(metadata))
+      await this.replaceFileAtomically(metadataTempPath, metadataPath)
+      await this.removeOtherPersistentPayloads(cacheDir, cacheKey, fileName)
+    } finally {
+      await Promise.allSettled([
+        fsPromises.rm(payloadTempPath, { force: true }),
+        fsPromises.rm(metadataTempPath, { force: true })
+      ])
+    }
+
+    this.schedulePersistentCachePrune()
+    return { cacheFilePath, mimeType }
+  }
+
+  private async getDecodedImagePayload(image: DecodedImage): Promise<Buffer | null> {
+    const separatorIndex = image.data.indexOf(',')
+    if (separatorIndex > 0) {
+      const header = image.data.slice(0, separatorIndex)
+      if (/^data:image\/[a-z0-9.+-]+;base64$/i.test(header)) {
+        const payload = Buffer.from(image.data.slice(separatorIndex + 1), 'base64')
+        return payload.length > 0 ? payload : null
+      }
+    }
+
+    if (image.cacheFilePath) {
+      try {
+        return await fsPromises.readFile(image.cacheFilePath)
+      } catch {
+        return null
+      }
+    }
+    return null
+  }
+
+  async findImageFileAsync(
+    md5?: string,
+    imageDatName?: string,
+    options?: ImageFindOptions
+  ): Promise<string | null> {
+    const sessionDirectory = this.getSessionDirectoryName(options?.sessionId)
+    if (!sessionDirectory) return this.findImageFile(md5, imageDatName, options)
+
+    const allowThumbnail = options?.allowThumbnail !== false
+    const normalizedMd5 = this.normalizeDatBase(md5 || '')
+    const normalizedDatName = this.normalizeDatBase(imageDatName || '')
+    const pathCacheKey = [
+      normalizedMd5,
+      normalizedDatName,
+      allowThumbnail ? 'thumb' : 'original',
+      options?.preferThumbnail ? 'prefer-thumb' : 'prefer-original',
+      options?.accountDir || '',
+      sessionDirectory
+    ].join('|')
+    const cachedPath = this.imagePathCache.get(pathCacheKey)
+    if (cachedPath && existsSync(cachedPath)) return cachedPath
+
+    const rememberPath = (filePath: string | null): string | null => {
+      if (filePath) this.imagePathCache.set(pathCacheKey, filePath)
+      return filePath
+    }
+    const accountDir =
+      options?.accountDir && existsSync(options.accountDir)
+        ? options.accountDir
+        : this.getAccountDir()
+    if (!accountDir) return null
+
+    const attachDir = join(accountDir, 'msg', 'attach')
+    if (normalizedDatName && existsSync(attachDir)) {
+      const scopedHit = await this.findImageInSessionDirectoryAsync(
+        attachDir,
+        normalizedDatName,
+        allowThumbnail,
+        options?.preferThumbnail,
+        sessionDirectory
+      )
+      if (scopedHit) return rememberPath(scopedHit)
+    }
+
+    for (const key of this.uniq([normalizedMd5, normalizedDatName])) {
+      const hardlink = await this.wcdb4Client?.resolveImageHardlinkAsync(key)
+      const fullPath = typeof hardlink?.full_path === 'string' ? hardlink.full_path : ''
+      if (!fullPath || !existsSync(fullPath)) continue
+      const selected = this.getPreferredDatVariantPath(
+        fullPath,
+        allowThumbnail,
+        options?.preferThumbnail
+      )
+      if (allowThumbnail || !this.isThumbnailName(basename(selected))) {
+        return rememberPath(selected)
+      }
+    }
+
+    return null
+  }
+
+  private async findImageInSessionDirectoryAsync(
+    attachDir: string,
+    datName: string,
+    allowThumbnail: boolean,
+    preferThumbnail: boolean | undefined,
+    sessionDirectory: string
+  ): Promise<string | null> {
+    const normalized = this.normalizeDatBase(datName)
+    if (!normalized || !sessionDirectory) return null
+
+    const sessionRoot = join(attachDir, sessionDirectory)
+    let monthDirectories: string[]
+    try {
+      monthDirectories = (await fsPromises.readdir(sessionRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && /^\d{4}-\d{2}$/.test(entry.name))
+        .map((entry) => entry.name)
+        .sort((left, right) => right.localeCompare(left))
+    } catch {
+      return null
+    }
+
+    const variants = this.buildPreferredDatNames(normalized)
+    for (const month of monthDirectories) {
+      const candidates = ['Img', 'Image', 'image'].flatMap((subDirectory) =>
+        variants.map((variant) => join(sessionRoot, month, subDirectory, variant))
+      )
+      const found = await this.getLargestExistingPathAsync(
+        candidates,
+        allowThumbnail,
+        preferThumbnail
+      )
+      if (found) return found
+    }
+    return null
+  }
+
+  private isValidPersistentImageMeta(
+    metadata: PersistentImageMeta,
+    cacheKey: string
+  ): boolean {
+    return (
+      metadata !== null &&
+      typeof metadata === 'object' &&
+      metadata.version === PERSISTENT_IMAGE_CACHE_VERSION &&
+      typeof metadata.sourcePath === 'string' &&
+      metadata.sourcePath.length > 0 &&
+      Number.isFinite(metadata.sourceSize) &&
+      metadata.sourceSize >= 0 &&
+      Number.isFinite(metadata.sourceMtimeMs) &&
+      typeof metadata.fileName === 'string' &&
+      basename(metadata.fileName) === metadata.fileName &&
+      metadata.fileName.startsWith(`${cacheKey}.`) &&
+      Number.isFinite(metadata.cacheSize) &&
+      metadata.cacheSize > 0 &&
+      typeof metadata.mimeType === 'string' &&
+      metadata.mimeType.startsWith('image/') &&
+      typeof metadata.isThumbnail === 'boolean'
+    )
+  }
+
+  private async readImageSignature(filePath: string): Promise<Buffer> {
+    const handle = await fsPromises.open(filePath, 'r')
+    try {
+      const signature = Buffer.alloc(16)
+      const { bytesRead } = await handle.read(signature, 0, signature.length, 0)
+      return signature.subarray(0, bytesRead)
+    } finally {
+      await handle.close()
+    }
+  }
+
+  private async replaceFileAtomically(tempPath: string, targetPath: string): Promise<void> {
+    try {
+      await fsPromises.rename(tempPath, targetPath)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'EEXIST' && code !== 'EPERM') throw error
+      await fsPromises.rm(targetPath, { force: true })
+      await fsPromises.rename(tempPath, targetPath)
+    }
+  }
+
+  private async removeOtherPersistentPayloads(
+    cacheDir: string,
+    cacheKey: string,
+    keepFileName: string
+  ): Promise<void> {
+    const names = await fsPromises.readdir(cacheDir)
+    const obsolete = names.filter(
+      (name) =>
+        name !== keepFileName &&
+        name.startsWith(`${cacheKey}.`) &&
+        /^\.(?:jpe?g|png|gif|bmp|webp)$/i.test(name.slice(cacheKey.length))
+    )
+    await Promise.allSettled(
+      obsolete.map((name) => fsPromises.rm(join(cacheDir, name), { force: true }))
+    )
+  }
+
+  private async removePersistentCacheEntry(
+    cacheDir: string,
+    cacheKey: string,
+    fileName?: string
+  ): Promise<void> {
+    const candidates = new Set<string>([`${cacheKey}.json`])
+    if (fileName && basename(fileName) === fileName && fileName.startsWith(`${cacheKey}.`)) {
+      candidates.add(fileName)
+    } else {
+      try {
+        const names = await fsPromises.readdir(cacheDir)
+        for (const name of names) {
+          if (
+            name.startsWith(`${cacheKey}.`) &&
+            /^\.(?:jpe?g|png|gif|bmp|webp)$/i.test(name.slice(cacheKey.length))
+          ) {
+            candidates.add(name)
+          }
+        }
+      } catch {
+        return
+      }
+    }
+    await Promise.allSettled(
+      Array.from(candidates, (name) => fsPromises.rm(join(cacheDir, name), { force: true }))
+    )
+  }
+
+  private schedulePersistentCachePrune(): void {
+    if (this.persistentCachePrunePromise) {
+      this.persistentCachePrunePending = true
+      return
+    }
+    this.persistentCachePrunePromise = this.prunePersistentCache()
+      .catch((error) => imageDecryptLog('[ImageDecrypt] persistent cache prune failed:', error))
+      .finally(() => {
+        this.persistentCachePrunePromise = null
+        if (this.persistentCachePrunePending) {
+          this.persistentCachePrunePending = false
+          this.schedulePersistentCachePrune()
+        }
+      })
+  }
+
+  private async prunePersistentCache(): Promise<void> {
+    const cacheDir = this.getPersistentCacheDir()
+    if (!cacheDir) return
+
+    const entries = await fsPromises.readdir(cacheDir, { withFileTypes: true })
+    const payloadNames = entries
+      .filter(
+        (entry) =>
+          entry.isFile() &&
+          /^[a-f0-9]{64}\.(?:jpe?g|png|gif|bmp|webp)$/i.test(entry.name)
+      )
+      .map((entry) => entry.name)
+    const payloads = (
+      await Promise.all(
+        payloadNames.map(async (name) => {
+          try {
+            const stat = await fsPromises.stat(join(cacheDir, name))
+            return { name, size: stat.size, mtimeMs: stat.mtimeMs }
+          } catch {
+            return null
+          }
+        })
+      )
+    )
+      .filter((entry): entry is { name: string; size: number; mtimeMs: number } => entry !== null)
+      .sort((left, right) => left.mtimeMs - right.mtimeMs)
+
+    let totalBytes = payloads.reduce((total, entry) => total + entry.size, 0)
+    let totalFiles = payloads.length
+    for (const payload of payloads) {
+      if (
+        totalFiles <= MAX_PERSISTENT_IMAGE_CACHE_FILES &&
+        totalBytes <= MAX_PERSISTENT_IMAGE_CACHE_BYTES
+      ) {
+        break
+      }
+      const cacheKey = payload.name.slice(0, 64)
+      await Promise.allSettled([
+        fsPromises.rm(join(cacheDir, payload.name), { force: true }),
+        fsPromises.rm(join(cacheDir, `${cacheKey}.json`), { force: true })
+      ])
+      totalFiles -= 1
+      totalBytes -= payload.size
+    }
+
+    const remainingPayloadKeys = new Set(
+      payloads
+        .slice(payloads.length - totalFiles)
+        .map((payload) => payload.name.slice(0, 64))
+    )
+    const staleMetadata = entries.filter(
+      (entry) =>
+        entry.isFile() &&
+        /^[a-f0-9]{64}\.json$/i.test(entry.name) &&
+        !remainingPayloadKeys.has(entry.name.slice(0, 64))
+    )
+    await Promise.allSettled(
+      staleMetadata.map((entry) => fsPromises.rm(join(cacheDir, entry.name), { force: true }))
+    )
+  }
+
   private fastProbabilisticSearch(
     attachDir: string,
     datName: string,
     allowThumbnail = true,
-    preferThumbnail = false
+    preferThumbnail = false,
+    sessionDirectory = ''
   ): string | null {
     const normalized = this.normalizeDatBase(datName)
     if (!normalized) return null
@@ -243,9 +926,13 @@ export class ImageDecryptService {
     }
 
     try {
-      const sessionDirs = readdirSync(attachDir).filter(
-        (name) => name.length === 32 && /^[a-f0-9]+$/i.test(name)
-      )
+      const sessionDirs = sessionDirectory
+        ? existsSync(join(attachDir, sessionDirectory))
+          ? [sessionDirectory]
+          : []
+        : readdirSync(attachDir).filter(
+            (name) => name.length === 32 && /^[a-f0-9]+$/i.test(name)
+          )
 
       const now = new Date()
       const months: string[] = []
@@ -462,6 +1149,54 @@ export class ImageDecryptService {
     return null
   }
 
+  async decryptImageToBase64WithFallbackAsync(
+    datPath: string,
+    allowThumbnail = true
+  ): Promise<{ data: string; filePath: string } | null> {
+    if (!existsSync(datPath)) return null
+
+    return new Promise((resolve) => {
+      let settled = false
+      const worker = new Worker(IMAGE_DECRYPT_WORKER_SOURCE, {
+        eval: true,
+        workerData: {
+          datPath,
+          allowThumbnail,
+          xorKey: this.xorKey,
+          aesKey: this.aesKey
+        }
+      })
+      const timeout = setTimeout(() => {
+        imageDecryptLog('[ImageDecrypt] worker timed out:', datPath)
+        void worker.terminate()
+        finish(null)
+      }, 30_000)
+      const finish = (result: { data: string; filePath: string } | null): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        resolve(result)
+      }
+      worker.once('message', (value: unknown) => {
+        if (
+          value &&
+          typeof value === 'object' &&
+          typeof (value as { data?: unknown }).data === 'string' &&
+          typeof (value as { filePath?: unknown }).filePath === 'string'
+        ) {
+          finish(value as { data: string; filePath: string })
+          return
+        }
+        finish(null)
+      })
+      worker.once('error', (error) => {
+        imageDecryptLog('[ImageDecrypt] worker failed:', error)
+        finish(null)
+      })
+      worker.once('exit', () => finish(null))
+    })
+  }
+
   /**
    * 检测 DAT 文件版本（仅识别 WeChat 4.0 头 V2）。
    * 老 V1 头（V3 及以下）直接返回 0，由调用方走"不支持"分支。
@@ -584,6 +1319,13 @@ export class ImageDecryptService {
     return withoutDat.replace(/(_thumb|\.thumb|_hd|\.hd|_h|\.h|_t|\.t|_c|\.c)$/i, '').toLowerCase()
   }
 
+  private getSessionDirectoryName(sessionId?: string): string {
+    const value = String(sessionId || '').trim()
+    if (!value) return ''
+    if (/^[a-f0-9]{32}$/i.test(value)) return value.toLowerCase()
+    return crypto.createHash('md5').update(value).digest('hex')
+  }
+
   private buildPreferredDatNames(baseName: string): string[] {
     const base = this.normalizeDatBase(baseName)
     if (!base) return []
@@ -649,6 +1391,37 @@ export class ImageDecryptService {
 
     const existing = toSized(paths)
     return existing[0]?.candidate || null
+  }
+
+  private async getLargestExistingPathAsync(
+    paths: string[],
+    allowThumbnail: boolean,
+    preferThumbnail = false
+  ): Promise<string | null> {
+    const sized = (
+      await Promise.all(
+        paths.map(async (candidate) => {
+          try {
+            const stat = await fsPromises.stat(candidate)
+            return stat.isFile() ? { candidate, size: stat.size } : null
+          } catch {
+            return null
+          }
+        })
+      )
+    )
+      .filter((entry): entry is { candidate: string; size: number } => entry !== null)
+      .sort((left, right) => right.size - left.size)
+
+    if (preferThumbnail) {
+      const thumbnail = sized.find((entry) => this.isThumbnailName(basename(entry.candidate)))
+      if (thumbnail) return thumbnail.candidate
+    }
+    const nonThumbnail = sized.find(
+      (entry) => !this.isThumbnailName(basename(entry.candidate))
+    )
+    if (nonThumbnail) return nonThumbnail.candidate
+    return allowThumbnail ? sized[0]?.candidate || null : null
   }
 
   private isThumbnailName(fileName: string): boolean {

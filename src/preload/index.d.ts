@@ -205,7 +205,7 @@ declare global {
         imageMd5?: string,
         imageDatNameOrThumb?: string | boolean,
         sessionId?: string,
-        options?: { force?: boolean; preferThumbnail?: boolean }
+        options?: { force?: boolean; preferThumbnail?: boolean; priority?: number }
       ) => Promise<{
         success: boolean
         data?: string

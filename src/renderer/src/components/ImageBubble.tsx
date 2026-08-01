@@ -29,93 +29,92 @@ export function ImageBubble({
   const [usingFallback, setUsingFallback] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const mountedRef = useRef(true)
-  const backgroundUpgradeRef = useRef(false)
 
   useEffect(() => {
+    mountedRef.current = true
     return () => {
       mountedRef.current = false
     }
   }, [])
 
-  const upgradeOriginalInBackground = useCallback(() => {
-    if (!isThumbnail || backgroundUpgradeRef.current || (!imageMd5 && !imageDatName)) return
-    backgroundUpgradeRef.current = true
-    void requestImage(imageMd5, imageDatName, sessionId, { force: true }, 1)
-      .then((original) => {
-        if (!mountedRef.current) return
-        setImageUrl(original.data)
-        setIsThumbnail(false)
-      })
-      .catch(() => undefined)
-  }, [imageDatName, imageMd5, isThumbnail, sessionId])
-
-  const loadImage = useCallback(async () => {
-    if (imageUrl || loading) return
-    if (!imageMd5 && !imageDatName) {
-      if (fallbackUrl) {
-        setImageUrl(fallbackUrl)
-        setUsingFallback(true)
-        setError(null)
+  const loadImage = useCallback(
+    async (priority = 0) => {
+      if (imageUrl) return
+      if (!imageMd5 && !imageDatName) {
+        if (fallbackUrl) {
+          setImageUrl(fallbackUrl)
+          setUsingFallback(true)
+          setError(null)
+          return
+        }
+        setError('缺少图片标识')
         return
       }
-      setError('缺少图片标识')
-      return
-    }
-
-    setLoading(true)
-    try {
-      const result = await requestImage(
-        imageMd5,
-        imageDatName,
-        sessionId,
-        { preferThumbnail: true },
-        0
-      )
-      setImageUrl(result.data)
-      setUsingFallback(false)
-      setIsThumbnail(result.isThumbnail)
-      setError(null)
-      if (result.isThumbnail) upgradeOriginalInBackground()
-    } catch (error) {
-      if (fallbackUrl) {
-        setImageUrl(fallbackUrl)
-        setUsingFallback(true)
-        setError(null)
-      } else {
-        setError(error instanceof Error ? error.message : '加载图片失败')
+      if (loading) {
+        if (priority === 0) {
+          void requestImage(
+            imageMd5,
+            imageDatName,
+            sessionId,
+            { preferThumbnail: true },
+            priority
+          ).catch(() => undefined)
+        }
+        return
       }
-    } finally {
-      setLoading(false)
-    }
-  }, [
-    fallbackUrl,
-    imageDatName,
-    imageMd5,
-    imageUrl,
-    loading,
-    sessionId,
-    upgradeOriginalInBackground
-  ])
+
+      setLoading(true)
+      try {
+        const result = await requestImage(
+          imageMd5,
+          imageDatName,
+          sessionId,
+          { preferThumbnail: true },
+          priority
+        )
+        if (!mountedRef.current) return
+        setImageUrl(result.data)
+        setUsingFallback(false)
+        setIsThumbnail(result.isThumbnail)
+        setError(null)
+      } catch (error) {
+        if (!mountedRef.current) return
+        if (fallbackUrl) {
+          setImageUrl(fallbackUrl)
+          setUsingFallback(true)
+          setError(null)
+        } else {
+          setError(error instanceof Error ? error.message : '加载图片失败')
+        }
+      } finally {
+        if (mountedRef.current) setLoading(false)
+      }
+    },
+    [fallbackUrl, imageDatName, imageMd5, imageUrl, loading, sessionId]
+  )
 
   useEffect(() => {
-    if (initialCachedImage?.isThumbnail) upgradeOriginalInBackground()
-  }, [initialCachedImage?.isThumbnail, upgradeOriginalInBackground])
-
-  useEffect(() => {
-    if (imageUrl || loading || error) return
+    if (imageUrl || error) return
     const element = containerRef.current
     if (!element || typeof IntersectionObserver === 'undefined') {
-      const timer = window.setTimeout(() => void loadImage(), 0)
+      const timer = window.setTimeout(() => void loadImage(0), 0)
       return () => window.clearTimeout(timer)
     }
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (!entries.some((entry) => entry.isIntersecting)) return
+        const entry = entries.find((candidate) => candidate.isIntersecting)
+        if (!entry) return
+        const rect = entry.boundingClientRect
+        const isInViewport =
+          rect.bottom >= 0 &&
+          rect.top <= window.innerHeight &&
+          rect.right >= 0 &&
+          rect.left <= window.innerWidth
         observer.disconnect()
-        void loadImage()
+        void loadImage(isInViewport ? 0 : 1)
       },
-      { rootMargin: '400px 0px' }
+      { rootMargin: loading ? '0px' : '400px 0px' }
     )
     observer.observe(element)
     return () => observer.disconnect()
@@ -143,7 +142,7 @@ export function ImageBubble({
     setUpgrading(true)
     try {
       const result = await requestImage(imageMd5, imageDatName, sessionId, { force: true }, 0)
-      if (result.data.startsWith('data:image/')) {
+      if (result.data.startsWith('data:image/') || result.data.startsWith('wxe-media://')) {
         setImageUrl(result.data)
         setUsingFallback(false)
         setIsThumbnail(result.isThumbnail)
@@ -162,7 +161,7 @@ export function ImageBubble({
 
   if (loading) {
     return (
-      <div className="image-bubble image-loading" onClick={handleClick}>
+      <div ref={containerRef} className="image-bubble image-loading" onClick={handleClick}>
         <div className="image-loading-skeleton" aria-hidden />
         <div className="image-quality-badge">加载中</div>
       </div>
@@ -171,7 +170,7 @@ export function ImageBubble({
 
   if (error) {
     return (
-      <div className="image-bubble image-error" onClick={loadImage}>
+      <div className="image-bubble image-error" onClick={() => void loadImage(0)}>
         <div className="image-error-text">{error || '图片未缓存'}</div>
         <div className="image-quality-badge">加载失败</div>
       </div>
