@@ -24,13 +24,11 @@ export function RichMessageBubble({
       return <CardBubble data={contentData} />
     case 'share':
       return <ShareBubble data={contentData} />
+    case 'forwardBundle':
+      return <ForwardBundleBubble data={contentData} />
     case 'miniProgram':
       return (
-        <MiniProgramBubble
-          data={contentData}
-          sessionId={sessionId}
-          onImageClick={onImageClick}
-        />
+        <MiniProgramBubble data={contentData} sessionId={sessionId} onImageClick={onImageClick} />
       )
     case 'redPacket':
       return <RedPacketBubble data={contentData} />
@@ -44,13 +42,66 @@ export function RichMessageBubble({
       return <SystemBubble data={contentData} />
     case 'unknown':
       return (
-        <div className="message-text">
-          {renderWechatEmojiText((contentData as { raw?: string }).raw || '[未知消息]')}
+        <div className="unsupported-message">
+          <strong>暂不支持此消息</strong>
+          <span>
+            消息类型 {(contentData as { messageType?: string | number }).messageType || '未知'}
+          </span>
         </div>
       )
     default:
       return <div className="message-text">[不支持的消息类型]</div>
   }
+}
+
+function ForwardBundleBubble({
+  data
+}: {
+  data: Extract<ParsedContent, { type: 'forwardBundle' }>
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false)
+  const visibleItems = expanded ? data.items : data.items.slice(0, 3)
+  const hiddenCount = Math.max(0, data.items.length - visibleItems.length)
+
+  return (
+    <div className="forward-bundle-message">
+      <button
+        type="button"
+        className="forward-bundle-header"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span>{data.title || '聊天记录'}</span>
+        <small>
+          {data.items.length ? `${data.items.length} 条消息` : data.description || '聊天记录'}
+        </small>
+      </button>
+      <div className="forward-bundle-list">
+        {visibleItems.length ? (
+          visibleItems.map((item, index) => (
+            <div
+              className="forward-bundle-item"
+              key={`${item.sender || ''}-${item.sentAt || ''}-${index}`}
+            >
+              {item.sender && <b>{item.sender}</b>}
+              <span>{renderWechatEmojiText(item.text, 24)}</span>
+              {item.nested?.length ? <small>包含 {item.nested.length} 条聊天记录</small> : null}
+            </div>
+          ))
+        ) : (
+          <div className="forward-bundle-empty">暂未解析到可展示的记录</div>
+        )}
+      </div>
+      {(hiddenCount > 0 || expanded) && data.items.length > 3 ? (
+        <button
+          type="button"
+          className="forward-bundle-toggle"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? '收起' : `展开其余 ${hiddenCount} 条`}
+        </button>
+      ) : null}
+    </div>
+  )
 }
 
 function LocationBubble({
@@ -161,12 +212,7 @@ function MiniProgramBubble({
           />
         </div>
       ) : data.iconUrl ? (
-        <img
-          className="mini-program-icon"
-          src={data.iconUrl}
-          alt=""
-          referrerPolicy="no-referrer"
-        />
+        <img className="mini-program-icon" src={data.iconUrl} alt="" referrerPolicy="no-referrer" />
       ) : null}
       <div className="mini-program-footer">
         <span aria-hidden>⌁</span>
@@ -242,6 +288,7 @@ function StickerBubble({
   )
   const [loading, setLoading] = useState(Boolean(sourceUrl || md5) && !displayUrl)
   const [error, setError] = useState(false)
+  const [errorText, setErrorText] = useState('')
 
   useEffect(() => {
     if (!cacheKey || displayUrl || error) return
@@ -255,12 +302,17 @@ function StickerBubble({
           stickerDataUrlCache.set(cacheKey, result.data)
           setDisplayUrl(result.data)
           setError(false)
+          setErrorText('')
         } else {
           setError(true)
+          setErrorText(result.error || '表情包未缓存')
         }
       })
       .catch(() => {
-        if (!cancelled) setError(true)
+        if (!cancelled) {
+          setError(true)
+          setErrorText('表情包加载失败')
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -289,7 +341,7 @@ function StickerBubble({
 
   return (
     <div className="sticker-message">
-      <div className="sticker-placeholder">{error ? '表情包未缓存' : '表情包'}</div>
+      <div className="sticker-placeholder">{error ? errorText || '表情包未缓存' : '表情包'}</div>
       {md5 && <div className="sticker-md5">MD5: {md5}</div>}
     </div>
   )

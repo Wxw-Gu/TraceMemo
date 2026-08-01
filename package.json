@@ -28,6 +28,7 @@
     "start": "electron-vite preview",
     "dev": "node scripts/ensure-env.cjs && node scripts/build-wechat-connector.cjs && electron-vite dev",
     "test:wechat-connector": "go -C services/wechat-connector test ./... && go -C services/wechat-connector vet ./...",
+    "test:stability": "node --experimental-strip-types --test tests/stability-compat.test.mjs",
     "build:wechat-connector": "node scripts/build-wechat-connector.cjs",
     "build:wechat-connector:win": "node scripts/build-wechat-connector.cjs --platform win32 --arch x64,arm64",
     "build:wechat-connector:mac": "node scripts/build-wechat-connector.cjs --platform darwin --arch x64,arm64",

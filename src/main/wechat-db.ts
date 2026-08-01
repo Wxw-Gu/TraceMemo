@@ -6,6 +6,8 @@ export interface UserContact {
   avatar?: string
   wechatNickname?: string
   remark?: string
+  isFolded?: boolean
+  isMuted?: boolean
 }
 
 export interface WechatMessage {
@@ -80,7 +82,9 @@ export class WechatDb {
         nickname: session.nickname || session.username,
         avatar: session.avatar,
         wechatNickname: session.wechatNickname,
-        remark: session.remark
+        remark: session.remark,
+        isFolded: session.isFolded,
+        isMuted: session.isMuted
       }))
       .filter((contact) => {
         if (!keyword) return true
@@ -176,12 +180,7 @@ export class WechatDb {
     this.ensureChatTableMapping()
     const username = this.chatMd5ToUsername.get(userMd5)
     if (!username) return []
-    const messages = await this.wcdb4Client.getMessagesAsync(
-      username,
-      startTime,
-      endTime,
-      options
-    )
+    const messages = await this.wcdb4Client.getMessagesAsync(username, startTime, endTime, options)
     return messages.map((message) => ({ ...message, ...message.raw }))
   }
 

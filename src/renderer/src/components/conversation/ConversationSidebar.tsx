@@ -25,7 +25,7 @@ export interface ConversationSidebarProps {
   onOpenSettings: () => void
 }
 
-type SectionName = 'groups' | 'contacts'
+type SectionName = 'groups' | 'folded' | 'contacts'
 type ConversationRow =
   | { kind: 'header'; id: string; title: string; count: number; section: SectionName }
   | { kind: 'contact'; id: string; contact: Contact }
@@ -44,24 +44,67 @@ export function ConversationSidebar({
   const [searchTerm, setSearchTerm] = useState('')
   const [expandedSections, setExpandedSections] = useState<Record<SectionName, boolean>>({
     groups: true,
+    folded: false,
     contacts: false
   })
   const listRef = useRef<HTMLDivElement>(null)
 
-  const groups = contacts.filter((contact) => contact.type === 'group')
+  const groups = contacts.filter((contact) => contact.type === 'group' && !contact.isFolded)
+  const foldedGroups = contacts.filter((contact) => contact.type === 'group' && contact.isFolded)
   const users = contacts.filter((contact) => contact.type === 'user')
   const rows = useMemo<ConversationRow[]>(
     () => [
-      { kind: 'header', id: 'groups-header', title: '群聊', count: groups.length, section: 'groups' },
+      {
+        kind: 'header',
+        id: 'groups-header',
+        title: '群聊',
+        count: groups.length,
+        section: 'groups'
+      },
       ...(expandedSections.groups
-        ? groups.map((contact) => ({ kind: 'contact' as const, id: `group-${contact.md5}`, contact }))
+        ? groups.map((contact) => ({
+            kind: 'contact' as const,
+            id: `group-${contact.md5}`,
+            contact
+          }))
         : []),
-      { kind: 'header', id: 'contacts-header', title: '联系人', count: users.length, section: 'contacts' },
+      ...(foldedGroups.length
+        ? [
+            {
+              kind: 'header' as const,
+              id: 'folded-header',
+              title: '折叠群聊',
+              count: foldedGroups.length,
+              section: 'folded' as const
+            },
+            ...(expandedSections.folded
+              ? foldedGroups.map((contact) => ({
+                  kind: 'contact' as const,
+                  id: `folded-${contact.md5}`,
+                  contact
+                }))
+              : [])
+          ]
+        : []),
+      {
+        kind: 'header',
+        id: 'contacts-header',
+        title: '联系人',
+        count: users.length,
+        section: 'contacts'
+      },
       ...(expandedSections.contacts
         ? users.map((contact) => ({ kind: 'contact' as const, id: `user-${contact.md5}`, contact }))
         : [])
     ],
-    [expandedSections.contacts, expandedSections.groups, groups, users]
+    [
+      expandedSections.contacts,
+      expandedSections.folded,
+      expandedSections.groups,
+      foldedGroups,
+      groups,
+      users
+    ]
   )
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -84,7 +127,10 @@ export function ConversationSidebar({
         onSearchChange={handleSearchChange}
       />
       <div ref={listRef} className="conversation-list" aria-label="会话列表">
-        <div className="conversation-virtual-content" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+        <div
+          className="conversation-virtual-content"
+          style={{ height: `${virtualizer.getTotalSize()}px` }}
+        >
           {virtualizer.getVirtualItems().map((virtualItem) => {
             const row = rows[virtualItem.index]
             if (!row) return null
@@ -95,9 +141,15 @@ export function ConversationSidebar({
                   key={virtualItem.key}
                   type="button"
                   className="conversation-section-header conversation-virtual-row"
-                  style={{ transform: `translateY(${virtualItem.start}px)`, height: `${virtualItem.size}px` }}
+                  style={{
+                    transform: `translateY(${virtualItem.start}px)`,
+                    height: `${virtualItem.size}px`
+                  }}
                   onClick={() =>
-                    setExpandedSections((current) => ({ ...current, [row.section]: !current[row.section] }))
+                    setExpandedSections((current) => ({
+                      ...current,
+                      [row.section]: !current[row.section]
+                    }))
                   }
                 >
                   <span className="conversation-section-chevron" aria-hidden="true">
@@ -105,7 +157,9 @@ export function ConversationSidebar({
                       <path d={expanded ? 'M4 6l4 4 4-4' : 'M6 4l4 4-4 4'} />
                     </svg>
                   </span>
-                  <span className="conversation-section-title">{row.title} ({row.count})</span>
+                  <span className="conversation-section-title">
+                    {row.title} ({row.count})
+                  </span>
                 </button>
               )
             }
@@ -113,7 +167,10 @@ export function ConversationSidebar({
               <div
                 key={virtualItem.key}
                 className="conversation-virtual-row"
-                style={{ transform: `translateY(${virtualItem.start}px)`, height: `${virtualItem.size}px` }}
+                style={{
+                  transform: `translateY(${virtualItem.start}px)`,
+                  height: `${virtualItem.size}px`
+                }}
               >
                 <ConversationItem
                   contact={row.contact}

@@ -601,8 +601,11 @@ function App(): React.ReactElement {
               setIsNativeMonitorActive(typeof result !== 'boolean' && result.monitoring === true)
               setIsDatabaseConnected(true)
               setDbKeyStatus('已连接数据库')
-              // Cached contacts/self info are enough for startup. Native refresh is
-              // intentionally user-triggered so it cannot freeze the first session.
+              // The cached list paints first. Refresh lightweight session flags and
+              // missing avatars after the database is connected.
+              void loadContacts({ waitForAvatars: false }).catch((error) => {
+                console.warn('[Startup] background contact refresh failed:', error)
+              })
             })
             .catch((error) => {
               console.warn('[Startup] background database init failed:', error)

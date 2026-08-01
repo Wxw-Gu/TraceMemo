@@ -6,6 +6,8 @@ export interface Contact {
   avatar?: string
   wechatNickname?: string
   remark?: string
+  isFolded?: boolean
+  isMuted?: boolean
 }
 
 export interface Message {
@@ -52,6 +54,19 @@ type ShareContent = {
   url: string
   appname?: string
   typeVal?: string
+}
+export type ForwardedMessageItem = {
+  messageType: number
+  sender?: string
+  sentAt?: string
+  text: string
+  nested?: ForwardedMessageItem[]
+}
+type ForwardBundleContent = {
+  type: 'forwardBundle'
+  title: string
+  description?: string
+  items: ForwardedMessageItem[]
 }
 type MiniProgramContent = {
   type: 'miniProgram'
@@ -119,7 +134,7 @@ type SystemContent = {
     recallTime?: number
   }
 }
-type UnknownContent = { type: 'unknown'; raw: string }
+type UnknownContent = { type: 'unknown'; raw: string; messageType?: string | number }
 
 export type ParsedContent =
   | TextContent
@@ -127,6 +142,7 @@ export type ParsedContent =
   | LocationContent
   | CardContent
   | ShareContent
+  | ForwardBundleContent
   | MiniProgramContent
   | RedPacketContent
   | VoipContent

@@ -329,3 +329,94 @@
 .voip-status {
   font-size: 13px;
 }
+
+.forward-bundle-message {
+  width: min(320px, 56vw);
+  overflow: hidden;
+}
+
+.forward-bundle-header,
+.forward-bundle-toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.forward-bundle-header {
+  display: grid;
+  gap: 3px;
+  padding: 0 0 9px;
+  border-bottom: 1px solid var(--wxex-border);
+
+  span {
+    overflow: hidden;
+    font-size: 14px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  small {
+    color: var(--wxex-text-muted);
+    font-size: 11px;
+  }
+}
+
+.forward-bundle-list {
+  display: grid;
+  gap: 8px;
+  padding: 9px 0;
+}
+
+.forward-bundle-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 6px;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+
+  b {
+    color: var(--wxex-text-primary);
+    font-weight: 600;
+  }
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  small {
+    grid-column: 2;
+    color: var(--wxex-text-muted);
+  }
+}
+
+.forward-bundle-empty,
+.unsupported-message span {
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+}
+
+.forward-bundle-toggle {
+  padding: 8px 0 0;
+  border-top: 1px solid var(--wxex-border);
+  color: var(--wxex-brand);
+  font-size: 12px;
+  text-align: center;
+}
+
+.unsupported-message {
+  display: grid;
+  min-width: 150px;
+  gap: 4px;
+
+  strong {
+    font-size: 13px;
+    font-weight: 600;
+  }
+}

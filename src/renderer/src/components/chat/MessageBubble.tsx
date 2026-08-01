@@ -31,7 +31,9 @@ const RICH_MESSAGE_TYPES = [
   '引用消息',
   '通话',
   '表情包',
-  '系统消息'
+  '系统消息',
+  '合并转发',
+  '不支持的消息'
 ]
 
 export function MessageBubble({
@@ -46,7 +48,8 @@ export function MessageBubble({
   const isVoice = message.type === '语音'
   const isImage = message.type === '图片'
   const isVideo = message.type === '视频'
-  const isRichMedia = RICH_MESSAGE_TYPES.includes(message.type)
+  const isRichMedia =
+    RICH_MESSAGE_TYPES.includes(message.type) || message.contentData?.type === 'unknown'
   const hoverTime = formatMessageTime(message)
 
   return (
@@ -63,6 +66,8 @@ export function MessageBubble({
             sessionId={message.sessionId}
             localId={message.localId || 0}
             createTime={message.createTime || 0}
+            svrId={message.serverId}
+            duration={message.voiceDuration}
           />
         ) : isImage && message.contentData && message.contentData.type === 'image' ? (
           <ImageBubble

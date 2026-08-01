@@ -221,7 +221,13 @@ declare global {
       getSticker: (
         cdnUrl?: string,
         md5?: string
-      ) => Promise<{ success: boolean; data?: string; error?: string }>
+      ) => Promise<{
+        success: boolean
+        data?: string
+        error?: string
+        failureCode?: import('../shared/sticker').StickerFailureCode
+        httpStatus?: number
+      }>
       startExport: (request: ExportRequest) => Promise<ExportResult>
       cancelExport: (jobId: string) => Promise<{ success: boolean }>
       revealExport: (path: string) => Promise<{ success: boolean; error?: string }>

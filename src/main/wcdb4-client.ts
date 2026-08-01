@@ -12,6 +12,8 @@ export interface Wcdb4Session {
   avatar?: string
   wechatNickname?: string
   remark?: string
+  isFolded?: boolean
+  isMuted?: boolean
   raw: Record<string, unknown>
 }
 
@@ -34,6 +36,7 @@ export interface Wcdb4MessageQueryOptions {
 
 export interface Wcdb4SessionQueryOptions {
   hydrateDisplayNames?: boolean
+  hydrateStatuses?: boolean
 }
 
 type Wcdb4MessageStore = {
@@ -177,9 +180,12 @@ export function bootstrapWcdbNativeAsync(
     ) => number
     const resourceRoots = Array.from(
       new Set(
-        [libDir, path.dirname(libDir), process.env.WCDB_RESOURCES_PATH || '', ...getResourceRoots()].filter(
-          Boolean
-        )
+        [
+          libDir,
+          path.dirname(libDir),
+          process.env.WCDB_RESOURCES_PATH || '',
+          ...getResourceRoots()
+        ].filter(Boolean)
       )
     )
     let initOk = false
@@ -242,12 +248,15 @@ export class Wcdb4Client {
   private handle: number | null = null
   private displayNameCache = new Map<string, string>()
   private avatarCache = new Map<string, string>()
+  private sessionStatusCache = new Map<string, { isFolded: boolean; isMuted: boolean }>()
   private groupNicknameCache = new Map<string, Map<string, string>>()
   private cachedSessions: Wcdb4Session[] | null = null
   private cachedChatTables: { name: string; db_number: string }[] | null = null
   private sessionsInFlight: Promise<Wcdb4Session[]> | null = null
   private sessionDisplayNamesInFlight: Promise<void> | null = null
   private sessionDisplayNamesHydrated = false
+  private sessionStatusesInFlight: Promise<void> | null = null
+  private sessionStatusesUpdatedAt = 0
   private sessionCacheGeneration = 0
 
   private wcdbShutdown: (() => number) | null = null
@@ -274,6 +283,12 @@ export class Wcdb4Client {
     | ((handle: number, usernamesJson: string, outJson: WcdbVoidOut) => number)
     | null = null
   private wcdbGetAvatarUrls:
+    | ((handle: number, usernamesJson: string, outJson: WcdbVoidOut) => number)
+    | null = null
+  private wcdbGetContactStatus:
+    | ((handle: number, usernamesJson: string, outJson: WcdbVoidOut) => number)
+    | null = null
+  private wcdbGetHeadImageBuffers:
     | ((handle: number, usernamesJson: string, outJson: WcdbVoidOut) => number)
     | null = null
   private wcdbExecQuery:
@@ -565,8 +580,11 @@ export class Wcdb4Client {
     this.handle = null
     this.cachedSessions = null
     this.sessionDisplayNamesHydrated = false
+    this.sessionStatusesInFlight = null
+    this.sessionStatusesUpdatedAt = 0
     this.displayNameCache.clear()
     this.avatarCache.clear()
+    this.sessionStatusCache.clear()
     this.groupNicknameCache.clear()
   }
 
@@ -720,16 +738,11 @@ export class Wcdb4Client {
       .map((row) => this.normalizeSession(row))
       .filter((session) => session.username)
 
-    this.hydrateDisplayNames(
-      sessions
-        .filter((session) => this.shouldHydrateSessionDisplayName(session))
-        .map((session) => session.username)
-    )
     this.cachedSessions = sessions.map((session) => ({
       ...session,
       nickname: this.displayNameCache.get(session.username) || session.nickname || session.username
     }))
-    this.sessionDisplayNamesHydrated = true
+    this.sessionDisplayNamesHydrated = false
 
     return this.cachedSessions
   }
@@ -738,11 +751,13 @@ export class Wcdb4Client {
     const hydrateDisplayNames = options.hydrateDisplayNames !== false
     if (this.cachedSessions) {
       if (hydrateDisplayNames) await this.ensureSessionDisplayNamesAsync()
+      if (options.hydrateStatuses) await this.refreshSessionStatusesAsync()
       return this.cachedSessions
     }
     if (this.sessionsInFlight) {
       await this.sessionsInFlight
       if (hydrateDisplayNames) await this.ensureSessionDisplayNamesAsync()
+      if (options.hydrateStatuses) await this.refreshSessionStatusesAsync()
       return this.cachedSessions || []
     }
     if (!this.wcdbGetSessions) return []
@@ -765,7 +780,57 @@ export class Wcdb4Client {
       if (this.sessionsInFlight === request) this.sessionsInFlight = null
     }
     if (hydrateDisplayNames) await this.ensureSessionDisplayNamesAsync()
+    if (options.hydrateStatuses) await this.refreshSessionStatusesAsync()
     return this.cachedSessions || []
+  }
+
+  private async refreshSessionStatusesAsync(): Promise<void> {
+    if (Date.now() - this.sessionStatusesUpdatedAt < 5 * 60 * 1000) return
+    if (this.sessionStatusesInFlight) {
+      await this.sessionStatusesInFlight
+      return
+    }
+    const sessions = this.cachedSessions
+    if (!sessions?.length || !this.wcdbGetContactStatus) return
+    const groupUsernames = sessions
+      .map((session) => session.username)
+      .filter((username) => username.endsWith('@chatroom'))
+    if (!groupUsernames.length) {
+      this.sessionStatusesUpdatedAt = Date.now()
+      return
+    }
+    const request = (async (): Promise<void> => {
+      try {
+        const map = await this.callJsonAsync<
+          Record<string, { isFolded?: boolean; isMuted?: boolean }>
+        >(
+          this.wcdbGetContactStatus as unknown as KoffiAsyncFunction,
+          JSON.stringify(groupUsernames)
+        )
+        for (const username of groupUsernames) {
+          const status = map?.[username]
+          this.sessionStatusCache.set(username, {
+            isFolded: Boolean(status?.isFolded),
+            isMuted: Boolean(status?.isMuted)
+          })
+        }
+        if (this.cachedSessions) {
+          this.cachedSessions = this.cachedSessions.map((session) => {
+            const status = this.sessionStatusCache.get(session.username)
+            return status ? { ...session, ...status } : session
+          })
+        }
+        this.sessionStatusesUpdatedAt = Date.now()
+      } catch (error) {
+        console.warn('[WCDB4] session status lookup failed:', error)
+      }
+    })()
+    this.sessionStatusesInFlight = request
+    try {
+      await request
+    } finally {
+      if (this.sessionStatusesInFlight === request) this.sessionStatusesInFlight = null
+    }
   }
 
   invalidateSessionCache(): void {
@@ -1120,6 +1185,52 @@ export class Wcdb4Client {
       if (avatar) result[username] = avatar
     }
     return result
+  }
+
+  async getAvatarUrlsAsync(usernames: string[]): Promise<Record<string, string>> {
+    const normalized = this.uniq(usernames)
+    await this.hydrateAvatarUrlsAsync(normalized)
+    const localCandidates = normalized.filter((username) => {
+      const avatar = this.avatarCache.get(username)
+      return !avatar || !avatar.startsWith('data:')
+    })
+    if (localCandidates.length && this.wcdbGetHeadImageBuffers) {
+      try {
+        const buffers = await this.callJsonAsync<Record<string, string>>(
+          this.wcdbGetHeadImageBuffers as unknown as KoffiAsyncFunction,
+          JSON.stringify(localCandidates)
+        )
+        for (const [username, hex] of Object.entries(buffers || {})) {
+          const avatar = this.avatarHexToDataUrl(hex)
+          if (avatar) this.avatarCache.set(username, avatar)
+        }
+      } catch (error) {
+        console.warn('[WCDB4] local avatar fallback failed:', error)
+      }
+    }
+
+    const result: Record<string, string> = {}
+    for (const username of normalized) {
+      const avatar = this.avatarCache.get(username)
+      if (avatar) result[username] = avatar
+    }
+    return result
+  }
+
+  private avatarHexToDataUrl(value: string): string | undefined {
+    const hex = String(value || '').trim()
+    if (!hex || hex.length % 2 !== 0 || !/^[a-f0-9]+$/i.test(hex)) return undefined
+    const buffer = Buffer.from(hex, 'hex')
+    let mime = 'image/jpeg'
+    if (buffer.length >= 8 && buffer.subarray(1, 4).toString('ascii') === 'PNG') mime = 'image/png'
+    if (
+      buffer.length >= 12 &&
+      buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+    ) {
+      mime = 'image/webp'
+    }
+    return `data:${mime};base64,${buffer.toString('base64')}`
   }
 
   getMyGroupNickname(chatroomId: string): string | undefined {
@@ -1488,9 +1599,10 @@ export class Wcdb4Client {
     const nicknames = new Map<string, string>()
     if (!this.wcdbGetGroupNicknames || !chatroomId) return nicknames
 
-    const rows = await this.callJsonAsync<
-      Record<string, string> | Record<string, unknown>[]
-    >(this.wcdbGetGroupNicknames as unknown as KoffiAsyncFunction, chatroomId)
+    const rows = await this.callJsonAsync<Record<string, string> | Record<string, unknown>[]>(
+      this.wcdbGetGroupNicknames as unknown as KoffiAsyncFunction,
+      chatroomId
+    )
     this.readStringMap(rows, [
       'nickname',
       'nickName',
@@ -1754,6 +1866,22 @@ export class Wcdb4Client {
       ) as (handle: number, usernamesJson: string, outJson: WcdbVoidOut) => number
     } catch {
       this.wcdbGetAvatarUrls = null
+    }
+
+    try {
+      this.wcdbGetContactStatus = lib.func(
+        'int32 wcdb_get_contact_status(int64 handle, const char* usernamesJson, _Out_ void** outJson)'
+      ) as (handle: number, usernamesJson: string, outJson: WcdbVoidOut) => number
+    } catch {
+      this.wcdbGetContactStatus = null
+    }
+
+    try {
+      this.wcdbGetHeadImageBuffers = lib.func(
+        'int32 wcdb_get_head_image_buffers(int64 handle, const char* usernamesJson, _Out_ void** outJson)'
+      ) as (handle: number, usernamesJson: string, outJson: WcdbVoidOut) => number
+    } catch {
+      this.wcdbGetHeadImageBuffers = null
     }
 
     try {
@@ -2079,7 +2207,16 @@ export class Wcdb4Client {
       'contactRemark',
       'contact_remark'
     ])
-    return { username, nickname, wechatNickname, remark, raw: row }
+    const status = this.sessionStatusCache.get(username)
+    return {
+      username,
+      nickname,
+      wechatNickname,
+      remark,
+      isFolded: status?.isFolded,
+      isMuted: status?.isMuted,
+      raw: row
+    }
   }
 
   private normalizeMessage(row: Record<string, unknown>): Wcdb4Message {
@@ -2208,9 +2345,10 @@ export class Wcdb4Client {
     const missing = this.uniq(usernames).filter((username) => !this.displayNameCache.has(username))
     if (missing.length === 0) return
     try {
-      const rows = await this.callJsonAsync<
-        Record<string, string> | Record<string, unknown>[]
-      >(this.wcdbGetDisplayNames as unknown as KoffiAsyncFunction, JSON.stringify(missing))
+      const rows = await this.callJsonAsync<Record<string, string> | Record<string, unknown>[]>(
+        this.wcdbGetDisplayNames as unknown as KoffiAsyncFunction,
+        JSON.stringify(missing)
+      )
       this.readStringMap(rows, [
         'nickname',
         'displayName',
@@ -2290,9 +2428,10 @@ export class Wcdb4Client {
     const missing = this.uniq(usernames).filter((username) => !this.avatarCache.has(username))
     if (missing.length === 0) return
     try {
-      const rows = await this.callJsonAsync<
-        Record<string, string> | Record<string, unknown>[]
-      >(this.wcdbGetAvatarUrls as unknown as KoffiAsyncFunction, JSON.stringify(missing))
+      const rows = await this.callJsonAsync<Record<string, string> | Record<string, unknown>[]>(
+        this.wcdbGetAvatarUrls as unknown as KoffiAsyncFunction,
+        JSON.stringify(missing)
+      )
       this.readStringMap(rows, [
         'avatarUrl',
         'avatar_url',

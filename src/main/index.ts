@@ -125,10 +125,7 @@ const COLD_IMAGE_LOAD_GAP_MS = 100
 const MAX_CONCURRENT_COLD_IMAGE_LOADS = 2
 
 function pumpColdImageLoads(): void {
-  if (
-    activeColdImageLoads >= MAX_CONCURRENT_COLD_IMAGE_LOADS ||
-    coldImageLoadQueue.length === 0
-  ) {
+  if (activeColdImageLoads >= MAX_CONCURRENT_COLD_IMAGE_LOADS || coldImageLoadQueue.length === 0) {
     return
   }
 
@@ -768,8 +765,8 @@ app.whenReady().then(async () => {
     return contacts
   })
 
-  ipcMain.handle('db:getContactAvatars', (_, usernames: string[]) => {
-    const avatars = chat.getContactAvatars(usernames)
+  ipcMain.handle('db:getContactAvatars', async (_, usernames: string[]) => {
+    const avatars = await chat.getContactAvatars(usernames)
     if (chat.isReady()) mergeBootstrapAvatars(chat.getCurrentAccountRoot(), avatars)
     return avatars
   })

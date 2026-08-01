@@ -5,8 +5,15 @@ import https from 'https'
 import os from 'os'
 import path from 'path'
 import { Wcdb4Client } from './wcdb4-client'
+import { classifyStickerHttpFailure, StickerFailureCode } from '../shared/sticker'
 
-type StickerResult = { success: boolean; data?: string; error?: string }
+type StickerResult = {
+  success: boolean
+  data?: string
+  error?: string
+  failureCode?: StickerFailureCode
+  httpStatus?: number
+}
 
 const downloadCache = new Map<string, Promise<StickerResult>>()
 
@@ -129,15 +136,24 @@ export class StickerService {
           const redirectUrl = response.headers.location
           if (redirectUrl && [301, 302, 303, 307, 308].includes(Number(response.statusCode || 0))) {
             const nextUrl = new URL(redirectUrl, url).toString()
+            response.resume()
             this.downloadToDataUrl(nextUrl, cacheKey, redirectCount + 1).then(resolve)
             return
           }
 
           if (response.statusCode !== 200) {
+            const statusCode = Number(response.statusCode || 0)
+            const failure = classifyStickerHttpFailure(statusCode, url)
+            response.resume()
             console.warn(
-              `[StickerService] download failed: HTTP ${response.statusCode}; md5=${cacheKey}; url=${url}`
+              `[StickerService] download failed code=${failure.code} status=${statusCode} md5=${cacheKey} host=${this.getUrlHost(url)}`
             )
-            resolve({ success: false, error: `表情包下载失败: HTTP ${response.statusCode}` })
+            resolve({
+              success: false,
+              error: failure.message,
+              failureCode: failure.code,
+              httpStatus: statusCode
+            })
             return
           }
 
@@ -195,6 +211,14 @@ export class StickerService {
       return ['.gif', '.png', '.webp', '.jpg', '.jpeg'].includes(ext) ? ext : null
     } catch {
       return null
+    }
+  }
+
+  private getUrlHost(url: string): string {
+    try {
+      return new URL(url).hostname || 'unknown'
+    } catch {
+      return 'unknown'
     }
   }
 

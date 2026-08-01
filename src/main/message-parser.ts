@@ -16,6 +16,19 @@ type ShareContent = {
   appname?: string
   typeVal?: string
 }
+type ForwardedMessageItem = {
+  messageType: number
+  sender?: string
+  sentAt?: string
+  text: string
+  nested?: ForwardedMessageItem[]
+}
+type ForwardBundleContent = {
+  type: 'forwardBundle'
+  title: string
+  description?: string
+  items: ForwardedMessageItem[]
+}
 type MiniProgramContent = {
   type: 'miniProgram'
   title: string
@@ -82,7 +95,7 @@ type SystemContent = {
     recallTime?: number
   }
 }
-type UnknownContent = { type: 'unknown'; raw: string }
+type UnknownContent = { type: 'unknown'; raw: string; messageType?: string | number }
 
 export type ParsedContent =
   | TextContent
@@ -90,6 +103,7 @@ export type ParsedContent =
   | LocationContent
   | CardContent
   | ShareContent
+  | ForwardBundleContent
   | MiniProgramContent
   | RedPacketContent
   | VoipContent
@@ -108,6 +122,10 @@ export function parseMessageContent(content: string, messageType: number): Parse
   const normalized = content.trim()
 
   switch (messageType) {
+    case 1:
+      return { type: 'text', content: normalized }
+    case 34:
+      return { type: 'voice' }
     case 3:
       return parseImageMessage(normalized)
     case 42:
@@ -126,7 +144,7 @@ export function parseMessageContent(content: string, messageType: number): Parse
     case 10002:
       return parseSystemMessage(normalized)
     default:
-      return { type: 'text', content: normalized }
+      return { type: 'unknown', raw: normalized, messageType }
   }
 }
 
@@ -412,6 +430,9 @@ function parseLocationMessage(content: string): ParsedContent {
 
 function parseShareMessage(content: string): ParsedContent {
   const appMsgType = extractAppMsgType(content)
+  if (appMsgType === '19' || /<recorditem\b|<dataitem\b/i.test(content)) {
+    return parseForwardBundle(content)
+  }
   if (appMsgType === '47' || /<(?:emoji|sticker|emoticon)\b/i.test(content)) {
     const sticker = parseStickerMessage(content)
     if (sticker.type === 'sticker') return sticker
@@ -467,6 +488,94 @@ function parseShareMessage(content: string): ParsedContent {
   }
 
   return { type: 'share', title, des, url, appname, typeVal }
+}
+
+function parseForwardBundle(content: string): ForwardBundleContent {
+  const normalized = decodeXmlEntities(stripChatroomPrefix(content))
+  const title = decodeXmlEntities(extractXmlValue(normalized, 'title')) || '聊天记录'
+  const description = decodeXmlEntities(extractXmlValue(normalized, 'des')) || undefined
+  const containers = Array.from(
+    normalized.matchAll(/<recorditem\b[^>]*>([\s\S]*?)<\/recorditem>/gi),
+    (match) => match[1] || ''
+  )
+  const sources = containers.length ? containers : [normalized]
+  const items = dedupeForwardedItems(sources.flatMap((source) => parseForwardedItems(source)))
+  return { type: 'forwardBundle', title, description, items }
+}
+
+function parseForwardedItems(container: string, depth = 0): ForwardedMessageItem[] {
+  if (!container || depth > 4) return []
+  const variants = new Set<string>([container, decodeXmlEntities(container)])
+  for (const match of container.matchAll(/<!\[CDATA\[([\s\S]*?)\]\]>/g)) {
+    if (match[1]) variants.add(decodeXmlEntities(match[1]))
+  }
+
+  const items: ForwardedMessageItem[] = []
+  for (const variant of variants) {
+    for (const match of variant.matchAll(/<dataitem\b([^>]*)>([\s\S]*?)<\/dataitem>/gi)) {
+      const attributes = match[1] || ''
+      const body = match[2] || ''
+      const attrType = /datatype\s*=\s*["']?(\d+)/i.exec(attributes)?.[1]
+      const messageType = Number.parseInt(attrType || extractXmlValue(body, 'datatype') || '0', 10)
+      const sender = decodeXmlEntities(extractXmlValue(body, 'sourcename')) || undefined
+      const sentAt = extractXmlValue(body, 'sourcetime') || undefined
+      const title = decodeXmlEntities(extractXmlValue(body, 'datatitle'))
+      const description = decodeXmlEntities(
+        extractXmlValue(body, 'datadesc') || extractXmlValue(body, 'content')
+      )
+      const nestedXml = extractXmlBody(body, 'recordxml')
+      const nested =
+        messageType === 17 && nestedXml
+          ? parseForwardedItems(decodeXmlEntities(nestedXml), depth + 1)
+          : undefined
+      const text = description || title || forwardedTypeLabel(messageType)
+      if (!sender && !text && !nested?.length) continue
+      items.push({
+        messageType: Number.isFinite(messageType) ? messageType : 0,
+        sender,
+        sentAt,
+        text: text || '[消息]',
+        nested: nested?.length ? nested : undefined
+      })
+    }
+  }
+  return dedupeForwardedItems(items)
+}
+
+function dedupeForwardedItems(items: ForwardedMessageItem[]): ForwardedMessageItem[] {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    const key = `${item.messageType}|${item.sender || ''}|${item.sentAt || ''}|${item.text}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function forwardedTypeLabel(messageType: number): string {
+  switch (messageType) {
+    case 3:
+      return '[图片]'
+    case 34:
+      return '[语音]'
+    case 43:
+      return '[视频]'
+    case 47:
+      return '[表情包]'
+    case 8:
+    case 49:
+      return '[文件或分享]'
+    case 17:
+      return '[聊天记录]'
+    default:
+      return '[消息]'
+  }
+}
+
+function extractXmlBody(xml: string, tagName: string): string {
+  const match = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i').exec(xml)
+  if (!match?.[1]) return ''
+  return match[1].replace(/^<!\[CDATA\[([\s\S]*?)\]\]>$/, '$1').trim()
 }
 
 function parseQuoteMessage(content: string): {
@@ -713,9 +822,7 @@ export function parseImageDatNameFromRow(row: Record<string, unknown>): string |
   return hexMatch?.[1]?.toLowerCase()
 }
 
-export function parseImageBufferDataUrlFromRow(
-  row: Record<string, unknown>
-): string | undefined {
+export function parseImageBufferDataUrlFromRow(row: Record<string, unknown>): string | undefined {
   const raw = pickRowString(row, [
     'ImgBuf',
     'imgBuf',

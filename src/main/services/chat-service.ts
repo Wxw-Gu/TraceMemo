@@ -37,6 +37,8 @@ export interface FormattedContact {
   avatar?: string
   wechatNickname?: string
   remark?: string
+  isFolded?: boolean
+  isMuted?: boolean
 }
 
 export interface FormattedMessage {
@@ -140,7 +142,9 @@ export function listContacts(filter?: string): FormattedContact[] {
       type: isGroup ? 'group' : 'user',
       avatar: typeof user.avatar === 'string' ? user.avatar : undefined,
       wechatNickname: user.wechatNickname,
-      remark: user.remark
+      remark: user.remark,
+      isFolded: user.isFolded,
+      isMuted: user.isMuted
     })
   }
 
@@ -174,17 +178,20 @@ export function listContacts(filter?: string): FormattedContact[] {
 
 export async function listContactsAsync(filter?: string): Promise<FormattedContact[]> {
   if (!dbRef) return []
-  await dbRef.getWcdb4Client().getSessionsAsync({ hydrateDisplayNames: false })
+  await dbRef.getWcdb4Client().getSessionsAsync({
+    hydrateDisplayNames: false,
+    hydrateStatuses: true
+  })
   return listContacts(filter)
 }
 
-export function getContactAvatars(usernames: string[]): Record<string, string> {
+export async function getContactAvatars(usernames: string[]): Promise<Record<string, string>> {
   if (!dbRef) return {}
   const normalized = Array.from(
     new Set((usernames || []).map((username) => String(username || '').trim()).filter(Boolean))
   )
   if (normalized.length === 0) return {}
-  return dbRef.getWcdb4Client().getAvatarUrls(normalized)
+  return dbRef.getWcdb4Client().getAvatarUrlsAsync(normalized)
 }
 
 function listSourceMessages(
@@ -251,7 +258,13 @@ function listSourceMessages(
       const patContent =
         system.type === 'system'
           ? { ...system, pat: true }
-          : { type: 'system' as const, content: String(content || '').replace(/<[^>]+>/g, '').trim(), pat: true }
+          : {
+              type: 'system' as const,
+              content: String(content || '')
+                .replace(/<[^>]+>/g, '')
+                .trim(),
+              pat: true
+            }
       contentData = patContent
       content = patContent.content
       displayType = '系统消息'
@@ -265,11 +278,9 @@ function listSourceMessages(
       try {
         const isQuotePayload = /<refermsg\b/i.test(content)
         const hasStickerPayload =
-          /<(?:emoji|sticker|emoticon)\b/i.test(content) ||
-          /<type>\s*47\s*<\/type>/i.test(content)
+          /<(?:emoji|sticker|emoticon)\b/i.test(content) || /<type>\s*47\s*<\/type>/i.test(content)
         const rowSticker =
-          inferredMsgType === 47 ||
-          (inferredMsgType === 49 && !isQuotePayload && hasStickerPayload)
+          inferredMsgType === 47 || (inferredMsgType === 49 && !isQuotePayload && hasStickerPayload)
             ? parseStickerMessageFromRow(msg, content)
             : undefined
         const parsedContent = parseMessageContent(content, inferredMsgType)
@@ -301,7 +312,7 @@ function listSourceMessages(
         if (parsed.type === 'system') {
           content = parsed.content
           contentData = parsed
-        } else if (parsed.type !== 'unknown') {
+        } else {
           content = ''
         }
         if (parsed.type === 'image') {
@@ -311,8 +322,7 @@ function listSourceMessages(
           contentData = {
             ...parsed,
             thumbDatName: parsed.thumbDatName || parseImageDatNameFromRow(msg),
-            thumbDataUrl:
-              parsed.thumbDataUrl || parseImageBufferDataUrlFromRow(msg.raw || msg)
+            thumbDataUrl: parsed.thumbDataUrl || parseImageBufferDataUrlFromRow(msg.raw || msg)
           }
         } else if (parsed.type !== 'system') {
           if (parsed.type === 'sticker' && !parsed.url && parsed.md5) {
@@ -327,6 +337,11 @@ function listSourceMessages(
         if (parsed.type === 'sticker') displayType = '表情包'
         if (parsed.type === 'miniProgram') displayType = '小程序'
         if (parsed.type === 'redPacket') displayType = '微信红包'
+        if (parsed.type === 'forwardBundle') displayType = '合并转发'
+        if (parsed.type === 'unknown') {
+          displayType = '不支持的消息'
+          contentData = { ...parsed, messageType: msgType }
+        }
         if (parsed.type === 'share') {
           if (parsed.typeVal === '5') displayType = '公众号链接'
           if (parsed.typeVal === '6') displayType = '文件'
@@ -349,6 +364,12 @@ function listSourceMessages(
         contentData = parsed
         displayType = '表情包'
       }
+    }
+
+    if (!contentData && !MSG_TYPE_DICT[msgType] && msgType !== 0) {
+      contentData = { type: 'unknown', raw: rawContent, messageType: msgType }
+      content = ''
+      displayType = '不支持的消息'
     }
 
     if (msgType === 34) content = '[语音消息]'
@@ -403,13 +424,7 @@ export async function listMessagesAsync(
 ): Promise<FormattedMessage[]> {
   if (!dbRef) return []
   const rawMessages = await dbRef.getUserMessagesAsync(userMd5, startTime, endTime, options)
-  const sourceMessages = listSourceMessages(
-    userMd5,
-    startTime,
-    endTime,
-    options,
-    rawMessages
-  )
+  const sourceMessages = listSourceMessages(userMd5, startTime, endTime, options, rawMessages)
   const username = dbRef.getWcdb4Client().getUsernameByMd5(userMd5) || ''
   recordRecallArchiveMessages(userMd5, username, sourceMessages)
   return mergeRecallArchiveMessages(userMd5, sourceMessages, startTime, endTime, options?.limit)

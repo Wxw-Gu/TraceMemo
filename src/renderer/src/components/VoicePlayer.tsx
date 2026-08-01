@@ -16,15 +16,16 @@ export function VoicePlayer({
   sessionId,
   localId,
   createTime,
-  svrId
+  svrId,
+  duration
 }: VoicePlayerProps): JSX.Element {
   const [isPlaying, setIsPlaying] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [audioDuration, setAudioDuration] = useState<number | undefined>(undefined)
-  const [shouldAutoPlay, setShouldAutoPlay] = useState(false)
+  const [audioDuration, setAudioDuration] = useState<number | undefined>(duration)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const objectUrlRef = useRef<string | null>(null)
 
   const stopCurrentAndPlay = useCallback((audio: HTMLAudioElement) => {
     if (globalCurrentAudio && globalCurrentAudio !== audio) {
@@ -35,126 +36,113 @@ export function VoicePlayer({
     globalCurrentAudio = audio
   }, [])
 
-  const handlePlayPause = useCallback(async () => {
-    // 如果还没有音频数据，先获取
-    if (!audioUrl && !loading) {
-      setLoading(true)
-      setShouldAutoPlay(true)
-      console.log('[VoicePlayer] fetching voice data:', { sessionId, localId, createTime })
-      try {
-        const result = await window.api.getVoiceData(sessionId, localId, createTime, svrId)
-        console.log('[VoicePlayer] got result:', result)
-        if (result.success && result.data) {
-          console.log('[VoicePlayer] setting audioUrl, data length:', result.data.length)
-          // 使用 Blob URL 替代 data URL，绕过 CSP 限制
-          const byteCharacters = atob(result.data)
-          const byteNumbers = new Array(byteCharacters.length)
-          for (let i = 0; i < byteCharacters.length; i++) {
-            byteNumbers[i] = byteCharacters.charCodeAt(i)
-          }
-          const byteArray = new Uint8Array(byteNumbers)
-          const blob = new Blob([byteArray], { type: 'audio/wav' })
-          const blobUrl = URL.createObjectURL(blob)
-          console.log('[VoicePlayer] created blob URL:', blobUrl)
-          setAudioUrl(blobUrl)
-        } else {
-          console.log('[VoicePlayer] getVoiceData failed:', result.error)
-          setError(result.error || '获取语音数据失败')
-          setShouldAutoPlay(false)
-        }
-      } catch (e) {
-        console.log('[VoicePlayer] exception:', e)
-        setError('加载语音失败')
-        setShouldAutoPlay(false)
-      }
-      setLoading(false)
-      return
-    }
-
-    if (!audioRef.current) {
-      console.log('[VoicePlayer] no audioRef')
-      return
-    }
-
-    const audio = audioRef.current
-
-    if (isPlaying) {
-      audio.pause()
-      setIsPlaying(false)
-      globalStopCallback = null
-    } else {
+  const playAudio = useCallback(
+    async (audio: HTMLAudioElement): Promise<void> => {
       stopCurrentAndPlay(audio)
-      audio
-        .play()
-        .then(() => {
-          console.log('[VoicePlayer] play() succeeded')
-        })
-        .catch((e) => {
-          console.log('[VoicePlayer] play() failed:', e)
-        })
-      setIsPlaying(true)
-      globalStopCallback = () => {
-        setIsPlaying(false)
-        audio.currentTime = 0
-      }
-    }
-  }, [audioUrl, loading, isPlaying, sessionId, localId, createTime, svrId, stopCurrentAndPlay])
-
-  useEffect(() => {
-    if (!audioUrl) return
-
-    let audio = audioRef.current
-    if (!audio) {
-      audio = new Audio(audioUrl)
-      audioRef.current = audio
-    }
-
-    const audioEl = audio!
-
-    audioEl.addEventListener('loadedmetadata', () => {
-      setAudioDuration(audioEl.duration)
-      console.log('[VoicePlayer] loadedmetadata, duration:', audioEl.duration)
-    })
-
-    audioEl.addEventListener('ended', () => {
-      setIsPlaying(false)
-      globalStopCallback = null
-    })
-
-    audioEl.addEventListener('timeupdate', () => {
-      if (audioEl.duration && isFinite(audioEl.duration)) {
-        setAudioDuration(audioEl.duration)
-      }
-    })
-
-    audioEl.addEventListener('canplay', () => {
-      console.log('[VoicePlayer] canplay event, shouldAutoPlay:', shouldAutoPlay)
-      if (shouldAutoPlay && audioRef.current) {
-        setShouldAutoPlay(false)
-        stopCurrentAndPlay(audioRef.current)
-        audioRef.current.play()
+      try {
+        await audio.play()
+        setError(null)
         setIsPlaying(true)
         globalStopCallback = () => {
           setIsPlaying(false)
-          if (audioRef.current) {
-            audioRef.current.currentTime = 0
-          }
+          audio.currentTime = 0
         }
+      } catch (playError) {
+        if (globalCurrentAudio === audio) {
+          globalCurrentAudio = null
+          globalStopCallback = null
+        }
+        setIsPlaying(false)
+        setError('语音播放失败，请重试')
+        console.warn('[VoicePlayer] play failed:', playError)
       }
-    })
+    },
+    [stopCurrentAndPlay]
+  )
 
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current.src = ''
-        audioRef.current = null
-      }
-      if (globalCurrentAudio === audioRef.current) {
+  const createAudio = useCallback((blobUrl: string): HTMLAudioElement => {
+    const audio = new Audio()
+    audio.preload = 'auto'
+    audio.src = blobUrl
+    audio.onloadedmetadata = () => {
+      if (Number.isFinite(audio.duration)) setAudioDuration(audio.duration)
+    }
+    audio.ontimeupdate = () => {
+      if (Number.isFinite(audio.duration)) setAudioDuration(audio.duration)
+    }
+    audio.onended = () => {
+      setIsPlaying(false)
+      if (globalCurrentAudio === audio) {
         globalCurrentAudio = null
         globalStopCallback = null
       }
     }
-  }, [audioUrl, shouldAutoPlay, stopCurrentAndPlay])
+    audioRef.current = audio
+    objectUrlRef.current = blobUrl
+    return audio
+  }, [])
+
+  const handlePlayPause = useCallback(async () => {
+    if (loading) return
+
+    let audio = audioRef.current
+    if (!audio) {
+      setLoading(true)
+      setError(null)
+      try {
+        const result = await window.api.getVoiceData(sessionId, localId, createTime, svrId)
+        if (result.success && result.data) {
+          const byteCharacters = atob(result.data)
+          const byteArray = new Uint8Array(byteCharacters.length)
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteArray[i] = byteCharacters.charCodeAt(i)
+          }
+          const blob = new Blob([byteArray], { type: 'audio/wav' })
+          const blobUrl = URL.createObjectURL(blob)
+          setAudioUrl(blobUrl)
+          audio = createAudio(blobUrl)
+          await playAudio(audio)
+        } else {
+          setError(result.error || '获取语音数据失败')
+        }
+      } catch (loadError) {
+        console.warn('[VoicePlayer] load failed:', loadError)
+        setError('加载语音失败')
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+
+    if (isPlaying) {
+      audio.pause()
+      setIsPlaying(false)
+      if (globalCurrentAudio === audio) {
+        globalCurrentAudio = null
+        globalStopCallback = null
+      }
+    } else {
+      await playAudio(audio)
+    }
+  }, [createAudio, createTime, isPlaying, loading, localId, playAudio, sessionId, svrId])
+
+  useEffect(() => {
+    return () => {
+      const audio = audioRef.current
+      if (audio) {
+        audio.pause()
+        audio.removeAttribute('src')
+        audio.load()
+      }
+      if (globalCurrentAudio === audio) {
+        globalCurrentAudio = null
+        globalStopCallback = null
+      }
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = null
+      audioRef.current = null
+    }
+  }, [])
 
   const formatDuration = (seconds: number | undefined): string => {
     if (!seconds || !isFinite(seconds)) return '0:00'
