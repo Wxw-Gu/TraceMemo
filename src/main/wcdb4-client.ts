@@ -32,6 +32,10 @@ export interface Wcdb4MessageQueryOptions {
   limit?: number
 }
 
+export interface Wcdb4SessionQueryOptions {
+  hydrateDisplayNames?: boolean
+}
+
 type Wcdb4MessageStore = {
   tableName: string
   dbPath: string
@@ -242,6 +246,8 @@ export class Wcdb4Client {
   private cachedSessions: Wcdb4Session[] | null = null
   private cachedChatTables: { name: string; db_number: string }[] | null = null
   private sessionsInFlight: Promise<Wcdb4Session[]> | null = null
+  private sessionDisplayNamesInFlight: Promise<void> | null = null
+  private sessionDisplayNamesHydrated = false
   private sessionCacheGeneration = 0
 
   private wcdbShutdown: (() => number) | null = null
@@ -558,6 +564,7 @@ export class Wcdb4Client {
 
     this.handle = null
     this.cachedSessions = null
+    this.sessionDisplayNamesHydrated = false
     this.displayNameCache.clear()
     this.avatarCache.clear()
     this.groupNicknameCache.clear()
@@ -722,13 +729,22 @@ export class Wcdb4Client {
       ...session,
       nickname: this.displayNameCache.get(session.username) || session.nickname || session.username
     }))
+    this.sessionDisplayNamesHydrated = true
 
     return this.cachedSessions
   }
 
-  async getSessionsAsync(): Promise<Wcdb4Session[]> {
-    if (this.cachedSessions) return this.cachedSessions
-    if (this.sessionsInFlight) return this.sessionsInFlight
+  async getSessionsAsync(options: Wcdb4SessionQueryOptions = {}): Promise<Wcdb4Session[]> {
+    const hydrateDisplayNames = options.hydrateDisplayNames !== false
+    if (this.cachedSessions) {
+      if (hydrateDisplayNames) await this.ensureSessionDisplayNamesAsync()
+      return this.cachedSessions
+    }
+    if (this.sessionsInFlight) {
+      await this.sessionsInFlight
+      if (hydrateDisplayNames) await this.ensureSessionDisplayNamesAsync()
+      return this.cachedSessions || []
+    }
     if (!this.wcdbGetSessions) return []
 
     const generation = this.sessionCacheGeneration
@@ -739,25 +755,17 @@ export class Wcdb4Client {
       const sessions = (Array.isArray(rows) ? rows : [])
         .map((row) => this.normalizeSession(row))
         .filter((session) => session.username)
-      await this.hydrateDisplayNamesAsync(
-        sessions
-          .filter((session) => this.shouldHydrateSessionDisplayName(session))
-          .map((session) => session.username)
-      )
-      const hydrated = sessions.map((session) => ({
-        ...session,
-        nickname:
-          this.displayNameCache.get(session.username) || session.nickname || session.username
-      }))
-      if (generation === this.sessionCacheGeneration) this.cachedSessions = hydrated
-      return hydrated
+      if (generation === this.sessionCacheGeneration) this.cachedSessions = sessions
+      return sessions
     })()
     this.sessionsInFlight = request
     try {
-      return await request
+      await request
     } finally {
       if (this.sessionsInFlight === request) this.sessionsInFlight = null
     }
+    if (hydrateDisplayNames) await this.ensureSessionDisplayNamesAsync()
+    return this.cachedSessions || []
   }
 
   invalidateSessionCache(): void {
@@ -765,6 +773,7 @@ export class Wcdb4Client {
     this.cachedSessions = null
     this.cachedChatTables = null
     this.sessionsInFlight = null
+    this.sessionDisplayNamesHydrated = false
   }
 
   getChatTables(): { name: string; db_number: string }[] {
@@ -2211,6 +2220,34 @@ export class Wcdb4Client {
       ]).forEach((name, username) => this.displayNameCache.set(username, name))
     } catch {
       // Names are optional; usernames remain usable.
+    }
+  }
+
+  private async ensureSessionDisplayNamesAsync(): Promise<void> {
+    if (this.sessionDisplayNamesHydrated || !this.cachedSessions) return
+    if (this.sessionDisplayNamesInFlight) return this.sessionDisplayNamesInFlight
+
+    const generation = this.sessionCacheGeneration
+    const sessions = this.cachedSessions
+    const request = (async (): Promise<void> => {
+      await this.hydrateDisplayNamesAsync(
+        sessions
+          .filter((session) => this.shouldHydrateSessionDisplayName(session))
+          .map((session) => session.username)
+      )
+      if (generation !== this.sessionCacheGeneration || this.cachedSessions !== sessions) return
+      this.cachedSessions = sessions.map((session) => ({
+        ...session,
+        nickname:
+          this.displayNameCache.get(session.username) || session.nickname || session.username
+      }))
+      this.sessionDisplayNamesHydrated = true
+    })()
+    this.sessionDisplayNamesInFlight = request
+    try {
+      await request
+    } finally {
+      if (this.sessionDisplayNamesInFlight === request) this.sessionDisplayNamesInFlight = null
     }
   }
 

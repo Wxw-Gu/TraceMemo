@@ -253,6 +253,10 @@ body {
   &.ready {
     background: var(--wxex-success);
   }
+
+  &.connecting {
+    background: var(--wxex-brand);
+  }
 }
 
 .account-summary:not(.compact) .account-summary-avatar .account-summary-status {
@@ -305,6 +309,10 @@ body {
 
   &.ready {
     background: var(--wxex-success);
+  }
+
+  &.connecting {
+    background: var(--wxex-brand);
   }
 }
 

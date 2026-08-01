@@ -210,6 +210,7 @@ const mergeMessagePages = (older: Message[], current: Message[]): Message[] => {
 function App(): React.ReactElement {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
+  const [isDatabaseConnecting, setIsDatabaseConnecting] = useState(false)
   const [dbKey, setDbKey] = useState(getDevelopmentDatabaseKey)
   const [contacts, setContacts] = useState<Contact[]>([])
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
@@ -582,6 +583,7 @@ function App(): React.ReactElement {
       if (!autoLoginEnabled) return
       try {
         const startupCacheReady = await loadStartupCache()
+        setIsDatabaseConnecting(true)
         const initPromise = window.api.initDb(key)
         if (startupCacheReady) {
           setIsAuthenticated(true)
@@ -605,6 +607,9 @@ function App(): React.ReactElement {
             .catch((error) => {
               console.warn('[Startup] background database init failed:', error)
               setDbKeyStatusKind('error')
+            })
+            .finally(() => {
+              if (active) setIsDatabaseConnecting(false)
             })
           return
         }
@@ -638,6 +643,8 @@ function App(): React.ReactElement {
         setDbKeyStatus(`自动连接失败: ${message}`)
         setDbKeyStatusKind('error')
         setBootState('login')
+      } finally {
+        if (active) setIsDatabaseConnecting(false)
       }
     }
     void attemptAutoConnect()
@@ -663,6 +670,7 @@ function App(): React.ReactElement {
     const keyToUse = keyInput || dbKey
     if (!keyToUse) return
     setBootState('connecting')
+    setIsDatabaseConnecting(true)
     // 持久化用户手动指定的微信聊天文件路径，供 db:init 读取 settings.dbRoot
     const trimmedRoot = dbRootInput.trim()
     if (trimmedRoot) {
@@ -746,6 +754,8 @@ function App(): React.ReactElement {
       setBootState('login')
       setStartupProgress(null)
       alert('Error connecting to database')
+    } finally {
+      setIsDatabaseConnecting(false)
     }
   }
 
@@ -918,6 +928,7 @@ function App(): React.ReactElement {
   const handleReturnToLogin = (): void => {
     setIsAuthenticated(false)
     setIsDatabaseConnected(false)
+    setIsDatabaseConnecting(false)
     setBootState('login')
     setDatabaseConnectionMode(dbKey ? 'manual' : 'automatic')
     setActivePage('archive')
@@ -1425,6 +1436,7 @@ function App(): React.ReactElement {
         width={sidebarWidth}
         selfInfo={selfInfo}
         dbReady={isDatabaseConnected}
+        dbConnecting={isDatabaseConnecting}
         onOpenSettings={openSettings}
       />
       <div className="resizer" onMouseDown={startResizing} />
@@ -1454,6 +1466,7 @@ function App(): React.ReactElement {
           selectedReportId={selectedReportId}
           selfInfo={selfInfo}
           dbReady={isDatabaseConnected}
+          dbConnecting={isDatabaseConnecting}
           onSelectReport={openReport}
           onCreateReport={openReportConfigure}
           onDeleteReport={handleDeleteReport}
@@ -1476,6 +1489,7 @@ function App(): React.ReactElement {
           selectedContact={reportSourceContact}
           selfInfo={selfInfo}
           dbReady={isDatabaseConnected}
+          dbConnecting={isDatabaseConnecting}
           onSelectContact={handleSelectReportSource}
           onOpenSettings={openSettings}
         />
@@ -1546,6 +1560,7 @@ function App(): React.ReactElement {
             onCategoryChange={setSettingsCategory}
             selfInfo={selfInfo}
             dbReady={isDatabaseConnected}
+            dbConnecting={isDatabaseConnecting}
             dbKey={dbKey}
             onDbKeyChange={setDbKey}
             onDatabaseConnectionChange={setIsDatabaseConnected}
@@ -1692,6 +1707,7 @@ function App(): React.ReactElement {
       activePage={activePage}
       selfInfo={selfInfo}
       dbReady={isDatabaseConnected}
+      dbConnecting={isDatabaseConnecting}
       onPageChange={handlePageChange}
       onOpenSettings={openSettings}
       onOpenGuide={openFirstUseGuide}

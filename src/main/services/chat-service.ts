@@ -174,7 +174,7 @@ export function listContacts(filter?: string): FormattedContact[] {
 
 export async function listContactsAsync(filter?: string): Promise<FormattedContact[]> {
   if (!dbRef) return []
-  await dbRef.getWcdb4Client().getSessionsAsync()
+  await dbRef.getWcdb4Client().getSessionsAsync({ hydrateDisplayNames: false })
   return listContacts(filter)
 }
 

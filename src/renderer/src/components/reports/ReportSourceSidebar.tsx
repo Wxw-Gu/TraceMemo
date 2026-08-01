@@ -14,6 +14,7 @@ interface ReportSourceSidebarProps {
   selectedContact: Contact | null
   selfInfo: SelfInfo | null
   dbReady: boolean
+  dbConnecting?: boolean
   onSelectContact: (contact: Contact) => void
   onOpenSettings: () => void
 }
@@ -23,6 +24,7 @@ export function ReportSourceSidebar({
   selectedContact,
   selfInfo,
   dbReady,
+  dbConnecting = false,
   onSelectContact,
   onOpenSettings
 }: ReportSourceSidebarProps): React.ReactElement {
@@ -95,6 +97,7 @@ export function ReportSourceSidebar({
         <AccountSummary
           selfInfo={selfInfo}
           dbReady={dbReady}
+          dbConnecting={dbConnecting}
           onClick={onOpenSettings}
         />
       </div>

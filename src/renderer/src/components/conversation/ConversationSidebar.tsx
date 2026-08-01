@@ -21,6 +21,7 @@ export interface ConversationSidebarProps {
   width: number
   selfInfo: SelfInfo | null
   dbReady: boolean
+  dbConnecting?: boolean
   onOpenSettings: () => void
 }
 
@@ -37,6 +38,7 @@ export function ConversationSidebar({
   width,
   selfInfo,
   dbReady,
+  dbConnecting = false,
   onOpenSettings
 }: ConversationSidebarProps): React.ReactElement {
   const [searchTerm, setSearchTerm] = useState('')
@@ -124,7 +126,12 @@ export function ConversationSidebar({
         </div>
       </div>
       <div className="conversation-sidebar-account">
-        <AccountSummary selfInfo={selfInfo} dbReady={dbReady} onClick={onOpenSettings} />
+        <AccountSummary
+          selfInfo={selfInfo}
+          dbReady={dbReady}
+          dbConnecting={dbConnecting}
+          onClick={onOpenSettings}
+        />
       </div>
     </aside>
   )

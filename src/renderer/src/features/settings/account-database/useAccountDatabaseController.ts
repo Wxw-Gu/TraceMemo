@@ -13,11 +13,13 @@ import type { ConnectionCheckState } from './types'
 export function useAccountDatabaseController({
   dbKey,
   dbReady,
+  dbConnecting = false,
   selfInfo,
   onNotice
 }: {
   dbKey: string
   dbReady: boolean
+  dbConnecting?: boolean
   selfInfo: SettingsSelfInfo | null
   onNotice: (message: string) => void
 }) {
@@ -28,7 +30,7 @@ export function useAccountDatabaseController({
   useEffect(() => {
     let active = true
     void window.api
-      .getImageDecryptionStatus()
+      .getImageKeyConfig()
       .then((result) => {
         if (active) setHasImageKey(result.configured)
       })
@@ -58,8 +60,11 @@ export function useAccountDatabaseController({
     [checkState, dbKey, dbReady, hasImageKey, selfInfo]
   )
   const connectionStatus = useMemo(
-    () => getConnectionOverviewStatus({ dbReady, checkState, diagnostics }),
-    [checkState, dbReady, diagnostics]
+    () =>
+      dbConnecting
+        ? ('checking' as const)
+        : getConnectionOverviewStatus({ dbReady, checkState, diagnostics }),
+    [checkState, dbConnecting, dbReady, diagnostics]
   )
   const lastCheckedLabel = formatConnectionCheckedAt(checkState, clock)
 
@@ -121,7 +126,7 @@ export function useAccountDatabaseController({
     diagnostics,
     connectionStatus,
     checkState,
-    isChecking: checkState.status === 'checking',
+    isChecking: dbConnecting || checkState.status === 'checking',
     lastCheckedLabel,
     testConnection,
     openAccountDirectory,

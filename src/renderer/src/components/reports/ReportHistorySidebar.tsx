@@ -14,6 +14,7 @@ interface ReportHistorySidebarProps {
   selectedReportId: string | null
   selfInfo: SelfInfo | null
   dbReady: boolean
+  dbConnecting?: boolean
   onSelectReport: (reportId: string) => void
   onCreateReport: () => void
   onDeleteReport: (reportId: string) => Promise<{ success: boolean; error?: string }>
@@ -80,6 +81,7 @@ export function ReportHistorySidebar({
   selectedReportId,
   selfInfo,
   dbReady,
+  dbConnecting = false,
   onSelectReport,
   onCreateReport,
   onDeleteReport,
@@ -202,7 +204,12 @@ export function ReportHistorySidebar({
         )}
       </div>
       <div className="report-history-account">
-        <AccountSummary selfInfo={selfInfo} dbReady={dbReady} onClick={onOpenSettings} />
+        <AccountSummary
+          selfInfo={selfInfo}
+          dbReady={dbReady}
+          dbConnecting={dbConnecting}
+          onClick={onOpenSettings}
+        />
       </div>
       {pendingDelete && (
         <div className="report-delete-confirm" role="dialog" aria-modal="true">

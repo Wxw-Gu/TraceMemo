@@ -8,12 +8,14 @@ export function SettingsSidebar({
   onSelect,
   selfInfo,
   dbReady,
+  dbConnecting = false,
   onOpenSettings
 }: {
   selectedId: SettingsCategoryId
   onSelect: (id: SettingsCategoryId) => void
   selfInfo: SettingsSelfInfo | null
   dbReady: boolean
+  dbConnecting?: boolean
   onOpenSettings: () => void
 }): React.ReactElement {
   const [keyword, setKeyword] = useState('')
@@ -57,7 +59,12 @@ export function SettingsSidebar({
         ))}
       </div>
       <div className="settings-sidebar-account">
-        <AccountSummary selfInfo={selfInfo} dbReady={dbReady} onClick={onOpenSettings} />
+        <AccountSummary
+          selfInfo={selfInfo}
+          dbReady={dbReady}
+          dbConnecting={dbConnecting}
+          onClick={onOpenSettings}
+        />
       </div>
     </aside>
   )

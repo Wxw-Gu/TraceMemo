@@ -10,6 +10,7 @@ interface SelfInfo {
 interface AccountSummaryProps {
   selfInfo: SelfInfo | null
   dbReady: boolean
+  dbConnecting?: boolean
   compact?: boolean
   onClick?: () => void
 }
@@ -17,13 +18,20 @@ interface AccountSummaryProps {
 export function AccountSummary({
   selfInfo,
   dbReady,
+  dbConnecting = false,
   compact = false,
   onClick
 }: AccountSummaryProps): React.ReactElement {
+  const showAccount = Boolean(selfInfo && (dbReady || dbConnecting))
   const displayName =
-    dbReady && selfInfo ? selfInfo.nickname || selfInfo.wxid || '当前账号' : '未连接'
-  const subtitle = dbReady && selfInfo ? selfInfo.wxid : '打开设置'
-  const statusText = dbReady ? '数据库已连接' : '数据库未连接'
+    showAccount && selfInfo ? selfInfo.nickname || selfInfo.wxid || '当前账号' : '未连接'
+  const subtitle = showAccount && selfInfo ? selfInfo.wxid : '打开设置'
+  const statusText = dbReady
+    ? '数据库已连接'
+    : dbConnecting
+      ? '正在连接数据库'
+      : '数据库未连接'
+  const statusClass = dbReady ? 'ready' : dbConnecting ? 'connecting' : ''
   const initial = (displayName || '?').charAt(0)
   const title = `${displayName}\n${subtitle}`
   const avatar = (
@@ -33,7 +41,7 @@ export function AccountSummary({
       ) : (
         initial
       )}
-      <span className={`account-summary-status ${dbReady ? 'ready' : ''}`} aria-hidden />
+      <span className={`account-summary-status ${statusClass}`} aria-hidden />
     </span>
   )
 
@@ -52,7 +60,7 @@ export function AccountSummary({
         <span className="account-summary-name">{displayName}</span>
         <span className="account-summary-meta">{subtitle}</span>
         <span className="account-summary-state">
-          <span className={`account-summary-state-dot ${dbReady ? 'ready' : ''}`} aria-hidden />
+          <span className={`account-summary-state-dot ${statusClass}`} aria-hidden />
           {statusText}
         </span>
       </span>

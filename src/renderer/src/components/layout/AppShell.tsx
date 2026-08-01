@@ -15,6 +15,7 @@ interface AppShellProps {
   activePage: AppPage
   selfInfo: SelfInfo | null
   dbReady: boolean
+  dbConnecting?: boolean
   onPageChange: (page: AppPage) => void
   onOpenSettings: () => void
   onOpenGuide: () => void
@@ -35,6 +36,7 @@ export function AppShell({
   activePage,
   selfInfo,
   dbReady,
+  dbConnecting = false,
   onPageChange,
   onOpenSettings,
   onOpenGuide,
@@ -63,7 +65,13 @@ export function AppShell({
           <span className="app-guide-launcher-label">新手引导</span>
         </button>
         <div className="app-rail-account">
-          <AccountSummary selfInfo={selfInfo} dbReady={dbReady} compact onClick={onOpenSettings} />
+          <AccountSummary
+            selfInfo={selfInfo}
+            dbReady={dbReady}
+            dbConnecting={dbConnecting}
+            compact
+            onClick={onOpenSettings}
+          />
         </div>
       </aside>
       <main className="app-shell-main" aria-label={activeItem?.label || '工作区'}>

@@ -486,6 +486,7 @@ app.whenReady().then(async () => {
     if (dbInitInFlight) return dbInitInFlight
 
     dbInitInFlight = (async () => {
+      const startedAt = Date.now()
       try {
         if (wcdbBootstrapPromise) await wcdbBootstrapPromise
         const trimmedKey = String(key || '').trim()
@@ -511,7 +512,7 @@ app.whenReady().then(async () => {
         }
         chat.setChatDb(nextWechatDb)
         const wcdb4Client = nextWechatDb.getWcdb4Client()
-        const sessions = await wcdb4Client.getSessionsAsync()
+        const sessions = await wcdb4Client.getSessionsAsync({ hydrateDisplayNames: false })
         configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
         voiceService = new VoiceService(wcdb4Client)
         stickerService = new StickerService(wcdb4Client)
@@ -530,6 +531,9 @@ app.whenReady().then(async () => {
             .catch((error) => console.warn('[WCDB4] message cursor warmup failed:', error))
         }
         imageDecryptService = null
+        console.log(
+          `[WCDB4] db:init ready sessions=${sessions.length} monitoring=${monitoring} cost=${Date.now() - startedAt}ms`
+        )
         return { success: true, monitoring }
       } catch (error) {
         console.error('Failed to init DB:', error)

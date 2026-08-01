@@ -17,15 +17,23 @@ const STATUS_LABELS: Record<ConnectionOverviewStatus, string> = {
 export function AccountDatabasePage({
   dbKey,
   dbReady,
+  dbConnecting = false,
   selfInfo,
   onNotice
 }: {
   dbKey: string
   dbReady: boolean
+  dbConnecting?: boolean
   selfInfo: SettingsSelfInfo | null
   onNotice: (message: string) => void
 }): React.ReactElement {
-  const controller = useAccountDatabaseController({ dbKey, dbReady, selfInfo, onNotice })
+  const controller = useAccountDatabaseController({
+    dbKey,
+    dbReady,
+    dbConnecting,
+    selfInfo,
+    onNotice
+  })
   const [autoLogin, setAutoLogin] = useState(false)
 
   useEffect(() => {
