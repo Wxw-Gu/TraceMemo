@@ -1,0 +1,97 @@
+{
+  "self": {
+    "wxid": "wxid_fixture_self",
+    "nickname": "测试账号",
+    "accountRoot": "fixture-account"
+  },
+  "contacts": [
+    {
+      "m_nsUsrName": "group_regular@chatroom",
+      "m_nsNickName": "产品测试群",
+      "md5": "group-regular-md5",
+      "type": "group",
+      "avatar": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
+    },
+    {
+      "m_nsUsrName": "group_folded@chatroom",
+      "m_nsNickName": "折叠群聊样本",
+      "md5": "group-folded-md5",
+      "type": "group",
+      "isFolded": true
+    },
+    {
+      "m_nsUsrName": "filehelper",
+      "m_nsNickName": "文件传输助手",
+      "md5": "file-helper-md5",
+      "type": "user"
+    }
+  ],
+  "messages": {
+    "group-regular-md5": [
+      {
+        "id": "msg-text",
+        "from": "user",
+        "type": "普通文本",
+        "datetime": "2026-08-01 10:00:00",
+        "content": "这是一条脱敏测试消息",
+        "isSender": false,
+        "name": "测试成员",
+        "senderId": "wxid_fixture_member",
+        "createTime": 1785549600,
+        "contentData": { "type": "text", "content": "这是一条脱敏测试消息" }
+      },
+      {
+        "id": "msg-image",
+        "from": "user",
+        "type": "图片",
+        "datetime": "2026-08-01 10:01:00",
+        "content": "[图片]",
+        "isSender": false,
+        "localId": 2,
+        "createTime": 1785549660,
+        "sessionId": "group_regular@chatroom",
+        "contentData": { "type": "image", "md5": "fixture-image-md5", "datName": "fixture.dat" }
+      },
+      {
+        "id": "msg-unknown",
+        "from": "user",
+        "type": "不支持的消息",
+        "datetime": "2026-08-01 10:02:00",
+        "content": "[未知消息]",
+        "isSender": false,
+        "createTime": 1785549720,
+        "contentData": { "type": "unknown", "raw": "fixture-unknown" }
+      }
+    ],
+    "file-helper-md5": [
+      {
+        "id": "msg-voice",
+        "from": "user",
+        "type": "语音",
+        "datetime": "2026-08-01 11:00:00",
+        "content": "[语音]",
+        "isSender": false,
+        "localId": 11,
+        "createTime": 1785553200,
+        "sessionId": "filehelper",
+        "contentData": { "type": "voice", "duration": 1 }
+      },
+      {
+        "id": "msg-forward",
+        "from": "user",
+        "type": "合并转发",
+        "datetime": "2026-08-01 11:01:00",
+        "content": "[合并转发]",
+        "isSender": false,
+        "createTime": 1785553260,
+        "contentData": {
+          "type": "forwardBundle",
+          "title": "转发多条内容",
+          "items": [
+            { "messageType": 1, "sender": "测试成员", "sentAt": "11:00", "text": "脱敏转发内容" }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -203,9 +203,11 @@ function getMimeType(extension) {
 function strictRemovePadding(buffer) {
   if (buffer.length === 0) return buffer
   const paddingLength = buffer[buffer.length - 1]
-  if (paddingLength <= 0 || paddingLength > 16 || paddingLength > buffer.length) return buffer
+  if (paddingLength <= 0 || paddingLength > 16 || paddingLength > buffer.length) {
+    throw new Error('invalid PKCS#7 padding')
+  }
   for (let index = buffer.length - paddingLength; index < buffer.length; index += 1) {
-    if (buffer[index] !== paddingLength) return buffer
+    if (buffer[index] !== paddingLength) throw new Error('invalid PKCS#7 padding')
   }
   return buffer.subarray(0, buffer.length - paddingLength)
 }
@@ -1636,19 +1638,13 @@ export class ImageDecryptService {
   private strictRemovePadding(buffer: Buffer): Buffer {
     if (buffer.length === 0) return buffer
     const lastByte = buffer[buffer.length - 1]
-    if (lastByte <= 16 && lastByte > 0) {
-      const paddingLength = lastByte
-      let valid = true
-      for (let i = buffer.length - paddingLength; i < buffer.length; i++) {
-        if (buffer[i] !== lastByte) {
-          valid = false
-          break
-        }
-      }
-      if (valid) {
-        return buffer.subarray(0, buffer.length - paddingLength)
-      }
+    if (lastByte <= 0 || lastByte > 16 || lastByte > buffer.length) {
+      throw new Error('invalid PKCS#7 padding')
     }
-    return buffer
+    const paddingLength = lastByte
+    for (let i = buffer.length - paddingLength; i < buffer.length; i += 1) {
+      if (buffer[i] !== lastByte) throw new Error('invalid PKCS#7 padding')
+    }
+    return buffer.subarray(0, buffer.length - paddingLength)
   }
 }

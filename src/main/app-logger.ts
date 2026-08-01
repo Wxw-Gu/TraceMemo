@@ -13,6 +13,7 @@ const sanitize = (value: unknown, depth = 0): unknown => {
     return value
       .replace(/\bsk-[a-z0-9_-]{8,}\b/gi, '***')
       .replace(/\bBearer\s+[a-z0-9._~-]{8,}\b/gi, 'Bearer ***')
+      .replace(/\b(?:0x)?[a-f0-9]{64}\b/gi, '***')
       .slice(0, 2000)
   }
   if (Array.isArray(value)) return value.slice(0, 30).map((item) => sanitize(item, depth + 1))
@@ -56,7 +57,7 @@ export class AppLogger {
         mode: isPackagedRuntime() ? 'packaged' : 'development',
         level: entry.level,
         scope: String(entry.scope || 'app').slice(0, 80),
-        message: String(entry.message || '').slice(0, 500),
+        message: String(sanitize(entry.message || '')).slice(0, 500),
         details: sanitize(entry.details || {})
       }
       fs.appendFileSync(this.logPath, `${JSON.stringify(record)}\n`, { encoding: 'utf8' })

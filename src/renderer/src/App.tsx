@@ -24,6 +24,11 @@ import { FirstUseWelcome } from './components/FirstUseWelcome'
 import { ExportWorkspace } from './components/export/ExportWorkspace'
 import { AISearchWorkspace } from './components/search/AISearchWorkspace'
 import type { ExportJobProgress, ExportRequest, ExportTaskRecord } from '../../shared/export'
+import {
+  getMessageIdentity,
+  mergeMessagePages,
+  sortMessagesChronologically
+} from './utils/message-pages'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -47,12 +52,6 @@ const INITIAL_MESSAGE_COUNT = 20
 const MESSAGE_PAGE_SIZE = 100
 const MESSAGE_PREFETCH_COUNT = INITIAL_MESSAGE_COUNT + MESSAGE_PAGE_SIZE
 const EXPORT_PREVIEW_LIMIT = 20
-const getMessageIdentity = (message: Message): string => {
-  if (message.localId) return `local:${message.localId}`
-  if (message.id) return `id:${message.id}`
-  return `${message.createTime || 0}:${message.from}:${message.type}:${message.content}`
-}
-
 const normalizeQuotedText = (value: string | undefined): string =>
   String(value || '')
     .replace(/\s+/g, ' ')
@@ -193,19 +192,6 @@ const buildSyntheticGroupMessages = (
 }
 
 void buildSyntheticGroupMessages
-
-const sortMessagesChronologically = (items: Message[]): Message[] =>
-  [...items].sort((left, right) => {
-    const timeDelta = (left.createTime || 0) - (right.createTime || 0)
-    if (timeDelta !== 0) return timeDelta
-    return getMessageIdentity(left).localeCompare(getMessageIdentity(right))
-  })
-
-const mergeMessagePages = (older: Message[], current: Message[]): Message[] => {
-  const merged = new Map<string, Message>()
-  for (const message of [...older, ...current]) merged.set(getMessageIdentity(message), message)
-  return sortMessagesChronologically(Array.from(merged.values()))
-}
 
 function App(): React.ReactElement {
   const [isAuthenticated, setIsAuthenticated] = useState(false)

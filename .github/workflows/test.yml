@@ -1,0 +1,76 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  desktop-tests:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 7.33.7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/wechat-connector/go.mod
+          cache-dependency-path: services/wechat-connector/go.sum
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test:unit
+
+      - name: Component tests
+        run: pnpm test:component
+
+      - name: IPC integration tests
+        run: pnpm test:integration
+
+      - name: Skill installation instruction tests
+        run: pnpm test:skill-install
+
+      - name: WeChat connector tests
+        run: pnpm test:wechat-connector
+
+      - name: Build Electron test application
+        run: pnpm test:e2e:build
+
+      - name: Electron E2E tests
+        run: pnpm exec playwright test --grep-invert @visual
+        env:
+          WXE_E2E_CLOSE_DELAY_MS: 0
+
+      - name: Platform visual regression
+        run: pnpm exec playwright test tests/e2e/visual.spec.ts
+        env:
+          WXE_E2E_CLOSE_DELAY_MS: 0
+
+      - name: Upload Playwright diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-${{ matrix.os }}
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
