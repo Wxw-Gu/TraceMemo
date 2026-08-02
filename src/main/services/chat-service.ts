@@ -179,7 +179,9 @@ export function listContacts(filter?: string): FormattedContact[] {
 export async function listContactsAsync(filter?: string): Promise<FormattedContact[]> {
   if (!dbRef) return []
   await dbRef.getWcdb4Client().getSessionsAsync({
-    hydrateDisplayNames: false,
+    // macOS session rows frequently contain only wxid/chatroom ids. Hydrate
+    // contact display names before exposing the list to the renderer.
+    hydrateDisplayNames: true,
     hydrateStatuses: true
   })
   return listContacts(filter)
