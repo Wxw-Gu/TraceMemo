@@ -269,7 +269,9 @@ img.media-image { cursor: zoom-in; }
 @media (max-width: 800px) {
   .page { padding: 10px; }
   .toolbar { align-items: stretch; flex-direction: column; gap: 12px; padding: 14px; }
-  .controls { width: 100%; }
+  .controls { width: 100%; flex-wrap: wrap; }
+  .segment { width: 100%; }
+  .segment button { flex: 1 1 auto; padding: 0 6px; }
   .controls input[type=search] { width: 100%; flex: 1; }
   .workspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); gap: 8px; margin-top: 10px; }
   .timeline { overflow-x: auto; overflow-y: hidden; padding: 4px 0 8px; border-right: 0; border-bottom: 1px solid #cbd7d1; }
@@ -301,6 +303,8 @@ export function renderExportPage(name: string): string {
         <div class="segment" role="group" aria-label="消息类型筛选">
           <button type="button" class="active" data-mode="all">全部</button>
           <button type="button" data-mode="media">图片与视频</button>
+          <button type="button" data-mode="file">文件</button>
+          <button type="button" data-mode="share">链接与分享</button>
         </div>
         <input id="query" type="search" placeholder="搜索消息..." aria-label="搜索消息">
       </div>
@@ -364,6 +368,21 @@ export function renderExportPage(name: string): string {
       const type = message.exportMediaType || (message.contentData && message.contentData.type);
       return type === 'image' || type === 'video';
     };
+    const isFile = (message) => {
+      const data = message.contentData || {};
+      return Boolean(message.exportFileUrl) ||
+        (data.type === 'share' && (String(data.typeVal) === '6' || String(data.typeVal) === '74')) ||
+        message.type === '文件' || message.type === '文件发送中';
+    };
+    const isShare = (message) => {
+      const type = message.contentData && message.contentData.type;
+      return !isFile(message) &&
+        (type === 'share' || type === 'miniProgram' || type === 'redPacket' || type === 'card');
+    };
+    const matchesMode = (message) => mode === 'all' ||
+      (mode === 'media' && isMedia(message)) ||
+      (mode === 'file' && isFile(message)) ||
+      (mode === 'share' && isShare(message));
     const searchText = (message) => {
       const data = message.contentData || {};
       return [message.name, message.content, message.type, data.title, data.des, message.exportFileName]
@@ -556,7 +575,7 @@ export function renderExportPage(name: string): string {
         const inSelectedPeriod = !selectedYear ||
           (key >= loadedFromPeriod && key <= loadedThroughPeriod);
         return inSelectedPeriod &&
-          (mode === 'all' || isMedia(message)) && (!term || searchText(message).includes(term));
+          matchesMode(message) && (!term || searchText(message).includes(term));
       });
     }
 
