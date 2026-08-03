@@ -197,7 +197,7 @@ WechatExplorer 希望不仅仅是一个聊天记录查看工具，更希望成�
 
 ### 下载并安装
 
-当前 WechatExplorer / 迹忆版本：`v2.1.6`。
+当前 WechatExplorer / 迹忆版本：`v2.1.7`。
 
 应用安装包：[WechatExplorer GitHub Releases](https://github.com/Wxw-Gu/WechatExplorer/releases)。Windows 选择 `-setup.exe`，macOS 按处理器架构选择对应 `.dmg`。
 
