@@ -548,7 +548,12 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             message.contentData.newMd5,
             message.contentData.rawMd5
           ].filter((value): value is string => Boolean(value))
-          const resolved = videoService.resolve(hashes)
+          const resolved = await videoService.resolveForExport(hashes, {
+            createTime: message.createTime,
+            duration: message.contentData.duration,
+            width: message.contentData.width,
+            height: message.contentData.height
+          })
           const token = resolved.url?.split('/').pop()
           const source = token ? videoService.pathForToken(token) : undefined
           if (source) {
