@@ -102,7 +102,7 @@ handle('key:getSavedDbKey', () => ({
   saved: Boolean(savedKey),
   encryptionAvailable: true
 }))
-handle('key:saveDbKey', (key) => {
+handle('key:saveDbKey', (_accountRoot, key) => {
   savedKey = String(key || '')
   return { success: true, key: savedKey, saved: true, encryptionAvailable: true }
 })
@@ -112,6 +112,12 @@ handle('key:clearSavedDbKey', () => {
 })
 handle('key:getEnvironment', () => ({
   platform: process.platform,
+  osVersion: process.platform === 'win32' ? 'Windows fixture' : 'macOS fixture',
+  appVersion: 'v2.1.6',
+  wechatVersion: '4.1.9.57',
+  dataStructureVersion: settings.dbRoot === 'fixture-account' ? '微信 4.x（WCDB）' : '未检测到',
+  dataDirectoryDetected: settings.dbRoot === 'fixture-account',
+  diagnosticSummary: 'WechatExplorer: v2.1.6\n数据目录: 已检测到',
   autoDetectSupported: true,
   wechatRunning: true,
   accountIdentified: connected,
@@ -128,12 +134,22 @@ handle('key:autoGetImageKey', () => ({
   verified: true
 }))
 
-handle('db:init', (key) => {
+handle('db:init', (key, accountRoot) => {
+  if (settings.dbRoot === 'Z:\\missing-wechat-data') {
+    connected = false
+    return {
+      success: false,
+      code: 'ROOT_UNAVAILABLE',
+      error: '微信数据目录不存在，请重新选择目录',
+      monitoring: false
+    }
+  }
   if (key !== VALID_KEY) {
     connected = false
     return { success: false, error: '数据库密钥无效', monitoring: false }
   }
   connected = true
+  settings.dbRoot = accountRoot || settings.dbRoot
   return { success: true, monitoring: true }
 })
 handle('db:testConnection', (key) =>
@@ -339,6 +355,29 @@ handle('image:getStatus', () => ({
     ])
   )
 }))
+handle('settings:selectDbRoot', () => ({ canceled: false, path: 'fixture-account' }))
+handle('accounts:discover', (inputPath) =>
+  inputPath === 'Z:\\missing-wechat-data'
+    ? { success: false, accounts: [], error: '微信数据目录不存在，请重新选择目录' }
+    : {
+        success: true,
+        inputKind: 'account',
+        preselectedAccountId: 'fixture-account-id',
+        accounts: [
+          {
+            id: 'fixture-account-id',
+            accountRoot: inputPath || 'fixture-account',
+            directoryName: 'fixture-account',
+            wxid: fixture.self.wxid,
+            nickname: fixture.self.nickname,
+            avatar: fixture.self.avatar,
+            hasSavedDbKey: Boolean(savedKey),
+            loginStatus: connected ? 'current' : 'unknown',
+            selectedByInput: true
+          }
+        ]
+      }
+)
 handle('agent-hub:getStatus', () => ({ state: 'disconnected', connected: false }))
 handle('agent-hub:getLogs', () => [])
 handle('app-update:getState', () => ({ status: 'idle', currentVersion: '2.1.6' }))
@@ -347,7 +386,6 @@ for (const channel of [
   'export:start',
   'export:cancel',
   'export:reveal',
-  'settings:selectDbRoot',
   'settings:openAccountRoot',
   'db:reopenWithRoot',
   'api:skillStatus',

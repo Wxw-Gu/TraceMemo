@@ -9,6 +9,7 @@ interface MessageListProps {
   messages: Message[]
   hiddenMessageCount: number
   isLoadingMessages?: boolean
+  messageHistoryStatus?: 'idle' | 'end' | 'error'
   isGroupChat: boolean
   showAvatar: boolean
   listRef: React.RefObject<HTMLDivElement | null>
@@ -24,6 +25,7 @@ export function MessageList({
   messages,
   hiddenMessageCount,
   isLoadingMessages,
+  messageHistoryStatus,
   isGroupChat,
   showAvatar,
   listRef,
@@ -119,6 +121,18 @@ export function MessageList({
   return (
     <div className="message-list wechat-message-list" ref={listRef} onScroll={handleScroll}>
       {isLoadingMessages && <div className="message-loading-pill">正在加载聊天记录...</div>}
+      {messageHistoryStatus === 'end' && (
+        <div className="wechat-system-message-row">
+          <div className="wechat-system-message">已显示本地数据库中的最早记录</div>
+        </div>
+      )}
+      {messageHistoryStatus === 'error' && (
+        <div className="wechat-system-message-row">
+          <div className="wechat-system-message">
+            无法读取更早记录，请检查数据目录或当前微信数据版本
+          </div>
+        </div>
+      )}
       {hiddenMessageCount > 0 && (
         <div className="wechat-system-message-row">
           <div className="wechat-system-message">

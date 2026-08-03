@@ -21,6 +21,7 @@ import type { AppUpdateState } from '../shared/app-update'
 import type { CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress } from '../shared/export'
 import type { ImageDecoderSelectionResult, ImageDecoderStatus } from '../shared/image-decryption'
+import type { AccountDiscoveryResult } from '../shared/database-key'
 
 // 渲染器的自定义 API
 const api = {
@@ -40,7 +41,9 @@ const api = {
   getCacheSummary: (): Promise<CacheSummary> => ipcRenderer.invoke('cache:getSummary'),
   clearCache: (scope: 'bootstrap' | 'electron' | 'all'): Promise<CacheSummary> =>
     ipcRenderer.invoke('cache:clear', scope),
-  initDb: (key: string) => ipcRenderer.invoke('db:init', key),
+  initDb: (key: string, accountRoot: string) => ipcRenderer.invoke('db:init', key, accountRoot),
+  discoverAccounts: (inputPath: string): Promise<AccountDiscoveryResult> =>
+    ipcRenderer.invoke('accounts:discover', inputPath),
   getBootstrapCache: () => ipcRenderer.invoke('db:getBootstrapCache'),
   getStartupCache: () => ipcRenderer.invoke('db:getStartupCache'),
   getContacts: (filter?: string) => ipcRenderer.invoke('db:getContacts', filter),
@@ -98,10 +101,11 @@ const api = {
   deleteGeneratedReport: (reportId: string) =>
     ipcRenderer.invoke('report:deleteGenerated', reportId),
   revealGroupReport: (filePath: string) => ipcRenderer.invoke('report:reveal', filePath),
-  getSavedDbKey: () => ipcRenderer.invoke('key:getSavedDbKey'),
+  getSavedDbKey: (accountRoot: string) => ipcRenderer.invoke('key:getSavedDbKey', accountRoot),
   getDatabaseKeyEnvironment: () => ipcRenderer.invoke('key:getEnvironment'),
   readDatabaseKeyClipboard: () => ipcRenderer.invoke('key:readClipboardDbKey'),
-  autoGetDbKey: (options?: { save?: boolean }) => ipcRenderer.invoke('key:autoGetDbKey', options),
+  autoGetDbKey: (accountRoot: string, options?: { save?: boolean }) =>
+    ipcRenderer.invoke('key:autoGetDbKey', accountRoot, options),
   autoGetImageKey: (options?: { save?: boolean }) =>
     ipcRenderer.invoke('key:autoGetImageKey', options),
   getImageKeyConfig: () => ipcRenderer.invoke('image:getConfig'),
@@ -115,9 +119,11 @@ const api = {
   saveImageKeyConfig: (request) => ipcRenderer.invoke('image:saveConfig', request),
   testImageDecryption: (request) => ipcRenderer.invoke('image:testConfig', request),
   clearImageKeyConfig: () => ipcRenderer.invoke('image:clearConfig'),
-  pasteAndSaveDbKey: () => ipcRenderer.invoke('key:pasteAndSaveDbKey'),
-  saveDbKey: (key: string) => ipcRenderer.invoke('key:saveDbKey', key),
-  clearSavedDbKey: () => ipcRenderer.invoke('key:clearSavedDbKey'),
+  pasteAndSaveDbKey: (accountRoot: string) =>
+    ipcRenderer.invoke('key:pasteAndSaveDbKey', accountRoot),
+  saveDbKey: (accountRoot: string, key: string) =>
+    ipcRenderer.invoke('key:saveDbKey', accountRoot, key),
+  clearSavedDbKey: (accountRoot: string) => ipcRenderer.invoke('key:clearSavedDbKey', accountRoot),
   onWcdbChange: (callback: (payload: { type: string; json: string }) => void) => {
     const listener = (
       _event: Electron.IpcRendererEvent,

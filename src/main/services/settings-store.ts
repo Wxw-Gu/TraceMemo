@@ -86,7 +86,7 @@ function unique(values: string[]): string[] {
   return Array.from(new Set(values))
 }
 
-function isUsableDbRoot(candidate?: string): boolean {
+export function isUsableDbRoot(candidate?: string): boolean {
   if (!candidate || !fs.existsSync(candidate)) return false
   if (fs.existsSync(path.join(candidate, 'db_storage'))) return true
   try {
@@ -96,6 +96,21 @@ function isUsableDbRoot(candidate?: string): boolean {
   } catch {
     return false
   }
+}
+
+export function validateDbRoot(candidate?: string): { valid: boolean; error?: string } {
+  const root = String(candidate || '').trim()
+  if (!root) return { valid: false, error: '微信数据目录为空，请重新选择目录' }
+  if (!fs.existsSync(root)) {
+    return { valid: false, error: '微信数据目录不存在，请检查路径或重新选择目录' }
+  }
+  if (!isUsableDbRoot(root)) {
+    return {
+      valid: false,
+      error: '所选目录中未找到微信 4.x 数据库（db_storage），请选择 xwechat_files 或账号目录'
+    }
+  }
+  return { valid: true }
 }
 
 const defaultDbRoot = getDefaultDbRoot()

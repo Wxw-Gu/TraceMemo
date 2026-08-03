@@ -24,6 +24,7 @@ import { FirstUseWelcome } from './components/FirstUseWelcome'
 import { ExportWorkspace } from './components/export/ExportWorkspace'
 import { AISearchWorkspace } from './components/search/AISearchWorkspace'
 import type { ExportJobProgress, ExportRequest, ExportTaskRecord } from '../../shared/export'
+import type { DatabaseKeyEnvironment, WechatAccountCandidate } from '../../shared/database-key'
 import {
   getMessageIdentity,
   mergeMessagePages,
@@ -32,6 +33,23 @@ import {
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
+const DATABASE_CONNECT_TIMEOUT_MS = 30_000
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs)
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        window.clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+}
 
 function getDevelopmentDatabaseKey(): string {
   if (!import.meta.env.DEV) return ''
@@ -202,6 +220,7 @@ function App(): React.ReactElement {
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [isMessagesLoading, setIsMessagesLoading] = useState(false)
+  const [messageHistoryStatus, setMessageHistoryStatus] = useState<'idle' | 'end' | 'error'>('idle')
   const [filteredContacts, setFilteredContacts] = useState<Contact[]>([])
   const [contentFilter, setContentFilter] = useState('')
   const [isFetchingDbKey, setIsFetchingDbKey] = useState(false)
@@ -209,10 +228,16 @@ function App(): React.ReactElement {
   const [dbKeyStatusKind, setDbKeyStatusKind] = useState<'normal' | 'success' | 'error'>('normal')
   const [showDbKey, setShowDbKey] = useState(false)
   const [dbRootInput, setDbRootInput] = useState('')
+  const [discoveredAccounts, setDiscoveredAccounts] = useState<WechatAccountCandidate[]>([])
+  const [selectedAccountId, setSelectedAccountId] = useState('')
+  const selectedAccount = discoveredAccounts.find((account) => account.id === selectedAccountId)
   const [showMacKeyFaq, setShowMacKeyFaq] = useState(false)
   const [databaseConnectionMode, setDatabaseConnectionMode] = useState<DatabaseConnectionMode>(
     getDevelopmentDatabaseKey() ? 'manual' : 'automatic'
   )
+  const [connectionGuideStep, setConnectionGuideStep] = useState<1 | 2 | 3 | 4 | 5 | 6>(1)
+  const [databaseEnvironment, setDatabaseEnvironment] = useState<DatabaseKeyEnvironment>()
+  const connectionOperationRef = React.useRef(0)
   const [activePage, setActivePage] = useState<AppPage>('archive')
   const [archiveJumpTime, setArchiveJumpTime] = useState<number | null>(null)
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>('account-database')
@@ -277,6 +302,34 @@ function App(): React.ReactElement {
         showStartupProgress: result.settings.showStartupProgress
       })
     })
+  }, [])
+
+  const refreshConnectionEnvironment = React.useCallback(async (): Promise<void> => {
+    const root = dbRootInput.trim()
+    try {
+      if (root) {
+        const discovery = await window.api.discoverAccounts(root)
+        if (!discovery.success) throw new Error(discovery.error || '账号目录识别失败')
+        setDiscoveredAccounts(discovery.accounts)
+        setSelectedAccountId(discovery.preselectedAccountId || '')
+      }
+      const environment = await window.api.getDatabaseKeyEnvironment()
+      setDatabaseEnvironment(environment)
+      setDbKeyStatus('环境检查已更新')
+      setDbKeyStatusKind('normal')
+    } catch (error) {
+      setDbKeyStatus(
+        error instanceof Error ? `环境检查失败：${error.message}` : '环境检查失败，请重试'
+      )
+      setDbKeyStatusKind('error')
+    }
+  }, [dbRootInput])
+
+  React.useEffect(() => {
+    void window.api
+      .getDatabaseKeyEnvironment()
+      .then(setDatabaseEnvironment)
+      .catch(() => undefined)
   }, [])
   React.useEffect(() => {
     const loadAIConfig = async (): Promise<void> => {
@@ -533,13 +586,26 @@ function App(): React.ReactElement {
       if (active && settingsResult.settings.dbRoot) {
         setDbRootInput(settingsResult.settings.dbRoot)
       }
+      const discovery = settingsResult.settings.dbRoot
+        ? await window.api.discoverAccounts(settingsResult.settings.dbRoot)
+        : { success: false, accounts: [] }
+      if (active && discovery.success) {
+        setDiscoveredAccounts(discovery.accounts)
+        setSelectedAccountId(discovery.preselectedAccountId || '')
+      }
+      const startupAccountRoot = discovery.success
+        ? discovery.accounts.find((account) => account.id === discovery.preselectedAccountId)
+            ?.accountRoot
+        : undefined
       const autoLoginEnabled = settingsResult.settings.autoLogin
       // 开发环境允许使用 VITE_DB_KEY；生产安装包只能读取目标电脑自己的 safeStorage。
       const envKey = getDevelopmentDatabaseKey()
       // 生产环境以及未配置开发密钥时，读取上一次保存到 safeStorage 的密钥。
       let savedKey = ''
       if (!envKey) {
-        const result = await window.api.getSavedDbKey()
+        const result = startupAccountRoot
+          ? await window.api.getSavedDbKey(startupAccountRoot)
+          : { success: true, saved: false, encryptionAvailable: true }
         if (result.success && result.key) savedKey = result.key
       }
       const key = envKey || savedKey
@@ -570,7 +636,11 @@ function App(): React.ReactElement {
       try {
         const startupCacheReady = await loadStartupCache()
         setIsDatabaseConnecting(true)
-        const initPromise = window.api.initDb(key)
+        if (!startupAccountRoot) {
+          setBootState('login')
+          return
+        }
+        const initPromise = window.api.initDb(key, startupAccountRoot)
         if (startupCacheReady) {
           setIsAuthenticated(true)
           setIsDatabaseConnected(false)
@@ -655,13 +725,36 @@ function App(): React.ReactElement {
     void loadGeneratedReports()
   }, [isAuthenticated, loadGeneratedReports])
 
-  const handleLogin = async (keyInput?: string): Promise<void> => {
+  const handleLogin = async (keyInput?: string, accountRootInput?: string): Promise<void> => {
     const keyToUse = keyInput || dbKey
-    if (!keyToUse) return
-    setBootState('connecting')
+    let accountRoot = accountRootInput || selectedAccount?.accountRoot
+    if (!keyToUse || isDatabaseConnecting) return
+    if (!accountRoot) {
+      const discovery = await window.api.discoverAccounts(dbRootInput.trim())
+      if (!discovery.success) {
+        setDbKeyStatus(discovery.error || '微信数据目录不可用')
+        setDbKeyStatusKind('error')
+        return
+      }
+      if (!discovery.preselectedAccountId) {
+        setDiscoveredAccounts(discovery.accounts)
+        setDbKeyStatus('请选择要连接的微信账号')
+        setDbKeyStatusKind('error')
+        return
+      }
+      const account = discovery.accounts.find(
+        (candidate) => candidate.id === discovery.preselectedAccountId
+      )
+      if (!account) return
+      setDiscoveredAccounts(discovery.accounts)
+      setSelectedAccountId(account.id)
+      accountRoot = account.accountRoot
+    }
+    const operationId = ++connectionOperationRef.current
+    if (databaseConnectionMode === 'automatic') setConnectionGuideStep(6)
     setIsDatabaseConnecting(true)
     // 持久化用户手动指定的微信聊天文件路径，供 db:init 读取 settings.dbRoot
-    const trimmedRoot = dbRootInput.trim()
+    const trimmedRoot = accountRoot
     if (trimmedRoot) {
       try {
         await window.api.setSettings({ dbRoot: trimmedRoot })
@@ -682,7 +775,12 @@ function App(): React.ReactElement {
         detail: '正在打开 WCDB 数据库',
         percent: 15
       })
-      const result = await window.api.initDb(keyToUse)
+      const result = await withTimeout(
+        window.api.initDb(keyToUse, trimmedRoot),
+        DATABASE_CONNECT_TIMEOUT_MS,
+        '数据库连接超时，请检查数据目录后重试'
+      )
+      if (operationId !== connectionOperationRef.current) return
       const success = typeof result === 'boolean' ? result : result.success
       if (success) {
         setIsNativeMonitorActive(typeof result !== 'boolean' && result.monitoring === true)
@@ -693,8 +791,9 @@ function App(): React.ReactElement {
           percent: 25
         })
         const hasBootstrap = await loadBootstrapCache()
+        if (operationId !== connectionOperationRef.current) return
         // 持久化手动输入的密钥，供下次启动继续使用
-        void window.api.saveDbKey(keyToUse).catch(() => undefined)
+        void window.api.saveDbKey(trimmedRoot, keyToUse).catch(() => undefined)
         void window.api.getSettings().then((current) => {
           if (!current.settings.autoLoginPreferenceSet) {
             void window.api.setSettings({ autoLogin: true })
@@ -734,17 +833,23 @@ function App(): React.ReactElement {
         }, 500)
       } else {
         const error = typeof result === 'boolean' ? '' : result.error
+        setDbKeyStatus(error || '数据库连接失败，请检查密钥和数据目录后重试')
+        setDbKeyStatusKind('error')
+        if (databaseConnectionMode === 'automatic') setConnectionGuideStep(5)
         setBootState('login')
         setStartupProgress(null)
-        alert(`Failed to open database.${error ? `\n\n${error}` : '\nCheck your key.'}`)
       }
     } catch (error) {
       console.error(error)
+      setDbKeyStatus(
+        error instanceof Error ? `数据库连接失败：${error.message}` : '数据库连接失败，请重试'
+      )
+      setDbKeyStatusKind('error')
+      if (databaseConnectionMode === 'automatic') setConnectionGuideStep(5)
       setBootState('login')
       setStartupProgress(null)
-      alert('Error connecting to database')
     } finally {
-      setIsDatabaseConnecting(false)
+      if (operationId === connectionOperationRef.current) setIsDatabaseConnecting(false)
     }
   }
 
@@ -864,31 +969,42 @@ function App(): React.ReactElement {
 
   const handleAutoGetDbKey = async (): Promise<void> => {
     if (isFetchingDbKey) return
+    const operationId = ++connectionOperationRef.current
+    setConnectionGuideStep(4)
     setIsFetchingDbKey(true)
     setDbKeyStatus('正在准备获取密钥...')
     setDbKeyStatusKind('normal')
     setShowMacKeyFaq(false)
     try {
-      const result = await window.api.autoGetDbKey()
+      if (!selectedAccount) throw new Error('请先选择微信账号')
+      const result = await window.api.autoGetDbKey(selectedAccount.accountRoot)
+      if (operationId !== connectionOperationRef.current) return
       if (!result.success || !result.key) {
         setShowMacKeyFaq(result.code === 'SCAN_FAILED')
         throw new Error(result.error || '获取密钥失败')
       }
       setDbKey(result.key)
-      setDatabaseConnectionMode('manual')
+      setConnectionGuideStep(5)
       setDbKeyStatus(result.saved ? '密钥已获取并安全保存' : result.warning || '密钥已获取')
       setDbKeyStatusKind(result.saved ? 'success' : 'normal')
     } catch (error) {
+      if (operationId !== connectionOperationRef.current) return
       setDbKeyStatus(error instanceof Error ? error.message : String(error))
       setDbKeyStatusKind('error')
+      setConnectionGuideStep(3)
     } finally {
-      setIsFetchingDbKey(false)
+      if (operationId === connectionOperationRef.current) setIsFetchingDbKey(false)
     }
   }
 
   const handlePasteAndSaveDbKey = async (): Promise<void> => {
     setShowMacKeyFaq(false)
-    const result = await window.api.pasteAndSaveDbKey()
+    if (!selectedAccount) {
+      setDbKeyStatus('请先选择微信账号')
+      setDbKeyStatusKind('error')
+      return
+    }
+    const result = await window.api.pasteAndSaveDbKey(selectedAccount.accountRoot)
     if (result.success && result.key) {
       setDbKey(result.key)
       setDatabaseConnectionMode('manual')
@@ -902,7 +1018,8 @@ function App(): React.ReactElement {
 
   const handleClearSavedDbKey = async (): Promise<void> => {
     setShowMacKeyFaq(false)
-    const result = await window.api.clearSavedDbKey()
+    if (!selectedAccount) return
+    const result = await window.api.clearSavedDbKey(selectedAccount.accountRoot)
     if (!result.success) {
       setDbKeyStatus(result.error || '清除密钥失败')
       setDbKeyStatusKind('error')
@@ -935,12 +1052,54 @@ function App(): React.ReactElement {
     setStartupProgress(null)
   }
 
+  const handleSwitchAccount = async (account: WechatAccountCandidate): Promise<void> => {
+    connectionOperationRef.current += 1
+    await window.api.disconnectDb({ closeNative: true })
+    setIsAuthenticated(false)
+    setIsDatabaseConnected(false)
+    setSelectedContact(null)
+    setMessages([])
+    setContacts([])
+    setFilteredContacts([])
+    setContentFilter('')
+    setSelfInfo(null)
+    setReportSourceContact(null)
+    setExportTasks([])
+    messageHistoryRef.current = []
+    messagesRef.current = []
+    selectedContactMd5Ref.current = ''
+    currentGroupSnapshotRef.current = null
+    groupMemberMetaRef.current = {}
+    syntheticGroupMessagesRef.current = {}
+    setDiscoveredAccounts((current) =>
+      current.some((item) => item.id === account.id) ? current : [account]
+    )
+    setSelectedAccountId(account.id)
+    setDbRootInput(account.accountRoot)
+    await window.api.setSettings({ dbRoot: account.accountRoot, imageKeyRoot: account.accountRoot })
+    const saved = await window.api.getSavedDbKey(account.accountRoot)
+    if (!saved.success || !saved.key) {
+      setDbKey('')
+      setDatabaseConnectionMode('automatic')
+      setBootState('login')
+      setConnectionGuideStep(3)
+      setDbKeyStatus('该账号尚无可用密钥，请为所选账号获取密钥')
+      setDbKeyStatusKind('normal')
+      return
+    }
+    setDbKey(saved.key)
+    setDatabaseConnectionMode('manual')
+    setBootState('login')
+    await handleLogin(saved.key, account.accountRoot)
+  }
+
   const handleSelectContact = async (contact: Contact, forceLive = false): Promise<void> => {
     setArchiveJumpTime(null)
     setSelectedContact(contact)
     selectedContactMd5Ref.current = contact.md5
     currentGroupSnapshotRef.current = null
     setIsMessagesLoading(true)
+    setMessageHistoryStatus('idle')
     const cachedPage = await window.api.getCachedMessagePage(contact.md5)
     const cachedMsgs = cachedPage.messages
     if (selectedContactMd5Ref.current !== contact.md5) return
@@ -1052,7 +1211,7 @@ function App(): React.ReactElement {
 
   const handleLoadOlderMessages = async (): Promise<void> => {
     const contact = selectedContact
-    if (!contact || messagesRef.current.length === 0) return
+    if (!contact || messagesRef.current.length === 0 || messageHistoryStatus === 'end') return
     if (messagePrefetchRef.current) await messagePrefetchRef.current
     if (selectedContactMd5Ref.current !== contact.md5) return
     const currentMessages = messagesRef.current
@@ -1089,6 +1248,7 @@ function App(): React.ReactElement {
             limit: MESSAGE_PAGE_SIZE
           })
       if (selectedContactMd5Ref.current !== contact.md5) return
+      setMessageHistoryStatus(olderMessages.length === 0 ? 'end' : 'idle')
       messageHistoryRef.current = mergeMessagePages(olderMessages, historyMessages)
       setMessages((current) =>
         applyGroupMemberMeta(
@@ -1098,6 +1258,7 @@ function App(): React.ReactElement {
       )
     } catch (error) {
       console.warn('[Messages] older page load failed:', error)
+      if (selectedContactMd5Ref.current === contact.md5) setMessageHistoryStatus('error')
     } finally {
       if (selectedContactMd5Ref.current === contact.md5) setIsMessagesLoading(false)
     }
@@ -1434,6 +1595,7 @@ function App(): React.ReactElement {
         contact={selectedContact}
         messages={messages}
         isLoadingMessages={isMessagesLoading}
+        messageHistoryStatus={messageHistoryStatus}
         contentFilter={contentFilter}
         onContentFilterChange={setContentFilter}
         onRefresh={() => selectedContact && handleSelectContact(selectedContact, true)}
@@ -1561,6 +1723,7 @@ function App(): React.ReactElement {
             onNotice={setReportNotice}
             onOpenSettings={openSettings}
             onAppearanceChange={handleAppearanceChange}
+            onSwitchAccount={handleSwitchAccount}
           />
         )
       case 'search':
@@ -1675,15 +1838,80 @@ function App(): React.ReactElement {
         dbRoot={dbRootInput}
         showDbKey={showDbKey}
         isFetching={isFetchingDbKey}
+        isConnecting={isDatabaseConnecting}
+        guideStep={connectionGuideStep}
+        environment={databaseEnvironment}
+        accounts={discoveredAccounts}
+        selectedAccountId={selectedAccountId}
         status={dbKeyStatus}
         statusKind={dbKeyStatusKind}
         showMacKeyFaq={showMacKeyFaq}
         macKeyFaqUrl={MAC_KEY_FAQ_URL}
         onModeChange={setDatabaseConnectionMode}
         onDbKeyChange={setDbKey}
-        onDbRootChange={setDbRootInput}
+        onDbRootChange={(value) => {
+          setDbRootInput(value)
+          setDiscoveredAccounts([])
+          setSelectedAccountId('')
+        }}
+        onSelectAccount={(account) => {
+          setSelectedAccountId(account.id)
+          setDbKey('')
+          void window.api.getSavedDbKey(account.accountRoot).then((result) => {
+            if (result.success && result.key) setDbKey(result.key)
+          })
+        }}
+        onSelectDbRoot={() => {
+          void window.api.selectDbRoot().then((result) => {
+            if (!result.canceled && result.path) {
+              setDbRootInput(result.path)
+              void window.api.discoverAccounts(result.path).then((discovery) => {
+                if (!discovery.success) {
+                  setDiscoveredAccounts([])
+                  setSelectedAccountId('')
+                  setDbKeyStatus(discovery.error || '账号目录识别失败')
+                  setDbKeyStatusKind('error')
+                  return
+                }
+                setDiscoveredAccounts(discovery.accounts)
+                setSelectedAccountId(discovery.preselectedAccountId || '')
+              })
+            }
+          })
+        }}
         onToggleDbKey={() => setShowDbKey((visible) => !visible)}
         onAutoGetKey={handleAutoGetDbKey}
+        onRefreshEnvironment={() => void refreshConnectionEnvironment()}
+        onGuideNext={() =>
+          setConnectionGuideStep((current) => (current === 1 ? 2 : current === 2 ? 3 : current))
+        }
+        onGuideBack={() =>
+          setConnectionGuideStep((current) =>
+            current === 5 ? 3 : current > 1 ? ((current - 1) as 1 | 2 | 3 | 4 | 5 | 6) : 1
+          )
+        }
+        onGuideCancel={() => {
+          connectionOperationRef.current += 1
+          setIsFetchingDbKey(false)
+          setIsDatabaseConnecting(false)
+          setBootState('login')
+          setStartupProgress(null)
+          setConnectionGuideStep(1)
+          setDbKeyStatus('已取消，可以重新检查环境')
+          setDbKeyStatusKind('normal')
+        }}
+        onValidateConnection={() => void handleLogin()}
+        onCopyDiagnostics={() => {
+          if (!databaseEnvironment?.diagnosticSummary) {
+            setDbKeyStatus('诊断信息尚未准备好，请先重新检查环境')
+            setDbKeyStatusKind('error')
+            return
+          }
+          void window.api.copyText(databaseEnvironment.diagnosticSummary).then(() => {
+            setDbKeyStatus('脱敏诊断摘要已复制')
+            setDbKeyStatusKind('success')
+          })
+        }}
         onManualConnect={() => handleLogin()}
         onPasteKey={handlePasteAndSaveDbKey}
         onClearKey={handleClearSavedDbKey}

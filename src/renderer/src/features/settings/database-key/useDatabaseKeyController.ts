@@ -36,14 +36,14 @@ export function useDatabaseKeyController({
   }, [])
 
   const refreshStorage = useCallback(async (): Promise<void> => {
-    const result = await window.api.getSavedDbKey()
+    const result = await window.api.getSavedDbKey(selfInfo?.accountRoot || '')
     dispatch({
       type: 'STORAGE_LOADED',
       saved: result.saved,
       encryptionAvailable: result.encryptionAvailable,
       error: result.success ? undefined : result.error
     })
-  }, [])
+  }, [selfInfo?.accountRoot])
 
   useEffect(() => {
     void Promise.all([refreshStorage(), refreshEnvironment()])
@@ -109,7 +109,8 @@ export function useDatabaseKeyController({
   const saveKey = useCallback(async (): Promise<void> => {
     if (state.status !== 'valid') return
     dispatch({ type: 'SAVE_START' })
-    const saved = await window.api.saveDbKey(dbKey)
+    const accountRoot = selfInfo?.accountRoot || ''
+    const saved = await window.api.saveDbKey(accountRoot, dbKey)
     if (!saved.success || !saved.key) {
       dispatch({
         type: 'SAVE_ERROR',
@@ -117,12 +118,12 @@ export function useDatabaseKeyController({
       })
       return
     }
-    const stored = await window.api.getSavedDbKey()
+    const stored = await window.api.getSavedDbKey(accountRoot)
     if (!stored.success || !stored.saved || !stored.key) {
       dispatch({ type: 'SAVE_ERROR', error: '无法确认密钥保存状态' })
       return
     }
-    const initialized = await window.api.initDb(stored.key)
+    const initialized = await window.api.initDb(stored.key, accountRoot)
     const connected = typeof initialized === 'boolean' ? initialized : initialized.success
     onDbKeyChange(stored.key)
     onDatabaseConnectionChange(connected)
@@ -148,13 +149,14 @@ export function useDatabaseKeyController({
     onNotice,
     onSelfInfoChange,
     refreshEnvironment,
+    selfInfo?.accountRoot,
     state.status
   ])
 
   const autoDetectKey = useCallback(async (): Promise<void> => {
     dispatch({ type: 'AUTO_START' })
     await refreshEnvironment()
-    const result = await window.api.autoGetDbKey({ save: false })
+    const result = await window.api.autoGetDbKey(selfInfo?.accountRoot || '', { save: false })
     if (!result.success || !result.key) {
       dispatch({ type: 'AUTO_ERROR', error: result.error || '暂未找到有效密钥' })
       return
@@ -162,11 +164,11 @@ export function useDatabaseKeyController({
     onDbKeyChange(result.key)
     dispatch({ type: 'AUTO_SUCCESS' })
     await runValidation(result.key)
-  }, [onDbKeyChange, refreshEnvironment, runValidation])
+  }, [onDbKeyChange, refreshEnvironment, runValidation, selfInfo?.accountRoot])
 
   const clearSavedKey = useCallback(async (): Promise<void> => {
     dispatch({ type: 'CLEAR_START' })
-    const result = await window.api.clearSavedDbKey()
+    const result = await window.api.clearSavedDbKey(selfInfo?.accountRoot || '')
     if (!result.success) {
       dispatch({ type: 'CLEAR_ERROR', error: '清除密钥失败' })
       return
@@ -187,7 +189,8 @@ export function useDatabaseKeyController({
     onFilteredContactsChange,
     onNotice,
     onSelfInfoChange,
-    refreshEnvironment
+    refreshEnvironment,
+    selfInfo?.accountRoot
   ])
 
   const returnToLogin = useCallback(async (): Promise<void> => {

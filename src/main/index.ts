@@ -58,13 +58,25 @@ import * as chat from './services/chat-service'
 import { apiServer } from './http-server'
 import { skillResourceService } from './services/skill-resource-service'
 import { testLocalApiRequest } from './services/local-api-test-service'
-import { isWindowsWechatRunning } from './services/wechat-process-status'
+import { isWechatRunning } from './services/wechat-process-status'
 import {
   inspectImageDecryptionStatus,
   testImageDecryption
 } from './services/image-decryption-status-service'
 import type { SaveImageKeyRequest, TestImageDecryptionRequest } from '../shared/image-decryption'
-import { loadSettings, saveSettings, getSettingsPath, AppSettings } from './services/settings-store'
+import {
+  loadSettings,
+  saveSettings,
+  getSettingsPath,
+  AppSettings,
+  validateDbRoot
+} from './services/settings-store'
+import {
+  detectDataStructureVersion,
+  detectWechatVersion,
+  getOsVersionLabel
+} from './services/connection-diagnostics'
+import { buildSafeDiagnosticSummary } from '../shared/connection-diagnostics'
 import {
   flushBootstrapCacheWritesSync,
   getBootstrapCache,
@@ -88,6 +100,7 @@ import { configureRecallArchive, RecallArchiveMonitor } from './services/recall-
 import { VideoAssetService } from './video-asset-service'
 import { cancelExport, revealExport, runExport } from './export-service'
 import type { ExportRequest } from '../shared/export'
+import { discoverAccounts } from './services/account-discovery'
 
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
@@ -479,7 +492,7 @@ app.whenReady().then(async () => {
     return clearCache(scope)
   })
 
-  ipcMain.handle('db:init', async (_, key: string) => {
+  ipcMain.handle('db:init', async (_, key: string, accountRoot?: string) => {
     if (dbInitInFlight) return dbInitInFlight
 
     dbInitInFlight = (async () => {
@@ -489,17 +502,35 @@ app.whenReady().then(async () => {
         const trimmedKey = String(key || '').trim()
         console.log(`db:init build=${BUILD_MARK} keyLength=${trimmedKey.length}`)
         const settings = loadSettings()
+        const selectedRoot = String(accountRoot || settings.dbRoot || '').trim()
+        const rootValidation = validateDbRoot(selectedRoot)
+        if (!rootValidation.valid) {
+          return {
+            success: false,
+            code: 'ROOT_UNAVAILABLE',
+            error: rootValidation.error,
+            monitoring: false
+          }
+        }
+        if (!existsSync(join(selectedRoot, 'db_storage'))) {
+          return {
+            success: false,
+            code: 'ACCOUNT_SELECTION_REQUIRED',
+            error: '请先明确选择一个微信账号',
+            monitoring: false
+          }
+        }
         if (
           chat.isReady() &&
           chat.getCurrentKey().replace(/^0x/i, '').trim() === trimmedKey.replace(/^0x/i, '') &&
-          (!settings.dbRoot || chat.getCurrentAccountRoot() === settings.dbRoot)
+          chat.getCurrentAccountRoot() === selectedRoot
         ) {
           console.log('[WCDB4] db:init reuse current connection')
           return { success: true, monitoring: true }
         }
-        const nextWechatDb = await WechatDb.create(key, settings.dbRoot)
+        const nextWechatDb = await WechatDb.create(key, selectedRoot)
         const resolvedRoot = nextWechatDb.getWcdb4Client().getAccountRoot()
-        if (resolvedRoot && resolvedRoot !== settings.dbRoot) {
+        if (resolvedRoot) {
           // 同步更新 imageKeyRoot，避免自动获取图片密钥时扫描到错误目录
           saveSettings({
             ...settings,
@@ -543,19 +574,43 @@ app.whenReady().then(async () => {
     return dbInitInFlight
   })
 
-  ipcMain.handle('key:getSavedDbKey', async () => databaseKeyStore.load())
+  ipcMain.handle('accounts:discover', (_, inputPath: string) =>
+    discoverAccounts(inputPath, databaseKeyStore, chat.getCurrentAccountRoot())
+  )
+
+  ipcMain.handle('key:getSavedDbKey', async (_, accountRoot: string) => {
+    const selectedRoot = String(accountRoot || '').trim()
+    const scoped = await databaseKeyStore.load(selectedRoot)
+    if (scoped.saved || !selectedRoot) return scoped
+    const legacy = await databaseKeyStore.loadLegacy()
+    if (!legacy.success || !legacy.key) return scoped
+    const validation = await chat.testConnection(legacy.key, selectedRoot)
+    if (!validation.success) return scoped
+    const migrated = await databaseKeyStore.save(selectedRoot, legacy.key)
+    if (migrated.success) await databaseKeyStore.clearLegacy()
+    return migrated
+  })
 
   ipcMain.handle('key:getEnvironment', async () => {
-    const storage = await databaseKeyStore.getStatus()
+    const storage = await databaseKeyStore.getStatus(
+      chat.getCurrentAccountRoot() || loadSettings().dbRoot
+    )
     const self = chat.getSelfAccountInfo()
-    return {
+    const settings = loadSettings()
+    const environment = {
       platform: process.platform,
+      osVersion: getOsVersionLabel(),
+      appVersion: `v${app.getVersion()}`,
+      wechatVersion: await detectWechatVersion(),
+      dataStructureVersion: detectDataStructureVersion(settings.dbRoot),
+      dataDirectoryDetected: validateDbRoot(settings.dbRoot).valid,
       autoDetectSupported: process.platform === 'win32',
-      wechatRunning: await isWindowsWechatRunning(),
+      wechatRunning: await isWechatRunning(),
       accountIdentified: Boolean(self?.wxid),
       dbConnected: chat.isReady(),
       encryptionAvailable: storage.encryptionAvailable
     }
+    return { ...environment, diagnosticSummary: buildSafeDiagnosticSummary(environment) }
   })
 
   ipcMain.handle('key:readClipboardDbKey', () => {
@@ -566,36 +621,47 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('key:pasteAndSaveDbKey', async () => {
+  ipcMain.handle('key:pasteAndSaveDbKey', async (_, accountRoot: string) => {
     const clipboardKey = clipboard.readText().trim()
-    return databaseKeyStore.save(clipboardKey)
+    return databaseKeyStore.save(String(accountRoot || ''), clipboardKey)
   })
 
-  ipcMain.handle('key:saveDbKey', async (_, key: string) =>
-    databaseKeyStore.save(String(key || ''))
+  ipcMain.handle('key:saveDbKey', async (_, accountRoot: string, key: string) =>
+    databaseKeyStore.save(String(accountRoot || ''), String(key || ''))
   )
 
-  ipcMain.handle('key:clearSavedDbKey', async () => databaseKeyStore.clear())
+  ipcMain.handle('key:clearSavedDbKey', async (_, accountRoot: string) =>
+    databaseKeyStore.clear(String(accountRoot || ''))
+  )
 
-  ipcMain.handle('key:autoGetDbKey', async (event, options?: { save?: boolean }) => {
-    const onStatus = (message: string): void => {
-      if (!event.sender.isDestroyed()) event.sender.send('key:dbKeyStatus', { message })
+  ipcMain.handle(
+    'key:autoGetDbKey',
+    async (event, accountRoot: string, options?: { save?: boolean }) => {
+      const onStatus = (message: string): void => {
+        if (!event.sender.isDestroyed()) event.sender.send('key:dbKeyStatus', { message })
+      }
+      const result =
+        process.platform === 'win32'
+          ? await keyServiceWin.autoGetDbKey(60_000, onStatus)
+          : await keyServiceMac.autoGetDbKey(onStatus)
+      if (!result.success || !result.key) return result
+
+      const selectedRoot = String(accountRoot || '').trim()
+      if (!selectedRoot) return { success: false, error: '请先选择微信账号' }
+      const validation = await chat.testConnection(result.key, selectedRoot)
+      if (!validation.success) {
+        return { ...result, success: false, key: undefined, error: '获取到的密钥不属于所选账号' }
+      }
+      if (options?.save === false) return result
+
+      const saved = await databaseKeyStore.save(selectedRoot, result.key)
+      return {
+        ...result,
+        saved: saved.success,
+        warning: saved.success ? undefined : saved.error
+      }
     }
-    const result =
-      process.platform === 'win32'
-        ? await keyServiceWin.autoGetDbKey(60_000, onStatus)
-        : await keyServiceMac.autoGetDbKey(onStatus)
-    if (!result.success || !result.key) return result
-
-    if (options?.save === false) return result
-
-    const saved = await databaseKeyStore.save(result.key)
-    return {
-      ...result,
-      saved: saved.success,
-      warning: saved.success ? undefined : saved.error
-    }
-  })
+  )
 
   ipcMain.handle('key:autoGetImageKey', async (event, options?: { save?: boolean }) => {
     const settings = loadSettings()

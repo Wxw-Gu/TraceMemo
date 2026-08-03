@@ -23,6 +23,9 @@ export interface ExportRequest {
   endTime?: number
   kinds: ExportMessageKind[]
   includeMedia: boolean
+  preferOriginal?: boolean
+  fallbackThumbnail?: boolean
+  keepMissing?: boolean
   includeAvatars?: boolean
   avatarUrls?: Record<string, string>
   nameMode?: ExportNameMode

@@ -23,17 +23,52 @@ test('KEY-01 KEY-02 invalid key remains recoverable and valid key enters the app
     await fixture.page.getByRole('tab', { name: /高级用户/ }).click()
     const keyInput = fixture.page.getByLabel('数据库密钥')
     await keyInput.fill('b'.repeat(64))
-    const errorDialog = fixture.page.waitForEvent('dialog')
-    await fixture.page
-      .getByRole('button', { name: '连接数据库' })
-      .evaluate((element: HTMLButtonElement) => element.click())
-    const dialog = await errorDialog
-    expect(dialog.message()).toContain('数据库密钥无效')
-    await dialog.dismiss()
+    await fixture.page.getByRole('button', { name: '连接数据库' }).click()
+    await expect(fixture.page.getByText('数据库密钥无效')).toBeVisible()
 
     await expect(keyInput).toBeVisible()
     await keyInput.fill('a'.repeat(64))
     await fixture.page.getByRole('button', { name: '连接数据库' }).click()
+    await expect(fixture.page.getByRole('navigation', { name: '一级导航' })).toBeVisible()
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('P0-01 an invalid directory can be corrected and retried without restarting', async () => {
+  test.skip(process.platform !== 'win32', 'Manual database directory editing is Windows-only')
+  const fixture = await launchTestApp({ mode: 'disconnected' })
+  try {
+    await fixture.page.getByRole('tab', { name: /高级用户/ }).click()
+    await fixture.page.getByLabel('数据库密钥').fill('a'.repeat(64))
+    await fixture.page.getByLabel('微信数据目录').fill('Z:\\missing-wechat-data')
+    await fixture.page.getByRole('button', { name: '连接数据库' }).click()
+
+    await expect(fixture.page.getByText('微信数据目录不存在，请重新选择目录')).toBeVisible()
+    await expect(fixture.page.getByLabel('微信数据目录')).toBeEditable()
+    await expect(fixture.page.getByRole('button', { name: '选择目录' })).toBeEnabled()
+
+    await fixture.page.getByRole('button', { name: '选择目录' }).click()
+    await expect(fixture.page.getByLabel('微信数据目录')).toHaveValue('fixture-account')
+    await fixture.page.getByRole('button', { name: '连接数据库' }).click()
+    await expect(fixture.page.getByRole('navigation', { name: '一级导航' })).toBeVisible()
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('P2-01 P2-02 guided connection exposes safe diagnostics and completes all stages', async () => {
+  const fixture = await launchTestApp({ mode: 'disconnected' })
+  try {
+    await expect(fixture.page.getByText('4.1.9.57')).toBeVisible()
+    await expect(fixture.page.getByText('微信 4.x（WCDB）')).toBeVisible()
+    await expect(fixture.page.getByRole('button', { name: '复制脱敏诊断摘要' })).toBeEnabled()
+
+    await fixture.page.getByRole('button', { name: '检查完成，继续' }).click()
+    await fixture.page.getByRole('button', { name: '我已准备好' }).click()
+    await fixture.page.getByRole('button', { name: '开始准备连接组件' }).click()
+    await expect(fixture.page.getByRole('button', { name: '微信已登录，验证连接' })).toBeEnabled()
+    await fixture.page.getByRole('button', { name: '微信已登录，验证连接' }).click()
     await expect(fixture.page.getByRole('navigation', { name: '一级导航' })).toBeVisible()
   } finally {
     await fixture.close()
@@ -188,6 +223,7 @@ test('REPORT-01 REPORT-02 generates a fixed report with non-empty local assets',
     await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
     await expect(fixture.page.getByRole('heading', { name: '生成群聊日报' })).toBeVisible()
     await fixture.page.locator('.report-source-item').filter({ hasText: '产品测试群' }).click()
+    await fixture.page.getByRole('button', { name: '近 7 天' }).click()
     const generate = fixture.page.getByRole('button', { name: '开始生成日报' })
     await expect(generate).toBeEnabled()
     await generate.click()
@@ -218,6 +254,7 @@ test('REPORT-03 report failure is retryable and leaves other pages usable', asyn
     await fixture.page.getByRole('button', { name: '日报' }).click()
     await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
     await fixture.page.locator('.report-source-item').filter({ hasText: '产品测试群' }).click()
+    await fixture.page.getByRole('button', { name: '近 7 天' }).click()
     await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
     await expect(fixture.page.getByText(/本地假服务错误 401/).first()).toBeVisible()
     await expect(fixture.page.getByRole('button', { name: '重试' })).toBeEnabled()

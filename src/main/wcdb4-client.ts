@@ -938,9 +938,27 @@ export class Wcdb4Client {
   ): Promise<Wcdb4Message[]> {
     const startedAt = Date.now()
     const maxRows = this.normalizeMessageLimit(options.limit)
-    const messages = await this.getMessagesByCursorAsync(username, startTime, endTime, maxRows)
+    let cursorMessages: Wcdb4Message[] = []
+    try {
+      cursorMessages = await this.getMessagesByCursorAsync(username, startTime, endTime, maxRows)
+    } catch (error) {
+      console.warn(`[WCDB4] async cursor messages failed username=${username}:`, error)
+    }
+
+    if (endTime && (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery)) {
+      throw new Error('当前数据服务无法检查历史消息分片，请更新应用或核对微信数据版本')
+    }
+
+    // Older pages may live in message shards that the native cursor does not
+    // enumerate. A bounded query must inspect all matching stores so history
+    // cannot silently stop at a shard boundary.
+    let tableMessages: Wcdb4Message[] = []
+    if (endTime || cursorMessages.length === 0) {
+      tableMessages = await this.getMessagesByTableScanAsync(username, startTime, endTime, maxRows)
+    }
+    const messages = this.mergeMessageRows(cursorMessages, tableMessages, maxRows)
     console.log(
-      `[WCDB4] getMessages async username=${username} rows=${messages.length} cost=${Date.now() - startedAt}ms`
+      `[WCDB4] getMessages async username=${username} rows=${messages.length} cursor=${cursorMessages.length} tables=${tableMessages.length} cost=${Date.now() - startedAt}ms`
     )
     return messages
   }
@@ -993,6 +1011,71 @@ export class Wcdb4Client {
           error
         )
       }
+    }
+
+    return this.finalizeMessages(username, allRows, startTime, endTime, limit)
+  }
+
+  private async getMessagesByTableScanAsync(
+    username: string,
+    startTime?: number,
+    endTime?: number,
+    limit?: number
+  ): Promise<Wcdb4Message[]> {
+    if (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery) return []
+
+    let tables: Wcdb4MessageStore[] = []
+    try {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbGetMessageTableStats as unknown as KoffiAsyncFunction,
+        username
+      )
+      tables = (Array.isArray(rows) ? rows : [])
+        .map((row) => ({
+          tableName: this.pickString(row, ['table_name', 'tableName', 'name']),
+          dbPath: this.pickString(row, ['db_path', 'dbPath', 'path'])
+        }))
+        .filter((row) => row.tableName && row.dbPath)
+    } catch (error) {
+      console.warn(`[WCDB4] async message table stats failed username=${username}:`, error)
+      throw new Error(
+        `无法读取历史消息分片信息：${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+
+    const begin = this.normalizeTimestamp(startTime || 0)
+    const end = this.normalizeTimestamp(endTime || 0)
+    const where = [
+      begin > 0 ? `"create_time" >= ${begin}` : '',
+      end > 0 ? `"create_time" <= ${end}` : ''
+    ].filter(Boolean)
+    const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : ''
+    const rowLimit = limit || 5000
+    const order = limit ? 'DESC' : 'ASC'
+
+    const allRows: Record<string, unknown>[] = []
+    let successfulTables = 0
+    for (const table of tables) {
+      try {
+        const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          table.dbPath,
+          sql
+        )
+        successfulTables += 1
+        if (Array.isArray(rows)) allRows.push(...rows)
+      } catch (error) {
+        console.warn(
+          `[WCDB4] async message table scan failed username=${username} db=${table.dbPath} table=${table.tableName}:`,
+          error
+        )
+      }
+    }
+
+    if (tables.length > 0 && successfulTables === 0) {
+      throw new Error('历史消息分片均读取失败，请检查数据目录或微信数据版本')
     }
 
     return this.finalizeMessages(username, allRows, startTime, endTime, limit)

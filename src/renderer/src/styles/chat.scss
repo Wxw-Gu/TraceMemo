@@ -1185,7 +1185,7 @@
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 48px clamp(40px, 7vw, 96px);
+  padding: 28px clamp(40px, 7vw, 96px);
   background: #fff;
 }
 
@@ -1195,7 +1195,7 @@
 }
 
 .database-login-start {
-  margin-bottom: 22px;
+  margin-bottom: 14px;
 
   h2 {
     margin: 0;
@@ -1285,7 +1285,7 @@
   grid-template-columns: repeat(2, 1fr);
   gap: 4px;
   padding: 4px;
-  margin-bottom: 28px;
+  margin-bottom: 18px;
   border: 1px solid var(--login-border);
   border-radius: 8px;
   background: #e9eeeb;
@@ -1408,6 +1408,58 @@
   color: #35423d;
   font-size: 12px;
   text-align: right;
+}
+
+.database-login-guide-progress {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 5px;
+  margin: 0 0 12px;
+}
+
+.database-login-guide-progress span {
+  height: 4px;
+  border-radius: 2px;
+  background: #dce4df;
+}
+
+.database-login-guide-progress span.active {
+  background: var(--login-primary);
+}
+
+.database-login-guide-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.database-login-guide-actions button,
+.database-login-text-action {
+  padding: 5px 0;
+  border: 0;
+  color: var(--login-primary-dark);
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.database-login-text-action {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  text-align: center;
+}
+
+.database-login-path-select {
+  margin-top: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--login-border);
+  border-radius: 5px;
+  color: var(--login-primary-dark);
+  background: #fff;
+  cursor: pointer;
+  font-size: 11px;
 }
 
 .database-login-path-input-wrap {
@@ -1596,12 +1648,44 @@
 }
 
 .database-login-field > input,
+.database-login-root-control,
 .database-login-key-input {
   width: 100%;
   min-height: 42px;
   border: 1px solid var(--login-border);
   border-radius: 7px;
   background: #fff;
+}
+
+.database-login-root-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.database-login-root-control input {
+  min-width: 0;
+  padding: 0 12px;
+  border: 0;
+  outline: 0;
+  color: var(--login-text);
+  background: transparent;
+  font-size: 13px;
+}
+
+.database-login-root-control button {
+  padding: 0 12px;
+  border: 0;
+  border-left: 1px solid var(--login-border);
+  color: var(--login-primary-dark);
+  background: var(--login-surface-low);
+  cursor: pointer;
+}
+
+.database-login-root-control button:disabled,
+.database-login-path-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .database-login-field > input {
@@ -1617,6 +1701,7 @@
 }
 
 .database-login-key-input:focus-within,
+.database-login-root-control:focus-within,
 .database-login-field > input:focus {
   border-color: var(--login-primary);
   box-shadow: 0 0 0 3px rgba(36, 122, 99, 0.1);
@@ -1968,4 +2053,71 @@
     user-select: none;
     pointer-events: none;
   }
+}
+.database-account-list {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+
+  h3 {
+    margin: 0;
+    font-size: 14px;
+  }
+}
+
+.database-account-card {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--border-color, #d8e2dc);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  &.selected {
+    border-color: #176b57;
+    box-shadow: 0 0 0 2px #176b5720;
+  }
+}
+
+.database-account-avatar {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #dcebe4;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+}
+
+.database-account-identity,
+.database-account-status {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+
+  small,
+  code {
+    color: var(--text-secondary, #68766f);
+  }
+  code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.database-account-status {
+  text-align: right;
 }

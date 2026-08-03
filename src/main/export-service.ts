@@ -16,6 +16,7 @@ import { ImageDecryptService } from './image-decrypt-service'
 import { ImageKeyConfigService } from './services/image-key-config-service'
 import { VideoAssetService } from './video-asset-service'
 import { StickerService } from './sticker-service'
+import { getImageExportAttempts } from '../shared/export-media'
 
 const jobs = new Set<string>()
 const safeFilePart = (value: string): string =>
@@ -26,6 +27,10 @@ const exportStamp = (): string => {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
 }
 const imageKeys = new ImageKeyConfigService()
+
+const keepMediaError = (request: ExportRequest, message: Message, error: string): void => {
+  if (request.keepMissing !== false) message.exportMediaError = error
+}
 function decodeDataUrl(data: string): { extension: string; buffer: Buffer } | null {
   const match = /^data:([^;]+);base64,(.+)$/s.exec(data)
   if (!match) return null
@@ -105,11 +110,20 @@ function render(format: ExportRequest['format'], messages: Message[], name: stri
   if (format === 'json')
     return JSON.stringify({ name, exportedAt: new Date().toISOString(), messages }, null, 2)
   if (format === 'markdown')
-    return `# ${name}\n\n${messages.map((m) => `**${m.name || (m.isSender ? '我' : '联系人')}** · ${m.datetime}\n\n${m.content || `[${m.type}]`}\n`).join('\n')}`
+    return `# ${name}\n\n${messages.map((m) => `**${m.name || (m.isSender ? '我' : '联系人')}** · ${m.datetime}\n\n${m.content || `[${m.type}]`}${m.exportMediaUrl || m.voiceDataUrl || m.exportMediaError ? `\n\n媒体：${m.exportMediaUrl || m.voiceDataUrl || m.exportMediaError}` : ''}\n`).join('\n')}`
   return [
-    '时间,发送者,类型,内容',
+    '时间,发送者,类型,内容,媒体路径,媒体状态',
     ...messages.map((m) =>
-      [m.datetime, m.name || (m.isSender ? '我' : '联系人'), m.type, m.content].map(csv).join(',')
+      [
+        m.datetime,
+        m.name || (m.isSender ? '我' : '联系人'),
+        m.type,
+        m.content,
+        m.exportMediaUrl || m.voiceDataUrl || '',
+        m.exportMediaError || ''
+      ]
+        .map(csv)
+        .join(',')
     )
   ].join('\n')
 }
@@ -126,9 +140,19 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
       .listMessages(request.userMd5, request.startTime, request.endTime)
       .filter((m) => request.kinds.includes(kindOf(m)))
     for (const message of messages) {
+      message.exportMediaUrl = undefined
+      message.exportMediaType = undefined
+      message.exportMediaError = undefined
+      message.voiceDataUrl = undefined
       message.exportShowAvatar = request.includeAvatars !== false
       const mappedName = message.senderId ? request.nameMap?.[message.senderId] : undefined
       if (mappedName) message.name = mappedName
+      if (
+        request.format !== 'html' &&
+        ['image', 'video', 'voice', 'sticker'].includes(kindOf(message))
+      ) {
+        message.exportMediaError = '当前导出格式记录媒体状态，但不复制媒体文件'
+      }
     }
     send({ jobId: request.jobId, phase: 'reading', processed: 10, total: 100, percent: 10 })
     if (!jobs.has(request.jobId)) {
@@ -181,25 +205,46 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
           : null
       if (voiceService) {
         for (const [index, message] of messages.entries()) {
-          if (
-            kindOf(message) !== 'voice' ||
-            !message.sessionId ||
-            !message.localId ||
-            !message.createTime
-          )
+          if (kindOf(message) !== 'voice') continue
+          if (!message.sessionId || message.localId == null || !message.createTime) {
+            keepMediaError(request, message, '语音标识不完整，无法定位本地语音')
             continue
-          const voice = await voiceService.resolveVoice(
-            message.sessionId,
-            message.localId,
-            message.createTime,
-            message.serverId
-          )
-          if (!voice.success || !voice.data) continue
-          const voiceName = `voice_${index + 1}_${message.localId}.wav`
-          const audioBuffer = Buffer.from(voice.data, 'base64')
-          await fs.writeFile(join(outputDir, 'voices', voiceName), audioBuffer)
-          message.voiceDataUrl = `voices/${voiceName}`
-          message.voiceDuration = Math.max(1, Math.round(audioBuffer.length / (24000 * 2)))
+          }
+          try {
+            const voice = await voiceService.resolveVoice(
+              message.sessionId,
+              message.localId,
+              message.createTime,
+              message.serverId
+            )
+            if (!voice.success || !voice.data) {
+              const detail = voice.error || '未知原因'
+              const reason = /未找到|不存在|获取语音数据失败/.test(detail)
+                ? `语音文件缺失：${detail}`
+                : /Silk|解码|数据为空/.test(detail)
+                  ? `语音解析失败：${detail}`
+                  : `语音格式不支持或读取失败：${detail}`
+              keepMediaError(request, message, reason)
+              continue
+            }
+            const voiceName = `voice_${index + 1}_${message.localId}.wav`
+            const audioBuffer = Buffer.from(voice.data, 'base64')
+            await fs.writeFile(join(outputDir, 'voices', voiceName), audioBuffer)
+            message.voiceDataUrl = `voices/${voiceName}`
+            message.voiceDuration = Math.max(1, Math.round(audioBuffer.length / (24000 * 2)))
+          } catch (error) {
+            keepMediaError(
+              request,
+              message,
+              `语音文件写入失败：${error instanceof Error ? error.message : String(error)}`
+            )
+          }
+        }
+      } else if (request.includeMedia) {
+        for (const message of messages) {
+          if (kindOf(message) === 'voice') {
+            keepMediaError(request, message, '数据库未连接，无法读取本地语音')
+          }
         }
       }
       for (const [index, message] of messages.entries()) {
@@ -228,34 +273,78 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
           })
           continue
         }
-        if (message.contentData.type === 'image' && imageService) {
-          const file = imageService.findImageFile(
-            message.contentData.md5,
-            message.contentData.datName,
-            { allowThumbnail: true }
-          )
-          const decrypted = file ? imageService.decryptImageToBase64WithFallback(file, true) : null
-          const decoded = decrypted ? decodeDataUrl(decrypted.data) : null
-          if (decoded) {
-            const name = `image_${index + 1}.${decoded.extension}`
-            await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
-            message.exportMediaUrl = `media/${name}`
-            message.exportMediaType = 'image'
+        if (message.contentData.type === 'image') {
+          if (!imageService) {
+            keepMediaError(request, message, '未配置图片解密密钥，无法导出图片')
+          } else {
+            let fileFound = false
+            let decryptedImage: { data: string; filePath: string } | null = null
+            let usedFallback = false
+            for (const attempt of getImageExportAttempts(request)) {
+              const file = imageService.findImageFile(
+                message.contentData.md5,
+                message.contentData.datName,
+                {
+                  allowThumbnail: attempt.allowThumbnail,
+                  preferThumbnail: attempt.preferThumbnail,
+                  sessionId: message.sessionId
+                }
+              )
+              if (!file) continue
+              fileFound = true
+              const decrypted = imageService.decryptImageToBase64WithFallback(
+                file,
+                attempt.allowThumbnail
+              )
+              if (!decrypted) continue
+              decryptedImage = decrypted
+              usedFallback = attempt.fallback || imageService.isThumbnailFile(decrypted.filePath)
+              break
+            }
+            const decoded = decryptedImage ? decodeDataUrl(decryptedImage.data) : null
+            if (decoded) {
+              const name = `image_${index + 1}.${decoded.extension}`
+              await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
+              message.exportMediaUrl = `media/${name}`
+              message.exportMediaType = 'image'
+              if (usedFallback) {
+                keepMediaError(request, message, '原图不可用，已降级使用缩略图')
+              }
+            } else if (!fileFound) {
+              keepMediaError(
+                request,
+                message,
+                request.fallbackThumbnail === false
+                  ? '原图文件缺失，未启用缩略图降级'
+                  : '原图和缩略图文件均缺失'
+              )
+            } else {
+              keepMediaError(request, message, '图片解析失败或当前格式不支持')
+            }
           }
-        } else if (message.contentData.type === 'video' && videoService) {
+        } else if (message.contentData.type === 'video') {
           const hashes = [
             message.contentData.md5,
             message.contentData.newMd5,
             message.contentData.rawMd5
           ].filter((value): value is string => Boolean(value))
-          const resolved = videoService.resolve(hashes)
-          const token = resolved.url?.split('/').pop()
-          const source = token ? videoService.pathForToken(token) : undefined
-          if (source) {
-            const name = `video_${index + 1}.mp4`
-            await fs.copyFile(source, join(outputDir, 'media', name))
-            message.exportMediaUrl = `media/${name}`
-            message.exportMediaType = 'video'
+          if (!videoService) {
+            keepMediaError(request, message, '数据库未连接，无法定位本地视频')
+          } else if (hashes.length === 0) {
+            keepMediaError(request, message, '视频标识不完整，无法定位本地视频')
+          } else {
+            const resolved = videoService.resolve(hashes)
+            const source = resolved.url ? videoService.pathForUrl(resolved.url) : undefined
+            if (!resolved.success || !source) {
+              keepMediaError(request, message, resolved.error || '视频文件缺失或已移动')
+            } else if (extname(source).toLowerCase() !== '.mp4') {
+              keepMediaError(request, message, '视频格式不支持，仅支持本地 MP4 文件')
+            } else {
+              const name = `video_${index + 1}.mp4`
+              await fs.copyFile(source, join(outputDir, 'media', name))
+              message.exportMediaUrl = `media/${name}`
+              message.exportMediaType = 'video'
+            }
           }
         } else if (message.contentData.type === 'sticker' && stickerService) {
           const stickerSource = message.contentData.url || message.contentData.thumbUrl
@@ -270,6 +359,8 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
             message.exportMediaUrl = `media/${name}`
             message.exportMediaType = 'sticker'
+          } else {
+            keepMediaError(request, message, result.error || '表情资源缺失或下载失败')
           }
         }
         send({

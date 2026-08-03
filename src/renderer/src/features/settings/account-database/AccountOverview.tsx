@@ -25,7 +25,8 @@ export function AccountOverview({
   isChecking,
   onCheck,
   onOpenDirectory,
-  onCopyDirectory
+  onCopyDirectory,
+  onSwitchAccount
 }: {
   selfInfo: SettingsSelfInfo | null
   connectionStatus: ConnectionOverviewStatus
@@ -34,6 +35,7 @@ export function AccountOverview({
   onCheck: () => void
   onOpenDirectory: () => void
   onCopyDirectory: () => void
+  onSwitchAccount: () => void
 }): React.ReactElement {
   const accountRoot = selfInfo?.accountRoot || ''
   return (
@@ -82,6 +84,9 @@ export function AccountOverview({
           disabled={!accountRoot}
         >
           打开账号目录
+        </button>
+        <button type="button" className="api-secondary-button" onClick={onSwitchAccount}>
+          切换账号
         </button>
       </div>
 

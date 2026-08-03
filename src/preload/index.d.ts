@@ -11,7 +11,8 @@ import {
 import type {
   DatabaseKeyEnvironment,
   DatabaseKeyStorageResult,
-  DatabaseKeyValidationResult
+  DatabaseKeyValidationResult,
+  AccountDiscoveryResult
 } from '../shared/database-key'
 import type {
   ImageDecoderSelectionResult,
@@ -115,8 +116,10 @@ declare global {
       getCacheSummary: () => Promise<CacheSummary>
       clearCache: (scope: 'bootstrap' | 'electron' | 'all') => Promise<CacheSummary>
       initDb: (
-        key: string
+        key: string,
+        accountRoot: string
       ) => Promise<boolean | { success: boolean; error?: string; monitoring?: boolean }>
+      discoverAccounts: (inputPath: string) => Promise<AccountDiscoveryResult>
       getBootstrapCache: () => Promise<{
         self?: { wxid: string; nickname: string; avatar?: string; accountRoot: string }
         contacts: Contact[]
@@ -239,14 +242,17 @@ declare global {
       ) => Promise<SaveGeneratedReportResult>
       deleteGeneratedReport: (reportId: string) => Promise<DeleteGeneratedReportResult>
       revealGroupReport: (filePath: string) => Promise<{ success: boolean; error?: string }>
-      getSavedDbKey: () => Promise<DatabaseKeyStorageResult>
+      getSavedDbKey: (accountRoot: string) => Promise<DatabaseKeyStorageResult>
       getDatabaseKeyEnvironment: () => Promise<DatabaseKeyEnvironment>
       readDatabaseKeyClipboard: () => Promise<{
         success: boolean
         value?: string
         error?: string
       }>
-      autoGetDbKey: (options?: { save?: boolean }) => Promise<{
+      autoGetDbKey: (
+        accountRoot: string,
+        options?: { save?: boolean }
+      ) => Promise<{
         success: boolean
         key?: string
         error?: string
@@ -290,9 +296,11 @@ declare global {
         request: TestImageDecryptionRequest
       ) => Promise<ImageDecryptionTestResult>
       clearImageKeyConfig: () => Promise<{ success: boolean; error?: string }>
-      pasteAndSaveDbKey: () => Promise<{ success: boolean; key?: string; error?: string }>
-      saveDbKey: (key: string) => Promise<DatabaseKeyStorageResult>
-      clearSavedDbKey: () => Promise<{ success: boolean; error?: string }>
+      pasteAndSaveDbKey: (
+        accountRoot: string
+      ) => Promise<{ success: boolean; key?: string; error?: string }>
+      saveDbKey: (accountRoot: string, key: string) => Promise<DatabaseKeyStorageResult>
+      clearSavedDbKey: (accountRoot: string) => Promise<{ success: boolean; error?: string }>
       onWcdbChange: (callback: (payload: { type: string; json: string }) => void) => () => void
       onDbKeyStatus: (callback: (payload: { message: string }) => void) => () => void
       onImageKeyStatus: (callback: (payload: { message: string }) => void) => () => void

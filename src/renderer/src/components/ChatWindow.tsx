@@ -10,6 +10,7 @@ interface ChatWindowProps {
   contact: Contact | null
   messages: Message[]
   isLoadingMessages?: boolean
+  messageHistoryStatus?: 'idle' | 'end' | 'error'
   contentFilter?: string
   onContentFilterChange?: (keyword: string) => void
   onRefresh?: () => void
@@ -25,6 +26,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   contact,
   messages,
   isLoadingMessages,
+  messageHistoryStatus,
   contentFilter,
   onContentFilterChange,
   onRefresh,
@@ -205,6 +207,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         messages={filteredMessages}
         hiddenMessageCount={0}
         isLoadingMessages={isLoadingMessages}
+        messageHistoryStatus={messageHistoryStatus}
         isGroupChat={isGroupChat}
         showAvatar={showAvatar}
         listRef={messageListRef}

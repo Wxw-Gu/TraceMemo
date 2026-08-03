@@ -24,8 +24,36 @@ export interface DatabaseKeyStorageResult {
   encryptionAvailable: boolean
 }
 
+export type AccountLoginStatus = 'current' | 'other' | 'unknown'
+
+export interface WechatAccountCandidate {
+  id: string
+  accountRoot: string
+  directoryName: string
+  wxid?: string
+  nickname?: string
+  avatar?: string
+  hasSavedDbKey: boolean
+  loginStatus: AccountLoginStatus
+  selectedByInput: boolean
+}
+
+export interface AccountDiscoveryResult {
+  success: boolean
+  inputKind?: 'root' | 'account'
+  accounts: WechatAccountCandidate[]
+  preselectedAccountId?: string
+  error?: string
+}
+
 export interface DatabaseKeyEnvironment {
   platform: NodeJS.Platform
+  osVersion: string
+  appVersion: string
+  wechatVersion: string
+  dataStructureVersion: string
+  dataDirectoryDetected: boolean
+  diagnosticSummary: string
   autoDetectSupported: boolean
   wechatRunning: boolean
   accountIdentified: boolean

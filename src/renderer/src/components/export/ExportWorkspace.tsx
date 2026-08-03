@@ -41,7 +41,7 @@ export function ExportWorkspace({
   const [includeAvatars, setIncludeAvatars] = useState(true)
   const [preferOriginal, setPreferOriginal] = useState(true)
   const [fallbackThumbnail, setFallbackThumbnail] = useState(true)
-  const [keepMissing, setKeepMissing] = useState(false)
+  const [keepMissing, setKeepMissing] = useState(true)
   const [format, setFormat] = useState<ExportFormat>('csv')
   const [zip, setZip] = useState(false)
   const [fileName, setFileName] = useState('')
@@ -158,6 +158,8 @@ export function ExportWorkspace({
 
   const handleStart = async (): Promise<void> => {
     if (!activeContact || status === 'running') return
+    // Runs only from the export button event; a fresh id is required for each job.
+    // eslint-disable-next-line react-hooks/purity
     const nextJobId = `export-${Date.now()}`
     setJobId(nextJobId)
     setProgress(null)
@@ -204,6 +206,9 @@ export function ExportWorkspace({
           : undefined,
       kinds: Array.from(selectedKinds) as ExportMessageKind[],
       includeMedia,
+      preferOriginal,
+      fallbackThumbnail,
+      keepMissing,
       includeAvatars,
       avatarUrls: exportAvatarUrls,
       nameMode,
@@ -303,20 +308,39 @@ export function ExportWorkspace({
             <h3>导出格式</h3>
             <div className="export-format-grid">
               {formatOrder.map((value) => (
-                <button key={value} type="button" className={format === value ? 'active' : ''} onClick={() => setFormat(value)}>
+                <button
+                  key={value}
+                  type="button"
+                  className={format === value ? 'active' : ''}
+                  onClick={() => setFormat(value)}
+                >
                   <strong>{formatLabels[value].label}</strong>
                   {formatLabels[value].hint && <small>{formatLabels[value].hint}</small>}
                 </button>
               ))}
             </div>
-            <p className="export-helper-text">CSV 默认最快；HTML 会包含图片、引用和其他媒体，导出时间可能较长。</p>
+            <p className="export-helper-text">
+              CSV 默认最快；HTML 会包含图片、引用和其他媒体，导出时间可能较长。
+            </p>
             {format === 'html' && (
               <div className="export-html-options">
                 <label>
-                  <input type="radio" name="html-package-top" checked={!zip} onChange={() => setZip(false)} /> HTML 资源包
+                  <input
+                    type="radio"
+                    name="html-package-top"
+                    checked={!zip}
+                    onChange={() => setZip(false)}
+                  />{' '}
+                  HTML 资源包
                 </label>
                 <label>
-                  <input type="radio" name="html-package-top" checked={zip} onChange={() => setZip(true)} /> HTML 资源包并压缩为 ZIP
+                  <input
+                    type="radio"
+                    name="html-package-top"
+                    checked={zip}
+                    onChange={() => setZip(true)}
+                  />{' '}
+                  HTML 资源包并压缩为 ZIP
                 </label>
               </div>
             )}
@@ -383,19 +407,13 @@ export function ExportWorkspace({
             <h3>消息内容</h3>
             <div className="export-kind-grid">
               {messageKinds.map(([value, label]) => (
-                <label key={value} className={`export-check-row ${value === 'video' ? 'unsupported' : ''}`}>
+                <label key={value} className="export-check-row">
                   <input
                     type="checkbox"
-                    checked={value !== 'video' && selectedKinds.has(value)}
-                    disabled={value === 'video'}
+                    checked={selectedKinds.has(value)}
                     onChange={() => toggleKind(value)}
                   />
                   <span>{label}</span>
-                  {value === 'video' && (
-                    <span className="export-unsupported-hint" title="当前版本暂不支持视频导出" aria-label="当前版本暂不支持视频导出">
-                      !
-                    </span>
-                  )}
                 </label>
               ))}
             </div>
@@ -424,12 +442,14 @@ export function ExportWorkspace({
               <span>包含图片、视频、语音及动态表情</span>
               <input
                 type="checkbox"
-                  checked={includeMedia}
-                  disabled={format !== 'html'}
+                checked={includeMedia}
+                disabled={format !== 'html'}
                 onChange={(event) => setIncludeMedia(event.target.checked)}
               />
             </label>
-            <div className={`export-media-options ${includeMedia && format === 'html' ? '' : 'disabled'}`}>
+            <div
+              className={`export-media-options ${includeMedia && format === 'html' ? '' : 'disabled'}`}
+            >
               <label className="export-check-row">
                 <input
                   type="checkbox"
@@ -458,7 +478,9 @@ export function ExportWorkspace({
                 <span>媒体缺失时保留占位说明</span>
               </label>
             </div>
-            <p className="export-helper-text">资源文件仅在 HTML 导出中生效，CSV、JSON 和 Markdown 只保留文本内容。</p>
+            <p className="export-helper-text">
+              资源文件仅在 HTML 导出中生效，CSV、JSON 和 Markdown 只保留文本内容。
+            </p>
             <div className="export-resource-statuses">
               <span>图片解密：已就绪</span>
               <span>视频资源：可用</span>

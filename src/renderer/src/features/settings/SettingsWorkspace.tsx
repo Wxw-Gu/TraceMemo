@@ -30,7 +30,8 @@ export function SettingsWorkspace({
   onAIRuntimeChange,
   onNotice,
   onOpenSettings,
-  onAppearanceChange
+  onAppearanceChange,
+  onSwitchAccount
 }: {
   selectedCategory: SettingsCategoryId
   onCategoryChange: (id: SettingsCategoryId) => void
@@ -47,7 +48,13 @@ export function SettingsWorkspace({
   onAIRuntimeChange: (config: AIRuntimeModelConfig) => void
   onNotice: (message: string) => void
   onOpenSettings: () => void
-  onAppearanceChange: (settings: { theme: 'system' | 'light' | 'dark'; compactMode: boolean }) => void
+  onAppearanceChange: (settings: {
+    theme: 'system' | 'light' | 'dark'
+    compactMode: boolean
+  }) => void
+  onSwitchAccount: (
+    account: import('../../../../shared/database-key').WechatAccountCandidate
+  ) => Promise<void>
 }): React.ReactElement {
   const renderSelectedPage = (): React.ReactElement => {
     switch (selectedCategory) {
@@ -59,6 +66,7 @@ export function SettingsWorkspace({
             dbConnecting={dbConnecting}
             selfInfo={selfInfo}
             onNotice={onNotice}
+            onSwitchAccount={onSwitchAccount}
           />
         )
       case 'database-key':
@@ -87,9 +95,7 @@ export function SettingsWorkspace({
       case 'cache-cleanup':
         return <CacheCleanupPage onNotice={onNotice} />
       case 'appearance':
-        return (
-          <AppearancePage onNotice={onNotice} onAppearanceChange={onAppearanceChange} />
-        )
+        return <AppearancePage onNotice={onNotice} onAppearanceChange={onAppearanceChange} />
       case 'about':
         return <AboutPage onNotice={onNotice} />
       default:

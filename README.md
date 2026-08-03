@@ -197,10 +197,18 @@ WechatExplorer 希望不仅仅是一个聊天记录查看工具，更希望成�
 
 ### 下载并安装
 
-从 [GitHub Releases](https://github.com/Wxw-Gu/WechatExplorer/releases) 下载对应系统的安装包：
+当前 WechatExplorer / 迹忆版本：`v2.1.6`。
 
-- Windows：下载 `-setup.exe` 并按安装向导完成安装。
-- macOS：下载 `.dmg`，将 WechatExplorer 拖入“应用程序”。首次打开若被系统拦截，请在“系统设置 → 隐私与安全性”中允许打开。
+应用安装包：[WechatExplorer GitHub Releases](https://github.com/Wxw-Gu/WechatExplorer/releases)。Windows 选择 `-setup.exe`，macOS 按处理器架构选择对应 `.dmg`。
+
+| 系统    | 已测试的微信客户端                                                                                |
+| ------- | ------------------------------------------------------------------------------------------------- |
+| Windows | [微信 Windows `4.1.9.57`](https://github.com/iibob/wechat-win-archive/releases#release-v4.1.9.57) |
+| macOS   | [微信 macOS `4.1.8.100`](https://github.com/zsbai/wechat-versions/releases/tag/4.1.8.100)         |
+
+微信客户端来自上表对应的第三方版本存档，请自行核对来源与文件完整性。
+
+正常覆盖安装只会替换应用程序文件，WechatExplorer / 迹忆不会主动删除或修改微信原始聊天记录；但应用缓存和本地设置可能随版本升级变化。升级前仍建议使用微信官方迁移或备份功能备份重要记录，不要将唯一副本保存在单一设备。
 
 ### 连接微信
 
