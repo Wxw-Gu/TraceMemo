@@ -335,9 +335,10 @@ export function getCachedMessagePage(
       writeCacheFile(cache)
     }
   }
+  const messages = bucket?.items || []
   return {
-    hit: Boolean(bucket) && !containsLegacyMisparsedAppMessage(bucket?.items || []),
-    messages: bucket?.items || [],
+    hit: messages.length > 0 && !containsLegacyMisparsedAppMessage(messages),
+    messages,
     groupSnapshot: cache?.groupSnapshots?.[userMd5]?.snapshot
   }
 }
@@ -386,7 +387,16 @@ export function saveCachedMessages(
   const cache = loadOrCreate(accountRoot)
   if (!cache) return
   const nextMessages = cache.messages || {}
-  nextMessages[messageBucketKey(userMd5, startTime, endTime)] = {
+  const key = messageBucketKey(userMd5, startTime, endTime)
+  if (messages.length === 0) {
+    if (!nextMessages[key]) return
+    delete nextMessages[key]
+    cache.messages = nextMessages
+    cache.updatedAt = Date.now()
+    writeCacheFile(cache)
+    return
+  }
+  nextMessages[key] = {
     updatedAt: Date.now(),
     startTime,
     endTime,

@@ -718,7 +718,6 @@ app.whenReady().then(async () => {
       _sessionId?: string,
       options?: { force?: boolean; preferThumbnail?: boolean }
     ) => {
-      void _sessionId
       if (!imageDecryptService) {
         const { xorKey, aesKey } = getConfiguredImageKeys()
         if (!aesKey) {
@@ -734,6 +733,12 @@ app.whenReady().then(async () => {
       const imageDatName = typeof imageDatNameOrThumb === 'string' ? imageDatNameOrThumb : undefined
       const force = options?.force === true
       const preferThumbnail = options?.preferThumbnail === true
+      const client = chat.getChatDb()?.getWcdb4Client()
+      const sessionMd5 = _sessionId
+        ? /^[a-f0-9]{32}$/i.test(_sessionId)
+          ? _sessionId.toLowerCase()
+          : client?.md5(_sessionId)
+        : undefined
       const imageCacheKey = [
         imageMd5 || '',
         imageDatName || '',
@@ -749,12 +754,16 @@ app.whenReady().then(async () => {
         }
       }
       let filePath = force
-        ? imageDecryptService.findImageFile(imageMd5, imageDatName, { allowThumbnail: false })
+        ? imageDecryptService.findImageFile(imageMd5, imageDatName, {
+            allowThumbnail: false,
+            sessionMd5
+          })
         : null
       if (!filePath) {
         filePath = imageDecryptService.findImageFile(imageMd5, imageDatName, {
           allowThumbnail: true,
-          preferThumbnail
+          preferThumbnail,
+          sessionMd5
         })
       }
       if (!filePath) {

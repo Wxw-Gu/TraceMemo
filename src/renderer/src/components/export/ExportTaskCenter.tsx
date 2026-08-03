@@ -37,6 +37,11 @@ export function ExportTaskCenter({
                   <small>
                     {task.format.toUpperCase()} · {task.progress.phase}
                   </small>
+                  {task.progress.error && (
+                    <small className="export-task-error" title={task.progress.error}>
+                      {task.progress.error}
+                    </small>
+                  )}
                 </span>
                 <span className="export-task-progress">
                   <i style={{ width: `${task.progress.percent ?? 0}%` }} />

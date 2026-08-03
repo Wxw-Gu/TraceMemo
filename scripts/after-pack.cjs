@@ -1,15 +1,73 @@
-const { existsSync, renameSync } = require('node:fs')
+const { cpSync, existsSync, renameSync, rmSync } = require('node:fs')
 const { execFileSync } = require('node:child_process')
+const { listPackage } = require('@electron/asar')
 const path = require('node:path')
 
 const COMPATIBILITY_NAME = 'Electron'
 const HELPER_SUFFIXES = ['', ' (Plugin)', ' (Renderer)', ' (GPU)']
+const REQUIRED_RUNTIME_PACKAGES = [
+  '@electron-toolkit/preload',
+  '@electron-toolkit/utils',
+  'electron-updater',
+  'ffmpeg-static',
+  'fs-extra',
+  'jsonrepair',
+  'koffi'
+]
 
 function setPlistValue(plistPath, key, value) {
   execFileSync('/usr/libexec/PlistBuddy', ['-c', `Set :${key} ${value}`, plistPath])
 }
 
+function validateRuntimeDependencies(runtimeResources) {
+  const appAsar = path.join(runtimeResources, 'app.asar')
+  if (!existsSync(appAsar)) throw new Error(`Missing packaged application archive: ${appAsar}`)
+
+  const packagedFiles = new Set(listPackage(appAsar))
+  const missingPackages = REQUIRED_RUNTIME_PACKAGES.filter(
+    (packageName) => !packagedFiles.has(`/node_modules/${packageName}/package.json`)
+  )
+  if (missingPackages.length > 0) {
+    throw new Error(
+      `Missing packaged runtime dependencies: ${missingPackages.join(', ')}. ` +
+        'Install dependencies with the repository node-linker setting before packaging.'
+    )
+  }
+}
+
 exports.default = async function afterPack(context) {
+  const productName = context.packager.appInfo.productFilename
+  const runtimeResources =
+    context.electronPlatformName === 'darwin'
+      ? path.join(context.appOutDir, `${productName}.app`, 'Contents', 'Resources')
+      : path.join(context.appOutDir, 'resources')
+  const silkWasmSource = path.join(context.packager.projectDir, 'node_modules', 'silk-wasm')
+  const silkWasmTarget = path.join(
+    runtimeResources,
+    'app.asar.unpacked',
+    'node_modules',
+    'silk-wasm'
+  )
+  if (!existsSync(silkWasmSource)) {
+    throw new Error(`Missing silk-wasm dependency: ${silkWasmSource}`)
+  }
+  rmSync(silkWasmTarget, { recursive: true, force: true })
+  cpSync(silkWasmSource, silkWasmTarget, { recursive: true, dereference: true })
+  const silkWasm = path.join(silkWasmTarget, 'lib', 'silk.wasm')
+  if (!existsSync(silkWasm)) {
+    throw new Error(`Missing unpacked silk-wasm runtime: ${silkWasm}`)
+  }
+  validateRuntimeDependencies(runtimeResources)
+  const ffmpegName = context.electronPlatformName === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  const ffmpegPath = path.join(
+    runtimeResources,
+    'app.asar.unpacked',
+    'node_modules',
+    'ffmpeg-static',
+    ffmpegName
+  )
+  if (!existsSync(ffmpegPath)) throw new Error(`Missing unpacked ffmpeg runtime: ${ffmpegPath}`)
+
   if (context.electronPlatformName === 'win32') {
     const koffiNative = path.join(
       context.appOutDir,
@@ -29,7 +87,6 @@ exports.default = async function afterPack(context) {
 
   if (context.electronPlatformName !== 'darwin') return
 
-  const productName = context.packager.appInfo.productFilename
   const appPath = path.join(context.appOutDir, `${productName}.app`)
   const contentsPath = path.join(appPath, 'Contents')
   const sourceExecutable = path.join(contentsPath, 'MacOS', productName)

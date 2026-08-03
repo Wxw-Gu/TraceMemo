@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync, readdirSync } from 'fs'
 import crypto from 'crypto'
 import os from 'os'
 import { Wcdb4Client } from './wcdb4-client'
+import { decodeWxgf } from './wxgf-decoder'
 
 const imageDecryptDebugEnabled = process.env['WECHATEXPLORER_DEBUG_IMAGE'] === '1'
 const imageDecryptLog = (...args: unknown[]): void => {
@@ -96,7 +97,13 @@ export class ImageDecryptService {
   findImageFile(
     md5?: string,
     imageDatName?: string,
-    options?: { allowThumbnail?: boolean; accountDir?: string; preferThumbnail?: boolean }
+    options?: {
+      allowThumbnail?: boolean
+      accountDir?: string
+      preferThumbnail?: boolean
+      sessionMd5?: string
+      createTime?: number
+    }
   ): string | null {
     const allowThumbnail = options?.allowThumbnail !== false
     const normalizedMd5 = this.normalizeDatBase(md5 || '')
@@ -106,7 +113,9 @@ export class ImageDecryptService {
       normalizedDatName,
       allowThumbnail ? 'thumb' : 'original',
       options?.preferThumbnail ? 'prefer-thumb' : 'prefer-original',
-      options?.accountDir || ''
+      options?.accountDir || '',
+      options?.sessionMd5 || '',
+      options?.createTime || 0
     ].join('|')
     const cachedPath = this.imagePathCache.get(pathCacheKey)
     if (cachedPath && existsSync(cachedPath)) return cachedPath
@@ -115,6 +124,7 @@ export class ImageDecryptService {
       if (path) this.imagePathCache.set(pathCacheKey, path)
       return path
     }
+    let thumbnailFallback: string | null = null
 
     // 测试场景下可显式指定根目录；不传则维持原 getAccountDir() 行为
     const accountDir =
@@ -129,6 +139,45 @@ export class ImageDecryptService {
       allowThumbnail
     })
 
+    const attachDir = join(accountDir, 'msg', 'attach')
+    if (existsSync(attachDir) && options?.sessionMd5) {
+      const sessionAttachment = this.findSessionAttachment(
+        attachDir,
+        this.uniq([normalizedDatName, normalizedMd5]),
+        options.sessionMd5,
+        options.createTime,
+        allowThumbnail,
+        options.preferThumbnail
+      )
+      if (sessionAttachment) {
+        imageDecryptLog('[ImageDecrypt] session attachment hit:', sessionAttachment)
+        return rememberPath(sessionAttachment)
+      }
+    }
+
+    if (existsSync(attachDir) && !options?.preferThumbnail) {
+      for (const key of this.uniq([normalizedDatName, normalizedMd5])) {
+        const original = this.fastProbabilisticSearch(attachDir, key, false, false)
+        if (original) {
+          imageDecryptLog('[ImageDecrypt] original attachment hit:', original)
+          return rememberPath(original)
+        }
+      }
+    }
+
+    if (options?.preferThumbnail && options.sessionMd5) {
+      const bubblePreview = this.findBubblePreview(
+        accountDir,
+        this.uniq([normalizedDatName, normalizedMd5]),
+        options.sessionMd5,
+        options.createTime
+      )
+      if (bubblePreview) {
+        imageDecryptLog('[ImageDecrypt] bubble preview hit:', bubblePreview)
+        return rememberPath(bubblePreview)
+      }
+    }
+
     for (const key of this.uniq([normalizedMd5, normalizedDatName])) {
       const hardlink = this.wcdb4Client?.resolveImageHardlink(key)
       const fullPath = typeof hardlink?.full_path === 'string' ? hardlink.full_path : ''
@@ -138,15 +187,18 @@ export class ImageDecryptService {
           allowThumbnail,
           options?.preferThumbnail
         )
-        if (allowThumbnail || !this.isThumbnailName(basename(selected))) {
-          imageDecryptLog('[ImageDecrypt] hardlink hit:', selected)
-          return rememberPath(selected)
+        const isThumbnail = this.isThumbnailName(basename(selected))
+        if (isThumbnail && !allowThumbnail) continue
+        if (isThumbnail && !options?.preferThumbnail) {
+          thumbnailFallback ||= selected
+          continue
         }
+        imageDecryptLog('[ImageDecrypt] hardlink hit:', selected)
+        return rememberPath(selected)
       }
     }
 
     // 尝试 WechatExplorer 的目录结构: msg/attach/{hash}/{YYYY-MM}/Img/
-    const attachDir = join(accountDir, 'msg', 'attach')
     if (!existsSync(attachDir)) {
       imageDecryptLog('[ImageDecrypt] attach dir not found:', attachDir)
       return rememberPath(
@@ -179,6 +231,14 @@ export class ImageDecryptService {
       options?.preferThumbnail
     )
     if (legacyHit) return rememberPath(legacyHit)
+
+    if (thumbnailFallback) {
+      imageDecryptLog(
+        '[ImageDecrypt] original missing, using hardlink thumbnail:',
+        thumbnailFallback
+      )
+      return rememberPath(thumbnailFallback)
+    }
 
     imageDecryptLog('[ImageDecrypt] findImageFile miss for:', searchKeys)
     return null
@@ -302,6 +362,78 @@ export class ImageDecryptService {
     return null
   }
 
+  private findBubblePreview(
+    accountDir: string,
+    imageKeys: string[],
+    sessionMd5: string,
+    createTime?: number
+  ): string | null {
+    const date = createTime ? new Date(createTime * 1000) : null
+    const months = date
+      ? [`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`]
+      : []
+    for (const month of months) {
+      const bubbleDir = join(accountDir, 'cache', month, 'Message', sessionMd5, 'Bubble')
+      if (!existsSync(bubbleDir)) continue
+      const candidates = imageKeys.flatMap((key) =>
+        [`${key}_b.dat`, `${key}_w.dat`, `${key}_c.dat`, `${key}_t.dat`].map((name) =>
+          join(bubbleDir, name)
+        )
+      )
+      const found = this.getLargestExistingPath(candidates, true, true)
+      if (found) return found
+    }
+    return null
+  }
+
+  private findSessionAttachment(
+    attachDir: string,
+    imageKeys: string[],
+    sessionMd5: string,
+    createTime?: number,
+    allowThumbnail = true,
+    preferThumbnail = false
+  ): string | null {
+    const normalizedSession = String(sessionMd5 || '')
+      .trim()
+      .toLowerCase()
+    if (!/^[a-f0-9]{32}$/.test(normalizedSession)) return null
+    const sessionDir = join(attachDir, normalizedSession)
+    if (!existsSync(sessionDir)) return null
+
+    const preferredMonth = createTime
+      ? (() => {
+          const date = new Date(createTime * 1000)
+          return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+        })()
+      : ''
+    let months: string[] = []
+    try {
+      months = readdirSync(sessionDir)
+        .filter((name) => /^\d{4}-\d{2}$/.test(name))
+        .sort()
+        .reverse()
+    } catch {
+      return null
+    }
+    if (preferredMonth) {
+      months = [preferredMonth, ...months.filter((month) => month !== preferredMonth)]
+    }
+
+    for (const month of months) {
+      for (const subDir of ['Img', 'Image', 'image']) {
+        const imageDir = join(sessionDir, month, subDir)
+        if (!existsSync(imageDir)) continue
+        const candidates = imageKeys.flatMap((key) =>
+          this.buildPreferredDatNames(key).map((name) => join(imageDir, name))
+        )
+        const found = this.getLargestExistingPath(candidates, allowThumbnail, preferThumbnail)
+        if (found) return found
+      }
+    }
+    return null
+  }
+
   private recursiveFindDat(
     dir: string,
     datName: string,
@@ -418,8 +550,9 @@ export class ImageDecryptService {
     const decrypted = this.decryptImage(datPath)
     if (!decrypted) return null
 
-    const unwrapped = this.unwrapWxgf(decrypted)
-    const ext = this.detectImageExtension(unwrapped)
+    const wxgf = this.decodeWxgf(decrypted)
+    const unwrapped = wxgf?.buffer || this.unwrapEmbeddedImage(decrypted)
+    const ext = wxgf?.extension || this.detectImageExtension(unwrapped)
     if (!ext) {
       imageDecryptLog('[ImageDecrypt] unknown image format')
       return null
@@ -494,16 +627,16 @@ export class ImageDecryptService {
     const aesSize = this.bytesToInt32(header.subarray(6, 10))
     const xorSize = this.bytesToInt32(header.subarray(10, 14))
 
-    // 对齐 AES 数据到 16 字节边界
+    // Header stores the plaintext length. PKCS#7 adds a full block when it is already aligned.
     const remainder = ((aesSize % 16) + 16) % 16
-    const alignedAesSize = aesSize + (16 - remainder)
+    const encryptedAesSize = aesSize + (16 - remainder)
 
-    if (alignedAesSize > data.length) {
+    if (encryptedAesSize > data.length) {
       throw new Error('文件格式异常：AES 数据长度超过文件实际长度')
     }
 
     // 解密 AES 数据
-    const aesData = data.subarray(0, alignedAesSize)
+    const aesData = data.subarray(0, encryptedAesSize)
     let unpadded: Buffer = Buffer.alloc(0)
     if (aesData.length > 0) {
       const decipher = crypto.createDecipheriv('aes-128-ecb', aesKey, null)
@@ -513,7 +646,7 @@ export class ImageDecryptService {
     }
 
     // 解密 XOR 数据
-    const remaining = data.subarray(alignedAesSize)
+    const remaining = data.subarray(encryptedAesSize)
     if (xorSize < 0 || xorSize > remaining.length) {
       throw new Error('文件格式异常：XOR 数据长度不合法')
     }
@@ -581,7 +714,9 @@ export class ImageDecryptService {
     if (!lower) return ''
     const file = lower.split('/').pop()?.split('\\').pop() || lower
     const withoutDat = file.endsWith('.dat') ? file.slice(0, -4) : file
-    return withoutDat.replace(/(_thumb|\.thumb|_hd|\.hd|_h|\.h|_t|\.t|_c|\.c)$/i, '').toLowerCase()
+    return withoutDat
+      .replace(/(_thumb|\.thumb|_hd|\.hd|_h|\.h|_t|\.t|_b|\.b|_w|\.w|_c|\.c)$/i, '')
+      .toLowerCase()
   }
 
   private buildPreferredDatNames(baseName: string): string[] {
@@ -653,14 +788,22 @@ export class ImageDecryptService {
 
   private isThumbnailName(fileName: string): boolean {
     const lower = fileName.toLowerCase()
-    return lower.includes('_t.dat') || lower.includes('_thumb.dat') || lower.includes('.thumb.dat')
+    return /(?:_t|_thumb|\.thumb|_b|_w|_c)\.dat$/.test(lower)
   }
 
   isThumbnailFile(filePath: string): boolean {
     return this.isThumbnailName(basename(filePath))
   }
 
-  private unwrapWxgf(buffer: Buffer): Buffer {
+  private decodeWxgf(buffer: Buffer): { buffer: Buffer; extension: '.jpg' | '.gif' } | null {
+    if (!buffer.subarray(0, 4).equals(Buffer.from('wxgf'))) return null
+    const decoded = decodeWxgf(buffer)
+    if (!decoded) imageDecryptLog('[ImageDecrypt] wxgf decoder failed')
+    else imageDecryptLog('[ImageDecrypt] wxgf decoded:', decoded.extension, decoded.buffer.length)
+    return decoded
+  }
+
+  private unwrapEmbeddedImage(buffer: Buffer): Buffer {
     if (
       buffer.length < 20 ||
       buffer[0] !== 0x77 ||

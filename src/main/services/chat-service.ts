@@ -54,8 +54,12 @@ export interface FormattedMessage {
   voiceDuration?: number
   exportMediaUrl?: string
   exportMediaType?: 'image' | 'video' | 'sticker'
+  exportFileUrl?: string
+  exportFileName?: string
+  exportFileSize?: number
   exportShowAvatar?: boolean
   exportMediaError?: string
+  exportOmitIfMissing?: boolean
   exportAvatarUrl?: string
   localId?: number
   serverId?: string
@@ -245,7 +249,13 @@ function listSourceMessages(
       const patContent =
         system.type === 'system'
           ? { ...system, pat: true }
-          : { type: 'system' as const, content: String(content || '').replace(/<[^>]+>/g, '').trim(), pat: true }
+          : {
+              type: 'system' as const,
+              content: String(content || '')
+                .replace(/<[^>]+>/g, '')
+                .trim(),
+              pat: true
+            }
       contentData = patContent
       content = patContent.content
       displayType = '系统消息'
@@ -259,11 +269,9 @@ function listSourceMessages(
       try {
         const isQuotePayload = /<refermsg\b/i.test(content)
         const hasStickerPayload =
-          /<(?:emoji|sticker|emoticon)\b/i.test(content) ||
-          /<type>\s*47\s*<\/type>/i.test(content)
+          /<(?:emoji|sticker|emoticon)\b/i.test(content) || /<type>\s*47\s*<\/type>/i.test(content)
         const rowSticker =
-          inferredMsgType === 47 ||
-          (inferredMsgType === 49 && !isQuotePayload && hasStickerPayload)
+          inferredMsgType === 47 || (inferredMsgType === 49 && !isQuotePayload && hasStickerPayload)
             ? parseStickerMessageFromRow(msg, content)
             : undefined
         const parsedContent = parseMessageContent(content, inferredMsgType)
@@ -305,12 +313,15 @@ function listSourceMessages(
           contentData = {
             ...parsed,
             thumbDatName: parsed.thumbDatName || parseImageDatNameFromRow(msg),
-            thumbDataUrl:
-              parsed.thumbDataUrl || parseImageBufferDataUrlFromRow(msg.raw || msg)
+            thumbDataUrl: parsed.thumbDataUrl || parseImageBufferDataUrlFromRow(msg.raw || msg)
           }
         } else if (parsed.type !== 'system') {
           if (parsed.type === 'sticker' && !parsed.url && parsed.md5) {
-            parsed.url = wcdb4Client.resolveEmoticonCdnUrl(parsed.md5)
+            const info = wcdb4Client.resolveEmoticonInfo(parsed.md5)
+            parsed.url = info?.cdnUrl || info?.externUrl || info?.thumbUrl
+            parsed.thumbUrl ||= info?.thumbUrl
+            parsed.encryptUrl ||= info?.encryptUrl
+            parsed.aeskey ||= info?.aesKey
           }
           contentData = parsed
         }
@@ -337,7 +348,11 @@ function listSourceMessages(
       const parsed = parseStickerMessageFromRow(msg, content)
       if (parsed.type === 'sticker') {
         if (!parsed.url && parsed.md5) {
-          parsed.url = wcdb4Client.resolveEmoticonCdnUrl(parsed.md5)
+          const info = wcdb4Client.resolveEmoticonInfo(parsed.md5)
+          parsed.url = info?.cdnUrl || info?.externUrl || info?.thumbUrl
+          parsed.thumbUrl ||= info?.thumbUrl
+          parsed.encryptUrl ||= info?.encryptUrl
+          parsed.aeskey ||= info?.aesKey
         }
         content = ''
         contentData = parsed
@@ -389,6 +404,19 @@ export function listMessages(
   return mergeRecallArchiveMessages(userMd5, sourceMessages, startTime, endTime, options?.limit)
 }
 
+export async function listMessagesForExport(
+  userMd5: string,
+  startTime?: number,
+  endTime?: number
+): Promise<FormattedMessage[]> {
+  if (!dbRef) return []
+  const rawMessages = await dbRef.getUserMessagesForExport(userMd5, startTime, endTime)
+  const sourceMessages = listSourceMessages(userMd5, startTime, endTime, undefined, rawMessages)
+  const username = dbRef.getWcdb4Client().getUsernameByMd5(userMd5) || ''
+  recordRecallArchiveMessages(userMd5, username, sourceMessages)
+  return mergeRecallArchiveMessages(userMd5, sourceMessages, startTime, endTime)
+}
+
 export async function listMessagesAsync(
   userMd5: string,
   startTime?: number,
@@ -397,13 +425,7 @@ export async function listMessagesAsync(
 ): Promise<FormattedMessage[]> {
   if (!dbRef) return []
   const rawMessages = await dbRef.getUserMessagesAsync(userMd5, startTime, endTime, options)
-  const sourceMessages = listSourceMessages(
-    userMd5,
-    startTime,
-    endTime,
-    options,
-    rawMessages
-  )
+  const sourceMessages = listSourceMessages(userMd5, startTime, endTime, options, rawMessages)
   const username = dbRef.getWcdb4Client().getUsernameByMd5(userMd5) || ''
   recordRecallArchiveMessages(userMd5, username, sourceMessages)
   return mergeRecallArchiveMessages(userMd5, sourceMessages, startTime, endTime, options?.limit)

@@ -5,6 +5,7 @@ export type ExportMessageKind =
   | 'text'
   | 'image'
   | 'video'
+  | 'file'
   | 'voice'
   | 'sticker'
   | 'share'
@@ -23,6 +24,9 @@ export interface ExportRequest {
   endTime?: number
   kinds: ExportMessageKind[]
   includeMedia: boolean
+  preferOriginal?: boolean
+  fallbackThumbnail?: boolean
+  keepMissing?: boolean
   includeAvatars?: boolean
   avatarUrls?: Record<string, string>
   nameMode?: ExportNameMode
@@ -54,6 +58,12 @@ export interface ExportResult {
   success: boolean
   outputPath?: string
   messageCount?: number
+  media?: {
+    requested: number
+    exported: number
+    failed: number
+    warnings: string[]
+  }
   error?: string
 }
 export type ExportRendererApi = {

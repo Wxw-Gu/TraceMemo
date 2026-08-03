@@ -42,10 +42,11 @@ let writeQueue: Promise<void> = Promise.resolve()
 
 function messageIdentity(message: Message): string {
   if (message.recoveredFromRecallJournal) {
-    return `recovered:${message.localId || 0}:${message.serverId || message.id}`
+    return `recovered:${message.localId || 0}:${message.createTime || 0}:${message.serverId || message.id}`
   }
-  if (message.localId) return `local:${message.localId}`
-  if (message.serverId) return `server:${message.serverId}`
+  if (message.localId) return `local:${message.localId}:${message.createTime || 0}`
+  const serverId = String(message.serverId || '').trim()
+  if (serverId && serverId !== '0') return `server:${serverId}`
   if (message.id) return `id:${message.id}`
   return `${message.createTime || 0}:${message.from}:${message.type}:${message.content}`
 }

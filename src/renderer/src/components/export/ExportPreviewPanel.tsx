@@ -1,5 +1,6 @@
 import React from 'react'
 import type { Message } from './exportTypes'
+import type { ExportResult } from '../../../../shared/export'
 import type { ExportJobProgress, ExportStatus, SelfInfo } from './exportTypes'
 import { formatPreviewTime } from './exportUtils'
 
@@ -10,6 +11,7 @@ interface ExportPreviewPanelProps {
   previewBytes: number
   selfInfo: SelfInfo | null
   progress: ExportJobProgress | null
+  result: ExportResult | null
   jobId: string
   onCancel: (jobId: string) => void
   onReveal: (path: string) => void
@@ -22,6 +24,7 @@ export function ExportPreviewPanel({
   previewBytes,
   selfInfo,
   progress,
+  result,
   jobId,
   onCancel,
   onReveal
@@ -137,12 +140,24 @@ export function ExportPreviewPanel({
               导出消息<strong>{progress?.processed.toLocaleString() || '已完成'}</strong>
             </span>
             <span>
-              媒体资源<strong>按设置处理</strong>
+              媒体资源
+              <strong>
+                {result?.media
+                  ? `${result.media.exported}/${result.media.requested}`
+                  : '按设置处理'}
+              </strong>
             </span>
             <span>
               输出位置<strong>已保存</strong>
             </span>
           </div>
+          {result?.media?.warnings.length ? (
+            <div className="export-complete-warnings">
+              {result.media.warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          ) : null}
           <button
             type="button"
             className="export-primary-button"

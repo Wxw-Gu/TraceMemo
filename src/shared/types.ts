@@ -30,8 +30,12 @@ export interface Message {
   recoveredFromRecallJournal?: boolean
   exportMediaUrl?: string
   exportMediaType?: 'image' | 'video' | 'sticker'
+  exportFileUrl?: string
+  exportFileName?: string
+  exportFileSize?: number
   exportShowAvatar?: boolean
   exportMediaError?: string
+  exportOmitIfMissing?: boolean
   exportAvatarUrl?: string
 }
 

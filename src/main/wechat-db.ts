@@ -162,9 +162,21 @@ export class WechatDb {
     const username = this.chatMd5ToUsername.get(userMd5)
     if (!username) return []
     return this.wcdb4Client.getMessages(username, startTime, endTime, options).map((message) => ({
-      ...message,
-      ...message.raw
+      ...message.raw,
+      ...message
     }))
+  }
+
+  public async getUserMessagesForExport(
+    userMd5: string,
+    startTime?: number,
+    endTime?: number
+  ): Promise<WechatMessage[]> {
+    this.ensureChatTableMapping()
+    const username = this.chatMd5ToUsername.get(userMd5)
+    if (!username) return []
+    const messages = await this.wcdb4Client.getMessagesForExport(username, startTime, endTime)
+    return messages.map((message) => ({ ...message.raw, ...message }))
   }
 
   public async getUserMessagesAsync(
@@ -176,13 +188,8 @@ export class WechatDb {
     this.ensureChatTableMapping()
     const username = this.chatMd5ToUsername.get(userMd5)
     if (!username) return []
-    const messages = await this.wcdb4Client.getMessagesAsync(
-      username,
-      startTime,
-      endTime,
-      options
-    )
-    return messages.map((message) => ({ ...message, ...message.raw }))
+    const messages = await this.wcdb4Client.getMessagesAsync(username, startTime, endTime, options)
+    return messages.map((message) => ({ ...message.raw, ...message }))
   }
 
   public searchAllMessages(keyword: string): string | null {

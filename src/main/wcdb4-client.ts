@@ -57,6 +57,15 @@ export interface Wcdb4VideoHardlink {
   [key: string]: unknown
 }
 
+export interface Wcdb4EmoticonInfo {
+  md5?: string
+  aesKey?: string
+  thumbUrl?: string
+  cdnUrl?: string
+  externUrl?: string
+  encryptUrl?: string
+}
+
 type KoffiModule = {
   load: (libraryPath: string) => KoffiLibrary
   decode: (ptr: unknown, type: string, length: number) => string
@@ -173,9 +182,12 @@ export function bootstrapWcdbNativeAsync(
     ) => number
     const resourceRoots = Array.from(
       new Set(
-        [libDir, path.dirname(libDir), process.env.WCDB_RESOURCES_PATH || '', ...getResourceRoots()].filter(
-          Boolean
-        )
+        [
+          libDir,
+          path.dirname(libDir),
+          process.env.WCDB_RESOURCES_PATH || '',
+          ...getResourceRoots()
+        ].filter(Boolean)
       )
     )
     let initOk = false
@@ -241,6 +253,7 @@ export class Wcdb4Client {
   private groupNicknameCache = new Map<string, Map<string, string>>()
   private cachedSessions: Wcdb4Session[] | null = null
   private cachedChatTables: { name: string; db_number: string }[] | null = null
+  private messageCursorQueue: Promise<void> = Promise.resolve()
 
   private wcdbShutdown: (() => number) | null = null
   private wcdbOpenAccount:
@@ -809,6 +822,14 @@ export class Wcdb4Client {
     return messages
   }
 
+  async getMessagesForExport(
+    username: string,
+    startTime?: number,
+    endTime?: number
+  ): Promise<Wcdb4Message[]> {
+    return this.getMessagesAsync(username, startTime, endTime)
+  }
+
   async getMessagesAsync(
     username: string,
     startTime?: number,
@@ -817,7 +838,14 @@ export class Wcdb4Client {
   ): Promise<Wcdb4Message[]> {
     const startedAt = Date.now()
     const maxRows = this.normalizeMessageLimit(options.limit)
-    const messages = await this.getMessagesByCursorAsync(username, startTime, endTime, maxRows)
+    const read = this.messageCursorQueue.then(() =>
+      this.getMessagesByCursorAsync(username, startTime, endTime, maxRows)
+    )
+    this.messageCursorQueue = read.then(
+      () => undefined,
+      () => undefined
+    )
+    const messages = await read
     console.log(
       `[WCDB4] getMessages async username=${username} rows=${messages.length} cost=${Date.now() - startedAt}ms`
     )
@@ -836,7 +864,8 @@ export class Wcdb4Client {
     username: string,
     startTime?: number,
     endTime?: number,
-    limit?: number
+    limit?: number,
+    exhaustive = false
   ): Wcdb4Message[] {
     if (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery) return []
 
@@ -852,14 +881,31 @@ export class Wcdb4Client {
     const begin = this.normalizeTimestamp(startTime || 0)
     const end = this.normalizeTimestamp(endTime || 0)
     const where = [
+      '"create_time" > 0',
       begin > 0 ? `"create_time" >= ${begin}` : '',
       end > 0 ? `"create_time" <= ${end}` : ''
     ].filter(Boolean)
     const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : ''
+    const failedStores: string[] = []
 
     for (const table of tables) {
       try {
         const order = limit ? 'DESC' : 'ASC'
+        if (exhaustive && !limit) {
+          const pageSize = 1000
+          let offset = 0
+          while (true) {
+            const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${pageSize} OFFSET ${offset}`
+            const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+              this.wcdbExecQuery!(handle, 'message', table.dbPath, sql, outJson)
+            )
+            const page = Array.isArray(rows) ? rows : []
+            allRows.push(...page)
+            if (page.length < pageSize) break
+            offset += page.length
+          }
+          continue
+        }
         const rowLimit = limit || 5000
         const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
         const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
@@ -867,11 +913,18 @@ export class Wcdb4Client {
         )
         if (Array.isArray(rows)) allRows.push(...rows)
       } catch (error) {
+        failedStores.push(`${table.dbPath}:${table.tableName}`)
         console.warn(
           `[WCDB4] message table scan failed username=${username} db=${table.dbPath} table=${table.tableName}:`,
           error
         )
       }
+    }
+
+    if (exhaustive && failedStores.length > 0) {
+      throw new Error(
+        `有 ${failedStores.length} 个消息分片读取失败，已停止导出以避免产生不完整记录`
+      )
     }
 
     return this.finalizeMessages(username, allRows, startTime, endTime, limit)
@@ -1432,9 +1485,10 @@ export class Wcdb4Client {
     const nicknames = new Map<string, string>()
     if (!this.wcdbGetGroupNicknames || !chatroomId) return nicknames
 
-    const rows = await this.callJsonAsync<
-      Record<string, string> | Record<string, unknown>[]
-    >(this.wcdbGetGroupNicknames as unknown as KoffiAsyncFunction, chatroomId)
+    const rows = await this.callJsonAsync<Record<string, string> | Record<string, unknown>[]>(
+      this.wcdbGetGroupNicknames as unknown as KoffiAsyncFunction,
+      chatroomId
+    )
     this.readStringMap(rows, [
       'nickname',
       'nickName',
@@ -1545,6 +1599,8 @@ export class Wcdb4Client {
   }
 
   resolveEmoticonCdnUrl(md5: string): string | undefined {
+    const info = this.resolveEmoticonInfo(md5)
+    if (info) return info.cdnUrl || info.externUrl || info.thumbUrl || info.encryptUrl
     if (!this.wcdbGetEmoticonCdnUrl) {
       console.warn(`[WCDB4] wcdb_get_emoticon_cdn_url unavailable for md5=${md5}`)
       return undefined
@@ -1576,6 +1632,41 @@ export class Wcdb4Client {
       return undefined
     } finally {
       this.wcdbFreeString?.(outUrl[0])
+    }
+  }
+
+  resolveEmoticonInfo(md5: string): Wcdb4EmoticonInfo | null {
+    const normalizedMd5 = String(md5 || '')
+      .trim()
+      .toLowerCase()
+    if (!/^[a-f0-9]{32}$/.test(normalizedMd5) || !this.wcdbExecQuery) return null
+    const dbPath = this.findEmoticonDb()
+    if (!dbPath) return null
+
+    try {
+      const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+        this.wcdbExecQuery!(
+          handle,
+          'emoticon',
+          dbPath,
+          `SELECT md5, aes_key, thumb_url, cdn_url, extern_url, encrypt_url ` +
+            `FROM kNonStoreEmoticonTable WHERE lower(md5) = '${normalizedMd5}' LIMIT 1`,
+          outJson
+        )
+      )
+      const row = Array.isArray(rows) ? rows[0] : undefined
+      if (!row) return null
+      return {
+        md5: this.pickString(row, ['md5']),
+        aesKey: this.pickString(row, ['aes_key', 'aesKey']) || undefined,
+        thumbUrl: this.pickString(row, ['thumb_url', 'thumbUrl']) || undefined,
+        cdnUrl: this.pickString(row, ['cdn_url', 'cdnUrl']) || undefined,
+        externUrl: this.pickString(row, ['extern_url', 'externUrl']) || undefined,
+        encryptUrl: this.pickString(row, ['encrypt_url', 'encryptUrl']) || undefined
+      }
+    } catch (error) {
+      console.warn('[WCDB4] resolve emoticon metadata failed:', error)
+      return null
     }
   }
 
@@ -2133,9 +2224,10 @@ export class Wcdb4Client {
     const missing = this.uniq(usernames).filter((username) => !this.displayNameCache.has(username))
     if (missing.length === 0) return
     try {
-      const rows = await this.callJsonAsync<
-        Record<string, string> | Record<string, unknown>[]
-      >(this.wcdbGetDisplayNames as unknown as KoffiAsyncFunction, JSON.stringify(missing))
+      const rows = await this.callJsonAsync<Record<string, string> | Record<string, unknown>[]>(
+        this.wcdbGetDisplayNames as unknown as KoffiAsyncFunction,
+        JSON.stringify(missing)
+      )
       this.readStringMap(rows, [
         'nickname',
         'displayName',
@@ -2187,9 +2279,10 @@ export class Wcdb4Client {
     const missing = this.uniq(usernames).filter((username) => !this.avatarCache.has(username))
     if (missing.length === 0) return
     try {
-      const rows = await this.callJsonAsync<
-        Record<string, string> | Record<string, unknown>[]
-      >(this.wcdbGetAvatarUrls as unknown as KoffiAsyncFunction, JSON.stringify(missing))
+      const rows = await this.callJsonAsync<Record<string, string> | Record<string, unknown>[]>(
+        this.wcdbGetAvatarUrls as unknown as KoffiAsyncFunction,
+        JSON.stringify(missing)
+      )
       this.readStringMap(rows, [
         'avatarUrl',
         'avatar_url',

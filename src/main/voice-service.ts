@@ -1,8 +1,11 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
+import { createRequire } from 'module'
 import { Wcdb4Client } from './wcdb4-client'
 import { isPackagedRuntime } from './runtime-mode'
+
+const nodeRequire = createRequire(import.meta.url)
 
 export class VoiceService {
   private wcdb4Client: Wcdb4Client
@@ -123,8 +126,9 @@ export class VoiceService {
         return null
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const silkWasm = require('silk-wasm')
+      const silkWasm = isPackagedRuntime()
+        ? nodeRequire(join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'silk-wasm'))
+        : nodeRequire('silk-wasm')
       if (!silkWasm || !silkWasm.decode) {
         console.error('[VoiceService] silk-wasm module invalid')
         return null

@@ -5,6 +5,7 @@ export const messageKinds = [
   ['text', '文字'],
   ['image', '图片'],
   ['video', '视频'],
+  ['file', '文件'],
   ['voice', '语音'],
   ['sticker', '表情包'],
   ['share', '链接与分享'],
