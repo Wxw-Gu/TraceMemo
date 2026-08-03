@@ -132,6 +132,20 @@ button, input { font: inherit; }
 .timeline-item.year { min-height: 32px; font-size: 15px; font-weight: 700; }
 .timeline-item.month { min-height: 30px; padding-left: 38px; font-size: 13px; }
 .timeline-item.month::before { left: 5px; top: 13px; width: 6px; height: 6px; border-width: 2px; }
+.timeline-item.latest { margin-top: 10px; min-height: 34px; color: var(--accent); font-size: 12px; font-weight: 700; }
+.timeline-item.latest::before {
+  content: "↓";
+  left: 0;
+  top: 7px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+}
 .timeline-item.active { color: var(--accent); font-weight: 750; }
 .timeline-item.active::before { border-color: var(--accent); background: #f0c928; }
 .conversation { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
@@ -262,7 +276,7 @@ img.media-image { cursor: zoom-in; }
   .timeline-list { display: flex; gap: 4px; min-width: max-content; }
   .timeline-list::before, .timeline-item::before { display: none; }
   .timeline-item { width: auto; min-height: 34px; padding: 6px 10px; border-radius: 5px; }
-  .timeline-item.year, .timeline-item.month, .timeline-item.all { padding-left: 10px; }
+  .timeline-item.year, .timeline-item.month, .timeline-item.all, .timeline-item.latest { padding-left: 10px; }
   .timeline-item.year { font-size: 14px; }
   .timeline-item.month, .timeline-item.all { font-size: 12px; }
   .timeline-item.active { background: var(--accent-soft); }
@@ -317,12 +331,16 @@ export function renderExportPage(name: string): string {
     const PAGE_SIZE = 240;
     let selectedYear = 0;
     let selectedMonth = 0;
+    let loadedFromPeriod = 0;
     let loadedThroughPeriod = 0;
     let mode = 'all';
-    let visibleLimit = PAGE_SIZE;
+    let visibleStart = 0;
+    let visibleEnd = PAGE_SIZE;
     let zoom = 1;
     let periodKeys = [];
     let scrollLoadPending = false;
+    let scrollLoadSuppressed = false;
+    let lastScrollTop = 0;
 
     const make = (tag, className, text) => {
       const node = document.createElement(tag);
@@ -474,11 +492,11 @@ export function renderExportPage(name: string): string {
 
     function renderTimeline(periods) {
       timeline.replaceChildren();
-      const allButton = make('button', 'timeline-item all' + (!selectedYear ? ' active' : ''), '全部时间');
+      const allButton = make('button', 'timeline-item all' + (!selectedYear ? ' active' : ''), '跳转到最早');
       allButton.type = 'button';
       allButton.addEventListener('click', () => {
-        selectedYear = 0; selectedMonth = 0; loadedThroughPeriod = 0;
-        visibleLimit = PAGE_SIZE; container.scrollTop = 0;
+        selectedYear = 0; selectedMonth = 0; loadedFromPeriod = 0; loadedThroughPeriod = 0;
+        visibleStart = 0; visibleEnd = PAGE_SIZE; setScrollTop(0);
         renderTimeline(periods); renderMessages();
       });
       timeline.append(allButton);
@@ -489,9 +507,10 @@ export function renderExportPage(name: string): string {
         yearButton.addEventListener('click', () => {
           selectedYear = year;
           selectedMonth = Math.max(...Array.from(periods.get(year)));
-          loadedThroughPeriod = selectedYear * 100 + selectedMonth;
-          visibleLimit = PAGE_SIZE;
-          container.scrollTop = 0;
+          loadedFromPeriod = selectedYear * 100 + selectedMonth;
+          loadedThroughPeriod = loadedFromPeriod;
+          visibleStart = 0; visibleEnd = PAGE_SIZE;
+          setScrollTop(0);
           renderTimeline(periods); renderMessages();
         });
         timeline.append(yearButton);
@@ -501,24 +520,41 @@ export function renderExportPage(name: string): string {
             monthButton.type = 'button';
             monthButton.addEventListener('click', () => {
               selectedYear = year; selectedMonth = month;
-              loadedThroughPeriod = year * 100 + month;
-              visibleLimit = PAGE_SIZE; container.scrollTop = 0;
+              loadedFromPeriod = year * 100 + month;
+              loadedThroughPeriod = loadedFromPeriod;
+              visibleStart = 0; visibleEnd = PAGE_SIZE; setScrollTop(0);
               renderTimeline(periods); renderMessages();
             });
             timeline.append(monthButton);
           });
         }
       });
+      const latestKey = periodKeys[periodKeys.length - 1];
+      if (latestKey) {
+        const latestButton = make('button', 'timeline-item latest', '跳转到最新');
+        latestButton.type = 'button';
+        latestButton.addEventListener('click', () => {
+          selectedYear = Math.floor(latestKey / 100);
+          selectedMonth = latestKey % 100;
+          loadedFromPeriod = latestKey;
+          loadedThroughPeriod = latestKey;
+          const messages = filteredMessages();
+          visibleEnd = messages.length;
+          visibleStart = Math.max(0, visibleEnd - PAGE_SIZE);
+          renderTimeline(periods);
+          renderMessages({ scrollToEnd: true });
+        });
+        timeline.append(latestButton);
+      }
     }
 
     function filteredMessages() {
       const term = query.value.trim().toLocaleLowerCase();
-      const selectedKey = selectedYear * 100 + selectedMonth;
       return archive.messages.filter((message) => {
         const value = messagePeriod(message);
         const key = periodKey(value);
         const inSelectedPeriod = !selectedYear ||
-          (key >= selectedKey && key <= loadedThroughPeriod);
+          (key >= loadedFromPeriod && key <= loadedThroughPeriod);
         return inSelectedPeriod &&
           (mode === 'all' || isMedia(message)) && (!term || searchText(message).includes(term));
       });
@@ -530,37 +566,96 @@ export function renderExportPage(name: string): string {
       return index >= 0 && index < periodKeys.length - 1;
     }
 
+    function hasPreviousPeriod() {
+      if (!selectedYear) return false;
+      const index = periodKeys.indexOf(loadedFromPeriod);
+      return index > 0;
+    }
+
     function loadNextBatch() {
-      const messages = filteredMessages();
-      if (visibleLimit < messages.length) {
-        visibleLimit += PAGE_SIZE;
+      let messages = filteredMessages();
+      if (visibleEnd < messages.length) {
+        visibleEnd = Math.min(messages.length, visibleEnd + PAGE_SIZE);
         renderMessages();
         return true;
       }
-      if (!hasNextPeriod()) return false;
-      const currentIndex = periodKeys.indexOf(loadedThroughPeriod);
-      loadedThroughPeriod = periodKeys[currentIndex + 1];
-      visibleLimit += PAGE_SIZE;
+      const previousLength = messages.length;
+      while (hasNextPeriod() && messages.length === previousLength) {
+        const currentIndex = periodKeys.indexOf(loadedThroughPeriod);
+        loadedThroughPeriod = periodKeys[currentIndex + 1];
+        messages = filteredMessages();
+      }
+      if (messages.length === previousLength) return false;
+      visibleEnd = Math.min(messages.length, visibleEnd + PAGE_SIZE);
       renderMessages();
       return true;
     }
 
-    function renderMessages() {
+    function loadPreviousBatch() {
+      let messages = filteredMessages();
+      if (visibleStart > 0) {
+        visibleStart = Math.max(0, visibleStart - PAGE_SIZE);
+        renderMessages({ preservePrepend: true });
+        return true;
+      }
+      const previousLength = messages.length;
+      while (hasPreviousPeriod() && messages.length === previousLength) {
+        const currentIndex = periodKeys.indexOf(loadedFromPeriod);
+        loadedFromPeriod = periodKeys[currentIndex - 1];
+        messages = filteredMessages();
+      }
+      const prependedCount = messages.length - previousLength;
+      if (prependedCount <= 0) return false;
+      visibleStart = Math.max(0, prependedCount - PAGE_SIZE);
+      visibleEnd = Math.min(messages.length, prependedCount + visibleEnd);
+      renderMessages({ preservePrepend: true });
+      return true;
+    }
+
+    function setScrollTop(value) {
+      scrollLoadSuppressed = true;
+      const previousBehavior = container.style.scrollBehavior;
+      container.style.scrollBehavior = 'auto';
+      container.scrollTop = value;
+      lastScrollTop = container.scrollTop;
+      requestAnimationFrame(() => {
+        container.style.scrollBehavior = previousBehavior;
+        lastScrollTop = container.scrollTop;
+        scrollLoadSuppressed = false;
+      });
+    }
+
+    function renderMessages(options = {}) {
+      const previousHeight = container.scrollHeight;
+      const previousTop = container.scrollTop;
+      if (options.preservePrepend || options.scrollToEnd) scrollLoadSuppressed = true;
       const messages = filteredMessages();
-      const shown = messages.slice(0, visibleLimit);
+      visibleStart = Math.min(visibleStart, messages.length);
+      visibleEnd = Math.max(visibleStart, Math.min(visibleEnd, messages.length));
+      const shown = messages.slice(visibleStart, visibleEnd);
       container.replaceChildren(...shown.map(renderMessage));
-      const selectedKey = selectedYear * 100 + selectedMonth;
       period.textContent = !selectedYear
         ? '全部时间'
-        : loadedThroughPeriod === selectedKey
-          ? periodLabel(selectedKey)
-          : periodLabel(selectedKey) + ' - ' + periodLabel(loadedThroughPeriod);
+        : loadedFromPeriod === loadedThroughPeriod
+          ? periodLabel(loadedFromPeriod)
+          : periodLabel(loadedFromPeriod) + ' - ' + periodLabel(loadedThroughPeriod);
       count.textContent = '已显示 ' + shown.length.toLocaleString() + ' / ' + messages.length.toLocaleString() + ' 条';
       if (!messages.length) container.append(make('div', 'empty', '没有符合条件的消息'));
-      if (shown.length < messages.length || hasNextPeriod()) {
+      if (visibleEnd < messages.length || hasNextPeriod()) {
         const more = make('button', 'load-more', '加载更多'); more.type = 'button';
         more.addEventListener('click', loadNextBatch);
         container.append(more);
+      }
+      if (options.preservePrepend) {
+        requestAnimationFrame(() => {
+          setScrollTop(previousTop + Math.max(0, container.scrollHeight - previousHeight));
+        });
+      } else if (options.scrollToEnd) {
+        requestAnimationFrame(() => {
+          setScrollTop(container.scrollHeight);
+        });
+      } else {
+        lastScrollTop = container.scrollTop;
       }
     }
 
@@ -579,7 +674,8 @@ export function renderExportPage(name: string): string {
     if (years.length) {
       selectedYear = years[years.length - 1];
       selectedMonth = Math.max(...Array.from(periods.get(selectedYear)));
-      loadedThroughPeriod = selectedYear * 100 + selectedMonth;
+      loadedFromPeriod = selectedYear * 100 + selectedMonth;
+      loadedThroughPeriod = loadedFromPeriod;
       renderTimeline(periods);
       renderMessages();
     } else {
@@ -587,36 +683,59 @@ export function renderExportPage(name: string): string {
     }
 
     query.addEventListener('input', () => {
-      loadedThroughPeriod = selectedYear * 100 + selectedMonth;
-      visibleLimit = PAGE_SIZE; container.scrollTop = 0; renderMessages();
+      loadedFromPeriod = selectedYear * 100 + selectedMonth;
+      loadedThroughPeriod = loadedFromPeriod;
+      visibleStart = 0; visibleEnd = PAGE_SIZE; setScrollTop(0); renderMessages();
     });
     document.querySelectorAll('[data-mode]').forEach((button) => {
       button.addEventListener('click', () => {
         mode = button.dataset.mode;
         document.querySelectorAll('[data-mode]').forEach((item) => item.classList.toggle('active', item === button));
-        loadedThroughPeriod = selectedYear * 100 + selectedMonth;
-        visibleLimit = PAGE_SIZE; container.scrollTop = 0; renderMessages();
+        loadedFromPeriod = selectedYear * 100 + selectedMonth;
+        loadedThroughPeriod = loadedFromPeriod;
+        visibleStart = 0; visibleEnd = PAGE_SIZE; setScrollTop(0); renderMessages();
       });
     });
-    container.addEventListener('scroll', () => {
-      if (scrollLoadPending || container.scrollHeight - container.scrollTop - container.clientHeight > 160) return;
+    function scheduleScrollLoad(direction) {
+      if (scrollLoadPending) return;
       scrollLoadPending = true;
       requestAnimationFrame(() => {
-        loadNextBatch();
+        if (direction === 'up') loadPreviousBatch();
+        else loadNextBatch();
         scrollLoadPending = false;
       });
+    }
+    container.addEventListener('scroll', () => {
+      const currentTop = container.scrollTop;
+      const movingUp = currentTop < lastScrollTop;
+      const nearTop = currentTop < 160;
+      const nearBottom = container.scrollHeight - currentTop - container.clientHeight < 160;
+      lastScrollTop = currentTop;
+      if (scrollLoadSuppressed) return;
+      if (movingUp && nearTop) scheduleScrollLoad('up');
+      else if (!movingUp && nearBottom) scheduleScrollLoad('down');
     });
+    container.addEventListener('wheel', (event) => {
+      if (!scrollLoadSuppressed && event.deltaY < 0 && container.scrollTop <= 1) scheduleScrollLoad('up');
+    }, { passive: true });
     container.addEventListener('click', (event) => {
       const image = event.target.closest('img.media-image');
       if (!image) return;
       preview.src = image.src; zoom = 1; preview.style.setProperty('--zoom', zoom); lightbox.classList.add('open');
     });
+    const closeLightbox = () => {
+      lightbox.classList.remove('open');
+      preview.removeAttribute('src');
+    };
     preview.addEventListener('wheel', (event) => {
       event.preventDefault(); zoom = Math.min(5, Math.max(.5, zoom + (event.deltaY < 0 ? .2 : -.2)));
       preview.style.setProperty('--zoom', zoom);
     }, { passive: false });
     preview.addEventListener('dblclick', () => { zoom = 1; preview.style.setProperty('--zoom', zoom); });
-    lightbox.addEventListener('click', (event) => { if (event.target === lightbox) lightbox.classList.remove('open'); });
+    lightbox.addEventListener('click', (event) => { if (event.target === lightbox) closeLightbox(); });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && lightbox.classList.contains('open')) closeLightbox();
+    });
   })();
   </script>
 </body>
