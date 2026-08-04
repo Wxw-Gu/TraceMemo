@@ -1,7 +1,19 @@
 import { dirname, join } from 'path'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'fs'
 import { tmpdir } from 'os'
+import { execFileSync } from 'child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ExportTarget } from '../../src/shared/export'
 import type { Message } from '../../src/shared/types'
 
 const state = vi.hoisted(() => ({
@@ -9,6 +21,7 @@ const state = vi.hoisted(() => ({
   accountRoot: '',
   videoPath: '',
   messages: [] as Message[],
+  messagesByUser: {} as Record<string, Message[]>,
   imageLookups: [] as {
     allowThumbnail?: boolean
     preferThumbnail?: boolean
@@ -25,7 +38,8 @@ vi.mock('electron', () => ({
 }))
 vi.mock('../../src/main/services/chat-service', () => ({
   listMessages: () => structuredClone(state.messages),
-  listMessagesAsync: async () => structuredClone(state.messages),
+  listMessagesAsync: async (userMd5: string) =>
+    structuredClone(state.messagesByUser[userMd5] || state.messages),
   getChatDb: () => ({
     getWcdb4Client: () => ({ getAccountRoot: () => state.accountRoot })
   }),
@@ -129,17 +143,26 @@ const message = (overrides: Partial<Message>): Message => ({
   ...overrides
 })
 
-const readArchive = (outputPath: string): { sourceId: string; messages: Message[] } => {
+const target = (userMd5 = 'fixture-user', name = '脱敏会话'): ExportTarget => ({
+  userMd5,
+  name,
+  type: 'user'
+})
+
+const readArchive = (
+  outputPath: string
+): {
+  version: 2
+  conversations: { id: string; name: string; avatarUrl?: string; messageCount: number }[]
+  messages: Message[]
+} => {
   const source = readFileSync(join(dirname(outputPath), 'data', 'messages.js'), 'utf8')
   return JSON.parse(
     source
       .slice(source.indexOf('=') + 1)
       .trim()
       .replace(/;\s*$/, '')
-  ) as {
-    sourceId: string
-    messages: Message[]
-  }
+  )
 }
 
 describe('media export flow', () => {
@@ -152,6 +175,7 @@ describe('media export flow', () => {
       Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex')
     )
     state.imageLookups = []
+    state.messagesByUser = {}
     const fileMonth = join(state.accountRoot, 'msg', 'file', '2026-08')
     mkdirSync(fileMonth, { recursive: true })
     writeFileSync(join(fileMonth, '测试附件.txt'), '附件内容')
@@ -201,8 +225,7 @@ describe('media export flow', () => {
     const result = await runExport(
       {
         jobId: 'fixture-export',
-        userMd5: 'fixture-user',
-        name: '脱敏会话',
+        targets: [target()],
         format: 'html',
         outputName: 'fixture',
         kinds: ['voice', 'image', 'video', 'file'],
@@ -249,8 +272,7 @@ describe('media export flow', () => {
     const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
     const request = {
       jobId: 'incremental-first',
-      userMd5: 'fixture-user',
-      name: '增量会话',
+      targets: [target('fixture-user', '增量会话')],
       format: 'html' as const,
       outputName: 'incremental-fixture',
       kinds: ['voice', 'text'] as const,
@@ -302,14 +324,245 @@ describe('media export flow', () => {
     expect(existsSync(join(dirname(second.outputPath!), 'data', 'messages.js.bak'))).toBe(true)
   })
 
+  it('keeps copied videos writable and can replace a legacy read-only video incrementally', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    chmodSync(state.videoPath, 0o444)
+    state.messages = [
+      message({
+        id: 'read-only-video',
+        type: '视频',
+        contentData: { type: 'video', md5: 'b'.repeat(32) }
+      })
+    ]
+    const request = {
+      targets: [target('fixture-user', '只读视频会话')],
+      format: 'html' as const,
+      outputName: 'read-only-video-fixture',
+      kinds: ['video'] as const,
+      includeMedia: true
+    }
+
+    const first = await runExport(
+      { ...request, jobId: 'read-only-video-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success, first.error).toBe(true)
+    const firstArchive = readArchive(first.outputPath!)
+    const videoPath = join(
+      dirname(first.outputPath!),
+      firstArchive.messages[0].exportMediaUrl as string
+    )
+    expect(statSync(videoPath).mode & 0o777).toBe(0o644)
+
+    chmodSync(videoPath, 0o444)
+    const second = await runExport(
+      { ...request, jobId: 'read-only-video-second', kinds: [...request.kinds] },
+      win as never
+    )
+
+    expect(second.success, second.error).toBe(true)
+    expect(second.outputPath).toBe(first.outputPath)
+    expect(statSync(videoPath).mode & 0o777).toBe(0o644)
+  })
+
+  it('merges two conversations in stable order without colliding identical message ids or media', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    state.messagesByUser = {
+      alpha: [
+        message({
+          id: 'same-id',
+          type: '图片',
+          createTime: 100,
+          contentData: { type: 'image', md5: 'a'.repeat(32), datName: 'same.dat' }
+        }),
+        message({ id: 'alpha-later', content: 'A2', createTime: 200 })
+      ],
+      beta: [
+        message({
+          id: 'same-id',
+          type: '图片',
+          createTime: 100,
+          contentData: { type: 'image', md5: 'a'.repeat(32), datName: 'same.dat' }
+        }),
+        message({ id: 'beta-later', content: 'B2', createTime: 150 })
+      ]
+    }
+
+    const result = await runExport(
+      {
+        jobId: 'multi-conversation',
+        targets: [target('alpha', '聊天 A'), target('beta', '聊天 B')],
+        format: 'html',
+        outputName: 'multi-conversation',
+        kinds: ['text', 'image'],
+        includeMedia: true
+      },
+      win as never
+    )
+
+    expect(result.success).toBe(true)
+    const archive = readArchive(result.outputPath!)
+    expect(archive.version).toBe(2)
+    expect(archive.conversations.map(({ id, messageCount }) => ({ id, messageCount }))).toEqual([
+      { id: 'alpha', messageCount: 2 },
+      { id: 'beta', messageCount: 2 }
+    ])
+    expect(
+      archive.messages.map((item) => [item.exportConversationId, item.id, item.createTime])
+    ).toEqual([
+      ['alpha', 'same-id', 100],
+      ['beta', 'same-id', 100],
+      ['beta', 'beta-later', 150],
+      ['alpha', 'alpha-later', 200]
+    ])
+    const imagePaths = archive.messages
+      .filter((item) => item.id === 'same-id')
+      .map((item) => item.exportMediaUrl)
+    expect(new Set(imagePaths).size).toBe(2)
+    for (const imagePath of imagePaths) {
+      expect(existsSync(join(dirname(result.outputPath!), imagePath!))).toBe(true)
+    }
+  })
+
+  it('creates a replaceable ZIP containing the complete top-level archive folder', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const progress: unknown[][] = []
+    const win = {
+      isDestroyed: () => false,
+      webContents: { send: (...args: unknown[]) => progress.push(args) }
+    }
+    state.messages = [
+      message({
+        id: 'zip-image',
+        type: '图片',
+        contentData: { type: 'image', md5: 'a'.repeat(32), datName: 'fixture.dat' }
+      })
+    ]
+    const request = {
+      targets: [
+        {
+          ...target('fixture-user', 'ZIP 会话'),
+          avatarUrl:
+            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII='
+        }
+      ],
+      format: 'html' as const,
+      outputName: 'zip-fixture',
+      kinds: ['image'] as const,
+      includeMedia: true,
+      includeAvatars: true,
+      zip: true
+    }
+    const first = await runExport(
+      { ...request, jobId: 'zip-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success, first.error).toBe(true)
+    const firstSize = readFileSync(first.outputPath!).length
+    const second = await runExport(
+      { ...request, jobId: 'zip-second', kinds: [...request.kinds] },
+      win as never
+    )
+
+    expect(first.success).toBe(true)
+    expect(second.success).toBe(true)
+    expect(second.outputPath).toBe(first.outputPath)
+    expect(firstSize).toBeGreaterThan(0)
+    expect(readFileSync(second.outputPath!).subarray(0, 2).toString()).toBe('PK')
+    const entries = execFileSync('unzip', ['-Z1', second.outputPath!], { encoding: 'utf8' })
+    expect(entries).toContain('zip-fixture/index.html')
+    expect(entries).toContain('zip-fixture/data/messages.js')
+    expect(entries).toMatch(/zip-fixture\/avatars\/conversation_[0-9a-f]{16}\.png/)
+    expect(entries).toMatch(/zip-fixture\/media\/image_[0-9a-f]{16}\.png/)
+    expect(progress.some((args) => (args[1] as { phase?: string })?.phase === 'compressing')).toBe(
+      true
+    )
+    expect(
+      readdirSync(join(state.documents, 'WechatExplorer', '导出')).some((name) =>
+        name.startsWith('zip-fixture.zip.tmp-')
+      )
+    ).toBe(false)
+  })
+
+  it('keeps the last complete ZIP when a replacement is cancelled during compression', async () => {
+    const { cancelExport, runExport } = await import('../../src/main/export-service')
+    state.messages = [message({ id: 'zip-cancel', content: '保留完整压缩包' })]
+    const request = {
+      targets: [target('fixture-user', '取消压缩会话')],
+      format: 'html' as const,
+      outputName: 'zip-cancel-fixture',
+      kinds: ['text'] as const,
+      includeMedia: false,
+      zip: true
+    }
+    const silentWindow = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    const first = await runExport(
+      { ...request, jobId: 'zip-cancel-first', kinds: [...request.kinds] },
+      silentWindow as never
+    )
+    expect(first.success, first.error).toBe(true)
+    const completeZip = readFileSync(first.outputPath!)
+    const cancellingWindow = {
+      isDestroyed: () => false,
+      webContents: {
+        send: (_channel: string, progress: { phase: string }): void => {
+          if (progress.phase === 'compressing') cancelExport('zip-cancel-second')
+        }
+      }
+    }
+
+    const cancelled = await runExport(
+      { ...request, jobId: 'zip-cancel-second', kinds: [...request.kinds] },
+      cancellingWindow as never
+    )
+
+    expect(cancelled).toEqual({ success: false, error: '已取消' })
+    expect(readFileSync(first.outputPath!)).toEqual(completeZip)
+    expect(
+      readdirSync(join(state.documents, 'WechatExplorer', '导出')).some((name) =>
+        name.startsWith('zip-cancel-fixture.zip.tmp-')
+      )
+    ).toBe(false)
+  })
+
+  it('normalizes a legacy v1 single-chat archive into v2', async () => {
+    const { readHtmlArchive } = await import('../../src/main/export-service')
+    const outputDir = join(state.documents, 'legacy-archive')
+    mkdirSync(join(outputDir, 'data'), { recursive: true })
+    writeFileSync(
+      join(outputDir, 'data', 'messages.js'),
+      `window.__WECHAT_EXPORT__ = ${JSON.stringify({
+        version: 1,
+        sourceId: 'legacy-user',
+        name: '旧档案',
+        exportedAt: '2026-08-01T00:00:00.000Z',
+        messages: [message({ id: 'legacy-message', content: '旧消息' })]
+      })};\n`,
+      'utf8'
+    )
+
+    const archive = await readHtmlArchive(outputDir, [target('legacy-user', '旧档案')], '旧档案')
+
+    expect(archive.version).toBe(2)
+    expect(archive.conversations).toEqual([
+      expect.objectContaining({ id: 'legacy-user', name: '旧档案', messageCount: 1 })
+    ])
+    expect(archive.messages[0]).toMatchObject({
+      id: 'legacy-message',
+      exportConversationId: 'legacy-user',
+      exportConversationName: '旧档案'
+    })
+  })
+
   it('refuses to merge a different conversation into an existing named archive', async () => {
     const { runExport } = await import('../../src/main/export-service')
     const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
     state.messages = [message({ id: 'text', content: 'fixture' })]
     const baseRequest = {
       jobId: 'source-first',
-      userMd5: 'first-user',
-      name: '第一个会话',
+      targets: [target('first-user', '第一个会话')],
       format: 'html' as const,
       outputName: 'same-name',
       kinds: ['text'] as const,
@@ -320,8 +573,7 @@ describe('media export flow', () => {
       {
         ...baseRequest,
         jobId: 'source-second',
-        userMd5: 'second-user',
-        name: '第二个会话',
+        targets: [target('second-user', '第二个会话')],
         kinds: [...baseRequest.kinds]
       },
       win as never
@@ -329,8 +581,10 @@ describe('media export flow', () => {
 
     expect(first.success).toBe(true)
     expect(second.success).toBe(false)
-    expect(second.error).toContain('另一个会话')
-    expect(readArchive(first.outputPath!).sourceId).toBe('first-user')
+    expect(second.error).toContain('聊天集合不同')
+    expect(readArchive(first.outputPath!).conversations.map((item) => item.id)).toEqual([
+      'first-user'
+    ])
   })
 
   it('uses message content as the stable fallback when the database supplies a random id', async () => {
@@ -357,13 +611,16 @@ describe('media export flow', () => {
     const result = await runExport(
       {
         jobId: 'self-name',
-        userMd5: 'fixture-user',
-        name: '本人昵称',
+        targets: [
+          {
+            ...target('fixture-user', '本人昵称'),
+            nameMap: { fixture_account: 'fixture_account' }
+          }
+        ],
         format: 'html',
         outputName: 'self-name',
         kinds: ['text'],
-        includeMedia: false,
-        nameMap: { fixture_account: 'fixture_account' }
+        includeMedia: false
       },
       win as never
     )
@@ -376,8 +633,7 @@ describe('media export flow', () => {
     const { runExport } = await import('../../src/main/export-service')
     const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
     const request = {
-      userMd5: 'fixture-user',
-      name: '增量昵称',
+      targets: [target('fixture-user', '增量昵称')],
       format: 'html' as const,
       outputName: 'incremental-self-name',
       kinds: ['text'] as const,

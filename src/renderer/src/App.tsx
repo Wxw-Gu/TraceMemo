@@ -212,7 +212,32 @@ function App(): React.ReactElement {
   const [exportTasks, setExportTasks] = useState<ExportTaskRecord[]>(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('wxe_export_tasks') || '[]')
-      return Array.isArray(stored) ? (stored as ExportTaskRecord[]).slice(0, 20) : []
+      if (!Array.isArray(stored)) return []
+      return stored.slice(0, 20).map(
+        (
+          value: Partial<ExportTaskRecord> & {
+            contactId?: string
+            contactName?: string
+          }
+        ) => {
+          const targetIds = Array.isArray(value.targetIds)
+            ? value.targetIds
+            : value.contactId
+              ? [value.contactId]
+              : []
+          const targetNames = Array.isArray(value.targetNames)
+            ? value.targetNames
+            : value.contactName
+              ? [value.contactName]
+              : []
+          return {
+            ...value,
+            targetIds,
+            targetNames,
+            targetLabel: value.targetLabel || targetNames.join('、') || '聊天导出'
+          } as ExportTaskRecord
+        }
+      )
     } catch {
       return []
     }
@@ -341,10 +366,14 @@ function App(): React.ReactElement {
   const handleStartExport = async (
     request: ExportRequest
   ): Promise<import('../../shared/export').ExportResult> => {
+    const targetNames = request.targets.map((target) => target.name)
+    const targetLabel =
+      targetNames.length > 1 ? `${targetNames[0]} 等 ${targetNames.length} 个聊天` : targetNames[0]
     const task: ExportTaskRecord = {
       jobId: request.jobId,
-      contactId: request.userMd5,
-      contactName: request.name,
+      targetIds: request.targets.map((target) => target.userMd5),
+      targetNames,
+      targetLabel,
       format: request.format,
       status: 'running',
       progress: { jobId: request.jobId, phase: 'reading', processed: 0, percent: 0 },
@@ -1220,16 +1249,14 @@ function App(): React.ReactElement {
     }
   }
 
-  const loadExportPreview = async (contact: Contact): Promise<void> => {
-    setSelectedContact(contact)
-    selectedContactMd5Ref.current = contact.md5
+  const loadExportPreviewMessages = async (contact: Contact): Promise<Message[]> => {
     try {
-      const previewMessages = await window.api.getMessages(contact.md5, undefined, undefined, {
+      return await window.api.getMessages(contact.md5, undefined, undefined, {
         limit: EXPORT_PREVIEW_LIMIT
       })
-      if (selectedContactMd5Ref.current === contact.md5) setMessages(previewMessages)
     } catch (error) {
       console.warn('[Export] preview load failed:', error)
+      return []
     }
   }
 
@@ -1322,7 +1349,6 @@ function App(): React.ReactElement {
   const handlePageChange = (page: AppPage): void => {
     setActivePage(page)
     if (page === 'archive' && selectedContact) void handleSelectContact(selectedContact)
-    if (page === 'export' && selectedContact) void loadExportPreview(selectedContact)
     if (page === 'settings') setSettingsCategory('account-database')
     if (page === 'report' && isGroupContact(selectedContact) && !reportSourceContact) {
       setReportSourceContact(selectedContact)
@@ -1702,11 +1728,10 @@ function App(): React.ReactElement {
         return (
           <ExportWorkspace
             contacts={contacts}
-            selectedContact={selectedContact}
-            previewMessages={messages}
+            initialContact={selectedContact}
             selfInfo={selfInfo}
             dbReady={isDatabaseConnected}
-            onSelectContact={loadExportPreview}
+            loadPreviewMessages={loadExportPreviewMessages}
             onOpenSettings={openSettings}
             exportTasks={exportTasks}
             onStartExport={handleStartExport}

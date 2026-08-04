@@ -1,14 +1,16 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { createHash } from 'crypto'
-import { promises as fs } from 'fs'
+import { createWriteStream, promises as fs } from 'fs'
 import { extname, join } from 'path'
 import { fileURLToPath } from 'url'
+import { ZipArchive, type Archiver } from 'archiver'
 import * as chat from './services/chat-service'
 import type {
   ExportJobProgress,
   ExportMessageKind,
   ExportRequest,
-  ExportResult
+  ExportResult,
+  ExportTarget
 } from '../shared/export'
 import type { Message } from '../shared/types'
 import { VoiceService } from './voice-service'
@@ -22,8 +24,18 @@ import { FileAssetService } from './file-asset-service'
 import { mergeCachedSelfInfo } from './services/bootstrap-cache'
 
 const jobs = new Set<string>()
+const activeArchives = new Map<string, Archiver>()
 const safeFilePart = (value: string): string =>
   value.replace(/[\\/:*?"<>|]/g, '_').trim() || '聊天档案'
+const copyWritableExportFile = async (source: string, destination: string): Promise<void> => {
+  try {
+    await fs.chmod(destination, 0o644)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  await fs.copyFile(source, destination)
+  await fs.chmod(destination, 0o644)
+}
 const exportStamp = (): string => {
   const date = new Date()
   const pad = (value: number): string => String(value).padStart(2, '0')
@@ -31,11 +43,27 @@ const exportStamp = (): string => {
 }
 const imageKeys = new ImageKeyConfigService()
 
-export interface HtmlExportArchive {
+export interface HtmlExportConversation {
+  id: string
+  name: string
+  type: 'user' | 'group'
+  avatarUrl?: string
+  messageCount: number
+}
+
+interface HtmlExportArchiveV1 {
   version: 1
   sourceId: string
   name: string
   exportedAt: string
+  messages: Message[]
+}
+
+export interface HtmlExportArchive {
+  version: 2
+  name: string
+  exportedAt: string
+  conversations: HtmlExportConversation[]
   messages: Message[]
 }
 
@@ -44,15 +72,16 @@ const hashPart = (value: string, length = 16): string =>
   createHash('sha1').update(value).digest('hex').slice(0, length)
 
 export const exportMessageKey = (message: Message, sourceId = ''): string => {
+  const conversationId = message.exportConversationId || sourceId
   const sessionId = message.sessionId || sourceId
   if (message.localId && message.createTime) {
-    return `${sessionId}:local:${message.localId}:${message.createTime}`
+    return `${conversationId}:${sessionId}:local:${message.localId}:${message.createTime}`
   }
-  if (message.serverId) return `${sessionId}:server:${message.serverId}`
+  if (message.serverId) return `${conversationId}:${sessionId}:server:${message.serverId}`
   if (message.id && message.createTime && !/^0\.\d+$/.test(message.id)) {
-    return `${sessionId}:id:${message.id}:${message.createTime}`
+    return `${conversationId}:${sessionId}:id:${message.id}:${message.createTime}`
   }
-  return `${sessionId}:fallback:${hashPart(
+  return `${conversationId}:${sessionId}:fallback:${hashPart(
     JSON.stringify([
       message.createTime || 0,
       message.senderId || '',
@@ -89,7 +118,8 @@ const mergeArchiveMessage = (previous: Message, current: Message): Message => {
 export function mergeHtmlArchiveMessages(
   previous: Message[],
   current: Message[],
-  sourceId = ''
+  sourceId = '',
+  conversationOrder: string[] = []
 ): Message[] {
   const merged = new Map<string, Message>()
   for (const message of previous) merged.set(exportMessageKey(message, sourceId), message)
@@ -101,6 +131,10 @@ export function mergeHtmlArchiveMessages(
   return Array.from(merged.values()).sort((left, right) => {
     const byTime = Number(left.createTime || 0) - Number(right.createTime || 0)
     if (byTime !== 0) return byTime
+    const byConversation =
+      conversationOrder.indexOf(left.exportConversationId || sourceId) -
+      conversationOrder.indexOf(right.exportConversationId || sourceId)
+    if (byConversation !== 0) return byConversation
     return Number(left.localId || 0) - Number(right.localId || 0)
   })
 }
@@ -127,7 +161,7 @@ export function normalizeHtmlArchiveSelfNames(
 
 export async function readHtmlArchive(
   outputDir: string,
-  sourceId: string,
+  targets: ExportTarget[],
   name: string
 ): Promise<HtmlExportArchive> {
   const dataPath = join(outputDir, 'data', 'messages.js')
@@ -136,7 +170,18 @@ export async function readHtmlArchive(
     source = await fs.readFile(dataPath, 'utf8')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { version: 1, sourceId, name, exportedAt: new Date(0).toISOString(), messages: [] }
+      return {
+        version: 2,
+        name,
+        exportedAt: new Date(0).toISOString(),
+        conversations: targets.map((target) => ({
+          id: target.userMd5,
+          name: target.name,
+          type: target.type,
+          messageCount: 0
+        })),
+        messages: []
+      }
     }
     throw error
   }
@@ -146,21 +191,100 @@ export async function readHtmlArchive(
     .slice(assignment + 1)
     .trim()
     .replace(/;\s*$/, '')
-  let archive: HtmlExportArchive
+  let parsed: HtmlExportArchive | HtmlExportArchiveV1
   try {
-    archive = JSON.parse(json) as HtmlExportArchive
+    parsed = JSON.parse(json) as HtmlExportArchive | HtmlExportArchiveV1
   } catch {
     throw new Error('现有 HTML 档案数据已损坏，请从 messages.js.bak 恢复或更换导出名称')
   }
-  if (archive.sourceId && archive.sourceId !== sourceId) {
-    throw new Error('同名导出目录已属于另一个会话，请修改文件名称后重试')
+  const expectedIds = targets.map((target) => target.userMd5).sort()
+  if (parsed.version === 1) {
+    if (targets.length !== 1 || parsed.sourceId !== targets[0].userMd5) {
+      throw new Error('同名导出目录的聊天集合不同，请修改文件名称后重试')
+    }
+    return {
+      version: 2,
+      name: parsed.name || name,
+      exportedAt: parsed.exportedAt || new Date(0).toISOString(),
+      conversations: [
+        {
+          id: targets[0].userMd5,
+          name: targets[0].name,
+          type: targets[0].type,
+          messageCount: Array.isArray(parsed.messages) ? parsed.messages.length : 0
+        }
+      ],
+      messages: (Array.isArray(parsed.messages) ? parsed.messages : []).map((message) => ({
+        ...message,
+        exportConversationId: targets[0].userMd5,
+        exportConversationName: targets[0].name
+      }))
+    }
+  }
+  const actualIds = (Array.isArray(parsed.conversations) ? parsed.conversations : [])
+    .map((conversation) => conversation.id)
+    .sort()
+  if (actualIds.join('|') !== expectedIds.join('|')) {
+    throw new Error('同名导出目录的聊天集合不同，请修改文件名称后重试')
   }
   return {
-    version: 1,
-    sourceId,
-    name: archive.name || name,
-    exportedAt: archive.exportedAt || new Date(0).toISOString(),
-    messages: Array.isArray(archive.messages) ? archive.messages : []
+    version: 2,
+    name: parsed.name || name,
+    exportedAt: parsed.exportedAt || new Date(0).toISOString(),
+    conversations: parsed.conversations,
+    messages: Array.isArray(parsed.messages) ? parsed.messages : []
+  }
+}
+
+async function writeZipArchive(
+  outputDir: string,
+  zipPath: string,
+  folderName: string,
+  jobId: string
+): Promise<void> {
+  const temporaryPath = `${zipPath}.tmp-${process.pid}-${Date.now()}`
+  await fs.rm(temporaryPath, { force: true })
+  const output = createWriteStream(temporaryPath)
+  await new Promise<void>((resolve, reject) => {
+    output.once('open', () => resolve())
+    output.once('error', reject)
+  })
+  const archive = new ZipArchive({ zlib: { level: 6 } })
+  activeArchives.set(jobId, archive)
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false
+      const finish = (error?: Error): void => {
+        if (settled) return
+        settled = true
+        if (error) reject(error)
+        else resolve()
+      }
+      output.on('close', () => finish())
+      output.on('error', finish)
+      archive.on('warning', (error) => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') finish(error)
+      })
+      archive.on('error', finish)
+      archive.pipe(output)
+      archive.directory(outputDir, safeFilePart(folderName))
+      void archive.finalize().catch(finish)
+    })
+    if (!jobs.has(jobId)) throw new Error('已取消')
+    try {
+      await fs.rename(temporaryPath, zipPath)
+    } catch (error) {
+      if (!['EEXIST', 'EPERM'].includes((error as NodeJS.ErrnoException).code || '')) throw error
+      await fs.rm(zipPath, { force: true })
+      await fs.rename(temporaryPath, zipPath)
+    }
+  } finally {
+    activeArchives.delete(jobId)
+    if (!output.closed) {
+      output.destroy()
+      await new Promise<void>((resolve) => output.once('close', () => resolve()))
+    }
+    await fs.rm(temporaryPath, { force: true })
   }
 }
 
@@ -298,11 +422,57 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
     if (!win.isDestroyed()) win.webContents.send('export:progress', p)
   }
   try {
+    const targets = request.targets || []
+    if (targets.length < 1 || targets.length > 5) {
+      throw new Error('一次导出必须选择 1 到 5 个聊天')
+    }
+    if (new Set(targets.map((target) => target.userMd5)).size !== targets.length) {
+      throw new Error('导出聊天不能重复')
+    }
+    if (targets.length > 1 && request.format !== 'html') {
+      throw new Error('多聊天合并仅支持 HTML 格式')
+    }
+    const archiveName =
+      targets.length > 1 ? `${targets[0].name} 等 ${targets.length} 个聊天` : targets[0].name
+    const targetById = new Map(targets.map((target) => [target.userMd5, target]))
     send({ jobId: request.jobId, phase: 'reading', processed: 0, total: 100, percent: 0 })
     await new Promise<void>((resolve) => setImmediate(resolve))
-    const messages = (
-      await chat.listMessagesAsync(request.userMd5, request.startTime, request.endTime)
-    ).filter((message) => request.kinds.includes(kindOf(message)))
+    const messageEntries: { message: Message; targetOrder: number; messageOrder: number }[] = []
+    for (const [targetOrder, target] of targets.entries()) {
+      if (!jobs.has(request.jobId)) {
+        send({ jobId: request.jobId, phase: 'cancelled', processed: 0, percent: 5 })
+        return { success: false, error: '已取消' }
+      }
+      const targetMessages = (
+        await chat.listMessagesAsync(target.userMd5, request.startTime, request.endTime)
+      ).filter((message) => request.kinds.includes(kindOf(message)))
+      for (const [messageOrder, message] of targetMessages.entries()) {
+        messageEntries.push({
+          message: {
+            ...message,
+            exportConversationId: target.userMd5,
+            exportConversationName: target.name
+          },
+          targetOrder,
+          messageOrder
+        })
+      }
+      send({
+        jobId: request.jobId,
+        phase: 'reading',
+        processed: targetOrder + 1,
+        total: targets.length,
+        percent: Math.max(1, Math.round(((targetOrder + 1) / targets.length) * 10))
+      })
+    }
+    const messages = messageEntries
+      .sort((left, right) => {
+        const byTime = Number(left.message.createTime || 0) - Number(right.message.createTime || 0)
+        if (byTime !== 0) return byTime
+        if (left.targetOrder !== right.targetOrder) return left.targetOrder - right.targetOrder
+        return left.messageOrder - right.messageOrder
+      })
+      .map((entry) => entry.message)
     const rawSelfInfo = await chat.getSelfAccountInfoAsync()
     const selfInfo = rawSelfInfo ? mergeCachedSelfInfo(rawSelfInfo.accountRoot, rawSelfInfo) : null
     const isUsableSelfName = (value: string | undefined): value is string => {
@@ -313,13 +483,14 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
       return true
     }
     for (const message of messages) {
+      const target = targetById.get(message.exportConversationId || '')
       message.exportMediaUrl = undefined
       message.exportMediaType = undefined
       message.exportMediaName = undefined
       message.exportMediaError = undefined
       message.voiceDataUrl = undefined
       message.exportShowAvatar = request.includeAvatars !== false
-      const mappedName = message.senderId ? request.nameMap?.[message.senderId] : undefined
+      const mappedName = message.senderId ? target?.nameMap?.[message.senderId] : undefined
       if (mappedName && (!message.isSender || isUsableSelfName(mappedName))) {
         message.name = mappedName
       } else if (message.isSender && isUsableSelfName(selfInfo?.nickname)) {
@@ -357,7 +528,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
         ? join(outputDir, 'index.html')
         : join(root, `${outputFolder}.${ext}`)
     if (request.format === 'html') {
-      const previousArchive = await readHtmlArchive(outputDir, request.userMd5, request.name)
+      const previousArchive = await readHtmlArchive(outputDir, targets, archiveName)
       await fs.mkdir(join(outputDir, 'voices'), { recursive: true })
       await fs.mkdir(join(outputDir, 'media'), { recursive: true })
       await fs.mkdir(join(outputDir, 'avatars'), { recursive: true })
@@ -369,10 +540,14 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             .filter((value): value is string => Boolean(value))
         )
       )
+      const requestedAvatarUrls = Object.assign(
+        {},
+        ...targets.map((target) => target.avatarUrls || {})
+      ) as Record<string, string>
       const avatarMap =
         request.includeAvatars === false
           ? {}
-          : { ...chat.getContactAvatars(avatarUsernames), ...(request.avatarUrls || {}) }
+          : { ...(await chat.getContactAvatars(avatarUsernames)), ...requestedAvatarUrls }
       const imageConfig = imageKeys.getConfig()
       const imageService =
         client && imageConfig.aesKey
@@ -382,13 +557,27 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
       const stickerService = client ? new StickerService(client) : null
       const fileService = client ? new FileAssetService(client) : null
       const exportedAvatars = new Map<string, string>()
+      const conversationAvatarUrls = new Map<string, string>()
+      if (request.includeAvatars !== false) {
+        for (const target of targets) {
+          if (!jobs.has(request.jobId)) throw new Error('已取消')
+          if (!target.avatarUrl) continue
+          const resolved = await readAvatarAsset(target.avatarUrl)
+          if (!resolved) continue
+          const avatarName = `conversation_${hashPart(target.userMd5)}.${resolved.extension}`
+          await fs.writeFile(join(outputDir, 'avatars', avatarName), resolved.buffer)
+          conversationAvatarUrls.set(target.userMd5, `avatars/${avatarName}`)
+        }
+      }
       const voiceService =
         request.includeMedia && chat.getChatDb()
           ? new VoiceService(chat.getChatDb()!.getWcdb4Client())
           : null
       if (voiceService) {
         for (const message of messages) {
+          if (!jobs.has(request.jobId)) throw new Error('已取消')
           if (kindOf(message) !== 'voice') continue
+          const conversationId = message.exportConversationId || targets[0].userMd5
           if (!message.sessionId || message.localId == null || !message.createTime) {
             keepMediaError(request, message, '语音标识不完整，无法定位本地语音')
             continue
@@ -410,7 +599,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
               keepMediaError(request, message, reason)
               continue
             }
-            const voiceName = `voice_${hashPart(exportMessageKey(message, request.userMd5))}.wav`
+            const voiceName = `voice_${hashPart(exportMessageKey(message, conversationId))}.wav`
             const audioBuffer = Buffer.from(voice.data, 'base64')
             await fs.writeFile(join(outputDir, 'voices', voiceName), audioBuffer)
             message.voiceDataUrl = `voices/${voiceName}`
@@ -431,14 +620,26 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
         }
       }
       for (const [index, message] of messages.entries()) {
+        if (!jobs.has(request.jobId)) {
+          send({
+            jobId: request.jobId,
+            phase: 'cancelled',
+            processed: index,
+            total: messages.length,
+            percent: 15 + Math.round((index / Math.max(messages.length, 1)) * 75)
+          })
+          return { success: false, error: '已取消' }
+        }
+        const conversationId = message.exportConversationId || targets[0].userMd5
         message.exportShowAvatar = request.includeAvatars !== false
         const avatar = (message.senderId ? avatarMap[message.senderId] : undefined) || message.img
         const resolvedAvatar = avatar ? await readAvatarAsset(avatar) : null
         const avatarBuffer = resolvedAvatar?.buffer || null
         const avatarExtension = resolvedAvatar?.extension || 'jpg'
         if (avatarBuffer) {
-          const avatarKey =
-            message.senderId || avatar || `message_${exportMessageKey(message, request.userMd5)}`
+          const avatarKey = `${conversationId}:${
+            message.senderId || avatar || `message_${exportMessageKey(message, conversationId)}`
+          }`
           let avatarName = exportedAvatars.get(avatarKey)
           if (!avatarName) {
             avatarName = `avatar_${hashPart(avatarKey)}.${avatarExtension}`
@@ -472,7 +673,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
                   allowThumbnail: attempt.allowThumbnail,
                   preferThumbnail: attempt.preferThumbnail,
                   sessionId: message.sessionId,
-                  sessionMd5: request.userMd5,
+                  sessionMd5: conversationId,
                   createTime: message.createTime
                 }
               )
@@ -497,7 +698,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             }
             const decoded = decryptedImage ? decodeDataUrl(decryptedImage.data) : null
             if (decoded) {
-              const name = `image_${hashPart(exportMessageKey(message, request.userMd5))}.${decoded.extension}`
+              const name = `image_${hashPart(exportMessageKey(message, conversationId))}.${decoded.extension}`
               await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
               message.exportMediaUrl = `media/${name}`
               message.exportMediaType = 'image'
@@ -534,8 +735,8 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             } else if (extname(source).toLowerCase() !== '.mp4') {
               keepMediaError(request, message, '视频格式不支持，仅支持本地 MP4 文件')
             } else {
-              const name = `video_${hashPart(exportMessageKey(message, request.userMd5))}.mp4`
-              await fs.copyFile(source, join(outputDir, 'media', name))
+              const name = `video_${hashPart(exportMessageKey(message, conversationId))}.mp4`
+              await copyWritableExportFile(source, join(outputDir, 'media', name))
               message.exportMediaUrl = `media/${name}`
               message.exportMediaType = 'video'
             }
@@ -549,7 +750,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
               ? await readAvatarAsset(stickerSource)
               : null
           if (decoded) {
-            const name = `sticker_${hashPart(exportMessageKey(message, request.userMd5))}.${decoded.extension}`
+            const name = `sticker_${hashPart(exportMessageKey(message, conversationId))}.${decoded.extension}`
             await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
             message.exportMediaUrl = `media/${name}`
             message.exportMediaType = 'sticker'
@@ -564,8 +765,8 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             if (!resolved.success || !resolved.filePath || !resolved.fileName) {
               keepMediaError(request, message, resolved.error || '本地文件附件缺失')
             } else {
-              const name = `file_${hashPart(exportMessageKey(message, request.userMd5))}_${safeFilePart(resolved.fileName)}`
-              await fs.copyFile(resolved.filePath, join(outputDir, 'media', name))
+              const name = `file_${hashPart(exportMessageKey(message, conversationId))}_${safeFilePart(resolved.fileName)}`
+              await copyWritableExportFile(resolved.filePath, join(outputDir, 'media', name))
               message.exportMediaUrl = `media/${name}`
               message.exportMediaType = 'file'
               message.exportMediaName = message.contentData.title || resolved.fileName
@@ -583,26 +784,53 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
       const mergedMessages = mergeHtmlArchiveMessages(
         previousArchive.messages,
         messages,
-        request.userMd5
+        '',
+        targets.map((target) => target.userMd5)
       )
+      const normalizedMessages = normalizeHtmlArchiveSelfNames(mergedMessages, selfInfo)
       const archive: HtmlExportArchive = {
-        version: 1,
-        sourceId: request.userMd5,
-        name: request.name,
+        version: 2,
+        name: archiveName,
         exportedAt: new Date().toISOString(),
-        messages: normalizeHtmlArchiveSelfNames(mergedMessages, selfInfo)
+        conversations: targets.map((target) => ({
+          id: target.userMd5,
+          name: target.name,
+          type: target.type,
+          avatarUrl:
+            conversationAvatarUrls.get(target.userMd5) ||
+            previousArchive.conversations.find((item) => item.id === target.userMd5)?.avatarUrl,
+          messageCount: normalizedMessages.filter(
+            (message) => message.exportConversationId === target.userMd5
+          ).length
+        })),
+        messages: normalizedMessages
       }
-      await fs.writeFile(outputPath, renderExportPage(request.name), 'utf8')
+      if (!jobs.has(request.jobId)) throw new Error('已取消')
+      await fs.writeFile(outputPath, renderExportPage(archiveName), 'utf8')
       await writeHtmlArchive(outputDir, archive)
+      let completedPath = outputPath
+      if (request.zip) {
+        if (!jobs.has(request.jobId)) return { success: false, error: '已取消' }
+        const zipPath = join(root, `${outputFolder}.zip`)
+        send({
+          jobId: request.jobId,
+          phase: 'compressing',
+          processed: archive.messages.length,
+          total: archive.messages.length,
+          percent: 95
+        })
+        await writeZipArchive(outputDir, zipPath, outputFolder, request.jobId)
+        completedPath = zipPath
+      }
       send({
         jobId: request.jobId,
         phase: 'completed',
         processed: archive.messages.length,
         total: archive.messages.length,
         percent: 100,
-        outputPath
+        outputPath: completedPath
       })
-      return { success: true, outputPath, messageCount: archive.messages.length }
+      return { success: true, outputPath: completedPath, messageCount: archive.messages.length }
     } else {
       send({
         jobId: request.jobId,
@@ -612,7 +840,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
         percent: 90
       })
     }
-    await fs.writeFile(outputPath, render(request.format, messages, request.name), 'utf8')
+    await fs.writeFile(outputPath, render(request.format, messages, archiveName), 'utf8')
     send({
       jobId: request.jobId,
       phase: 'completed',
@@ -624,6 +852,10 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
     return { success: true, outputPath, messageCount: messages.length }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    if (!jobs.has(request.jobId) || message === '已取消') {
+      send({ jobId: request.jobId, phase: 'cancelled', processed: 0, error: '已取消' })
+      return { success: false, error: '已取消' }
+    }
     send({ jobId: request.jobId, phase: 'failed', processed: 0, error: message })
     return { success: false, error: message }
   } finally {
@@ -632,6 +864,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
 }
 export function cancelExport(jobId: string): void {
   jobs.delete(jobId)
+  activeArchives.get(jobId)?.abort()
 }
 export async function revealExport(path: string): Promise<void> {
   shell.showItemInFolder(path)

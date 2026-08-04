@@ -39,8 +39,16 @@ body {
   padding: 16px 20px;
   box-shadow: 0 8px 24px #29483b12;
 }
+.archive-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
 .title { font-size: 18px; font-weight: 750; }
 .meta { color: var(--muted); margin-left: 12px; font-size: 13px; }
+.archive-heading .meta { margin-left: 0; }
 .controls { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
 .controls input, .filter-button {
   border: 1px solid var(--border);
@@ -63,13 +71,66 @@ body {
 .count { margin-left: auto; color: var(--muted); font-size: 13px; }
 .archive-layout {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
+  grid-template-columns: 168px minmax(0, 1fr);
   gap: 18px;
   min-height: 0;
   flex: 1;
   margin-top: 16px;
 }
+.archive-layout.single-conversation { grid-template-columns: 168px minmax(0, 1fr); }
+.archive-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+.conversation-filter {
+  position: relative;
+  display: inline-flex;
+  flex: 0 1 320px;
+  min-width: 210px;
+  max-width: 100%;
+}
+.conversation-filter[hidden] { display: none; }
+.conversation-filter::after {
+  content: '';
+  position: absolute;
+  right: 15px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  transform: translateY(-65%) rotate(45deg);
+  pointer-events: none;
+}
+.conversation-select {
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  padding: 0 42px 0 14px;
+  border: 1px solid #b8cec5;
+  border-radius: 10px;
+  outline: 0;
+  background: #f7fbf9;
+  color: var(--text);
+  font: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 8px #29483b12;
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+.conversation-select:hover { border-color: #70a392; background: #fff; }
+.conversation-select:focus {
+  border-color: var(--accent);
+  background: #fff;
+  box-shadow: 0 0 0 3px #176b571c;
+}
 .timeline {
+  flex: 1;
   overflow: auto;
   background: #f7faf8;
   border: 1px solid var(--border);
@@ -133,6 +194,14 @@ body {
 }
 .message.system .sender { display: none; }
 .time { color: var(--muted); font-size: 11px; margin: 0 12px; }
+.conversation-source {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
 .row { display: flex; gap: 12px; align-items: flex-end; max-width: 100%; }
 .sent .row { flex-direction: row-reverse; }
 .avatar {
@@ -249,9 +318,19 @@ body {
   .controls input[type=search] { width: 100%; }
   .filters { grid-column: 1; }
   .count { width: 100%; margin-left: 0; }
-  .archive-layout { grid-template-columns: 1fr; margin-top: 10px; }
-  .timeline { display: flex; gap: 6px; overflow: auto; padding: 8px; }
-  .timeline-year { display: none; }
+  .archive-layout { grid-template-columns: 1fr; align-content: start; margin-top: 10px; }
+  .archive-layout.single-conversation { grid-template-columns: 1fr; }
+  .archive-navigation { align-self: start; gap: 8px; }
+  .timeline { align-self: start; display: flex; gap: 6px; overflow: auto; padding: 8px; }
+  .archive-heading { align-items: flex-start; }
+  .conversation-filter { flex-basis: 100%; width: 100%; }
+  .timeline-year {
+    flex: 0 0 auto;
+    align-self: center;
+    margin: 0 2px 0 0;
+    padding: 7px 5px;
+    white-space: nowrap;
+  }
   .timeline-month {
     flex: 0 0 auto;
     width: auto;
@@ -281,8 +360,24 @@ const renderExportScript = (name: string): string => `
   const PAGE_SIZE = ${EXPORT_PAGE_SIZE}
   const WINDOW_STEP = Math.floor(PAGE_SIZE / 2)
   const archive = window.__WECHAT_EXPORT__ || { name: ${JSON.stringify(name)}, messages: [] }
-  const allMessages = Array.isArray(archive.messages) ? archive.messages : []
+  const legacyConversation = archive.sourceId
+    ? [{ id: archive.sourceId, name: archive.name || ${JSON.stringify(name)}, type: 'user', messageCount: 0 }]
+    : []
+  const conversations = Array.isArray(archive.conversations) && archive.conversations.length
+    ? archive.conversations
+    : legacyConversation
+  const allMessages = (Array.isArray(archive.messages) ? archive.messages : []).map((message) =>
+    message.exportConversationId || conversations.length !== 1
+      ? message
+      : Object.assign({}, message, {
+          exportConversationId: conversations[0].id,
+          exportConversationName: conversations[0].name
+        })
+  )
   const list = document.querySelector('#messages')
+  const layout = document.querySelector('.archive-layout')
+  const conversationFilter = document.querySelector('#conversation-filter')
+  const conversationSelect = document.querySelector('#conversation-select')
   const timeline = document.querySelector('#timeline')
   const query = document.querySelector('#query')
   const count = document.querySelector('#count')
@@ -293,6 +388,7 @@ const renderExportScript = (name: string): string => `
   const preview = document.querySelector('#lightbox-image')
   const closeButton = document.querySelector('#lightbox-close')
   let activeKind = 'all'
+  let activeConversation = 'all'
   let filtered = []
   let windowStart = 0
   let windowEnd = 0
@@ -345,6 +441,7 @@ const renderExportScript = (name: string): string => `
     return 'text'
   }
   const searchText = (message) => [
+    message.exportConversationName,
     message.name,
     message.senderId,
     message.content,
@@ -389,12 +486,40 @@ const renderExportScript = (name: string): string => `
           : avatarFallback) + '</div>'
     const text = message.content || (data.type === 'quote' ? data.title : '')
     const content = esc(text || (!media && !audio && !quote ? '[' + (message.type || '消息') + ']' : ''))
+    const source = conversations.length > 1 && activeConversation === 'all'
+      ? '<span class="conversation-source">' + esc(message.exportConversationName || '聊天') + '</span>'
+      : ''
     return '<article class="message' + (message.isSender ? ' sent' : '') + (isSystem ? ' system' : '') +
       '" data-index="' + archiveIndex + '" data-month="' + esc(monthKey(message)) + '">' +
-      '<div class="time">' + esc(fullTime(message)) + '</div><div class="row">' +
+      '<div class="time">' + esc(fullTime(message)) + source + '</div><div class="row">' +
       (isSystem ? '' : avatar) + '<div class="bubble"><div class="sender">' +
       (isSystem ? '' : esc(sender)) + '</div>' + media + audio + quote +
       '<div class="content">' + content + '</div>' + mediaStatus + '</div></div></article>'
+  }
+
+  const renderConversations = () => {
+    if (conversations.length <= 1) {
+      conversationFilter.hidden = true
+      title.hidden = false
+      layout.classList.add('single-conversation')
+      return
+    }
+    const counts = new Map()
+    for (const message of allMessages) {
+      const id = message.exportConversationId || ''
+      counts.set(id, (counts.get(id) || 0) + 1)
+    }
+    const option = (id, label, total) =>
+      '<option value="' + esc(id) + '">' + esc(label) + '（' + total + '）</option>'
+    title.hidden = true
+    conversationFilter.hidden = false
+    conversationSelect.innerHTML = option('all', '全部聊天', allMessages.length) +
+      conversations.map((conversation) => option(
+        conversation.id,
+        conversation.name,
+        counts.get(conversation.id) || 0
+      )).join('')
+    conversationSelect.value = activeConversation
   }
 
   const renderTimeline = () => {
@@ -431,7 +556,11 @@ const renderExportScript = (name: string): string => `
   }
   const updateCount = () => {
     const shown = Math.max(0, windowEnd - windowStart)
-    count.textContent = '已显示 ' + shown + ' / 筛选 ' + filtered.length + ' / 全部 ' + allMessages.length
+    const scopeTotal = activeConversation === 'all'
+      ? allMessages.length
+      : allMessages.filter((message) => message.exportConversationId === activeConversation).length
+    const scopeLabel = activeConversation === 'all' ? '全部' : '当前聊天'
+    count.textContent = '已显示 ' + shown + ' / 筛选 ' + filtered.length + ' / ' + scopeLabel + ' ' + scopeTotal
   }
   const setScrollTop = (value) => {
     scrollLoadSuppressed = true
@@ -472,6 +601,7 @@ const renderExportScript = (name: string): string => `
   const applyFilters = () => {
     const term = query.value.trim().toLowerCase()
     filtered = allMessages.filter((message) =>
+      (activeConversation === 'all' || message.exportConversationId === activeConversation) &&
       (activeKind === 'all' || kindOf(message) === activeKind) &&
       (!term || searchText(message).includes(term))
     )
@@ -540,6 +670,10 @@ const renderExportScript = (name: string): string => `
     filters.querySelectorAll('[data-kind]').forEach((item) => item.classList.toggle('active', item === button))
     applyFilters()
   })
+  conversationSelect.addEventListener('change', () => {
+    activeConversation = conversationSelect.value
+    applyFilters()
+  })
   timeline.addEventListener('click', (event) => {
     const button = event.target.closest('[data-month]')
     if (button) jumpToMonth(button.dataset.month)
@@ -577,10 +711,12 @@ const renderExportScript = (name: string): string => `
   })
 
   title.textContent = archive.name || ${JSON.stringify(name)}
-  meta.textContent = allMessages.length.toLocaleString() + ' 条消息 · 更新于 ' +
-    (archive.exportedAt
-      ? new Date(archive.exportedAt).toLocaleString('zh-CN', { hour12: false })
-      : '未知时间')
+  const updatedAt = archive.exportedAt
+    ? new Date(archive.exportedAt).toLocaleString('zh-CN', { hour12: false })
+    : '未知时间'
+  meta.textContent = (conversations.length > 1 ? '' : allMessages.length.toLocaleString() + ' 条消息 · ') +
+    '更新于 ' + updatedAt
+  renderConversations()
   applyFilters()
 })()
 `
@@ -597,8 +733,11 @@ export function renderExportPage(name: string): string {
 <body>
   <main class="page">
     <header class="toolbar">
-      <div>
+      <div class="archive-heading">
         <span class="title" id="archive-title">${safe(name)}</span>
+        <label class="conversation-filter" id="conversation-filter" hidden>
+          <select class="conversation-select" id="conversation-select" aria-label="筛选聊天"></select>
+        </label>
         <span class="meta" id="archive-meta">正在读取消息…</span>
       </div>
       <div class="controls">
@@ -616,7 +755,9 @@ export function renderExportPage(name: string): string {
       </div>
     </header>
     <section class="archive-layout">
-      <nav class="timeline" id="timeline" aria-label="聊天时间轴"></nav>
+      <aside class="archive-navigation">
+        <nav class="timeline" id="timeline" aria-label="聊天时间轴"></nav>
+      </aside>
       <section class="scroll" id="messages">
         <div class="empty">正在加载聊天档案…</div>
       </section>
