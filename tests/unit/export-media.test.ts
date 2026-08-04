@@ -94,6 +94,60 @@ describe('export media', () => {
     dom.window.close()
   })
 
+  it('filters a v2 merged archive by conversation before search and month counts', () => {
+    const html = renderExportPage('合并档案')
+    const dom = new JSDOM(html, { runScripts: 'outside-only' })
+    Object.assign(dom.window, {
+      __WECHAT_EXPORT__: {
+        version: 2,
+        name: '合并档案',
+        exportedAt: '2026-08-04T00:00:00.000Z',
+        conversations: [
+          { id: 'alpha', name: '聊天 A', type: 'user', messageCount: 2 },
+          { id: 'beta', name: '聊天 B', type: 'group', messageCount: 1 }
+        ],
+        messages: [
+          messageForArchive('alpha-1', 'alpha', '聊天 A', '共同关键词', 1_767_225_600),
+          messageForArchive('beta-1', 'beta', '聊天 B', '共同关键词', 1_769_904_000),
+          messageForArchive('alpha-2', 'alpha', '聊天 A', '仅 A 可见', 1_769_990_400)
+        ]
+      }
+    })
+
+    dom.window.eval(inlineScriptOf(html))
+
+    const filter = dom.window.document.querySelector('#conversation-filter')!
+    const select = dom.window.document.querySelector('#conversation-select') as HTMLSelectElement
+    expect(filter.hasAttribute('hidden')).toBe(false)
+    expect(filter.parentElement?.classList.contains('archive-heading')).toBe(true)
+    expect((dom.window.document.querySelector('#archive-title') as HTMLElement).hidden).toBe(true)
+    expect(dom.window.document.querySelector('#archive-meta')?.textContent).toMatch(/^更新于 /)
+    expect(select.options).toHaveLength(3)
+    expect(select.value).toBe('all')
+    expect(select.options[0].textContent).toBe('全部聊天（3）')
+    expect(dom.window.document.querySelectorAll('.conversation-source')).toHaveLength(3)
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
+      '已显示 3 / 筛选 3 / 全部 3'
+    )
+    select.value = 'alpha'
+    select.dispatchEvent(new dom.window.Event('change'))
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(2)
+    expect(dom.window.document.querySelectorAll('.conversation-source')).toHaveLength(0)
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
+      '已显示 2 / 筛选 2 / 当前聊天 2'
+    )
+    expect(dom.window.document.querySelectorAll('.timeline-month')).toHaveLength(2)
+
+    const search = dom.window.document.querySelector('#query') as HTMLInputElement
+    search.value = '共同关键词'
+    search.dispatchEvent(new dom.window.Event('input'))
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(1)
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
+      '已显示 1 / 筛选 1 / 当前聊天 2'
+    )
+    dom.window.close()
+  })
+
   it('keeps relative media, file download, quote, and missing-media renderers', () => {
     const html = renderExportPage('媒体档案')
 
@@ -116,3 +170,23 @@ describe('export media', () => {
     expect(html).toContain("if (event.key === 'Escape') closeLightbox()")
   })
 })
+
+function messageForArchive(
+  id: string,
+  conversationId: string,
+  conversationName: string,
+  content: string,
+  createTime: number
+): Message {
+  return {
+    id,
+    from: 'user',
+    type: '普通文本',
+    datetime: '',
+    content,
+    isSender: false,
+    createTime,
+    exportConversationId: conversationId,
+    exportConversationName: conversationName
+  }
+}

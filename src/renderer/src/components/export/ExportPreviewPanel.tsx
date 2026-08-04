@@ -10,6 +10,7 @@ interface ExportPreviewPanelProps {
   previewBytes: number
   selfInfo: SelfInfo | null
   progress: ExportJobProgress | null
+  selectedCount: number
   jobId: string
   onCancel: (jobId: string) => void
   onReveal: (path: string) => void
@@ -22,6 +23,7 @@ export function ExportPreviewPanel({
   previewBytes,
   selfInfo,
   progress,
+  selectedCount,
   jobId,
   onCancel,
   onReveal
@@ -32,7 +34,9 @@ export function ExportPreviewPanel({
         <>
           <div className="export-preview-heading">
             <strong>导出预览</strong>
-            <span>仅预览最近 20 条</span>
+            <span>
+              {selectedCount > 1 ? `${selectedCount} 个聊天 · 合并预览` : '仅预览最近 20 条'}
+            </span>
           </div>
           <div className="export-message-preview">
             <div className="export-preview-date">最近消息</div>
@@ -50,7 +54,7 @@ export function ExportPreviewPanel({
                 ]
             ).map((message) => (
               <div
-                key={message.id}
+                key={`${message.exportConversationId || 'single'}:${message.id}`}
                 className={`export-preview-message ${message.isSender ? 'mine' : ''} ${
                   message.contentData?.type === 'system' && message.contentData.pat ? 'system' : ''
                 }`}
@@ -64,6 +68,9 @@ export function ExportPreviewPanel({
                 </span>
                 <span className="export-preview-bubble">
                   <small>
+                    {selectedCount > 1 && message.exportConversationName
+                      ? `${message.exportConversationName} · `
+                      : ''}
                     {message.name || (message.isSender ? '我' : '联系人')} ·{' '}
                     {formatPreviewTime(message)}
                   </small>
@@ -108,7 +115,11 @@ export function ExportPreviewPanel({
           <ol>
             <li className="done">准备导出</li>
             <li className="current">
-              {progress?.phase === 'writing' ? '生成档案' : '分批读取聊天记录'}
+              {progress?.phase === 'compressing'
+                ? '压缩 ZIP'
+                : progress?.phase === 'writing'
+                  ? '生成档案'
+                  : '分批读取聊天记录'}
             </li>
             <li>解析消息内容</li>
             <li>处理媒体资源</li>
@@ -118,9 +129,11 @@ export function ExportPreviewPanel({
             <span style={{ width: `${progress?.percent ?? 0}%` }} />
           </div>
           <strong>
-            {progress?.phase === 'writing'
-              ? `正在写入 ${progress.processed.toLocaleString()} 条消息... ${progress.percent ?? 0}%`
-              : `正在读取消息... ${progress?.percent ?? 0}%`}
+            {progress?.phase === 'compressing'
+              ? `正在压缩资源包... ${progress.percent ?? 0}%`
+              : progress?.phase === 'writing'
+                ? `正在写入 ${progress.processed.toLocaleString()} 条消息... ${progress.percent ?? 0}%`
+                : `正在读取消息... ${progress?.percent ?? 0}%`}
           </strong>
           <button type="button" className="export-cancel-button" onClick={() => onCancel(jobId)}>
             取消导出

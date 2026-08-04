@@ -114,6 +114,38 @@ test('NAV-01 NAV-02 every top-level page is unique and switchable', async () => 
   }
 })
 
+test('EXPORT-01 multi-chat selection stays local to export and forces HTML', async () => {
+  const fixture = await launchTestApp()
+  try {
+    const navigation = fixture.page.getByRole('navigation', { name: '一级导航' })
+    await fixture.page.getByRole('button', { name: '联系人 (1)' }).click()
+    await fixture.page.getByText('文件传输助手', { exact: true }).click()
+    await expect(fixture.page.getByText('转发多条内容', { exact: true })).toBeVisible()
+
+    await navigation.getByRole('button', { name: '导出' }).click()
+    const contactList = fixture.page.locator('.export-contact-list')
+    await expect(contactList.getByRole('button', { name: /文件传输助手/ })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
+    await fixture.page.getByRole('button', { name: '+ 添加聊天' }).click()
+    await contactList.getByRole('button', { name: /产品测试群/ }).click()
+
+    await expect(fixture.page.getByText('已选 2 / 5 个')).toBeVisible()
+    await expect(fixture.page.getByRole('button', { name: 'CSV' })).toBeDisabled()
+    await expect(fixture.page.getByRole('button', { name: /HTML/ })).toHaveClass(/active/)
+    await expect(fixture.page.getByText('文件传输助手、产品测试群 · 共 2 个聊天')).toBeVisible()
+    await expect(
+      fixture.page.locator('.export-preview-bubble').filter({ hasText: '这是一条脱敏测试消息' })
+    ).toHaveCount(1)
+
+    await navigation.getByRole('button', { name: '档案' }).click()
+    await expect(fixture.page.getByText('转发多条内容', { exact: true })).toBeVisible()
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('ARCH-01 ARCH-02 folded chats and supported message types are represented explicitly', async () => {
   const fixture = await launchTestApp()
   try {

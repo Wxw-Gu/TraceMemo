@@ -6,6 +6,9 @@ interface ExportContactPanelProps {
   contacts: Contact[]
   filteredContacts: Contact[]
   activeContact: Contact | null
+  selectedContactIds: string[]
+  selectionMode: boolean
+  selectionLimit: number
   selfInfo: SelfInfo | null
   dbReady: boolean
   contactFilter: string
@@ -13,6 +16,7 @@ interface ExportContactPanelProps {
   onContactFilterChange: (value: string) => void
   onContactTypeChange: (value: 'all' | 'group' | 'user') => void
   onSelectContact: (contact: Contact) => void
+  onCompleteSelection: () => void
   onOpenSettings: () => void
 }
 
@@ -20,6 +24,9 @@ export function ExportContactPanel({
   contacts,
   filteredContacts,
   activeContact,
+  selectedContactIds,
+  selectionMode,
+  selectionLimit,
   selfInfo,
   dbReady,
   contactFilter,
@@ -27,6 +34,7 @@ export function ExportContactPanel({
   onContactFilterChange,
   onContactTypeChange,
   onSelectContact,
+  onCompleteSelection,
   onOpenSettings
 }: ExportContactPanelProps): React.ReactElement {
   return (
@@ -65,15 +73,30 @@ export function ExportContactPanel({
         </div>
       </div>
 
+      {selectionMode && (
+        <div className="export-multi-select-bar">
+          <span>
+            已选 {selectedContactIds.length} / {selectionLimit} 个
+          </span>
+          <button type="button" onClick={onCompleteSelection}>
+            完成
+          </button>
+        </div>
+      )}
+
       <div className="export-contact-list">
         {filteredContacts.map((contact) => {
           const name = displayName(contact)
+          const selected = selectedContactIds.includes(contact.md5)
+          const atLimit = selectionMode && !selected && selectedContactIds.length >= selectionLimit
           return (
             <button
               key={contact.md5}
               type="button"
-              className={`export-contact-item ${activeContact?.md5 === contact.md5 ? 'active' : ''}`}
+              className={`export-contact-item ${activeContact?.md5 === contact.md5 ? 'active' : ''} ${selected ? 'selected' : ''}`}
               onClick={() => onSelectContact(contact)}
+              disabled={atLimit}
+              aria-pressed={selected}
             >
               <span className="export-contact-avatar">
                 {contact.avatar ? <img src={contact.avatar} alt="" /> : name.slice(0, 1)}
@@ -82,6 +105,11 @@ export function ExportContactPanel({
                 <strong>{name}</strong>
                 <small>{contact.type === 'group' ? '群聊' : '联系人'}</small>
               </span>
+              {selectionMode && (
+                <span className={`export-contact-check ${selected ? 'checked' : ''}`} aria-hidden>
+                  {selected ? '✓' : ''}
+                </span>
+              )}
             </button>
           )
         })}
