@@ -4,14 +4,20 @@ interface VideoBubbleProps {
   md5?: string
   newMd5?: string
   rawMd5?: string
+  createTime?: number
   duration?: number
+  width?: number
+  height?: number
 }
 
 export function VideoBubble({
   md5,
   newMd5,
   rawMd5,
-  duration
+  createTime,
+  duration,
+  width,
+  height
 }: VideoBubbleProps): React.ReactElement {
   const hashes = useMemo(
     () => [rawMd5, newMd5, md5].filter((value): value is string => Boolean(value)),
@@ -22,7 +28,7 @@ export function VideoBubble({
   useEffect(() => {
     let cancelled = false
     window.api
-      .getVideo(hashes)
+      .getVideo(hashes, { createTime, duration, width, height })
       .then((result) => {
         if (!cancelled) setMedia(result.success ? result : { error: result.error })
       })
@@ -32,7 +38,7 @@ export function VideoBubble({
     return () => {
       cancelled = true
     }
-  }, [hashes])
+  }, [createTime, duration, hashes, height, width])
 
   if (!media.url) {
     return <div className="video-placeholder">{media.error || '视频加载中…'}</div>

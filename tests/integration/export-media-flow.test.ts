@@ -22,6 +22,12 @@ const state = vi.hoisted(() => ({
   videoPath: '',
   messages: [] as Message[],
   messagesByUser: {} as Record<string, Message[]>,
+  videoLookups: [] as {
+    createTime?: number
+    duration?: number
+    width?: number
+    height?: number
+  }[],
   imageLookups: [] as {
     allowThumbnail?: boolean
     preferThumbnail?: boolean
@@ -120,7 +126,11 @@ vi.mock('../../src/main/image-decrypt-service', () => ({
 }))
 vi.mock('../../src/main/video-asset-service', () => ({
   VideoAssetService: class {
-    resolve(): { success: boolean; url: string } {
+    resolve(
+      _hashes: string[],
+      options?: { createTime?: number; duration?: number; width?: number; height?: number }
+    ): { success: boolean; url: string } {
+      state.videoLookups.push(options || {})
       return { success: true, url: 'wxe-media://local/fixture-video' }
     }
     pathForUrl(): string {
@@ -175,6 +185,7 @@ describe('media export flow', () => {
       Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex')
     )
     state.imageLookups = []
+    state.videoLookups = []
     state.messagesByUser = {}
     const fileMonth = join(state.accountRoot, 'msg', 'file', '2026-08')
     mkdirSync(fileMonth, { recursive: true })
@@ -203,7 +214,13 @@ describe('media export flow', () => {
       message({
         id: 'video',
         type: '视频',
-        contentData: { type: 'video', md5: 'b'.repeat(32) }
+        contentData: {
+          type: 'video',
+          md5: 'b'.repeat(32),
+          duration: 68,
+          width: 279,
+          height: 630
+        }
       }),
       message({
         id: 'file',
@@ -263,6 +280,12 @@ describe('media export flow', () => {
       sessionId: 'fixture-session',
       sessionMd5: 'fixture-user',
       createTime: 1_785_549_600
+    })
+    expect(state.videoLookups[0]).toEqual({
+      createTime: 1_785_549_600,
+      duration: 68,
+      width: 279,
+      height: 630
     })
     expect(progress.length).toBeGreaterThan(0)
   })

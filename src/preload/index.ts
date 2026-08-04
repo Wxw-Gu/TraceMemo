@@ -82,7 +82,10 @@ const api = {
     sessionId?: string,
     options?: { force?: boolean; preferThumbnail?: boolean; priority?: number }
   ) => ipcRenderer.invoke('db:getImage', imageMd5, imageDatNameOrThumb, sessionId, options),
-  getVideo: (hashes: string[]) => ipcRenderer.invoke('db:getVideo', hashes),
+  getVideo: (
+    hashes: string[],
+    options?: { createTime?: number; duration?: number; width?: number; height?: number }
+  ) => ipcRenderer.invoke('db:getVideo', hashes, options),
   getSticker: (cdnUrl?: string, md5?: string) => ipcRenderer.invoke('db:getSticker', cdnUrl, md5),
   startExport: (request: ExportRequest) => ipcRenderer.invoke('export:start', request),
   cancelExport: (jobId: string) => ipcRenderer.invoke('export:cancel', jobId),

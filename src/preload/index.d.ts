@@ -219,7 +219,8 @@ declare global {
         filePath?: string
       }>
       getVideo: (
-        hashes: string[]
+        hashes: string[],
+        options?: { createTime?: number; duration?: number; width?: number; height?: number }
       ) => Promise<{ success: boolean; url?: string; poster?: string; error?: string }>
       getSticker: (
         cdnUrl?: string,

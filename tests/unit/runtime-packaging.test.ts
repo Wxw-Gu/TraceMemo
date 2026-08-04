@@ -5,12 +5,15 @@ import { dirname, join, resolve } from 'path'
 import { afterAll, describe, expect, it } from 'vitest'
 
 const nodeRequire = createRequire(import.meta.url)
-const { validateFfmpegRuntime, validateSilkWasmRuntime } = nodeRequire(
-  '../../scripts/after-pack.cjs'
-) as {
-  validateFfmpegRuntime: (runtimeResources: string, platform?: NodeJS.Platform) => void
-  validateSilkWasmRuntime: (runtimeResources: string) => void
+const asar = nodeRequire('@electron/asar') as {
+  createPackage: (source: string, destination: string) => Promise<void>
 }
+const { validateAsarRuntimeDependencies, validateFfmpegRuntime, validateSilkWasmRuntime } =
+  nodeRequire('../../scripts/after-pack.cjs') as {
+    validateAsarRuntimeDependencies: (runtimeResources: string) => void
+    validateFfmpegRuntime: (runtimeResources: string, platform?: NodeJS.Platform) => void
+    validateSilkWasmRuntime: (runtimeResources: string) => void
+  }
 const root = mkdtempSync(join(tmpdir(), 'wxe-runtime-package-'))
 
 describe('production runtime packaging', () => {
@@ -30,6 +33,19 @@ describe('production runtime packaging', () => {
   it('keeps silk-wasm in electron-builder asarUnpack', () => {
     const config = readFileSync(resolve(__dirname, '../../electron-builder.yml'), 'utf8')
     expect(config).toContain('node_modules/silk-wasm/**')
+  })
+
+  it('rejects an app archive with missing runtime dependencies', async () => {
+    const resources = join(root, 'asar-resources')
+    const source = join(root, 'asar-source')
+    mkdirSync(source, { recursive: true })
+    writeFileSync(join(source, 'package.json'), '{}')
+    mkdirSync(resources, { recursive: true })
+    await asar.createPackage(source, join(resources, 'app.asar'))
+
+    expect(() => validateAsarRuntimeDependencies(resources)).toThrow(
+      /Missing packaged runtime dependencies:.*@electron-toolkit\/utils/
+    )
   })
 
   it('requires and unpacks the bundled ffmpeg-static executable', () => {

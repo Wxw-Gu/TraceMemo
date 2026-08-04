@@ -728,7 +728,12 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
           } else if (hashes.length === 0) {
             keepMediaError(request, message, '视频标识不完整，无法定位本地视频')
           } else {
-            const resolved = videoService.resolve(hashes)
+            const resolved = await videoService.resolve(hashes, {
+              createTime: message.createTime,
+              duration: message.contentData.duration,
+              width: message.contentData.width,
+              height: message.contentData.height
+            })
             const source = resolved.url ? videoService.pathForUrl(resolved.url) : undefined
             if (!resolved.success || !source) {
               keepMediaError(request, message, resolved.error || '视频文件缺失或已移动')

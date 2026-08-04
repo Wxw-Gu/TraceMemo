@@ -1176,14 +1176,21 @@ app.whenReady().then(async () => {
     return stickerService.resolveSticker(cdnUrl, md5)
   })
 
-  ipcMain.handle('db:getVideo', async (_, hashes: string[]) => {
-    if (!videoAssetService) {
-      const client = chat.getChatDb()?.getWcdb4Client()
-      if (!client) return { success: false, error: '数据库尚未连接' }
-      videoAssetService = new VideoAssetService(client)
+  ipcMain.handle(
+    'db:getVideo',
+    async (
+      _,
+      hashes: string[],
+      options?: { createTime?: number; duration?: number; width?: number; height?: number }
+    ) => {
+      if (!videoAssetService) {
+        const client = chat.getChatDb()?.getWcdb4Client()
+        if (!client) return { success: false, error: '数据库尚未连接' }
+        videoAssetService = new VideoAssetService(client)
+      }
+      return videoAssetService.resolve(Array.isArray(hashes) ? hashes : [], options)
     }
-    return videoAssetService.resolve(Array.isArray(hashes) ? hashes : [])
-  })
+  )
 
   // -------- Settings & API service --------
 

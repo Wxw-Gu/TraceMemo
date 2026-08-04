@@ -1,9 +1,21 @@
+/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/explicit-function-return-type */
 const { chmodSync, existsSync, renameSync } = require('node:fs')
 const { execFileSync } = require('node:child_process')
 const path = require('node:path')
+const asar = require('@electron/asar')
 
 const COMPATIBILITY_NAME = 'Electron'
 const HELPER_SUFFIXES = ['', ' (Plugin)', ' (Renderer)', ' (GPU)']
+const REQUIRED_RUNTIME_PACKAGES = [
+  '@electron-toolkit/preload',
+  '@electron-toolkit/utils',
+  'archiver',
+  'electron-updater',
+  'ffmpeg-static',
+  'fs-extra',
+  'jsonrepair',
+  'koffi'
+]
 
 function getRuntimeResources(context) {
   const productName = context.packager.appInfo.productFilename
@@ -41,12 +53,29 @@ function validateFfmpegRuntime(runtimeResources, platform = process.platform) {
   return ffmpegPath
 }
 
+function validateAsarRuntimeDependencies(runtimeResources) {
+  const asarPath = path.join(runtimeResources, 'app.asar')
+  if (!existsSync(asarPath)) throw new Error(`Missing packaged application archive: ${asarPath}`)
+
+  const entries = new Set(asar.listPackage(asarPath))
+  const missingPackages = REQUIRED_RUNTIME_PACKAGES.filter(
+    (packageName) => !entries.has(`/node_modules/${packageName}/package.json`)
+  )
+  if (missingPackages.length > 0) {
+    throw new Error(
+      `Missing packaged runtime dependencies: ${missingPackages.join(', ')}. ` +
+        'Use pnpm 7.33.7 so electron-builder can read pnpm-lock.yaml.'
+    )
+  }
+}
+
 function setPlistValue(plistPath, key, value) {
   execFileSync('/usr/libexec/PlistBuddy', ['-c', `Set :${key} ${value}`, plistPath])
 }
 
 exports.default = async function afterPack(context) {
   const runtimeResources = getRuntimeResources(context)
+  validateAsarRuntimeDependencies(runtimeResources)
   validateSilkWasmRuntime(runtimeResources)
   const ffmpegPath = validateFfmpegRuntime(runtimeResources, context.electronPlatformName)
 
@@ -117,5 +146,6 @@ exports.default = async function afterPack(context) {
 }
 
 exports.getRuntimeResources = getRuntimeResources
+exports.validateAsarRuntimeDependencies = validateAsarRuntimeDependencies
 exports.validateFfmpegRuntime = validateFfmpegRuntime
 exports.validateSilkWasmRuntime = validateSilkWasmRuntime
