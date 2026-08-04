@@ -267,6 +267,7 @@ const isolatedUserData = process.env['WXE_USER_DATA']
 if (isolatedUserData) app.setPath('userData', isolatedUserData)
 let dbInitInFlight: Promise<{ success: boolean; monitoring?: boolean; error?: string }> | null =
   null
+let appShutdownRequested = false
 const BUILD_MARK = 'wechat4-local-http-api-2026-07-03'
 const TRAY_MODE =
   process.argv.includes('--tray') || (process.env['WXE_TRAY'] || '').toString() === '1'
@@ -493,12 +494,18 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('db:init', async (_, key: string, accountRoot?: string) => {
+    if (appShutdownRequested) {
+      return { success: false, error: '应用正在退出，数据库连接已取消', monitoring: false }
+    }
     if (dbInitInFlight) return dbInitInFlight
 
     dbInitInFlight = (async () => {
       const startedAt = Date.now()
       try {
         if (wcdbBootstrapPromise) await wcdbBootstrapPromise
+        if (appShutdownRequested) {
+          return { success: false, error: '应用正在退出，数据库连接已取消', monitoring: false }
+        }
         const trimmedKey = String(key || '').trim()
         console.log(`db:init build=${BUILD_MARK} keyLength=${trimmedKey.length}`)
         const settings = loadSettings()
@@ -529,6 +536,10 @@ app.whenReady().then(async () => {
           return { success: true, monitoring: true }
         }
         const nextWechatDb = await WechatDb.create(key, selectedRoot)
+        if (appShutdownRequested) {
+          await nextWechatDb.closeAsync()
+          return { success: false, error: '应用正在退出，数据库连接已取消', monitoring: false }
+        }
         const resolvedRoot = nextWechatDb.getWcdb4Client().getAccountRoot()
         if (resolvedRoot) {
           // 同步更新 imageKeyRoot，避免自动获取图片密钥时扫描到错误目录
@@ -538,7 +549,9 @@ app.whenReady().then(async () => {
             imageKeyRoot: resolvedRoot
           })
         }
-        chat.setChatDb(nextWechatDb)
+        if (!chat.setChatDb(nextWechatDb)) {
+          return { success: false, error: '应用正在退出，数据库连接已取消', monitoring: false }
+        }
         const wcdb4Client = nextWechatDb.getWcdb4Client()
         const sessions = await wcdb4Client.getSessionsAsync({ hydrateDisplayNames: false })
         configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
@@ -1342,15 +1355,44 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', async () => {
-  agentHubService.stop()
-  flushBootstrapCacheWritesSync()
-  chat.setChatDb(null)
-  await apiServer.stop().catch(() => undefined)
-  if (tray) {
-    tray.destroy()
-    tray = null
-  }
+let quitCleanupStarted = false
+let quitCleanupComplete = false
+
+app.on('before-quit', (event) => {
+  if (quitCleanupComplete) return
+  appShutdownRequested = true
+  event.preventDefault()
+  if (quitCleanupStarted) return
+  quitCleanupStarted = true
+  console.log('[Shutdown] cleanup started')
+
+  void (async () => {
+    agentHubService.stop()
+    flushBootstrapCacheWritesSync()
+    const [, nativeCallsDrained] = await Promise.all([
+      apiServer.stop().catch(() => undefined),
+      chat.closeChatDbForQuit().catch(() => false)
+    ])
+    if (!nativeCallsDrained) {
+      console.warn('[Shutdown] WCDB async calls did not fully drain before quit')
+    }
+    if (tray) {
+      tray.destroy()
+      tray = null
+    }
+    console.log('[Shutdown] cleanup completed')
+  })()
+    .catch((error) => {
+      console.warn('[Shutdown] cleanup failed:', error)
+    })
+    .finally(() => {
+      quitCleanupComplete = true
+      // The first quit request has already been cancelled so cleanup can finish safely.
+      // app.exit() avoids starting a second before-quit cycle that can leave Electron alive
+      // on macOS even after every application service has stopped.
+      console.log('[Shutdown] exiting application')
+      app.exit(0)
+    })
 })
 
 function showMainWindow(): void {

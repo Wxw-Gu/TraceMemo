@@ -22,6 +22,27 @@ export type DecodedImage = {
   mimeType?: string
 }
 
+export type ImageDecodeDiagnosticCode =
+  | 'NOT_RUN'
+  | 'FILE_NOT_FOUND'
+  | 'DIRECT_IMAGE'
+  | 'UNSUPPORTED_DAT_VERSION'
+  | 'MISSING_AES_KEY'
+  | 'AES_DECRYPT_FAILED'
+  | 'INVALID_DAT_FILE'
+  | 'WXGF_REQUIRES_DECODER'
+  | 'UNKNOWN_IMAGE_FORMAT'
+  | 'SUCCESS'
+
+export interface ImageDecodeDiagnostic {
+  code: ImageDecodeDiagnosticCode
+  detail: string
+  datVersion?: number
+  fileSize?: number
+  imageFormat?: string
+  wxgf?: boolean
+}
+
 type ImageFindOptions = {
   allowThumbnail?: boolean
   accountDir?: string
@@ -158,12 +179,15 @@ function normalizeDatBase(value) {
   if (!lower) return ''
   const file = lower.split('/').pop().split('\\').pop()
   const withoutDat = file.endsWith('.dat') ? file.slice(0, -4) : file
-  return withoutDat.replace(/(_thumb|\.thumb|_hd|\.hd|_h|\.h|_t|\.t|_c|\.c)$/i, '')
+  return withoutDat.replace(
+    /(_thumb|\.thumb|_hd|\.hd|_h_m|_h|\.h|_t_m|_t|\.t|_m|_b|_w|_c)$/i,
+    ''
+  )
 }
 
 function isThumbnailName(fileName) {
   const lower = fileName.toLowerCase()
-  return lower.includes('_t.dat') || lower.includes('_thumb.dat') || lower.includes('.thumb.dat')
+  return /(?:_t(?:_m)?|_thumb|\.thumb)\.dat$/i.test(lower)
 }
 
 function buildPreferredDatNames(baseName) {
@@ -172,10 +196,13 @@ function buildPreferredDatNames(baseName) {
   return [
     base + '.dat',
     base + '_hd.dat',
+    base + '_h_M.dat',
     base + '_h.dat',
+    base + '_M.dat',
     base + '_b.dat',
     base + '_w.dat',
     base + '_c.dat',
+    base + '_t_M.dat',
     base + '_t.dat',
     base + '.thumb.dat',
     base + '_thumb.dat'
@@ -285,8 +312,15 @@ function unwrapWxgf(buffer, ffmpegPath) {
 
 function decryptCandidate(filePath, aesKey, xorKey, ffmpegPath) {
   const bytes = fs.readFileSync(filePath)
+  const directExtension = detectImageExtension(bytes)
+  if (directExtension) {
+    return {
+      data: 'data:' + getMimeType(directExtension) + ';base64,' + bytes.toString('base64'),
+      filePath
+    }
+  }
   if (!path.extname(filePath).toLowerCase().includes('dat')) {
-    const extension = detectImageExtension(bytes) || path.extname(filePath).toLowerCase()
+    const extension = path.extname(filePath).toLowerCase()
     return { data: 'data:' + getMimeType(extension) + ';base64,' + bytes.toString('base64'), filePath }
   }
   if (
@@ -381,6 +415,10 @@ export class ImageDecryptService {
   private decodedImageCacheBytes = 0
   private persistentCachePrunePromise: Promise<void> | null = null
   private persistentCachePrunePending = false
+  private lastDecodeDiagnostic: ImageDecodeDiagnostic = {
+    code: 'NOT_RUN',
+    detail: '尚未执行图片解析'
+  }
 
   constructor(
     xorKey: string,
@@ -405,6 +443,10 @@ export class ImageDecryptService {
       this.cachedAccountDir = accountDir
       this.accountDirResolved = true
     }
+  }
+
+  getLastDecodeDiagnostic(): ImageDecodeDiagnostic {
+    return { ...this.lastDecodeDiagnostic }
   }
 
   /**
@@ -1211,11 +1253,27 @@ export class ImageDecryptService {
   decryptImage(datPath: string): Buffer | null {
     if (!existsSync(datPath)) {
       imageDecryptLog('[ImageDecrypt] file not found:', datPath)
+      this.lastDecodeDiagnostic = {
+        code: 'FILE_NOT_FOUND',
+        detail: '候选图片文件不存在'
+      }
       return null
     }
 
     try {
+      const source = readFileSync(datPath)
+      const directExtension = this.detectImageExtension(source)
+      if (directExtension) {
+        this.lastDecodeDiagnostic = {
+          code: 'DIRECT_IMAGE',
+          detail: 'DAT 文件内容是可直接读取的图片',
+          fileSize: source.length,
+          imageFormat: directExtension.replace(/^\./, '').toUpperCase()
+        }
+        return source
+      }
       const version = this.getDatVersion(datPath)
+      const fileSize = statSync(datPath).size
       imageDecryptLog(
         '[ImageDecrypt] dat version:',
         version,
@@ -1231,6 +1289,12 @@ export class ImageDecryptService {
         imageDecryptLog('[ImageDecrypt] using WeChat 4.0 (user AES key)')
         if (!this.aesKey) {
           imageDecryptLog('[ImageDecrypt] no AES key configured')
+          this.lastDecodeDiagnostic = {
+            code: 'MISSING_AES_KEY',
+            detail: '未配置 AES 图片密钥',
+            datVersion: version,
+            fileSize
+          }
           return null
         }
         const key = Buffer.from(this.aesKey, 'ascii').slice(0, 16)
@@ -1238,12 +1302,34 @@ export class ImageDecryptService {
       } else {
         // 仅支持 WeChat 4.0：版本不匹配直接返回 null，不做 V3/老版本兜底。
         imageDecryptLog('[ImageDecrypt] unsupported dat version (WeChat 4.0 only):', version)
+        this.lastDecodeDiagnostic = {
+          code: 'UNSUPPORTED_DAT_VERSION',
+          detail: '不是受支持的 WeChat 4.0 DAT 图片格式',
+          datVersion: version,
+          fileSize
+        }
         return null
       }
 
+      this.lastDecodeDiagnostic = {
+        code: 'SUCCESS',
+        detail: 'DAT 数据已解密，正在识别图片格式',
+        datVersion: version,
+        fileSize
+      }
       return decrypted
     } catch (error) {
       imageDecryptLog('[ImageDecrypt] decrypt error:', error)
+      const message = error instanceof Error ? error.message : String(error)
+      const aesFailure = /padding|bad decrypt|decrypt/i.test(message)
+      this.lastDecodeDiagnostic = {
+        code: aesFailure ? 'AES_DECRYPT_FAILED' : 'INVALID_DAT_FILE',
+        detail: aesFailure
+          ? 'AES 解密校验失败，密钥可能与当前账号不匹配'
+          : 'DAT 文件结构异常或文件不完整',
+        datVersion: 2,
+        fileSize: existsSync(datPath) ? statSync(datPath).size : undefined
+      }
       return null
     }
   }
@@ -1253,23 +1339,54 @@ export class ImageDecryptService {
    */
   decryptImageToBase64(datPath: string): string | null {
     if (!extname(datPath).toLowerCase().includes('dat')) {
-      const data = readFileSync(datPath)
-      const ext = this.detectImageExtension(data) || extname(datPath).toLowerCase()
-      const mimeType = this.getMimeType(ext)
-      return `data:${mimeType};base64,${data.toString('base64')}`
+      try {
+        const data = readFileSync(datPath)
+        const ext = this.detectImageExtension(data) || extname(datPath).toLowerCase()
+        const mimeType = this.getMimeType(ext)
+        this.lastDecodeDiagnostic = {
+          code: 'DIRECT_IMAGE',
+          detail: '文件本身是可直接读取的图片',
+          fileSize: data.length,
+          imageFormat: ext.replace(/^\./, '').toUpperCase()
+        }
+        return `data:${mimeType};base64,${data.toString('base64')}`
+      } catch {
+        this.lastDecodeDiagnostic = {
+          code: 'FILE_NOT_FOUND',
+          detail: '候选图片文件无法读取'
+        }
+        return null
+      }
     }
 
     const decrypted = this.decryptImage(datPath)
     if (!decrypted) return null
 
+    const directImage = this.lastDecodeDiagnostic.code === 'DIRECT_IMAGE'
+    const wxgf = this.isWxgfBuffer(decrypted)
     const unwrapped = this.unwrapWxgf(decrypted)
     const ext = this.detectImageExtension(unwrapped)
     if (!ext) {
       imageDecryptLog('[ImageDecrypt] unknown image format')
+      this.lastDecodeDiagnostic = {
+        ...this.lastDecodeDiagnostic,
+        code: wxgf ? 'WXGF_REQUIRES_DECODER' : 'UNKNOWN_IMAGE_FORMAT',
+        detail: wxgf
+          ? '已解密为 WXGF/HEVC 数据，但 FFmpeg 转换未成功'
+          : '数据已解密，但无法识别为常见图片格式',
+        wxgf
+      }
       return null
     }
 
     const mimeType = this.getMimeType(ext)
+    this.lastDecodeDiagnostic = {
+      ...this.lastDecodeDiagnostic,
+      code: directImage ? 'DIRECT_IMAGE' : 'SUCCESS',
+      detail: directImage ? 'DAT 文件内容是可直接读取的图片' : '图片解密并识别成功',
+      imageFormat: ext.replace(/^\./, '').toUpperCase(),
+      wxgf
+    }
     return `data:${mimeType};base64,${unwrapped.toString('base64')}`
   }
 
@@ -1474,7 +1591,9 @@ export class ImageDecryptService {
     if (!lower) return ''
     const file = lower.split('/').pop()?.split('\\').pop() || lower
     const withoutDat = file.endsWith('.dat') ? file.slice(0, -4) : file
-    return withoutDat.replace(/(_thumb|\.thumb|_hd|\.hd|_h|\.h|_t|\.t|_c|\.c)$/i, '').toLowerCase()
+    return withoutDat
+      .replace(/(_thumb|\.thumb|_hd|\.hd|_h_m|_h|\.h|_t_m|_t|\.t|_m|_b|_w|_c)$/i, '')
+      .toLowerCase()
   }
 
   private getSessionDirectoryName(sessionId?: string): string {
@@ -1490,10 +1609,13 @@ export class ImageDecryptService {
     return [
       `${base}.dat`,
       `${base}_hd.dat`,
+      `${base}_h_M.dat`,
       `${base}_h.dat`,
+      `${base}_M.dat`,
       `${base}_b.dat`,
       `${base}_w.dat`,
       `${base}_c.dat`,
+      `${base}_t_M.dat`,
       `${base}_t.dat`,
       `${base}.thumb.dat`,
       `${base}_thumb.dat`
@@ -1584,7 +1706,7 @@ export class ImageDecryptService {
 
   private isThumbnailName(fileName: string): boolean {
     const lower = fileName.toLowerCase()
-    return lower.includes('_t.dat') || lower.includes('_thumb.dat') || lower.includes('.thumb.dat')
+    return /(?:_t(?:_m)?|_thumb|\.thumb)\.dat$/i.test(lower)
   }
 
   isThumbnailFile(filePath: string): boolean {
@@ -1592,13 +1714,7 @@ export class ImageDecryptService {
   }
 
   private unwrapWxgf(buffer: Buffer): Buffer {
-    if (
-      buffer.length < 20 ||
-      buffer[0] !== 0x77 ||
-      buffer[1] !== 0x78 ||
-      buffer[2] !== 0x67 ||
-      buffer[3] !== 0x66
-    ) {
+    if (!this.isWxgfBuffer(buffer)) {
       return buffer
     }
 
@@ -1617,6 +1733,16 @@ export class ImageDecryptService {
     }
 
     return buffer
+  }
+
+  private isWxgfBuffer(buffer: Buffer): boolean {
+    return (
+      buffer.length >= 20 &&
+      buffer[0] === 0x77 &&
+      buffer[1] === 0x78 &&
+      buffer[2] === 0x67 &&
+      buffer[3] === 0x66
+    )
   }
 
   private uniq(values: string[]): string[] {

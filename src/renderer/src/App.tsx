@@ -30,6 +30,7 @@ import {
   mergeMessagePages,
   sortMessagesChronologically
 } from './utils/message-pages'
+import { enrichQuotedMessages } from './utils/quoted-messages'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -70,67 +71,6 @@ const INITIAL_MESSAGE_COUNT = 20
 const MESSAGE_PAGE_SIZE = 100
 const MESSAGE_PREFETCH_COUNT = INITIAL_MESSAGE_COUNT + MESSAGE_PAGE_SIZE
 const EXPORT_PREVIEW_LIMIT = 20
-const normalizeQuotedText = (value: string | undefined): string =>
-  String(value || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-const isInternalReferenceSender = (value: string | undefined): boolean => {
-  const sender = String(value || '').trim()
-  return (
-    !sender ||
-    sender.endsWith('@chatroom') ||
-    sender.startsWith('wxid_') ||
-    /^[a-z0-9_@.-]{12,}$/i.test(sender)
-  )
-}
-
-const enrichQuotedMessages = (messages: Message[], referenceMessages: Message[]): Message[] => {
-  const imageDatNameByMd5 = new Map<string, string>()
-  const messagesByContent = new Map<string, Message[]>()
-
-  for (const message of referenceMessages) {
-    if (
-      message.contentData?.type === 'image' &&
-      message.contentData.md5 &&
-      message.contentData.datName
-    ) {
-      imageDatNameByMd5.set(message.contentData.md5, message.contentData.datName)
-    }
-    const content = normalizeQuotedText(message.content)
-    if (!content) continue
-    const candidates = messagesByContent.get(content) || []
-    candidates.push(message)
-    messagesByContent.set(content, candidates)
-  }
-
-  return messages.map((message) => {
-    if (message.contentData?.type !== 'quote') return message
-    const quote = message.contentData
-    let quotedImageDatName = quote.quotedImageDatName
-    if (!quotedImageDatName && quote.quotedImageMd5) {
-      quotedImageDatName = imageDatNameByMd5.get(quote.quotedImageMd5)
-    }
-
-    let quotedSender = quote.quotedSender
-    if (isInternalReferenceSender(quotedSender)) {
-      const candidates = messagesByContent.get(normalizeQuotedText(quote.quotedContent)) || []
-      const source = candidates
-        .filter((candidate) => (candidate.createTime || 0) <= (message.createTime || Infinity))
-        .sort((left, right) => (right.createTime || 0) - (left.createTime || 0))[0]
-      if (source?.name && !isInternalReferenceSender(source.name)) quotedSender = source.name
-    }
-
-    if (quotedSender === quote.quotedSender && quotedImageDatName === quote.quotedImageDatName) {
-      return message
-    }
-    return {
-      ...message,
-      contentData: { ...quote, quotedSender, quotedImageDatName }
-    }
-  })
-}
-
 const areMessagesEquivalent = (left: Message[], right: Message[]): boolean => {
   if (left === right) return true
   if (left.length !== right.length) return false
@@ -138,6 +78,16 @@ const areMessagesEquivalent = (left: Message[], right: Message[]): boolean => {
     if (getMessageIdentity(left[index]) !== getMessageIdentity(right[index])) return false
   }
   return true
+}
+
+const filterContactList = (list: Contact[], keyword: string): Contact[] => {
+  const lower = keyword.trim().toLowerCase()
+  if (!lower) return list
+  return list.filter((contact) =>
+    [contact.m_nsNickName, contact.m_nsUsrName, contact.remark, contact.wechatNickname].some(
+      (value) => value?.toLowerCase().includes(lower)
+    )
+  )
 }
 
 type GroupSnapshot = {
@@ -501,11 +451,12 @@ function App(): React.ReactElement {
   const loadContacts = async (options?: {
     waitForAvatars?: boolean
     onProgress?: (message: string, percent?: number) => void
+    filterKeyword?: string
   }): Promise<void> => {
     options?.onProgress?.('正在加载联系人...', 35)
     const list = await window.api.getContacts()
     setContacts(list)
-    setFilteredContacts(list)
+    setFilteredContacts(filterContactList(list, options?.filterKeyword || ''))
     const runId = ++contactAvatarHydrationRunRef.current
     const hydrate = (): Promise<void> => hydrateContactAvatars(list, runId, options?.onProgress)
     if (options?.waitForAvatars) {
@@ -886,11 +837,12 @@ function App(): React.ReactElement {
   const applyGroupMemberMeta = React.useCallback(
     (contact: Contact | null, baseMessages: Message[]): Message[] => {
       if (!contact || contact.type !== 'group') return baseMessages
-      const enrichedMessages = enrichQuotedMessages(baseMessages, [
-        ...messageHistoryRef.current,
-        ...baseMessages
-      ])
       const memberMap = groupMemberMetaRef.current[contact.md5]
+      const enrichedMessages = enrichQuotedMessages(
+        baseMessages,
+        [...messageHistoryRef.current, ...baseMessages],
+        (senderId) => memberMap?.get(senderId)?.nickname
+      )
       if (!memberMap || memberMap.size === 0) return enrichedMessages
 
       return enrichedMessages.map((message) => {
@@ -1347,16 +1299,16 @@ function App(): React.ReactElement {
   ])
 
   const handleSearchContacts = (keyword: string): void => {
-    if (!keyword) {
-      setFilteredContacts(contacts)
-    } else {
-      const lower = keyword.toLowerCase()
-      const filtered = contacts.filter(
-        (c) =>
-          c.m_nsNickName.toLowerCase().includes(lower) ||
-          c.m_nsUsrName.toLowerCase().includes(lower)
-      )
-      setFilteredContacts(filtered)
+    setFilteredContacts(filterContactList(contacts, keyword))
+  }
+
+  const handleRefreshContacts = async (filterKeyword: string): Promise<void> => {
+    try {
+      await loadContacts({ waitForAvatars: false, filterKeyword })
+      setReportNotice('会话列表已刷新')
+    } catch (error) {
+      console.warn('[Contacts] refresh failed:', error)
+      setReportNotice('会话列表刷新失败，请稍后重试')
     }
   }
 
@@ -1588,6 +1540,7 @@ function App(): React.ReactElement {
         dbReady={isDatabaseConnected}
         dbConnecting={isDatabaseConnecting}
         onOpenSettings={openSettings}
+        onRefresh={handleRefreshContacts}
       />
       <div className="resizer" onMouseDown={startResizing} />
       <ChatWindow

@@ -7,6 +7,7 @@ export const messageKinds = [
   ['video', '视频'],
   ['voice', '语音'],
   ['sticker', '表情包'],
+  ['file', '文件'],
   ['share', '链接与分享'],
   ['location', '位置'],
   ['system', '系统消息']

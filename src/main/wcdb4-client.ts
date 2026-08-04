@@ -258,6 +258,8 @@ export class Wcdb4Client {
   private sessionStatusesInFlight: Promise<void> | null = null
   private sessionStatusesUpdatedAt = 0
   private sessionCacheGeneration = 0
+  private closing = false
+  private nativeCallsInFlight = new Set<Promise<unknown>>()
 
   private wcdbShutdown: (() => number) | null = null
   private wcdbOpenAccount:
@@ -535,17 +537,12 @@ export class Wcdb4Client {
     }
 
     const handleOut: WcdbHandleOut = [0]
-    const openResult = await new Promise<number>((resolve, reject) => {
-      this.wcdbOpenAccountAsync!.async(
-        this.sessionDbPath,
-        this.key,
-        handleOut,
-        (error: unknown, result: unknown) => {
-          if (error) reject(error)
-          else resolve(Number(result))
-        }
-      )
-    })
+    const openResult = await this.callAsyncCode(
+      this.wcdbOpenAccountAsync,
+      this.sessionDbPath,
+      this.key,
+      handleOut
+    )
     if (openResult !== 0 || handleOut[0] <= 0) {
       throw new Error(
         `wcdb_open_account failed, code=${openResult}; sessionDb=${this.sessionDbPath}; accountRoot=${this.accountRoot}; wxid=${this.wxid}; keyLength=${this.key.length}`
@@ -566,19 +563,49 @@ export class Wcdb4Client {
   }
 
   close(): void {
+    this.closing = true
     this.stopMonitor()
-    if (this.handle === null || !this.wcdbShutdown) return
+    const canShutdownNative = this.nativeCallsInFlight.size === 0
+    if (!canShutdownNative) {
+      console.warn(
+        `[WCDB4] skip synchronous native shutdown; ${this.nativeCallsInFlight.size} async call(s) still running`
+      )
+    }
+    this.finishClose(canShutdownNative)
+  }
 
-    if (process.platform !== 'win32') {
+  async closeAsync(timeoutMs = 8_000): Promise<boolean> {
+    this.closing = true
+    this.stopMonitorTransport()
+    const drained = await this.waitForNativeCalls(timeoutMs)
+    this.stopNativeMonitor()
+    if (!drained) {
+      console.warn(
+        `[WCDB4] native calls did not drain within ${timeoutMs}ms; skip wcdb_shutdown during app quit`
+      )
+    }
+    this.finishClose(drained)
+    return drained
+  }
+
+  private finishClose(shutdownNative: boolean): void {
+    if (
+      shutdownNative &&
+      this.handle !== null &&
+      this.wcdbShutdown &&
+      process.platform !== 'win32'
+    ) {
       try {
         this.wcdbShutdown()
       } catch {
-        // Shutdown is best-effort on app close.
+        // Shutdown is best-effort after all tracked native calls have completed.
       }
     }
-
     this.handle = null
     this.cachedSessions = null
+    this.cachedChatTables = null
+    this.sessionsInFlight = null
+    this.sessionDisplayNamesInFlight = null
     this.sessionDisplayNamesHydrated = false
     this.sessionStatusesInFlight = null
     this.sessionStatusesUpdatedAt = 0
@@ -588,8 +615,32 @@ export class Wcdb4Client {
     this.groupNicknameCache.clear()
   }
 
+  private waitForNativeCalls(timeoutMs: number): Promise<boolean> {
+    const pending = Array.from(this.nativeCallsInFlight)
+    if (pending.length === 0) return Promise.resolve(true)
+
+    return new Promise<boolean>((resolve) => {
+      let settled = false
+      const finish = (drained: boolean): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(drained)
+      }
+      const timer = setTimeout(() => finish(false), timeoutMs)
+      void Promise.allSettled(pending).then(() => {
+        // Koffi promise resolution can resume higher-level async cleanup (for example,
+        // closing a message cursor) in the same event-loop turn. Give those continuations
+        // one full turn before shutting down the process-wide WCDB runtime.
+        setImmediate(() => finish(this.nativeCallsInFlight.size === 0))
+      })
+    })
+  }
+
   async startMonitor(callback: (type: string, json: string) => void): Promise<boolean> {
-    if (!this.wcdbStartMonitorPipe || !this.wcdbGetMonitorPipeName || !this.koffi) return false
+    if (this.closing || !this.wcdbStartMonitorPipe || !this.wcdbGetMonitorPipeName || !this.koffi) {
+      return false
+    }
 
     this.stopMonitor()
     this.monitorCallback = callback
@@ -604,6 +655,10 @@ export class Wcdb4Client {
         return false
       }
       this.monitorStarted = true
+      if (this.closing) {
+        this.stopMonitor()
+        return false
+      }
 
       const outName: WcdbVoidOut = [null]
       const nameResult = await this.callAsyncCode(
@@ -637,6 +692,11 @@ export class Wcdb4Client {
   }
 
   stopMonitor(): void {
+    this.stopMonitorTransport()
+    this.stopNativeMonitor()
+  }
+
+  private stopMonitorTransport(): void {
     this.monitorCallback = null
 
     if (this.monitorConnectTimer) {
@@ -651,6 +711,9 @@ export class Wcdb4Client {
       this.monitorPipeClient.destroy()
       this.monitorPipeClient = null
     }
+  }
+
+  private stopNativeMonitor(): void {
     if (this.monitorStarted && this.wcdbStopMonitorPipe) {
       try {
         this.wcdbStopMonitorPipe()
@@ -2218,7 +2281,7 @@ export class Wcdb4Client {
   private callJsonAsync<T>(fn: KoffiAsyncFunction, ...args: unknown[]): Promise<T> {
     const handle = this.ensureHandle()
     const outJson: WcdbVoidOut = [null]
-    return new Promise<T>((resolve, reject) => {
+    return this.createTrackedNativeCall<T>((resolve, reject) => {
       fn.async(handle, ...args, outJson, (error: unknown, result: unknown) => {
         if (error) {
           reject(error)
@@ -2242,7 +2305,7 @@ export class Wcdb4Client {
   }
 
   private callAsyncCode(fn: KoffiAsyncFunction, ...args: unknown[]): Promise<number> {
-    return new Promise<number>((resolve, reject) => {
+    return this.createTrackedNativeCall<number>((resolve, reject) => {
       fn.async(...args, (error: unknown, result: unknown) => {
         if (error) reject(error)
         else resolve(Number(result))
@@ -2250,7 +2313,21 @@ export class Wcdb4Client {
     })
   }
 
+  private createTrackedNativeCall<T>(
+    executor: (resolve: (value: T) => void, reject: (reason?: unknown) => void) => void
+  ): Promise<T> {
+    if (this.closing) return Promise.reject(new Error('微信数据库正在关闭'))
+    const promise = new Promise<T>(executor)
+    this.nativeCallsInFlight.add(promise)
+    void promise.then(
+      () => this.nativeCallsInFlight.delete(promise),
+      () => this.nativeCallsInFlight.delete(promise)
+    )
+    return promise
+  }
+
   private ensureHandle(): number {
+    if (this.closing) throw new Error('微信数据库正在关闭')
     if (!this.handle) throw new Error('微信 4.0 数据库未打开')
     return this.handle
   }

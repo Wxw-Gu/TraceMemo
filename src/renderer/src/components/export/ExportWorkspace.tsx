@@ -66,8 +66,10 @@ export function ExportWorkspace({
   const taskCount = exportTasks.filter((task) => task.status === 'running').length
   const activeName = displayName(activeContact)
   const preview = previewMessages.slice(-20)
-  const previewMediaCount = preview.filter((message) =>
-    ['image', 'video', 'voice', 'sticker'].includes(message.contentData?.type || '')
+  const previewMediaCount = preview.filter(
+    (message) =>
+      ['image', 'video', 'voice', 'sticker'].includes(message.contentData?.type || '') ||
+      (message.contentData?.type === 'share' && message.contentData.typeVal === '6')
   ).length
   const previewBytes = preview.reduce(
     (total, message) => total + (message.content?.length || 0) * 2 + (message.img ? 1024 : 0),
@@ -439,7 +441,7 @@ export function ExportWorkspace({
           <section className="export-section">
             <h3>资源处理</h3>
             <label className="export-media-master">
-              <span>包含图片、视频、语音及动态表情</span>
+              <span>包含图片、视频、语音、表情及文件附件</span>
               <input
                 type="checkbox"
                 checked={includeMedia}
@@ -486,6 +488,7 @@ export function ExportWorkspace({
               <span>视频资源：可用</span>
               <span>语音资源：可用</span>
               <span>表情资源：按需解析</span>
+              <span>文件附件：按需复制</span>
             </div>
             <p className="export-helper-text">媒体资源会延长导出时间，缺失资源不会中断任务。</p>
             <label className="export-media-master">

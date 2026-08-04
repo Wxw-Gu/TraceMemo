@@ -7,6 +7,7 @@ export type ExportMessageKind =
   | 'video'
   | 'voice'
   | 'sticker'
+  | 'file'
   | 'share'
   | 'location'
   | 'system'

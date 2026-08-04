@@ -17,6 +17,16 @@ export function sanitizeImageError(error?: string): string {
   if (value.includes('unsupported') || value.includes('dat version')) {
     return '仅支持 WeChat 4.0 图片协议，V3 及以下无法解析'
   }
+  if (
+    value.includes('wxgf') ||
+    value.includes('ffmpeg') ||
+    value.includes('hevc') ||
+    value.includes('不完整') ||
+    value.includes('格式异常') ||
+    value.includes('无法识别')
+  ) {
+    return error || '无法解析媒体文件'
+  }
   if (value.includes('key') || value.includes('密钥')) return '图片密钥未配置或与当前账号不匹配'
   if (value.includes('不存在') || value.includes('not found')) return '图片文件不存在'
   if (value.includes('账号')) return '当前账号不匹配'

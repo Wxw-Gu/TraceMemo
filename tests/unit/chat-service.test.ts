@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WechatDb } from '../../src/main/wechat-db'
-import { listContactsAsync, setChatDb } from '../../src/main/services/chat-service'
+import {
+  closeChatDbForQuit,
+  isReady,
+  listContactsAsync,
+  setChatDb
+} from '../../src/main/services/chat-service'
 
 describe('chat service contacts', () => {
   afterEach(() => setChatDb(null))
@@ -35,5 +40,31 @@ describe('chat service contacts', () => {
       hydrateStatuses: true
     })
     expect(contacts[0]?.m_nsNickName).toBe('测试群聊')
+  })
+
+  it('detaches the database immediately and awaits native cleanup on quit', async () => {
+    let finishClose: ((value: boolean) => void) | undefined
+    const closeAsync = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishClose = resolve
+        })
+    )
+    const fakeDb = {
+      close: vi.fn(),
+      closeAsync
+    } as unknown as WechatDb
+
+    setChatDb(fakeDb)
+    const closing = closeChatDbForQuit()
+
+    expect(isReady()).toBe(false)
+    expect(closeAsync).toHaveBeenCalledOnce()
+    finishClose?.(true)
+    await expect(closing).resolves.toBe(true)
+
+    const lateDb = { close: vi.fn() } as unknown as WechatDb
+    expect(setChatDb(lateDb)).toBe(false)
+    expect(lateDb.close).toHaveBeenCalledOnce()
   })
 })

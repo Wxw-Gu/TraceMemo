@@ -85,4 +85,5 @@ export interface ImageDecryptionTestResult {
   decrypted: boolean
   readable: boolean
   isThumbnail?: boolean
+  diagnosticLog?: string
 }

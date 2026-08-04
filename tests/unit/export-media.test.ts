@@ -38,6 +38,14 @@ describe('export media', () => {
         id: 'missing',
         type: '语音',
         exportMediaError: '语音文件缺失：本地未找到语音数据'
+      }),
+      baseMessage({
+        id: 'file',
+        type: '文件',
+        contentData: { type: 'share', typeVal: '6', title: '示例附件.zip', url: '' },
+        exportMediaType: 'file',
+        exportMediaName: '示例附件.zip',
+        exportMediaUrl: 'media/file_4_示例附件.zip'
       })
     ])
 
@@ -46,6 +54,7 @@ describe('export media', () => {
     )
     expect(html).toContain('video class="media-image" controls src="media/video_2.mp4"')
     expect(html).toContain('语音文件缺失：本地未找到语音数据')
+    expect(html).toContain('class="file-attachment" href="media/file_4_示例附件.zip" download')
     expect(html).not.toMatch(/(?:src|href)="[A-Za-z]:\\/)
   })
 

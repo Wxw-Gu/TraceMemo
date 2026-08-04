@@ -21,7 +21,7 @@
 
 .conversation-sidebar-title-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
@@ -39,6 +39,56 @@
     font-size: 12px;
     line-height: 18px;
     white-space: nowrap;
+  }
+}
+
+.conversation-sidebar-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.conversation-refresh-button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--wxex-text-muted);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+
+  &:hover:not(:disabled) {
+    background: rgba(36, 122, 99, 0.1);
+    color: var(--wxex-brand);
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgba(36, 122, 99, 0.35);
+    outline-offset: 1px;
+  }
+
+  &:disabled {
+    cursor: wait;
+    opacity: 0.72;
+  }
+
+  svg {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+  }
+
+  &.is-refreshing svg {
+    animation: conversation-refresh-spin 0.8s linear infinite;
+  }
+}
+
+@keyframes conversation-refresh-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

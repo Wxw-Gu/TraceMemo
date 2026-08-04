@@ -55,7 +55,8 @@ export interface FormattedMessage {
   voiceDataUrl?: string
   voiceDuration?: number
   exportMediaUrl?: string
-  exportMediaType?: 'image' | 'video' | 'sticker'
+  exportMediaType?: 'image' | 'video' | 'sticker' | 'file'
+  exportMediaName?: string
   exportShowAvatar?: boolean
   exportMediaError?: string
   exportAvatarUrl?: string
@@ -109,10 +110,24 @@ function normalizeMsgType(value: string | number | undefined): number {
 }
 
 let dbRef: WechatDb | null = null
+let shutdownRequested = false
 
-export function setChatDb(db: WechatDb | null): void {
+export function setChatDb(db: WechatDb | null): boolean {
+  if (shutdownRequested) {
+    db?.close()
+    return false
+  }
   dbRef?.close()
   dbRef = db
+  return true
+}
+
+export async function closeChatDbForQuit(): Promise<boolean> {
+  shutdownRequested = true
+  const current = dbRef
+  dbRef = null
+  if (!current) return true
+  return current.closeAsync()
 }
 
 export function getChatDb(): WechatDb | null {
@@ -639,8 +654,7 @@ export function reopenWithRoot(accountRoot: string): boolean {
   if (!key) return false
   try {
     const next = new WechatDb(key, accountRoot)
-    setChatDb(next)
-    return true
+    return setChatDb(next)
   } catch (error) {
     console.error('[ChatService] reopen with root failed:', error)
     return false

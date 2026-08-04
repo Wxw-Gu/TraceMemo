@@ -327,7 +327,8 @@ handle('image:testConfig', () => ({
   success: true,
   fileFound: true,
   decrypted: true,
-  readable: true
+  readable: true,
+  diagnosticLog: 'WechatExplorer 图片解析测试日志（已脱敏）\n测试结果：成功（SUCCESS）'
 }))
 handle('image:clearConfig', () => ({ success: true }))
 handle('image:getDecoderStatus', () => ({

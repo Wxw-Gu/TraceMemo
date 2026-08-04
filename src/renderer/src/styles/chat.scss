@@ -821,6 +821,12 @@
   line-height: 1.4;
 }
 
+.quoted-message-image {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+}
+
 .wechat-message-row.other .quoted-message {
   background: #f0f0f0;
   color: #666;

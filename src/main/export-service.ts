@@ -17,6 +17,7 @@ import { ImageKeyConfigService } from './services/image-key-config-service'
 import { VideoAssetService } from './video-asset-service'
 import { StickerService } from './sticker-service'
 import { getImageExportAttempts } from '../shared/export-media'
+import { FileAssetService } from './file-asset-service'
 
 const jobs = new Set<string>()
 const safeFilePart = (value: string): string =>
@@ -87,6 +88,7 @@ async function readAvatarAsset(
 const kindOf = (message: Message): ExportMessageKind => {
   const type = message.contentData?.type
   if (type === 'system' && message.contentData?.pat) return 'text'
+  if (type === 'share' && message.contentData.typeVal === '6') return 'file'
   if (
     type === 'image' ||
     type === 'video' ||
@@ -142,6 +144,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
     for (const message of messages) {
       message.exportMediaUrl = undefined
       message.exportMediaType = undefined
+      message.exportMediaName = undefined
       message.exportMediaError = undefined
       message.voiceDataUrl = undefined
       message.exportShowAvatar = request.includeAvatars !== false
@@ -149,7 +152,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
       if (mappedName) message.name = mappedName
       if (
         request.format !== 'html' &&
-        ['image', 'video', 'voice', 'sticker'].includes(kindOf(message))
+        ['image', 'video', 'voice', 'sticker', 'file'].includes(kindOf(message))
       ) {
         message.exportMediaError = '当前导出格式记录媒体状态，但不复制媒体文件'
       }
@@ -198,6 +201,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
           : null
       const videoService = client ? new VideoAssetService(client) : null
       const stickerService = client ? new StickerService(client) : null
+      const fileService = client ? new FileAssetService(client) : null
       const exportedAvatars = new Map<string, string>()
       const voiceService =
         request.includeMedia && chat.getChatDb()
@@ -361,6 +365,21 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             message.exportMediaType = 'sticker'
           } else {
             keepMediaError(request, message, result.error || '表情资源缺失或下载失败')
+          }
+        } else if (message.contentData.type === 'share' && message.contentData.typeVal === '6') {
+          if (!fileService) {
+            keepMediaError(request, message, '数据库未连接，无法定位本地文件附件')
+          } else {
+            const resolved = fileService.resolve(message.contentData.title, message.createTime)
+            if (!resolved.success || !resolved.filePath || !resolved.fileName) {
+              keepMediaError(request, message, resolved.error || '本地文件附件缺失')
+            } else {
+              const name = `file_${index + 1}_${safeFilePart(resolved.fileName)}`
+              await fs.copyFile(resolved.filePath, join(outputDir, 'media', name))
+              message.exportMediaUrl = `media/${name}`
+              message.exportMediaType = 'file'
+              message.exportMediaName = message.contentData.title || resolved.fileName
+            }
           }
         }
         send({

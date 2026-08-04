@@ -23,6 +23,7 @@ export interface ConversationSidebarProps {
   dbReady: boolean
   dbConnecting?: boolean
   onOpenSettings: () => void
+  onRefresh: (filterKeyword: string) => Promise<void>
 }
 
 type SectionName = 'groups' | 'folded' | 'contacts'
@@ -39,9 +40,11 @@ export function ConversationSidebar({
   selfInfo,
   dbReady,
   dbConnecting = false,
-  onOpenSettings
+  onOpenSettings,
+  onRefresh
 }: ConversationSidebarProps): React.ReactElement {
   const [searchTerm, setSearchTerm] = useState('')
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [expandedSections, setExpandedSections] = useState<Record<SectionName, boolean>>({
     groups: true,
     folded: false,
@@ -119,12 +122,24 @@ export function ConversationSidebar({
     onSearch(term)
   }
 
+  const handleRefresh = async (): Promise<void> => {
+    if (isRefreshing) return
+    setIsRefreshing(true)
+    try {
+      await onRefresh(searchTerm)
+    } finally {
+      setIsRefreshing(false)
+    }
+  }
+
   return (
     <aside className="conversation-sidebar" style={{ width }}>
       <ConversationSidebarHeader
         totalCount={contacts.length}
         searchValue={searchTerm}
         onSearchChange={handleSearchChange}
+        refreshing={isRefreshing}
+        onRefresh={() => void handleRefresh()}
       />
       <div ref={listRef} className="conversation-list" aria-label="会话列表">
         <div

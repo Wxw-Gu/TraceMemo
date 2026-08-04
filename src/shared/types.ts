@@ -31,7 +31,8 @@ export interface Message {
   recalledBy?: string
   recoveredFromRecallJournal?: boolean
   exportMediaUrl?: string
-  exportMediaType?: 'image' | 'video' | 'sticker'
+  exportMediaType?: 'image' | 'video' | 'sticker' | 'file'
+  exportMediaName?: string
   exportShowAvatar?: boolean
   exportMediaError?: string
   exportAvatarUrl?: string

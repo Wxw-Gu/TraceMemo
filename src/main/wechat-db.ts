@@ -156,6 +156,10 @@ export class WechatDb {
     this.wcdb4Client.close()
   }
 
+  public closeAsync(timeoutMs?: number): Promise<boolean> {
+    return this.wcdb4Client.closeAsync(timeoutMs)
+  }
+
   public getUserMessages(
     userMd5: string,
     startTime?: number,

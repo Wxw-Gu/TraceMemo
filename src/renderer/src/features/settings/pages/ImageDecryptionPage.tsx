@@ -91,10 +91,14 @@ export function ImageDecryptionPage({
           <h2 className="settings-section-heading">图片解析测试</h2>
           <ImageTestSection
             state={controller.state}
+            batchTest={controller.batchTest}
             disabled={controller.busy}
             canSave={controller.canSave}
             onSelect={controller.selectChat}
             onTest={() => void controller.test()}
+            onBatchTest={(contacts) => void controller.testMany(contacts)}
+            onStopBatchTest={controller.stopBatchTest}
+            onCopyLog={() => void controller.copyDiagnostics()}
             onSave={() => void controller.save()}
           />
 

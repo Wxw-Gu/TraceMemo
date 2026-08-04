@@ -1,11 +1,12 @@
 import { dirname, join } from 'path'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '../../src/shared/types'
 
 const state = vi.hoisted(() => ({
   documents: '',
+  accountRoot: '',
   videoPath: '',
   messages: [] as Message[],
   imageLookups: [] as { allowThumbnail?: boolean; preferThumbnail?: boolean }[]
@@ -18,7 +19,9 @@ vi.mock('electron', () => ({
 }))
 vi.mock('../../src/main/services/chat-service', () => ({
   listMessages: () => structuredClone(state.messages),
-  getChatDb: () => ({ getWcdb4Client: () => ({}) }),
+  getChatDb: () => ({
+    getWcdb4Client: () => ({ getAccountRoot: () => state.accountRoot })
+  }),
   getContactAvatars: () => ({})
 }))
 vi.mock('../../src/main/services/image-key-config-service', () => ({
@@ -92,12 +95,16 @@ const message = (overrides: Partial<Message>): Message => ({
 describe('media export flow', () => {
   beforeEach(() => {
     state.documents = mkdtempSync(join(tmpdir(), 'wxe-export-fixture-'))
+    state.accountRoot = join(state.documents, 'fixture-account')
     state.videoPath = join(state.documents, 'fixture.mp4')
     writeFileSync(
       state.videoPath,
       Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex')
     )
     state.imageLookups = []
+    const fileMonth = join(state.accountRoot, 'msg', 'file', '2026-08')
+    mkdirSync(fileMonth, { recursive: true })
+    writeFileSync(join(fileMonth, '测试附件.txt'), '附件内容')
     state.messages = [
       message({
         id: 'voice-ok',
@@ -123,6 +130,11 @@ describe('media export flow', () => {
         id: 'video',
         type: '视频',
         contentData: { type: 'video', md5: 'b'.repeat(32) }
+      }),
+      message({
+        id: 'file',
+        type: '文件',
+        contentData: { type: 'share', typeVal: '6', title: '测试附件.txt', url: '' }
       })
     ]
   })
@@ -143,7 +155,7 @@ describe('media export flow', () => {
         name: '脱敏会话',
         format: 'html',
         outputName: 'fixture',
-        kinds: ['voice', 'image', 'video'],
+        kinds: ['voice', 'image', 'video', 'file'],
         includeMedia: true,
         preferOriginal: true,
         fallbackThumbnail: true,
@@ -161,8 +173,10 @@ describe('media export flow', () => {
     expect(readFileSync(join(outputDir, 'media/video_4.mp4')).subarray(4, 8).toString()).toBe(
       'ftyp'
     )
+    expect(readFileSync(join(outputDir, 'media/file_5_测试附件.txt'), 'utf8')).toBe('附件内容')
     expect(html).toContain('src="voices/voice_1_1.wav"')
     expect(html).toContain('src="media/video_4.mp4"')
+    expect(html).toContain('href="media/file_5_测试附件.txt" download')
     expect(html).toContain('语音文件缺失：本地未找到语音数据')
     expect(state.imageLookups[0]).toMatchObject({
       allowThumbnail: false,

@@ -359,12 +359,13 @@ function QuoteBubble({
   const quotedText = data.quotedContent || data.content || '[引用消息]'
   const replyText = data.content || data.title || ''
   const quotedSender = data.quotedSender || data.sender || ''
+  const hasQuotedImage = Boolean(data.quotedImageMd5 || data.quotedImageDatName)
 
   return (
     <div className="quote-message">
-      <div className="quoted-message">
+      <div className={`quoted-message${hasQuotedImage ? ' quoted-message-image' : ''}`}>
         {quotedSender && <span className="quoted-sender">{quotedSender}</span>}
-        {data.quotedImageMd5 || data.quotedImageDatName ? (
+        {hasQuotedImage ? (
           <ImageBubble
             imageMd5={data.quotedImageMd5}
             imageDatName={data.quotedImageDatName}

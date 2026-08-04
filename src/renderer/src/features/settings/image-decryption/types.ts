@@ -45,6 +45,30 @@ export interface ImageDecryptionState {
   dirty: boolean
 }
 
+export type ImageBatchTestItemStatus =
+  | 'pending'
+  | 'testing'
+  | 'success'
+  | 'failed'
+  | 'no-image'
+  | 'stopped'
+
+export interface ImageBatchTestItem {
+  contact: Contact
+  status: ImageBatchTestItemStatus
+  elapsedMs?: number
+  result?: ImageDecryptionTestResult
+  error?: string
+}
+
+export interface ImageBatchTestState {
+  running: boolean
+  stopRequested: boolean
+  startedAt?: number
+  elapsedMs: number
+  items: ImageBatchTestItem[]
+}
+
 export type ImageDecryptionAction =
   | {
       type: 'LOADED'
@@ -77,12 +101,16 @@ export type ImageDecryptionAction =
 
 export interface ImageDecryptionController {
   state: ImageDecryptionState
+  batchTest: ImageBatchTestState
   pageStatus: 'configured' | 'unconfigured' | 'partial'
   busy: boolean
   canSave: boolean
   edit: (field: 'xorKey' | 'aesKey', value: string) => void
   selectChat: (userMd5: string) => void
   test: () => Promise<void>
+  testMany: (contacts: Contact[]) => Promise<void>
+  stopBatchTest: () => void
+  copyDiagnostics: () => Promise<void>
   save: () => Promise<void>
   autoDetect: () => Promise<void>
   clear: () => Promise<void>

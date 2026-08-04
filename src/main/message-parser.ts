@@ -590,10 +590,10 @@ function parseQuoteMessage(content: string): {
   if (referMsgStart === -1 || referMsgEnd === -1) return {}
 
   const referMsgXml = content.substring(referMsgStart, referMsgEnd + '</refermsg>'.length)
-  const sender =
-    sanitizeQuotedContent(extractXmlValue(referMsgXml, 'displayname')) ||
-    sanitizeQuotedContent(extractXmlValue(referMsgXml, 'fromusr')) ||
-    undefined
+  const displayName = sanitizeQuotedContent(extractXmlValue(referMsgXml, 'displayname'))
+  const chatUser = sanitizeQuotedSenderId(extractXmlValue(referMsgXml, 'chatusr'))
+  const fromUser = sanitizeQuotedSenderId(extractXmlValue(referMsgXml, 'fromusr'))
+  const sender = displayName || chatUser || fromUser || undefined
   const referContent = extractXmlValue(referMsgXml, 'content')
   const referType = extractXmlValue(referMsgXml, 'type')
 
@@ -651,6 +651,10 @@ function sanitizeQuotedContent(content: string): string {
     .trim()
   if (/^(wxid_[\w-]+|[a-z][a-z0-9_-]{5,})$/i.test(decoded)) return ''
   return decoded
+}
+
+function sanitizeQuotedSenderId(value: string): string {
+  return decodeXmlEntities(String(value || '')).trim()
 }
 
 function stripChatroomPrefix(content: string): string {

@@ -1,8 +1,27 @@
-import { useCallback, useEffect, useMemo, useReducer } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import type { Contact } from '../../../../../shared/types'
 import type { SettingsSelfInfo } from '../model/types'
 import { imageDecryptionReducer, initialImageDecryptionState } from './imageDecryptionReducer'
-import type { ImageDecryptionController } from './types'
+import type { ImageBatchTestItem, ImageBatchTestState, ImageDecryptionController } from './types'
 import { normalizeAutoXorKey, sanitizeImageError } from './utils'
+
+const EMPTY_BATCH_TEST: ImageBatchTestState = {
+  running: false,
+  stopRequested: false,
+  elapsedMs: 0,
+  items: []
+}
+
+const BATCH_CONCURRENCY = 3
+
+function uniqueContacts(contacts: Contact[]): Contact[] {
+  const seen = new Set<string>()
+  return contacts.filter((contact) => {
+    if (!contact.md5 || seen.has(contact.md5)) return false
+    seen.add(contact.md5)
+    return true
+  })
+}
 
 export function useImageDecryptionController({
   selfInfo,
@@ -12,6 +31,9 @@ export function useImageDecryptionController({
   onNotice: (message: string) => void
 }): ImageDecryptionController {
   const [state, dispatch] = useReducer(imageDecryptionReducer, initialImageDecryptionState)
+  const [batchTest, setBatchTest] = useState<ImageBatchTestState>(EMPTY_BATCH_TEST)
+  const batchRunRef = useRef(0)
+  const batchStopRef = useRef(false)
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -54,6 +76,116 @@ export function useImageDecryptionController({
       result: result.success ? result : { ...result, error: sanitizeImageError(result.error) }
     })
   }, [state.aesKey, state.resourceRoot, state.selectedUserMd5, state.xorKey])
+
+  const testMany = useCallback(
+    async (contacts: Contact[]): Promise<void> => {
+      const targets = uniqueContacts(contacts)
+      if (targets.length === 0 || batchTest.running) return
+
+      const runId = ++batchRunRef.current
+      const startedAt = Date.now()
+      let nextIndex = 0
+      batchStopRef.current = false
+      setBatchTest({
+        running: true,
+        stopRequested: false,
+        startedAt,
+        elapsedMs: 0,
+        items: targets.map((contact) => ({ contact, status: 'pending' }))
+      })
+
+      const updateItem = (
+        contactMd5: string,
+        update: (item: ImageBatchTestItem) => ImageBatchTestItem
+      ): void => {
+        if (batchRunRef.current !== runId) return
+        setBatchTest((current) => ({
+          ...current,
+          elapsedMs: Date.now() - startedAt,
+          items: current.items.map((item) =>
+            item.contact.md5 === contactMd5 ? update(item) : item
+          )
+        }))
+      }
+
+      const worker = async (): Promise<void> => {
+        while (!batchStopRef.current) {
+          const targetIndex = nextIndex
+          nextIndex += 1
+          const contact = targets[targetIndex]
+          if (!contact) return
+
+          updateItem(contact.md5, (item) => ({ ...item, status: 'testing' }))
+          const itemStartedAt = Date.now()
+          try {
+            const rawResult = await window.api.testImageDecryption({
+              userMd5: contact.md5,
+              resourceRoot: state.resourceRoot,
+              xorKey: state.xorKey,
+              aesKey: state.aesKey
+            })
+            const result = rawResult.success
+              ? rawResult
+              : { ...rawResult, error: sanitizeImageError(rawResult.error) }
+            const status = result.success
+              ? 'success'
+              : result.code === 'NO_IMAGE_MESSAGE'
+                ? 'no-image'
+                : 'failed'
+            updateItem(contact.md5, (item) => ({
+              ...item,
+              status,
+              elapsedMs: Math.max(1, Date.now() - itemStartedAt),
+              result,
+              error: result.error
+            }))
+          } catch (error) {
+            updateItem(contact.md5, (item) => ({
+              ...item,
+              status: 'failed',
+              elapsedMs: Math.max(1, Date.now() - itemStartedAt),
+              error: sanitizeImageError(error instanceof Error ? error.message : String(error))
+            }))
+          }
+        }
+      }
+
+      await Promise.all(
+        Array.from({ length: Math.min(BATCH_CONCURRENCY, targets.length) }, () => worker())
+      )
+      if (batchRunRef.current !== runId) return
+      const stopped = batchStopRef.current
+      setBatchTest((current) => ({
+        ...current,
+        running: false,
+        stopRequested: false,
+        elapsedMs: Date.now() - startedAt,
+        items: stopped
+          ? current.items.map((item) =>
+              item.status === 'pending' ? { ...item, status: 'stopped' } : item
+            )
+          : current.items
+      }))
+      onNotice(stopped ? '批量图片测试已停止' : `批量图片测试完成，共 ${targets.length} 个会话`)
+    },
+    [batchTest.running, onNotice, state.aesKey, state.resourceRoot, state.xorKey]
+  )
+
+  const stopBatchTest = useCallback((): void => {
+    if (!batchTest.running || batchStopRef.current) return
+    batchStopRef.current = true
+    setBatchTest((current) => ({ ...current, stopRequested: true }))
+  }, [batchTest.running])
+
+  const copyDiagnostics = useCallback(async (): Promise<void> => {
+    const diagnosticLog = state.testResult?.diagnosticLog
+    if (!diagnosticLog) {
+      onNotice('请先完成一次图片解析测试')
+      return
+    }
+    const result = await window.api.copyText(diagnosticLog)
+    onNotice(result.success ? '图片解析测试日志已复制' : result.error || '复制测试日志失败')
+  }, [onNotice, state.testResult?.diagnosticLog])
 
   const save = useCallback(async (): Promise<void> => {
     if (!state.testResult?.success && state.autoPhase !== 'success') return
@@ -125,7 +257,7 @@ export function useImageDecryptionController({
     onNotice('图片密钥已清除，微信原始数据未受影响')
   }, [onNotice])
 
-  const busy = ['checking', 'testing', 'clearing'].includes(state.phase)
+  const busy = ['checking', 'testing', 'clearing'].includes(state.phase) || batchTest.running
   const canSave = Boolean(
     ((state.testResult?.success && state.dirty) || state.autoPhase === 'success') &&
     state.status?.encryptionAvailable
@@ -139,12 +271,16 @@ export function useImageDecryptionController({
 
   return {
     state,
+    batchTest,
     pageStatus,
     busy,
     canSave,
     edit,
     selectChat,
     test,
+    testMany,
+    stopBatchTest,
+    copyDiagnostics,
     save,
     autoDetect,
     clear,

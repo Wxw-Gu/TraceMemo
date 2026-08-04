@@ -9,6 +9,7 @@ vi.mock('../../src/renderer/src/components/image-loader', () => ({
 }))
 
 import { ImageBubble } from '../../src/renderer/src/components/ImageBubble'
+import { RichMessageBubble } from '../../src/renderer/src/components/RichMessageBubble'
 
 const thumbnail =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII='
@@ -48,6 +49,26 @@ describe('ImageBubble', () => {
 
     requestImage.mockResolvedValueOnce({ data: thumbnail, isThumbnail: true })
     await userEvent.click(screen.getByText('加载失败'))
+    expect(await screen.findByAltText('图片')).toBeVisible()
+  })
+
+  it('places a quoted image on the line below the quoted sender', async () => {
+    requestImage.mockResolvedValueOnce({ data: thumbnail, isThumbnail: true })
+    const { container } = render(
+      <RichMessageBubble
+        contentData={{
+          type: 'quote',
+          content: '回复内容',
+          quotedContent: '[图片]',
+          quotedSender: '测试群成员',
+          quotedImageMd5: 'fixture-image'
+        }}
+        sessionId="fixture-session"
+      />
+    )
+
+    expect(screen.getByText('测试群成员')).toBeInTheDocument()
+    expect(container.querySelector('.quoted-message')).toHaveClass('quoted-message-image')
     expect(await screen.findByAltText('图片')).toBeVisible()
   })
 })
