@@ -147,6 +147,7 @@ body {
 }
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
 .bubble {
+  min-width: 0;
   max-width: min(78%, 760px);
   padding: 13px 15px;
   border: 1px solid var(--border);
@@ -157,9 +158,8 @@ body {
 .sent .bubble { background: var(--mine); border-color: #c7e6d4; border-radius: 18px 10px 18px 18px; }
 .sender { color: var(--muted); font-size: 12px; margin-bottom: 5px; }
 .content { line-height: 1.7; word-break: break-word; white-space: pre-wrap; }
-.audio-wrap, .audio { width: 260px; }
-.audio-wrap { min-width: 260px; }
-.audio { display: block; height: 38px; }
+.audio-wrap { width: 260px; max-width: 100%; min-width: 0; }
+.audio { display: block; width: 100%; max-width: 100%; height: 38px; }
 .media-status {
   margin-top: 8px;
   padding: 6px 8px;
@@ -263,7 +263,7 @@ body {
     border-bottom-color: var(--accent);
   }
   .bubble { max-width: calc(100vw - 92px); }
-  .audio-wrap, .audio { width: min(260px, calc(100vw - 130px)); min-width: 0; }
+  .audio-wrap { width: min(260px, calc(100vw - 130px)); }
 }
 `
 
@@ -296,8 +296,18 @@ const renderExportScript = (name: string): string => `
   let filtered = []
   let windowStart = 0
   let windowEnd = 0
-  let loading = false
+  let scrollLoadPending = false
+  let scrollLoadSuppressed = false
+  let lastScrollTop = 0
   let zoom = 1
+
+  const nextFrame = (callback) => {
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(callback)
+    } else {
+      window.setTimeout(callback, 0)
+    }
+  }
 
   const esc = (value) => String(value ?? '').replace(
     /[&<>"']/g,
@@ -423,6 +433,18 @@ const renderExportScript = (name: string): string => `
     const shown = Math.max(0, windowEnd - windowStart)
     count.textContent = '已显示 ' + shown + ' / 筛选 ' + filtered.length + ' / 全部 ' + allMessages.length
   }
+  const setScrollTop = (value) => {
+    scrollLoadSuppressed = true
+    const previousBehavior = list.style.scrollBehavior
+    list.style.scrollBehavior = 'auto'
+    list.scrollTop = value
+    lastScrollTop = list.scrollTop
+    nextFrame(() => {
+      list.style.scrollBehavior = previousBehavior
+      lastScrollTop = list.scrollTop
+      scrollLoadSuppressed = false
+    })
+  }
   const renderWindow = (anchorIndex, anchorOffset) => {
     const visible = filtered.slice(windowStart, windowEnd)
     const before = windowStart > 0 ? '<div class="lazy-hint">向上滚动加载更早消息</div>' : ''
@@ -432,7 +454,7 @@ const renderExportScript = (name: string): string => `
       : '<div class="empty">没有符合条件的消息<br><small>可以更换筛选条件或关键词</small></div>'
     if (Number.isInteger(anchorIndex)) {
       const anchor = list.querySelector('.message[data-index="' + anchorIndex + '"]')
-      if (anchor) list.scrollTop = anchor.offsetTop - anchorOffset
+      if (anchor) setScrollTop(anchor.offsetTop - anchorOffset)
     }
     updateCount()
     updateActiveMonth()
@@ -445,7 +467,7 @@ const renderExportScript = (name: string): string => `
       windowEnd = Math.min(filtered.length, PAGE_SIZE)
     }
     renderWindow()
-    list.scrollTop = preferLatest ? list.scrollHeight : 0
+    setScrollTop(preferLatest ? list.scrollHeight : 0)
   }
   const applyFilters = () => {
     const term = query.value.trim().toLowerCase()
@@ -464,7 +486,7 @@ const renderExportScript = (name: string): string => `
     windowStart = Math.max(0, windowEnd - PAGE_SIZE)
     renderWindow()
     const target = list.querySelector('.message[data-index="' + index + '"]')
-    list.scrollTop = target ? Math.max(0, target.offsetTop - 24) : 0
+    setScrollTop(target ? Math.max(0, target.offsetTop - 24) : 0)
     timeline.querySelectorAll('.timeline-month').forEach((button) => {
       button.classList.toggle('active', button.dataset.month === key)
     })
@@ -485,18 +507,31 @@ const renderExportScript = (name: string): string => `
     renderWindow(anchorIndex, anchorOffset)
   }
 
+  const scheduleWindowSlide = (direction) => {
+    if (scrollLoadPending) return
+    scrollLoadPending = true
+    nextFrame(() => {
+      if (direction < 0 ? windowStart > 0 : windowEnd < filtered.length) {
+        slideWindow(direction)
+      }
+      scrollLoadPending = false
+    })
+  }
   list.addEventListener('scroll', () => {
-    if (loading) return
-    if (list.scrollTop < 180 && windowStart > 0) {
-      loading = true
-      slideWindow(-1)
-      loading = false
-    } else if (list.scrollHeight - list.scrollTop - list.clientHeight < 240 && windowEnd < filtered.length) {
-      loading = true
-      slideWindow(1)
-      loading = false
-    }
+    const currentTop = list.scrollTop
+    const movingUp = currentTop < lastScrollTop
+    const nearTop = currentTop < 180
+    const nearBottom = list.scrollHeight - currentTop - list.clientHeight < 240
+    lastScrollTop = currentTop
+    if (scrollLoadSuppressed) return
+    if (movingUp && nearTop) scheduleWindowSlide(-1)
+    else if (!movingUp && nearBottom) scheduleWindowSlide(1)
   })
+  list.addEventListener('wheel', (event) => {
+    if (!scrollLoadSuppressed && event.deltaY < 0 && list.scrollTop <= 1) {
+      scheduleWindowSlide(-1)
+    }
+  }, { passive: true })
   query.addEventListener('input', applyFilters)
   filters.addEventListener('click', (event) => {
     const button = event.target.closest('[data-kind]')

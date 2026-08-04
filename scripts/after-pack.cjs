@@ -1,15 +1,61 @@
-const { existsSync, renameSync } = require('node:fs')
+const { chmodSync, existsSync, renameSync } = require('node:fs')
 const { execFileSync } = require('node:child_process')
 const path = require('node:path')
 
 const COMPATIBILITY_NAME = 'Electron'
 const HELPER_SUFFIXES = ['', ' (Plugin)', ' (Renderer)', ' (GPU)']
 
+function getRuntimeResources(context) {
+  const productName = context.packager.appInfo.productFilename
+  return context.electronPlatformName === 'darwin'
+    ? path.join(context.appOutDir, `${productName}.app`, 'Contents', 'Resources')
+    : path.join(context.appOutDir, 'resources')
+}
+
+function validateSilkWasmRuntime(runtimeResources) {
+  const packagePath = path.join(runtimeResources, 'app.asar.unpacked', 'node_modules', 'silk-wasm')
+  const requiredFiles = [
+    path.join(packagePath, 'package.json'),
+    path.join(packagePath, 'lib', 'index.cjs'),
+    path.join(packagePath, 'lib', 'silk.wasm')
+  ]
+  const missingFiles = requiredFiles.filter((filePath) => !existsSync(filePath))
+  if (missingFiles.length > 0) {
+    throw new Error(`Missing unpacked silk-wasm runtime: ${missingFiles.join(', ')}`)
+  }
+}
+
+function validateFfmpegRuntime(runtimeResources, platform = process.platform) {
+  const executable = platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  const ffmpegPath = path.join(
+    runtimeResources,
+    'app.asar.unpacked',
+    'node_modules',
+    'ffmpeg-static',
+    executable
+  )
+  if (!existsSync(ffmpegPath)) {
+    throw new Error(`Missing unpacked ffmpeg-static runtime: ${ffmpegPath}`)
+  }
+  if (platform !== 'win32') chmodSync(ffmpegPath, 0o755)
+  return ffmpegPath
+}
+
 function setPlistValue(plistPath, key, value) {
   execFileSync('/usr/libexec/PlistBuddy', ['-c', `Set :${key} ${value}`, plistPath])
 }
 
 exports.default = async function afterPack(context) {
+  const runtimeResources = getRuntimeResources(context)
+  validateSilkWasmRuntime(runtimeResources)
+  const ffmpegPath = validateFfmpegRuntime(runtimeResources, context.electronPlatformName)
+
+  if (context.electronPlatformName === 'darwin') {
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', ffmpegPath], {
+      stdio: 'ignore'
+    })
+  }
+
   if (context.electronPlatformName === 'win32') {
     const koffiNative = path.join(
       context.appOutDir,
@@ -69,3 +115,7 @@ exports.default = async function afterPack(context) {
     setPlistValue(plistPath, 'CFBundleName', targetName)
   }
 }
+
+exports.getRuntimeResources = getRuntimeResources
+exports.validateFfmpegRuntime = validateFfmpegRuntime
+exports.validateSilkWasmRuntime = validateSilkWasmRuntime

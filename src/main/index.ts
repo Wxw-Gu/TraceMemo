@@ -84,6 +84,7 @@ import {
   getCachedMessages,
   mergeBootstrapAvatars,
   mergeCachedContactAvatars,
+  mergeCachedSelfInfo,
   saveBootstrapContacts,
   saveBootstrapSelf,
   saveCachedGroupSnapshot,
@@ -1221,9 +1222,10 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('settings:getSelf', () => {
-    const info = chat.getSelfAccountInfo()
-    if (!info) return { ready: false }
+  ipcMain.handle('settings:getSelf', async () => {
+    const rawInfo = await chat.getSelfAccountInfoAsync()
+    if (!rawInfo) return { ready: false }
+    const info = mergeCachedSelfInfo(rawInfo.accountRoot, rawInfo)
     if (chat.isReady()) saveBootstrapSelf(chat.getCurrentAccountRoot(), info)
     return { ready: true, info }
   })
@@ -1232,7 +1234,7 @@ app.whenReady().then(async () => {
     return chat.testConnection(key, accountRoot)
   })
 
-  ipcMain.handle('db:reopenWithRoot', (_, accountRoot: string) => {
+  ipcMain.handle('db:reopenWithRoot', async (_, accountRoot: string) => {
     const ok = chat.reopenWithRoot(accountRoot)
     if (!ok) return { success: false, error: '数据库未初始化或重新打开失败' }
     // 同步 imageKeyRoot，避免自动获取扫描到旧目录
@@ -1240,7 +1242,8 @@ app.whenReady().then(async () => {
     if (accountRoot && accountRoot !== settings.imageKeyRoot) {
       saveSettings({ ...settings, imageKeyRoot: accountRoot })
     }
-    const info = chat.getSelfAccountInfo()
+    const rawInfo = await chat.getSelfAccountInfoAsync()
+    const info = rawInfo ? mergeCachedSelfInfo(rawInfo.accountRoot, rawInfo) : null
     return { success: true, info }
   })
 

@@ -83,22 +83,31 @@ describe('DAT image decryption', () => {
 
   it('finds modern _M variants and reads plain images stored with a DAT extension', async () => {
     const accountRoot = join(root, 'modern-account')
-    const sessionId = '77705c31c50e8a4242a9d527fe9433de'
-    const imageDirectory = join(accountRoot, 'msg', 'attach', sessionId, '2025-10', 'Img')
+    const sessionMd5 = '77705c31c50e8a4242a9d527fe9433de'
+    const imageDirectory = join(accountRoot, 'msg', 'attach', sessionMd5, '2025-10', 'Img')
     mkdirSync(imageDirectory, { recursive: true })
 
     const imageBase = '9718e38ad90f57f9e833d17ff2373abd'
     const mediumFile = join(imageDirectory, `${imageBase}_M.dat`)
     writeFileSync(mediumFile, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]))
+    const newerDirectory = join(accountRoot, 'msg', 'attach', sessionMd5, '2026-08', 'Img')
+    mkdirSync(newerDirectory, { recursive: true })
+    writeFileSync(join(newerDirectory, `${imageBase}_M.dat`), Buffer.from([0xff, 0xd8, 0xff, 0]))
+
+    const findOptions = {
+      allowThumbnail: false,
+      accountDir: accountRoot,
+      sessionId: 'stale-session-name',
+      sessionMd5,
+      createTime: Math.floor(new Date(2025, 9, 15).getTime() / 1000)
+    }
+    const syncService = new ImageDecryptService('0x40', aesKey)
+    expect(syncService.findImageFile(undefined, imageBase, findOptions)).toBe(mediumFile)
 
     const service = new ImageDecryptService('0x40', aesKey)
-    await expect(
-      service.findImageFileAsync(undefined, imageBase, {
-        allowThumbnail: false,
-        accountDir: accountRoot,
-        sessionId
-      })
-    ).resolves.toBe(mediumFile)
+    await expect(service.findImageFileAsync(undefined, imageBase, findOptions)).resolves.toBe(
+      mediumFile
+    )
     expect(service.decryptImageToBase64(mediumFile)).toMatch(/^data:image\/png;base64,/)
     expect(service.getLastDecodeDiagnostic()).toMatchObject({
       code: 'DIRECT_IMAGE',
@@ -116,15 +125,44 @@ describe('DAT image decryption', () => {
       service.findImageFileAsync(undefined, `${thumbnailBase}_t_M.dat`, {
         allowThumbnail: false,
         accountDir: accountRoot,
-        sessionId
+        sessionMd5
       })
     ).resolves.toBeNull()
     await expect(
       service.findImageFileAsync(undefined, `${thumbnailBase}_t_M.dat`, {
         allowThumbnail: true,
         accountDir: accountRoot,
-        sessionId
+        sessionMd5
       })
     ).resolves.toBe(thumbnailFile)
+
+    const bubbleBase = '5e1f000000000000000000000000cafe'
+    const bubbleDirectory = join(accountRoot, 'cache', '2025-10', 'Message', sessionMd5, 'Bubble')
+    mkdirSync(bubbleDirectory, { recursive: true })
+    const bubblePreview = join(bubbleDirectory, `${bubbleBase}_b.dat`)
+    writeFileSync(bubblePreview, Buffer.from([0xff, 0xd8, 0xff, 0]))
+    expect(service.isThumbnailFile(bubblePreview)).toBe(true)
+    const bubbleOptions = {
+      allowThumbnail: true,
+      preferThumbnail: true,
+      accountDir: accountRoot,
+      sessionMd5,
+      createTime: Math.floor(new Date(2025, 9, 15).getTime() / 1000)
+    }
+    const syncBubbleService = new ImageDecryptService('0x40', aesKey)
+    expect(syncBubbleService.findImageFile(undefined, bubbleBase, bubbleOptions)).toBe(
+      bubblePreview
+    )
+    await expect(
+      service.findImageFileAsync(undefined, bubbleBase, {
+        allowThumbnail: false,
+        accountDir: accountRoot,
+        sessionMd5,
+        createTime: Math.floor(new Date(2025, 9, 15).getTime() / 1000)
+      })
+    ).resolves.toBeNull()
+    await expect(service.findImageFileAsync(undefined, bubbleBase, bubbleOptions)).resolves.toBe(
+      bubblePreview
+    )
   })
 })

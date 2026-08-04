@@ -1,12 +1,8 @@
 const fs = require('node:fs')
+const { execFileSync } = require('node:child_process')
 const path = require('node:path')
 
-const runtimeNames = [
-  'msvcp140.dll',
-  'msvcp140_1.dll',
-  'vcruntime140.dll',
-  'vcruntime140_1.dll'
-]
+const runtimeNames = ['msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll']
 
 function copyIfDifferent(sourcePath, targetPath) {
   const source = fs.statSync(sourcePath)
@@ -23,7 +19,24 @@ function copyIfDifferent(sourcePath, targetPath) {
   return true
 }
 
+function prepareFfmpegRuntime() {
+  let ffmpegPath = ''
+  try {
+    ffmpegPath = require('ffmpeg-static') || ''
+  } catch {
+    return
+  }
+  if (!ffmpegPath || !fs.existsSync(ffmpegPath) || process.platform === 'win32') return
+  fs.chmodSync(ffmpegPath, 0o755)
+  if (process.platform === 'darwin') {
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', ffmpegPath], {
+      stdio: 'ignore'
+    })
+  }
+}
+
 function main() {
+  prepareFfmpegRuntime()
   if (process.platform !== 'win32') return
 
   const projectRoot = path.resolve(__dirname, '..')

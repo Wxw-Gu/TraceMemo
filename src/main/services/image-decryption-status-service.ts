@@ -124,14 +124,18 @@ export async function testImageDecryption(
       (await service.findImageFileAsync(image.md5, image.datName, {
         allowThumbnail: false,
         accountDir: testAccountDir,
-        sessionId: imageMessage.sessionId
+        sessionId: imageMessage.sessionId,
+        sessionMd5: request.userMd5,
+        createTime: imageMessage.createTime
       })) || undefined
     if (!filePath) {
       filePath =
         (await service.findImageFileAsync(image.md5, image.datName, {
           allowThumbnail: true,
           accountDir: testAccountDir,
-          sessionId: imageMessage.sessionId
+          sessionId: imageMessage.sessionId,
+          sessionMd5: request.userMd5,
+          createTime: imageMessage.createTime
         })) || undefined
     }
     if (!filePath) return finish(failure('FILE_NOT_FOUND', '图片文件不存在'))

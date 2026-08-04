@@ -5,6 +5,7 @@ import os from 'os'
 import { app } from 'electron'
 import { execFile } from 'child_process'
 import { Worker } from 'worker_threads'
+import ffmpegStaticPath from 'ffmpeg-static'
 import type { ImageDecoderSource, ImageDecoderStatus } from '../shared/image-decryption'
 import { loadSettings } from './services/settings-store'
 import { Wcdb4Client } from './wcdb4-client'
@@ -48,6 +49,8 @@ type ImageFindOptions = {
   accountDir?: string
   preferThumbnail?: boolean
   sessionId?: string
+  sessionMd5?: string
+  createTime?: number
 }
 
 const MAX_DECODED_IMAGE_CACHE_BYTES = 48 * 1024 * 1024
@@ -72,9 +75,17 @@ function getFfmpegCandidates(selectedPath = loadSettings().ffmpegPath): FfmpegCa
   const selected = String(selectedPath || '').trim()
   const environment = String(process.env['FFMPEG_BIN'] || '').trim()
   const executable = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  const staticExecutable = String(ffmpegStaticPath || '')
+    .replace('app.asar', 'app.asar.unpacked')
+    .trim()
   const candidates: FfmpegCandidate[] = [
     ...(selected ? [{ executable: selected, source: 'selected' as const }] : []),
     ...(environment ? [{ executable: environment, source: 'environment' as const }] : []),
+    ...(staticExecutable ? [{ executable: staticExecutable, source: 'bundled' as const }] : []),
+    {
+      executable: join(process.resourcesPath, 'resources', 'ffmpeg', executable),
+      source: 'bundled'
+    },
     {
       executable: join(process.resourcesPath, 'ffmpeg', executable),
       source: 'bundled'
@@ -83,6 +94,12 @@ function getFfmpegCandidates(selectedPath = loadSettings().ffmpegPath): FfmpegCa
       executable: join(process.cwd(), 'resources', 'ffmpeg', executable),
       source: 'bundled'
     },
+    ...(process.platform === 'darwin'
+      ? [
+          { executable: `/opt/homebrew/bin/${executable}`, source: 'system' as const },
+          { executable: `/usr/local/bin/${executable}`, source: 'system' as const }
+        ]
+      : []),
     { executable: process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg', source: 'system' }
   ]
 
@@ -96,10 +113,12 @@ function getFfmpegCandidates(selectedPath = loadSettings().ffmpegPath): FfmpegCa
 
 function resolveFfmpegExecutable(): string {
   for (const candidate of getFfmpegCandidates()) {
-    if (candidate.source === 'environment' || candidate.source === 'system') {
-      return candidate.executable
+    const pathLike = candidate.executable.includes('/') || candidate.executable.includes('\\')
+    if (pathLike) {
+      if (existsSync(candidate.executable)) return candidate.executable
+      continue
     }
-    if (existsSync(candidate.executable)) return candidate.executable
+    return candidate.executable
   }
   return process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
 }
@@ -131,8 +150,7 @@ export async function inspectImageDecoderExecutable(
   const decoders = await runImageDecoderCommand(executable, ['-hide_banner', '-decoders'])
   return {
     installed: true,
-    supportsHevc:
-      decoders.success && /^\s*[A-Z.]{6}\s+hevc\s/im.test(decoders.output)
+    supportsHevc: decoders.success && /^\s*[A-Z.]{6}\s+hevc\s/im.test(decoders.output)
   }
 }
 
@@ -187,7 +205,7 @@ function normalizeDatBase(value) {
 
 function isThumbnailName(fileName) {
   const lower = fileName.toLowerCase()
-  return /(?:_t(?:_m)?|_thumb|\.thumb)\.dat$/i.test(lower)
+  return /(?:_t(?:_m)?|_thumb|\.thumb|_b|_w|_c)\.dat$/i.test(lower)
 }
 
 function buildPreferredDatNames(baseName) {
@@ -263,26 +281,63 @@ function unwrapWxgf(buffer, ffmpegPath) {
     }
   }
 
-  let hevcOffset = -1
-  for (let index = 4; index < Math.min(buffer.length - 4, 4096); index += 1) {
-    if (
-      buffer[index] === 0x00 &&
-      buffer[index + 1] === 0x00 &&
-      buffer[index + 2] === 0x00 &&
-      buffer[index + 3] === 0x01
-    ) {
-      hevcOffset = index
-      break
+  function findHevcPartitions(data) {
+    if (data.length < 15) return []
+    const headerLength = data[4]
+    if (headerLength < 5 || headerLength >= data.length) return []
+
+    for (const pattern of [Buffer.from([0, 0, 0, 1]), Buffer.from([0, 0, 1])]) {
+      const partitions = []
+      let searchOffset = headerLength
+      while (searchOffset < data.length) {
+        const relativeIndex = data.subarray(searchOffset).indexOf(pattern)
+        if (relativeIndex < 0) break
+        const offset = searchOffset + relativeIndex
+        if (offset < 4) {
+          searchOffset = offset + 1
+          continue
+        }
+        const size = data.readUInt32BE(offset - 4)
+        if (size === 0 || offset + size > data.length) {
+          searchOffset = offset + 1
+          continue
+        }
+        partitions.push({ offset, size })
+        searchOffset = offset + size
+      }
+      if (partitions.length > 0) return partitions
+    }
+    return []
+  }
+
+  const partitions = findHevcPartitions(buffer)
+  let hevcData = null
+  if (partitions.length > 0) {
+    const largest = partitions.reduce((best, current) =>
+      current.size > best.size ? current : best
+    )
+    hevcData = buffer.subarray(largest.offset, largest.offset + largest.size)
+  } else {
+    for (let index = 4; index < Math.min(buffer.length - 4, 4096); index += 1) {
+      if (
+        buffer[index] === 0x00 &&
+        buffer[index + 1] === 0x00 &&
+        buffer[index + 2] === 0x00 &&
+        buffer[index + 3] === 0x01
+      ) {
+        hevcData = buffer.subarray(index)
+        break
+      }
     }
   }
-  if (hevcOffset < 0 || !ffmpegPath) return buffer
+  if (!hevcData || !ffmpegPath) return buffer
 
   const nonce = process.pid + '-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex')
   const tempBase = path.join(os.tmpdir(), 'wxe-wxgf-' + nonce)
   const inputPath = tempBase + '.hevc'
   const outputPath = tempBase + '.png'
   try {
-    fs.writeFileSync(inputPath, buffer.subarray(hevcOffset))
+    fs.writeFileSync(inputPath, hevcData)
     childProcess.execFileSync(
       ffmpegPath,
       [
@@ -501,22 +556,19 @@ export class ImageDecryptService {
   /**
    * 根据 md5 查找图片文件 (WechatExplorer 风格)
    */
-  findImageFile(
-    md5?: string,
-    imageDatName?: string,
-    options?: ImageFindOptions
-  ): string | null {
+  findImageFile(md5?: string, imageDatName?: string, options?: ImageFindOptions): string | null {
     const allowThumbnail = options?.allowThumbnail !== false
     const normalizedMd5 = this.normalizeDatBase(md5 || '')
     const normalizedDatName = this.normalizeDatBase(imageDatName || '')
-    const sessionDirectory = this.getSessionDirectoryName(options?.sessionId)
+    const sessionDirectory = this.getSessionDirectoryName(options?.sessionMd5 || options?.sessionId)
     const pathCacheKey = [
       normalizedMd5,
       normalizedDatName,
       allowThumbnail ? 'thumb' : 'original',
       options?.preferThumbnail ? 'prefer-thumb' : 'prefer-original',
       options?.accountDir || '',
-      sessionDirectory
+      sessionDirectory,
+      options?.createTime || 0
     ].join('|')
     const cachedPath = this.imagePathCache.get(pathCacheKey)
     if (cachedPath && existsSync(cachedPath)) return cachedPath
@@ -537,13 +589,24 @@ export class ImageDecryptService {
       imageDatName: normalizedDatName,
       accountDir,
       allowThumbnail,
-      sessionDirectory
+      sessionDirectory,
+      createTime: options?.createTime
     })
 
     const attachDir = join(accountDir, 'msg', 'attach')
     // The attach directory stores DAT filenames, while the message MD5 often
     // identifies the original image rather than the local file.
     const searchKeys = this.uniq([normalizedDatName, normalizedMd5])
+
+    if (sessionDirectory && allowThumbnail && options?.preferThumbnail) {
+      const bubblePreview = this.findBubblePreview(
+        accountDir,
+        searchKeys,
+        sessionDirectory,
+        options?.createTime
+      )
+      if (bubblePreview) return rememberPath(bubblePreview)
+    }
 
     // Message rows already identify their conversation. Prefer that small,
     // deterministic directory before consulting the native hardlink database.
@@ -554,7 +617,8 @@ export class ImageDecryptService {
           key,
           allowThumbnail,
           options?.preferThumbnail,
-          sessionDirectory
+          sessionDirectory,
+          options?.createTime
         )
         if (scopedHit) return rememberPath(scopedHit)
       }
@@ -834,7 +898,7 @@ export class ImageDecryptService {
     imageDatName?: string,
     options?: ImageFindOptions
   ): Promise<string | null> {
-    const sessionDirectory = this.getSessionDirectoryName(options?.sessionId)
+    const sessionDirectory = this.getSessionDirectoryName(options?.sessionMd5 || options?.sessionId)
     if (!sessionDirectory) return this.findImageFile(md5, imageDatName, options)
 
     const allowThumbnail = options?.allowThumbnail !== false
@@ -846,7 +910,8 @@ export class ImageDecryptService {
       allowThumbnail ? 'thumb' : 'original',
       options?.preferThumbnail ? 'prefer-thumb' : 'prefer-original',
       options?.accountDir || '',
-      sessionDirectory
+      sessionDirectory,
+      options?.createTime || 0
     ].join('|')
     const cachedPath = this.imagePathCache.get(pathCacheKey)
     if (cachedPath && existsSync(cachedPath)) return cachedPath
@@ -862,15 +927,28 @@ export class ImageDecryptService {
     if (!accountDir) return null
 
     const attachDir = join(accountDir, 'msg', 'attach')
-    if (normalizedDatName && existsSync(attachDir)) {
-      const scopedHit = await this.findImageInSessionDirectoryAsync(
-        attachDir,
-        normalizedDatName,
-        allowThumbnail,
-        options?.preferThumbnail,
-        sessionDirectory
+    const searchKeys = this.uniq([normalizedDatName, normalizedMd5])
+    if (allowThumbnail && options?.preferThumbnail) {
+      const bubblePreview = await this.findBubblePreviewAsync(
+        accountDir,
+        searchKeys,
+        sessionDirectory,
+        options?.createTime
       )
-      if (scopedHit) return rememberPath(scopedHit)
+      if (bubblePreview) return rememberPath(bubblePreview)
+    }
+    if (existsSync(attachDir)) {
+      for (const key of searchKeys) {
+        const scopedHit = await this.findImageInSessionDirectoryAsync(
+          attachDir,
+          key,
+          allowThumbnail,
+          options?.preferThumbnail,
+          sessionDirectory,
+          options?.createTime
+        )
+        if (scopedHit) return rememberPath(scopedHit)
+      }
     }
 
     for (const key of this.uniq([normalizedMd5, normalizedDatName])) {
@@ -895,7 +973,8 @@ export class ImageDecryptService {
     datName: string,
     allowThumbnail: boolean,
     preferThumbnail: boolean | undefined,
-    sessionDirectory: string
+    sessionDirectory: string,
+    createTime?: number
   ): Promise<string | null> {
     const normalized = this.normalizeDatBase(datName)
     if (!normalized || !sessionDirectory) return null
@@ -911,6 +990,7 @@ export class ImageDecryptService {
       return null
     }
 
+    monthDirectories = this.prioritizeImageMonth(monthDirectories, createTime)
     const variants = this.buildPreferredDatNames(normalized)
     for (const month of monthDirectories) {
       const candidates = ['Img', 'Image', 'image'].flatMap((subDirectory) =>
@@ -926,10 +1006,7 @@ export class ImageDecryptService {
     return null
   }
 
-  private isValidPersistentImageMeta(
-    metadata: PersistentImageMeta,
-    cacheKey: string
-  ): boolean {
+  private isValidPersistentImageMeta(metadata: PersistentImageMeta, cacheKey: string): boolean {
     return (
       metadata !== null &&
       typeof metadata === 'object' &&
@@ -1040,9 +1117,7 @@ export class ImageDecryptService {
     const entries = await fsPromises.readdir(cacheDir, { withFileTypes: true })
     const payloadNames = entries
       .filter(
-        (entry) =>
-          entry.isFile() &&
-          /^[a-f0-9]{64}\.(?:jpe?g|png|gif|bmp|webp)$/i.test(entry.name)
+        (entry) => entry.isFile() && /^[a-f0-9]{64}\.(?:jpe?g|png|gif|bmp|webp)$/i.test(entry.name)
       )
       .map((entry) => entry.name)
     const payloads = (
@@ -1079,9 +1154,7 @@ export class ImageDecryptService {
     }
 
     const remainingPayloadKeys = new Set(
-      payloads
-        .slice(payloads.length - totalFiles)
-        .map((payload) => payload.name.slice(0, 64))
+      payloads.slice(payloads.length - totalFiles).map((payload) => payload.name.slice(0, 64))
     )
     const staleMetadata = entries.filter(
       (entry) =>
@@ -1099,7 +1172,8 @@ export class ImageDecryptService {
     datName: string,
     allowThumbnail = true,
     preferThumbnail = false,
-    sessionDirectory = ''
+    sessionDirectory = '',
+    createTime?: number
   ): string | null {
     const normalized = this.normalizeDatBase(datName)
     if (!normalized) return null
@@ -1129,18 +1203,13 @@ export class ImageDecryptService {
         ? existsSync(join(attachDir, sessionDirectory))
           ? [sessionDirectory]
           : []
-        : readdirSync(attachDir).filter(
-            (name) => name.length === 32 && /^[a-f0-9]+$/i.test(name)
-          )
-
-      const now = new Date()
-      const months: string[] = []
-      for (let i = 0; i < 24; i++) {
-        const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-        months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
-      }
+        : readdirSync(attachDir).filter((name) => name.length === 32 && /^[a-f0-9]+$/i.test(name))
 
       for (const sessDir of sessionDirs) {
+        const sessionRoot = join(attachDir, sessDir)
+        const months = sessionDirectory
+          ? this.getImageMonthDirectories(sessionRoot, createTime)
+          : this.getRecentImageMonths(24)
         for (const month of months) {
           for (const sub of ['Img', 'Image', 'image']) {
             const imgDir = join(attachDir, sessDir, month, sub)
@@ -1603,6 +1672,101 @@ export class ImageDecryptService {
     return crypto.createHash('md5').update(value).digest('hex')
   }
 
+  private getImageMonth(createTime?: number): string {
+    if (!createTime || !Number.isFinite(createTime)) return ''
+    const date = new Date(createTime * 1000)
+    if (Number.isNaN(date.getTime())) return ''
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+  }
+
+  private prioritizeImageMonth(months: string[], createTime?: number): string[] {
+    const preferred = this.getImageMonth(createTime)
+    if (!preferred || !months.includes(preferred)) return months
+    return [preferred, ...months.filter((month) => month !== preferred)]
+  }
+
+  private getImageMonthDirectories(root: string, createTime?: number): string[] {
+    try {
+      const months = readdirSync(root)
+        .filter((name) => /^\d{4}-\d{2}$/.test(name) && existsSync(join(root, name)))
+        .sort((left, right) => right.localeCompare(left))
+      return this.prioritizeImageMonth(months, createTime)
+    } catch {
+      return []
+    }
+  }
+
+  private getRecentImageMonths(count: number): string[] {
+    const now = new Date()
+    return Array.from({ length: count }, (_, index) => {
+      const date = new Date(now.getFullYear(), now.getMonth() - index, 1)
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+    })
+  }
+
+  private findBubblePreview(
+    accountDir: string,
+    imageKeys: string[],
+    sessionDirectory: string,
+    createTime?: number
+  ): string | null {
+    const cacheRoot = join(accountDir, 'cache')
+    const months = this.getImageMonthDirectories(cacheRoot, createTime)
+    const previewNames = imageKeys.flatMap((key) => [
+      `${key}_b.dat`,
+      `${key}_w.dat`,
+      `${key}_c.dat`,
+      `${key}_t_M.dat`,
+      `${key}_t.dat`
+    ])
+    for (const month of months) {
+      const bubbleDir = join(cacheRoot, month, 'Message', sessionDirectory, 'Bubble')
+      const found = this.getLargestExistingPath(
+        previewNames.map((name) => join(bubbleDir, name)),
+        true,
+        true
+      )
+      if (found) return found
+    }
+    return null
+  }
+
+  private async findBubblePreviewAsync(
+    accountDir: string,
+    imageKeys: string[],
+    sessionDirectory: string,
+    createTime?: number
+  ): Promise<string | null> {
+    const cacheRoot = join(accountDir, 'cache')
+    let months: string[]
+    try {
+      months = (await fsPromises.readdir(cacheRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && /^\d{4}-\d{2}$/.test(entry.name))
+        .map((entry) => entry.name)
+        .sort((left, right) => right.localeCompare(left))
+    } catch {
+      return null
+    }
+    months = this.prioritizeImageMonth(months, createTime)
+    const previewNames = imageKeys.flatMap((key) => [
+      `${key}_b.dat`,
+      `${key}_w.dat`,
+      `${key}_c.dat`,
+      `${key}_t_M.dat`,
+      `${key}_t.dat`
+    ])
+    for (const month of months) {
+      const bubbleDir = join(cacheRoot, month, 'Message', sessionDirectory, 'Bubble')
+      const found = await this.getLargestExistingPathAsync(
+        previewNames.map((name) => join(bubbleDir, name)),
+        true,
+        true
+      )
+      if (found) return found
+    }
+    return null
+  }
+
   private buildPreferredDatNames(baseName: string): string[] {
     const base = this.normalizeDatBase(baseName)
     if (!base) return []
@@ -1697,16 +1861,14 @@ export class ImageDecryptService {
       const thumbnail = sized.find((entry) => this.isThumbnailName(basename(entry.candidate)))
       if (thumbnail) return thumbnail.candidate
     }
-    const nonThumbnail = sized.find(
-      (entry) => !this.isThumbnailName(basename(entry.candidate))
-    )
+    const nonThumbnail = sized.find((entry) => !this.isThumbnailName(basename(entry.candidate)))
     if (nonThumbnail) return nonThumbnail.candidate
     return allowThumbnail ? sized[0]?.candidate || null : null
   }
 
   private isThumbnailName(fileName: string): boolean {
     const lower = fileName.toLowerCase()
-    return /(?:_t(?:_m)?|_thumb|\.thumb)\.dat$/i.test(lower)
+    return /(?:_t(?:_m)?|_thumb|\.thumb|_b|_w|_c)\.dat$/i.test(lower)
   }
 
   isThumbnailFile(filePath: string): boolean {

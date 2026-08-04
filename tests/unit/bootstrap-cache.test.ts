@@ -15,7 +15,9 @@ import {
   flushBootstrapCacheWritesSync,
   getBootstrapCache,
   getCachedMessages,
+  mergeCachedSelfInfo,
   saveBootstrapContacts,
+  saveBootstrapSelf,
   saveCachedMessages
 } from '../../src/main/services/bootstrap-cache'
 
@@ -77,5 +79,30 @@ describe('bootstrap cache', () => {
     writeFileSync(startup, '{broken', 'utf8')
     clearBootstrapCache()
     expect(getBootstrapCache(accountRoot)).toBeNull()
+  })
+
+  it('reuses a hydrated contact nickname when cached self info only contains the account id', () => {
+    const selfRoot = '/fixture/fixture_account_1a2b'
+    saveBootstrapContacts(selfRoot, [
+      {
+        m_nsUsrName: 'fixture_account',
+        m_nsNickName: '示例昵称',
+        md5: 'self-md5',
+        type: 'user'
+      }
+    ])
+    saveBootstrapSelf(selfRoot, {
+      wxid: 'fixture_account',
+      nickname: 'fixture_account',
+      accountRoot: selfRoot
+    })
+
+    expect(
+      mergeCachedSelfInfo(selfRoot, {
+        wxid: 'fixture_account',
+        nickname: 'fixture_account',
+        accountRoot: selfRoot
+      }).nickname
+    ).toBe('示例昵称')
   })
 })

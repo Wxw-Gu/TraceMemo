@@ -19,6 +19,7 @@ import { VideoAssetService } from './video-asset-service'
 import { StickerService } from './sticker-service'
 import { getImageExportAttempts } from '../shared/export-media'
 import { FileAssetService } from './file-asset-service'
+import { mergeCachedSelfInfo } from './services/bootstrap-cache'
 
 const jobs = new Set<string>()
 const safeFilePart = (value: string): string =>
@@ -101,6 +102,26 @@ export function mergeHtmlArchiveMessages(
     const byTime = Number(left.createTime || 0) - Number(right.createTime || 0)
     if (byTime !== 0) return byTime
     return Number(left.localId || 0) - Number(right.localId || 0)
+  })
+}
+
+export function normalizeHtmlArchiveSelfNames(
+  messages: Message[],
+  selfInfo: { wxid: string; nickname: string } | null
+): Message[] {
+  const wxid = String(selfInfo?.wxid || '').trim()
+  const nickname = String(selfInfo?.nickname || '').trim()
+  if (!nickname || nickname === wxid || /^wxid_/i.test(nickname)) return messages
+  return messages.map((message) => {
+    if (!message.isSender) return message
+    const currentName = String(message.name || '').trim()
+    const senderId = String(message.senderId || '').trim()
+    const usesRawAccount =
+      !currentName ||
+      currentName === wxid ||
+      (senderId === wxid && currentName === senderId) ||
+      /^wxid_/i.test(currentName)
+    return usesRawAccount ? { ...message, name: nickname } : message
   })
 }
 
@@ -282,6 +303,15 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
     const messages = (
       await chat.listMessagesAsync(request.userMd5, request.startTime, request.endTime)
     ).filter((message) => request.kinds.includes(kindOf(message)))
+    const rawSelfInfo = await chat.getSelfAccountInfoAsync()
+    const selfInfo = rawSelfInfo ? mergeCachedSelfInfo(rawSelfInfo.accountRoot, rawSelfInfo) : null
+    const isUsableSelfName = (value: string | undefined): value is string => {
+      const name = String(value || '').trim()
+      if (!name) return false
+      if (name === selfInfo?.wxid) return false
+      if (/^wxid_/i.test(name)) return false
+      return true
+    }
     for (const message of messages) {
       message.exportMediaUrl = undefined
       message.exportMediaType = undefined
@@ -290,7 +320,11 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
       message.voiceDataUrl = undefined
       message.exportShowAvatar = request.includeAvatars !== false
       const mappedName = message.senderId ? request.nameMap?.[message.senderId] : undefined
-      if (mappedName) message.name = mappedName
+      if (mappedName && (!message.isSender || isUsableSelfName(mappedName))) {
+        message.name = mappedName
+      } else if (message.isSender && isUsableSelfName(selfInfo?.nickname)) {
+        message.name = selfInfo.nickname
+      }
       if (
         request.format !== 'html' &&
         ['image', 'video', 'voice', 'sticker', 'file'].includes(kindOf(message))
@@ -431,21 +465,31 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             let decryptedImage: { data: string; filePath: string } | null = null
             let usedFallback = false
             for (const attempt of getImageExportAttempts(request)) {
-              const file = imageService.findImageFile(
+              const file = await imageService.findImageFileAsync(
                 message.contentData.md5,
                 message.contentData.datName,
                 {
                   allowThumbnail: attempt.allowThumbnail,
                   preferThumbnail: attempt.preferThumbnail,
-                  sessionId: message.sessionId
+                  sessionId: message.sessionId,
+                  sessionMd5: request.userMd5,
+                  createTime: message.createTime
                 }
               )
               if (!file) continue
               fileFound = true
-              const decrypted = imageService.decryptImageToBase64WithFallback(
+              let decrypted = await imageService.decryptImageToBase64WithFallbackAsync(
                 file,
                 attempt.allowThumbnail
               )
+              // Worker 启动异常时，普通 JPEG/PNG 仍可由主进程同步解析；
+              // WXGF/HEVC 原图则以 Worker 的 FFmpeg 结果为准。
+              if (!decrypted) {
+                decrypted = imageService.decryptImageToBase64WithFallback(
+                  file,
+                  attempt.allowThumbnail
+                )
+              }
               if (!decrypted) continue
               decryptedImage = decrypted
               usedFallback = attempt.fallback || imageService.isThumbnailFile(decrypted.filePath)
@@ -536,12 +580,17 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
           percent: 15 + Math.round(((index + 1) / Math.max(messages.length, 1)) * 75)
         })
       }
+      const mergedMessages = mergeHtmlArchiveMessages(
+        previousArchive.messages,
+        messages,
+        request.userMd5
+      )
       const archive: HtmlExportArchive = {
         version: 1,
         sourceId: request.userMd5,
         name: request.name,
         exportedAt: new Date().toISOString(),
-        messages: mergeHtmlArchiveMessages(previousArchive.messages, messages, request.userMd5)
+        messages: normalizeHtmlArchiveSelfNames(mergedMessages, selfInfo)
       }
       await fs.writeFile(outputPath, renderExportPage(request.name), 'utf8')
       await writeHtmlArchive(outputDir, archive)

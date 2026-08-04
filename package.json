@@ -1,6 +1,6 @@
 {
   "name": "wechatexplorer",
-  "version": "2.1.7",
+  "version": "2.1.8",
   "description": "macOS / Windows 微信聊天记录查看与 AI 群聊总结助手",
   "keywords": [
     "wechat",
@@ -60,6 +60,7 @@
     "@tanstack/react-virtual": "^3.14.6",
     "cross-env": "^10.1.0",
     "electron-updater": "^6.6.2",
+    "ffmpeg-static": "5.3.0",
     "fs-extra": "^11.3.2",
     "fzstd": "^0.1.1",
     "jsonrepair": "^3.15.0",
@@ -113,7 +114,8 @@
     },
     "onlyBuiltDependencies": [
       "electron",
-      "esbuild"
+      "esbuild",
+      "ffmpeg-static"
     ]
   }
 }

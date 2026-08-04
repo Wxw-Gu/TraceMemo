@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WechatDb } from '../../src/main/wechat-db'
 import {
   closeChatDbForQuit,
+  getSelfAccountInfoAsync,
   isReady,
   listContactsAsync,
   setChatDb
@@ -40,6 +41,39 @@ describe('chat service contacts', () => {
       hydrateStatuses: true
     })
     expect(contacts[0]?.m_nsNickName).toBe('测试群聊')
+  })
+
+  it('hydrates the current account nickname before returning self info', async () => {
+    const session = { username: 'fixture_account', nickname: 'fixture_account' }
+    const client = {
+      getSessionsAsync: vi.fn(async () => {
+        session.nickname = '示例昵称'
+        return [session]
+      }),
+      getAccountRoot: () => '/fixture/fixture_account_1a2b',
+      getMyUsernameCandidates: () => ['fixture_account'],
+      getUsernameByMd5: () => undefined,
+      md5: () => 'fixture-md5',
+      getMyAvatarUrl: () => undefined
+    }
+    const fakeDb = {
+      close: vi.fn(),
+      md5: () => 'fixture-md5',
+      getAllGroupContacts: () => ({}),
+      getUserList: () => [
+        {
+          m_nsUsrName: session.username,
+          nickname: session.nickname
+        }
+      ],
+      getWcdb4Client: () => client
+    } as unknown as WechatDb
+
+    setChatDb(fakeDb)
+    const info = await getSelfAccountInfoAsync()
+
+    expect(client.getSessionsAsync).toHaveBeenCalledWith({ hydrateDisplayNames: true })
+    expect(info).toMatchObject({ wxid: 'fixture_account', nickname: '示例昵称' })
   })
 
   it('detaches the database immediately and awaits native cleanup on quit', async () => {

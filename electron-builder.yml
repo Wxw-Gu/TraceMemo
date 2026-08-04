@@ -15,6 +15,8 @@ extraMetadata:
   main: out/main/index.js
 asarUnpack:
   - resources/**
+  - node_modules/ffmpeg-static/**
+  - node_modules/silk-wasm/**
 extraResources:
   # Includes the optional WeChat connector binary for the target platform.
   - from: resources

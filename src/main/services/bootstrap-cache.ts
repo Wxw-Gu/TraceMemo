@@ -428,6 +428,37 @@ function isRawContactName(contact: Contact): boolean {
   return false
 }
 
+function accountRootCandidates(accountRoot: string): Set<string> {
+  const directory = path.basename(normalizeRoot(accountRoot))
+  const suffixMatch = directory.match(/^(.+)_([a-zA-Z0-9]{4})$/)
+  return new Set([directory, suffixMatch?.[1] || ''].filter(Boolean))
+}
+
+export function mergeCachedSelfInfo(accountRoot: string, self: CachedSelfInfo): CachedSelfInfo {
+  const cache = readStartupCacheFile(accountRoot)
+  if (!cache) return self
+  const identifiers = accountRootCandidates(accountRoot)
+  if (self.wxid) identifiers.add(self.wxid)
+  const isRawSelfName = (value?: string): boolean => {
+    const name = String(value || '').trim()
+    return !name || name === '我' || identifiers.has(name)
+  }
+  if (!isRawSelfName(self.nickname)) return self
+
+  const cachedContact = cache.contacts.find(
+    (contact) => identifiers.has(contact.m_nsUsrName) && !isRawContactName(contact)
+  )
+  const cachedNickname = !isRawSelfName(cache.self?.nickname)
+    ? cache.self?.nickname
+    : cachedContact?.m_nsNickName
+  if (!cachedNickname) return self
+  return {
+    ...self,
+    nickname: cachedNickname,
+    avatar: self.avatar || cache.self?.avatar || cachedContact?.avatar
+  }
+}
+
 export function mergeCachedContactAvatars(accountRoot: string, contacts: Contact[]): Contact[] {
   const cache = readStartupCacheFile(accountRoot)
   if (!cache?.contacts.length) return contacts

@@ -565,6 +565,18 @@ export function getSelfAccountInfo(): SelfAccountInfo | null {
   }
 }
 
+export async function getSelfAccountInfoAsync(): Promise<SelfAccountInfo | null> {
+  const current = dbRef
+  if (!current) return null
+  try {
+    await current.getWcdb4Client().getSessionsAsync({ hydrateDisplayNames: true })
+  } catch {
+    // Nickname hydration is best-effort; the synchronous fallback still returns the account id.
+  }
+  if (dbRef !== current) return getSelfAccountInfo()
+  return getSelfAccountInfo()
+}
+
 export function testConnection(key: string, accountRoot?: string): DatabaseKeyValidationResult {
   const probeKey = key.replace(/^0x/i, '').trim()
   if (!/^[0-9a-f]{64}$/i.test(probeKey)) {

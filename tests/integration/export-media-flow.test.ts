@@ -9,7 +9,13 @@ const state = vi.hoisted(() => ({
   accountRoot: '',
   videoPath: '',
   messages: [] as Message[],
-  imageLookups: [] as { allowThumbnail?: boolean; preferThumbnail?: boolean }[]
+  imageLookups: [] as {
+    allowThumbnail?: boolean
+    preferThumbnail?: boolean
+    sessionId?: string
+    sessionMd5?: string
+    createTime?: number
+  }[]
 }))
 
 vi.mock('electron', () => ({
@@ -23,7 +29,12 @@ vi.mock('../../src/main/services/chat-service', () => ({
   getChatDb: () => ({
     getWcdb4Client: () => ({ getAccountRoot: () => state.accountRoot })
   }),
-  getContactAvatars: () => ({})
+  getContactAvatars: () => ({}),
+  getSelfAccountInfoAsync: async () => ({
+    wxid: 'fixture_account',
+    nickname: '示例昵称',
+    accountRoot: state.accountRoot
+  })
 }))
 vi.mock('../../src/main/services/image-key-config-service', () => ({
   ImageKeyConfigService: class {
@@ -52,16 +63,41 @@ vi.mock('../../src/main/image-decrypt-service', () => ({
     findImageFile(
       _md5: string,
       _datName: string,
-      options: { allowThumbnail?: boolean; preferThumbnail?: boolean }
+      options: {
+        allowThumbnail?: boolean
+        preferThumbnail?: boolean
+        sessionId?: string
+        sessionMd5?: string
+        createTime?: number
+      }
     ): string {
       state.imageLookups.push(options)
       return 'fixture-original.dat'
+    }
+    async findImageFileAsync(
+      md5: string,
+      datName: string,
+      options: {
+        allowThumbnail?: boolean
+        preferThumbnail?: boolean
+        sessionId?: string
+        sessionMd5?: string
+        createTime?: number
+      }
+    ): Promise<string> {
+      return this.findImageFile(md5, datName, options)
     }
     decryptImageToBase64WithFallback(): { data: string; filePath: string } {
       return {
         data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=',
         filePath: 'fixture-original.dat'
       }
+    }
+    async decryptImageToBase64WithFallbackAsync(): Promise<{
+      data: string
+      filePath: string
+    }> {
+      return this.decryptImageToBase64WithFallback()
     }
     isThumbnailFile(): boolean {
       return false
@@ -200,7 +236,10 @@ describe('media export flow', () => {
     expect(missingVoice.exportMediaError).toBe('语音文件缺失：本地未找到语音数据')
     expect(state.imageLookups[0]).toMatchObject({
       allowThumbnail: false,
-      preferThumbnail: false
+      preferThumbnail: false,
+      sessionId: 'fixture-session',
+      sessionMd5: 'fixture-user',
+      createTime: 1_785_549_600
     })
     expect(progress.length).toBeGreaterThan(0)
   })
@@ -300,5 +339,92 @@ describe('media export flow', () => {
     const second = message({ id: '0.987654', content: '同一条无本地 ID 消息' })
 
     expect(exportMessageKey(first, 'fixture-user')).toBe(exportMessageKey(second, 'fixture-user'))
+  })
+
+  it('replaces a raw sender account with the hydrated self nickname', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    state.messages = [
+      message({
+        id: 'self-message',
+        isSender: true,
+        senderId: 'fixture_account',
+        name: 'fixture_account',
+        content: '本人消息'
+      })
+    ]
+
+    const result = await runExport(
+      {
+        jobId: 'self-name',
+        userMd5: 'fixture-user',
+        name: '本人昵称',
+        format: 'html',
+        outputName: 'self-name',
+        kinds: ['text'],
+        includeMedia: false,
+        nameMap: { fixture_account: 'fixture_account' }
+      },
+      win as never
+    )
+
+    expect(result.success).toBe(true)
+    expect(readArchive(result.outputPath!).messages[0]?.name).toBe('示例昵称')
+  })
+
+  it('migrates raw self names already stored in an incremental HTML archive', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    const request = {
+      userMd5: 'fixture-user',
+      name: '增量昵称',
+      format: 'html' as const,
+      outputName: 'incremental-self-name',
+      kinds: ['text'] as const,
+      includeMedia: false
+    }
+    state.messages = [
+      message({
+        id: 'old-self',
+        isSender: true,
+        senderId: 'fixture_account',
+        name: 'fixture_account',
+        content: '旧消息',
+        createTime: 1_785_549_600
+      })
+    ]
+    const first = await runExport(
+      { ...request, jobId: 'incremental-self-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success).toBe(true)
+
+    const firstData = readArchive(first.outputPath!)
+    firstData.messages[0].name = 'fixture_account'
+    writeFileSync(
+      join(dirname(first.outputPath!), 'data', 'messages.js'),
+      `window.__WECHAT_EXPORT__ = ${JSON.stringify(firstData)};\n`,
+      'utf8'
+    )
+    state.messages = [
+      message({
+        id: 'new-self',
+        isSender: true,
+        senderId: 'fixture_account',
+        name: '示例昵称',
+        content: '新消息',
+        createTime: 1_785_549_700
+      })
+    ]
+    const second = await runExport(
+      { ...request, jobId: 'incremental-self-second', kinds: [...request.kinds] },
+      win as never
+    )
+
+    expect(second.success).toBe(true)
+    expect(readArchive(second.outputPath!).messages.map((item) => item.name)).toEqual([
+      '示例昵称',
+      '示例昵称'
+    ])
   })
 })

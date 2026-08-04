@@ -610,9 +610,11 @@ function App(): React.ReactElement {
               setDbKeyStatus('已连接数据库')
               // The cached list paints first. Refresh lightweight session flags and
               // missing avatars after the database is connected.
-              void loadContacts({ waitForAvatars: false }).catch((error) => {
-                console.warn('[Startup] background contact refresh failed:', error)
-              })
+              void loadContacts({ waitForAvatars: false })
+                .then(() => refreshSelfInfo(3))
+                .catch((error) => {
+                  console.warn('[Startup] background contact refresh failed:', error)
+                })
             })
             .catch((error) => {
               console.warn('[Startup] background database init failed:', error)
@@ -638,7 +640,8 @@ function App(): React.ReactElement {
           if (hasBootstrap) {
             setIsAuthenticated(true)
           } else {
-            await Promise.all([loadContacts(), refreshSelfInfo(3)])
+            await loadContacts()
+            await refreshSelfInfo(3)
             setIsAuthenticated(true)
           }
         } else {
@@ -761,13 +764,14 @@ function App(): React.ReactElement {
         if (hasBootstrap) {
           // Cached contacts are sufficient for the first paint. Refresh native data in the background.
           setIsAuthenticated(true)
-          void Promise.all([loadContacts({ waitForAvatars: false }), refreshSelfInfo(3)]).catch(
-            (error) => {
+          void loadContacts({ waitForAvatars: false })
+            .then(() => refreshSelfInfo(3))
+            .catch((error) => {
               console.warn('[Startup] background refresh failed:', error)
-            }
-          )
+            })
         } else {
-          await Promise.all([loadContacts({ waitForAvatars: false }), refreshSelfInfo(3)])
+          await loadContacts({ waitForAvatars: false })
+          await refreshSelfInfo(3)
           setIsAuthenticated(true)
         }
         setStartupProgress({

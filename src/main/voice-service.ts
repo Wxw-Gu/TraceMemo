@@ -1,8 +1,51 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
+import { createRequire } from 'module'
 import { Wcdb4Client } from './wcdb4-client'
 import { isPackagedRuntime } from './runtime-mode'
+
+const nodeRequire = createRequire(import.meta.url)
+
+export type SilkWasmRuntimeLocation = {
+  packagePath: string
+  wasmPath: string
+  source: 'unpacked' | 'resources' | 'asar' | 'development'
+}
+
+export function getSilkWasmRuntimeLocations(options?: {
+  packaged?: boolean
+  resourcesPath?: string
+  appPath?: string
+}): SilkWasmRuntimeLocation[] {
+  const packaged = options?.packaged ?? isPackagedRuntime()
+  const resourcesPath = options?.resourcesPath ?? process.resourcesPath
+  const appPath = options?.appPath ?? app.getAppPath()
+  const location = (
+    packagePath: string,
+    source: SilkWasmRuntimeLocation['source']
+  ): SilkWasmRuntimeLocation => ({
+    packagePath,
+    wasmPath: join(packagePath, 'lib', 'silk.wasm'),
+    source
+  })
+
+  if (!packaged) {
+    return [location(join(appPath, 'node_modules', 'silk-wasm'), 'development')]
+  }
+
+  return [
+    location(join(resourcesPath, 'app.asar.unpacked', 'node_modules', 'silk-wasm'), 'unpacked'),
+    location(join(resourcesPath, 'node_modules', 'silk-wasm'), 'resources'),
+    location(join(appPath, 'node_modules', 'silk-wasm'), 'asar')
+  ]
+}
+
+export function findSilkWasmRuntimeLocation(
+  locations: SilkWasmRuntimeLocation[]
+): SilkWasmRuntimeLocation | null {
+  return locations.find((location) => existsSync(location.wasmPath)) || null
+}
 
 export class VoiceService {
   private wcdb4Client: Wcdb4Client
@@ -101,35 +144,23 @@ export class VoiceService {
 
   private async decodeSilkToPcm(silkData: Buffer, sampleRate: number): Promise<Buffer | null> {
     try {
-      let wasmPath: string
-      if (isPackagedRuntime()) {
-        wasmPath = join(
-          process.resourcesPath,
-          'app.asar.unpacked',
-          'node_modules',
-          'silk-wasm',
-          'lib',
-          'silk.wasm'
+      const locations = getSilkWasmRuntimeLocations()
+      const runtime = findSilkWasmRuntimeLocation(locations)
+      if (!runtime) {
+        console.error(
+          '[VoiceService] silk.wasm not found. checked:',
+          locations.map((location) => location.wasmPath)
         )
-        if (!existsSync(wasmPath)) {
-          wasmPath = join(process.resourcesPath, 'node_modules', 'silk-wasm', 'lib', 'silk.wasm')
-        }
-      } else {
-        wasmPath = join(app.getAppPath(), 'node_modules', 'silk-wasm', 'lib', 'silk.wasm')
-      }
-
-      if (!existsSync(wasmPath)) {
-        console.error('[VoiceService] silk.wasm not found at:', wasmPath)
         return null
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const silkWasm = require('silk-wasm')
+      const silkWasm = nodeRequire(runtime.packagePath)
       if (!silkWasm || !silkWasm.decode) {
-        console.error('[VoiceService] silk-wasm module invalid')
+        console.error('[VoiceService] silk-wasm module invalid:', runtime.packagePath)
         return null
       }
 
+      console.log('[VoiceService] using silk-wasm runtime:', runtime.source)
       const result = await silkWasm.decode(silkData, sampleRate)
       return Buffer.from(result.data)
     } catch (e) {

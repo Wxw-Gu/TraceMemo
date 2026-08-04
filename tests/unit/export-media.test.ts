@@ -31,13 +31,15 @@ describe('export media', () => {
     expect(html).toContain('placeholder="搜索发送者或消息内容…"')
     expect(html).toContain('filtered.slice(windowStart, windowEnd)')
     expect(html).toContain('windowStart = Math.max(0, windowEnd - PAGE_SIZE)')
+    expect(html).toContain('scheduleWindowSlide')
+    expect(html).toContain("list.addEventListener('wheel'")
     expect(html).toContain('date.getSeconds()')
     const inlineScript = inlineScriptOf(html)
     expect(inlineScript).toBeTruthy()
     expect(() => new Function(inlineScript)).not.toThrow()
   })
 
-  it('initially renders only one page and searches the full archive dataset', () => {
+  it('keeps a bounded DOM while loading older and newer messages in both directions', async () => {
     const html = renderExportPage('大量消息')
     const dom = new JSDOM(html, { runScripts: 'outside-only' })
     const messages = Array.from(
@@ -69,12 +71,21 @@ describe('export media', () => {
       '已显示 240 / 筛选 500 / 全部 500'
     )
     const list = dom.window.document.querySelector('#messages')!
-    for (let index = 0; index < 5; index += 1) {
-      list.dispatchEvent(new dom.window.Event('scroll'))
-      expect(dom.window.document.querySelectorAll('.message').length).toBeLessThanOrEqual(
-        EXPORT_PAGE_SIZE
-      )
-    }
+    expect(list.querySelector('.message')?.getAttribute('data-index')).toBe('260')
+
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 10))
+    list.dispatchEvent(new dom.window.WheelEvent('wheel', { deltaY: -100 }))
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 10))
+    expect(list.querySelector('.message')?.getAttribute('data-index')).toBe('140')
+    expect(dom.window.document.querySelectorAll('.message').length).toBe(EXPORT_PAGE_SIZE)
+
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 20))
+    Object.defineProperty(list, 'scrollTop', { configurable: true, writable: true, value: 1_000 })
+    list.dispatchEvent(new dom.window.Event('scroll'))
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 10))
+    expect(list.querySelector('.message')?.getAttribute('data-index')).toBe('260')
+    expect(dom.window.document.querySelectorAll('.message').length).toBe(EXPORT_PAGE_SIZE)
+
     const search = dom.window.document.querySelector('#query') as HTMLInputElement
     search.value = 'needle'
     search.dispatchEvent(new dom.window.Event('input'))
@@ -91,6 +102,8 @@ describe('export media', () => {
     expect(html).toContain('class="file-attachment" href="')
     expect(html).toContain('class="quote-reference"')
     expect(html).toContain('message.exportMediaError')
+    expect(html).toContain('.audio-wrap { width: 260px; max-width: 100%; min-width: 0; }')
+    expect(html).toContain('.audio { display: block; width: 100%; max-width: 100%; height: 38px; }')
     expect(html).not.toMatch(/(?:src|href)="[A-Za-z]:\\/)
   })
 
