@@ -34,6 +34,24 @@ export interface GroupMemberInfo {
   m_nsHeadImgUrl: string
 }
 
+function mergeExportMessages(messages: WechatMessage[]): WechatMessage[] {
+  const merged = new Map<string, WechatMessage>()
+  for (const message of messages) {
+    const serverId = String(message.serverId || '')
+    const recovered = Boolean(message.raw?.['_wxe_recovered'] || message['_wxe_recovered'])
+    const identity =
+      serverId && serverId !== '0'
+        ? `server:${serverId}`
+        : `local:${message.mesLocalID}:${message.msgCreateTime}`
+    merged.set(recovered ? `recovered:${identity}` : identity, message)
+  }
+  return Array.from(merged.values()).sort(
+    (left, right) =>
+      Number(left.msgCreateTime || 0) - Number(right.msgCreateTime || 0) ||
+      Number(left.mesLocalID || 0) - Number(right.mesLocalID || 0)
+  )
+}
+
 export class WechatDb {
   private wcdb4Client: Wcdb4Client
   private chatMd5ToUsername = new Map<string, string>()
@@ -170,8 +188,8 @@ export class WechatDb {
     const username = this.chatMd5ToUsername.get(userMd5)
     if (!username) return []
     return this.wcdb4Client.getMessages(username, startTime, endTime, options).map((message) => ({
-      ...message,
-      ...message.raw
+      ...message.raw,
+      ...message
     }))
   }
 
@@ -185,7 +203,34 @@ export class WechatDb {
     const username = this.chatMd5ToUsername.get(userMd5)
     if (!username) return []
     const messages = await this.wcdb4Client.getMessagesAsync(username, startTime, endTime, options)
-    return messages.map((message) => ({ ...message, ...message.raw }))
+    return messages.map((message) => ({ ...message.raw, ...message }))
+  }
+
+  public async getUserMessagesForExport(
+    userMd5: string,
+    startTime?: number,
+    endTime?: number
+  ): Promise<WechatMessage[]> {
+    this.ensureChatTableMapping()
+    const username = this.chatMd5ToUsername.get(userMd5)
+    if (!username) return []
+    if (startTime && endTime && startTime > endTime) return []
+
+    // A bounded native cursor can omit rows stored across a message shard boundary.
+    // Scan without bounds first, then apply the requested range in application code.
+    const rows = await this.wcdb4Client.getMessagesAsync(username)
+    const messages = rows
+      .map((message) => ({ ...message.raw, ...message }))
+      .filter((message) => {
+        const createTime = Number(message.msgCreateTime || 0)
+        if (startTime && createTime < startTime) return false
+        if (endTime && createTime > endTime) return false
+        return true
+      })
+    console.log(
+      `[WechatDb] export scan username=${username} raw=${rows.length} filtered=${messages.length} start=${startTime || 0} end=${endTime || 0}`
+    )
+    return mergeExportMessages(messages)
   }
 
   public searchAllMessages(keyword: string): string | null {

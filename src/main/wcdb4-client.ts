@@ -1286,11 +1286,13 @@ export class Wcdb4Client {
     const merged = new Map<string, Wcdb4Message>()
     for (const message of [...recovered, ...current]) {
       const recoveredRow = Boolean(message.raw?.['_wxe_recovered'])
-      const identity = message.mesLocalID
-        ? `local:${message.mesLocalID}`
-        : message.serverId
-          ? `server:${message.serverId}`
-          : `${message.msgCreateTime}:${message.msgContent}`
+      const serverId = String(message.serverId || '').trim()
+      const identity =
+        serverId && serverId !== '0'
+          ? `server:${serverId}`
+          : message.mesLocalID
+            ? `local:${message.mesLocalID}:${message.msgCreateTime || 0}`
+            : `${message.msgCreateTime}:${message.msgContent}`
       const key = recoveredRow ? `recovered:${identity}` : identity
       merged.set(key, message)
     }

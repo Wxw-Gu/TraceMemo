@@ -177,12 +177,81 @@ body {
   width: min(100%, 820px);
   margin: 0 auto 22px;
 }
+.locate-all {
+  position: relative;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 1px solid #b8d4c7;
+  border-radius: 50%;
+  padding: 0;
+  place-items: center;
+  background: #fff;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  box-shadow: 0 3px 10px #29483b1a;
+  transition: opacity .15s ease, background .15s ease;
+}
+.locate-icon { font-size: 16px; line-height: 1; }
+.locate-label {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  left: calc(100% + 7px);
+  border: 1px solid #b8d4c7;
+  border-radius: 7px;
+  padding: 5px 8px;
+  background: #fff;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-2px, -50%);
+  box-shadow: 0 3px 10px #29483b1a;
+  transition: opacity .15s ease, transform .15s ease;
+}
+.message.sent .locate-label { right: calc(100% + 7px); left: auto; transform: translate(2px, -50%); }
+.message:hover .locate-all, .locate-all:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.locate-all:hover, .locate-all:focus-visible { background: var(--accent-soft); outline: none; }
+.locate-all:hover .locate-label, .locate-all:focus-visible .locate-label {
+  opacity: 1;
+  transform: translate(0, -50%);
+}
+.message.located .bubble { animation: locate-message 1.5s ease-out; }
+@keyframes locate-message {
+  0%, 32% { outline: 3px solid #36a477; outline-offset: 3px; }
+  100% { outline: 3px solid transparent; outline-offset: 3px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .message.located .bubble { animation: none; outline: 3px solid #36a477; outline-offset: 3px; }
+}
 .message.sent { align-items: flex-end; }
 .message.system { align-items: center; }
-.message.system .row { justify-content: center; }
+.message.system .row {
+  position: relative;
+  width: fit-content;
+  max-width: 92%;
+  justify-content: center;
+}
+.message.system .locate-all {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 10px);
+  transform: translateY(-50%);
+}
 .message.system .avatar { display: none; }
 .message.system .bubble {
-  max-width: 92%;
+  max-width: 100%;
   padding: 5px 10px;
   border: 0;
   border-radius: 5px;
@@ -265,6 +334,95 @@ body {
 }
 .quote-reference strong { font-weight: 650; color: var(--text); }
 .quote-reference span { white-space: pre-wrap; }
+.structured-content {
+  display: grid;
+  gap: 7px;
+  width: min(420px, 100%);
+  min-width: min(240px, 100%);
+}
+.structured-kicker {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+.structured-title {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.structured-description {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.structured-footer {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}
+.structured-link { color: inherit; text-decoration: none; }
+.structured-link:hover .structured-title { color: var(--accent); }
+.location-content {
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 3px solid #3f8f76;
+}
+.location-content .structured-footer { justify-content: space-between; }
+.location-coordinates {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.location-action { color: var(--accent); font-weight: 650; }
+.mini-program-content { border-top: 3px solid #4d9d75; padding-top: 8px; }
+.mini-program-preview {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  border-radius: 8px;
+  object-fit: cover;
+  cursor: zoom-in;
+}
+.mini-program-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.forward-content details { margin-top: 2px; }
+.forward-content summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+.forward-list, .forward-list ol {
+  display: grid;
+  gap: 7px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+.forward-item { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.forward-item strong { color: var(--text); font-weight: 650; }
+.forward-item time { margin-left: 6px; font-size: 10px; }
+.forward-item span { display: block; white-space: pre-wrap; word-break: break-word; }
+.payment-content {
+  gap: 4px;
+  padding-left: 12px;
+  border-left: 4px solid #d15246;
+}
+.payment-content.transfer { border-left-color: var(--accent); }
+.payment-content .structured-title { font-size: 16px; }
 .media-image {
   display: block;
   max-width: 100%;
@@ -321,7 +479,15 @@ body {
   .archive-layout { grid-template-columns: 1fr; align-content: start; margin-top: 10px; }
   .archive-layout.single-conversation { grid-template-columns: 1fr; }
   .archive-navigation { align-self: start; gap: 8px; }
-  .timeline { align-self: start; display: flex; gap: 6px; overflow: auto; padding: 8px; }
+  .timeline {
+    align-self: stretch;
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    gap: 6px;
+    overflow: auto;
+    padding: 8px;
+  }
   .archive-heading { align-items: flex-start; }
   .conversation-filter { flex-basis: 100%; width: 100%; }
   .timeline-year {
@@ -394,6 +560,8 @@ const renderExportScript = (name: string): string => `
   let windowEnd = 0
   let scrollLoadPending = false
   let scrollLoadSuppressed = false
+  let activeMonthUpdatePending = false
+  const tabPositions = new Map()
   let lastScrollTop = 0
   let zoom = 1
 
@@ -409,6 +577,37 @@ const renderExportScript = (name: string): string => `
     /[&<>"']/g,
     (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character] || character
   )
+  const decodeEntities = (value) => {
+    const textarea = document.createElement('textarea')
+    textarea.innerHTML = String(value ?? '')
+    return textarea.value
+  }
+  const displayText = (value) => esc(decodeEntities(value))
+  const externalUrl = (value) => {
+    const decoded = decodeEntities(value).trim()
+    if (!decoded) return ''
+    try {
+      const parsed = new URL(decoded)
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? esc(decoded) : ''
+    } catch {
+      return ''
+    }
+  }
+  const imageUrl = (value) => {
+    const decoded = decodeEntities(value).trim()
+    if (decoded.toLowerCase().startsWith('data:image/')) return esc(decoded)
+    return ''
+  }
+  const urlHost = (value) => {
+    const decoded = decodeEntities(value).trim()
+    if (!decoded) return ''
+    try {
+      const parsed = new URL(decoded)
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.hostname : ''
+    } catch {
+      return ''
+    }
+  }
   const pad = (value) => String(value).padStart(2, '0')
   const fullTime = (message) => {
     const timestamp = Number(message.createTime || 0)
@@ -426,7 +625,11 @@ const renderExportScript = (name: string): string => `
   }
   const kindOf = (message) => {
     const data = message.contentData || {}
-    if (message.exportMediaType === 'file' || (data.type === 'share' && String(data.typeVal) === '6')) return 'file'
+    const shareType = String(data.typeVal || '')
+    if (
+      message.exportMediaType === 'file' ||
+      (data.type === 'share' && (shareType === '6' || shareType === '74'))
+    ) return 'file'
     if (
       message.exportMediaType === 'image' || message.exportMediaType === 'video' ||
       message.exportMediaType === 'sticker' || data.type === 'image' ||
@@ -434,12 +637,25 @@ const renderExportScript = (name: string): string => `
     ) return 'media'
     if (message.voiceDataUrl || data.type === 'voice' || message.type === '语音') return 'voice'
     if (
+      data.type === 'system' || data.type === 'unknown' || data.type === 'redPacket' ||
+      data.type === 'voip' || data.type === 'card' || message.from === 'system' ||
+      (data.type === 'share' && shareType === '2000') ||
+      message.type === '微信红包' || message.type === '转账'
+    ) return 'system'
+    if (
       data.type === 'share' || data.type === 'location' ||
       data.type === 'miniProgram' || data.type === 'forwardBundle'
     ) return 'share'
-    if (data.type === 'system' || data.type === 'unknown' || message.from === 'system') return 'system'
     return 'text'
   }
+  const forwardedSearchText = (items) => Array.isArray(items)
+    ? items.flatMap((item) => [
+        item.sender,
+        item.sentAt,
+        item.text,
+        forwardedSearchText(item.nested)
+      ]).flat().filter(Boolean)
+    : []
   const searchText = (message) => [
     message.exportConversationName,
     message.name,
@@ -447,10 +663,152 @@ const renderExportScript = (name: string): string => `
     message.content,
     message.type,
     message.contentData && message.contentData.title,
+    message.contentData && message.contentData.des,
+    message.contentData && message.contentData.description,
+    message.contentData && message.contentData.appname,
+    message.contentData && message.contentData.appName,
     message.contentData && message.contentData.quotedSender,
     message.contentData && message.contentData.quotedContent,
+    message.contentData && message.contentData.nickname,
+    message.contentData && message.contentData.username,
+    message.contentData && message.contentData.poiname,
+    message.contentData && message.contentData.label,
+    message.contentData && message.contentData.status,
+    message.contentData && forwardedSearchText(message.contentData.items),
     message.exportMediaName
   ].filter(Boolean).join(' ').toLowerCase()
+
+  const shareLabel = (typeVal) => {
+    if (String(typeVal) === '5') return '公众号链接'
+    if (String(typeVal) === '51') return '视频号'
+    return '分享'
+  }
+  const renderShareContent = (data) => {
+    const label = shareLabel(data.typeVal)
+    let title = decodeEntities(data.title || label)
+    let description = decodeEntities(data.des || '')
+    if (String(data.typeVal) === '51' && /当前微信版本不支持展示该内容/.test(title) && description) {
+      const lines = description.split(/\\n+/).map((line) => line.trim()).filter(Boolean)
+      title = lines.shift() || label
+      description = lines.join('\\n')
+    }
+    const href = externalUrl(data.url)
+    const host = urlHost(data.url)
+    const appName = displayText(data.appname || label)
+    const titleMarkup = '<div class="structured-title">' + esc(title) + '</div>'
+    return '<div class="structured-content share-content" data-rich-kind="share">' +
+      '<div class="structured-kicker">' + displayText(label) + '</div>' +
+      (href
+        ? '<a class="structured-link" href="' + href + '" target="_blank" rel="noreferrer noopener">' + titleMarkup + '</a>'
+        : titleMarkup) +
+      (description ? '<div class="structured-description">' + esc(description) + '</div>' : '') +
+      '<div class="structured-footer"><span>' + appName + '</span>' +
+      (host ? '<span>·</span><span>' + esc(host) + '</span>' : '') + '</div></div>'
+  }
+  const renderMiniProgramContent = (data) => {
+    const previewUrl = imageUrl(data.thumbDataUrl)
+    const iconUrl = imageUrl(data.iconUrl)
+    return '<div class="structured-content mini-program-content" data-rich-kind="miniProgram">' +
+      '<div class="structured-kicker">小程序</div>' +
+      '<div class="structured-title">' + displayText(data.title || '小程序') + '</div>' +
+      (data.description
+        ? '<div class="structured-description">' + displayText(data.description) + '</div>'
+        : '') +
+      (previewUrl
+        ? '<img class="mini-program-preview" data-preview src="' + previewUrl + '" alt="">'
+        : '') +
+      '<div class="structured-footer">' +
+      (iconUrl ? '<img class="mini-program-icon" src="' + iconUrl + '" alt="">' : '') +
+      '<span>' + displayText(data.appName || '小程序') + '</span></div></div>'
+  }
+  const renderForwardItems = (items, depth = 0) => {
+    if (!Array.isArray(items) || !items.length || depth > 4) return ''
+    return '<ol class="forward-list">' + items.map((item) =>
+      '<li class="forward-item">' +
+      (item.sender ? '<strong>' + displayText(item.sender) + '</strong>' : '') +
+      (item.sentAt ? '<time>' + displayText(item.sentAt) + '</time>' : '') +
+      '<span>' + displayText(item.text || '[消息]') + '</span>' +
+      renderForwardItems(item.nested, depth + 1) + '</li>'
+    ).join('') + '</ol>'
+  }
+  const renderForwardContent = (data) => {
+    const items = Array.isArray(data.items) ? data.items : []
+    return '<div class="structured-content forward-content" data-rich-kind="forwardBundle">' +
+      '<div class="structured-kicker">聊天记录</div>' +
+      '<div class="structured-title">' + displayText(data.title || '聊天记录') + '</div>' +
+      (!items.length && data.description
+        ? '<div class="structured-description">' + displayText(data.description) + '</div>'
+        : '') +
+      (items.length
+        ? '<details><summary>展开 ' + items.length + ' 条消息</summary>' + renderForwardItems(items) + '</details>'
+        : '') + '</div>'
+  }
+  const renderLocationContent = (data) => {
+    const latitude = Number(data.lat)
+    const longitude = Number(data.lng)
+    const hasCoordinates = Number.isFinite(latitude) && Number.isFinite(longitude) &&
+      (latitude !== 0 || longitude !== 0)
+    const title = data.poiname || data.label || '位置'
+    const address = data.label && data.label !== data.poiname ? data.label : ''
+    const coordinates = hasCoordinates
+      ? latitude.toFixed(6) + ', ' + longitude.toFixed(6)
+      : ''
+    const mapUrl = hasCoordinates
+      ? externalUrl('https://maps.apple.com/?q=' + encodeURIComponent(title) +
+          '&ll=' + latitude + ',' + longitude)
+      : ''
+    const card = '<div class="structured-content location-content" data-rich-kind="location">' +
+      '<div class="structured-kicker">位置</div>' +
+      '<div class="structured-title">' + displayText(title) + '</div>' +
+      (address ? '<div class="structured-description">' + displayText(address) + '</div>' : '') +
+      (coordinates
+        ? '<div class="structured-footer"><span class="location-coordinates">' +
+          esc(coordinates) + '</span><span class="location-action">在地图中打开</span></div>'
+        : '') + '</div>'
+    return mapUrl
+      ? '<a class="structured-link" href="' + mapUrl +
+        '" target="_blank" rel="noreferrer noopener">' + card + '</a>'
+      : card
+  }
+  const renderPaymentContent = (data, kind) => {
+    const isTransfer = kind === 'transfer'
+    return '<div class="structured-content payment-content ' + (isTransfer ? 'transfer' : 'red-packet') +
+      '" data-rich-kind="' + (isTransfer ? 'transfer' : 'redPacket') + '">' +
+      '<div class="structured-kicker">' + (isTransfer ? '微信转账' : '微信红包') + '</div>' +
+      '<div class="structured-title">' + displayText(data.title || (isTransfer ? '微信转账' : '微信红包')) + '</div>' +
+      '<div class="structured-description">' +
+      displayText(data.description || data.des || (isTransfer ? '转账消息' : '恭喜发财，大吉大利')) +
+      '</div></div>'
+  }
+  const renderVoipContent = (data) => {
+    const title = Number(data.roomType) === 1 ? '视频通话' : '语音通话'
+    const duration = Number(data.duration || 0)
+    const minutes = Math.floor(duration / 60)
+    const seconds = duration % 60
+    const durationText = duration
+      ? (minutes ? minutes + '分' : '') + seconds + '秒'
+      : ''
+    return '<div class="structured-content" data-rich-kind="voip">' +
+      '<div class="structured-kicker">通话</div>' +
+      '<div class="structured-title">' + title + '</div>' +
+      '<div class="structured-description">' +
+      displayText([data.status, durationText].filter(Boolean).join(' · ') || '通话消息') +
+      '</div></div>'
+  }
+  const renderStructuredContent = (data) => {
+    if (data.type === 'share') {
+      const typeVal = String(data.typeVal || '')
+      if (typeVal === '6' || typeVal === '74') return ''
+      if (typeVal === '2000') return renderPaymentContent(data, 'transfer')
+      return renderShareContent(data)
+    }
+    if (data.type === 'miniProgram') return renderMiniProgramContent(data)
+    if (data.type === 'forwardBundle') return renderForwardContent(data)
+    if (data.type === 'location') return renderLocationContent(data)
+    if (data.type === 'redPacket') return renderPaymentContent(data, 'redPacket')
+    if (data.type === 'voip') return renderVoipContent(data)
+    return ''
+  }
 
   const renderMessage = (message, archiveIndex) => {
     const data = message.contentData || {}
@@ -476,7 +834,8 @@ const renderExportScript = (name: string): string => `
     const quote = data.type === 'quote'
       ? '<div class="quote-reference"><strong>' + esc(data.quotedSender || '引用消息') + '</strong><span>' + esc(data.quotedContent || '[引用消息]') + '</span></div>'
       : ''
-    const isSystem = data.type === 'system' && data.pat
+    const structured = renderStructuredContent(data)
+    const isSystem = data.type === 'system'
     const sender = message.name || (message.isSender ? '我' : '联系人')
     const avatarFallback = esc(String(sender || '友').slice(0, 1))
     const avatar = message.exportShowAvatar === false
@@ -485,16 +844,22 @@ const renderExportScript = (name: string): string => `
           ? '<img src="' + esc(message.exportAvatarUrl) + '" alt="">'
           : avatarFallback) + '</div>'
     const text = message.content || (data.type === 'quote' ? data.title : '')
-    const content = esc(text || (!media && !audio && !quote ? '[' + (message.type || '消息') + ']' : ''))
+    const content = esc(text || (!media && !audio && !quote && !structured ? '[' + (message.type || '消息') + ']' : ''))
+    const contentMarkup = content ? '<div class="content">' + content + '</div>' : ''
     const source = conversations.length > 1 && activeConversation === 'all'
       ? '<span class="conversation-source">' + esc(message.exportConversationName || '聊天') + '</span>'
       : ''
+    const locateAction = activeKind === 'all'
+      ? ''
+      : '<button class="locate-all" type="button" data-locate-index="' + archiveIndex +
+        '" aria-label="定位到聊天位置"><span class="locate-icon" aria-hidden="true">⌖</span>' +
+        '<span class="locate-label" aria-hidden="true">定位到聊天位置</span></button>'
     return '<article class="message' + (message.isSender ? ' sent' : '') + (isSystem ? ' system' : '') +
       '" data-index="' + archiveIndex + '" data-month="' + esc(monthKey(message)) + '">' +
       '<div class="time">' + esc(fullTime(message)) + source + '</div><div class="row">' +
       (isSystem ? '' : avatar) + '<div class="bubble"><div class="sender">' +
-      (isSystem ? '' : esc(sender)) + '</div>' + media + audio + quote +
-      '<div class="content">' + content + '</div>' + mediaStatus + '</div></div></article>'
+      (isSystem ? '' : esc(sender)) + '</div>' + media + audio + quote + structured +
+      contentMarkup + mediaStatus + '</div>' + locateAction + '</div></article>'
   }
 
   const renderConversations = () => {
@@ -547,11 +912,48 @@ const renderExportScript = (name: string): string => `
     timeline.innerHTML = html || '<div class="timeline-empty">时间信息不可用</div>'
   }
 
+  const visibleMessages = () => {
+    const messages = Array.from(list.querySelectorAll('.message'))
+    const listBounds = list.getBoundingClientRect()
+    return messages.filter((message) => {
+      const bounds = message.getBoundingClientRect()
+      return bounds.bottom > listBounds.top && bounds.top < listBounds.bottom
+    })
+  }
   const updateActiveMonth = () => {
-    const first = list.querySelector('.message')
-    const key = first && first.dataset.month
+    const messages = Array.from(list.querySelectorAll('.message'))
+    const visible = visibleMessages()
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight <= 2
+    const activeMessage = atBottom
+      ? visible[visible.length - 1] || messages[messages.length - 1]
+      : visible[0] || messages[0]
+    const key = activeMessage && activeMessage.dataset.month
+    let activeButton
     timeline.querySelectorAll('.timeline-month').forEach((button) => {
-      button.classList.toggle('active', button.dataset.month === key)
+      const active = button.dataset.month === key
+      button.classList.toggle('active', active)
+      if (active) activeButton = button
+    })
+    if (!activeButton) return
+    const timelineBounds = timeline.getBoundingClientRect()
+    const buttonBounds = activeButton.getBoundingClientRect()
+    if (buttonBounds.top < timelineBounds.top) {
+      timeline.scrollTop -= timelineBounds.top - buttonBounds.top
+    } else if (buttonBounds.bottom > timelineBounds.bottom) {
+      timeline.scrollTop += buttonBounds.bottom - timelineBounds.bottom
+    }
+    if (buttonBounds.left < timelineBounds.left) {
+      timeline.scrollLeft -= timelineBounds.left - buttonBounds.left
+    } else if (buttonBounds.right > timelineBounds.right) {
+      timeline.scrollLeft += buttonBounds.right - timelineBounds.right
+    }
+  }
+  const scheduleActiveMonthUpdate = () => {
+    if (activeMonthUpdatePending) return
+    activeMonthUpdatePending = true
+    nextFrame(() => {
+      updateActiveMonth()
+      activeMonthUpdatePending = false
     })
   }
   const updateCount = () => {
@@ -568,11 +970,18 @@ const renderExportScript = (name: string): string => `
     list.style.scrollBehavior = 'auto'
     list.scrollTop = value
     lastScrollTop = list.scrollTop
+    updateActiveMonth()
     nextFrame(() => {
       list.style.scrollBehavior = previousBehavior
       lastScrollTop = list.scrollTop
+      updateActiveMonth()
       scrollLoadSuppressed = false
     })
+  }
+  const scrollTopForTarget = (target, offset) => {
+    const targetBounds = target.getBoundingClientRect()
+    const listBounds = list.getBoundingClientRect()
+    return list.scrollTop + targetBounds.top - listBounds.top - offset
   }
   const renderWindow = (anchorIndex, anchorOffset) => {
     const visible = filtered.slice(windowStart, windowEnd)
@@ -583,7 +992,7 @@ const renderExportScript = (name: string): string => `
       : '<div class="empty">没有符合条件的消息<br><small>可以更换筛选条件或关键词</small></div>'
     if (Number.isInteger(anchorIndex)) {
       const anchor = list.querySelector('.message[data-index="' + anchorIndex + '"]')
-      if (anchor) setScrollTop(anchor.offsetTop - anchorOffset)
+      if (anchor) setScrollTop(scrollTopForTarget(anchor, anchorOffset))
     }
     updateCount()
     updateActiveMonth()
@@ -598,15 +1007,81 @@ const renderExportScript = (name: string): string => `
     renderWindow()
     setScrollTop(preferLatest ? list.scrollHeight : 0)
   }
-  const applyFilters = () => {
+  const tabPositionKey = () => [
+    activeConversation,
+    activeKind,
+    query.value.trim().toLowerCase()
+  ].join('\u0000')
+  const rememberTabPosition = () => {
+    const anchor = visibleMessages()[0]
+    const index = anchor ? Number(anchor.dataset.index) : -1
+    const message = Number.isInteger(index) ? filtered[index] : undefined
+    if (!anchor || !message) return
+    tabPositions.set(tabPositionKey(), {
+      message,
+      offset: anchor.getBoundingClientRect().top - list.getBoundingClientRect().top
+    })
+  }
+  const restoreTabPosition = () => {
+    const position = tabPositions.get(tabPositionKey())
+    if (!position) return false
+    const index = filtered.indexOf(position.message)
+    if (index < 0) {
+      tabPositions.delete(tabPositionKey())
+      return false
+    }
+    windowStart = Math.max(0, index - Math.floor(PAGE_SIZE / 2))
+    windowEnd = Math.min(filtered.length, windowStart + PAGE_SIZE)
+    windowStart = Math.max(0, windowEnd - PAGE_SIZE)
+    renderWindow()
+    const target = list.querySelector('.message[data-index="' + index + '"]')
+    if (!target) return false
+    setScrollTop(Math.max(0, scrollTopForTarget(target, position.offset)))
+    return true
+  }
+  const matchingMessages = () => {
     const term = query.value.trim().toLowerCase()
-    filtered = allMessages.filter((message) =>
+    return allMessages.filter((message) =>
       (activeConversation === 'all' || message.exportConversationId === activeConversation) &&
       (activeKind === 'all' || kindOf(message) === activeKind) &&
       (!term || searchText(message).includes(term))
     )
+  }
+  const applyFilters = (restorePosition = false) => {
+    filtered = matchingMessages()
     renderTimeline()
-    resetWindow(true)
+    if (!restorePosition || !restoreTabPosition()) resetWindow(true)
+  }
+  const setActiveKind = (kind) => {
+    activeKind = kind
+    filters.querySelectorAll('[data-kind]').forEach((item) => {
+      item.classList.toggle('active', item.dataset.kind === kind)
+    })
+  }
+  const locateInAll = (sourceIndex) => {
+    const targetMessage = filtered[sourceIndex]
+    if (!targetMessage) return
+    rememberTabPosition()
+    setActiveKind('all')
+    filtered = matchingMessages()
+    renderTimeline()
+    const targetIndex = filtered.indexOf(targetMessage)
+    if (targetIndex < 0) {
+      resetWindow(true)
+      return
+    }
+    windowStart = Math.max(0, targetIndex - Math.floor(PAGE_SIZE / 2))
+    windowEnd = Math.min(filtered.length, windowStart + PAGE_SIZE)
+    windowStart = Math.max(0, windowEnd - PAGE_SIZE)
+    renderWindow()
+    const target = list.querySelector('.message[data-index="' + targetIndex + '"]')
+    if (!target) return
+    setScrollTop(Math.max(
+      0,
+      scrollTopForTarget(target, Math.max(24, (list.clientHeight - target.offsetHeight) / 2))
+    ))
+    target.classList.add('located')
+    window.setTimeout(() => target.classList.remove('located'), 1600)
   }
   const jumpToMonth = (key) => {
     const index = filtered.findIndex((message) => monthKey(message) === key)
@@ -616,7 +1091,7 @@ const renderExportScript = (name: string): string => `
     windowStart = Math.max(0, windowEnd - PAGE_SIZE)
     renderWindow()
     const target = list.querySelector('.message[data-index="' + index + '"]')
-    setScrollTop(target ? Math.max(0, target.offsetTop - 24) : 0)
+    setScrollTop(target ? Math.max(0, scrollTopForTarget(target, 24)) : 0)
     timeline.querySelectorAll('.timeline-month').forEach((button) => {
       button.classList.toggle('active', button.dataset.month === key)
     })
@@ -626,7 +1101,9 @@ const renderExportScript = (name: string): string => `
     const anchor =
       direction < 0 ? renderedMessages[0] : renderedMessages[renderedMessages.length - 1]
     const anchorIndex = anchor ? Number(anchor.dataset.index) : undefined
-    const anchorOffset = anchor ? anchor.offsetTop - list.scrollTop : 0
+    const anchorOffset = anchor
+      ? anchor.getBoundingClientRect().top - list.getBoundingClientRect().top
+      : 0
     if (direction < 0) {
       windowStart = Math.max(0, windowStart - WINDOW_STEP)
       windowEnd = Math.min(filtered.length, windowStart + PAGE_SIZE)
@@ -653,6 +1130,7 @@ const renderExportScript = (name: string): string => `
     const nearTop = currentTop < 180
     const nearBottom = list.scrollHeight - currentTop - list.clientHeight < 240
     lastScrollTop = currentTop
+    scheduleActiveMonthUpdate()
     if (scrollLoadSuppressed) return
     if (movingUp && nearTop) scheduleWindowSlide(-1)
     else if (!movingUp && nearBottom) scheduleWindowSlide(1)
@@ -662,17 +1140,18 @@ const renderExportScript = (name: string): string => `
       scheduleWindowSlide(-1)
     }
   }, { passive: true })
-  query.addEventListener('input', applyFilters)
+  query.addEventListener('input', () => applyFilters())
   filters.addEventListener('click', (event) => {
     const button = event.target.closest('[data-kind]')
     if (!button) return
-    activeKind = button.dataset.kind
-    filters.querySelectorAll('[data-kind]').forEach((item) => item.classList.toggle('active', item === button))
-    applyFilters()
+    rememberTabPosition()
+    setActiveKind(button.dataset.kind)
+    applyFilters(true)
   })
   conversationSelect.addEventListener('change', () => {
+    rememberTabPosition()
     activeConversation = conversationSelect.value
-    applyFilters()
+    applyFilters(true)
   })
   timeline.addEventListener('click', (event) => {
     const button = event.target.closest('[data-month]')
@@ -686,6 +1165,11 @@ const renderExportScript = (name: string): string => `
     updateZoom()
   }
   list.addEventListener('click', (event) => {
+    const locateButton = event.target.closest('[data-locate-index]')
+    if (locateButton) {
+      locateInAll(Number(locateButton.dataset.locateIndex))
+      return
+    }
     const image = event.target.closest('img[data-preview]')
     if (!image) return
     preview.src = image.src

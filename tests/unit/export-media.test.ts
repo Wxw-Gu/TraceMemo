@@ -148,6 +148,97 @@ describe('export media', () => {
     dom.window.close()
   })
 
+  it('locates every filtered message kind in all messages, including outside the latest window', () => {
+    const html = renderExportPage('定位消息')
+    const dom = new JSDOM(html, { runScripts: 'outside-only' })
+    const categorized: Message[] = [
+      {
+        ...messageForArchive('target-text', 'fixture', '定位消息', '目标文字', 1),
+        type: '普通文本'
+      },
+      {
+        ...messageForArchive('target-media', 'fixture', '定位消息', '', 2),
+        type: '图片',
+        exportMediaType: 'image',
+        exportMediaUrl: 'media/target.jpg'
+      },
+      {
+        ...messageForArchive('target-voice', 'fixture', '定位消息', '', 3),
+        type: '语音',
+        voiceDataUrl: 'voices/target.wav'
+      },
+      {
+        ...messageForArchive('target-file', 'fixture', '定位消息', '', 4),
+        type: '文件',
+        exportMediaType: 'file',
+        exportMediaUrl: 'files/target.pdf'
+      },
+      {
+        ...messageForArchive('target-share', 'fixture', '定位消息', '', 5),
+        type: '分享',
+        contentData: { type: 'share', typeVal: '5', title: '目标分享' }
+      },
+      {
+        ...messageForArchive('target-system', 'fixture', '定位消息', '目标系统消息', 6),
+        from: 'system',
+        type: '系统消息',
+        contentData: { type: 'system', content: '目标系统消息' }
+      }
+    ]
+    const laterMessages = Array.from({ length: EXPORT_PAGE_SIZE }, (_, index) => ({
+      ...messageForArchive(
+        `later-${index}`,
+        'fixture',
+        '定位消息',
+        `稍后消息-${index}`,
+        100 + index
+      ),
+      type: '普通文本'
+    }))
+    Object.assign(dom.window, {
+      __WECHAT_EXPORT__: {
+        version: 1,
+        sourceId: 'fixture',
+        name: '定位消息',
+        messages: [...categorized, ...laterMessages]
+      }
+    })
+
+    dom.window.eval(inlineScriptOf(html))
+
+    expect(dom.window.document.querySelectorAll('.locate-all')).toHaveLength(0)
+    for (const kind of ['media', 'voice', 'file', 'share', 'system']) {
+      const filterButton = dom.window.document.querySelector(`[data-kind="${kind}"]`) as HTMLElement
+      filterButton.click()
+      const locateButton = dom.window.document.querySelector('.locate-all') as HTMLElement
+      expect(locateButton?.getAttribute('aria-label')).toBe('定位到聊天位置')
+      expect(locateButton?.querySelector('.locate-icon')?.textContent).toBe('⌖')
+      expect(locateButton?.querySelector('.locate-label')?.textContent).toBe('定位到聊天位置')
+      locateButton.click()
+      expect(
+        dom.window.document.querySelector('[data-kind="all"]')?.classList.contains('active')
+      ).toBe(true)
+      expect(
+        dom.window.document.querySelector('.message.located')?.getAttribute('data-index')
+      ).toBe(String(categorized.findIndex((message) => kindOfFixture(message) === kind)))
+    }
+
+    const textFilter = dom.window.document.querySelector('[data-kind="text"]') as HTMLElement
+    textFilter.click()
+    const search = dom.window.document.querySelector('#query') as HTMLInputElement
+    search.value = '目标文字'
+    search.dispatchEvent(new dom.window.Event('input'))
+    ;(dom.window.document.querySelector('.locate-all') as HTMLElement).click()
+    expect(
+      dom.window.document.querySelector('[data-kind="all"]')?.classList.contains('active')
+    ).toBe(true)
+    expect(dom.window.document.querySelector('.message.located')?.getAttribute('data-index')).toBe(
+      '0'
+    )
+    expect(dom.window.document.querySelector('.message.located')?.textContent).toContain('目标文字')
+    dom.window.close()
+  })
+
   it('keeps relative media, file download, quote, and missing-media renderers', () => {
     const html = renderExportPage('媒体档案')
 
@@ -189,4 +280,13 @@ function messageForArchive(
     exportConversationId: conversationId,
     exportConversationName: conversationName
   }
+}
+
+function kindOfFixture(message: Message): string {
+  if (message.exportMediaType === 'image') return 'media'
+  if (message.voiceDataUrl) return 'voice'
+  if (message.exportMediaType === 'file') return 'file'
+  if (message.contentData?.type === 'share') return 'share'
+  if (message.contentData?.type === 'system') return 'system'
+  return 'text'
 }

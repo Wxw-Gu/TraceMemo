@@ -168,3 +168,360 @@ test('EXPORT-ARCHIVE-02 legacy single-chat archive keeps its original layout', a
     rmSync(outputDir, { recursive: true, force: true })
   }
 })
+
+test('EXPORT-ARCHIVE-04 timeline follows the latest visible month after changing tabs', async ({
+  page
+}) => {
+  const outputDir = mkdtempSync(join(tmpdir(), 'wxe-timeline-sync-e2e-'))
+  try {
+    const dataPath = join(outputDir, 'data', 'messages.js')
+    mkdirSync(dirname(dataPath), { recursive: true })
+    writeFileSync(join(outputDir, 'index.html'), renderExportPage('时间轴同步档案'), 'utf8')
+    const oldVoiceMessages = Array.from({ length: 240 }, (_, index) => ({
+      ...archiveMessage(
+        `old-voice-${index}`,
+        'timeline',
+        '时间轴同步档案',
+        `旧语音-${index}`,
+        Date.UTC(2006 + Math.floor(index / 12), index % 12, 1) / 1000
+      ),
+      type: '语音'
+    }))
+    writeFileSync(
+      dataPath,
+      `window.__WECHAT_EXPORT__ = ${JSON.stringify({
+        version: 1,
+        sourceId: 'timeline',
+        name: '时间轴同步档案',
+        exportedAt: '2026-08-04T00:00:00.000Z',
+        messages: [
+          ...oldVoiceMessages,
+          {
+            ...archiveMessage(
+              'latest-voice',
+              'timeline',
+              '时间轴同步档案',
+              '最新语音',
+              1_775_520_000
+            ),
+            type: '语音'
+          }
+        ]
+      })};\n`,
+      'utf8'
+    )
+
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto(pathToFileURL(join(outputDir, 'index.html')).href)
+    await page.getByRole('button', { name: '语音', exact: true }).click()
+
+    const messages = page.locator('#messages')
+    const activeMonth = page.locator('.timeline-month.active')
+    await expect(activeMonth).toHaveAttribute('data-month', '2026-04')
+    expect(
+      await messages.evaluate(
+        (element) => element.scrollHeight - element.scrollTop - element.clientHeight
+      )
+    ).toBeLessThanOrEqual(2)
+    const timelinePosition = await activeMonth.evaluate((element) => {
+      const button = element.getBoundingClientRect()
+      const timeline = element.parentElement!.getBoundingClientRect()
+      return {
+        buttonTop: button.top,
+        buttonBottom: button.bottom,
+        timelineTop: timeline.top,
+        timelineBottom: timeline.bottom
+      }
+    })
+    expect(timelinePosition.buttonTop).toBeGreaterThanOrEqual(timelinePosition.timelineTop)
+    expect(timelinePosition.buttonBottom).toBeLessThanOrEqual(timelinePosition.timelineBottom + 1)
+
+    await messages.evaluate((element) => {
+      element.scrollTop = 0
+    })
+    await expect(activeMonth).toHaveAttribute('data-month', '2006-01')
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true })
+  }
+})
+
+test('EXPORT-ARCHIVE-05 each message tab restores its previous scroll anchor', async ({ page }) => {
+  const outputDir = mkdtempSync(join(tmpdir(), 'wxe-tab-position-e2e-'))
+  try {
+    const dataPath = join(outputDir, 'data', 'messages.js')
+    mkdirSync(dirname(dataPath), { recursive: true })
+    writeFileSync(join(outputDir, 'index.html'), renderExportPage('Tab 位置档案'), 'utf8')
+    const messages = Array.from({ length: 600 }, (_, index) => ({
+      ...archiveMessage(
+        `message-${index}`,
+        'tab-position',
+        'Tab 位置档案',
+        `${index % 2 === 0 ? '文字' : '语音'}消息-${index}`,
+        1_735_689_600 + index * 86_400
+      ),
+      type: index % 2 === 0 ? '普通文本' : '语音'
+    }))
+    writeFileSync(
+      dataPath,
+      `window.__WECHAT_EXPORT__ = ${JSON.stringify({
+        version: 1,
+        sourceId: 'tab-position',
+        name: 'Tab 位置档案',
+        exportedAt: '2026-08-04T00:00:00.000Z',
+        messages
+      })};\n`,
+      'utf8'
+    )
+
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto(pathToFileURL(join(outputDir, 'index.html')).href)
+    await page.getByRole('button', { name: '文字', exact: true }).click()
+
+    const messageList = page.locator('#messages')
+    const target = page.locator('.message[data-index="100"]')
+    await target.evaluate((element) => {
+      const list = element.parentElement!
+      list.scrollTop += element.getBoundingClientRect().top - list.getBoundingClientRect().top - 37
+    })
+    await expect(target).toBeInViewport()
+    const before = await target.evaluate((element) => {
+      const message = element.getBoundingClientRect()
+      const list = element.parentElement!.getBoundingClientRect()
+      return message.top - list.top
+    })
+
+    await page.getByRole('button', { name: '语音', exact: true }).click()
+    await page.getByRole('button', { name: '文字', exact: true }).click()
+
+    await expect(target).toBeInViewport()
+    const after = await target.evaluate((element) => {
+      const message = element.getBoundingClientRect()
+      const list = element.parentElement!.getBoundingClientRect()
+      return message.top - list.top
+    })
+    expect(Math.abs(after - before)).toBeLessThanOrEqual(1)
+    expect(
+      await messageList.evaluate(
+        (element) => element.scrollHeight - element.scrollTop - element.clientHeight
+      )
+    ).toBeGreaterThan(100)
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true })
+  }
+})
+
+test('EXPORT-ARCHIVE-03 renders shares and locations, and groups payments under system', async ({
+  page
+}, testInfo) => {
+  const outputDir = mkdtempSync(join(tmpdir(), 'wxe-structured-archive-e2e-'))
+  try {
+    const dataPath = join(outputDir, 'data', 'messages.js')
+    mkdirSync(dirname(dataPath), { recursive: true })
+    writeFileSync(join(outputDir, 'index.html'), renderExportPage('结构化消息档案'), 'utf8')
+    const message = (
+      id: string,
+      type: string,
+      createTime: number,
+      contentData: Message['contentData']
+    ): Message => ({
+      ...archiveMessage(id, 'structured', '结构化消息档案', '', createTime),
+      type,
+      contentData
+    })
+    writeFileSync(
+      dataPath,
+      `window.__WECHAT_EXPORT__ = ${JSON.stringify({
+        version: 1,
+        sourceId: 'structured',
+        name: '结构化消息档案',
+        exportedAt: '2026-08-04T12:57:32.000Z',
+        messages: [
+          message('article', '公众号链接', 1_775_000_001, {
+            type: 'share',
+            typeVal: '5',
+            title: '真正的公众号标题',
+            des: '文章摘要与关键内容',
+            appname: '示例公众号',
+            url: 'https://example.com/article?a=1&amp;b=2'
+          }),
+          message('mini', '小程序', 1_775_000_002, {
+            type: 'miniProgram',
+            title: '小程序商品标题',
+            description: '商品的真实描述',
+            appName: '示例小程序'
+          }),
+          message('channel', '视频号', 1_775_000_003, {
+            type: 'share',
+            typeVal: '51',
+            title: '当前微信版本不支持展示该内容，请升级至最新版本。',
+            des: '视频号真实标题\n视频号正文内容',
+            url: 'https://example.com/channel'
+          }),
+          message('forward', '合并转发', 1_775_000_004, {
+            type: 'forwardBundle',
+            title: '项目群的聊天记录',
+            description: '项目成员: 项目结论',
+            items: [
+              {
+                messageType: 1,
+                sender: '项目成员',
+                sentAt: '2026-08-04 20:00',
+                text: '项目结论已经确认'
+              }
+            ]
+          }),
+          message('red-packet', '微信红包', 1_775_000_005, {
+            type: 'redPacket',
+            title: '微信红包',
+            description: '我给你发了一个红包'
+          }),
+          message('transfer', '转账', 1_775_000_006, {
+            type: 'share',
+            typeVal: '2000',
+            title: '微信转账',
+            des: '收到转账￥1000.00元',
+            url: ''
+          }),
+          message('voip', '通话', 1_775_000_007, {
+            type: 'voip',
+            status: '通话时长 2分15秒'
+          }),
+          message('location', '位置', 1_775_000_008, {
+            type: 'location',
+            poiname: '望和公园南园',
+            label: '北京市朝阳区望京街道北四环东路41号望和公园',
+            lat: 39.986984,
+            lng: 116.448578
+          }),
+          {
+            ...message('legacy-recall', '系统消息', 1_775_000_009, {
+              type: 'system',
+              content: '"联系人" 撤回了一条消息'
+            }),
+            from: 'system',
+            content: '"联系人" 撤回了一条消息',
+            name: ''
+          },
+          {
+            ...message('structured-recall', '系统消息', 1_775_000_010, {
+              type: 'system',
+              content: '你撤回了一条消息',
+              recall: {
+                targetId: 'fixture-target',
+                replacement: '你撤回了一条消息',
+                actor: '你'
+              }
+            }),
+            from: 'system',
+            content: '你撤回了一条消息',
+            name: ''
+          },
+          {
+            ...message('location-sharing-ended', '系统消息', 1_775_000_011, {
+              type: 'system',
+              content: '位置共享已经结束'
+            }),
+            from: 'system',
+            content: '位置共享已经结束',
+            name: ''
+          }
+        ]
+      })};\n`,
+      'utf8'
+    )
+
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto(pathToFileURL(join(outputDir, 'index.html')).href)
+    await expect(page.locator('[data-rich-kind="share"]')).toHaveCount(2)
+    await expect(page.getByText('真正的公众号标题')).toBeVisible()
+    await expect(page.getByText('文章摘要与关键内容')).toBeVisible()
+    await expect(page.getByText('小程序商品标题')).toBeVisible()
+    await expect(page.getByText('视频号真实标题')).toBeVisible()
+    await expect(page.getByText('当前微信版本不支持展示该内容，请升级至最新版本。')).toHaveCount(0)
+    await expect(page.getByText('项目群的聊天记录')).toBeVisible()
+    await page.getByText('展开 1 条消息').click()
+    await expect(page.getByText('项目结论已经确认')).toBeVisible()
+
+    await page.getByRole('button', { name: '分享', exact: true }).click()
+    await expect(page.locator('.message')).toHaveCount(5)
+    await expect(page.locator('[data-rich-kind="forwardBundle"]')).toHaveCount(1)
+    const locationCard = page.locator('[data-rich-kind="location"]')
+    await expect(locationCard).toHaveCount(1)
+    await expect(locationCard.getByText('望和公园南园')).toBeVisible()
+    await expect(locationCard.getByText('北京市朝阳区望京街道北四环东路41号望和公园')).toBeVisible()
+    await expect(locationCard.getByText('39.986984, 116.448578')).toBeVisible()
+    await expect(locationCard.getByText('在地图中打开')).toBeVisible()
+    await expect(locationCard.locator('xpath=ancestor::a')).toHaveAttribute(
+      'href',
+      /^https:\/\/maps\.apple\.com\/\?q=.*&ll=39\.986984,116\.448578$/
+    )
+    await expect(page.locator('.content', { hasText: '[位置]' })).toHaveCount(0)
+    await expect(page.locator('[data-rich-kind="transfer"]')).toHaveCount(0)
+    const locationMessage = locationCard.locator('xpath=ancestor::article')
+    const locateButton = locationMessage.getByRole('button', { name: '定位到聊天位置' })
+    const locateLabel = locateButton.locator('.locate-label')
+    await page.mouse.move(0, 0)
+    await expect(locateButton).toHaveCSS('opacity', '0')
+    await locationMessage.hover()
+    await expect(locateButton).toHaveCSS('opacity', '1')
+    await expect(locateLabel).toHaveCSS('opacity', '0')
+    await locateButton.hover()
+    await expect(locateLabel).toHaveCSS('opacity', '1')
+    await page.screenshot({ path: testInfo.outputPath('locate-hover-1440.png') })
+    await locateButton.click()
+    await expect(page.getByRole('button', { name: '全部', exact: true })).toHaveClass(/active/)
+    await expect(page.locator('.message.located')).toContainText('望和公园南园')
+    const locatedPosition = await page.locator('.message.located').evaluate((element) => {
+      const messageRect = element.getBoundingClientRect()
+      const listRect = element.parentElement!.getBoundingClientRect()
+      return {
+        messageTop: messageRect.top,
+        messageBottom: messageRect.bottom,
+        listTop: listRect.top,
+        listBottom: listRect.bottom
+      }
+    })
+    expect(locatedPosition.messageBottom).toBeGreaterThan(locatedPosition.listTop)
+    expect(locatedPosition.messageTop).toBeLessThan(locatedPosition.listBottom)
+    await page.locator('#messages').evaluate((element) => {
+      element.scrollTop = 0
+    })
+    await page.screenshot({
+      path: testInfo.outputPath('structured-archive-1440.png'),
+      fullPage: true
+    })
+
+    await page.getByRole('button', { name: '系统 / 其他', exact: true }).click()
+    await expect(page.locator('.message')).toHaveCount(6)
+    await expect(page.getByText('我给你发了一个红包')).toBeVisible()
+    await expect(page.getByText('收到转账￥1000.00元')).toBeVisible()
+    await expect(page.getByText('通话时长 2分15秒')).toBeVisible()
+    const systemNotices = page.locator('.message.system')
+    await expect(systemNotices).toHaveCount(3)
+    const recallNotices = systemNotices.filter({ hasText: '撤回了一条消息' })
+    await expect(recallNotices).toHaveCount(2)
+    await expect(recallNotices.locator('.avatar')).toHaveCount(0)
+    await expect(recallNotices.locator('.sender').first()).toBeHidden()
+    const locationNotice = systemNotices.filter({ hasText: '位置共享已经结束' })
+    await expect(locationNotice).toHaveCount(1)
+    await expect(locationNotice.locator('.avatar')).toHaveCount(0)
+    const recallAlignment = await recallNotices.first().evaluate((element) => {
+      const messageRect = element.getBoundingClientRect()
+      const bubbleRect = element.querySelector('.bubble')!.getBoundingClientRect()
+      return Math.abs(
+        messageRect.left + messageRect.width / 2 - (bubbleRect.left + bubbleRect.width / 2)
+      )
+    })
+    expect(recallAlignment).toBeLessThan(1)
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    await page.screenshot({
+      path: testInfo.outputPath('structured-archive-390.png'),
+      fullPage: true
+    })
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true })
+  }
+})

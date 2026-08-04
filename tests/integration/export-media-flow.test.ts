@@ -8,6 +8,8 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  unlinkSync,
+  utimesSync,
   writeFileSync
 } from 'fs'
 import { tmpdir } from 'os'
@@ -22,6 +24,8 @@ const state = vi.hoisted(() => ({
   videoPath: '',
   messages: [] as Message[],
   messagesByUser: {} as Record<string, Message[]>,
+  exportReads: [] as string[],
+  voiceLookups: [] as number[],
   videoLookups: [] as {
     createTime?: number
     duration?: number
@@ -46,8 +50,15 @@ vi.mock('../../src/main/services/chat-service', () => ({
   listMessages: () => structuredClone(state.messages),
   listMessagesAsync: async (userMd5: string) =>
     structuredClone(state.messagesByUser[userMd5] || state.messages),
+  listMessagesForExport: async (userMd5: string) => {
+    state.exportReads.push(userMd5)
+    return structuredClone(state.messagesByUser[userMd5] || state.messages)
+  },
   getChatDb: () => ({
-    getWcdb4Client: () => ({ getAccountRoot: () => state.accountRoot })
+    getWcdb4Client: () => ({
+      getAccountRoot: () => state.accountRoot,
+      getUsernameByMd5: (userMd5: string) => `wxid_${userMd5}`
+    })
   }),
   getContactAvatars: () => ({}),
   getSelfAccountInfoAsync: async () => ({
@@ -69,6 +80,7 @@ vi.mock('../../src/main/voice-service', () => ({
       _sessionId: string,
       localId: number
     ): Promise<{ success: boolean; data?: string; error?: string }> {
+      state.voiceLookups.push(localId)
       return localId === 1
         ? {
             success: true,
@@ -187,6 +199,8 @@ describe('media export flow', () => {
     state.imageLookups = []
     state.videoLookups = []
     state.messagesByUser = {}
+    state.exportReads = []
+    state.voiceLookups = []
     const fileMonth = join(state.accountRoot, 'msg', 'file', '2026-08')
     mkdirSync(fileMonth, { recursive: true })
     writeFileSync(join(fileMonth, '测试附件.txt'), '附件内容')
@@ -272,7 +286,7 @@ describe('media export flow', () => {
     expect(html).toContain('<script src="data/messages.js"></script>')
     expect(voice.voiceDataUrl).toMatch(/^voices\/voice_[0-9a-f]{16}\.wav$/)
     expect(video.exportMediaUrl).toMatch(/^media\/video_[0-9a-f]{16}\.mp4$/)
-    expect(file.exportMediaUrl).toMatch(/^media\/file_[0-9a-f]{16}_测试附件\.txt$/)
+    expect(file.exportMediaUrl).toMatch(/^files\/file_[0-9a-f]{16}_测试附件\.txt$/)
     expect(missingVoice.exportMediaError).toBe('语音文件缺失：本地未找到语音数据')
     expect(state.imageLookups[0]).toMatchObject({
       allowThumbnail: false,
@@ -288,6 +302,42 @@ describe('media export flow', () => {
       height: 630
     })
     expect(progress.length).toBeGreaterThan(0)
+    expect(state.exportReads).toEqual(['fixture-user'])
+  })
+
+  it('keeps one-to-one sender sides and fills both display names', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    state.messages = [
+      message({ id: 'peer-message', content: '对方消息', isSender: false, name: '', senderId: '' }),
+      message({ id: 'self-message', content: '我的消息', isSender: true, name: '', senderId: '' })
+    ]
+
+    const result = await runExport(
+      {
+        jobId: 'one-to-one-identity',
+        targets: [target('jamie', 'Jamie')],
+        format: 'html',
+        outputName: 'one-to-one-identity',
+        kinds: ['text'],
+        includeMedia: false
+      },
+      win as never
+    )
+
+    expect(result.success, result.error).toBe(true)
+    const archive = readArchive(result.outputPath!)
+    expect(
+      archive.messages.map(({ id, isSender, name, senderId }) => ({
+        id,
+        isSender,
+        name,
+        senderId
+      }))
+    ).toEqual([
+      { id: 'peer-message', isSender: false, name: 'Jamie', senderId: 'wxid_jamie' },
+      { id: 'self-message', isSender: true, name: '示例昵称', senderId: 'fixture_account' }
+    ])
   })
 
   it('incrementally merges the same HTML archive, deduplicates messages, and keeps old media', async () => {
@@ -316,6 +366,19 @@ describe('media export flow', () => {
     expect(first.success).toBe(true)
     const firstArchive = readArchive(first.outputPath!)
     const oldVoiceUrl = firstArchive.messages.find((item) => item.id === 'voice-old')!.voiceDataUrl
+    const outputDir = dirname(first.outputPath!)
+    firstArchive.messages.find((item) => item.id === 'voice-old')!.img =
+      'data:image/jpeg;base64,bGVnYWN5LWlubGluZS1hdmF0YXI='
+    writeFileSync(
+      join(outputDir, 'data', 'messages.js'),
+      `window.__WECHAT_EXPORT__ = ${JSON.stringify(firstArchive)};\n`,
+      'utf8'
+    )
+    writeFileSync(join(outputDir, 'voices', 'voice_orphan.wav'), 'orphan voice')
+    writeFileSync(join(outputDir, 'media', 'image_orphan.png'), 'orphan image')
+    writeFileSync(join(outputDir, 'media', 'file_orphan.txt'), 'legacy orphan file')
+    writeFileSync(join(outputDir, 'files', 'file_orphan.txt'), 'orphan file')
+    writeFileSync(join(outputDir, 'avatars', 'avatar_orphan.png'), 'orphan avatar')
 
     state.messages = [
       message({ id: 'text-old', content: '同一条消息已更新', createTime: 1_785_549_660 }),
@@ -344,7 +407,78 @@ describe('media export flow', () => {
     expect(secondArchive.messages.find((item) => item.id === 'voice-old')?.voiceDataUrl).toBe(
       oldVoiceUrl
     )
+    expect(secondArchive.messages.every((item) => item.img == null)).toBe(true)
+    expect(existsSync(join(outputDir, oldVoiceUrl!))).toBe(true)
+    expect(existsSync(join(outputDir, 'voices', 'voice_orphan.wav'))).toBe(false)
+    expect(existsSync(join(outputDir, 'media', 'image_orphan.png'))).toBe(false)
+    expect(existsSync(join(outputDir, 'media', 'file_orphan.txt'))).toBe(false)
+    expect(existsSync(join(outputDir, 'files', 'file_orphan.txt'))).toBe(false)
+    expect(existsSync(join(outputDir, 'avatars', 'avatar_orphan.png'))).toBe(false)
     expect(existsSync(join(dirname(second.outputPath!), 'data', 'messages.js.bak'))).toBe(true)
+  })
+
+  it('reuses unchanged resources and retries only missing or unresolved media', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    const request = {
+      targets: [target('fixture-user', '资源复用会话')],
+      format: 'html' as const,
+      outputName: 'resource-reuse-fixture',
+      kinds: ['voice', 'image', 'video', 'file'] as const,
+      includeMedia: true,
+      keepMissing: true
+    }
+
+    const first = await runExport(
+      { ...request, jobId: 'resource-reuse-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success, first.error).toBe(true)
+    const firstArchive = readArchive(first.outputPath!)
+    const outputDir = dirname(first.outputPath!)
+    const voicePath = join(
+      outputDir,
+      firstArchive.messages.find((item) => item.id === 'voice-ok')!.voiceDataUrl!
+    )
+    const imagePath = join(
+      outputDir,
+      firstArchive.messages.find((item) => item.id === 'image')!.exportMediaUrl!
+    )
+    const videoPath = join(
+      outputDir,
+      firstArchive.messages.find((item) => item.id === 'video')!.exportMediaUrl!
+    )
+    const filePath = join(
+      outputDir,
+      firstArchive.messages.find((item) => item.id === 'file')!.exportMediaUrl!
+    )
+    const oldTimestamp = new Date(1_000_000)
+    utimesSync(videoPath, oldTimestamp, oldTimestamp)
+    utimesSync(filePath, oldTimestamp, oldTimestamp)
+
+    const second = await runExport(
+      { ...request, jobId: 'resource-reuse-second', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(second.success, second.error).toBe(true)
+    expect(state.imageLookups).toHaveLength(1)
+    expect(state.videoLookups).toHaveLength(1)
+    expect(state.voiceLookups).toEqual([1, 2, 2])
+    expect(statSync(videoPath).mtimeMs).toBe(oldTimestamp.getTime())
+    expect(statSync(filePath).mtimeMs).toBe(oldTimestamp.getTime())
+
+    unlinkSync(voicePath)
+    unlinkSync(imagePath)
+    const third = await runExport(
+      { ...request, jobId: 'resource-reuse-third', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(third.success, third.error).toBe(true)
+    expect(state.imageLookups).toHaveLength(2)
+    expect(state.videoLookups).toHaveLength(1)
+    expect(state.voiceLookups).toEqual([1, 2, 2, 1, 2])
+    expect(existsSync(voicePath)).toBe(true)
+    expect(existsSync(imagePath)).toBe(true)
   })
 
   it('keeps copied videos writable and can replace a legacy read-only video incrementally', async () => {
@@ -440,10 +574,11 @@ describe('media export flow', () => {
       ['beta', 'beta-later', 150],
       ['alpha', 'alpha-later', 200]
     ])
+    expect(state.exportReads).toEqual(['alpha', 'beta'])
     const imagePaths = archive.messages
       .filter((item) => item.id === 'same-id')
       .map((item) => item.exportMediaUrl)
-    expect(new Set(imagePaths).size).toBe(2)
+    expect(new Set(imagePaths).size).toBe(1)
     for (const imagePath of imagePaths) {
       expect(existsSync(join(dirname(result.outputPath!), imagePath!))).toBe(true)
     }
@@ -495,9 +630,15 @@ describe('media export flow', () => {
     expect(firstSize).toBeGreaterThan(0)
     expect(readFileSync(second.outputPath!).subarray(0, 2).toString()).toBe('PK')
     const entries = execFileSync('unzip', ['-Z1', second.outputPath!], { encoding: 'utf8' })
+    const htmlPath = join(state.documents, 'WechatExplorer', '导出', 'zip-fixture', 'index.html')
+    const archive = readArchive(htmlPath)
     expect(entries).toContain('zip-fixture/index.html')
     expect(entries).toContain('zip-fixture/data/messages.js')
-    expect(entries).toMatch(/zip-fixture\/avatars\/conversation_[0-9a-f]{16}\.png/)
+    const avatarEntries = entries
+      .split('\n')
+      .filter((entry) => /zip-fixture\/avatars\/avatar_[0-9a-f]{16}\.png$/.test(entry))
+    expect(avatarEntries).toHaveLength(1)
+    expect(archive.conversations[0].avatarUrl).toBe(archive.messages[0].exportAvatarUrl)
     expect(entries).toMatch(/zip-fixture\/media\/image_[0-9a-f]{16}\.png/)
     expect(progress.some((args) => (args[1] as { phase?: string })?.phase === 'compressing')).toBe(
       true
