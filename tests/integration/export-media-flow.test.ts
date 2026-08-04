@@ -1,5 +1,5 @@
 import { dirname, join } from 'path'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '../../src/shared/types'
@@ -19,6 +19,7 @@ vi.mock('electron', () => ({
 }))
 vi.mock('../../src/main/services/chat-service', () => ({
   listMessages: () => structuredClone(state.messages),
+  listMessagesAsync: async () => structuredClone(state.messages),
   getChatDb: () => ({
     getWcdb4Client: () => ({ getAccountRoot: () => state.accountRoot })
   }),
@@ -91,6 +92,19 @@ const message = (overrides: Partial<Message>): Message => ({
   createTime: 1_785_549_600,
   ...overrides
 })
+
+const readArchive = (outputPath: string): { sourceId: string; messages: Message[] } => {
+  const source = readFileSync(join(dirname(outputPath), 'data', 'messages.js'), 'utf8')
+  return JSON.parse(
+    source
+      .slice(source.indexOf('=') + 1)
+      .trim()
+      .replace(/;\s*$/, '')
+  ) as {
+    sourceId: string
+    messages: Message[]
+  }
+}
 
 describe('media export flow', () => {
   beforeEach(() => {
@@ -167,21 +181,124 @@ describe('media export flow', () => {
     expect(result.success).toBe(true)
     const html = readFileSync(result.outputPath!, 'utf8')
     const outputDir = dirname(result.outputPath!)
-    expect(readFileSync(join(outputDir, 'voices/voice_1_1.wav')).subarray(0, 4).toString()).toBe(
+    const archive = readArchive(result.outputPath!)
+    const voice = archive.messages.find((item) => item.id === 'voice-ok')!
+    const video = archive.messages.find((item) => item.id === 'video')!
+    const file = archive.messages.find((item) => item.id === 'file')!
+    const missingVoice = archive.messages.find((item) => item.id === 'voice-missing')!
+    expect(readFileSync(join(outputDir, voice.voiceDataUrl!)).subarray(0, 4).toString()).toBe(
       'RIFF'
     )
-    expect(readFileSync(join(outputDir, 'media/video_4.mp4')).subarray(4, 8).toString()).toBe(
+    expect(readFileSync(join(outputDir, video.exportMediaUrl!)).subarray(4, 8).toString()).toBe(
       'ftyp'
     )
-    expect(readFileSync(join(outputDir, 'media/file_5_测试附件.txt'), 'utf8')).toBe('附件内容')
-    expect(html).toContain('src="voices/voice_1_1.wav"')
-    expect(html).toContain('src="media/video_4.mp4"')
-    expect(html).toContain('href="media/file_5_测试附件.txt" download')
-    expect(html).toContain('语音文件缺失：本地未找到语音数据')
+    expect(readFileSync(join(outputDir, file.exportMediaUrl!), 'utf8')).toBe('附件内容')
+    expect(html).toContain('<script src="data/messages.js"></script>')
+    expect(voice.voiceDataUrl).toMatch(/^voices\/voice_[0-9a-f]{16}\.wav$/)
+    expect(video.exportMediaUrl).toMatch(/^media\/video_[0-9a-f]{16}\.mp4$/)
+    expect(file.exportMediaUrl).toMatch(/^media\/file_[0-9a-f]{16}_测试附件\.txt$/)
+    expect(missingVoice.exportMediaError).toBe('语音文件缺失：本地未找到语音数据')
     expect(state.imageLookups[0]).toMatchObject({
       allowThumbnail: false,
       preferThumbnail: false
     })
     expect(progress.length).toBeGreaterThan(0)
+  })
+
+  it('incrementally merges the same HTML archive, deduplicates messages, and keeps old media', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    const request = {
+      jobId: 'incremental-first',
+      userMd5: 'fixture-user',
+      name: '增量会话',
+      format: 'html' as const,
+      outputName: 'incremental-fixture',
+      kinds: ['voice', 'text'] as const,
+      includeMedia: true,
+      keepMissing: true
+    }
+    state.messages = [
+      message({
+        id: 'voice-old',
+        type: '语音',
+        sessionId: 'fixture-session',
+        localId: 1,
+        contentData: { type: 'voice', duration: 1 }
+      }),
+      message({ id: 'text-old', content: '第一次导出', createTime: 1_785_549_660 })
+    ]
+    const first = await runExport({ ...request, kinds: [...request.kinds] }, win as never)
+    expect(first.success).toBe(true)
+    const firstArchive = readArchive(first.outputPath!)
+    const oldVoiceUrl = firstArchive.messages.find((item) => item.id === 'voice-old')!.voiceDataUrl
+
+    state.messages = [
+      message({ id: 'text-old', content: '同一条消息已更新', createTime: 1_785_549_660 }),
+      message({ id: 'text-new', content: '第二次新增', createTime: 1_785_549_720 })
+    ]
+    const second = await runExport(
+      {
+        ...request,
+        jobId: 'incremental-second',
+        kinds: [...request.kinds],
+        includeMedia: false
+      },
+      win as never
+    )
+    expect(second.success).toBe(true)
+    expect(second.outputPath).toBe(first.outputPath)
+    const secondArchive = readArchive(second.outputPath!)
+    expect(secondArchive.messages.map((item) => item.id)).toEqual([
+      'voice-old',
+      'text-old',
+      'text-new'
+    ])
+    expect(secondArchive.messages.find((item) => item.id === 'text-old')?.content).toBe(
+      '同一条消息已更新'
+    )
+    expect(secondArchive.messages.find((item) => item.id === 'voice-old')?.voiceDataUrl).toBe(
+      oldVoiceUrl
+    )
+    expect(existsSync(join(dirname(second.outputPath!), 'data', 'messages.js.bak'))).toBe(true)
+  })
+
+  it('refuses to merge a different conversation into an existing named archive', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    state.messages = [message({ id: 'text', content: 'fixture' })]
+    const baseRequest = {
+      jobId: 'source-first',
+      userMd5: 'first-user',
+      name: '第一个会话',
+      format: 'html' as const,
+      outputName: 'same-name',
+      kinds: ['text'] as const,
+      includeMedia: false
+    }
+    const first = await runExport({ ...baseRequest, kinds: [...baseRequest.kinds] }, win as never)
+    const second = await runExport(
+      {
+        ...baseRequest,
+        jobId: 'source-second',
+        userMd5: 'second-user',
+        name: '第二个会话',
+        kinds: [...baseRequest.kinds]
+      },
+      win as never
+    )
+
+    expect(first.success).toBe(true)
+    expect(second.success).toBe(false)
+    expect(second.error).toContain('另一个会话')
+    expect(readArchive(first.outputPath!).sourceId).toBe('first-user')
+  })
+
+  it('uses message content as the stable fallback when the database supplies a random id', async () => {
+    const { exportMessageKey } = await import('../../src/main/export-service')
+    const first = message({ id: '0.123456', content: '同一条无本地 ID 消息' })
+    const second = message({ id: '0.987654', content: '同一条无本地 ID 消息' })
+
+    expect(exportMessageKey(first, 'fixture-user')).toBe(exportMessageKey(second, 'fixture-user'))
   })
 })

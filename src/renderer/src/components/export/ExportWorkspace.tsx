@@ -325,26 +325,31 @@ export function ExportWorkspace({
               CSV 默认最快；HTML 会包含图片、引用和其他媒体，导出时间可能较长。
             </p>
             {format === 'html' && (
-              <div className="export-html-options">
-                <label>
-                  <input
-                    type="radio"
-                    name="html-package-top"
-                    checked={!zip}
-                    onChange={() => setZip(false)}
-                  />{' '}
-                  HTML 资源包
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="html-package-top"
-                    checked={zip}
-                    onChange={() => setZip(true)}
-                  />{' '}
-                  HTML 资源包并压缩为 ZIP
-                </label>
-              </div>
+              <>
+                <div className="export-html-options">
+                  <label>
+                    <input
+                      type="radio"
+                      name="html-package-top"
+                      checked={!zip}
+                      onChange={() => setZip(false)}
+                    />{' '}
+                    HTML 资源包
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="html-package-top"
+                      checked={zip}
+                      onChange={() => setZip(true)}
+                    />{' '}
+                    HTML 资源包并压缩为 ZIP
+                  </label>
+                </div>
+                <p className="export-helper-text">
+                  使用相同名称再次导出时，会把新消息合并进已有档案，不会删除之前导出的消息。
+                </p>
+              </>
             )}
           </section>
 
@@ -555,6 +560,11 @@ export function ExportWorkspace({
               <strong>{targetPath}</strong>
               <button type="button">选择位置</button>
             </div>
+            {format === 'html' && (
+              <p className="export-helper-text">
+                可以分多次选择不同时间范围，逐步补齐同一个聊天档案。
+              </p>
+            )}
           </section>
         </div>
         <footer className="export-action-bar">

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, shell } from 'electron'
+import { createHash } from 'crypto'
 import { promises as fs } from 'fs'
 import { extname, join } from 'path'
 import { fileURLToPath } from 'url'
@@ -28,6 +29,146 @@ const exportStamp = (): string => {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
 }
 const imageKeys = new ImageKeyConfigService()
+
+export interface HtmlExportArchive {
+  version: 1
+  sourceId: string
+  name: string
+  exportedAt: string
+  messages: Message[]
+}
+
+const archiveDataPrefix = 'window.__WECHAT_EXPORT__ = '
+const hashPart = (value: string, length = 16): string =>
+  createHash('sha1').update(value).digest('hex').slice(0, length)
+
+export const exportMessageKey = (message: Message, sourceId = ''): string => {
+  const sessionId = message.sessionId || sourceId
+  if (message.localId && message.createTime) {
+    return `${sessionId}:local:${message.localId}:${message.createTime}`
+  }
+  if (message.serverId) return `${sessionId}:server:${message.serverId}`
+  if (message.id && message.createTime && !/^0\.\d+$/.test(message.id)) {
+    return `${sessionId}:id:${message.id}:${message.createTime}`
+  }
+  return `${sessionId}:fallback:${hashPart(
+    JSON.stringify([
+      message.createTime || 0,
+      message.senderId || '',
+      message.isSender,
+      message.type,
+      message.content,
+      message.contentData || null
+    ]),
+    24
+  )}`
+}
+
+const mergeArchiveMessage = (previous: Message, current: Message): Message => {
+  const merged = { ...previous, ...current }
+  const preserveWhenMissing: (keyof Message)[] = [
+    'voiceDataUrl',
+    'voiceDuration',
+    'exportMediaUrl',
+    'exportMediaType',
+    'exportMediaName',
+    'exportAvatarUrl'
+  ]
+  for (const key of preserveWhenMissing) {
+    if (current[key] == null && previous[key] != null) {
+      Object.assign(merged, { [key]: previous[key] })
+    }
+  }
+  if (!current.exportMediaUrl && !current.voiceDataUrl && previous.exportMediaError) {
+    merged.exportMediaError = previous.exportMediaError
+  }
+  return merged
+}
+
+export function mergeHtmlArchiveMessages(
+  previous: Message[],
+  current: Message[],
+  sourceId = ''
+): Message[] {
+  const merged = new Map<string, Message>()
+  for (const message of previous) merged.set(exportMessageKey(message, sourceId), message)
+  for (const message of current) {
+    const key = exportMessageKey(message, sourceId)
+    const existing = merged.get(key)
+    merged.set(key, existing ? mergeArchiveMessage(existing, message) : message)
+  }
+  return Array.from(merged.values()).sort((left, right) => {
+    const byTime = Number(left.createTime || 0) - Number(right.createTime || 0)
+    if (byTime !== 0) return byTime
+    return Number(left.localId || 0) - Number(right.localId || 0)
+  })
+}
+
+export async function readHtmlArchive(
+  outputDir: string,
+  sourceId: string,
+  name: string
+): Promise<HtmlExportArchive> {
+  const dataPath = join(outputDir, 'data', 'messages.js')
+  let source = ''
+  try {
+    source = await fs.readFile(dataPath, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { version: 1, sourceId, name, exportedAt: new Date(0).toISOString(), messages: [] }
+    }
+    throw error
+  }
+  const assignment = source.indexOf('=')
+  if (assignment < 0) throw new Error('现有 HTML 档案数据格式无法识别，请更换导出名称')
+  const json = source
+    .slice(assignment + 1)
+    .trim()
+    .replace(/;\s*$/, '')
+  let archive: HtmlExportArchive
+  try {
+    archive = JSON.parse(json) as HtmlExportArchive
+  } catch {
+    throw new Error('现有 HTML 档案数据已损坏，请从 messages.js.bak 恢复或更换导出名称')
+  }
+  if (archive.sourceId && archive.sourceId !== sourceId) {
+    throw new Error('同名导出目录已属于另一个会话，请修改文件名称后重试')
+  }
+  return {
+    version: 1,
+    sourceId,
+    name: archive.name || name,
+    exportedAt: archive.exportedAt || new Date(0).toISOString(),
+    messages: Array.isArray(archive.messages) ? archive.messages : []
+  }
+}
+
+export async function writeHtmlArchive(
+  outputDir: string,
+  archive: HtmlExportArchive
+): Promise<void> {
+  const dataDir = join(outputDir, 'data')
+  const dataPath = join(dataDir, 'messages.js')
+  const backupPath = `${dataPath}.bak`
+  const temporaryPath = `${dataPath}.tmp-${process.pid}-${Date.now()}`
+  await fs.mkdir(dataDir, { recursive: true })
+  try {
+    await fs.copyFile(dataPath, backupPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  const source = `${archiveDataPrefix}${JSON.stringify(archive)};\n`
+  await fs.writeFile(temporaryPath, source, 'utf8')
+  try {
+    await fs.rename(temporaryPath, dataPath)
+  } catch (error) {
+    if (!['EEXIST', 'EPERM'].includes((error as NodeJS.ErrnoException).code || '')) throw error
+    await fs.rm(dataPath, { force: true })
+    await fs.rename(temporaryPath, dataPath)
+  } finally {
+    await fs.rm(temporaryPath, { force: true })
+  }
+}
 
 const keepMediaError = (request: ExportRequest, message: Message, error: string): void => {
   if (request.keepMissing !== false) message.exportMediaError = error
@@ -108,7 +249,7 @@ const kindOf = (message: Message): ExportMessageKind => {
 const csv = (value: unknown): string => `"${String(value ?? '').replace(/"/g, '""')}"`
 
 function render(format: ExportRequest['format'], messages: Message[], name: string): string {
-  if (format === 'html') return renderExportPage(name, messages)
+  if (format === 'html') return renderExportPage(name)
   if (format === 'json')
     return JSON.stringify({ name, exportedAt: new Date().toISOString(), messages }, null, 2)
   if (format === 'markdown')
@@ -138,9 +279,9 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
   try {
     send({ jobId: request.jobId, phase: 'reading', processed: 0, total: 100, percent: 0 })
     await new Promise<void>((resolve) => setImmediate(resolve))
-    const messages = chat
-      .listMessages(request.userMd5, request.startTime, request.endTime)
-      .filter((m) => request.kinds.includes(kindOf(m)))
+    const messages = (
+      await chat.listMessagesAsync(request.userMd5, request.startTime, request.endTime)
+    ).filter((message) => request.kinds.includes(kindOf(message)))
     for (const message of messages) {
       message.exportMediaUrl = undefined
       message.exportMediaType = undefined
@@ -172,13 +313,17 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
     const root = join(app.getPath('documents'), 'WechatExplorer', '导出')
     await fs.mkdir(root, { recursive: true })
     const ext = request.format === 'markdown' ? 'md' : request.format
-    const outputFolder = `${safeFilePart(request.outputName)}_${exportStamp()}`
+    const outputFolder =
+      request.format === 'html'
+        ? safeFilePart(request.outputName)
+        : `${safeFilePart(request.outputName)}_${exportStamp()}`
     const outputDir = join(root, outputFolder)
     const outputPath =
       request.format === 'html'
         ? join(outputDir, 'index.html')
         : join(root, `${outputFolder}.${ext}`)
     if (request.format === 'html') {
+      const previousArchive = await readHtmlArchive(outputDir, request.userMd5, request.name)
       await fs.mkdir(join(outputDir, 'voices'), { recursive: true })
       await fs.mkdir(join(outputDir, 'media'), { recursive: true })
       await fs.mkdir(join(outputDir, 'avatars'), { recursive: true })
@@ -208,7 +353,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
           ? new VoiceService(chat.getChatDb()!.getWcdb4Client())
           : null
       if (voiceService) {
-        for (const [index, message] of messages.entries()) {
+        for (const message of messages) {
           if (kindOf(message) !== 'voice') continue
           if (!message.sessionId || message.localId == null || !message.createTime) {
             keepMediaError(request, message, '语音标识不完整，无法定位本地语音')
@@ -231,7 +376,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
               keepMediaError(request, message, reason)
               continue
             }
-            const voiceName = `voice_${index + 1}_${message.localId}.wav`
+            const voiceName = `voice_${hashPart(exportMessageKey(message, request.userMd5))}.wav`
             const audioBuffer = Buffer.from(voice.data, 'base64')
             await fs.writeFile(join(outputDir, 'voices', voiceName), audioBuffer)
             message.voiceDataUrl = `voices/${voiceName}`
@@ -258,10 +403,11 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
         const avatarBuffer = resolvedAvatar?.buffer || null
         const avatarExtension = resolvedAvatar?.extension || 'jpg'
         if (avatarBuffer) {
-          const avatarKey = message.senderId || `message_${index + 1}`
+          const avatarKey =
+            message.senderId || avatar || `message_${exportMessageKey(message, request.userMd5)}`
           let avatarName = exportedAvatars.get(avatarKey)
           if (!avatarName) {
-            avatarName = `avatar_${exportedAvatars.size + 1}.${avatarExtension}`
+            avatarName = `avatar_${hashPart(avatarKey)}.${avatarExtension}`
             await fs.writeFile(join(outputDir, 'avatars', avatarName), avatarBuffer)
             exportedAvatars.set(avatarKey, avatarName)
           }
@@ -307,7 +453,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             }
             const decoded = decryptedImage ? decodeDataUrl(decryptedImage.data) : null
             if (decoded) {
-              const name = `image_${index + 1}.${decoded.extension}`
+              const name = `image_${hashPart(exportMessageKey(message, request.userMd5))}.${decoded.extension}`
               await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
               message.exportMediaUrl = `media/${name}`
               message.exportMediaType = 'image'
@@ -344,7 +490,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             } else if (extname(source).toLowerCase() !== '.mp4') {
               keepMediaError(request, message, '视频格式不支持，仅支持本地 MP4 文件')
             } else {
-              const name = `video_${index + 1}.mp4`
+              const name = `video_${hashPart(exportMessageKey(message, request.userMd5))}.mp4`
               await fs.copyFile(source, join(outputDir, 'media', name))
               message.exportMediaUrl = `media/${name}`
               message.exportMediaType = 'video'
@@ -359,7 +505,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
               ? await readAvatarAsset(stickerSource)
               : null
           if (decoded) {
-            const name = `sticker_${index + 1}.${decoded.extension}`
+            const name = `sticker_${hashPart(exportMessageKey(message, request.userMd5))}.${decoded.extension}`
             await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
             message.exportMediaUrl = `media/${name}`
             message.exportMediaType = 'sticker'
@@ -374,7 +520,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             if (!resolved.success || !resolved.filePath || !resolved.fileName) {
               keepMediaError(request, message, resolved.error || '本地文件附件缺失')
             } else {
-              const name = `file_${index + 1}_${safeFilePart(resolved.fileName)}`
+              const name = `file_${hashPart(exportMessageKey(message, request.userMd5))}_${safeFilePart(resolved.fileName)}`
               await fs.copyFile(resolved.filePath, join(outputDir, 'media', name))
               message.exportMediaUrl = `media/${name}`
               message.exportMediaType = 'file'
@@ -390,6 +536,24 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
           percent: 15 + Math.round(((index + 1) / Math.max(messages.length, 1)) * 75)
         })
       }
+      const archive: HtmlExportArchive = {
+        version: 1,
+        sourceId: request.userMd5,
+        name: request.name,
+        exportedAt: new Date().toISOString(),
+        messages: mergeHtmlArchiveMessages(previousArchive.messages, messages, request.userMd5)
+      }
+      await fs.writeFile(outputPath, renderExportPage(request.name), 'utf8')
+      await writeHtmlArchive(outputDir, archive)
+      send({
+        jobId: request.jobId,
+        phase: 'completed',
+        processed: archive.messages.length,
+        total: archive.messages.length,
+        percent: 100,
+        outputPath
+      })
+      return { success: true, outputPath, messageCount: archive.messages.length }
     } else {
       send({
         jobId: request.jobId,
