@@ -48,6 +48,23 @@ describe('preload IPC contract', () => {
       'fixture-session',
       { force: true, priority: 0 }
     )
+
+    const voiceReference = {
+      sessionId: 'filehelper',
+      localId: 11,
+      createTime: 1785553200,
+      svrId: 'server-11'
+    }
+    await api.recognizeVoice(voiceReference)
+    expect(invoke).toHaveBeenLastCalledWith('voice:recognize', voiceReference)
+    await api.cancelVoiceRecognition(voiceReference)
+    expect(invoke).toHaveBeenLastCalledWith('voice:cancelRecognition', voiceReference)
+    await api.downloadVoiceModel()
+    expect(invoke).toHaveBeenLastCalledWith('voice:downloadModel')
+    await api.removeVoiceModel()
+    expect(invoke).toHaveBeenLastCalledWith('voice:removeModel')
+    await api.openVoiceModelDirectory()
+    expect(invoke).toHaveBeenLastCalledWith('voice:openModelDirectory')
   })
 
   it('preserves key API return values without exposing ipcRenderer', async () => {

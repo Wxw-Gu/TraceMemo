@@ -120,8 +120,10 @@ body {
 .message.system { align-items: center; }
 .message.system .row { justify-content: center; }
 .message.system .avatar { display: none; }
-.message.system .bubble {
+.message.system .message-stack {
   max-width: 92%;
+}
+.message.system .bubble {
   padding: 5px 10px;
   border: 0;
   border-radius: 5px;
@@ -146,9 +148,15 @@ body {
   place-items: center;
 }
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
-.bubble {
+.message-stack {
   min-width: 0;
   max-width: min(78%, 760px);
+  display: grid;
+  gap: 6px;
+}
+.bubble {
+  min-width: 0;
+  max-width: 100%;
   padding: 13px 15px;
   border: 1px solid var(--border);
   border-radius: 10px 18px 18px 18px;
@@ -158,8 +166,21 @@ body {
 .sent .bubble { background: var(--mine); border-color: #c7e6d4; border-radius: 18px 10px 18px 18px; }
 .sender { color: var(--muted); font-size: 12px; margin-bottom: 5px; }
 .content { line-height: 1.7; word-break: break-word; white-space: pre-wrap; }
-.audio-wrap { width: 260px; max-width: 100%; min-width: 0; }
+.audio-wrap { width: 380px; max-width: 100%; min-width: 0; }
 .audio { display: block; width: 100%; max-width: 100%; height: 38px; }
+.voice-transcript {
+  width: 100%;
+  max-width: 100%;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #cad8d1;
+  color: #3c4742;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.voice-transcript.error { color: #8a5a16; border-top-color: #e4c88f; }
 .media-status {
   margin-top: 8px;
   padding: 6px 8px;
@@ -352,6 +373,7 @@ const renderExportScript = (name: string): string => `
     message.contentData && message.contentData.title,
     message.contentData && message.contentData.quotedSender,
     message.contentData && message.contentData.quotedContent,
+    message.voiceTranscript,
     message.exportMediaName
   ].filter(Boolean).join(' ').toLowerCase()
 
@@ -373,6 +395,11 @@ const renderExportScript = (name: string): string => `
     const audio = message.voiceDataUrl
       ? '<div class="audio-wrap"><audio class="audio" controls preload="metadata" src="' + esc(message.voiceDataUrl) + '"></audio></div>'
       : ''
+    const voiceTranscript = message.voiceTranscript
+      ? '<div class="voice-transcript">' + esc(message.voiceTranscript) + '</div>'
+      : message.voiceTranscriptError
+        ? '<div class="voice-transcript error">' + esc(message.voiceTranscriptError) + '</div>'
+        : ''
     const mediaStatus = message.exportMediaError
       ? '<div class="media-status">' + esc(message.exportMediaError) + '</div>'
       : ''
@@ -387,14 +414,18 @@ const renderExportScript = (name: string): string => `
       : '<div class="avatar">' + (message.exportAvatarUrl
           ? '<img src="' + esc(message.exportAvatarUrl) + '" alt="">'
           : avatarFallback) + '</div>'
-    const text = message.content || (data.type === 'quote' ? data.title : '')
+    const rawText = message.content || (data.type === 'quote' ? data.title : '')
+    const text = kindOf(message) === 'voice' && /^\\[语音(?:消息)?\\]$/.test(String(rawText).trim())
+      ? ''
+      : rawText
     const content = esc(text || (!media && !audio && !quote ? '[' + (message.type || '消息') + ']' : ''))
+    const contentBlock = content ? '<div class="content">' + content + '</div>' : ''
     return '<article class="message' + (message.isSender ? ' sent' : '') + (isSystem ? ' system' : '') +
       '" data-index="' + archiveIndex + '" data-month="' + esc(monthKey(message)) + '">' +
       '<div class="time">' + esc(fullTime(message)) + '</div><div class="row">' +
-      (isSystem ? '' : avatar) + '<div class="bubble"><div class="sender">' +
-      (isSystem ? '' : esc(sender)) + '</div>' + media + audio + quote +
-      '<div class="content">' + content + '</div>' + mediaStatus + '</div></div></article>'
+      (isSystem ? '' : avatar) + '<div class="message-stack"><div class="bubble"><div class="sender">' +
+      (isSystem ? '' : esc(sender)) + '</div>' + media + audio + voiceTranscript + quote +
+      contentBlock + mediaStatus + '</div></div></div></article>'
   }
 
   const renderTimeline = () => {

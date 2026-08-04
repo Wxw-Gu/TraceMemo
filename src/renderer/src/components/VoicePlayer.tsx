@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
-import type { JSX } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import type { JSX, MouseEvent as ReactMouseEvent } from 'react'
+import type { VoiceMessageReference, VoiceModelStatus } from '../../../shared/voice-recognition'
 
 interface VoicePlayerProps {
   sessionId: string
@@ -24,8 +25,16 @@ export function VoicePlayer({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [audioDuration, setAudioDuration] = useState<number | undefined>(duration)
+  const [modelStatus, setModelStatus] = useState<VoiceModelStatus | null>(null)
+  const [transcribing, setTranscribing] = useState(false)
+  const [transcript, setTranscript] = useState<string | null>(null)
+  const [transcriptError, setTranscriptError] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const objectUrlRef = useRef<string | null>(null)
+  const voiceReference = useMemo<VoiceMessageReference>(
+    () => ({ sessionId, localId, createTime, svrId }),
+    [createTime, localId, sessionId, svrId]
+  )
 
   const stopCurrentAndPlay = useCallback((audio: HTMLAudioElement) => {
     if (globalCurrentAudio && globalCurrentAudio !== audio) {
@@ -144,6 +153,46 @@ export function VoicePlayer({
     }
   }, [])
 
+  const handleTranscribe = useCallback(
+    async (event: ReactMouseEvent<HTMLButtonElement>) => {
+      event.stopPropagation()
+      setTranscriptError(null)
+      const status = await window.api.getVoiceModelStatus()
+      setModelStatus(status)
+      if (status.state !== 'ready') return
+
+      setTranscribing(true)
+      try {
+        const result = await window.api.recognizeVoice(voiceReference)
+        if (result.success) {
+          setTranscript(result.transcript?.trim() || '未识别出文字')
+          setModelStatus(null)
+        } else if (result.code !== 'CANCELLED') {
+          setTranscriptError(result.error || '语音识别失败')
+        }
+      } catch (recognitionError) {
+        console.warn('[VoicePlayer] recognition failed:', recognitionError)
+        setTranscriptError('语音识别失败，请重试')
+      } finally {
+        setTranscribing(false)
+      }
+    },
+    [voiceReference]
+  )
+
+  const handleCancelRecognition = useCallback(
+    async (event: ReactMouseEvent<HTMLButtonElement>) => {
+      event.stopPropagation()
+      await window.api.cancelVoiceRecognition(voiceReference)
+    },
+    [voiceReference]
+  )
+
+  const handleOpenVoiceSettings = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    window.dispatchEvent(new Event('wxe:open-voice-recognition-settings'))
+  }, [])
+
   const formatDuration = (seconds: number | undefined): string => {
     if (!seconds || !isFinite(seconds)) return '0:00'
     const mins = Math.floor(seconds / 60)
@@ -151,33 +200,54 @@ export function VoicePlayer({
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  if (loading) {
-    return (
-      <div className="voice-message voice-loading">
-        <span className="voice-icon">▶</span>
-        <span className="voice-loading-text">加载中...</span>
-      </div>
-    )
-  }
-
-  if (error && !audioUrl) {
-    return (
-      <div className="voice-message voice-error" onClick={handlePlayPause}>
-        <span className="voice-icon">▶</span>
-        <span className="voice-error-text">当前版本暂不支持播放</span>
-      </div>
-    )
-  }
-
   return (
-    <div className="voice-message" onClick={handlePlayPause}>
-      <span className={`voice-icon ${isPlaying ? 'playing' : ''}`}>{isPlaying ? '⏸' : '▶'}</span>
-      <div className="voice-bars" aria-hidden="true">
-        <i></i>
-        <i></i>
-        <i></i>
+    <div className="voice-player">
+      <div
+        className={`voice-message ${loading ? 'voice-loading' : ''} ${error && !audioUrl ? 'voice-error' : ''}`}
+        onClick={handlePlayPause}
+      >
+        <span className={`voice-icon ${isPlaying ? 'playing' : ''}`}>{isPlaying ? '⏸' : '▶'}</span>
+        {loading ? (
+          <span className="voice-loading-text">加载中...</span>
+        ) : error && !audioUrl ? (
+          <span className="voice-error-text">当前语音暂不支持播放</span>
+        ) : (
+          <>
+            <div className="voice-bars" aria-hidden="true">
+              <i></i>
+              <i></i>
+              <i></i>
+            </div>
+            <span className="voice-duration">{formatDuration(audioDuration)}</span>
+          </>
+        )}
+        {transcribing ? (
+          <button className="voice-text-action" type="button" onClick={handleCancelRecognition}>
+            取消识别
+          </button>
+        ) : (
+          <button className="voice-text-action" type="button" onClick={handleTranscribe}>
+            {transcript ? '重新识别' : '转文字'}
+          </button>
+        )}
       </div>
-      <span className="voice-duration">{formatDuration(audioDuration)}</span>
+      {modelStatus && modelStatus.state !== 'ready' && (
+        <div className="voice-model-panel" onClick={(event) => event.stopPropagation()}>
+          <span>
+            {modelStatus.state === 'downloading'
+              ? `离线模型正在下载 ${Math.round(modelStatus.progress * 100)}%`
+              : modelStatus.state === 'unsupported'
+                ? '当前系统暂不支持语音转文字'
+                : '请先在设置中准备离线语音模型'}
+          </span>
+          <button type="button" onClick={handleOpenVoiceSettings}>
+            前往设置
+          </button>
+        </div>
+      )}
+      {transcribing && <div className="voice-transcript-status">正在识别...</div>}
+      {transcript && <div className="voice-transcript">{transcript}</div>}
+      {transcriptError && <div className="voice-transcript-error">{transcriptError}</div>}
     </div>
   )
 }

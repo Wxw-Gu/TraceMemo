@@ -102,9 +102,53 @@ describe('export media', () => {
     expect(html).toContain('class="file-attachment" href="')
     expect(html).toContain('class="quote-reference"')
     expect(html).toContain('message.exportMediaError')
-    expect(html).toContain('.audio-wrap { width: 260px; max-width: 100%; min-width: 0; }')
+    expect(html).toContain('.audio-wrap { width: 380px; max-width: 100%; min-width: 0; }')
     expect(html).toContain('.audio { display: block; width: 100%; max-width: 100%; height: 38px; }')
+    expect(html).toContain('class="voice-transcript"')
+    expect(html).toContain('message.voiceTranscript')
+    expect(html).toContain('class="message-stack"')
     expect(html).not.toMatch(/(?:src|href)="[A-Za-z]:\\/)
+  })
+
+  it('renders a voice transcript below audio inside the same exported bubble', () => {
+    const html = renderExportPage('语音转写档案')
+    const dom = new JSDOM(html, { runScripts: 'outside-only' })
+    Object.assign(dom.window, {
+      __WECHAT_EXPORT__: {
+        version: 1,
+        sourceId: 'fixture',
+        name: '语音转写档案',
+        exportedAt: '2026-08-04T00:00:00.000Z',
+        messages: [
+          {
+            id: 'voice-transcript',
+            from: 'user',
+            type: '语音',
+            datetime: '2026-08-04 14:26',
+            content: '[语音消息]',
+            isSender: true,
+            voiceDataUrl: 'voices/fixture.wav',
+            voiceTranscript: '试一下',
+            createTime: 1_785_549_600
+          }
+        ]
+      }
+    })
+    dom.window.eval(inlineScriptOf(html))
+
+    const stack = dom.window.document.querySelector('.message-stack')!
+    const bubble = stack.querySelector('.bubble')!
+    const transcript = stack.querySelector('.voice-transcript')!
+    expect(bubble.querySelector('audio')?.getAttribute('src')).toBe('voices/fixture.wav')
+    expect(transcript.textContent).toBe('试一下')
+    expect(bubble.contains(transcript)).toBe(true)
+    expect(stack.children).toHaveLength(1)
+    expect(
+      bubble.querySelector('audio')!.compareDocumentPosition(transcript) &
+        dom.window.Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(bubble.textContent).not.toContain('[语音消息]')
+    dom.window.close()
   })
 
   it('renders explicit and keyboard-accessible lightbox closing controls', () => {

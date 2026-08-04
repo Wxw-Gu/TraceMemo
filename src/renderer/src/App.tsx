@@ -245,6 +245,18 @@ function App(): React.ReactElement {
     return () => window.clearTimeout(timer)
   }, [reportNotice])
   React.useEffect(() => {
+    const openVoiceRecognitionSettings = (): void => {
+      setSettingsCategory('voice-recognition')
+      setActivePage('settings')
+    }
+    window.addEventListener('wxe:open-voice-recognition-settings', openVoiceRecognitionSettings)
+    return () =>
+      window.removeEventListener(
+        'wxe:open-voice-recognition-settings',
+        openVoiceRecognitionSettings
+      )
+  }, [])
+  React.useEffect(() => {
     void window.api.getSettings().then((result) => {
       setAppearanceSettings({
         theme: result.settings.appearanceTheme,

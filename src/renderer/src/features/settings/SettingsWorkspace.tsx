@@ -11,6 +11,7 @@ import { AdvancedPage } from './pages/AdvancedPage'
 import { CacheCleanupPage } from './pages/CacheCleanupPage'
 import { AppearancePage } from './pages/AppearancePage'
 import { AboutPage } from './pages/AboutPage'
+import { VoiceRecognitionPage } from './pages/VoiceRecognitionPage'
 import type { Contact } from '../../../../shared/types'
 import type { AIRuntimeModelConfig } from '../../../../shared/ai-provider'
 
@@ -88,6 +89,8 @@ export function SettingsWorkspace({
         return <ImageDecryptionPage selfInfo={selfInfo} onNotice={onNotice} />
       case 'ai-model':
         return <AIModelPage onRuntimeChange={onAIRuntimeChange} onNotice={onNotice} />
+      case 'voice-recognition':
+        return <VoiceRecognitionPage onNotice={onNotice} />
       case 'recall-protection':
         return <RecallProtectionPage onNotice={onNotice} />
       case 'advanced':

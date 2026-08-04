@@ -22,6 +22,13 @@ import type { CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress } from '../shared/export'
 import type { ImageDecoderSelectionResult, ImageDecoderStatus } from '../shared/image-decryption'
 import type { AccountDiscoveryResult } from '../shared/database-key'
+import type {
+  VoiceMessageReference,
+  VoiceModelDownloadResult,
+  VoiceModelProgressEvent,
+  VoiceModelStatus,
+  VoiceRecognitionResult
+} from '../shared/voice-recognition'
 
 // 渲染器的自定义 API
 const api = {
@@ -74,6 +81,24 @@ const api = {
   copyImage: (base64String) => ipcRenderer.invoke('copy-image', base64String),
   getVoiceData: (sessionId: string, localId: number, createTime: number, svrId?: string | number) =>
     ipcRenderer.invoke('db:getVoiceData', sessionId, localId, createTime, svrId),
+  getVoiceModelStatus: (): Promise<VoiceModelStatus> => ipcRenderer.invoke('voice:getModelStatus'),
+  downloadVoiceModel: (): Promise<VoiceModelDownloadResult> =>
+    ipcRenderer.invoke('voice:downloadModel'),
+  cancelVoiceModelDownload: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('voice:cancelModelDownload'),
+  removeVoiceModel: (): Promise<VoiceModelStatus> => ipcRenderer.invoke('voice:removeModel'),
+  openVoiceModelDirectory: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('voice:openModelDirectory'),
+  recognizeVoice: (reference: VoiceMessageReference): Promise<VoiceRecognitionResult> =>
+    ipcRenderer.invoke('voice:recognize', reference),
+  cancelVoiceRecognition: (reference: VoiceMessageReference): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('voice:cancelRecognition', reference),
+  onVoiceModelProgress: (callback: (status: VoiceModelProgressEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: VoiceModelProgressEvent): void =>
+      callback(status)
+    ipcRenderer.on('voice:modelProgress', listener)
+    return () => ipcRenderer.removeListener('voice:modelProgress', listener)
+  },
   parseMessage: (content: string, messageType: number) =>
     ipcRenderer.invoke('db:parseMessage', content, messageType),
   getImage: (

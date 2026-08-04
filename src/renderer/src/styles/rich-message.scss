@@ -1,7 +1,64 @@
 /* Voice Player */
+.voice-player {
+  display: grid;
+  min-width: 190px;
+  gap: 7px;
+}
+
 .voice-message {
   cursor: pointer;
   user-select: none;
+}
+
+.voice-text-action,
+.voice-model-panel button {
+  border: 0;
+  background: transparent;
+  color: var(--wxex-brand);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.voice-text-action {
+  margin-left: auto;
+  padding: 2px 0 2px 8px;
+}
+
+.voice-model-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 10px;
+  padding-top: 7px;
+  border-top: 1px solid var(--wxex-border);
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: normal;
+}
+
+.voice-model-panel progress {
+  width: 100%;
+  height: 5px;
+}
+
+.voice-transcript,
+.voice-transcript-status,
+.voice-transcript-error {
+  padding-top: 7px;
+  border-top: 1px solid var(--wxex-border);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.voice-transcript-status {
+  color: var(--wxex-text-muted);
+}
+
+.voice-transcript-error {
+  color: var(--wxex-danger, #c63c3c);
 }
 
 .voice-loading {

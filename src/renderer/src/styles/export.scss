@@ -764,6 +764,10 @@
     color: var(--wxex-text-primary);
   }
 
+  .export-task-error {
+    color: var(--wxex-danger, #b42318);
+  }
+
   button {
     border: 1px solid var(--wxex-border);
     border-radius: 5px;

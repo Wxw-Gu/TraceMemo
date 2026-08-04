@@ -118,6 +118,185 @@
   }
 }
 
+.voice-runtime-card dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px 32px;
+  margin: 0;
+
+  div {
+    min-width: 0;
+  }
+
+  dt {
+    color: var(--wxex-text-muted);
+    font-size: 11px;
+  }
+
+  dd {
+    margin: 5px 0 0;
+    color: var(--wxex-text-primary);
+    font-size: 13px;
+  }
+}
+
+.voice-header-status {
+  display: grid;
+  min-width: 132px;
+  justify-items: end;
+  gap: 7px;
+
+  progress {
+    width: 112px;
+    height: 6px;
+    accent-color: var(--wxex-brand);
+  }
+}
+
+.voice-status-success {
+  color: var(--wxex-success, #2e8b68) !important;
+}
+
+.voice-status-error,
+.voice-model-error {
+  color: var(--wxex-danger, #c85a5a) !important;
+}
+
+.voice-model-license {
+  margin: 9px 0 0;
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+  line-height: 17px;
+
+  a {
+    color: var(--wxex-brand);
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+}
+
+.voice-model-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px 28px;
+  align-items: center;
+}
+
+.voice-model-summary {
+  min-width: 0;
+
+  strong,
+  small {
+    display: block;
+  }
+
+  strong {
+    color: var(--wxex-text-primary);
+    font-size: 18px;
+  }
+
+  small {
+    margin-top: 5px;
+    color: var(--wxex-text-secondary);
+    font-size: 11px;
+  }
+}
+
+.voice-model-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.voice-model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+
+  > button {
+    min-height: 34px;
+    padding: 7px 12px;
+    border: 1px solid var(--wxex-border);
+    border-radius: var(--wxex-radius-sm);
+    background: var(--wxex-bg-elevated);
+    color: var(--wxex-text-primary);
+    cursor: pointer;
+    font: 12px/18px var(--wxex-font);
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+  }
+
+  > .settings-primary-button {
+    border-color: var(--wxex-brand);
+    background: var(--wxex-brand);
+    color: #fff;
+  }
+}
+
+.voice-model-progress {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+
+  > div {
+    display: flex;
+    justify-content: space-between;
+    color: var(--wxex-text-secondary);
+    font-size: 12px;
+  }
+
+  progress {
+    width: 100%;
+    height: 7px;
+    accent-color: var(--wxex-brand);
+  }
+}
+
+.voice-platform-list {
+  padding-top: 8px;
+  padding-bottom: 8px;
+
+  > div {
+    display: grid;
+    grid-template-columns: 120px minmax(0, 1fr);
+    gap: 16px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--wxex-border);
+
+    &:last-child {
+      border-bottom: 0;
+    }
+  }
+
+  strong {
+    color: var(--wxex-text-primary);
+    font-size: 13px;
+  }
+
+  span {
+    color: var(--wxex-text-secondary);
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 760px) {
+  .voice-runtime-card dl,
+  .voice-model-card {
+    grid-template-columns: 1fr;
+  }
+
+  .voice-model-actions {
+    justify-content: flex-start;
+  }
+}
+
 .settings-option-card {
   padding: 12px;
 }
@@ -308,7 +487,6 @@
     --wxex-nav-width: 68px;
     --wxex-shell-content-top: 8px;
   }
-
 }
 
 .boot-splash.is-quiet {

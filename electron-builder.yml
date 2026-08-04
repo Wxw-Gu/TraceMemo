@@ -17,6 +17,8 @@ asarUnpack:
   - resources/**
   - node_modules/ffmpeg-static/**
   - node_modules/silk-wasm/**
+  - node_modules/sherpa-onnx-node/**
+  - node_modules/sherpa-onnx-*/**
 extraResources:
   # Includes the optional WeChat connector binary for the target platform.
   - from: resources

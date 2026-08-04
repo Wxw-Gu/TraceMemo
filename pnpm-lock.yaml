@@ -45,6 +45,7 @@ specifiers:
   react: ^19.2.1
   react-dom: ^19.2.1
   sass: ^1.102.0
+  sherpa-onnx-node: 1.13.3
   silk-wasm: ^3.7.1
   typescript: ^5.9.3
   vite: ^7.2.6
@@ -64,6 +65,7 @@ dependencies:
   jsonrepair: 3.15.0
   koffi: 3.1.0
   openai: 6.10.0
+  sherpa-onnx-node: 1.13.3
   silk-wasm: 3.7.1
   wechat-emojis: 1.0.2
 
@@ -5176,6 +5178,59 @@ packages:
   /shebang-regex/3.0.0:
     resolution: {integrity: sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==}
     engines: {node: '>=8'}
+
+  /sherpa-onnx-darwin-arm64/1.13.4:
+    resolution: {integrity: sha512-QcYKzyrTzGSx6aKCD6hUODgRS1LetqfG57Z/+i5LCyfMlrgCvDc1lRcl9cdB+TozBsLha9QwLTlI0vmDcf5JKg==}
+    cpu: [arm64]
+    os: [darwin]
+    dev: false
+    optional: true
+
+  /sherpa-onnx-darwin-x64/1.13.3:
+    resolution: {integrity: sha512-TVQ35g7JIpDPB1lUDdcog+JtI0cI45ZzOnvHXm0DtWs/dgxnJXtWMY3uLRtBbLnysV9j5ljffwZ1IX9VDHsCzQ==}
+    cpu: [x64]
+    os: [darwin]
+    dev: false
+    optional: true
+
+  /sherpa-onnx-linux-arm64/1.13.4:
+    resolution: {integrity: sha512-RMjMRqT82BgTXypNNGmLe6ZFYhc3WEvnAGl3DdkK7qB/kuXwkL3iHhV31wAecbnWPsnEpUoD+8cFovWSBzsCuw==}
+    cpu: [arm64]
+    os: [linux]
+    dev: false
+    optional: true
+
+  /sherpa-onnx-linux-x64/1.13.4:
+    resolution: {integrity: sha512-WZh5NCkGPFHHpYSd78iN4OnmxQeSTGyt9uZskH+im/NFHQ7elQ7B0sLzCMeRpvJxiIKvd9C6WxIJ4hYaxClfsQ==}
+    cpu: [x64]
+    os: [linux]
+    dev: false
+    optional: true
+
+  /sherpa-onnx-node/1.13.3:
+    resolution: {integrity: sha512-3XEiRvfZ73QoKDZqweAkAOb+OA2LPMKcLcRY6zngjhwZ1ymV6xagdahepYzeDRIzVq0nRjhUe8IaRdlRMYoamw==}
+    optionalDependencies:
+      sherpa-onnx-darwin-arm64: 1.13.4
+      sherpa-onnx-darwin-x64: 1.13.3
+      sherpa-onnx-linux-arm64: 1.13.4
+      sherpa-onnx-linux-x64: 1.13.4
+      sherpa-onnx-win-ia32: 1.13.4
+      sherpa-onnx-win-x64: 1.13.4
+    dev: false
+
+  /sherpa-onnx-win-ia32/1.13.4:
+    resolution: {integrity: sha512-/JbPjldrfNv+t+uIS3MlkuhfIf5l3FHUGkRC2oRXgjRqOaVmEyP3vLlQ7dTa4J7raG5oB8c3GoPjuSWSqT9GOQ==}
+    cpu: [ia32]
+    os: [win32]
+    dev: false
+    optional: true
+
+  /sherpa-onnx-win-x64/1.13.4:
+    resolution: {integrity: sha512-R0PWby1VxC14TDZPq7GcfSyXSY6SAFO8Y4JwdCdqouFmeXkZ1L7Is9m98C9KxQ0dN7ZtDzhAmE/43FUs/elXRQ==}
+    cpu: [x64]
+    os: [win32]
+    dev: false
+    optional: true
 
   /side-channel-list/1.0.0:
     resolution: {integrity: sha512-FCLHtRD/gnpCiCHEiJLOwdmFP+wzCmDEkc9y7NsYxeF4u7Btsn1ZuwgwJGxImImHicJArLP4R0yX4c2KCrMrTA==}

@@ -223,6 +223,24 @@ handle('db:getImage', (md5, datName, sessionId, options) =>
       }
 )
 handle('db:getVoiceData', () => ({ success: true, data: voiceData }))
+const voiceModelStatus = (state = 'missing') => ({
+  modelId: 'sensevoice-small-int8',
+  version: '2024-07-17',
+  state,
+  downloadedBytes: state === 'ready' ? 239549735 : 0,
+  totalBytes: 239549735,
+  progress: state === 'ready' ? 1 : 0,
+  platform: process.platform,
+  architecture: process.arch,
+  supported: process.platform === 'win32' || process.platform === 'darwin'
+})
+handle('voice:getModelStatus', () => voiceModelStatus())
+handle('voice:downloadModel', () => ({ success: true, status: voiceModelStatus('ready') }))
+handle('voice:cancelModelDownload', () => ({ success: true }))
+handle('voice:removeModel', () => voiceModelStatus())
+handle('voice:openModelDirectory', () => ({ success: true }))
+handle('voice:recognize', () => ({ success: true, transcript: '固定脱敏转写文本', language: 'zh' }))
+handle('voice:cancelRecognition', () => ({ success: true }))
 handle('db:getSticker', (url) =>
   String(url || '').includes('403')
     ? {

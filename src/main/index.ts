@@ -102,6 +102,8 @@ import { VideoAssetService } from './video-asset-service'
 import { cancelExport, revealExport, runExport } from './export-service'
 import type { ExportRequest } from '../shared/export'
 import { discoverAccounts } from './services/account-discovery'
+import { VoiceRecognitionUseCase } from './voice-pipeline/voice-recognition-use-case'
+import type { VoiceMessageReference } from '../shared/voice-recognition'
 
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
@@ -109,6 +111,7 @@ import { discoverAccounts } from './services/account-discovery'
 installSafeConsole()
 
 let voiceService: VoiceService | null = null
+let voiceRecognition: VoiceRecognitionUseCase | null = null
 let imageDecryptService: ImageDecryptService | null = null
 let stickerService: StickerService | null = null
 let videoAssetService: VideoAssetService | null = null
@@ -422,6 +425,16 @@ function createWindow(): void {
 // Electron 初始化完成并准备创建浏览器窗口后，将调用此方法
 // 某些 API 只能在此事件发生后使用
 app.whenReady().then(async () => {
+  voiceRecognition = new VoiceRecognitionUseCase({
+    modelRoot: join(app.getPath('userData'), 'models', 'sensevoice-small-int8'),
+    databasePath: join(app.getPath('userData'), 'cache', 'voice-transcripts.sqlite'),
+    workerPath: join(__dirname, 'voiceRecognitionWorker.js')
+  })
+  voiceRecognition.modelManager.setProgressListener((status) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('voice:modelProgress', status)
+    }
+  })
   protocol.handle('wxe-media', async (request) => {
     const filePath = videoAssetService?.pathForUrl(request.url)
     if (!filePath) return new Response('Not found', { status: 404 })
@@ -557,6 +570,7 @@ app.whenReady().then(async () => {
         const sessions = await wcdb4Client.getSessionsAsync({ hydrateDisplayNames: false })
         configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
         voiceService = new VoiceService(wcdb4Client)
+        voiceRecognition?.connect(voiceService, resolvedRoot)
         stickerService = new StickerService(wcdb4Client)
         videoAssetService = new VideoAssetService(wcdb4Client)
         const monitoring = await wcdb4Client.startMonitor((type, json) => {
@@ -926,7 +940,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('export:start', async (event, request: ExportRequest) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     if (!window) return { success: false, error: '窗口不可用' }
-    return runExport(request, window)
+    return runExport(request, window, voiceRecognition || undefined)
   })
   ipcMain.handle('export:cancel', (_, jobId: string) => {
     cancelExport(jobId)
@@ -969,6 +983,47 @@ app.whenReady().then(async () => {
       }
       return voiceService.resolveVoice(sessionId, localId, createTime, svrId)
     }
+  )
+
+  ipcMain.handle('voice:getModelStatus', async () => {
+    if (!voiceRecognition) throw new Error('Voice recognition is not initialized')
+    return voiceRecognition.getModelStatus()
+  })
+
+  ipcMain.handle('voice:downloadModel', async () => {
+    if (!voiceRecognition) throw new Error('Voice recognition is not initialized')
+    return voiceRecognition.downloadModel()
+  })
+
+  ipcMain.handle(
+    'voice:cancelModelDownload',
+    () => voiceRecognition?.cancelModelDownload() || { success: false }
+  )
+
+  ipcMain.handle('voice:removeModel', async () => {
+    if (!voiceRecognition) throw new Error('Voice recognition is not initialized')
+    return voiceRecognition.removeModel()
+  })
+
+  ipcMain.handle('voice:openModelDirectory', async () => {
+    if (!voiceRecognition) return { success: false, error: '语音识别服务尚未初始化' }
+    const directory = voiceRecognition.modelManager.directory
+    await fsPromises.mkdir(directory, { recursive: true })
+    const error = await shell.openPath(directory)
+    return error ? { success: false, error } : { success: true }
+  })
+
+  ipcMain.handle('voice:recognize', (_, reference: VoiceMessageReference) => {
+    if (!voiceRecognition) {
+      return { success: false, code: 'NOT_CONNECTED', error: '语音识别服务尚未初始化' }
+    }
+    return voiceRecognition.recognize(reference)
+  })
+
+  ipcMain.handle(
+    'voice:cancelRecognition',
+    (_, reference: VoiceMessageReference) =>
+      voiceRecognition?.cancelRecognition(reference) || { success: false }
   )
 
   ipcMain.handle('db:parseMessage', async (_, content: string, messageType: number) => {
@@ -1237,6 +1292,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('db:reopenWithRoot', async (_, accountRoot: string) => {
     const ok = chat.reopenWithRoot(accountRoot)
     if (!ok) return { success: false, error: '数据库未初始化或重新打开失败' }
+    const client = chat.getChatDb()?.getWcdb4Client()
+    if (client) {
+      voiceService = new VoiceService(client)
+      voiceRecognition?.connect(voiceService, client.getAccountRoot())
+    }
     // 同步 imageKeyRoot，避免自动获取扫描到旧目录
     const settings = loadSettings()
     if (accountRoot && accountRoot !== settings.imageKeyRoot) {
@@ -1266,6 +1326,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('db:disconnect', (_, options?: { closeNative?: boolean }) => {
     // 断开操作保持幂等：渲染进程可能已标记断开，或主进程连接已先行失效。
     // 即使当前未就绪，也应让用户正常返回登录页。
+    voiceRecognition?.disconnect()
+    voiceService = null
     if (options?.closeNative !== false && chat.isReady()) chat.setChatDb(null)
     return { success: true }
   })
@@ -1374,7 +1436,8 @@ app.on('before-quit', (event) => {
     flushBootstrapCacheWritesSync()
     const [, nativeCallsDrained] = await Promise.all([
       apiServer.stop().catch(() => undefined),
-      chat.closeChatDbForQuit().catch(() => false)
+      chat.closeChatDbForQuit().catch(() => false),
+      voiceRecognition?.dispose().catch(() => undefined)
     ])
     if (!nativeCallsDrained) {
       console.warn('[Shutdown] WCDB async calls did not fully drain before quit')

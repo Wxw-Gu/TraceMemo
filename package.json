@@ -67,6 +67,7 @@
     "jsonrepair": "^3.15.0",
     "koffi": "^3.1.0",
     "openai": "^6.10.0",
+    "sherpa-onnx-node": "1.13.3",
     "silk-wasm": "^3.7.1",
     "wechat-emojis": "^1.0.2"
   },

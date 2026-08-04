@@ -7,12 +7,13 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          index: resolve('src/main/index.ts')
+          index: resolve('src/main/index.ts'),
+          voiceRecognitionWorker: resolve('src/main/voice-pipeline/voice-recognition-worker.ts')
         },
         output: {
           entryFileNames: '[name].js'
         },
-        external: ['koffi']
+        external: ['koffi', 'sherpa-onnx-node']
       }
     }
   },

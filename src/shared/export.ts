@@ -24,6 +24,7 @@ export interface ExportRequest {
   endTime?: number
   kinds: ExportMessageKind[]
   includeMedia: boolean
+  includeVoiceTranscripts?: boolean
   preferOriginal?: boolean
   fallbackThumbnail?: boolean
   keepMissing?: boolean

@@ -41,6 +41,37 @@ function validateFfmpegRuntime(runtimeResources, platform = process.platform) {
   return ffmpegPath
 }
 
+function validateSherpaRuntime(runtimeResources, platform, arch) {
+  const platformName = platform === 'win32' ? 'win' : platform
+  const basePath = path.join(
+    runtimeResources,
+    'app.asar.unpacked',
+    'node_modules',
+    'sherpa-onnx-node'
+  )
+  const nativePath = path.join(
+    runtimeResources,
+    'app.asar.unpacked',
+    'node_modules',
+    `sherpa-onnx-${platformName}-${arch}`
+  )
+  const requiredFiles = [
+    path.join(basePath, 'package.json'),
+    path.join(basePath, 'sherpa-onnx.js'),
+    path.join(nativePath, 'package.json'),
+    path.join(nativePath, 'sherpa-onnx.node')
+  ]
+  const missingFiles = requiredFiles.filter((filePath) => !existsSync(filePath))
+  if (missingFiles.length > 0) {
+    throw new Error(`Missing unpacked sherpa-onnx runtime: ${missingFiles.join(', ')}`)
+  }
+}
+
+function normalizeBuilderArch(arch) {
+  if (typeof arch === 'string') return arch
+  return { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' }[arch] || String(arch)
+}
+
 function setPlistValue(plistPath, key, value) {
   execFileSync('/usr/libexec/PlistBuddy', ['-c', `Set :${key} ${value}`, plistPath])
 }
@@ -49,6 +80,11 @@ exports.default = async function afterPack(context) {
   const runtimeResources = getRuntimeResources(context)
   validateSilkWasmRuntime(runtimeResources)
   const ffmpegPath = validateFfmpegRuntime(runtimeResources, context.electronPlatformName)
+  validateSherpaRuntime(
+    runtimeResources,
+    context.electronPlatformName,
+    normalizeBuilderArch(context.arch)
+  )
 
   if (context.electronPlatformName === 'darwin') {
     execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', ffmpegPath], {
@@ -119,3 +155,4 @@ exports.default = async function afterPack(context) {
 exports.getRuntimeResources = getRuntimeResources
 exports.validateFfmpegRuntime = validateFfmpegRuntime
 exports.validateSilkWasmRuntime = validateSilkWasmRuntime
+exports.validateSherpaRuntime = validateSherpaRuntime

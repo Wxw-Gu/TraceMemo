@@ -54,6 +54,8 @@ export interface FormattedMessage {
   contentData?: ReturnType<typeof parseMessageContent>
   voiceDataUrl?: string
   voiceDuration?: number
+  voiceTranscript?: string
+  voiceTranscriptError?: string
   exportMediaUrl?: string
   exportMediaType?: 'image' | 'video' | 'sticker' | 'file'
   exportMediaName?: string

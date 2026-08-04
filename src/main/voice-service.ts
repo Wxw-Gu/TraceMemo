@@ -1,55 +1,37 @@
-import { app } from 'electron'
-import { join } from 'path'
-import { existsSync } from 'fs'
-import { createRequire } from 'module'
+import { createHash } from 'crypto'
 import { Wcdb4Client } from './wcdb4-client'
-import { isPackagedRuntime } from './runtime-mode'
+import {
+  createDefaultAudioDecoderRegistry,
+  type EncodedVoiceSource
+} from './voice-pipeline/audio-decoder'
 
-const nodeRequire = createRequire(import.meta.url)
+export {
+  findSilkWasmRuntimeLocation,
+  getSilkWasmRuntimeLocations,
+  type SilkWasmRuntimeLocation
+} from './voice-pipeline/audio-decoder'
 
-export type SilkWasmRuntimeLocation = {
-  packagePath: string
-  wasmPath: string
-  source: 'unpacked' | 'resources' | 'asar' | 'development'
+export interface ResolvedPcmAudio {
+  pcm: Buffer
+  sampleRate: number
+  channels: number
+  codec: 'silk'
+  sourceHash: string
 }
 
-export function getSilkWasmRuntimeLocations(options?: {
-  packaged?: boolean
-  resourcesPath?: string
-  appPath?: string
-}): SilkWasmRuntimeLocation[] {
-  const packaged = options?.packaged ?? isPackagedRuntime()
-  const resourcesPath = options?.resourcesPath ?? process.resourcesPath
-  const appPath = options?.appPath ?? app.getAppPath()
-  const location = (
-    packagePath: string,
-    source: SilkWasmRuntimeLocation['source']
-  ): SilkWasmRuntimeLocation => ({
-    packagePath,
-    wasmPath: join(packagePath, 'lib', 'silk.wasm'),
-    source
-  })
+export type ResolvePcmResult =
+  | { success: true; audio: ResolvedPcmAudio }
+  | { success: false; error: string }
 
-  if (!packaged) {
-    return [location(join(appPath, 'node_modules', 'silk-wasm'), 'development')]
-  }
-
-  return [
-    location(join(resourcesPath, 'app.asar.unpacked', 'node_modules', 'silk-wasm'), 'unpacked'),
-    location(join(resourcesPath, 'node_modules', 'silk-wasm'), 'resources'),
-    location(join(appPath, 'node_modules', 'silk-wasm'), 'asar')
-  ]
-}
-
-export function findSilkWasmRuntimeLocation(
-  locations: SilkWasmRuntimeLocation[]
-): SilkWasmRuntimeLocation | null {
-  return locations.find((location) => existsSync(location.wasmPath)) || null
-}
+export type ResolveSourceResult =
+  | { success: true; source: EncodedVoiceSource }
+  | { success: false; error: string }
 
 export class VoiceService {
   private wcdb4Client: Wcdb4Client
   private voiceCache = new Map<string, string>()
+  private pcmCache = new Map<string, ResolvedPcmAudio>()
+  private readonly decoderRegistry = createDefaultAudioDecoderRegistry()
 
   constructor(wcdb4Client: Wcdb4Client) {
     this.wcdb4Client = wcdb4Client
@@ -69,39 +51,9 @@ export class VoiceService {
       return { success: true, data: cached }
     }
 
-    const candidates = this.buildCandidates(sessionId)
-    console.log('[VoiceService] resolving voice:', { sessionId, localId, createTime, candidates })
-
-    const voiceResult = await this.wcdb4Client.getVoiceData(
-      sessionId,
-      createTime,
-      candidates,
-      localId,
-      svrId || 0
-    )
-
-    if (!voiceResult.success || !voiceResult.hex) {
-      console.log('[VoiceService] getVoiceData failed:', voiceResult.error)
-      return { success: false, error: voiceResult.error || '获取语音数据失败' }
-    }
-
-    console.log('[VoiceService] got hex data, length:', voiceResult.hex.length)
-
-    const silkData = this.decodeVoiceBlob(voiceResult.hex)
-    if (!silkData || silkData.length === 0) {
-      console.log('[VoiceService] decodeVoiceBlob failed, hex:', voiceResult.hex.substring(0, 100))
-      return { success: false, error: '语音数据为空' }
-    }
-
-    console.log('[VoiceService] silkData length:', silkData.length)
-
-    const pcmData = await this.decodeSilkToPcm(silkData, 24000)
-    if (!pcmData || pcmData.length === 0) {
-      console.log('[VoiceService] decodeSilkToPcm failed')
-      return { success: false, error: 'Silk 解码失败' }
-    }
-
-    console.log('[VoiceService] pcmData length:', pcmData.length)
+    const pcmResult = await this.resolvePcm(sessionId, localId, createTime, svrId)
+    if (!pcmResult.success) return pcmResult
+    const pcmData = pcmResult.audio.pcm
 
     const wavData = this.createWavBuffer(pcmData, 24000)
     console.log(
@@ -116,6 +68,61 @@ export class VoiceService {
     this.voiceCache.set(cacheKey, base64Data)
 
     return { success: true, data: base64Data }
+  }
+
+  async resolvePcm(
+    sessionId: string,
+    localId: number,
+    createTime: number,
+    svrId?: string | number
+  ): Promise<ResolvePcmResult> {
+    const cacheKey = this.buildCacheKey(sessionId, localId, createTime)
+    const cached = this.pcmCache.get(cacheKey)
+    if (cached) return { success: true, audio: cached }
+
+    const sourceResult = await this.resolveSource(sessionId, localId, createTime, svrId)
+    if (!sourceResult.success) return sourceResult
+
+    try {
+      const decoded = await this.decoderRegistry.decode(sourceResult.source)
+      const audio: ResolvedPcmAudio = { ...decoded, codec: 'silk' }
+      this.pcmCache.set(cacheKey, audio)
+      return { success: true, audio }
+    } catch (error) {
+      console.error('[VoiceService] audio decode failed:', error)
+      return { success: false, error: error instanceof Error ? error.message : 'Silk 解码失败' }
+    }
+  }
+
+  async resolveSource(
+    sessionId: string,
+    localId: number,
+    createTime: number,
+    svrId?: string | number
+  ): Promise<ResolveSourceResult> {
+    const candidates = this.buildCandidates(sessionId)
+    const voiceResult = await this.wcdb4Client.getVoiceData(
+      sessionId,
+      createTime,
+      candidates,
+      localId,
+      svrId || 0
+    )
+    if (!voiceResult.success || !voiceResult.hex) {
+      return { success: false, error: voiceResult.error || '获取语音数据失败' }
+    }
+
+    const silkData = this.decodeVoiceBlob(voiceResult.hex)
+    if (!silkData?.length) return { success: false, error: '语音数据为空' }
+
+    return {
+      success: true,
+      source: {
+        data: silkData,
+        codec: 'silk',
+        sourceHash: createHash('sha256').update(silkData).digest('hex')
+      }
+    }
   }
 
   private buildCacheKey(sessionId: string, localId: number, createTime: number): string {
@@ -138,33 +145,6 @@ export class VoiceService {
       }
       return Buffer.from(hexClean, 'hex')
     } catch {
-      return null
-    }
-  }
-
-  private async decodeSilkToPcm(silkData: Buffer, sampleRate: number): Promise<Buffer | null> {
-    try {
-      const locations = getSilkWasmRuntimeLocations()
-      const runtime = findSilkWasmRuntimeLocation(locations)
-      if (!runtime) {
-        console.error(
-          '[VoiceService] silk.wasm not found. checked:',
-          locations.map((location) => location.wasmPath)
-        )
-        return null
-      }
-
-      const silkWasm = nodeRequire(runtime.packagePath)
-      if (!silkWasm || !silkWasm.decode) {
-        console.error('[VoiceService] silk-wasm module invalid:', runtime.packagePath)
-        return null
-      }
-
-      console.log('[VoiceService] using silk-wasm runtime:', runtime.source)
-      const result = await silkWasm.decode(silkData, sampleRate)
-      return Buffer.from(result.data)
-    } catch (e) {
-      console.error('[VoiceService] decodeSilkToPcm error:', e)
       return null
     }
   }

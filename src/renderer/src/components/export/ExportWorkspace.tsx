@@ -16,6 +16,7 @@ import type {
   GroupMemberName
 } from './exportTypes'
 import { displayName, formatLabels, formatOrder, messageKinds } from './exportUtils'
+import type { VoiceModelStatus } from '../../../../shared/voice-recognition'
 
 export function ExportWorkspace({
   contacts,
@@ -38,6 +39,8 @@ export function ExportWorkspace({
   const [nameMode, setNameMode] = useState<ExportNameMode>('remark')
   const [groupMembers, setGroupMembers] = useState<GroupMemberName[]>([])
   const [includeMedia, setIncludeMedia] = useState(true)
+  const [includeVoiceTranscripts, setIncludeVoiceTranscripts] = useState(true)
+  const [voiceModelStatus, setVoiceModelStatus] = useState<VoiceModelStatus | null>(null)
   const [includeAvatars, setIncludeAvatars] = useState(true)
   const [preferOriginal, setPreferOriginal] = useState(true)
   const [fallbackThumbnail, setFallbackThumbnail] = useState(true)
@@ -149,6 +152,17 @@ export function ExportWorkspace({
     return () => window.clearTimeout(timer)
   }, [activeContact])
 
+  React.useEffect(() => {
+    let active = true
+    void window.api
+      .getVoiceModelStatus()
+      .then((next) => active && setVoiceModelStatus(next))
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [])
+
   const toggleKind = (value: string): void => {
     setSelectedKinds((current) => {
       const next = new Set(current)
@@ -208,6 +222,12 @@ export function ExportWorkspace({
           : undefined,
       kinds: Array.from(selectedKinds) as ExportMessageKind[],
       includeMedia,
+      includeVoiceTranscripts:
+        includeVoiceTranscripts &&
+        includeMedia &&
+        format === 'html' &&
+        selectedKinds.has('voice') &&
+        voiceModelStatus?.state === 'ready',
       preferOriginal,
       fallbackThumbnail,
       keepMissing,
@@ -484,6 +504,20 @@ export function ExportWorkspace({
                 />
                 <span>媒体缺失时保留占位说明</span>
               </label>
+              <label className="export-check-row">
+                <input
+                  type="checkbox"
+                  checked={includeVoiceTranscripts && voiceModelStatus?.state === 'ready'}
+                  disabled={
+                    !includeMedia ||
+                    format !== 'html' ||
+                    !selectedKinds.has('voice') ||
+                    voiceModelStatus?.state !== 'ready'
+                  }
+                  onChange={(event) => setIncludeVoiceTranscripts(event.target.checked)}
+                />
+                <span>语音转文字，显示在语音条下方</span>
+              </label>
             </div>
             <p className="export-helper-text">
               资源文件仅在 HTML 导出中生效，CSV、JSON 和 Markdown 只保留文本内容。
@@ -492,6 +526,10 @@ export function ExportWorkspace({
               <span>图片解密：已就绪</span>
               <span>视频资源：可用</span>
               <span>语音资源：可用</span>
+              <span>
+                语音转文字：
+                {voiceModelStatus?.state === 'ready' ? '已就绪' : '请先在设置中准备模型'}
+              </span>
               <span>表情资源：按需解析</span>
               <span>文件附件：按需复制</span>
             </div>

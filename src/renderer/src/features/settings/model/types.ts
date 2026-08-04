@@ -2,6 +2,7 @@ export type SettingsCategoryId =
   | 'account-database'
   | 'database-key'
   | 'image-key'
+  | 'voice-recognition'
   | 'ai-model'
   | 'recall-protection'
   | 'local-api'

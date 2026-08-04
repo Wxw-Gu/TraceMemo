@@ -45,6 +45,13 @@ import type { AppLogEntry } from '../shared/app-log'
 import type { AppUpdateCheckResult, AppUpdateState } from '../shared/app-update'
 import type { CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress, ExportResult } from '../shared/export'
+import type {
+  VoiceMessageReference,
+  VoiceModelDownloadResult,
+  VoiceModelProgressEvent,
+  VoiceModelStatus,
+  VoiceRecognitionResult
+} from '../shared/voice-recognition'
 
 export type ParsedContent =
   | { type: 'text'; content: string }
@@ -205,6 +212,14 @@ declare global {
         createTime: number,
         svrId?: string | number
       ) => Promise<{ success: boolean; data?: string; error?: string }>
+      getVoiceModelStatus: () => Promise<VoiceModelStatus>
+      downloadVoiceModel: () => Promise<VoiceModelDownloadResult>
+      cancelVoiceModelDownload: () => Promise<{ success: boolean }>
+      removeVoiceModel: () => Promise<VoiceModelStatus>
+      openVoiceModelDirectory: () => Promise<{ success: boolean; error?: string }>
+      recognizeVoice: (reference: VoiceMessageReference) => Promise<VoiceRecognitionResult>
+      cancelVoiceRecognition: (reference: VoiceMessageReference) => Promise<{ success: boolean }>
+      onVoiceModelProgress: (callback: (status: VoiceModelProgressEvent) => void) => () => void
       parseMessage: (content: string, messageType: number) => Promise<ParsedContent>
       getImage: (
         imageMd5?: string,

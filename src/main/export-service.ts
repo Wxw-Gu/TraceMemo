@@ -20,6 +20,7 @@ import { StickerService } from './sticker-service'
 import { getImageExportAttempts } from '../shared/export-media'
 import { FileAssetService } from './file-asset-service'
 import { mergeCachedSelfInfo } from './services/bootstrap-cache'
+import type { VoiceRecognitionUseCase } from './voice-pipeline/voice-recognition-use-case'
 
 const jobs = new Set<string>()
 const safeFilePart = (value: string): string =>
@@ -30,6 +31,37 @@ const exportStamp = (): string => {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
 }
 const imageKeys = new ImageKeyConfigService()
+
+const copyExportAsset = async (
+  source: string,
+  destination: string
+): Promise<{ success: true } | { success: false; error: string }> => {
+  try {
+    await fs.copyFile(source, destination)
+    return { success: true }
+  } catch (error) {
+    try {
+      const [sourceStat, destinationStat] = await Promise.all([
+        fs.stat(source),
+        fs.stat(destination)
+      ])
+      if (
+        sourceStat.isFile() &&
+        destinationStat.isFile() &&
+        sourceStat.size > 0 &&
+        sourceStat.size === destinationStat.size
+      ) {
+        return { success: true }
+      }
+    } catch {
+      // The original copy error below is more useful than a secondary stat error.
+    }
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error)
+    }
+  }
+}
 
 export interface HtmlExportArchive {
   version: 1
@@ -70,6 +102,8 @@ const mergeArchiveMessage = (previous: Message, current: Message): Message => {
   const preserveWhenMissing: (keyof Message)[] = [
     'voiceDataUrl',
     'voiceDuration',
+    'voiceTranscript',
+    'voiceTranscriptError',
     'exportMediaUrl',
     'exportMediaType',
     'exportMediaName',
@@ -292,7 +326,11 @@ function render(format: ExportRequest['format'], messages: Message[], name: stri
   ].join('\n')
 }
 
-export async function runExport(request: ExportRequest, win: BrowserWindow): Promise<ExportResult> {
+export async function runExport(
+  request: ExportRequest,
+  win: BrowserWindow,
+  voiceRecognition?: Pick<VoiceRecognitionUseCase, 'recognize'>
+): Promise<ExportResult> {
   jobs.add(request.jobId)
   const send = (p: ExportJobProgress): void => {
     if (!win.isDestroyed()) win.webContents.send('export:progress', p)
@@ -318,6 +356,8 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
       message.exportMediaName = undefined
       message.exportMediaError = undefined
       message.voiceDataUrl = undefined
+      message.voiceTranscript = undefined
+      message.voiceTranscriptError = undefined
       message.exportShowAvatar = request.includeAvatars !== false
       const mappedName = message.senderId ? request.nameMap?.[message.senderId] : undefined
       if (mappedName && (!message.isSender || isUsableSelfName(mappedName))) {
@@ -415,6 +455,23 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             await fs.writeFile(join(outputDir, 'voices', voiceName), audioBuffer)
             message.voiceDataUrl = `voices/${voiceName}`
             message.voiceDuration = Math.max(1, Math.round(audioBuffer.length / (24000 * 2)))
+            if (request.includeVoiceTranscripts) {
+              if (!voiceRecognition) {
+                message.voiceTranscriptError = '语音转文字服务不可用'
+              } else {
+                const recognition = await voiceRecognition.recognize({
+                  sessionId: message.sessionId,
+                  localId: message.localId,
+                  createTime: message.createTime,
+                  svrId: message.serverId
+                })
+                if (recognition.success) {
+                  message.voiceTranscript = recognition.transcript?.trim() || '未识别出文字'
+                } else {
+                  message.voiceTranscriptError = recognition.error || '语音识别失败'
+                }
+              }
+            }
           } catch (error) {
             keepMediaError(
               request,
@@ -535,9 +592,13 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
               keepMediaError(request, message, '视频格式不支持，仅支持本地 MP4 文件')
             } else {
               const name = `video_${hashPart(exportMessageKey(message, request.userMd5))}.mp4`
-              await fs.copyFile(source, join(outputDir, 'media', name))
-              message.exportMediaUrl = `media/${name}`
-              message.exportMediaType = 'video'
+              const copied = await copyExportAsset(source, join(outputDir, 'media', name))
+              if (copied.success) {
+                message.exportMediaUrl = `media/${name}`
+                message.exportMediaType = 'video'
+              } else {
+                keepMediaError(request, message, `视频复制失败：${copied.error}`)
+              }
             }
           }
         } else if (message.contentData.type === 'sticker' && stickerService) {
@@ -565,10 +626,17 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
               keepMediaError(request, message, resolved.error || '本地文件附件缺失')
             } else {
               const name = `file_${hashPart(exportMessageKey(message, request.userMd5))}_${safeFilePart(resolved.fileName)}`
-              await fs.copyFile(resolved.filePath, join(outputDir, 'media', name))
-              message.exportMediaUrl = `media/${name}`
-              message.exportMediaType = 'file'
-              message.exportMediaName = message.contentData.title || resolved.fileName
+              const copied = await copyExportAsset(
+                resolved.filePath,
+                join(outputDir, 'media', name)
+              )
+              if (copied.success) {
+                message.exportMediaUrl = `media/${name}`
+                message.exportMediaType = 'file'
+                message.exportMediaName = message.contentData.title || resolved.fileName
+              } else {
+                keepMediaError(request, message, `附件复制失败：${copied.error}`)
+              }
             }
           }
         }

@@ -23,6 +23,8 @@ export interface Message {
   contentData?: ParsedContent
   voiceDataUrl?: string
   voiceDuration?: number
+  voiceTranscript?: string
+  voiceTranscriptError?: string
   localId?: number
   serverId?: string
   createTime?: number

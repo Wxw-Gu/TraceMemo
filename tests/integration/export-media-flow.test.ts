@@ -1,6 +1,7 @@
 import { dirname, join } from 'path'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
+import fsExtra from 'fs-extra'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '../../src/shared/types'
 
@@ -207,11 +208,20 @@ describe('media export flow', () => {
         outputName: 'fixture',
         kinds: ['voice', 'image', 'video', 'file'],
         includeMedia: true,
+        includeVoiceTranscripts: true,
         preferOriginal: true,
         fallbackThumbnail: true,
         keepMissing: true
       },
-      win as never
+      win as never,
+      {
+        recognize: vi.fn().mockResolvedValue({
+          success: true,
+          transcript: '这是导出的固定语音转写',
+          language: 'zh',
+          cached: true
+        })
+      } as never
     )
 
     expect(result.success).toBe(true)
@@ -231,6 +241,7 @@ describe('media export flow', () => {
     expect(readFileSync(join(outputDir, file.exportMediaUrl!), 'utf8')).toBe('附件内容')
     expect(html).toContain('<script src="data/messages.js"></script>')
     expect(voice.voiceDataUrl).toMatch(/^voices\/voice_[0-9a-f]{16}\.wav$/)
+    expect(voice.voiceTranscript).toBe('这是导出的固定语音转写')
     expect(video.exportMediaUrl).toMatch(/^media\/video_[0-9a-f]{16}\.mp4$/)
     expect(file.exportMediaUrl).toMatch(/^media\/file_[0-9a-f]{16}_测试附件\.txt$/)
     expect(missingVoice.exportMediaError).toBe('语音文件缺失：本地未找到语音数据')
@@ -300,6 +311,52 @@ describe('media export flow', () => {
       oldVoiceUrl
     )
     expect(existsSync(join(dirname(second.outputPath!), 'data', 'messages.js.bak'))).toBe(true)
+  })
+
+  it('reuses existing video and file assets when Windows rejects an overwrite', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    const request = {
+      userMd5: 'fixture-user',
+      name: '媒体复用会话',
+      format: 'html' as const,
+      outputName: 'reused-media-fixture',
+      kinds: ['video', 'file'] as const,
+      includeMedia: true,
+      keepMissing: true
+    }
+
+    const first = await runExport(
+      { ...request, jobId: 'media-reuse-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success).toBe(true)
+
+    const originalCopyFile = fsExtra.copyFile.bind(fsExtra)
+    const copyFile = vi
+      .spyOn(fsExtra, 'copyFile')
+      .mockRejectedValueOnce(
+        Object.assign(new Error('EPERM: operation not permitted, copyfile'), { code: 'EPERM' })
+      )
+      .mockRejectedValueOnce(
+        Object.assign(new Error('EPERM: operation not permitted, copyfile'), { code: 'EPERM' })
+      )
+      .mockImplementation(originalCopyFile)
+
+    const second = await runExport(
+      { ...request, jobId: 'media-reuse-second', kinds: [...request.kinds] },
+      win as never
+    )
+    copyFile.mockRestore()
+
+    expect(second.success).toBe(true)
+    const archive = readArchive(second.outputPath!)
+    expect(archive.messages.find((item) => item.id === 'video')?.exportMediaUrl).toMatch(
+      /^media\/video_/
+    )
+    expect(archive.messages.find((item) => item.id === 'file')?.exportMediaUrl).toMatch(
+      /^media\/file_/
+    )
   })
 
   it('refuses to merge a different conversation into an existing named archive', async () => {

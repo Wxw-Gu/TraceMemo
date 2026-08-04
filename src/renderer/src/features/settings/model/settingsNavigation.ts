@@ -17,7 +17,8 @@ export const SETTINGS_NAVIGATION: SettingsNavigationGroup[] = [
   {
     label: '智能能力',
     items: [
-      { id: 'ai-model', label: 'AI 模型' },
+      { id: 'voice-recognition', label: '语音转文字' },
+      { id: 'ai-model', label: 'AI 模型' }
     ]
   },
   {
