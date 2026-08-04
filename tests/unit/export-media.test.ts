@@ -68,7 +68,7 @@ describe('export media', () => {
 
     expect(dom.window.document.querySelectorAll('.message')).toHaveLength(EXPORT_PAGE_SIZE)
     expect(dom.window.document.querySelector('#count')?.textContent).toBe(
-      '已显示 240 / 筛选 500 / 全部 500'
+      '已显示 240 / 筛选结果 500 / 全部 500'
     )
     const list = dom.window.document.querySelector('#messages')!
     expect(list.querySelector('.message')?.getAttribute('data-index')).toBe('260')
@@ -90,6 +90,7 @@ describe('export media', () => {
     search.value = 'needle'
     search.dispatchEvent(new dom.window.Event('input'))
     expect(dom.window.document.querySelectorAll('.message')).toHaveLength(5)
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe('筛选结果 5 / 全部 500')
     expect(dom.window.document.querySelectorAll('.timeline-month').length).toBeGreaterThan(1)
     dom.window.close()
   })

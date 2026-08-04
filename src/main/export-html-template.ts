@@ -462,7 +462,9 @@ const renderExportScript = (name: string): string => `
   }
   const updateCount = () => {
     const shown = Math.max(0, windowEnd - windowStart)
-    count.textContent = '已显示 ' + shown + ' / 筛选 ' + filtered.length + ' / 全部 ' + allMessages.length
+    count.textContent = shown < filtered.length
+      ? '已显示 ' + shown + ' / 筛选结果 ' + filtered.length + ' / 全部 ' + allMessages.length
+      : '筛选结果 ' + filtered.length + ' / 全部 ' + allMessages.length
   }
   const setScrollTop = (value) => {
     scrollLoadSuppressed = true
