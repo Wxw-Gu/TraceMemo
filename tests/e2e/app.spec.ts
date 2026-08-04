@@ -134,10 +134,10 @@ test('EXPORT-01 multi-chat selection stays local to export and forces HTML', asy
     await expect(fixture.page.getByText('已选 2 / 5 个')).toBeVisible()
     await expect(fixture.page.getByRole('button', { name: 'CSV' })).toBeDisabled()
     await expect(fixture.page.getByRole('button', { name: /HTML/ })).toHaveClass(/active/)
-    await expect(fixture.page.getByText('2 个聊天 · 合并预览')).toBeVisible()
+    await expect(fixture.page.getByText('文件传输助手、产品测试群 · 共 2 个聊天')).toBeVisible()
     await expect(
       fixture.page.locator('.export-preview-bubble').filter({ hasText: '这是一条脱敏测试消息' })
-    ).toBeVisible()
+    ).toHaveCount(1)
 
     await navigation.getByRole('button', { name: '档案' }).click()
     await expect(fixture.page.getByText('转发多条内容', { exact: true })).toBeVisible()
