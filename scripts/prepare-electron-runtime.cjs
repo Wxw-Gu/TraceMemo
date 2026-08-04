@@ -19,24 +19,49 @@ function copyIfDifferent(sourcePath, targetPath) {
   return true
 }
 
-function prepareFfmpegRuntime() {
-  let ffmpegPath = ''
+function readOption(name, fallback) {
+  const index = process.argv.indexOf(`--${name}`)
+  return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback
+}
+
+function prepareFfmpegRuntime(targetPlatform = process.platform, targetArch = process.arch) {
+  let packageRoot = ''
   try {
-    ffmpegPath = require('ffmpeg-static') || ''
+    packageRoot = path.dirname(require.resolve('ffmpeg-static/package.json'))
   } catch {
     return
   }
-  if (!ffmpegPath || !fs.existsSync(ffmpegPath) || process.platform === 'win32') return
+  const executable = targetPlatform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  const ffmpegPath = path.join(packageRoot, executable)
+
+  if (!fs.existsSync(ffmpegPath)) {
+    const installScript = path.join(packageRoot, 'install.js')
+    console.log(
+      `[prepare-electron-runtime] downloading ffmpeg-static for ${targetPlatform}-${targetArch}`
+    )
+    execFileSync(process.execPath, [installScript], {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        npm_config_platform: targetPlatform,
+        npm_config_arch: targetArch
+      }
+    })
+  }
+
+  if (!fs.existsSync(ffmpegPath)) {
+    throw new Error(`ffmpeg-static runtime download failed: ${ffmpegPath}`)
+  }
+  if (targetPlatform === 'win32') return
+
   fs.chmodSync(ffmpegPath, 0o755)
   if (process.platform === 'darwin') {
-    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', ffmpegPath], {
-      stdio: 'ignore'
-    })
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', ffmpegPath], { stdio: 'ignore' })
   }
 }
 
 function main() {
-  prepareFfmpegRuntime()
+  prepareFfmpegRuntime(readOption('platform', process.platform), readOption('arch', process.arch))
   if (process.platform !== 'win32') return
 
   const projectRoot = path.resolve(__dirname, '..')
