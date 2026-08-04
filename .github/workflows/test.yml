@@ -58,7 +58,7 @@ jobs:
         run: pnpm test:e2e:build
 
       - name: Electron E2E tests
-        run: pnpm exec playwright test --grep-invert @visual
+        run: pnpm exec playwright test --grep-invert="@visual"
         env:
           WXE_E2E_CLOSE_DELAY_MS: 0
 
