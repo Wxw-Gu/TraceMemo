@@ -106,6 +106,59 @@ describe('export media', () => {
     dom.window.close()
   })
 
+  it('does not match hidden sender ids when searching visible message text', () => {
+    const html = renderExportPage('搜索测试')
+    const dom = new JSDOM(html, { runScripts: 'outside-only' })
+    const messages: Message[] = [
+      {
+        id: 'hidden-sender-id-match',
+        from: 'user',
+        type: '普通文本',
+        datetime: '',
+        content: '这条消息不应命中',
+        name: 'Jamie',
+        senderId: 'wxid_fixture_member',
+        isSender: false,
+        createTime: 1_767_225_600
+      },
+      {
+        id: 'visible-content-match',
+        from: 'user',
+        type: '普通文本',
+        datetime: '',
+        content: 'https://example.com/xi',
+        name: 'Cherry',
+        senderId: 'wxid_fixture_self',
+        isSender: true,
+        createTime: 1_767_225_601
+      }
+    ]
+    Object.assign(dom.window, {
+      __WECHAT_EXPORT__: {
+        version: 1,
+        sourceId: 'fixture',
+        name: '搜索测试',
+        exportedAt: '2026-08-05T00:00:00.000Z',
+        messages
+      }
+    })
+
+    dom.window.eval(inlineScriptOf(html))
+    const search = dom.window.document.querySelector('#query') as HTMLInputElement
+    search.value = 'xi'
+    search.dispatchEvent(new dom.window.Event('input'))
+
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(1)
+    expect(dom.window.document.querySelector('.message')?.textContent).toContain(
+      'https://example.com/xi'
+    )
+    expect(dom.window.document.querySelectorAll('.search-highlight')).toHaveLength(1)
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
+      '已显示 1 / 筛选 1 / 全部 2'
+    )
+    dom.window.close()
+  })
+
   it('filters a v2 merged archive by conversation before search and month counts', () => {
     const html = renderExportPage('合并档案')
     const dom = new JSDOM(html, { runScripts: 'outside-only' })

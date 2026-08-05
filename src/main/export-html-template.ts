@@ -940,7 +940,6 @@ const renderExportScript = (name: string): string => `
   const searchText = (message) => [
     message.exportConversationName,
     message.name,
-    message.senderId,
     message.content,
     message.type,
     message.contentData && message.contentData.title,
