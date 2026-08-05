@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Wcdb4Client, type Wcdb4Message } from '../../src/main/wcdb4-client'
 
-const message = (id: string, year: number): Wcdb4Message => ({
+const message = (id: string, year: number, serverId = `server-${id}`): Wcdb4Message => ({
   mesLocalID: id,
-  serverId: `server-${id}`,
+  serverId,
   mesDes: 0,
   messageType: '1',
   msgCreateTime: String(Math.floor(Date.UTC(year, 0, 1) / 1000)),
@@ -12,6 +12,21 @@ const message = (id: string, year: number): Wcdb4Message => ({
 })
 
 describe('WCDB message shard pagination', () => {
+  it('keeps messages whose local ids repeat across database shards', async () => {
+    const cursor = vi.fn(async () => [
+      message('1', 2024, 'server-2024'),
+      message('1', 2025, 'server-2025')
+    ])
+    const client = Object.assign(Object.create(Wcdb4Client.prototype), {
+      getMessagesByCursorAsync: cursor
+    }) as Wcdb4Client
+
+    const result = await client.getMessagesAsync('fixture@chatroom')
+
+    expect(result).toHaveLength(2)
+    expect(result.map((item) => item.serverId)).toEqual(['server-2024', 'server-2025'])
+  })
+
   it('merges cursor and all-store rows for a bounded cross-year page', async () => {
     const cursor = vi.fn(async () => [message('2025', 2025)])
     const tableScan = vi.fn(async () => [message('2017', 2017), message('2025', 2025)])

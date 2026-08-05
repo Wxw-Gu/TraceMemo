@@ -34,6 +34,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright Chromium
+        if: runner.os == 'macOS'
         run: pnpm exec playwright install chromium
 
       - name: Type check

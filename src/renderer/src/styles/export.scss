@@ -116,6 +116,25 @@
   padding: 8px 0;
 }
 
+.export-multi-select-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--wxex-border);
+  background: var(--wxex-brand-soft);
+  color: var(--wxex-brand);
+  font-size: 12px;
+
+  button {
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font: 600 12px/18px var(--wxex-font);
+  }
+}
+
 .export-contact-item {
   display: flex;
   align-items: center;
@@ -136,6 +155,28 @@
   &.active {
     border-left-color: var(--wxex-brand);
     background: var(--wxex-brand-soft);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+  }
+}
+
+.export-contact-check {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--wxex-border-strong);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 12px;
+
+  &.checked {
+    border-color: var(--wxex-brand);
+    background: var(--wxex-brand);
   }
 }
 
@@ -246,6 +287,46 @@
     font-size: 13px;
   }
 }
+.export-config-title {
+  min-width: 0;
+}
+.export-config-title p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.export-chat-avatar-stack {
+  position: relative;
+  width: 70px;
+  height: 58px;
+  flex: 0 0 70px;
+
+  .export-chat-avatar {
+    position: absolute;
+    top: 3px;
+    border: 2px solid var(--wxex-bg-main);
+  }
+
+  .export-chat-avatar:nth-child(2) {
+    left: 12px;
+    top: 8px;
+  }
+  .export-chat-avatar:nth-child(3) {
+    left: 24px;
+    top: 13px;
+  }
+}
+.export-add-chat-button {
+  margin-left: auto;
+  padding: 7px 10px;
+  border: 1px solid var(--wxex-brand);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--wxex-brand);
+  cursor: pointer;
+  white-space: nowrap;
+  font: 600 12px/18px var(--wxex-font);
+}
 .export-chat-avatar {
   width: 52px;
   height: 52px;
@@ -257,6 +338,11 @@
     height: 100%;
     object-fit: cover;
   }
+}
+
+.export-format-grid button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .export-section {
@@ -766,6 +852,21 @@
 
   .export-task-error {
     color: var(--wxex-danger, #b42318);
+  }
+
+  .export-task-detail {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+
+    &.completed {
+      color: var(--wxex-brand);
+    }
+
+    &.failed {
+      color: var(--wxex-danger, #c43d3d);
+    }
   }
 
   button {

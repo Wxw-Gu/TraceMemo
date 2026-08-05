@@ -81,7 +81,10 @@ export function MessageBubble({
             md5={message.contentData.md5}
             newMd5={message.contentData.newMd5}
             rawMd5={message.contentData.rawMd5}
+            createTime={message.createTime}
             duration={message.contentData.duration}
+            width={message.contentData.width}
+            height={message.contentData.height}
           />
         ) : isRichMedia && message.contentData ? (
           <RichMessageBubble

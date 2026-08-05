@@ -38,6 +38,9 @@ export interface Message {
   exportShowAvatar?: boolean
   exportMediaError?: string
   exportAvatarUrl?: string
+  exportConversationId?: string
+  exportConversationName?: string
+  exportConversationAvatarUrl?: string
 }
 
 type TextContent = { type: 'text'; content: string }

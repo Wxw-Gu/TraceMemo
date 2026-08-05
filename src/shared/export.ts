@@ -14,10 +14,19 @@ export type ExportMessageKind =
 
 export type ExportNameMode = 'groupNickname' | 'remark' | 'wechatNickname'
 
-export interface ExportRequest {
-  jobId: string
+export interface ExportTarget {
   userMd5: string
   name: string
+  type: 'user' | 'group'
+  avatarUrl?: string
+  nameMode?: ExportNameMode
+  nameMap?: Record<string, string>
+  avatarUrls?: Record<string, string>
+}
+
+export interface ExportRequest {
+  jobId: string
+  targets: ExportTarget[]
   format: ExportFormat
   outputName: string
   startTime?: number
@@ -29,15 +38,12 @@ export interface ExportRequest {
   fallbackThumbnail?: boolean
   keepMissing?: boolean
   includeAvatars?: boolean
-  avatarUrls?: Record<string, string>
-  nameMode?: ExportNameMode
-  nameMap?: Record<string, string>
   zip?: boolean
 }
 
 export interface ExportJobProgress {
   jobId: string
-  phase: 'reading' | 'writing' | 'completed' | 'cancelled' | 'failed'
+  phase: 'reading' | 'writing' | 'compressing' | 'completed' | 'cancelled' | 'failed'
   processed: number
   total?: number
   percent?: number
@@ -47,8 +53,9 @@ export interface ExportJobProgress {
 
 export interface ExportTaskRecord {
   jobId: string
-  contactId: string
-  contactName: string
+  targetIds: string[]
+  targetNames: string[]
+  targetLabel: string
   format: ExportFormat
   status: 'running' | 'completed' | 'cancelled' | 'failed'
   progress: ExportJobProgress

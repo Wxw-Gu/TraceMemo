@@ -1,15 +1,39 @@
 import { dirname, join } from 'path'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync
+} from 'fs'
 import { tmpdir } from 'os'
-import fsExtra from 'fs-extra'
+import { execFileSync } from 'child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ExportTarget } from '../../src/shared/export'
 import type { Message } from '../../src/shared/types'
 
 const state = vi.hoisted(() => ({
   documents: '',
   accountRoot: '',
   videoPath: '',
+  selfAvatar: undefined as string | undefined,
+  avatarMap: {} as Record<string, string>,
   messages: [] as Message[],
+  messagesByUser: {} as Record<string, Message[]>,
+  exportReads: [] as string[],
+  voiceLookups: [] as number[],
+  videoLookups: [] as {
+    createTime?: number
+    duration?: number
+    width?: number
+    height?: number
+  }[],
   imageLookups: [] as {
     allowThumbnail?: boolean
     preferThumbnail?: boolean
@@ -22,18 +46,47 @@ const state = vi.hoisted(() => ({
 vi.mock('electron', () => ({
   app: { getPath: () => state.documents },
   shell: { showItemInFolder: vi.fn() },
+  nativeImage: {
+    createFromBuffer: (buffer: Buffer) => {
+      const reversed = buffer.toString().includes('different-avatar')
+      const bitmap = Buffer.alloc(9 * 8 * 4)
+      for (let y = 0; y < 8; y += 1) {
+        for (let x = 0; x < 9; x += 1) {
+          const offset = (y * 9 + x) * 4
+          const value = reversed ? 240 - x * 20 : 40 + x * 20
+          bitmap[offset] = value
+          bitmap[offset + 1] = value
+          bitmap[offset + 2] = value
+          bitmap[offset + 3] = 255
+        }
+      }
+      return {
+        isEmpty: () => false,
+        resize: () => ({ toBitmap: () => bitmap })
+      }
+    }
+  },
   BrowserWindow: class {}
 }))
 vi.mock('../../src/main/services/chat-service', () => ({
   listMessages: () => structuredClone(state.messages),
-  listMessagesAsync: async () => structuredClone(state.messages),
+  listMessagesAsync: async (userMd5: string) =>
+    structuredClone(state.messagesByUser[userMd5] || state.messages),
+  listMessagesForExport: async (userMd5: string) => {
+    state.exportReads.push(userMd5)
+    return structuredClone(state.messagesByUser[userMd5] || state.messages)
+  },
   getChatDb: () => ({
-    getWcdb4Client: () => ({ getAccountRoot: () => state.accountRoot })
+    getWcdb4Client: () => ({
+      getAccountRoot: () => state.accountRoot,
+      getUsernameByMd5: (userMd5: string) => `wxid_${userMd5}`
+    })
   }),
-  getContactAvatars: () => ({}),
+  getContactAvatars: () => ({ ...state.avatarMap }),
   getSelfAccountInfoAsync: async () => ({
     wxid: 'fixture_account',
     nickname: '示例昵称',
+    avatar: state.selfAvatar,
     accountRoot: state.accountRoot
   })
 }))
@@ -50,6 +103,7 @@ vi.mock('../../src/main/voice-service', () => ({
       _sessionId: string,
       localId: number
     ): Promise<{ success: boolean; data?: string; error?: string }> {
+      state.voiceLookups.push(localId)
       return localId === 1
         ? {
             success: true,
@@ -107,7 +161,11 @@ vi.mock('../../src/main/image-decrypt-service', () => ({
 }))
 vi.mock('../../src/main/video-asset-service', () => ({
   VideoAssetService: class {
-    resolve(): { success: boolean; url: string } {
+    resolve(
+      _hashes: string[],
+      options?: { createTime?: number; duration?: number; width?: number; height?: number }
+    ): { success: boolean; url: string } {
+      state.videoLookups.push(options || {})
       return { success: true, url: 'wxe-media://local/fixture-video' }
     }
     pathForUrl(): string {
@@ -130,17 +188,26 @@ const message = (overrides: Partial<Message>): Message => ({
   ...overrides
 })
 
-const readArchive = (outputPath: string): { sourceId: string; messages: Message[] } => {
+const target = (userMd5 = 'fixture-user', name = '脱敏会话'): ExportTarget => ({
+  userMd5,
+  name,
+  type: 'user'
+})
+
+const readArchive = (
+  outputPath: string
+): {
+  version: 2
+  conversations: { id: string; name: string; avatarUrl?: string; messageCount: number }[]
+  messages: Message[]
+} => {
   const source = readFileSync(join(dirname(outputPath), 'data', 'messages.js'), 'utf8')
   return JSON.parse(
     source
       .slice(source.indexOf('=') + 1)
       .trim()
       .replace(/;\s*$/, '')
-  ) as {
-    sourceId: string
-    messages: Message[]
-  }
+  )
 }
 
 describe('media export flow', () => {
@@ -148,11 +215,17 @@ describe('media export flow', () => {
     state.documents = mkdtempSync(join(tmpdir(), 'wxe-export-fixture-'))
     state.accountRoot = join(state.documents, 'fixture-account')
     state.videoPath = join(state.documents, 'fixture.mp4')
+    state.selfAvatar = undefined
+    state.avatarMap = {}
     writeFileSync(
       state.videoPath,
       Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex')
     )
     state.imageLookups = []
+    state.videoLookups = []
+    state.messagesByUser = {}
+    state.exportReads = []
+    state.voiceLookups = []
     const fileMonth = join(state.accountRoot, 'msg', 'file', '2026-08')
     mkdirSync(fileMonth, { recursive: true })
     writeFileSync(join(fileMonth, '测试附件.txt'), '附件内容')
@@ -180,7 +253,13 @@ describe('media export flow', () => {
       message({
         id: 'video',
         type: '视频',
-        contentData: { type: 'video', md5: 'b'.repeat(32) }
+        contentData: {
+          type: 'video',
+          md5: 'b'.repeat(32),
+          duration: 68,
+          width: 279,
+          height: 630
+        }
       }),
       message({
         id: 'file',
@@ -202,26 +281,16 @@ describe('media export flow', () => {
     const result = await runExport(
       {
         jobId: 'fixture-export',
-        userMd5: 'fixture-user',
-        name: '脱敏会话',
+        targets: [target()],
         format: 'html',
         outputName: 'fixture',
         kinds: ['voice', 'image', 'video', 'file'],
         includeMedia: true,
-        includeVoiceTranscripts: true,
         preferOriginal: true,
         fallbackThumbnail: true,
         keepMissing: true
       },
-      win as never,
-      {
-        recognize: vi.fn().mockResolvedValue({
-          success: true,
-          transcript: '这是导出的固定语音转写',
-          language: 'zh',
-          cached: true
-        })
-      } as never
+      win as never
     )
 
     expect(result.success).toBe(true)
@@ -239,11 +308,11 @@ describe('media export flow', () => {
       'ftyp'
     )
     expect(readFileSync(join(outputDir, file.exportMediaUrl!), 'utf8')).toBe('附件内容')
-    expect(html).toContain('<script src="data/messages.js"></script>')
+    expect(html).toContain("dataScript.src = 'data/messages.js'")
+    expect(html).toContain('id="archive-loading"')
     expect(voice.voiceDataUrl).toMatch(/^voices\/voice_[0-9a-f]{16}\.wav$/)
-    expect(voice.voiceTranscript).toBe('这是导出的固定语音转写')
     expect(video.exportMediaUrl).toMatch(/^media\/video_[0-9a-f]{16}\.mp4$/)
-    expect(file.exportMediaUrl).toMatch(/^media\/file_[0-9a-f]{16}_测试附件\.txt$/)
+    expect(file.exportMediaUrl).toMatch(/^files\/file_[0-9a-f]{16}_测试附件\.txt$/)
     expect(missingVoice.exportMediaError).toBe('语音文件缺失：本地未找到语音数据')
     expect(state.imageLookups[0]).toMatchObject({
       allowThumbnail: false,
@@ -252,7 +321,76 @@ describe('media export flow', () => {
       sessionMd5: 'fixture-user',
       createTime: 1_785_549_600
     })
+    expect(state.videoLookups[0]).toEqual({
+      createTime: 1_785_549_600,
+      duration: 68,
+      width: 279,
+      height: 630
+    })
     expect(progress.length).toBeGreaterThan(0)
+    expect(state.exportReads).toEqual(['fixture-user'])
+  })
+
+  it('uses the customized file name as the HTML archive title', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    state.messages = [message({ id: 'custom-title', content: '标题测试' })]
+
+    const result = await runExport(
+      {
+        jobId: 'custom-title',
+        targets: [target('fixture-user', '联系人原名')],
+        format: 'html',
+        outputName: '我修改后的文件名',
+        kinds: ['text'],
+        includeMedia: false
+      },
+      win as never
+    )
+
+    expect(result.success).toBe(true)
+    const html = readFileSync(result.outputPath!, 'utf8')
+    const archive = readArchive(result.outputPath!)
+    expect(html).toContain('<title>我修改后的文件名 - 聊天记录</title>')
+    expect(html).toContain('<span class="title" id="archive-title">我修改后的文件名</span>')
+    expect(html).not.toContain('<title>联系人原名 - 聊天记录</title>')
+    expect(archive.name).toBe('我修改后的文件名')
+    expect(archive.conversations[0].name).toBe('联系人原名')
+  })
+
+  it('keeps one-to-one sender sides and fills both display names', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    state.messages = [
+      message({ id: 'peer-message', content: '对方消息', isSender: false, name: '', senderId: '' }),
+      message({ id: 'self-message', content: '我的消息', isSender: true, name: '', senderId: '' })
+    ]
+
+    const result = await runExport(
+      {
+        jobId: 'one-to-one-identity',
+        targets: [target('jamie', 'Jamie')],
+        format: 'html',
+        outputName: 'one-to-one-identity',
+        kinds: ['text'],
+        includeMedia: false
+      },
+      win as never
+    )
+
+    expect(result.success, result.error).toBe(true)
+    const archive = readArchive(result.outputPath!)
+    expect(
+      archive.messages.map(({ id, isSender, name, senderId }) => ({
+        id,
+        isSender,
+        name,
+        senderId
+      }))
+    ).toEqual([
+      { id: 'peer-message', isSender: false, name: 'Jamie', senderId: 'wxid_jamie' },
+      { id: 'self-message', isSender: true, name: '示例昵称', senderId: 'fixture_account' }
+    ])
   })
 
   it('incrementally merges the same HTML archive, deduplicates messages, and keeps old media', async () => {
@@ -260,8 +398,7 @@ describe('media export flow', () => {
     const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
     const request = {
       jobId: 'incremental-first',
-      userMd5: 'fixture-user',
-      name: '增量会话',
+      targets: [target('fixture-user', '增量会话')],
       format: 'html' as const,
       outputName: 'incremental-fixture',
       kinds: ['voice', 'text'] as const,
@@ -282,6 +419,19 @@ describe('media export flow', () => {
     expect(first.success).toBe(true)
     const firstArchive = readArchive(first.outputPath!)
     const oldVoiceUrl = firstArchive.messages.find((item) => item.id === 'voice-old')!.voiceDataUrl
+    const outputDir = dirname(first.outputPath!)
+    firstArchive.messages.find((item) => item.id === 'voice-old')!.img =
+      'data:image/jpeg;base64,bGVnYWN5LWlubGluZS1hdmF0YXI='
+    writeFileSync(
+      join(outputDir, 'data', 'messages.js'),
+      `window.__WECHAT_EXPORT__ = ${JSON.stringify(firstArchive)};\n`,
+      'utf8'
+    )
+    writeFileSync(join(outputDir, 'voices', 'voice_orphan.wav'), 'orphan voice')
+    writeFileSync(join(outputDir, 'media', 'image_orphan.png'), 'orphan image')
+    writeFileSync(join(outputDir, 'media', 'file_orphan.txt'), 'legacy orphan file')
+    writeFileSync(join(outputDir, 'files', 'file_orphan.txt'), 'orphan file')
+    writeFileSync(join(outputDir, 'avatars', 'avatar_orphan.png'), 'orphan avatar')
 
     state.messages = [
       message({ id: 'text-old', content: '同一条消息已更新', createTime: 1_785_549_660 }),
@@ -310,53 +460,399 @@ describe('media export flow', () => {
     expect(secondArchive.messages.find((item) => item.id === 'voice-old')?.voiceDataUrl).toBe(
       oldVoiceUrl
     )
+    expect(secondArchive.messages.every((item) => item.img == null)).toBe(true)
+    expect(existsSync(join(outputDir, oldVoiceUrl!))).toBe(true)
+    expect(existsSync(join(outputDir, 'voices', 'voice_orphan.wav'))).toBe(false)
+    expect(existsSync(join(outputDir, 'media', 'image_orphan.png'))).toBe(false)
+    expect(existsSync(join(outputDir, 'media', 'file_orphan.txt'))).toBe(false)
+    expect(existsSync(join(outputDir, 'files', 'file_orphan.txt'))).toBe(false)
+    expect(existsSync(join(outputDir, 'avatars', 'avatar_orphan.png'))).toBe(false)
     expect(existsSync(join(dirname(second.outputPath!), 'data', 'messages.js.bak'))).toBe(true)
   })
 
-  it('reuses existing video and file assets when Windows rejects an overwrite', async () => {
+  it('reuses unchanged resources and retries only missing or unresolved media', async () => {
     const { runExport } = await import('../../src/main/export-service')
     const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
     const request = {
-      userMd5: 'fixture-user',
-      name: '媒体复用会话',
+      targets: [target('fixture-user', '资源复用会话')],
       format: 'html' as const,
-      outputName: 'reused-media-fixture',
-      kinds: ['video', 'file'] as const,
+      outputName: 'resource-reuse-fixture',
+      kinds: ['voice', 'image', 'video', 'file'] as const,
       includeMedia: true,
       keepMissing: true
     }
 
     const first = await runExport(
-      { ...request, jobId: 'media-reuse-first', kinds: [...request.kinds] },
+      { ...request, jobId: 'resource-reuse-first', kinds: [...request.kinds] },
       win as never
     )
-    expect(first.success).toBe(true)
-
-    const originalCopyFile = fsExtra.copyFile.bind(fsExtra)
-    const copyFile = vi
-      .spyOn(fsExtra, 'copyFile')
-      .mockRejectedValueOnce(
-        Object.assign(new Error('EPERM: operation not permitted, copyfile'), { code: 'EPERM' })
-      )
-      .mockRejectedValueOnce(
-        Object.assign(new Error('EPERM: operation not permitted, copyfile'), { code: 'EPERM' })
-      )
-      .mockImplementation(originalCopyFile)
+    expect(first.success, first.error).toBe(true)
+    const firstArchive = readArchive(first.outputPath!)
+    const outputDir = dirname(first.outputPath!)
+    const voicePath = join(
+      outputDir,
+      firstArchive.messages.find((item) => item.id === 'voice-ok')!.voiceDataUrl!
+    )
+    const imagePath = join(
+      outputDir,
+      firstArchive.messages.find((item) => item.id === 'image')!.exportMediaUrl!
+    )
+    const videoPath = join(
+      outputDir,
+      firstArchive.messages.find((item) => item.id === 'video')!.exportMediaUrl!
+    )
+    const filePath = join(
+      outputDir,
+      firstArchive.messages.find((item) => item.id === 'file')!.exportMediaUrl!
+    )
+    const oldTimestamp = new Date(1_000_000)
+    utimesSync(videoPath, oldTimestamp, oldTimestamp)
+    utimesSync(filePath, oldTimestamp, oldTimestamp)
 
     const second = await runExport(
-      { ...request, jobId: 'media-reuse-second', kinds: [...request.kinds] },
+      { ...request, jobId: 'resource-reuse-second', kinds: [...request.kinds] },
       win as never
     )
-    copyFile.mockRestore()
+    expect(second.success, second.error).toBe(true)
+    expect(state.imageLookups).toHaveLength(1)
+    expect(state.videoLookups).toHaveLength(1)
+    expect(state.voiceLookups).toEqual([1, 2, 2])
+    expect(statSync(videoPath).mtimeMs).toBe(oldTimestamp.getTime())
+    expect(statSync(filePath).mtimeMs).toBe(oldTimestamp.getTime())
 
+    unlinkSync(voicePath)
+    unlinkSync(imagePath)
+    const third = await runExport(
+      { ...request, jobId: 'resource-reuse-third', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(third.success, third.error).toBe(true)
+    expect(state.imageLookups).toHaveLength(2)
+    expect(state.videoLookups).toHaveLength(1)
+    expect(state.voiceLookups).toEqual([1, 2, 2, 1, 2])
+    expect(existsSync(voicePath)).toBe(true)
+    expect(existsSync(imagePath)).toBe(true)
+  })
+
+  it('keeps historical avatars and creates a new version only after a real visual change', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    const encodedAvatar = (value: string): string =>
+      `data:image/jpeg;base64,${Buffer.from(value).toString('base64')}`
+    const request = {
+      targets: [target('fixture-user', '头像版本会话')],
+      format: 'html' as const,
+      outputName: 'avatar-version-fixture',
+      kinds: ['text'] as const,
+      includeMedia: false,
+      includeAvatars: true
+    }
+    const oldMessage = message({
+      id: 'avatar-old',
+      isSender: true,
+      senderId: 'fixture_account',
+      content: '历史消息',
+      createTime: 1_785_549_600
+    })
+    const sameAvatarFirstEncoding = encodedAvatar('same-visual-encoding-one')
+    state.selfAvatar = sameAvatarFirstEncoding
+    state.avatarMap = { fixture_account: sameAvatarFirstEncoding }
+    state.messages = [oldMessage]
+
+    const first = await runExport(
+      { ...request, jobId: 'avatar-version-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success, first.error).toBe(true)
+    const firstAvatarUrl = readArchive(first.outputPath!).messages[0].exportAvatarUrl
+
+    const newMessageBeforeChange = message({
+      id: 'avatar-new-same',
+      isSender: true,
+      senderId: 'fixture_account',
+      content: '头像未变时的新消息',
+      createTime: 1_785_549_700
+    })
+    const sameAvatarSecondEncoding = encodedAvatar('same-visual-encoding-two')
+    state.selfAvatar = sameAvatarSecondEncoding
+    state.avatarMap = { fixture_account: sameAvatarSecondEncoding }
+    state.messages = [oldMessage, newMessageBeforeChange]
+    const second = await runExport(
+      { ...request, jobId: 'avatar-version-second', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(second.success, second.error).toBe(true)
+    expect(readArchive(second.outputPath!).messages.map((item) => item.exportAvatarUrl)).toEqual([
+      firstAvatarUrl,
+      firstAvatarUrl
+    ])
+
+    const newMessageAfterChange = message({
+      id: 'avatar-new-changed',
+      isSender: true,
+      senderId: 'fixture_account',
+      content: '真正换头像后的新消息',
+      createTime: 1_785_549_800
+    })
+    const changedAvatar = encodedAvatar('different-avatar')
+    state.selfAvatar = changedAvatar
+    state.avatarMap = { fixture_account: changedAvatar }
+    state.messages = [oldMessage, newMessageBeforeChange, newMessageAfterChange]
+    const third = await runExport(
+      { ...request, jobId: 'avatar-version-third', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(third.success, third.error).toBe(true)
+    const thirdArchive = readArchive(third.outputPath!)
+    expect(thirdArchive.messages.slice(0, 2).map((item) => item.exportAvatarUrl)).toEqual([
+      firstAvatarUrl,
+      firstAvatarUrl
+    ])
+    expect(thirdArchive.messages[2].exportAvatarUrl).not.toBe(firstAvatarUrl)
+    expect(
+      readdirSync(join(dirname(third.outputPath!), 'avatars')).filter((name) =>
+        name.startsWith('avatar_')
+      )
+    ).toHaveLength(2)
+  })
+
+  it('keeps copied videos writable and can replace a legacy read-only video incrementally', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    chmodSync(state.videoPath, 0o444)
+    state.messages = [
+      message({
+        id: 'read-only-video',
+        type: '视频',
+        contentData: { type: 'video', md5: 'b'.repeat(32) }
+      })
+    ]
+    const request = {
+      targets: [target('fixture-user', '只读视频会话')],
+      format: 'html' as const,
+      outputName: 'read-only-video-fixture',
+      kinds: ['video'] as const,
+      includeMedia: true
+    }
+
+    const first = await runExport(
+      { ...request, jobId: 'read-only-video-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success, first.error).toBe(true)
+    const firstArchive = readArchive(first.outputPath!)
+    const videoPath = join(
+      dirname(first.outputPath!),
+      firstArchive.messages[0].exportMediaUrl as string
+    )
+    expect(statSync(videoPath).mode & 0o777).toBe(0o644)
+
+    chmodSync(videoPath, 0o444)
+    const second = await runExport(
+      { ...request, jobId: 'read-only-video-second', kinds: [...request.kinds] },
+      win as never
+    )
+
+    expect(second.success, second.error).toBe(true)
+    expect(second.outputPath).toBe(first.outputPath)
+    expect(statSync(videoPath).mode & 0o777).toBe(0o644)
+  })
+
+  it('merges two conversations in stable order without colliding identical message ids or media', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    state.messagesByUser = {
+      alpha: [
+        message({
+          id: 'same-id',
+          type: '图片',
+          createTime: 100,
+          contentData: { type: 'image', md5: 'a'.repeat(32), datName: 'same.dat' }
+        }),
+        message({ id: 'alpha-later', content: 'A2', createTime: 200 })
+      ],
+      beta: [
+        message({
+          id: 'same-id',
+          type: '图片',
+          createTime: 100,
+          contentData: { type: 'image', md5: 'a'.repeat(32), datName: 'same.dat' }
+        }),
+        message({ id: 'beta-later', content: 'B2', createTime: 150 })
+      ]
+    }
+
+    const result = await runExport(
+      {
+        jobId: 'multi-conversation',
+        targets: [target('alpha', '聊天 A'), target('beta', '聊天 B')],
+        format: 'html',
+        outputName: 'multi-conversation',
+        kinds: ['text', 'image'],
+        includeMedia: true
+      },
+      win as never
+    )
+
+    expect(result.success).toBe(true)
+    const archive = readArchive(result.outputPath!)
+    expect(archive.version).toBe(2)
+    expect(archive.conversations.map(({ id, messageCount }) => ({ id, messageCount }))).toEqual([
+      { id: 'alpha', messageCount: 2 },
+      { id: 'beta', messageCount: 2 }
+    ])
+    expect(
+      archive.messages.map((item) => [item.exportConversationId, item.id, item.createTime])
+    ).toEqual([
+      ['alpha', 'same-id', 100],
+      ['beta', 'same-id', 100],
+      ['beta', 'beta-later', 150],
+      ['alpha', 'alpha-later', 200]
+    ])
+    expect(state.exportReads).toEqual(['alpha', 'beta'])
+    const imagePaths = archive.messages
+      .filter((item) => item.id === 'same-id')
+      .map((item) => item.exportMediaUrl)
+    expect(new Set(imagePaths).size).toBe(1)
+    for (const imagePath of imagePaths) {
+      expect(existsSync(join(dirname(result.outputPath!), imagePath!))).toBe(true)
+    }
+  })
+
+  it('creates a replaceable ZIP containing the complete top-level archive folder', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const progress: unknown[][] = []
+    const win = {
+      isDestroyed: () => false,
+      webContents: { send: (...args: unknown[]) => progress.push(args) }
+    }
+    state.messages = [
+      message({
+        id: 'zip-image',
+        type: '图片',
+        contentData: { type: 'image', md5: 'a'.repeat(32), datName: 'fixture.dat' }
+      })
+    ]
+    const request = {
+      targets: [
+        {
+          ...target('fixture-user', 'ZIP 会话'),
+          avatarUrl:
+            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII='
+        }
+      ],
+      format: 'html' as const,
+      outputName: 'zip-fixture',
+      kinds: ['image'] as const,
+      includeMedia: true,
+      includeAvatars: true,
+      zip: true
+    }
+    const first = await runExport(
+      { ...request, jobId: 'zip-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success, first.error).toBe(true)
+    const firstSize = readFileSync(first.outputPath!).length
+    const second = await runExport(
+      { ...request, jobId: 'zip-second', kinds: [...request.kinds] },
+      win as never
+    )
+
+    expect(first.success).toBe(true)
     expect(second.success).toBe(true)
-    const archive = readArchive(second.outputPath!)
-    expect(archive.messages.find((item) => item.id === 'video')?.exportMediaUrl).toMatch(
-      /^media\/video_/
+    expect(second.outputPath).toBe(first.outputPath)
+    expect(firstSize).toBeGreaterThan(0)
+    expect(readFileSync(second.outputPath!).subarray(0, 2).toString()).toBe('PK')
+    const entries = execFileSync('unzip', ['-Z1', second.outputPath!], { encoding: 'utf8' })
+    const htmlPath = join(state.documents, 'WechatExplorer', '导出', 'zip-fixture', 'index.html')
+    const archive = readArchive(htmlPath)
+    expect(entries).toContain('zip-fixture/index.html')
+    expect(entries).toContain('zip-fixture/data/messages.js')
+    const avatarEntries = entries
+      .split('\n')
+      .filter((entry) => /zip-fixture\/avatars\/avatar_[0-9a-f]{16}\.png$/.test(entry))
+    expect(avatarEntries).toHaveLength(1)
+    expect(archive.conversations[0].avatarUrl).toBe(archive.messages[0].exportAvatarUrl)
+    expect(entries).toMatch(/zip-fixture\/media\/image_[0-9a-f]{16}\.png/)
+    expect(progress.some((args) => (args[1] as { phase?: string })?.phase === 'compressing')).toBe(
+      true
     )
-    expect(archive.messages.find((item) => item.id === 'file')?.exportMediaUrl).toMatch(
-      /^media\/file_/
+    expect(
+      readdirSync(join(state.documents, 'WechatExplorer', '导出')).some((name) =>
+        name.startsWith('zip-fixture.zip.tmp-')
+      )
+    ).toBe(false)
+  })
+
+  it('keeps the last complete ZIP when a replacement is cancelled during compression', async () => {
+    const { cancelExport, runExport } = await import('../../src/main/export-service')
+    state.messages = [message({ id: 'zip-cancel', content: '保留完整压缩包' })]
+    const request = {
+      targets: [target('fixture-user', '取消压缩会话')],
+      format: 'html' as const,
+      outputName: 'zip-cancel-fixture',
+      kinds: ['text'] as const,
+      includeMedia: false,
+      zip: true
+    }
+    const silentWindow = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    const first = await runExport(
+      { ...request, jobId: 'zip-cancel-first', kinds: [...request.kinds] },
+      silentWindow as never
     )
+    expect(first.success, first.error).toBe(true)
+    const completeZip = readFileSync(first.outputPath!)
+    const cancellingWindow = {
+      isDestroyed: () => false,
+      webContents: {
+        send: (_channel: string, progress: { phase: string }): void => {
+          if (progress.phase === 'compressing') cancelExport('zip-cancel-second')
+        }
+      }
+    }
+
+    const cancelled = await runExport(
+      { ...request, jobId: 'zip-cancel-second', kinds: [...request.kinds] },
+      cancellingWindow as never
+    )
+
+    expect(cancelled).toEqual({ success: false, error: '已取消' })
+    expect(readFileSync(first.outputPath!)).toEqual(completeZip)
+    expect(
+      readdirSync(join(state.documents, 'WechatExplorer', '导出')).some((name) =>
+        name.startsWith('zip-cancel-fixture.zip.tmp-')
+      )
+    ).toBe(false)
+  })
+
+  it('normalizes a legacy v1 single-chat archive into v2', async () => {
+    const { readHtmlArchive } = await import('../../src/main/export-service')
+    const outputDir = join(state.documents, 'legacy-archive')
+    mkdirSync(join(outputDir, 'data'), { recursive: true })
+    writeFileSync(
+      join(outputDir, 'data', 'messages.js'),
+      `window.__WECHAT_EXPORT__ = ${JSON.stringify({
+        version: 1,
+        sourceId: 'legacy-user',
+        name: '旧档案',
+        exportedAt: '2026-08-01T00:00:00.000Z',
+        messages: [message({ id: 'legacy-message', content: '旧消息' })]
+      })};\n`,
+      'utf8'
+    )
+
+    const archive = await readHtmlArchive(outputDir, [target('legacy-user', '旧档案')], '旧档案')
+
+    expect(archive.version).toBe(2)
+    expect(archive.conversations).toEqual([
+      expect.objectContaining({ id: 'legacy-user', name: '旧档案', messageCount: 1 })
+    ])
+    expect(archive.messages[0]).toMatchObject({
+      id: 'legacy-message',
+      exportConversationId: 'legacy-user',
+      exportConversationName: '旧档案'
+    })
   })
 
   it('refuses to merge a different conversation into an existing named archive', async () => {
@@ -365,8 +861,7 @@ describe('media export flow', () => {
     state.messages = [message({ id: 'text', content: 'fixture' })]
     const baseRequest = {
       jobId: 'source-first',
-      userMd5: 'first-user',
-      name: '第一个会话',
+      targets: [target('first-user', '第一个会话')],
       format: 'html' as const,
       outputName: 'same-name',
       kinds: ['text'] as const,
@@ -377,8 +872,7 @@ describe('media export flow', () => {
       {
         ...baseRequest,
         jobId: 'source-second',
-        userMd5: 'second-user',
-        name: '第二个会话',
+        targets: [target('second-user', '第二个会话')],
         kinds: [...baseRequest.kinds]
       },
       win as never
@@ -386,8 +880,10 @@ describe('media export flow', () => {
 
     expect(first.success).toBe(true)
     expect(second.success).toBe(false)
-    expect(second.error).toContain('另一个会话')
-    expect(readArchive(first.outputPath!).sourceId).toBe('first-user')
+    expect(second.error).toContain('聊天集合不同')
+    expect(readArchive(first.outputPath!).conversations.map((item) => item.id)).toEqual([
+      'first-user'
+    ])
   })
 
   it('uses message content as the stable fallback when the database supplies a random id', async () => {
@@ -414,13 +910,16 @@ describe('media export flow', () => {
     const result = await runExport(
       {
         jobId: 'self-name',
-        userMd5: 'fixture-user',
-        name: '本人昵称',
+        targets: [
+          {
+            ...target('fixture-user', '本人昵称'),
+            nameMap: { fixture_account: 'fixture_account' }
+          }
+        ],
         format: 'html',
         outputName: 'self-name',
         kinds: ['text'],
-        includeMedia: false,
-        nameMap: { fixture_account: 'fixture_account' }
+        includeMedia: false
       },
       win as never
     )
@@ -433,8 +932,7 @@ describe('media export flow', () => {
     const { runExport } = await import('../../src/main/export-service')
     const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
     const request = {
-      userMd5: 'fixture-user',
-      name: '增量昵称',
+      targets: [target('fixture-user', '增量昵称')],
       format: 'html' as const,
       outputName: 'incremental-self-name',
       kinds: ['text'] as const,

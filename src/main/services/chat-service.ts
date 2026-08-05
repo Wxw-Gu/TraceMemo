@@ -449,6 +449,23 @@ export async function listMessagesAsync(
   return mergeRecallArchiveMessages(userMd5, sourceMessages, startTime, endTime, options?.limit)
 }
 
+export async function listMessagesForExport(
+  userMd5: string,
+  startTime?: number,
+  endTime?: number
+): Promise<FormattedMessage[]> {
+  if (!dbRef) return []
+  const rawMessages = await dbRef.getUserMessagesForExport(userMd5, startTime, endTime)
+  const sourceMessages = listSourceMessages(userMd5, startTime, endTime, undefined, rawMessages)
+  const username = dbRef.getWcdb4Client().getUsernameByMd5(userMd5) || ''
+  recordRecallArchiveMessages(userMd5, username, sourceMessages)
+  const mergedMessages = mergeRecallArchiveMessages(userMd5, sourceMessages, startTime, endTime)
+  console.log(
+    `[ChatService] listMessagesForExport end md5=${userMd5} source=${sourceMessages.length} merged=${mergedMessages.length}`
+  )
+  return mergedMessages
+}
+
 export function getGroupSnapshot(userMd5: string): GroupSnapshot | null {
   if (!dbRef) return null
   const wcdb4Client = dbRef.getWcdb4Client()

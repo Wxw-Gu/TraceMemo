@@ -430,8 +430,13 @@ function parseLocationMessage(content: string): ParsedContent {
 
 function parseShareMessage(content: string): ParsedContent {
   const appMsgType = extractAppMsgType(content)
-  if (appMsgType === '19' || /<recorditem\b|<dataitem\b/i.test(content)) {
+  const isFileMessage = appMsgType === '6' || appMsgType === '74'
+  if (appMsgType === '19') {
     return parseForwardBundle(content)
+  }
+  if (!isFileMessage && /<recorditem\b|<dataitem\b/i.test(content)) {
+    const forwardBundle = parseForwardBundle(content)
+    if (forwardBundle.items.length > 0) return forwardBundle
   }
   if (appMsgType === '47' || /<(?:emoji|sticker|emoticon)\b/i.test(content)) {
     const sticker = parseStickerMessage(content)

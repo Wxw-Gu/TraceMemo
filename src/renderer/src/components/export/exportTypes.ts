@@ -30,15 +30,21 @@ export interface SelfInfo {
 
 export interface ExportWorkspaceProps {
   contacts: Contact[]
-  selectedContact: Contact | null
-  previewMessages: Message[]
+  initialContact: Contact | null
   selfInfo: SelfInfo | null
   dbReady: boolean
-  onSelectContact: (contact: Contact) => void
+  loadPreviewMessages: (contact: Contact) => Promise<Message[]>
   onOpenSettings: () => void
   exportTasks: ExportTaskRecord[]
   onStartExport: (request: ExportRequest) => Promise<ExportResult>
   onCancelExport: (jobId: string) => Promise<void>
 }
 
-export type { Contact, ExportJobProgress, ExportMessageKind, Message, ExportNameMode, ExportTaskRecord }
+export type {
+  Contact,
+  ExportJobProgress,
+  ExportMessageKind,
+  Message,
+  ExportNameMode,
+  ExportTaskRecord
+}

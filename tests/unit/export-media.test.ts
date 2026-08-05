@@ -25,10 +25,16 @@ describe('export media', () => {
     const html = renderExportPage('脱敏导出')
 
     expect(EXPORT_PAGE_SIZE).toBe(240)
-    expect(html).toContain('<script src="data/messages.js"></script>')
+    expect(html).toContain("dataScript.src = 'data/messages.js'")
+    expect(html).toContain('id="archive-loading"')
+    expect(html).toContain('正在加载聊天档案')
+    expect(html).toContain('requestAnimationFrame(() => window.setTimeout(loadArchiveData, 0))')
     expect(html).toContain('aria-label="聊天时间轴"')
+    expect(html).toContain('aria-expanded="')
+    expect(html).toContain('setExpandedTimelineYear')
     expect(html).toContain('data-kind="media"')
     expect(html).toContain('placeholder="搜索发送者或消息内容…"')
+    expect(html).toContain('font-size: 16px;')
     expect(html).toContain('filtered.slice(windowStart, windowEnd)')
     expect(html).toContain('windowStart = Math.max(0, windowEnd - PAGE_SIZE)')
     expect(html).toContain('scheduleWindowSlide')
@@ -68,7 +74,7 @@ describe('export media', () => {
 
     expect(dom.window.document.querySelectorAll('.message')).toHaveLength(EXPORT_PAGE_SIZE)
     expect(dom.window.document.querySelector('#count')?.textContent).toBe(
-      '已显示 240 / 筛选结果 500 / 全部 500'
+      '已显示 240 / 筛选 500 / 全部 500'
     )
     const list = dom.window.document.querySelector('#messages')!
     expect(list.querySelector('.message')?.getAttribute('data-index')).toBe('260')
@@ -90,8 +96,227 @@ describe('export media', () => {
     search.value = 'needle'
     search.dispatchEvent(new dom.window.Event('input'))
     expect(dom.window.document.querySelectorAll('.message')).toHaveLength(5)
-    expect(dom.window.document.querySelector('#count')?.textContent).toBe('筛选结果 5 / 全部 500')
+    expect(dom.window.document.querySelector('#count')?.textContent).toContain('筛选 5')
+    expect(dom.window.document.querySelectorAll('.search-highlight')).toHaveLength(5)
+    expect(dom.window.document.querySelectorAll('.locate-all')).toHaveLength(5)
     expect(dom.window.document.querySelectorAll('.timeline-month').length).toBeGreaterThan(1)
+    expect(
+      dom.window.document.querySelectorAll('.timeline-year[aria-expanded="true"]')
+    ).toHaveLength(1)
+    expect(dom.window.document.querySelectorAll('.timeline-months:not([hidden])')).toHaveLength(1)
+    dom.window.close()
+  })
+
+  it('does not match hidden sender ids when searching visible message text', () => {
+    const html = renderExportPage('搜索测试')
+    const dom = new JSDOM(html, { runScripts: 'outside-only' })
+    const messages: Message[] = [
+      {
+        id: 'hidden-sender-id-match',
+        from: 'user',
+        type: '普通文本',
+        datetime: '',
+        content: '这条消息不应命中',
+        name: 'Jamie',
+        senderId: 'wxid_fixture_member',
+        isSender: false,
+        createTime: 1_767_225_600
+      },
+      {
+        id: 'visible-content-match',
+        from: 'user',
+        type: '普通文本',
+        datetime: '',
+        content: 'https://example.com/xi',
+        name: 'Cherry',
+        senderId: 'wxid_fixture_self',
+        isSender: true,
+        createTime: 1_767_225_601
+      }
+    ]
+    Object.assign(dom.window, {
+      __WECHAT_EXPORT__: {
+        version: 1,
+        sourceId: 'fixture',
+        name: '搜索测试',
+        exportedAt: '2026-08-05T00:00:00.000Z',
+        messages
+      }
+    })
+
+    dom.window.eval(inlineScriptOf(html))
+    const search = dom.window.document.querySelector('#query') as HTMLInputElement
+    search.value = 'xi'
+    search.dispatchEvent(new dom.window.Event('input'))
+
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(1)
+    expect(dom.window.document.querySelector('.message')?.textContent).toContain(
+      'https://example.com/xi'
+    )
+    expect(dom.window.document.querySelectorAll('.search-highlight')).toHaveLength(1)
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
+      '已显示 1 / 筛选 1 / 全部 2'
+    )
+    dom.window.close()
+  })
+
+  it('filters a v2 merged archive by conversation before search and month counts', () => {
+    const html = renderExportPage('合并档案')
+    const dom = new JSDOM(html, { runScripts: 'outside-only' })
+    Object.assign(dom.window, {
+      __WECHAT_EXPORT__: {
+        version: 2,
+        name: '合并档案',
+        exportedAt: '2026-08-04T00:00:00.000Z',
+        conversations: [
+          { id: 'alpha', name: '聊天 A', type: 'user', messageCount: 2 },
+          { id: 'beta', name: '聊天 B', type: 'group', messageCount: 1 }
+        ],
+        messages: [
+          messageForArchive('alpha-1', 'alpha', '聊天 A', '共同关键词', 1_767_225_600),
+          messageForArchive('beta-1', 'beta', '聊天 B', '共同关键词', 1_769_904_000),
+          messageForArchive('alpha-2', 'alpha', '聊天 A', '仅 A 可见', 1_769_990_400)
+        ]
+      }
+    })
+
+    dom.window.eval(inlineScriptOf(html))
+
+    const filter = dom.window.document.querySelector('#conversation-filter')!
+    const trigger = dom.window.document.querySelector('#conversation-trigger') as HTMLButtonElement
+    const menu = dom.window.document.querySelector('#conversation-menu') as HTMLElement
+    expect(filter.hasAttribute('hidden')).toBe(false)
+    expect(filter.parentElement?.classList.contains('archive-heading')).toBe(true)
+    expect((dom.window.document.querySelector('#archive-title') as HTMLElement).hidden).toBe(true)
+    expect(trigger.textContent).toContain('全部聊天')
+    expect(menu.querySelectorAll('[data-conversation-id]')).toHaveLength(3)
+    expect(dom.window.document.querySelectorAll('.conversation-source')).toHaveLength(3)
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
+      '已显示 3 / 筛选 3 / 全部 3'
+    )
+    trigger.click()
+    ;(menu.querySelector('[data-conversation-id="alpha"]') as HTMLButtonElement).click()
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(2)
+    expect(dom.window.document.querySelectorAll('.conversation-source')).toHaveLength(0)
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
+      '已显示 2 / 筛选 2 / 当前聊天 2'
+    )
+    expect(dom.window.document.querySelectorAll('.timeline-month')).toHaveLength(2)
+
+    const search = dom.window.document.querySelector('#query') as HTMLInputElement
+    search.value = '共同关键词'
+    search.dispatchEvent(new dom.window.Event('input'))
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(1)
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
+      '已显示 1 / 筛选 1 / 当前聊天 2'
+    )
+    dom.window.close()
+  })
+
+  it('locates every filtered message kind in all messages, including outside the latest window', () => {
+    const html = renderExportPage('定位消息')
+    const dom = new JSDOM(html, { runScripts: 'outside-only' })
+    const categorized: Message[] = [
+      {
+        ...messageForArchive('target-text', 'fixture', '定位消息', '目标文字', 1),
+        type: '普通文本'
+      },
+      {
+        ...messageForArchive('target-media', 'fixture', '定位消息', '', 2),
+        type: '图片',
+        exportMediaType: 'image',
+        exportMediaUrl: 'media/target.jpg'
+      },
+      {
+        ...messageForArchive('target-voice', 'fixture', '定位消息', '', 3),
+        type: '语音',
+        voiceDataUrl: 'voices/target.wav'
+      },
+      {
+        ...messageForArchive('target-file', 'fixture', '定位消息', '', 4),
+        type: '文件',
+        exportMediaType: 'file',
+        exportMediaUrl: 'files/target.pdf'
+      },
+      {
+        ...messageForArchive('target-share', 'fixture', '定位消息', '', 5),
+        type: '分享',
+        contentData: { type: 'share', typeVal: '5', title: '目标分享' }
+      },
+      {
+        ...messageForArchive('target-system', 'fixture', '定位消息', '目标系统消息', 6),
+        from: 'system',
+        type: '系统消息',
+        contentData: { type: 'system', content: '目标系统消息' }
+      }
+    ]
+    const laterMessages = Array.from({ length: EXPORT_PAGE_SIZE }, (_, index) => ({
+      ...messageForArchive(
+        `later-${index}`,
+        'fixture',
+        '定位消息',
+        `稍后消息-${index}`,
+        100 + index
+      ),
+      type: '普通文本'
+    }))
+    Object.assign(dom.window, {
+      __WECHAT_EXPORT__: {
+        version: 1,
+        sourceId: 'fixture',
+        name: '定位消息',
+        messages: [...categorized, ...laterMessages]
+      }
+    })
+
+    dom.window.eval(inlineScriptOf(html))
+
+    expect(dom.window.document.querySelectorAll('.locate-all')).toHaveLength(0)
+    for (const kind of ['media', 'voice', 'file', 'share', 'system']) {
+      const filterButton = dom.window.document.querySelector(`[data-kind="${kind}"]`) as HTMLElement
+      filterButton.click()
+      const locateButton = dom.window.document.querySelector('.locate-all') as HTMLElement
+      expect(locateButton?.getAttribute('aria-label')).toBe('定位到聊天位置')
+      expect(locateButton?.querySelector('.locate-icon')?.textContent).toBe('⌖')
+      expect(locateButton?.querySelector('.locate-label')?.textContent).toBe('定位到聊天位置')
+      locateButton.click()
+      expect(
+        dom.window.document.querySelector('[data-kind="all"]')?.classList.contains('active')
+      ).toBe(true)
+      expect(
+        dom.window.document.querySelector('.message.located')?.getAttribute('data-index')
+      ).toBe(String(categorized.findIndex((message) => kindOfFixture(message) === kind)))
+    }
+
+    const textFilter = dom.window.document.querySelector('[data-kind="text"]') as HTMLElement
+    textFilter.click()
+    const search = dom.window.document.querySelector('#query') as HTMLInputElement
+    search.value = '目标文字'
+    search.dispatchEvent(new dom.window.Event('input'))
+    expect(dom.window.document.querySelector('.search-highlight')?.textContent).toBe('目标文字')
+    ;(dom.window.document.querySelector('.locate-all') as HTMLElement).click()
+    expect(
+      dom.window.document.querySelector('[data-kind="all"]')?.classList.contains('active')
+    ).toBe(true)
+    expect(dom.window.document.querySelector('.message.located')?.getAttribute('data-index')).toBe(
+      '0'
+    )
+    expect(dom.window.document.querySelector('.message.located')?.textContent).toContain('目标文字')
+
+    search.value = '稍后消息-137'
+    search.dispatchEvent(new dom.window.Event('input'))
+    expect(
+      dom.window.document.querySelector('[data-kind="all"]')?.classList.contains('active')
+    ).toBe(true)
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(1)
+    expect(dom.window.document.querySelector('.search-highlight')?.textContent).toBe('稍后消息-137')
+    ;(dom.window.document.querySelector('.locate-all') as HTMLElement).click()
+    expect(search.value).toBe('')
+    expect(dom.window.document.querySelectorAll('.search-highlight')).toHaveLength(0)
+    expect(dom.window.document.querySelectorAll('.locate-all')).toHaveLength(0)
+    expect(dom.window.document.querySelector('.message.located')?.textContent).toContain(
+      '稍后消息-137'
+    )
     dom.window.close()
   })
 
@@ -158,6 +383,36 @@ describe('export media', () => {
     expect(html).toContain('aria-label="关闭图片预览"')
     expect(html).toContain("closeButton.addEventListener('click', closeLightbox)")
     expect(html).toContain('if (event.target === box) closeLightbox()')
-    expect(html).toContain("if (event.key === 'Escape') closeLightbox()")
+    expect(html).toContain("if (event.key === 'Escape')")
+    expect(html).toContain('closeLightbox()')
   })
 })
+
+function messageForArchive(
+  id: string,
+  conversationId: string,
+  conversationName: string,
+  content: string,
+  createTime: number
+): Message {
+  return {
+    id,
+    from: 'user',
+    type: '普通文本',
+    datetime: '',
+    content,
+    isSender: false,
+    createTime,
+    exportConversationId: conversationId,
+    exportConversationName: conversationName
+  }
+}
+
+function kindOfFixture(message: Message): string {
+  if (message.exportMediaType === 'image') return 'media'
+  if (message.voiceDataUrl) return 'voice'
+  if (message.exportMediaType === 'file') return 'file'
+  if (message.contentData?.type === 'share') return 'share'
+  if (message.contentData?.type === 'system') return 'system'
+  return 'text'
+}

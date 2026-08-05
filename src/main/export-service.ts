@@ -1,14 +1,16 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, nativeImage, shell } from 'electron'
 import { createHash } from 'crypto'
-import { promises as fs } from 'fs'
+import { createReadStream, createWriteStream, promises as fs } from 'fs'
 import { extname, join } from 'path'
 import { fileURLToPath } from 'url'
+import { ZipArchive, type Archiver } from 'archiver'
 import * as chat from './services/chat-service'
 import type {
   ExportJobProgress,
   ExportMessageKind,
   ExportRequest,
-  ExportResult
+  ExportResult,
+  ExportTarget
 } from '../shared/export'
 import type { Message } from '../shared/types'
 import { VoiceService } from './voice-service'
@@ -23,8 +25,18 @@ import { mergeCachedSelfInfo } from './services/bootstrap-cache'
 import type { VoiceRecognitionUseCase } from './voice-pipeline/voice-recognition-use-case'
 
 const jobs = new Set<string>()
+const activeArchives = new Map<string, Archiver>()
 const safeFilePart = (value: string): string =>
   value.replace(/[\\/:*?"<>|]/g, '_').trim() || '聊天档案'
+const copyWritableExportFile = async (source: string, destination: string): Promise<void> => {
+  try {
+    await fs.chmod(destination, 0o644)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  await fs.copyFile(source, destination)
+  await fs.chmod(destination, 0o644)
+}
 const exportStamp = (): string => {
   const date = new Date()
   const pad = (value: number): string => String(value).padStart(2, '0')
@@ -32,38 +44,21 @@ const exportStamp = (): string => {
 }
 const imageKeys = new ImageKeyConfigService()
 
-const copyExportAsset = async (
-  source: string,
-  destination: string
-): Promise<{ success: true } | { success: false; error: string }> => {
-  try {
-    await fs.copyFile(source, destination)
-    return { success: true }
-  } catch (error) {
-    try {
-      const [sourceStat, destinationStat] = await Promise.all([
-        fs.stat(source),
-        fs.stat(destination)
-      ])
-      if (
-        sourceStat.isFile() &&
-        destinationStat.isFile() &&
-        sourceStat.size > 0 &&
-        sourceStat.size === destinationStat.size
-      ) {
-        return { success: true }
-      }
-    } catch {
-      // The original copy error below is more useful than a secondary stat error.
-    }
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : String(error)
-    }
-  }
+export interface HtmlExportConversation {
+  id: string
+  name: string
+  type: 'user' | 'group'
+  avatarUrl?: string
+  messageCount: number
 }
 
-export interface HtmlExportArchive {
+interface HtmlExportAvatarVersion {
+  sourceHash: string
+  visualHash?: string
+  avatarUrl: string
+}
+
+interface HtmlExportArchiveV1 {
   version: 1
   sourceId: string
   name: string
@@ -71,20 +66,166 @@ export interface HtmlExportArchive {
   messages: Message[]
 }
 
+export interface HtmlExportArchive {
+  version: 2
+  name: string
+  exportedAt: string
+  conversations: HtmlExportConversation[]
+  messages: Message[]
+  avatarVersions?: Record<string, HtmlExportAvatarVersion>
+}
+
+const htmlArchiveResourcePrefixes = {
+  voices: ['voice_'],
+  media: ['image_', 'video_', 'sticker_', 'file_'],
+  files: ['file_'],
+  avatars: ['avatar_', 'conversation_']
+} as const
+type HtmlArchiveResourceDirectory = keyof typeof htmlArchiveResourcePrefixes
+
 const archiveDataPrefix = 'window.__WECHAT_EXPORT__ = '
 const hashPart = (value: string, length = 16): string =>
   createHash('sha1').update(value).digest('hex').slice(0, length)
+const bufferHashPart = (buffer: Buffer, length = 16): string =>
+  createHash('sha1').update(buffer).digest('hex').slice(0, length)
+const fileHashPart = async (filePath: string, length = 16): Promise<string> => {
+  const hash = createHash('sha1')
+  await new Promise<void>((resolve, reject) => {
+    const input = createReadStream(filePath)
+    input.on('data', (chunk) => hash.update(chunk))
+    input.once('end', resolve)
+    input.once('error', reject)
+  })
+  return hash.digest('hex').slice(0, length)
+}
+const avatarFileName = (buffer: Buffer, extension: string): string =>
+  `avatar_${bufferHashPart(buffer)}.${extension}`
+const avatarSourceHash = (source: string): string => hashPart(source, 24)
+const avatarIdentityKey = (conversationId: string, message: Message): string =>
+  `${conversationId}:${
+    message.senderId ||
+    (message.isSender ? '__self__' : message.from || message.name || '__unknown__')
+  }`
+
+const avatarVisualHash = (buffer: Buffer): string | null => {
+  try {
+    const image = nativeImage.createFromBuffer(buffer)
+    if (image.isEmpty()) return null
+    const bitmap = image.resize({ width: 9, height: 8, quality: 'good' }).toBitmap()
+    if (bitmap.length < 9 * 8 * 4) return null
+    let hash = 0n
+    let red = 0
+    let green = 0
+    let blue = 0
+    for (let y = 0; y < 8; y += 1) {
+      for (let x = 0; x < 8; x += 1) {
+        const left = (y * 9 + x) * 4
+        const right = left + 4
+        blue += bitmap[left]
+        green += bitmap[left + 1]
+        red += bitmap[left + 2]
+        const leftLuma = bitmap[left + 2] * 3 + bitmap[left + 1] * 6 + bitmap[left]
+        const rightLuma = bitmap[right + 2] * 3 + bitmap[right + 1] * 6 + bitmap[right]
+        hash = (hash << 1n) | (leftLuma > rightLuma ? 1n : 0n)
+      }
+    }
+    const averageHex = [red, green, blue]
+      .map((total) =>
+        Math.round(total / 64)
+          .toString(16)
+          .padStart(2, '0')
+      )
+      .join('')
+    return `${hash.toString(16).padStart(16, '0')}:${averageHex}`
+  } catch {
+    return null
+  }
+}
+
+const parseAvatarVisualHash = (value: string): { shape: bigint; color: number[] } | null => {
+  const match = /^([0-9a-f]{16}):([0-9a-f]{6})$/i.exec(value)
+  if (!match) return null
+  return {
+    shape: BigInt(`0x${match[1]}`),
+    color: [0, 2, 4].map((offset) => Number.parseInt(match[2].slice(offset, offset + 2), 16))
+  }
+}
+
+const avatarHashDistance = (left: bigint, right: bigint): number => {
+  let difference = left ^ right
+  let distance = 0
+  while (difference) {
+    difference &= difference - 1n
+    distance += 1
+  }
+  return distance
+}
+
+const avatarsLookTheSame = (left?: string | null, right?: string | null): boolean => {
+  if (!left || !right) return false
+  const leftHash = parseAvatarVisualHash(left)
+  const rightHash = parseAvatarVisualHash(right)
+  if (!leftHash || !rightHash || avatarHashDistance(leftHash.shape, rightHash.shape) > 5) {
+    return false
+  }
+  return leftHash.color.every((channel, index) => Math.abs(channel - rightHash.color[index]) <= 12)
+}
+
+const htmlArchiveSourceSignature = (message: Message): string =>
+  JSON.stringify([
+    message.type,
+    message.content,
+    message.contentData || null,
+    message.localId || null,
+    message.serverId || null,
+    message.createTime || null,
+    message.sessionId || null,
+    message.senderId || null,
+    message.isSender,
+    message.recalled || false,
+    message.recalledBy || null
+  ])
+
+const htmlArchiveResourcePath = (outputDir: string, value?: string): string | null => {
+  if (!value) return null
+  const normalized = value.replace(/\\/g, '/').split(/[?#]/, 1)[0]
+  const [directory, fileName, ...rest] = normalized.split('/')
+  if (
+    !directory ||
+    !fileName ||
+    rest.length > 0 ||
+    !Object.prototype.hasOwnProperty.call(htmlArchiveResourcePrefixes, directory)
+  ) {
+    return null
+  }
+  return join(outputDir, directory, fileName)
+}
+
+const htmlArchiveResourceExists = async (outputDir: string, value?: string): Promise<boolean> => {
+  const filePath = htmlArchiveResourcePath(outputDir, value)
+  if (!filePath) return false
+  try {
+    const stat = await fs.stat(filePath)
+    if (!stat.isFile()) return false
+    if ((stat.mode & 0o200) === 0) await fs.chmod(filePath, 0o644)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
 
 export const exportMessageKey = (message: Message, sourceId = ''): string => {
+  const conversationId = message.exportConversationId || sourceId
   const sessionId = message.sessionId || sourceId
   if (message.localId && message.createTime) {
-    return `${sessionId}:local:${message.localId}:${message.createTime}`
+    return `${conversationId}:${sessionId}:local:${message.localId}:${message.createTime}`
   }
-  if (message.serverId) return `${sessionId}:server:${message.serverId}`
+  if (message.serverId) return `${conversationId}:${sessionId}:server:${message.serverId}`
   if (message.id && message.createTime && !/^0\.\d+$/.test(message.id)) {
-    return `${sessionId}:id:${message.id}:${message.createTime}`
+    return `${conversationId}:${sessionId}:id:${message.id}:${message.createTime}`
   }
-  return `${sessionId}:fallback:${hashPart(
+  return `${conversationId}:${sessionId}:fallback:${hashPart(
     JSON.stringify([
       message.createTime || 0,
       message.senderId || '',
@@ -123,7 +264,8 @@ const mergeArchiveMessage = (previous: Message, current: Message): Message => {
 export function mergeHtmlArchiveMessages(
   previous: Message[],
   current: Message[],
-  sourceId = ''
+  sourceId = '',
+  conversationOrder: string[] = []
 ): Message[] {
   const merged = new Map<string, Message>()
   for (const message of previous) merged.set(exportMessageKey(message, sourceId), message)
@@ -135,6 +277,10 @@ export function mergeHtmlArchiveMessages(
   return Array.from(merged.values()).sort((left, right) => {
     const byTime = Number(left.createTime || 0) - Number(right.createTime || 0)
     if (byTime !== 0) return byTime
+    const byConversation =
+      conversationOrder.indexOf(left.exportConversationId || sourceId) -
+      conversationOrder.indexOf(right.exportConversationId || sourceId)
+    if (byConversation !== 0) return byConversation
     return Number(left.localId || 0) - Number(right.localId || 0)
   })
 }
@@ -159,9 +305,18 @@ export function normalizeHtmlArchiveSelfNames(
   })
 }
 
+export function stripHtmlArchiveInlineAvatars(messages: Message[]): Message[] {
+  return messages.map((message) => {
+    if (message.img == null) return message
+    const archiveMessage = { ...message }
+    delete archiveMessage.img
+    return archiveMessage
+  })
+}
+
 export async function readHtmlArchive(
   outputDir: string,
-  sourceId: string,
+  targets: ExportTarget[],
   name: string
 ): Promise<HtmlExportArchive> {
   const dataPath = join(outputDir, 'data', 'messages.js')
@@ -170,7 +325,18 @@ export async function readHtmlArchive(
     source = await fs.readFile(dataPath, 'utf8')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { version: 1, sourceId, name, exportedAt: new Date(0).toISOString(), messages: [] }
+      return {
+        version: 2,
+        name,
+        exportedAt: new Date(0).toISOString(),
+        conversations: targets.map((target) => ({
+          id: target.userMd5,
+          name: target.name,
+          type: target.type,
+          messageCount: 0
+        })),
+        messages: []
+      }
     }
     throw error
   }
@@ -180,21 +346,101 @@ export async function readHtmlArchive(
     .slice(assignment + 1)
     .trim()
     .replace(/;\s*$/, '')
-  let archive: HtmlExportArchive
+  let parsed: HtmlExportArchive | HtmlExportArchiveV1
   try {
-    archive = JSON.parse(json) as HtmlExportArchive
+    parsed = JSON.parse(json) as HtmlExportArchive | HtmlExportArchiveV1
   } catch {
     throw new Error('现有 HTML 档案数据已损坏，请从 messages.js.bak 恢复或更换导出名称')
   }
-  if (archive.sourceId && archive.sourceId !== sourceId) {
-    throw new Error('同名导出目录已属于另一个会话，请修改文件名称后重试')
+  const expectedIds = targets.map((target) => target.userMd5).sort()
+  if (parsed.version === 1) {
+    if (targets.length !== 1 || parsed.sourceId !== targets[0].userMd5) {
+      throw new Error('同名导出目录的聊天集合不同，请修改文件名称后重试')
+    }
+    return {
+      version: 2,
+      name: parsed.name || name,
+      exportedAt: parsed.exportedAt || new Date(0).toISOString(),
+      conversations: [
+        {
+          id: targets[0].userMd5,
+          name: targets[0].name,
+          type: targets[0].type,
+          messageCount: Array.isArray(parsed.messages) ? parsed.messages.length : 0
+        }
+      ],
+      messages: (Array.isArray(parsed.messages) ? parsed.messages : []).map((message) => ({
+        ...message,
+        exportConversationId: targets[0].userMd5,
+        exportConversationName: targets[0].name
+      }))
+    }
+  }
+  const actualIds = (Array.isArray(parsed.conversations) ? parsed.conversations : [])
+    .map((conversation) => conversation.id)
+    .sort()
+  if (actualIds.join('|') !== expectedIds.join('|')) {
+    throw new Error('同名导出目录的聊天集合不同，请修改文件名称后重试')
   }
   return {
-    version: 1,
-    sourceId,
-    name: archive.name || name,
-    exportedAt: archive.exportedAt || new Date(0).toISOString(),
-    messages: Array.isArray(archive.messages) ? archive.messages : []
+    version: 2,
+    name: parsed.name || name,
+    exportedAt: parsed.exportedAt || new Date(0).toISOString(),
+    conversations: parsed.conversations,
+    messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+    avatarVersions: parsed.avatarVersions
+  }
+}
+
+async function writeZipArchive(
+  outputDir: string,
+  zipPath: string,
+  folderName: string,
+  jobId: string
+): Promise<void> {
+  const temporaryPath = `${zipPath}.tmp-${process.pid}-${Date.now()}`
+  await fs.rm(temporaryPath, { force: true })
+  const output = createWriteStream(temporaryPath)
+  await new Promise<void>((resolve, reject) => {
+    output.once('open', () => resolve())
+    output.once('error', reject)
+  })
+  const archive = new ZipArchive({ zlib: { level: 6 } })
+  activeArchives.set(jobId, archive)
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false
+      const finish = (error?: Error): void => {
+        if (settled) return
+        settled = true
+        if (error) reject(error)
+        else resolve()
+      }
+      output.on('close', () => finish())
+      output.on('error', finish)
+      archive.on('warning', (error) => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') finish(error)
+      })
+      archive.on('error', finish)
+      archive.pipe(output)
+      archive.directory(outputDir, safeFilePart(folderName))
+      void archive.finalize().catch(finish)
+    })
+    if (!jobs.has(jobId)) throw new Error('已取消')
+    try {
+      await fs.rename(temporaryPath, zipPath)
+    } catch (error) {
+      if (!['EEXIST', 'EPERM'].includes((error as NodeJS.ErrnoException).code || '')) throw error
+      await fs.rm(zipPath, { force: true })
+      await fs.rename(temporaryPath, zipPath)
+    }
+  } finally {
+    activeArchives.delete(jobId)
+    if (!output.closed) {
+      output.destroy()
+      await new Promise<void>((resolve) => output.once('close', () => resolve()))
+    }
+    await fs.rm(temporaryPath, { force: true })
   }
 }
 
@@ -222,6 +468,54 @@ export async function writeHtmlArchive(
     await fs.rename(temporaryPath, dataPath)
   } finally {
     await fs.rm(temporaryPath, { force: true })
+  }
+}
+
+export async function pruneHtmlArchiveResources(
+  outputDir: string,
+  archive: HtmlExportArchive
+): Promise<void> {
+  const referenced = Object.fromEntries(
+    Object.keys(htmlArchiveResourcePrefixes).map((directory) => [directory, new Set<string>()])
+  ) as Record<HtmlArchiveResourceDirectory, Set<string>>
+  const addReference = (value?: string): void => {
+    if (!value) return
+    const path = value.replace(/\\/g, '/').split(/[?#]/, 1)[0]
+    const separator = path.indexOf('/')
+    if (separator <= 0 || path.indexOf('/', separator + 1) >= 0) return
+    const directory = path.slice(0, separator) as HtmlArchiveResourceDirectory
+    const fileName = path.slice(separator + 1)
+    if (!referenced[directory] || !fileName) return
+    referenced[directory].add(fileName)
+  }
+
+  for (const conversation of archive.conversations) addReference(conversation.avatarUrl)
+  for (const message of archive.messages) {
+    addReference(message.voiceDataUrl)
+    addReference(message.exportMediaUrl)
+    addReference(message.exportAvatarUrl)
+  }
+
+  for (const [directory, prefixes] of Object.entries(htmlArchiveResourcePrefixes) as [
+    HtmlArchiveResourceDirectory,
+    readonly string[]
+  ][]) {
+    let entries
+    try {
+      entries = await fs.readdir(join(outputDir, directory), { withFileTypes: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      throw error
+    }
+    for (const entry of entries) {
+      if (
+        entry.isFile() &&
+        prefixes.some((prefix) => entry.name.startsWith(prefix)) &&
+        !referenced[directory].has(entry.name)
+      ) {
+        await fs.unlink(join(outputDir, directory, entry.name))
+      }
+    }
   }
 }
 
@@ -336,13 +630,59 @@ export async function runExport(
     if (!win.isDestroyed()) win.webContents.send('export:progress', p)
   }
   try {
+    const targets = request.targets || []
+    if (targets.length < 1 || targets.length > 5) {
+      throw new Error('一次导出必须选择 1 到 5 个聊天')
+    }
+    if (new Set(targets.map((target) => target.userMd5)).size !== targets.length) {
+      throw new Error('导出聊天不能重复')
+    }
+    if (targets.length > 1 && request.format !== 'html') {
+      throw new Error('多聊天合并仅支持 HTML 格式')
+    }
+    const archiveName = safeFilePart(request.outputName)
+    const targetById = new Map(targets.map((target) => [target.userMd5, target]))
     send({ jobId: request.jobId, phase: 'reading', processed: 0, total: 100, percent: 0 })
     await new Promise<void>((resolve) => setImmediate(resolve))
-    const messages = (
-      await chat.listMessagesAsync(request.userMd5, request.startTime, request.endTime)
-    ).filter((message) => request.kinds.includes(kindOf(message)))
+    const messageEntries: { message: Message; targetOrder: number; messageOrder: number }[] = []
+    for (const [targetOrder, target] of targets.entries()) {
+      if (!jobs.has(request.jobId)) {
+        send({ jobId: request.jobId, phase: 'cancelled', processed: 0, percent: 5 })
+        return { success: false, error: '已取消' }
+      }
+      const targetMessages = (
+        await chat.listMessagesForExport(target.userMd5, request.startTime, request.endTime)
+      ).filter((message) => request.kinds.includes(kindOf(message)))
+      for (const [messageOrder, message] of targetMessages.entries()) {
+        messageEntries.push({
+          message: {
+            ...message,
+            exportConversationId: target.userMd5,
+            exportConversationName: target.name
+          },
+          targetOrder,
+          messageOrder
+        })
+      }
+      send({
+        jobId: request.jobId,
+        phase: 'reading',
+        processed: targetOrder + 1,
+        total: targets.length,
+        percent: Math.max(1, Math.round(((targetOrder + 1) / targets.length) * 10))
+      })
+    }
+    const messages = messageEntries
+      .sort((left, right) => {
+        const byTime = Number(left.message.createTime || 0) - Number(right.message.createTime || 0)
+        if (byTime !== 0) return byTime
+        if (left.targetOrder !== right.targetOrder) return left.targetOrder - right.targetOrder
+        return left.messageOrder - right.messageOrder
+      })
+      .map((entry) => entry.message)
     const rawSelfInfo = await chat.getSelfAccountInfoAsync()
     const selfInfo = rawSelfInfo ? mergeCachedSelfInfo(rawSelfInfo.accountRoot, rawSelfInfo) : null
+    const client = chat.getChatDb()?.getWcdb4Client()
     const isUsableSelfName = (value: string | undefined): value is string => {
       const name = String(value || '').trim()
       if (!name) return false
@@ -351,6 +691,9 @@ export async function runExport(
       return true
     }
     for (const message of messages) {
+      const target = targetById.get(message.exportConversationId || '')
+      const peerUsername = target ? client?.getUsernameByMd5(target.userMd5) || '' : ''
+      const isGroupChat = target?.type === 'group' || peerUsername.endsWith('@chatroom')
       message.exportMediaUrl = undefined
       message.exportMediaType = undefined
       message.exportMediaName = undefined
@@ -359,8 +702,22 @@ export async function runExport(
       message.voiceTranscript = undefined
       message.voiceTranscriptError = undefined
       message.exportShowAvatar = request.includeAvatars !== false
-      const mappedName = message.senderId ? request.nameMap?.[message.senderId] : undefined
-      if (mappedName && (!message.isSender || isUsableSelfName(mappedName))) {
+      if (!isGroupChat && !message.senderId) {
+        message.senderId = message.isSender ? selfInfo?.wxid : peerUsername || message.sessionId
+      }
+      const mappedName = message.senderId ? target?.nameMap?.[message.senderId] : undefined
+      if (!isGroupChat) {
+        message.name = message.isSender
+          ? isUsableSelfName(selfInfo?.nickname)
+            ? selfInfo.nickname
+            : isUsableSelfName(message.name)
+              ? message.name
+              : '我'
+          : target?.name || message.name || '联系人'
+        if (!message.img) {
+          message.img = message.isSender ? selfInfo?.avatar : target?.avatarUrl
+        }
+      } else if (mappedName && (!message.isSender || isUsableSelfName(mappedName))) {
         message.name = mappedName
       } else if (message.isSender && isUsableSelfName(selfInfo?.nickname)) {
         message.name = selfInfo.nickname
@@ -397,11 +754,45 @@ export async function runExport(
         ? join(outputDir, 'index.html')
         : join(root, `${outputFolder}.${ext}`)
     if (request.format === 'html') {
-      const previousArchive = await readHtmlArchive(outputDir, request.userMd5, request.name)
+      const previousArchive = await readHtmlArchive(outputDir, targets, archiveName)
+      const previousMessagesByKey = new Map(
+        previousArchive.messages.map((message) => [exportMessageKey(message), message])
+      )
+      const latestPreviousAvatarUrls = new Map<string, string>()
+      for (const message of previousArchive.messages) {
+        if (!message.exportAvatarUrl) continue
+        const conversationId = message.exportConversationId || targets[0].userMd5
+        latestPreviousAvatarUrls.set(
+          avatarIdentityKey(conversationId, message),
+          message.exportAvatarUrl
+        )
+      }
+      const reusablePreviousMessages = new Map<Message, Message>()
+      for (const message of messages) {
+        const previous = previousMessagesByKey.get(exportMessageKey(message))
+        if (
+          previous &&
+          htmlArchiveSourceSignature(previous) === htmlArchiveSourceSignature(message)
+        ) {
+          reusablePreviousMessages.set(message, previous)
+        }
+      }
+      const resourceExistence = new Map<string, Promise<boolean>>()
+      const resourceExists = (value?: string): Promise<boolean> => {
+        if (!value) return Promise.resolve(false)
+        const existing = resourceExistence.get(value)
+        if (existing) return existing
+        const pending = htmlArchiveResourceExists(outputDir, value)
+        resourceExistence.set(value, pending)
+        return pending
+      }
+      const markResourceExists = (value: string): void => {
+        resourceExistence.set(value, Promise.resolve(true))
+      }
       await fs.mkdir(join(outputDir, 'voices'), { recursive: true })
       await fs.mkdir(join(outputDir, 'media'), { recursive: true })
+      await fs.mkdir(join(outputDir, 'files'), { recursive: true })
       await fs.mkdir(join(outputDir, 'avatars'), { recursive: true })
-      const client = chat.getChatDb()?.getWcdb4Client()
       const avatarUsernames = Array.from(
         new Set(
           messages
@@ -409,10 +800,14 @@ export async function runExport(
             .filter((value): value is string => Boolean(value))
         )
       )
+      const requestedAvatarUrls = Object.assign(
+        {},
+        ...targets.map((target) => target.avatarUrls || {})
+      ) as Record<string, string>
       const avatarMap =
         request.includeAvatars === false
           ? {}
-          : { ...chat.getContactAvatars(avatarUsernames), ...(request.avatarUrls || {}) }
+          : { ...(await chat.getContactAvatars(avatarUsernames)), ...requestedAvatarUrls }
       const imageConfig = imageKeys.getConfig()
       const imageService =
         client && imageConfig.aesKey
@@ -422,13 +817,75 @@ export async function runExport(
       const stickerService = client ? new StickerService(client) : null
       const fileService = client ? new FileAssetService(client) : null
       const exportedAvatars = new Map<string, string>()
+      const previousAvatarVersions = previousArchive.avatarVersions || {}
+      const avatarVersions: Record<string, HtmlExportAvatarVersion> = {
+        ...previousAvatarVersions
+      }
+      const resolveExportAvatar = async (
+        identity: string,
+        source: string,
+        legacyAvatarUrl?: string
+      ): Promise<string | undefined> => {
+        const sourceHash = avatarSourceHash(source)
+        const previousVersion = previousAvatarVersions[identity]
+        const resolved = await readAvatarAsset(source)
+        if (!resolved?.buffer) return undefined
+        const visualHash = avatarVisualHash(resolved.buffer)
+        const previousAvatarUrl = previousVersion?.avatarUrl || legacyAvatarUrl
+        if (previousAvatarUrl && (await resourceExists(previousAvatarUrl))) {
+          const previousVisualHash =
+            previousVersion?.visualHash ||
+            avatarVisualHash(await fs.readFile(join(outputDir, previousAvatarUrl)))
+          if (avatarsLookTheSame(previousVisualHash, visualHash)) {
+            avatarVersions[identity] = {
+              sourceHash,
+              visualHash: visualHash || previousVisualHash || undefined,
+              avatarUrl: previousAvatarUrl
+            }
+            return previousAvatarUrl
+          }
+        }
+
+        const avatarName = avatarFileName(resolved.buffer, resolved.extension || 'jpg')
+        const avatarUrl = `avatars/${avatarName}`
+        if (!(await resourceExists(avatarUrl))) {
+          await fs.writeFile(join(outputDir, 'avatars', avatarName), resolved.buffer)
+          markResourceExists(avatarUrl)
+        }
+        avatarVersions[identity] = {
+          sourceHash,
+          visualHash: visualHash || undefined,
+          avatarUrl
+        }
+        return avatarUrl
+      }
+      const conversationAvatarUrls = new Map<string, string>()
+      if (request.includeAvatars !== false) {
+        for (const target of targets) {
+          if (!jobs.has(request.jobId)) throw new Error('已取消')
+          if (!target.avatarUrl) continue
+          const avatarUrl = await resolveExportAvatar(
+            `conversation:${target.userMd5}`,
+            target.avatarUrl,
+            previousArchive.conversations.find((item) => item.id === target.userMd5)?.avatarUrl
+          )
+          if (avatarUrl) conversationAvatarUrls.set(target.userMd5, avatarUrl)
+        }
+      }
       const voiceService =
         request.includeMedia && chat.getChatDb()
           ? new VoiceService(chat.getChatDb()!.getWcdb4Client())
           : null
       if (voiceService) {
         for (const message of messages) {
+          if (!jobs.has(request.jobId)) throw new Error('已取消')
           if (kindOf(message) !== 'voice') continue
+          const previous = reusablePreviousMessages.get(message)
+          if (previous?.voiceDataUrl && (await resourceExists(previous.voiceDataUrl))) {
+            message.voiceDataUrl = previous.voiceDataUrl
+            message.voiceDuration = previous.voiceDuration
+            continue
+          }
           if (!message.sessionId || message.localId == null || !message.createTime) {
             keepMediaError(request, message, '语音标识不完整，无法定位本地语音')
             continue
@@ -450,10 +907,14 @@ export async function runExport(
               keepMediaError(request, message, reason)
               continue
             }
-            const voiceName = `voice_${hashPart(exportMessageKey(message, request.userMd5))}.wav`
             const audioBuffer = Buffer.from(voice.data, 'base64')
-            await fs.writeFile(join(outputDir, 'voices', voiceName), audioBuffer)
-            message.voiceDataUrl = `voices/${voiceName}`
+            const voiceName = `voice_${bufferHashPart(audioBuffer)}.wav`
+            const voiceUrl = `voices/${voiceName}`
+            if (!(await resourceExists(voiceUrl))) {
+              await fs.writeFile(join(outputDir, 'voices', voiceName), audioBuffer)
+              markResourceExists(voiceUrl)
+            }
+            message.voiceDataUrl = voiceUrl
             message.voiceDuration = Math.max(1, Math.round(audioBuffer.length / (24000 * 2)))
             if (request.includeVoiceTranscripts) {
               if (!voiceRecognition) {
@@ -488,23 +949,68 @@ export async function runExport(
         }
       }
       for (const [index, message] of messages.entries()) {
-        message.exportShowAvatar = request.includeAvatars !== false
-        const avatar = (message.senderId ? avatarMap[message.senderId] : undefined) || message.img
-        const resolvedAvatar = avatar ? await readAvatarAsset(avatar) : null
-        const avatarBuffer = resolvedAvatar?.buffer || null
-        const avatarExtension = resolvedAvatar?.extension || 'jpg'
-        if (avatarBuffer) {
-          const avatarKey =
-            message.senderId || avatar || `message_${exportMessageKey(message, request.userMd5)}`
-          let avatarName = exportedAvatars.get(avatarKey)
-          if (!avatarName) {
-            avatarName = `avatar_${hashPart(avatarKey)}.${avatarExtension}`
-            await fs.writeFile(join(outputDir, 'avatars', avatarName), avatarBuffer)
-            exportedAvatars.set(avatarKey, avatarName)
-          }
-          message.exportAvatarUrl = `avatars/${avatarName}`
+        if (!jobs.has(request.jobId)) {
+          send({
+            jobId: request.jobId,
+            phase: 'cancelled',
+            processed: index,
+            total: messages.length,
+            percent: 15 + Math.round((index / Math.max(messages.length, 1)) * 75)
+          })
+          return { success: false, error: '已取消' }
         }
+        const conversationId = message.exportConversationId || targets[0].userMd5
+        message.exportShowAvatar = request.includeAvatars !== false
+        const previous = reusablePreviousMessages.get(message)
+        const previousMessage = previousMessagesByKey.get(exportMessageKey(message))
+        const avatar = (message.senderId ? avatarMap[message.senderId] : undefined) || message.img
+        const avatarKey = avatarIdentityKey(conversationId, message)
+        let avatarUrl: string | undefined
+        if (
+          request.includeAvatars !== false &&
+          previousMessage?.exportAvatarUrl &&
+          (await resourceExists(previousMessage.exportAvatarUrl))
+        ) {
+          avatarUrl = previousMessage.exportAvatarUrl
+        } else if (request.includeAvatars !== false && avatar) {
+          avatarUrl = exportedAvatars.get(avatarKey)
+          if (!avatarUrl) {
+            avatarUrl = await resolveExportAvatar(
+              avatarKey,
+              avatar,
+              latestPreviousAvatarUrls.get(avatarKey)
+            )
+            if (avatarUrl) exportedAvatars.set(avatarKey, avatarUrl)
+          }
+        }
+        if (avatarUrl) message.exportAvatarUrl = avatarUrl
         if (!request.includeMedia || !message.contentData) {
+          send({
+            jobId: request.jobId,
+            phase: 'writing',
+            processed: index + 1,
+            total: messages.length,
+            percent: 15 + Math.round(((index + 1) / Math.max(messages.length, 1)) * 75)
+          })
+          continue
+        }
+        const reusableMediaType =
+          message.contentData.type === 'image' ||
+          message.contentData.type === 'video' ||
+          message.contentData.type === 'sticker'
+            ? message.contentData.type
+            : message.contentData.type === 'share' && message.contentData.typeVal === '6'
+              ? 'file'
+              : null
+        if (
+          reusableMediaType &&
+          previous?.exportMediaUrl &&
+          (!previous.exportMediaType || previous.exportMediaType === reusableMediaType) &&
+          (await resourceExists(previous.exportMediaUrl))
+        ) {
+          message.exportMediaUrl = previous.exportMediaUrl
+          message.exportMediaType = reusableMediaType
+          message.exportMediaName = previous.exportMediaName
           send({
             jobId: request.jobId,
             phase: 'writing',
@@ -529,7 +1035,7 @@ export async function runExport(
                   allowThumbnail: attempt.allowThumbnail,
                   preferThumbnail: attempt.preferThumbnail,
                   sessionId: message.sessionId,
-                  sessionMd5: request.userMd5,
+                  sessionMd5: conversationId,
                   createTime: message.createTime
                 }
               )
@@ -554,9 +1060,13 @@ export async function runExport(
             }
             const decoded = decryptedImage ? decodeDataUrl(decryptedImage.data) : null
             if (decoded) {
-              const name = `image_${hashPart(exportMessageKey(message, request.userMd5))}.${decoded.extension}`
-              await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
-              message.exportMediaUrl = `media/${name}`
+              const name = `image_${bufferHashPart(decoded.buffer)}.${decoded.extension}`
+              const mediaUrl = `media/${name}`
+              if (!(await resourceExists(mediaUrl))) {
+                await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
+                markResourceExists(mediaUrl)
+              }
+              message.exportMediaUrl = mediaUrl
               message.exportMediaType = 'image'
               if (usedFallback) {
                 keepMediaError(request, message, '原图不可用，已降级使用缩略图')
@@ -584,21 +1094,26 @@ export async function runExport(
           } else if (hashes.length === 0) {
             keepMediaError(request, message, '视频标识不完整，无法定位本地视频')
           } else {
-            const resolved = videoService.resolve(hashes)
+            const resolved = await videoService.resolve(hashes, {
+              createTime: message.createTime,
+              duration: message.contentData.duration,
+              width: message.contentData.width,
+              height: message.contentData.height
+            })
             const source = resolved.url ? videoService.pathForUrl(resolved.url) : undefined
             if (!resolved.success || !source) {
               keepMediaError(request, message, resolved.error || '视频文件缺失或已移动')
             } else if (extname(source).toLowerCase() !== '.mp4') {
               keepMediaError(request, message, '视频格式不支持，仅支持本地 MP4 文件')
             } else {
-              const name = `video_${hashPart(exportMessageKey(message, request.userMd5))}.mp4`
-              const copied = await copyExportAsset(source, join(outputDir, 'media', name))
-              if (copied.success) {
-                message.exportMediaUrl = `media/${name}`
-                message.exportMediaType = 'video'
-              } else {
-                keepMediaError(request, message, `视频复制失败：${copied.error}`)
+              const name = `video_${await fileHashPart(source)}.mp4`
+              const mediaUrl = `media/${name}`
+              if (!(await resourceExists(mediaUrl))) {
+                await copyWritableExportFile(source, join(outputDir, 'media', name))
+                markResourceExists(mediaUrl)
               }
+              message.exportMediaUrl = mediaUrl
+              message.exportMediaType = 'video'
             }
           }
         } else if (message.contentData.type === 'sticker' && stickerService) {
@@ -610,9 +1125,13 @@ export async function runExport(
               ? await readAvatarAsset(stickerSource)
               : null
           if (decoded) {
-            const name = `sticker_${hashPart(exportMessageKey(message, request.userMd5))}.${decoded.extension}`
-            await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
-            message.exportMediaUrl = `media/${name}`
+            const name = `sticker_${bufferHashPart(decoded.buffer)}.${decoded.extension}`
+            const mediaUrl = `media/${name}`
+            if (!(await resourceExists(mediaUrl))) {
+              await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
+              markResourceExists(mediaUrl)
+            }
+            message.exportMediaUrl = mediaUrl
             message.exportMediaType = 'sticker'
           } else {
             keepMediaError(request, message, result.error || '表情资源缺失或下载失败')
@@ -625,18 +1144,15 @@ export async function runExport(
             if (!resolved.success || !resolved.filePath || !resolved.fileName) {
               keepMediaError(request, message, resolved.error || '本地文件附件缺失')
             } else {
-              const name = `file_${hashPart(exportMessageKey(message, request.userMd5))}_${safeFilePart(resolved.fileName)}`
-              const copied = await copyExportAsset(
-                resolved.filePath,
-                join(outputDir, 'media', name)
-              )
-              if (copied.success) {
-                message.exportMediaUrl = `media/${name}`
-                message.exportMediaType = 'file'
-                message.exportMediaName = message.contentData.title || resolved.fileName
-              } else {
-                keepMediaError(request, message, `附件复制失败：${copied.error}`)
+              const name = `file_${await fileHashPart(resolved.filePath)}_${safeFilePart(resolved.fileName)}`
+              const mediaUrl = `files/${name}`
+              if (!(await resourceExists(mediaUrl))) {
+                await copyWritableExportFile(resolved.filePath, join(outputDir, 'files', name))
+                markResourceExists(mediaUrl)
               }
+              message.exportMediaUrl = mediaUrl
+              message.exportMediaType = 'file'
+              message.exportMediaName = message.contentData.title || resolved.fileName
             }
           }
         }
@@ -651,26 +1167,57 @@ export async function runExport(
       const mergedMessages = mergeHtmlArchiveMessages(
         previousArchive.messages,
         messages,
-        request.userMd5
+        '',
+        targets.map((target) => target.userMd5)
+      )
+      const normalizedMessages = stripHtmlArchiveInlineAvatars(
+        normalizeHtmlArchiveSelfNames(mergedMessages, selfInfo)
       )
       const archive: HtmlExportArchive = {
-        version: 1,
-        sourceId: request.userMd5,
-        name: request.name,
+        version: 2,
+        name: archiveName,
         exportedAt: new Date().toISOString(),
-        messages: normalizeHtmlArchiveSelfNames(mergedMessages, selfInfo)
+        conversations: targets.map((target) => ({
+          id: target.userMd5,
+          name: target.name,
+          type: target.type,
+          avatarUrl:
+            conversationAvatarUrls.get(target.userMd5) ||
+            previousArchive.conversations.find((item) => item.id === target.userMd5)?.avatarUrl,
+          messageCount: normalizedMessages.filter(
+            (message) => message.exportConversationId === target.userMd5
+          ).length
+        })),
+        messages: normalizedMessages,
+        avatarVersions
       }
-      await fs.writeFile(outputPath, renderExportPage(request.name), 'utf8')
+      if (!jobs.has(request.jobId)) throw new Error('已取消')
+      await fs.writeFile(outputPath, renderExportPage(archiveName), 'utf8')
       await writeHtmlArchive(outputDir, archive)
+      await pruneHtmlArchiveResources(outputDir, archive)
+      let completedPath = outputPath
+      if (request.zip) {
+        if (!jobs.has(request.jobId)) return { success: false, error: '已取消' }
+        const zipPath = join(root, `${outputFolder}.zip`)
+        send({
+          jobId: request.jobId,
+          phase: 'compressing',
+          processed: archive.messages.length,
+          total: archive.messages.length,
+          percent: 95
+        })
+        await writeZipArchive(outputDir, zipPath, outputFolder, request.jobId)
+        completedPath = zipPath
+      }
       send({
         jobId: request.jobId,
         phase: 'completed',
         processed: archive.messages.length,
         total: archive.messages.length,
         percent: 100,
-        outputPath
+        outputPath: completedPath
       })
-      return { success: true, outputPath, messageCount: archive.messages.length }
+      return { success: true, outputPath: completedPath, messageCount: archive.messages.length }
     } else {
       send({
         jobId: request.jobId,
@@ -680,7 +1227,7 @@ export async function runExport(
         percent: 90
       })
     }
-    await fs.writeFile(outputPath, render(request.format, messages, request.name), 'utf8')
+    await fs.writeFile(outputPath, render(request.format, messages, archiveName), 'utf8')
     send({
       jobId: request.jobId,
       phase: 'completed',
@@ -692,6 +1239,10 @@ export async function runExport(
     return { success: true, outputPath, messageCount: messages.length }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    if (!jobs.has(request.jobId) || message === '已取消') {
+      send({ jobId: request.jobId, phase: 'cancelled', processed: 0, error: '已取消' })
+      return { success: false, error: '已取消' }
+    }
     send({ jobId: request.jobId, phase: 'failed', processed: 0, error: message })
     return { success: false, error: message }
   } finally {
@@ -700,6 +1251,7 @@ export async function runExport(
 }
 export function cancelExport(jobId: string): void {
   jobs.delete(jobId)
+  activeArchives.get(jobId)?.abort()
 }
 export async function revealExport(path: string): Promise<void> {
   shell.showItemInFolder(path)

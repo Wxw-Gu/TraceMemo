@@ -28,6 +28,34 @@ describe('message parser', () => {
     }
   })
 
+  it.each([
+    ['6', '测试附件.pdf'],
+    ['74', '发送中的附件.zip']
+  ])(
+    'keeps file app message type %s when attachment metadata contains record tags',
+    (typeVal, title) => {
+      const parsed = parseMessageContent(
+        `<appmsg><type>${typeVal}</type><title>${title}</title><des>1 MB</des><appattach><recorditem>legacy metadata</recorditem><dataitem datatype="8"><datatitle>${title}</datatitle></dataitem></appattach></appmsg>`,
+        49
+      )
+
+      expect(parsed).toMatchObject({
+        type: 'share',
+        title,
+        typeVal
+      })
+    }
+  )
+
+  it('does not classify empty incidental record metadata as a merged forward', () => {
+    const parsed = parseMessageContent(
+      '<appmsg><type>5</type><title>普通分享</title><recorditem>legacy metadata</recorditem></appmsg>',
+      49
+    )
+
+    expect(parsed).toMatchObject({ type: 'share', title: '普通分享', typeVal: '5' })
+  })
+
   it('uses the quoted group member id instead of the chatroom id', () => {
     const parsed = parseMessageContent(
       '<appmsg><type>57</type><title>回复内容</title><refermsg><type>1</type><fromusr>123456789@chatroom</fromusr><chatusr>wxid_fixture_member</chatusr><content>被引用内容</content></refermsg></appmsg>',
