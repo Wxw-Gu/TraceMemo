@@ -29,6 +29,7 @@ describe('ExportWorkspace multi-chat selection', () => {
       configurable: true,
       value: {
         onExportProgress: vi.fn(() => vi.fn()),
+        getVoiceModelStatus: vi.fn().mockRejectedValue(new Error('fixture model unavailable')),
         getGroupSnapshot: vi.fn(async () => ({ members: [] })),
         cancelExport: vi.fn(async () => ({ success: true })),
         revealExport: vi.fn(async () => ({ success: true }))

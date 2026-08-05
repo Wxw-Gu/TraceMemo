@@ -1009,6 +1009,26 @@
     background: var(--wxex-brand);
     transition: width 0.2s ease;
   }
+
+  &.indeterminate span {
+    width: 24%;
+    animation: export-progress-indeterminate 1.2s ease-in-out infinite;
+  }
+}
+@keyframes export-progress-indeterminate {
+  from {
+    transform: translateX(-110%);
+  }
+
+  to {
+    transform: translateX(430%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .export-progress-bar.indeterminate span {
+    width: 8%;
+    animation: none;
+  }
 }
 .export-job-state > strong {
   color: var(--wxex-text-secondary);

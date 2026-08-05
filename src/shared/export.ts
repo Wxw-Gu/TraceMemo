@@ -43,7 +43,16 @@ export interface ExportRequest {
 
 export interface ExportJobProgress {
   jobId: string
-  phase: 'reading' | 'writing' | 'compressing' | 'completed' | 'cancelled' | 'failed'
+  phase:
+    | 'reading'
+    | 'parsing'
+    | 'media'
+    | 'transcribing'
+    | 'writing'
+    | 'compressing'
+    | 'completed'
+    | 'cancelled'
+    | 'failed'
   processed: number
   total?: number
   percent?: number
@@ -57,6 +66,8 @@ export interface ExportTaskRecord {
   targetNames: string[]
   targetLabel: string
   format: ExportFormat
+  includeVoiceTranscripts?: boolean
+  zip?: boolean
   status: 'running' | 'completed' | 'cancelled' | 'failed'
   progress: ExportJobProgress
   createdAt: number

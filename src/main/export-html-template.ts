@@ -1113,9 +1113,16 @@ const renderExportScript = (name: string): string => `
     return ''
   }
 
+  const playableAudioPattern = /\\.(?:mp3|wav|m4a|aac|ogg|oga|opus|flac|webm)(?:$|[?#])/i
+  const playableAudioFile = (name, url) =>
+    playableAudioPattern.test(String(name || '')) || playableAudioPattern.test(String(url || ''))
+  const renderAudioPlayer = (source) =>
+    '<div class="audio-wrap"><audio class="audio" controls preload="metadata" src="' + source + '"></audio></div>'
+
   const renderMessage = (message, archiveIndex) => {
     const data = message.contentData || {}
-    const mediaUrl = message.exportMediaUrl ? esc(message.exportMediaUrl) : ''
+    const rawMediaUrl = message.exportMediaUrl ? String(message.exportMediaUrl) : ''
+    const mediaUrl = rawMediaUrl ? esc(rawMediaUrl) : ''
     const mediaType = message.exportMediaType || data.type
     let media = ''
     if (mediaUrl && mediaType === 'image') {
@@ -1125,11 +1132,13 @@ const renderExportScript = (name: string): string => `
     } else if (mediaUrl && mediaType === 'sticker') {
       media = '<img class="media-image" data-preview src="' + mediaUrl + '" alt="表情包">'
     } else if (mediaUrl && mediaType === 'file') {
-      const fileName = esc(message.exportMediaName || data.title || '下载文件')
-      media = '<a class="file-attachment" href="' + mediaUrl + '" download><span>📎</span><span>' + fileName + '</span></a>'
+      const rawFileName = message.exportMediaName || data.title || '打开文件'
+      const fileName = esc(rawFileName)
+      media = '<a class="file-attachment" href="' + mediaUrl + '" target="_blank" rel="noreferrer noopener"><span>📎</span><span>' + fileName + '</span></a>' +
+        (playableAudioFile(rawFileName, rawMediaUrl) ? renderAudioPlayer(mediaUrl) : '')
     }
     const audio = message.voiceDataUrl
-      ? '<div class="audio-wrap"><audio class="audio" controls preload="metadata" src="' + esc(message.voiceDataUrl) + '"></audio></div>'
+      ? renderAudioPlayer(esc(message.voiceDataUrl))
       : ''
     const voiceTranscript = message.voiceTranscript
       ? '<div class="voice-transcript">' + esc(message.voiceTranscript) + '</div>'

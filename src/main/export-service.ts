@@ -98,8 +98,10 @@ const fileHashPart = async (filePath: string, length = 16): Promise<string> => {
   })
   return hash.digest('hex').slice(0, length)
 }
-const avatarFileName = (buffer: Buffer, extension: string): string =>
-  `avatar_${bufferHashPart(buffer)}.${extension}`
+const avatarFileName = (source: string, buffer: Buffer, extension: string): string =>
+  `avatar_${/^https?:\/\//i.test(source) ? hashPart(source) : bufferHashPart(buffer)}.${extension}`
+const avatarVersionFileName = (source: string, buffer: Buffer, extension: string): string =>
+  `avatar_${hashPart(source)}_${bufferHashPart(buffer)}.${extension}`
 const avatarSourceHash = (source: string): string => hashPart(source, 24)
 const avatarIdentityKey = (conversationId: string, message: Message): string =>
   `${conversationId}:${
@@ -690,6 +692,13 @@ export async function runExport(
       if (/^wxid_/i.test(name)) return false
       return true
     }
+    send({
+      jobId: request.jobId,
+      phase: 'parsing',
+      processed: 0,
+      total: messages.length,
+      percent: 12
+    })
     for (const message of messages) {
       const target = targetById.get(message.exportConversationId || '')
       const peerUsername = target ? client?.getUsernameByMd5(target.userMd5) || '' : ''
@@ -729,17 +738,23 @@ export async function runExport(
         message.exportMediaError = '当前导出格式记录媒体状态，但不复制媒体文件'
       }
     }
-    send({ jobId: request.jobId, phase: 'reading', processed: 10, total: 100, percent: 10 })
+    send({
+      jobId: request.jobId,
+      phase: 'parsing',
+      processed: messages.length,
+      total: messages.length,
+      percent: 15
+    })
     if (!jobs.has(request.jobId)) {
       send({ jobId: request.jobId, phase: 'cancelled', processed: 0, percent: 10 })
       return { success: false, error: '已取消' }
     }
     send({
       jobId: request.jobId,
-      phase: 'writing',
+      phase: request.format === 'html' ? 'parsing' : 'writing',
       processed: 0,
       total: messages.length,
-      percent: 15
+      percent: request.format === 'html' ? 18 : 20
     })
     const root = join(app.getPath('documents'), 'WechatExplorer', '导出')
     await fs.mkdir(root, { recursive: true })
@@ -846,8 +861,13 @@ export async function runExport(
           }
         }
 
-        const avatarName = avatarFileName(resolved.buffer, resolved.extension || 'jpg')
-        const avatarUrl = `avatars/${avatarName}`
+        const extension = resolved.extension || 'jpg'
+        let avatarName = avatarFileName(source, resolved.buffer, extension)
+        let avatarUrl = `avatars/${avatarName}`
+        if (avatarUrl === previousAvatarUrl) {
+          avatarName = avatarVersionFileName(source, resolved.buffer, extension)
+          avatarUrl = `avatars/${avatarName}`
+        }
         if (!(await resourceExists(avatarUrl))) {
           await fs.writeFile(join(outputDir, 'avatars', avatarName), resolved.buffer)
           markResourceExists(avatarUrl)
@@ -876,54 +896,76 @@ export async function runExport(
         request.includeMedia && chat.getChatDb()
           ? new VoiceService(chat.getChatDb()!.getWcdb4Client())
           : null
+      const voiceMessages = messages.filter((message) => kindOf(message) === 'voice')
+      const voicePhase = request.includeVoiceTranscripts ? 'transcribing' : 'media'
+      const voiceProgressEnd = request.includeVoiceTranscripts ? 50 : 35
       if (voiceService) {
-        for (const message of messages) {
+        send({
+          jobId: request.jobId,
+          phase: voicePhase,
+          processed: 0,
+          total: voiceMessages.length,
+          percent: 20
+        })
+        for (const [voiceIndex, message] of voiceMessages.entries()) {
           if (!jobs.has(request.jobId)) throw new Error('已取消')
-          if (kindOf(message) !== 'voice') continue
           const previous = reusablePreviousMessages.get(message)
+          let canTranscribe = true
           if (previous?.voiceDataUrl && (await resourceExists(previous.voiceDataUrl))) {
             message.voiceDataUrl = previous.voiceDataUrl
             message.voiceDuration = previous.voiceDuration
-            continue
-          }
-          if (!message.sessionId || message.localId == null || !message.createTime) {
+            if (request.includeVoiceTranscripts && previous.voiceTranscript) {
+              message.voiceTranscript = previous.voiceTranscript
+            }
+          } else if (!message.sessionId || message.localId == null || !message.createTime) {
             keepMediaError(request, message, '语音标识不完整，无法定位本地语音')
-            continue
-          }
-          try {
-            const voice = await voiceService.resolveVoice(
-              message.sessionId,
-              message.localId,
-              message.createTime,
-              message.serverId
-            )
-            if (!voice.success || !voice.data) {
-              const detail = voice.error || '未知原因'
-              const reason = /未找到|不存在|获取语音数据失败/.test(detail)
-                ? `语音文件缺失：${detail}`
-                : /Silk|解码|数据为空/.test(detail)
-                  ? `语音解析失败：${detail}`
-                  : `语音格式不支持或读取失败：${detail}`
-              keepMediaError(request, message, reason)
-              continue
-            }
-            const audioBuffer = Buffer.from(voice.data, 'base64')
-            const voiceName = `voice_${bufferHashPart(audioBuffer)}.wav`
-            const voiceUrl = `voices/${voiceName}`
-            if (!(await resourceExists(voiceUrl))) {
-              await fs.writeFile(join(outputDir, 'voices', voiceName), audioBuffer)
-              markResourceExists(voiceUrl)
-            }
-            message.voiceDataUrl = voiceUrl
-            message.voiceDuration = Math.max(1, Math.round(audioBuffer.length / (24000 * 2)))
-            if (request.includeVoiceTranscripts) {
-              if (!voiceRecognition) {
-                message.voiceTranscriptError = '语音转文字服务不可用'
+            canTranscribe = false
+          } else {
+            try {
+              const voice = await voiceService.resolveVoice(
+                message.sessionId,
+                message.localId,
+                message.createTime,
+                message.serverId
+              )
+              if (!voice.success || !voice.data) {
+                const detail = voice.error || '未知原因'
+                const reason = /未找到|不存在|获取语音数据失败/.test(detail)
+                  ? `语音文件缺失：${detail}`
+                  : /Silk|解码|数据为空/.test(detail)
+                    ? `语音解析失败：${detail}`
+                    : `语音格式不支持或读取失败：${detail}`
+                keepMediaError(request, message, reason)
+                canTranscribe = false
               } else {
+                const audioBuffer = Buffer.from(voice.data, 'base64')
+                const voiceName = `voice_${bufferHashPart(audioBuffer)}.wav`
+                const voiceUrl = `voices/${voiceName}`
+                if (!(await resourceExists(voiceUrl))) {
+                  await fs.writeFile(join(outputDir, 'voices', voiceName), audioBuffer)
+                  markResourceExists(voiceUrl)
+                }
+                message.voiceDataUrl = voiceUrl
+                message.voiceDuration = Math.max(1, Math.round(audioBuffer.length / (24000 * 2)))
+              }
+            } catch (error) {
+              keepMediaError(
+                request,
+                message,
+                `语音文件写入失败：${error instanceof Error ? error.message : String(error)}`
+              )
+              canTranscribe = false
+            }
+          }
+          if (request.includeVoiceTranscripts && canTranscribe && !message.voiceTranscript) {
+            if (!voiceRecognition) {
+              message.voiceTranscriptError = '语音转文字服务不可用'
+            } else {
+              try {
                 const recognition = await voiceRecognition.recognize({
-                  sessionId: message.sessionId,
-                  localId: message.localId,
-                  createTime: message.createTime,
+                  sessionId: message.sessionId!,
+                  localId: message.localId!,
+                  createTime: message.createTime!,
                   svrId: message.serverId
                 })
                 if (recognition.success) {
@@ -931,15 +973,23 @@ export async function runExport(
                 } else {
                   message.voiceTranscriptError = recognition.error || '语音识别失败'
                 }
+              } catch (error) {
+                message.voiceTranscriptError =
+                  error instanceof Error ? error.message : '语音识别失败'
               }
             }
-          } catch (error) {
-            keepMediaError(
-              request,
-              message,
-              `语音文件写入失败：${error instanceof Error ? error.message : String(error)}`
-            )
           }
+          send({
+            jobId: request.jobId,
+            phase: voicePhase,
+            processed: voiceIndex + 1,
+            total: voiceMessages.length,
+            percent:
+              20 +
+              Math.round(
+                ((voiceIndex + 1) / Math.max(voiceMessages.length, 1)) * (voiceProgressEnd - 20)
+              )
+          })
         }
       } else if (request.includeMedia) {
         for (const message of messages) {
@@ -948,6 +998,17 @@ export async function runExport(
           }
         }
       }
+      const mediaStartPercent = voiceService ? voiceProgressEnd : 20
+      const mediaPercent = (processed: number): number =>
+        mediaStartPercent +
+        Math.round((processed / Math.max(messages.length, 1)) * (90 - mediaStartPercent))
+      send({
+        jobId: request.jobId,
+        phase: 'media',
+        processed: 0,
+        total: messages.length,
+        percent: mediaStartPercent
+      })
       for (const [index, message] of messages.entries()) {
         if (!jobs.has(request.jobId)) {
           send({
@@ -955,7 +1016,7 @@ export async function runExport(
             phase: 'cancelled',
             processed: index,
             total: messages.length,
-            percent: 15 + Math.round((index / Math.max(messages.length, 1)) * 75)
+            percent: mediaPercent(index)
           })
           return { success: false, error: '已取消' }
         }
@@ -987,10 +1048,10 @@ export async function runExport(
         if (!request.includeMedia || !message.contentData) {
           send({
             jobId: request.jobId,
-            phase: 'writing',
+            phase: 'media',
             processed: index + 1,
             total: messages.length,
-            percent: 15 + Math.round(((index + 1) / Math.max(messages.length, 1)) * 75)
+            percent: mediaPercent(index + 1)
           })
           continue
         }
@@ -1013,10 +1074,10 @@ export async function runExport(
           message.exportMediaName = previous.exportMediaName
           send({
             jobId: request.jobId,
-            phase: 'writing',
+            phase: 'media',
             processed: index + 1,
             total: messages.length,
-            percent: 15 + Math.round(((index + 1) / Math.max(messages.length, 1)) * 75)
+            percent: mediaPercent(index + 1)
           })
           continue
         }
@@ -1158,10 +1219,10 @@ export async function runExport(
         }
         send({
           jobId: request.jobId,
-          phase: 'writing',
+          phase: 'media',
           processed: index + 1,
           total: messages.length,
-          percent: 15 + Math.round(((index + 1) / Math.max(messages.length, 1)) * 75)
+          percent: mediaPercent(index + 1)
         })
       }
       const mergedMessages = mergeHtmlArchiveMessages(
@@ -1192,6 +1253,13 @@ export async function runExport(
         avatarVersions
       }
       if (!jobs.has(request.jobId)) throw new Error('已取消')
+      send({
+        jobId: request.jobId,
+        phase: 'writing',
+        processed: archive.messages.length,
+        total: archive.messages.length,
+        percent: 92
+      })
       await fs.writeFile(outputPath, renderExportPage(archiveName), 'utf8')
       await writeHtmlArchive(outputDir, archive)
       await pruneHtmlArchiveResources(outputDir, archive)
@@ -1204,7 +1272,7 @@ export async function runExport(
           phase: 'compressing',
           processed: archive.messages.length,
           total: archive.messages.length,
-          percent: 95
+          percent: 96
         })
         await writeZipArchive(outputDir, zipPath, outputFolder, request.jobId)
         completedPath = zipPath

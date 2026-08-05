@@ -387,6 +387,8 @@ function App(): React.ReactElement {
       targetNames,
       targetLabel,
       format: request.format,
+      includeVoiceTranscripts: request.includeVoiceTranscripts,
+      zip: request.zip,
       status: 'running',
       progress: { jobId: request.jobId, phase: 'reading', processed: 0, percent: 0 },
       createdAt: Date.now()

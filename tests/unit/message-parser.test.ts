@@ -47,6 +47,19 @@ describe('message parser', () => {
     }
   )
 
+  it('decodes XML entities in file titles used for attachment lookup', () => {
+    const parsed = parseMessageContent(
+      '<appmsg><type>6</type><title>Check-in Voucher （Samabe Bali Suites &amp; Villas）.pdf</title></appmsg>',
+      49
+    )
+
+    expect(parsed).toMatchObject({
+      type: 'share',
+      title: 'Check-in Voucher （Samabe Bali Suites & Villas）.pdf',
+      typeVal: '6'
+    })
+  })
+
   it('does not classify empty incidental record metadata as a merged forward', () => {
     const parsed = parseMessageContent(
       '<appmsg><type>5</type><title>普通分享</title><recorditem>legacy metadata</recorditem></appmsg>',

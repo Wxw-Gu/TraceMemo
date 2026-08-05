@@ -40,11 +40,15 @@ describe('export voice transcripts', () => {
             type: 'user'
           }
         ]}
-        selectedContact={null}
-        previewMessages={[]}
+        initialContact={{
+          m_nsUsrName: 'filehelper',
+          m_nsNickName: '文件传输助手',
+          md5: 'fixture-contact',
+          type: 'user'
+        }}
         selfInfo={null}
         dbReady
-        onSelectContact={vi.fn()}
+        loadPreviewMessages={vi.fn().mockResolvedValue([])}
         onOpenSettings={vi.fn()}
         exportTasks={[]}
         onStartExport={onStartExport}

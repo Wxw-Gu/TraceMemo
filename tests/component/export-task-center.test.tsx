@@ -22,8 +22,9 @@ describe('export task center', () => {
         tasks={[
           {
             jobId: 'failed-export',
-            contactId: 'fixture',
-            contactName: '脱敏会话',
+            targetIds: ['fixture'],
+            targetNames: ['脱敏会话'],
+            targetLabel: '脱敏会话',
             format: 'html',
             status: 'failed',
             progress: {
@@ -41,7 +42,9 @@ describe('export task center', () => {
       />
     )
 
-    expect(screen.getByText('EPERM: operation not permitted, copyfile')).toBeInTheDocument()
+    expect(
+      screen.getByText('失败原因：EPERM: operation not permitted, copyfile')
+    ).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '复制日志' }))
 
     expect(writeText).toHaveBeenCalledOnce()

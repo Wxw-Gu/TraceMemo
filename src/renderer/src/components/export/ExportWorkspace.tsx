@@ -63,6 +63,10 @@ export function ExportWorkspace({
   const [status, setStatus] = useState<ExportStatus>('idle')
   const [jobId, setJobId] = useState('')
   const [progress, setProgress] = useState<ExportJobProgress | null>(null)
+  const [activeJobOptions, setActiveJobOptions] = useState({
+    includeVoiceTranscripts: false,
+    zip: false
+  })
   const [taskCenterOpen, setTaskCenterOpen] = useState(false)
   const selectionLimit = 5
 
@@ -213,8 +217,16 @@ export function ExportWorkspace({
     if (!activeContact || selectedContacts.length === 0 || status === 'running') return
     // Runs only from the export button event; a fresh id is required for each job.
     const nextJobId = `export-${Date.now()}`
+    const exportFormat = selectedContacts.length > 1 ? 'html' : format
+    const shouldIncludeVoiceTranscripts =
+      includeVoiceTranscripts &&
+      includeMedia &&
+      exportFormat === 'html' &&
+      selectedKinds.has('voice') &&
+      voiceModelStatus?.state === 'ready'
     setJobId(nextJobId)
     setProgress(null)
+    setActiveJobOptions({ includeVoiceTranscripts: shouldIncludeVoiceTranscripts, zip })
     setStatus('running')
     const targets: ExportTarget[] = await Promise.all(
       selectedContacts.map(async (contact) => {
@@ -262,7 +274,7 @@ export function ExportWorkspace({
     const request: ExportRequest = {
       jobId: nextJobId,
       targets,
-      format: selectedContacts.length > 1 ? 'html' : format,
+      format: exportFormat,
       outputName,
       startTime: startOfRange
         ? Math.floor(startOfRange.getTime() / 1000)
@@ -276,12 +288,7 @@ export function ExportWorkspace({
           : undefined,
       kinds: Array.from(selectedKinds) as ExportMessageKind[],
       includeMedia,
-      includeVoiceTranscripts:
-        includeVoiceTranscripts &&
-        includeMedia &&
-        format === 'html' &&
-        selectedKinds.has('voice') &&
-        voiceModelStatus?.state === 'ready',
+      includeVoiceTranscripts: shouldIncludeVoiceTranscripts,
       preferOriginal,
       fallbackThumbnail,
       keepMissing,
@@ -319,6 +326,10 @@ export function ExportWorkspace({
     if (!currentTask) return
     setJobId(currentTask.jobId)
     setProgress(currentTask.progress)
+    setActiveJobOptions({
+      includeVoiceTranscripts: currentTask.includeVoiceTranscripts === true,
+      zip: currentTask.zip === true
+    })
     setStatus(
       currentTask.status === 'running'
         ? 'running'
@@ -349,6 +360,7 @@ export function ExportWorkspace({
     setStatus('idle')
     setJobId('')
     setProgress(null)
+    setActiveJobOptions({ includeVoiceTranscripts: false, zip: false })
   }
 
   const targetPath =
@@ -686,6 +698,8 @@ export function ExportWorkspace({
         previewBytes={previewBytes}
         selfInfo={selfInfo}
         progress={progress}
+        includeVoiceTranscripts={activeJobOptions.includeVoiceTranscripts}
+        zip={activeJobOptions.zip}
         selectedCount={selectedContacts.length}
         jobId={jobId}
         onCancel={(exportJobId) => {

@@ -269,7 +269,10 @@ describe('media export flow', () => {
     ]
   })
 
-  afterEach(() => rmSync(state.documents, { recursive: true, force: true }))
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    rmSync(state.documents, { recursive: true, force: true })
+  })
 
   it('writes playable relative assets, keeps failures, and requests the original image first', async () => {
     const { runExport } = await import('../../src/main/export-service')
@@ -329,6 +332,56 @@ describe('media export flow', () => {
     })
     expect(progress.length).toBeGreaterThan(0)
     expect(state.exportReads).toEqual(['fixture-user'])
+  })
+
+  it('reports voice transcription as its own progress stage', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    state.messages = [
+      message({
+        id: 'voice-transcript-progress',
+        type: '语音',
+        sessionId: 'fixture-session',
+        localId: 1,
+        contentData: { type: 'voice', duration: 1 }
+      })
+    ]
+    const progress: { phase: string; processed: number; total?: number; percent?: number }[] = []
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        send: (_channel: string, payload: (typeof progress)[number]) => progress.push(payload)
+      }
+    }
+    const recognize = vi.fn(async () => ({ success: true as const, transcript: '固定转写文本' }))
+
+    const result = await runExport(
+      {
+        jobId: 'voice-transcript-progress',
+        targets: [target()],
+        format: 'html',
+        outputName: 'voice-transcript-progress',
+        kinds: ['voice'],
+        includeMedia: true,
+        includeVoiceTranscripts: true
+      },
+      win as never,
+      { recognize }
+    )
+
+    expect(result.success, result.error).toBe(true)
+    expect(readArchive(result.outputPath!).messages[0].voiceTranscript).toBe('固定转写文本')
+    expect(recognize).toHaveBeenCalledOnce()
+    const phases = progress.map((item) => item.phase)
+    expect(phases).toContain('parsing')
+    expect(phases).toContain('transcribing')
+    expect(phases).toContain('media')
+    expect(phases).toContain('writing')
+    expect(phases.indexOf('transcribing')).toBeLessThan(phases.indexOf('media'))
+    expect(phases.indexOf('media')).toBeLessThan(phases.indexOf('writing'))
+    expect(progress.filter((item) => item.phase === 'transcribing').at(-1)).toMatchObject({
+      processed: 1,
+      total: 1
+    })
   })
 
   it('uses the customized file name as the HTML archive title', async () => {
@@ -614,6 +667,62 @@ describe('media export flow', () => {
         name.startsWith('avatar_')
       )
     ).toHaveLength(2)
+  })
+
+  it('keeps remote avatar filenames stable across independent first exports', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    const remoteAvatar = 'https://wx.qlogo.cn/mmhead/stable-avatar/0'
+    const responses = [
+      Buffer.from('same-visual-encoding-one'),
+      Buffer.from('same-visual-encoding-two')
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(responses.shift(), {
+            status: 200,
+            headers: { 'content-type': 'image/jpeg' }
+          })
+      )
+    )
+    state.selfAvatar = remoteAvatar
+    state.avatarMap = { fixture_account: remoteAvatar }
+    state.messages = [
+      message({
+        id: 'stable-remote-avatar',
+        isSender: true,
+        senderId: 'fixture_account',
+        content: '远程头像文件名应稳定'
+      })
+    ]
+    const request = {
+      targets: [target('fixture-user', '远程头像会话')],
+      format: 'html' as const,
+      kinds: ['text'] as const,
+      includeMedia: false,
+      includeAvatars: true
+    }
+
+    const first = await runExport(
+      { ...request, jobId: 'remote-avatar-first', outputName: 'remote-avatar-first' },
+      win as never
+    )
+    const second = await runExport(
+      { ...request, jobId: 'remote-avatar-second', outputName: 'remote-avatar-second' },
+      win as never
+    )
+
+    expect(first.success, first.error).toBe(true)
+    expect(second.success, second.error).toBe(true)
+    const firstAvatarUrl = readArchive(first.outputPath!).messages[0].exportAvatarUrl
+    const secondAvatarUrl = readArchive(second.outputPath!).messages[0].exportAvatarUrl
+    expect(firstAvatarUrl).toBe('avatars/avatar_c24b49a201c894fc.jpg')
+    expect(secondAvatarUrl).toBe(firstAvatarUrl)
+    expect(readFileSync(join(dirname(first.outputPath!), firstAvatarUrl!))).not.toEqual(
+      readFileSync(join(dirname(second.outputPath!), secondAvatarUrl!))
+    )
   })
 
   it('keeps copied videos writable and can replace a legacy read-only video incrementally', async () => {

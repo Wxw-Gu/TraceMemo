@@ -482,7 +482,7 @@ function parseShareMessage(content: string): ParsedContent {
     }
   }
 
-  const title = extractXmlValue(content, 'title') || ''
+  const title = decodeXmlEntities(extractXmlValue(content, 'title')) || ''
   const des = extractXmlValue(content, 'des') || extractXmlValue(content, 'desc') || ''
   const url = extractXmlValue(content, 'url') || ''
   const appname = extractXmlValue(content, 'appname') || extractXmlValue(content, 'appInfo') || ''

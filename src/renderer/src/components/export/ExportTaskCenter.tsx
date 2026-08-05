@@ -11,7 +11,10 @@ interface ExportTaskCenterProps {
 
 const phaseLabels: Record<ExportTaskRecord['progress']['phase'], string> = {
   reading: '读取消息',
-  writing: '导出资源',
+  parsing: '解析消息',
+  media: '处理媒体',
+  transcribing: '语音转文字',
+  writing: '生成档案',
   compressing: '压缩归档',
   completed: '已完成',
   cancelled: '已取消',

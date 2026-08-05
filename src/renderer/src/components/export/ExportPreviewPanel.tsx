@@ -10,6 +10,8 @@ interface ExportPreviewPanelProps {
   previewBytes: number
   selfInfo: SelfInfo | null
   progress: ExportJobProgress | null
+  includeVoiceTranscripts: boolean
+  zip: boolean
   selectedCount: number
   jobId: string
   onCancel: (jobId: string) => void
@@ -23,11 +25,43 @@ export function ExportPreviewPanel({
   previewBytes,
   selfInfo,
   progress,
+  includeVoiceTranscripts,
+  zip,
   selectedCount,
   jobId,
   onCancel,
   onReveal
 }: ExportPreviewPanelProps): React.ReactElement {
+  const percent = Math.max(0, Math.min(100, progress?.percent ?? 0))
+  const phase = progress?.phase || 'reading'
+  const showTranscriptStep = includeVoiceTranscripts || phase === 'transcribing'
+  const showZipStep = zip || phase === 'compressing'
+  const steps = [
+    { phase: 'reading', label: '分批读取聊天记录' },
+    { phase: 'parsing', label: '解析消息内容' },
+    ...(showTranscriptStep ? [{ phase: 'transcribing', label: '语音转文字' }] : []),
+    { phase: 'media', label: '处理媒体资源' },
+    { phase: 'writing', label: '生成档案' },
+    ...(showZipStep ? [{ phase: 'compressing', label: '压缩 ZIP' }] : [])
+  ]
+  const currentStepIndex = Math.max(
+    0,
+    steps.findIndex((step) => step.phase === phase)
+  )
+  const indeterminate = phase === 'reading' && percent === 0
+  const progressText =
+    phase === 'compressing'
+      ? `正在压缩资源包... ${percent}%`
+      : phase === 'writing'
+        ? `正在生成档案... ${percent}%`
+        : phase === 'transcribing'
+          ? `正在转写语音 ${progress?.processed ?? 0}/${progress?.total ?? 0}... ${percent}%`
+          : phase === 'media'
+            ? `正在处理媒体资源 ${progress?.processed ?? 0}/${progress?.total ?? 0}... ${percent}%`
+            : phase === 'parsing'
+              ? `正在解析消息内容... ${percent}%`
+              : `正在读取消息... ${percent}%`
+
   return (
     <aside className={`export-preview-panel ${status !== 'idle' ? `status-${status}` : ''}`}>
       {status === 'idle' && (
@@ -114,27 +148,29 @@ export function ExportPreviewPanel({
           <p>导出任务在后台运行，不影响档案浏览。</p>
           <ol>
             <li className="done">准备导出</li>
-            <li className="current">
-              {progress?.phase === 'compressing'
-                ? '压缩 ZIP'
-                : progress?.phase === 'writing'
-                  ? '生成档案'
-                  : '分批读取聊天记录'}
-            </li>
-            <li>解析消息内容</li>
-            <li>处理媒体资源</li>
-            <li>生成档案</li>
+            {steps.map((step, index) => (
+              <li
+                key={step.phase}
+                className={
+                  index < currentStepIndex ? 'done' : index === currentStepIndex ? 'current' : ''
+                }
+              >
+                {step.label}
+              </li>
+            ))}
           </ol>
-          <div className="export-progress-bar" aria-label="导出进度">
-            <span style={{ width: `${progress?.percent ?? 0}%` }} />
+          <div
+            className={`export-progress-bar ${indeterminate ? 'indeterminate' : ''}`}
+            role="progressbar"
+            aria-label="导出进度"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={indeterminate ? undefined : percent}
+            aria-valuetext={indeterminate ? '正在读取消息' : `${percent}%`}
+          >
+            <span style={indeterminate ? undefined : { width: `${percent}%` }} />
           </div>
-          <strong>
-            {progress?.phase === 'compressing'
-              ? `正在压缩资源包... ${progress.percent ?? 0}%`
-              : progress?.phase === 'writing'
-                ? `正在写入 ${progress.processed.toLocaleString()} 条消息... ${progress.percent ?? 0}%`
-                : `正在读取消息... ${progress?.percent ?? 0}%`}
-          </strong>
+          <strong>{progressText}</strong>
           <button type="button" className="export-cancel-button" onClick={() => onCancel(jobId)}>
             取消导出
           </button>

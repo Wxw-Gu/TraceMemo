@@ -236,12 +236,25 @@ describe('export media', () => {
         ...messageForArchive('target-file', 'fixture', '定位消息', '', 4),
         type: '文件',
         exportMediaType: 'file',
-        exportMediaUrl: 'files/target.pdf'
+        exportMediaUrl: 'files/target.mp3',
+        exportMediaName: 'target.mp3'
+      },
+      {
+        ...messageForArchive('target-document', 'fixture', '定位消息', '', 4.5),
+        type: '文件',
+        exportMediaType: 'file',
+        exportMediaUrl: 'files/target.pdf',
+        exportMediaName: 'target.pdf'
       },
       {
         ...messageForArchive('target-share', 'fixture', '定位消息', '', 5),
         type: '分享',
-        contentData: { type: 'share', typeVal: '5', title: '目标分享' }
+        contentData: {
+          type: 'share',
+          typeVal: '5',
+          title: '目标分享',
+          url: 'https://example.com/shared'
+        }
       },
       {
         ...messageForArchive('target-system', 'fixture', '定位消息', '目标系统消息', 6),
@@ -275,6 +288,19 @@ describe('export media', () => {
     for (const kind of ['media', 'voice', 'file', 'share', 'system']) {
       const filterButton = dom.window.document.querySelector(`[data-kind="${kind}"]`) as HTMLElement
       filterButton.click()
+      if (kind === 'file' || kind === 'share') {
+        const link = dom.window.document.querySelector(
+          kind === 'file' ? '.file-attachment' : '.structured-link'
+        )
+        expect(link?.getAttribute('target')).toBe('_blank')
+        expect(link?.getAttribute('rel')).toBe('noreferrer noopener')
+        if (kind === 'file') {
+          expect(link?.hasAttribute('download')).toBe(false)
+          const audioPlayers = dom.window.document.querySelectorAll('.audio')
+          expect(audioPlayers).toHaveLength(1)
+          expect(audioPlayers[0].getAttribute('src')).toBe('files/target.mp3')
+        }
+      }
       const locateButton = dom.window.document.querySelector('.locate-all') as HTMLElement
       expect(locateButton?.getAttribute('aria-label')).toBe('定位到聊天位置')
       expect(locateButton?.querySelector('.locate-icon')?.textContent).toBe('⌖')
@@ -320,7 +346,7 @@ describe('export media', () => {
     dom.window.close()
   })
 
-  it('keeps relative media, file download, quote, and missing-media renderers', () => {
+  it('keeps relative media, new-window file links, quote, and missing-media renderers', () => {
     const html = renderExportPage('媒体档案')
 
     expect(html).toContain('audio class="audio" controls preload="metadata"')
