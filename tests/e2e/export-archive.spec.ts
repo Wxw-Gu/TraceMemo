@@ -805,6 +805,17 @@ test('EXPORT-ARCHIVE-03 renders shares and locations, and groups payments under 
     await expect(recallNotices).toHaveCount(2)
     await expect(recallNotices.locator('.avatar')).toHaveCount(0)
     await expect(recallNotices.locator('.sender').first()).toBeHidden()
+    const recallLineMetrics = await recallNotices
+      .first()
+      .locator('.content')
+      .evaluate((element) => {
+        const styles = window.getComputedStyle(element)
+        return {
+          height: element.getBoundingClientRect().height,
+          lineHeight: Number.parseFloat(styles.lineHeight)
+        }
+      })
+    expect(recallLineMetrics.height).toBeLessThanOrEqual(recallLineMetrics.lineHeight + 1)
     const locationNotice = systemNotices.filter({ hasText: '位置共享已经结束' })
     await expect(locationNotice).toHaveCount(1)
     await expect(locationNotice.locator('.avatar')).toHaveCount(0)

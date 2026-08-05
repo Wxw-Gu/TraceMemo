@@ -427,9 +427,11 @@ body {
 }
 .message.system .avatar { display: none; }
 .message.system .message-stack {
-  max-width: 92%;
+  width: max-content;
+  max-width: 100%;
 }
 .message.system .bubble {
+  width: max-content;
   max-width: 100%;
   padding: 5px 10px;
   border: 0;
