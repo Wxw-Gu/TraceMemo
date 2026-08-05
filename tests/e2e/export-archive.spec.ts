@@ -44,6 +44,55 @@ const zipDirectory = async (
   })
 }
 
+test('EXPORT-ARCHIVE-00 shows a loading state while archive data is still loading', async ({
+  page
+}, testInfo) => {
+  let releaseData!: () => void
+  const dataReady = new Promise<void>((resolve) => {
+    releaseData = resolve
+  })
+
+  await page.route('http://archive.test/**', async (route) => {
+    if (route.request().url().endsWith('/data/messages.js')) {
+      await dataReady
+      await route.fulfill({
+        contentType: 'application/javascript',
+        body: `window.__WECHAT_EXPORT__ = ${JSON.stringify({
+          version: 1,
+          sourceId: 'loading-fixture',
+          name: '大量消息',
+          exportedAt: '2026-08-05T00:00:00.000Z',
+          messages: [
+            archiveMessage('loading-1', 'loading-fixture', '大量消息', '加载完成', 1_767_225_600)
+          ]
+        })};`
+      })
+      return
+    }
+
+    await route.fulfill({
+      contentType: 'text/html',
+      body: renderExportPage('大量消息')
+    })
+  })
+
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const navigation = page.goto('http://archive.test/index.html')
+  const loading = page.locator('#archive-loading')
+  await expect(loading).toBeVisible()
+  await expect(loading).toContainText('正在加载聊天档案')
+  await expect(loading).toHaveAttribute('aria-busy', 'true')
+  await page.screenshot({ path: testInfo.outputPath('archive-loading-1440.png') })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(loading).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('archive-loading-390.png') })
+
+  releaseData()
+  await navigation
+  await expect(loading).toBeHidden()
+  await expect(page.getByText('加载完成')).toBeVisible()
+})
+
 test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobile', async ({
   page
 }, testInfo) => {
@@ -60,13 +109,24 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
         name: '合并聊天档案',
         exportedAt: '2026-08-04T00:00:00.000Z',
         conversations: [
-          { id: 'alpha', name: '项目群', type: 'group', messageCount: 2 },
+          { id: 'alpha', name: '项目群', type: 'group', messageCount: 3 },
           { id: 'beta', name: '文件传输助手', type: 'user', messageCount: 1 }
         ],
         messages: [
           archiveMessage('alpha-1', 'alpha', '项目群', '项目群第一条', 1_764_547_200),
           archiveMessage('beta-1', 'beta', '文件传输助手', '个人聊天消息', 1_769_904_000),
-          archiveMessage('alpha-2', 'alpha', '项目群', '项目群第二条', 1_769_990_400)
+          archiveMessage('alpha-2', 'alpha', '项目群', '项目群第二条', 1_769_990_400),
+          {
+            ...archiveMessage(
+              'alpha-sent',
+              'alpha',
+              'Jamie',
+              '那边多少度呀 热不，这是用于验证移动端右侧头像不会被裁切的消息',
+              1_775_315_283
+            ),
+            isSender: true,
+            name: 'Nanin'
+          }
         ]
       })};\n`,
       'utf8'
@@ -83,12 +143,17 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
     const conversationSelect = page.getByLabel('筛选聊天')
     await expect(conversationSelect).toHaveValue('all')
     await expect(conversationSelect.locator('option')).toHaveCount(3)
+    await expect(conversationSelect.locator('option')).toHaveText([
+      '全部聊天',
+      '项目群',
+      '文件传输助手'
+    ])
     await expect(page.locator('#archive-title')).toBeHidden()
     await expect(page.locator('.archive-heading #conversation-filter')).toBeVisible()
     await expect(page.locator('#archive-meta')).toHaveText(/^更新于 /)
     await expect(page.locator('#archive-meta')).not.toContainText('条消息')
-    await expect(page.locator('.message')).toHaveCount(3)
-    await expect(page.locator('.conversation-source')).toHaveCount(3)
+    await expect(page.locator('.message')).toHaveCount(4)
+    await expect(page.locator('.conversation-source')).toHaveCount(4)
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true)
@@ -121,7 +186,91 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
     expect(positions.conversationBottom).toBeLessThanOrEqual(positions.toolbarBottom)
     expect(positions.timelineTop).toBeGreaterThanOrEqual(positions.toolbarBottom)
     expect(positions.documentWidth).toBeLessThanOrEqual(positions.viewportWidth)
-    await expect(page.locator('.message')).toHaveCount(3)
+    await expect(page.locator('.message')).toHaveCount(4)
+    const searchInput = page.getByLabel('搜索消息')
+    await expect(conversationSelect).toBeVisible()
+    const compactControlBounds = await page.evaluate(() => {
+      const conversations = document.querySelector('#conversation-filter')!.getBoundingClientRect()
+      const search = document.querySelector('#query')!.getBoundingClientRect()
+      return {
+        conversationTop: conversations.top,
+        conversationBottom: conversations.bottom,
+        conversationWidth: conversations.width,
+        searchTop: search.top,
+        searchBottom: search.bottom,
+        searchWidth: search.width
+      }
+    })
+    expect(
+      Math.abs(compactControlBounds.conversationTop - compactControlBounds.searchTop)
+    ).toBeLessThanOrEqual(1)
+    expect(
+      Math.abs(compactControlBounds.conversationBottom - compactControlBounds.searchBottom)
+    ).toBeLessThanOrEqual(1)
+    expect(compactControlBounds.searchWidth).toBeGreaterThan(compactControlBounds.conversationWidth)
+    await conversationSelect.selectOption('beta')
+    await expect(page.locator('.message')).toHaveCount(1)
+    await conversationSelect.selectOption('all')
+    await expect(page.locator('.message')).toHaveCount(4)
+    await expect(searchInput).toBeVisible()
+    const mobileFilterButtons = page.locator('.filter-button:visible')
+    await expect(mobileFilterButtons).toHaveCount(7)
+    const filterButtonTops = await mobileFilterButtons.evaluateAll((buttons) =>
+      buttons.map((button) => button.getBoundingClientRect().top)
+    )
+    expect(Math.max(...filterButtonTops) - Math.min(...filterButtonTops)).toBeLessThanOrEqual(1)
+    const countTop = await page
+      .locator('#count')
+      .evaluate((element) => element.getBoundingClientRect().top)
+    const filterBottom = await mobileFilterButtons
+      .first()
+      .evaluate((element) => element.getBoundingClientRect().bottom)
+    expect(countTop).toBeGreaterThanOrEqual(filterBottom)
+    expect(positions.toolbarBottom - positions.toolbarTop).toBeLessThanOrEqual(150)
+    await page.getByRole('button', { name: '文字', exact: true }).click()
+    const messageList = page.locator('#messages')
+    const sentMessageBounds = await page.locator('.message.sent').evaluate((element) => {
+      const list = element.parentElement!.getBoundingClientRect()
+      const message = element.getBoundingClientRect()
+      const row = element.querySelector('.row')!.getBoundingClientRect()
+      const avatar = element.querySelector('.avatar')!.getBoundingClientRect()
+      return {
+        listLeft: list.left,
+        listRight: list.right,
+        messageLeft: message.left,
+        messageRight: message.right,
+        rowLeft: row.left,
+        rowRight: row.right,
+        avatarLeft: avatar.left,
+        avatarRight: avatar.right
+      }
+    })
+    expect(Math.abs(sentMessageBounds.rowLeft - sentMessageBounds.messageLeft)).toBeLessThanOrEqual(
+      1
+    )
+    expect(
+      Math.abs(sentMessageBounds.rowRight - sentMessageBounds.messageRight)
+    ).toBeLessThanOrEqual(1)
+    expect(sentMessageBounds.rowLeft).toBeGreaterThanOrEqual(sentMessageBounds.listLeft)
+    expect(sentMessageBounds.rowRight).toBeLessThanOrEqual(sentMessageBounds.listRight)
+    expect(sentMessageBounds.avatarLeft).toBeGreaterThanOrEqual(sentMessageBounds.listLeft)
+    expect(sentMessageBounds.avatarRight).toBeLessThanOrEqual(sentMessageBounds.listRight)
+    const mobileScrollBehavior = await messageList.evaluate((element) => {
+      const styles = getComputedStyle(element)
+      return {
+        overflowX: styles.overflowX,
+        overscrollBehaviorX: styles.overscrollBehaviorX,
+        touchAction: styles.touchAction
+      }
+    })
+    expect(mobileScrollBehavior).toEqual({
+      overflowX: 'hidden',
+      overscrollBehaviorX: 'none',
+      touchAction: 'pan-y'
+    })
+    await messageList.hover()
+    await page.mouse.wheel(80, 120)
+    await expect.poll(() => messageList.evaluate((element) => element.scrollLeft)).toBe(0)
     await page.screenshot({ path: testInfo.outputPath('merged-archive-390.png'), fullPage: true })
   } finally {
     rmSync(fixtureRoot, { recursive: true, force: true })
@@ -171,7 +320,7 @@ test('EXPORT-ARCHIVE-02 legacy single-chat archive keeps its original layout', a
 
 test('EXPORT-ARCHIVE-04 timeline follows the latest visible month after changing tabs', async ({
   page
-}) => {
+}, testInfo) => {
   const outputDir = mkdtempSync(join(tmpdir(), 'wxe-timeline-sync-e2e-'))
   try {
     const dataPath = join(outputDir, 'data', 'messages.js')
@@ -218,6 +367,19 @@ test('EXPORT-ARCHIVE-04 timeline follows the latest visible month after changing
     const messages = page.locator('#messages')
     const activeMonth = page.locator('.timeline-month.active')
     await expect(activeMonth).toHaveAttribute('data-month', '2026-04')
+    const expandedYear = page.locator('.timeline-year[aria-expanded="true"]')
+    const latestYear = page.locator('.timeline-year[data-year="2026"]')
+    await expect(expandedYear).toHaveCount(1)
+    await expect(expandedYear).toHaveText('2026 年')
+    await expect(page.locator('.timeline-month:visible')).toHaveCount(1)
+    await latestYear.click()
+    await expect(latestYear).toHaveAttribute('aria-expanded', 'false')
+    await expect(page.locator('.timeline-month:visible')).toHaveCount(0)
+    await latestYear.click()
+    await expect(latestYear).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('.timeline-month:visible')).toHaveCount(1)
+    await expect(page.locator('#archive-loading')).toBeHidden()
+    await page.screenshot({ path: testInfo.outputPath('timeline-collapsed-1440.png') })
     expect(
       await messages.evaluate(
         (element) => element.scrollHeight - element.scrollTop - element.clientHeight
@@ -236,10 +398,59 @@ test('EXPORT-ARCHIVE-04 timeline follows the latest visible month after changing
     expect(timelinePosition.buttonTop).toBeGreaterThanOrEqual(timelinePosition.timelineTop)
     expect(timelinePosition.buttonBottom).toBeLessThanOrEqual(timelinePosition.timelineBottom + 1)
 
+    const selectedYear = page.locator('.timeline-year[data-year="2020"]')
+    await selectedYear.click()
+    await expect(expandedYear).toHaveText('2020 年')
+    await expect(selectedYear).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('.timeline-year[data-year="2026"]')).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+    await expect(page.locator('.timeline-month:visible')).toHaveCount(12)
+    const selectedMonth = page.locator('.timeline-month[data-month="2020-07"]')
+    await selectedMonth.click()
+    await expect(selectedMonth).toHaveClass(/active/)
+    await expect(activeMonth).toHaveAttribute('data-month', '2020-07')
+    const visibleMonths = await messages.evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      const anchor = bounds.top + Math.min(24, bounds.height / 4)
+      const items = Array.from(element.querySelectorAll<HTMLElement>('.message'))
+      return {
+        firstVisible: items.find((item) => item.getBoundingClientRect().bottom > bounds.top)
+          ?.dataset.month,
+        firstAnchored: items.find((item) => item.getBoundingClientRect().bottom > anchor)?.dataset
+          .month
+      }
+    })
+    expect(visibleMonths).toEqual({ firstVisible: '2020-06', firstAnchored: '2020-07' })
+
     await messages.evaluate((element) => {
       element.scrollTop = 0
     })
     await expect(activeMonth).toHaveAttribute('data-month', '2006-01')
+    await expect(expandedYear).toHaveText('2006 年')
+    await expect(page.locator('.timeline-month:visible')).toHaveCount(12)
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    const mobileLayoutBounds = await page.evaluate(() => {
+      const layout = document.querySelector('.archive-layout')!.getBoundingClientRect()
+      const messages = document.querySelector('#messages')!.getBoundingClientRect()
+      return {
+        viewportWidth: window.innerWidth,
+        layoutLeft: layout.left,
+        layoutRight: layout.right,
+        messagesLeft: messages.left,
+        messagesRight: messages.right
+      }
+    })
+    expect(mobileLayoutBounds.layoutLeft).toBeGreaterThanOrEqual(0)
+    expect(mobileLayoutBounds.layoutRight).toBeLessThanOrEqual(mobileLayoutBounds.viewportWidth)
+    expect(mobileLayoutBounds.messagesLeft).toBeGreaterThanOrEqual(0)
+    expect(mobileLayoutBounds.messagesRight).toBeLessThanOrEqual(mobileLayoutBounds.viewportWidth)
+    await expect(expandedYear).toHaveText('2006 年')
+    await page.screenshot({ path: testInfo.outputPath('timeline-collapsed-390.png') })
   } finally {
     rmSync(outputDir, { recursive: true, force: true })
   }
@@ -491,7 +702,7 @@ test('EXPORT-ARCHIVE-03 renders shares and locations, and groups payments under 
       fullPage: true
     })
 
-    await page.getByRole('button', { name: '系统 / 其他', exact: true }).click()
+    await page.getByRole('button', { name: '系统', exact: true }).click()
     await expect(page.locator('.message')).toHaveCount(6)
     await expect(page.getByText('我给你发了一个红包')).toBeVisible()
     await expect(page.getByText('收到转账￥1000.00元')).toBeVisible()

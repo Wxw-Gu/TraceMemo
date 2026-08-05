@@ -25,8 +25,13 @@ describe('export media', () => {
     const html = renderExportPage('脱敏导出')
 
     expect(EXPORT_PAGE_SIZE).toBe(240)
-    expect(html).toContain('<script src="data/messages.js"></script>')
+    expect(html).toContain("dataScript.src = 'data/messages.js'")
+    expect(html).toContain('id="archive-loading"')
+    expect(html).toContain('正在加载聊天档案')
+    expect(html).toContain('requestAnimationFrame(() => window.setTimeout(loadArchiveData, 0))')
     expect(html).toContain('aria-label="聊天时间轴"')
+    expect(html).toContain('aria-expanded="')
+    expect(html).toContain('setExpandedTimelineYear')
     expect(html).toContain('data-kind="media"')
     expect(html).toContain('placeholder="搜索发送者或消息内容…"')
     expect(html).toContain('filtered.slice(windowStart, windowEnd)')
@@ -91,6 +96,10 @@ describe('export media', () => {
     search.dispatchEvent(new dom.window.Event('input'))
     expect(dom.window.document.querySelectorAll('.message')).toHaveLength(5)
     expect(dom.window.document.querySelectorAll('.timeline-month').length).toBeGreaterThan(1)
+    expect(
+      dom.window.document.querySelectorAll('.timeline-year[aria-expanded="true"]')
+    ).toHaveLength(1)
+    expect(dom.window.document.querySelectorAll('.timeline-months:not([hidden])')).toHaveLength(1)
     dom.window.close()
   })
 
@@ -124,7 +133,7 @@ describe('export media', () => {
     expect(dom.window.document.querySelector('#archive-meta')?.textContent).toMatch(/^更新于 /)
     expect(select.options).toHaveLength(3)
     expect(select.value).toBe('all')
-    expect(select.options[0].textContent).toBe('全部聊天（3）')
+    expect(select.options[0].textContent).toBe('全部聊天')
     expect(dom.window.document.querySelectorAll('.conversation-source')).toHaveLength(3)
     expect(dom.window.document.querySelector('#count')?.textContent).toBe(
       '已显示 3 / 筛选 3 / 全部 3'

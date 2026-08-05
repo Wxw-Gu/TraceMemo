@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, nativeImage, shell } from 'electron'
 import { createHash } from 'crypto'
 import { createReadStream, createWriteStream, promises as fs } from 'fs'
 import { extname, join } from 'path'
@@ -51,6 +51,12 @@ export interface HtmlExportConversation {
   messageCount: number
 }
 
+interface HtmlExportAvatarVersion {
+  sourceHash: string
+  visualHash?: string
+  avatarUrl: string
+}
+
 interface HtmlExportArchiveV1 {
   version: 1
   sourceId: string
@@ -65,6 +71,7 @@ export interface HtmlExportArchive {
   exportedAt: string
   conversations: HtmlExportConversation[]
   messages: Message[]
+  avatarVersions?: Record<string, HtmlExportAvatarVersion>
 }
 
 const htmlArchiveResourcePrefixes = {
@@ -92,6 +99,76 @@ const fileHashPart = async (filePath: string, length = 16): Promise<string> => {
 }
 const avatarFileName = (buffer: Buffer, extension: string): string =>
   `avatar_${bufferHashPart(buffer)}.${extension}`
+const avatarSourceHash = (source: string): string => hashPart(source, 24)
+const avatarIdentityKey = (conversationId: string, message: Message): string =>
+  `${conversationId}:${
+    message.senderId ||
+    (message.isSender ? '__self__' : message.from || message.name || '__unknown__')
+  }`
+
+const avatarVisualHash = (buffer: Buffer): string | null => {
+  try {
+    const image = nativeImage.createFromBuffer(buffer)
+    if (image.isEmpty()) return null
+    const bitmap = image.resize({ width: 9, height: 8, quality: 'good' }).toBitmap()
+    if (bitmap.length < 9 * 8 * 4) return null
+    let hash = 0n
+    let red = 0
+    let green = 0
+    let blue = 0
+    for (let y = 0; y < 8; y += 1) {
+      for (let x = 0; x < 8; x += 1) {
+        const left = (y * 9 + x) * 4
+        const right = left + 4
+        blue += bitmap[left]
+        green += bitmap[left + 1]
+        red += bitmap[left + 2]
+        const leftLuma = bitmap[left + 2] * 3 + bitmap[left + 1] * 6 + bitmap[left]
+        const rightLuma = bitmap[right + 2] * 3 + bitmap[right + 1] * 6 + bitmap[right]
+        hash = (hash << 1n) | (leftLuma > rightLuma ? 1n : 0n)
+      }
+    }
+    const averageHex = [red, green, blue]
+      .map((total) =>
+        Math.round(total / 64)
+          .toString(16)
+          .padStart(2, '0')
+      )
+      .join('')
+    return `${hash.toString(16).padStart(16, '0')}:${averageHex}`
+  } catch {
+    return null
+  }
+}
+
+const parseAvatarVisualHash = (value: string): { shape: bigint; color: number[] } | null => {
+  const match = /^([0-9a-f]{16}):([0-9a-f]{6})$/i.exec(value)
+  if (!match) return null
+  return {
+    shape: BigInt(`0x${match[1]}`),
+    color: [0, 2, 4].map((offset) => Number.parseInt(match[2].slice(offset, offset + 2), 16))
+  }
+}
+
+const avatarHashDistance = (left: bigint, right: bigint): number => {
+  let difference = left ^ right
+  let distance = 0
+  while (difference) {
+    difference &= difference - 1n
+    distance += 1
+  }
+  return distance
+}
+
+const avatarsLookTheSame = (left?: string | null, right?: string | null): boolean => {
+  if (!left || !right) return false
+  const leftHash = parseAvatarVisualHash(left)
+  const rightHash = parseAvatarVisualHash(right)
+  if (!leftHash || !rightHash || avatarHashDistance(leftHash.shape, rightHash.shape) > 5) {
+    return false
+  }
+  return leftHash.color.every((channel, index) => Math.abs(channel - rightHash.color[index]) <= 12)
+}
 
 const htmlArchiveSourceSignature = (message: Message): string =>
   JSON.stringify([
@@ -307,7 +384,8 @@ export async function readHtmlArchive(
     name: parsed.name || name,
     exportedAt: parsed.exportedAt || new Date(0).toISOString(),
     conversations: parsed.conversations,
-    messages: Array.isArray(parsed.messages) ? parsed.messages : []
+    messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+    avatarVersions: parsed.avatarVersions
   }
 }
 
@@ -555,8 +633,7 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
     if (targets.length > 1 && request.format !== 'html') {
       throw new Error('多聊天合并仅支持 HTML 格式')
     }
-    const archiveName =
-      targets.length > 1 ? `${targets[0].name} 等 ${targets.length} 个聊天` : targets[0].name
+    const archiveName = safeFilePart(request.outputName)
     const targetById = new Map(targets.map((target) => [target.userMd5, target]))
     send({ jobId: request.jobId, phase: 'reading', processed: 0, total: 100, percent: 0 })
     await new Promise<void>((resolve) => setImmediate(resolve))
@@ -672,6 +749,15 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
       const previousMessagesByKey = new Map(
         previousArchive.messages.map((message) => [exportMessageKey(message), message])
       )
+      const latestPreviousAvatarUrls = new Map<string, string>()
+      for (const message of previousArchive.messages) {
+        if (!message.exportAvatarUrl) continue
+        const conversationId = message.exportConversationId || targets[0].userMd5
+        latestPreviousAvatarUrls.set(
+          avatarIdentityKey(conversationId, message),
+          message.exportAvatarUrl
+        )
+      }
       const reusablePreviousMessages = new Map<Message, Message>()
       for (const message of messages) {
         const previous = previousMessagesByKey.get(exportMessageKey(message))
@@ -722,20 +808,59 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
       const stickerService = client ? new StickerService(client) : null
       const fileService = client ? new FileAssetService(client) : null
       const exportedAvatars = new Map<string, string>()
+      const previousAvatarVersions = previousArchive.avatarVersions || {}
+      const avatarVersions: Record<string, HtmlExportAvatarVersion> = {
+        ...previousAvatarVersions
+      }
+      const resolveExportAvatar = async (
+        identity: string,
+        source: string,
+        legacyAvatarUrl?: string
+      ): Promise<string | undefined> => {
+        const sourceHash = avatarSourceHash(source)
+        const previousVersion = previousAvatarVersions[identity]
+        const resolved = await readAvatarAsset(source)
+        if (!resolved?.buffer) return undefined
+        const visualHash = avatarVisualHash(resolved.buffer)
+        const previousAvatarUrl = previousVersion?.avatarUrl || legacyAvatarUrl
+        if (previousAvatarUrl && (await resourceExists(previousAvatarUrl))) {
+          const previousVisualHash =
+            previousVersion?.visualHash ||
+            avatarVisualHash(await fs.readFile(join(outputDir, previousAvatarUrl)))
+          if (avatarsLookTheSame(previousVisualHash, visualHash)) {
+            avatarVersions[identity] = {
+              sourceHash,
+              visualHash: visualHash || previousVisualHash || undefined,
+              avatarUrl: previousAvatarUrl
+            }
+            return previousAvatarUrl
+          }
+        }
+
+        const avatarName = avatarFileName(resolved.buffer, resolved.extension || 'jpg')
+        const avatarUrl = `avatars/${avatarName}`
+        if (!(await resourceExists(avatarUrl))) {
+          await fs.writeFile(join(outputDir, 'avatars', avatarName), resolved.buffer)
+          markResourceExists(avatarUrl)
+        }
+        avatarVersions[identity] = {
+          sourceHash,
+          visualHash: visualHash || undefined,
+          avatarUrl
+        }
+        return avatarUrl
+      }
       const conversationAvatarUrls = new Map<string, string>()
       if (request.includeAvatars !== false) {
         for (const target of targets) {
           if (!jobs.has(request.jobId)) throw new Error('已取消')
           if (!target.avatarUrl) continue
-          const resolved = await readAvatarAsset(target.avatarUrl)
-          if (!resolved) continue
-          const avatarName = avatarFileName(resolved.buffer, resolved.extension)
-          const avatarUrl = `avatars/${avatarName}`
-          if (!(await resourceExists(avatarUrl))) {
-            await fs.writeFile(join(outputDir, 'avatars', avatarName), resolved.buffer)
-            markResourceExists(avatarUrl)
-          }
-          conversationAvatarUrls.set(target.userMd5, avatarUrl)
+          const avatarUrl = await resolveExportAvatar(
+            `conversation:${target.userMd5}`,
+            target.avatarUrl,
+            previousArchive.conversations.find((item) => item.id === target.userMd5)?.avatarUrl
+          )
+          if (avatarUrl) conversationAvatarUrls.set(target.userMd5, avatarUrl)
         }
       }
       const voiceService =
@@ -811,27 +936,28 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
         const conversationId = message.exportConversationId || targets[0].userMd5
         message.exportShowAvatar = request.includeAvatars !== false
         const previous = reusablePreviousMessages.get(message)
+        const previousMessage = previousMessagesByKey.get(exportMessageKey(message))
         const avatar = (message.senderId ? avatarMap[message.senderId] : undefined) || message.img
-        const avatarKey = `${conversationId}:${
-          message.senderId || avatar || `message_${exportMessageKey(message, conversationId)}`
-        }`
-        let avatarName = exportedAvatars.get(avatarKey)
-        if (!avatarName && avatar) {
-          const resolvedAvatar = await readAvatarAsset(avatar)
-          if (resolvedAvatar?.buffer) {
-            const avatarExtension = resolvedAvatar.extension || 'jpg'
-            avatarName = avatarFileName(resolvedAvatar.buffer, avatarExtension)
-            const avatarUrl = `avatars/${avatarName}`
-            if (!(await resourceExists(avatarUrl))) {
-              await fs.writeFile(join(outputDir, 'avatars', avatarName), resolvedAvatar.buffer)
-              markResourceExists(avatarUrl)
-            }
-            exportedAvatars.set(avatarKey, avatarName)
+        const avatarKey = avatarIdentityKey(conversationId, message)
+        let avatarUrl: string | undefined
+        if (
+          request.includeAvatars !== false &&
+          previousMessage?.exportAvatarUrl &&
+          (await resourceExists(previousMessage.exportAvatarUrl))
+        ) {
+          avatarUrl = previousMessage.exportAvatarUrl
+        } else if (request.includeAvatars !== false && avatar) {
+          avatarUrl = exportedAvatars.get(avatarKey)
+          if (!avatarUrl) {
+            avatarUrl = await resolveExportAvatar(
+              avatarKey,
+              avatar,
+              latestPreviousAvatarUrls.get(avatarKey)
+            )
+            if (avatarUrl) exportedAvatars.set(avatarKey, avatarUrl)
           }
         }
-        if (avatarName) {
-          message.exportAvatarUrl = `avatars/${avatarName}`
-        }
+        if (avatarUrl) message.exportAvatarUrl = avatarUrl
         if (!request.includeMedia || !message.contentData) {
           send({
             jobId: request.jobId,
@@ -1036,7 +1162,8 @@ export async function runExport(request: ExportRequest, win: BrowserWindow): Pro
             (message) => message.exportConversationId === target.userMd5
           ).length
         })),
-        messages: normalizedMessages
+        messages: normalizedMessages,
+        avatarVersions
       }
       if (!jobs.has(request.jobId)) throw new Error('已取消')
       await fs.writeFile(outputPath, renderExportPage(archiveName), 'utf8')

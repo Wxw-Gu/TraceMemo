@@ -20,8 +20,50 @@ body {
   color: var(--text);
   font: 14px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
+.archive-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  background: var(--page);
+  color: var(--text);
+  text-align: center;
+  transition: opacity .2s ease, visibility .2s ease;
+}
+.archive-loading.complete {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+.archive-loading-indicator {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 4px;
+  border: 3px solid #c9d9d1;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: archive-loading-spin .8s linear infinite;
+}
+.archive-loading strong { font-size: 16px; }
+.archive-loading span { color: var(--muted); font-size: 13px; }
+.archive-loading.error .archive-loading-indicator {
+  display: grid;
+  border: 0;
+  animation: none;
+  place-items: center;
+  color: #a33b32;
+  font-size: 28px;
+}
+.archive-loading.error .archive-loading-indicator::before { content: '!'; }
+@keyframes archive-loading-spin { to { transform: rotate(360deg); } }
 .page {
+  width: 100%;
   max-width: 1380px;
+  min-width: 0;
   height: 100vh;
   margin: auto;
   padding: 20px 24px;
@@ -30,6 +72,8 @@ body {
 }
 .toolbar {
   display: grid;
+  width: 100%;
+  min-width: 0;
   grid-template-columns: minmax(220px, 1fr) auto;
   gap: 14px 24px;
   align-items: center;
@@ -71,6 +115,9 @@ body {
 .count { margin-left: auto; color: var(--muted); font-size: 13px; }
 .archive-layout {
   display: grid;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   grid-template-columns: 168px minmax(0, 1fr);
   gap: 18px;
   min-height: 0;
@@ -80,6 +127,8 @@ body {
 .archive-layout.single-conversation { grid-template-columns: 168px minmax(0, 1fr); }
 .archive-navigation {
   display: flex;
+  width: 100%;
+  max-width: 100%;
   flex-direction: column;
   gap: 10px;
   min-width: 0;
@@ -138,7 +187,36 @@ body {
   padding: 12px 9px;
 }
 .timeline-empty { padding: 10px; color: var(--muted); font-size: 12px; }
-.timeline-year { margin: 6px 7px 5px; color: var(--text); font-size: 13px; font-weight: 700; }
+.timeline-year-group + .timeline-year-group { margin-top: 4px; }
+.timeline-year {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+}
+.timeline-year::after {
+  content: '⌄';
+  color: var(--muted);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1;
+  transform: rotate(-90deg);
+  transition: transform .15s ease;
+}
+.timeline-year:hover { background: #eaf2ee; }
+.timeline-year[aria-expanded=true]::after { transform: rotate(0); }
+.timeline-months[hidden] { display: none; }
 .timeline-month {
   width: 100%;
   display: flex;
@@ -159,7 +237,7 @@ body {
   color: var(--accent);
 }
 .timeline-month small { color: inherit; }
-.scroll { overflow: auto; min-width: 0; padding: 10px 8px 36px; }
+.scroll { width: 100%; max-width: 100%; overflow: auto; min-width: 0; padding: 10px 8px 36px; }
 .lazy-hint {
   width: min(100%, 820px);
   margin: 0 auto 12px;
@@ -175,6 +253,7 @@ body {
   flex-direction: column;
   gap: 6px;
   width: min(100%, 820px);
+  min-width: 0;
   margin: 0 auto 22px;
 }
 .locate-all {
@@ -234,6 +313,7 @@ body {
 }
 @media (prefers-reduced-motion: reduce) {
   .message.located .bubble { animation: none; outline: 3px solid #36a477; outline-offset: 3px; }
+  .archive-loading-indicator { animation: none; }
 }
 .message.sent { align-items: flex-end; }
 .message.system { align-items: center; }
@@ -271,7 +351,7 @@ body {
   background: var(--accent-soft);
   color: var(--accent);
 }
-.row { display: flex; gap: 12px; align-items: flex-end; max-width: 100%; }
+.row { display: flex; width: 100%; min-width: 0; gap: 12px; align-items: flex-end; max-width: 100%; }
 .sent .row { flex-direction: row-reverse; }
 .avatar {
   width: 38px;
@@ -470,12 +550,75 @@ body {
   cursor: pointer;
 }
 @media (max-width: 760px) {
+  html, body { width: 100%; max-width: 100%; overflow-x: hidden; overscroll-behavior-x: none; }
   .page { padding: 10px; }
-  .toolbar { grid-template-columns: 1fr; padding: 13px; }
-  .controls { justify-content: flex-start; }
-  .controls input[type=search] { width: 100%; }
-  .filters { grid-column: 1; }
-  .count { width: 100%; margin-left: 0; }
+  .toolbar {
+    grid-template-columns: minmax(112px, .7fr) minmax(0, 1.3fr);
+    gap: 8px;
+    padding: 10px;
+    border-radius: 14px;
+  }
+  .archive-heading {
+    grid-column: 1;
+    min-height: 36px;
+    gap: 4px;
+    align-items: center;
+    flex-wrap: nowrap;
+  }
+  .archive-heading .title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .archive-heading .meta { display: none; }
+  .conversation-filter:not([hidden]) {
+    display: inline-flex;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    flex: 1 1 auto;
+    height: 36px;
+  }
+  .conversation-filter::after {
+    right: 10px;
+    width: 6px;
+    height: 6px;
+  }
+  .conversation-select {
+    width: 100%;
+    min-width: 0;
+    height: 36px;
+    padding: 0 24px 0 8px;
+    border-radius: 9px;
+    font-size: 12px;
+    font-weight: 650;
+    box-shadow: none;
+  }
+  .controls { grid-column: 2; min-width: 0; justify-content: flex-start; }
+  .controls input[type=search] { width: 100%; min-width: 0; height: 36px; padding: 0 10px; }
+  .filters {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .filter-button {
+    min-height: 30px;
+    border-radius: 8px;
+    padding: 4px 6px;
+    font-size: 12px;
+    line-height: 1.2;
+  }
+  .count {
+    display: block;
+    width: 100%;
+    flex: 0 0 100%;
+    margin-left: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.4;
+  }
   .archive-layout { grid-template-columns: 1fr; align-content: start; margin-top: 10px; }
   .archive-layout.single-conversation { grid-template-columns: 1fr; }
   .archive-navigation { align-self: start; gap: 8px; }
@@ -488,15 +631,22 @@ body {
     overflow: auto;
     padding: 8px;
   }
-  .archive-heading { align-items: flex-start; }
-  .conversation-filter { flex-basis: 100%; width: 100%; }
+  .timeline-year-group {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .timeline-year-group + .timeline-year-group { margin-top: 0; }
   .timeline-year {
     flex: 0 0 auto;
-    align-self: center;
-    margin: 0 2px 0 0;
-    padding: 7px 5px;
+    width: auto;
+    gap: 6px;
+    padding: 7px 8px;
     white-space: nowrap;
   }
+  .timeline-months { display: flex; gap: 6px; }
+  .timeline-months[hidden] { display: none; }
   .timeline-month {
     flex: 0 0 auto;
     width: auto;
@@ -507,8 +657,14 @@ body {
     border-left-color: transparent;
     border-bottom-color: var(--accent);
   }
-  .bubble { max-width: calc(100vw - 92px); }
-  .audio-wrap { width: min(260px, calc(100vw - 130px)); }
+  .scroll {
+    overflow-x: hidden;
+    overscroll-behavior-x: none;
+    touch-action: pan-y;
+  }
+  .message:not(.system) .bubble { max-width: calc(100% - 50px); }
+  .message:not(.system) .row.has-locate .bubble { max-width: calc(100% - 90px); }
+  .audio-wrap { width: min(260px, 100%); }
 }
 `
 
@@ -523,6 +679,25 @@ const safe = (value: unknown): string =>
 const renderExportScript = (name: string): string => `
 (() => {
   'use strict'
+  const loadingOverlay = document.querySelector('#archive-loading')
+  const loadingTitle = document.querySelector('#archive-loading-title')
+  const loadingDetail = document.querySelector('#archive-loading-detail')
+  const finishLoading = () => {
+    if (!loadingOverlay) return
+    loadingOverlay.setAttribute('aria-busy', 'false')
+    loadingOverlay.classList.add('complete')
+    window.setTimeout(() => loadingOverlay.remove(), 250)
+  }
+  const failLoading = (message) => {
+    if (!loadingOverlay) return
+    loadingOverlay.setAttribute('aria-busy', 'false')
+    loadingOverlay.setAttribute('role', 'alert')
+    loadingOverlay.classList.add('error')
+    if (loadingTitle) loadingTitle.textContent = '无法加载聊天档案'
+    if (loadingDetail) loadingDetail.textContent = message
+  }
+  const initializeArchive = () => {
+    try {
   const PAGE_SIZE = ${EXPORT_PAGE_SIZE}
   const WINDOW_STEP = Math.floor(PAGE_SIZE / 2)
   const archive = window.__WECHAT_EXPORT__ || { name: ${JSON.stringify(name)}, messages: [] }
@@ -561,6 +736,7 @@ const renderExportScript = (name: string): string => `
   let scrollLoadPending = false
   let scrollLoadSuppressed = false
   let activeMonthUpdatePending = false
+  let expandedTimelineYear = ''
   const tabPositions = new Map()
   let lastScrollTop = 0
   let zoom = 1
@@ -856,7 +1032,8 @@ const renderExportScript = (name: string): string => `
         '<span class="locate-label" aria-hidden="true">定位到聊天位置</span></button>'
     return '<article class="message' + (message.isSender ? ' sent' : '') + (isSystem ? ' system' : '') +
       '" data-index="' + archiveIndex + '" data-month="' + esc(monthKey(message)) + '">' +
-      '<div class="time">' + esc(fullTime(message)) + source + '</div><div class="row">' +
+      '<div class="time">' + esc(fullTime(message)) + source + '</div><div class="row' +
+      (locateAction ? ' has-locate' : '') + '">' +
       (isSystem ? '' : avatar) + '<div class="bubble"><div class="sender">' +
       (isSystem ? '' : esc(sender)) + '</div>' + media + audio + quote + structured +
       contentMarkup + mediaStatus + '</div>' + locateAction + '</div></article>'
@@ -869,26 +1046,26 @@ const renderExportScript = (name: string): string => `
       layout.classList.add('single-conversation')
       return
     }
-    const counts = new Map()
-    for (const message of allMessages) {
-      const id = message.exportConversationId || ''
-      counts.set(id, (counts.get(id) || 0) + 1)
-    }
-    const option = (id, label, total) =>
-      '<option value="' + esc(id) + '">' + esc(label) + '（' + total + '）</option>'
+    const option = (id, label) => '<option value="' + esc(id) + '">' + esc(label) + '</option>'
     title.hidden = true
     conversationFilter.hidden = false
-    conversationSelect.innerHTML = option('all', '全部聊天', allMessages.length) +
-      conversations.map((conversation) => option(
-        conversation.id,
-        conversation.name,
-        counts.get(conversation.id) || 0
-      )).join('')
+    conversationSelect.innerHTML = option('all', '全部聊天') +
+      conversations.map((conversation) => option(conversation.id, conversation.name)).join('')
     conversationSelect.value = activeConversation
   }
 
+  const setExpandedTimelineYear = (year) => {
+    expandedTimelineYear = year || ''
+    timeline.querySelectorAll('.timeline-year').forEach((button) => {
+      const expanded = button.dataset.year === expandedTimelineYear
+      button.setAttribute('aria-expanded', String(expanded))
+      const months = button.nextElementSibling
+      if (months) months.hidden = !expanded
+    })
+  }
   const renderTimeline = () => {
     if (filtered.length === 0) {
+      expandedTimelineYear = ''
       timeline.innerHTML = '<div class="timeline-empty">没有可跳转的月份</div>'
       return
     }
@@ -898,16 +1075,29 @@ const renderExportScript = (name: string): string => `
       if (key === 'unknown') continue
       groups.set(key, (groups.get(key) || 0) + 1)
     }
-    let currentYear = ''
-    let html = ''
+    const yearGroups = new Map()
     for (const [key, total] of groups) {
       const parts = key.split('-')
-      if (parts[0] !== currentYear) {
-        currentYear = parts[0]
-        html += '<div class="timeline-year">' + esc(currentYear) + ' 年</div>'
-      }
-      html += '<button class="timeline-month" type="button" data-month="' + esc(key) + '">' +
-        '<span>' + Number(parts[1]) + ' 月</span><small>' + total + '</small></button>'
+      if (!yearGroups.has(parts[0])) yearGroups.set(parts[0], [])
+      yearGroups.get(parts[0]).push({ key, month: Number(parts[1]), total })
+    }
+    const years = Array.from(yearGroups.keys())
+    if (!years.includes(expandedTimelineYear)) {
+      expandedTimelineYear = years[years.length - 1] || ''
+    }
+    let html = ''
+    for (const year of years) {
+      const expanded = year === expandedTimelineYear
+      const monthsId = 'timeline-months-' + year
+      html += '<section class="timeline-year-group" data-year-group="' + esc(year) + '">' +
+        '<button class="timeline-year" type="button" data-year="' + esc(year) +
+        '" aria-expanded="' + String(expanded) + '" aria-controls="' + esc(monthsId) + '">' +
+        esc(year) + ' 年</button>' +
+        '<div class="timeline-months" id="' + esc(monthsId) + '"' + (expanded ? '' : ' hidden') + '>' +
+        yearGroups.get(year).map((entry) =>
+          '<button class="timeline-month" type="button" data-month="' + esc(entry.key) + '">' +
+          '<span>' + entry.month + ' 月</span><small>' + entry.total + '</small></button>'
+        ).join('') + '</div></section>'
     }
     timeline.innerHTML = html || '<div class="timeline-empty">时间信息不可用</div>'
   }
@@ -923,10 +1113,16 @@ const renderExportScript = (name: string): string => `
   const updateActiveMonth = () => {
     const messages = Array.from(list.querySelectorAll('.message'))
     const visible = visibleMessages()
+    const listBounds = list.getBoundingClientRect()
+    const topAnchor = listBounds.top + Math.min(24, listBounds.height / 4)
     const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight <= 2
+    const anchoredMessage = messages.find((message) => {
+      const bounds = message.getBoundingClientRect()
+      return bounds.bottom > topAnchor && bounds.top < listBounds.bottom
+    })
     const activeMessage = atBottom
       ? visible[visible.length - 1] || messages[messages.length - 1]
-      : visible[0] || messages[0]
+      : anchoredMessage || visible[0] || messages[0]
     const key = activeMessage && activeMessage.dataset.month
     let activeButton
     timeline.querySelectorAll('.timeline-month').forEach((button) => {
@@ -935,6 +1131,8 @@ const renderExportScript = (name: string): string => `
       if (active) activeButton = button
     })
     if (!activeButton) return
+    const activeYear = key.split('-')[0]
+    if (activeYear !== expandedTimelineYear) setExpandedTimelineYear(activeYear)
     const timelineBounds = timeline.getBoundingClientRect()
     const buttonBounds = activeButton.getBoundingClientRect()
     if (buttonBounds.top < timelineBounds.top) {
@@ -1092,6 +1290,7 @@ const renderExportScript = (name: string): string => `
     renderWindow()
     const target = list.querySelector('.message[data-index="' + index + '"]')
     setScrollTop(target ? Math.max(0, scrollTopForTarget(target, 24)) : 0)
+    setExpandedTimelineYear(key.split('-')[0])
     timeline.querySelectorAll('.timeline-month').forEach((button) => {
       button.classList.toggle('active', button.dataset.month === key)
     })
@@ -1154,6 +1353,13 @@ const renderExportScript = (name: string): string => `
     applyFilters(true)
   })
   timeline.addEventListener('click', (event) => {
+    const yearButton = event.target.closest('[data-year]')
+    if (yearButton) {
+      setExpandedTimelineYear(
+        yearButton.dataset.year === expandedTimelineYear ? '' : yearButton.dataset.year
+      )
+      return
+    }
     const button = event.target.closest('[data-month]')
     if (button) jumpToMonth(button.dataset.month)
   })
@@ -1202,6 +1408,39 @@ const renderExportScript = (name: string): string => `
     '更新于 ' + updatedAt
   renderConversations()
   applyFilters()
+      finishLoading()
+    } catch (error) {
+      console.error('初始化聊天档案失败', error)
+      failLoading('消息数据解析失败，请确认档案文件完整后重试')
+    }
+  }
+
+  if (window.__WECHAT_EXPORT__) {
+    initializeArchive()
+    return
+  }
+
+  const loadArchiveData = () => {
+    const dataScript = document.createElement('script')
+    dataScript.src = 'data/messages.js'
+    dataScript.onload = () => {
+      if (!window.__WECHAT_EXPORT__) {
+        failLoading('消息数据为空或格式不正确，请重新导出聊天档案')
+        return
+      }
+      initializeArchive()
+    }
+    dataScript.onerror = () => {
+      failLoading('未找到消息数据，请确认 data/messages.js 与当前页面在同一档案中')
+    }
+    document.body.appendChild(dataScript)
+  }
+
+  if (typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(() => window.setTimeout(loadArchiveData, 0))
+  } else {
+    window.setTimeout(loadArchiveData, 0)
+  }
 })()
 `
 
@@ -1215,6 +1454,11 @@ export function renderExportPage(name: string): string {
   <style>${exportStyles}</style>
 </head>
 <body>
+  <div class="archive-loading" id="archive-loading" role="status" aria-live="polite" aria-busy="true">
+    <div class="archive-loading-indicator" aria-hidden="true"></div>
+    <strong id="archive-loading-title">正在加载聊天档案</strong>
+    <span id="archive-loading-detail">消息较多时可能需要一些时间</span>
+  </div>
   <main class="page">
     <header class="toolbar">
       <div class="archive-heading">
@@ -1234,7 +1478,7 @@ export function renderExportPage(name: string): string {
         <button class="filter-button" type="button" data-kind="voice">语音</button>
         <button class="filter-button" type="button" data-kind="file">文件</button>
         <button class="filter-button" type="button" data-kind="share">分享</button>
-        <button class="filter-button" type="button" data-kind="system">系统 / 其他</button>
+        <button class="filter-button" type="button" data-kind="system">系统</button>
         <span class="count" id="count"></span>
       </div>
     </header>
@@ -1251,7 +1495,6 @@ export function renderExportPage(name: string): string {
     <button class="lightbox-close" id="lightbox-close" type="button" aria-label="关闭图片预览">×</button>
     <img id="lightbox-image" alt="预览">
   </div>
-  <script src="data/messages.js"></script>
   <script>${renderExportScript(name)}</script>
 </body>
 </html>`

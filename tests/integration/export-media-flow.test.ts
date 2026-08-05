@@ -22,6 +22,8 @@ const state = vi.hoisted(() => ({
   documents: '',
   accountRoot: '',
   videoPath: '',
+  selfAvatar: undefined as string | undefined,
+  avatarMap: {} as Record<string, string>,
   messages: [] as Message[],
   messagesByUser: {} as Record<string, Message[]>,
   exportReads: [] as string[],
@@ -44,6 +46,26 @@ const state = vi.hoisted(() => ({
 vi.mock('electron', () => ({
   app: { getPath: () => state.documents },
   shell: { showItemInFolder: vi.fn() },
+  nativeImage: {
+    createFromBuffer: (buffer: Buffer) => {
+      const reversed = buffer.toString().includes('different-avatar')
+      const bitmap = Buffer.alloc(9 * 8 * 4)
+      for (let y = 0; y < 8; y += 1) {
+        for (let x = 0; x < 9; x += 1) {
+          const offset = (y * 9 + x) * 4
+          const value = reversed ? 240 - x * 20 : 40 + x * 20
+          bitmap[offset] = value
+          bitmap[offset + 1] = value
+          bitmap[offset + 2] = value
+          bitmap[offset + 3] = 255
+        }
+      }
+      return {
+        isEmpty: () => false,
+        resize: () => ({ toBitmap: () => bitmap })
+      }
+    }
+  },
   BrowserWindow: class {}
 }))
 vi.mock('../../src/main/services/chat-service', () => ({
@@ -60,10 +82,11 @@ vi.mock('../../src/main/services/chat-service', () => ({
       getUsernameByMd5: (userMd5: string) => `wxid_${userMd5}`
     })
   }),
-  getContactAvatars: () => ({}),
+  getContactAvatars: () => ({ ...state.avatarMap }),
   getSelfAccountInfoAsync: async () => ({
     wxid: 'fixture_account',
     nickname: '示例昵称',
+    avatar: state.selfAvatar,
     accountRoot: state.accountRoot
   })
 }))
@@ -192,6 +215,8 @@ describe('media export flow', () => {
     state.documents = mkdtempSync(join(tmpdir(), 'wxe-export-fixture-'))
     state.accountRoot = join(state.documents, 'fixture-account')
     state.videoPath = join(state.documents, 'fixture.mp4')
+    state.selfAvatar = undefined
+    state.avatarMap = {}
     writeFileSync(
       state.videoPath,
       Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex')
@@ -283,7 +308,8 @@ describe('media export flow', () => {
       'ftyp'
     )
     expect(readFileSync(join(outputDir, file.exportMediaUrl!), 'utf8')).toBe('附件内容')
-    expect(html).toContain('<script src="data/messages.js"></script>')
+    expect(html).toContain("dataScript.src = 'data/messages.js'")
+    expect(html).toContain('id="archive-loading"')
     expect(voice.voiceDataUrl).toMatch(/^voices\/voice_[0-9a-f]{16}\.wav$/)
     expect(video.exportMediaUrl).toMatch(/^media\/video_[0-9a-f]{16}\.mp4$/)
     expect(file.exportMediaUrl).toMatch(/^files\/file_[0-9a-f]{16}_测试附件\.txt$/)
@@ -303,6 +329,33 @@ describe('media export flow', () => {
     })
     expect(progress.length).toBeGreaterThan(0)
     expect(state.exportReads).toEqual(['fixture-user'])
+  })
+
+  it('uses the customized file name as the HTML archive title', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    state.messages = [message({ id: 'custom-title', content: '标题测试' })]
+
+    const result = await runExport(
+      {
+        jobId: 'custom-title',
+        targets: [target('fixture-user', '联系人原名')],
+        format: 'html',
+        outputName: '我修改后的文件名',
+        kinds: ['text'],
+        includeMedia: false
+      },
+      win as never
+    )
+
+    expect(result.success).toBe(true)
+    const html = readFileSync(result.outputPath!, 'utf8')
+    const archive = readArchive(result.outputPath!)
+    expect(html).toContain('<title>我修改后的文件名 - 聊天记录</title>')
+    expect(html).toContain('<span class="title" id="archive-title">我修改后的文件名</span>')
+    expect(html).not.toContain('<title>联系人原名 - 聊天记录</title>')
+    expect(archive.name).toBe('我修改后的文件名')
+    expect(archive.conversations[0].name).toBe('联系人原名')
   })
 
   it('keeps one-to-one sender sides and fills both display names', async () => {
@@ -479,6 +532,88 @@ describe('media export flow', () => {
     expect(state.voiceLookups).toEqual([1, 2, 2, 1, 2])
     expect(existsSync(voicePath)).toBe(true)
     expect(existsSync(imagePath)).toBe(true)
+  })
+
+  it('keeps historical avatars and creates a new version only after a real visual change', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    const encodedAvatar = (value: string): string =>
+      `data:image/jpeg;base64,${Buffer.from(value).toString('base64')}`
+    const request = {
+      targets: [target('fixture-user', '头像版本会话')],
+      format: 'html' as const,
+      outputName: 'avatar-version-fixture',
+      kinds: ['text'] as const,
+      includeMedia: false,
+      includeAvatars: true
+    }
+    const oldMessage = message({
+      id: 'avatar-old',
+      isSender: true,
+      senderId: 'fixture_account',
+      content: '历史消息',
+      createTime: 1_785_549_600
+    })
+    const sameAvatarFirstEncoding = encodedAvatar('same-visual-encoding-one')
+    state.selfAvatar = sameAvatarFirstEncoding
+    state.avatarMap = { fixture_account: sameAvatarFirstEncoding }
+    state.messages = [oldMessage]
+
+    const first = await runExport(
+      { ...request, jobId: 'avatar-version-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success, first.error).toBe(true)
+    const firstAvatarUrl = readArchive(first.outputPath!).messages[0].exportAvatarUrl
+
+    const newMessageBeforeChange = message({
+      id: 'avatar-new-same',
+      isSender: true,
+      senderId: 'fixture_account',
+      content: '头像未变时的新消息',
+      createTime: 1_785_549_700
+    })
+    const sameAvatarSecondEncoding = encodedAvatar('same-visual-encoding-two')
+    state.selfAvatar = sameAvatarSecondEncoding
+    state.avatarMap = { fixture_account: sameAvatarSecondEncoding }
+    state.messages = [oldMessage, newMessageBeforeChange]
+    const second = await runExport(
+      { ...request, jobId: 'avatar-version-second', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(second.success, second.error).toBe(true)
+    expect(readArchive(second.outputPath!).messages.map((item) => item.exportAvatarUrl)).toEqual([
+      firstAvatarUrl,
+      firstAvatarUrl
+    ])
+
+    const newMessageAfterChange = message({
+      id: 'avatar-new-changed',
+      isSender: true,
+      senderId: 'fixture_account',
+      content: '真正换头像后的新消息',
+      createTime: 1_785_549_800
+    })
+    const changedAvatar = encodedAvatar('different-avatar')
+    state.selfAvatar = changedAvatar
+    state.avatarMap = { fixture_account: changedAvatar }
+    state.messages = [oldMessage, newMessageBeforeChange, newMessageAfterChange]
+    const third = await runExport(
+      { ...request, jobId: 'avatar-version-third', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(third.success, third.error).toBe(true)
+    const thirdArchive = readArchive(third.outputPath!)
+    expect(thirdArchive.messages.slice(0, 2).map((item) => item.exportAvatarUrl)).toEqual([
+      firstAvatarUrl,
+      firstAvatarUrl
+    ])
+    expect(thirdArchive.messages[2].exportAvatarUrl).not.toBe(firstAvatarUrl)
+    expect(
+      readdirSync(join(dirname(third.outputPath!), 'avatars')).filter((name) =>
+        name.startsWith('avatar_')
+      )
+    ).toHaveLength(2)
   })
 
   it('keeps copied videos writable and can replace a legacy read-only video incrementally', async () => {
