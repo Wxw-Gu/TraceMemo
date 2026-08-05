@@ -198,7 +198,8 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
         conversationWidth: conversations.width,
         searchTop: search.top,
         searchBottom: search.bottom,
-        searchWidth: search.width
+        searchWidth: search.width,
+        searchFontSize: getComputedStyle(document.querySelector('#query')!).fontSize
       }
     })
     expect(
@@ -208,11 +209,27 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
       Math.abs(compactControlBounds.conversationBottom - compactControlBounds.searchBottom)
     ).toBeLessThanOrEqual(1)
     expect(compactControlBounds.searchWidth).toBeGreaterThan(compactControlBounds.conversationWidth)
+    expect(compactControlBounds.searchFontSize).toBe('16px')
     await conversationSelect.selectOption('beta')
     await expect(page.locator('.message')).toHaveCount(1)
     await conversationSelect.selectOption('all')
     await expect(page.locator('.message')).toHaveCount(4)
     await expect(searchInput).toBeVisible()
+    await searchInput.fill('个人聊天消息')
+    await expect(page.locator('.search-highlight')).toHaveText('个人聊天消息')
+    const mobileSearchResult = page.locator('.message')
+    const mobileLocateButton = mobileSearchResult.getByRole('button', {
+      name: '定位到聊天位置'
+    })
+    await mobileSearchResult.hover()
+    await expect(mobileLocateButton).toHaveCSS('opacity', '1')
+    await page.screenshot({
+      path: testInfo.outputPath('search-highlight-390.png'),
+      animations: 'disabled'
+    })
+    await mobileLocateButton.click()
+    await expect(searchInput).toHaveValue('')
+    await expect(page.locator('.message.located')).toContainText('个人聊天消息')
     const mobileFilterButtons = page.locator('.filter-button:visible')
     await expect(mobileFilterButtons).toHaveCount(7)
     const filterButtonTops = await mobileFilterButtons.evaluateAll((buttons) =>
@@ -652,6 +669,22 @@ test('EXPORT-ARCHIVE-03 renders shares and locations, and groups payments under 
     await expect(page.getByText('项目群的聊天记录')).toBeVisible()
     await page.getByText('展开 1 条消息').click()
     await expect(page.getByText('项目结论已经确认')).toBeVisible()
+
+    const searchInput = page.getByLabel('搜索消息')
+    await searchInput.fill('真正的公众号标题')
+    await expect(page.locator('.message')).toHaveCount(1)
+    await expect(page.locator('.search-highlight')).toHaveText('真正的公众号标题')
+    const searchResult = page.locator('.message')
+    await searchResult.hover()
+    await page.screenshot({
+      path: testInfo.outputPath('search-highlight-1440.png'),
+      animations: 'disabled'
+    })
+    await searchResult.getByRole('button', { name: '定位到聊天位置' }).click()
+    await expect(searchInput).toHaveValue('')
+    await expect(page.getByRole('button', { name: '全部', exact: true })).toHaveClass(/active/)
+    await expect(page.locator('.search-highlight')).toHaveCount(0)
+    await expect(page.locator('.message.located')).toContainText('真正的公众号标题')
 
     await page.getByRole('button', { name: '分享', exact: true }).click()
     await expect(page.locator('.message')).toHaveCount(5)

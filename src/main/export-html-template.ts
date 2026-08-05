@@ -306,6 +306,10 @@ body {
   opacity: 1;
   transform: translate(0, -50%);
 }
+@media (hover: none) {
+  .locate-all { opacity: 1; pointer-events: auto; }
+  .locate-label { display: none; }
+}
 .message.located .bubble { animation: locate-message 1.5s ease-out; }
 @keyframes locate-message {
   0%, 32% { outline: 3px solid #36a477; outline-offset: 3px; }
@@ -376,6 +380,14 @@ body {
 .sent .bubble { background: var(--mine); border-color: #c7e6d4; border-radius: 18px 10px 18px 18px; }
 .sender { color: var(--muted); font-size: 12px; margin-bottom: 5px; }
 .content { line-height: 1.7; word-break: break-word; white-space: pre-wrap; }
+.search-highlight {
+  border-radius: 3px;
+  padding: 0 1px;
+  background: #ffe58f;
+  color: inherit;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
 .audio-wrap { width: 260px; max-width: 100%; min-width: 0; }
 .audio { display: block; width: 100%; max-width: 100%; height: 38px; }
 .media-status {
@@ -596,7 +608,13 @@ body {
     box-shadow: none;
   }
   .controls { grid-column: 2; min-width: 0; justify-content: flex-start; }
-  .controls input[type=search] { width: 100%; min-width: 0; height: 36px; padding: 0 10px; }
+  .controls input[type=search] {
+    width: 100%;
+    min-width: 0;
+    height: 36px;
+    padding: 0 10px;
+    font-size: 16px;
+  }
   .filters {
     grid-column: 1 / -1;
     display: flex;
@@ -1025,7 +1043,7 @@ const renderExportScript = (name: string): string => `
     const source = conversations.length > 1 && activeConversation === 'all'
       ? '<span class="conversation-source">' + esc(message.exportConversationName || '聊天') + '</span>'
       : ''
-    const locateAction = activeKind === 'all'
+    const locateAction = activeKind === 'all' && !query.value.trim()
       ? ''
       : '<button class="locate-all" type="button" data-locate-index="' + archiveIndex +
         '" aria-label="定位到聊天位置"><span class="locate-icon" aria-hidden="true">⌖</span>' +
@@ -1181,6 +1199,40 @@ const renderExportScript = (name: string): string => `
     const listBounds = list.getBoundingClientRect()
     return list.scrollTop + targetBounds.top - listBounds.top - offset
   }
+  const highlightSearchMatches = () => {
+    const term = query.value.trim().toLowerCase()
+    if (!term) return
+    list.querySelectorAll('.message').forEach((message) => {
+      const walker = document.createTreeWalker(message, window.NodeFilter.SHOW_TEXT)
+      const matches = []
+      while (walker.nextNode()) {
+        const node = walker.currentNode
+        const parent = node.parentElement
+        if (
+          node.nodeValue && parent && !parent.closest('.locate-all, .search-highlight') &&
+          node.nodeValue.toLowerCase().includes(term)
+        ) matches.push(node)
+      }
+      matches.forEach((node) => {
+        const text = node.nodeValue
+        const normalized = text.toLowerCase()
+        const fragment = document.createDocumentFragment()
+        let start = 0
+        let index = normalized.indexOf(term, start)
+        while (index >= 0) {
+          fragment.append(text.slice(start, index))
+          const mark = document.createElement('mark')
+          mark.className = 'search-highlight'
+          mark.textContent = text.slice(index, index + term.length)
+          fragment.append(mark)
+          start = index + term.length
+          index = normalized.indexOf(term, start)
+        }
+        fragment.append(text.slice(start))
+        node.replaceWith(fragment)
+      })
+    })
+  }
   const renderWindow = (anchorIndex, anchorOffset) => {
     const visible = filtered.slice(windowStart, windowEnd)
     const before = windowStart > 0 ? '<div class="lazy-hint">向上滚动加载更早消息</div>' : ''
@@ -1188,6 +1240,7 @@ const renderExportScript = (name: string): string => `
     list.innerHTML = visible.length
       ? before + visible.map((message, index) => renderMessage(message, windowStart + index)).join('') + after
       : '<div class="empty">没有符合条件的消息<br><small>可以更换筛选条件或关键词</small></div>'
+    highlightSearchMatches()
     if (Number.isInteger(anchorIndex)) {
       const anchor = list.querySelector('.message[data-index="' + anchorIndex + '"]')
       if (anchor) setScrollTop(scrollTopForTarget(anchor, anchorOffset))
@@ -1260,6 +1313,8 @@ const renderExportScript = (name: string): string => `
     const targetMessage = filtered[sourceIndex]
     if (!targetMessage) return
     rememberTabPosition()
+    query.value = ''
+    query.blur()
     setActiveKind('all')
     filtered = matchingMessages()
     renderTimeline()

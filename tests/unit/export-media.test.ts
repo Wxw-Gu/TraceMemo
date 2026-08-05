@@ -34,6 +34,7 @@ describe('export media', () => {
     expect(html).toContain('setExpandedTimelineYear')
     expect(html).toContain('data-kind="media"')
     expect(html).toContain('placeholder="搜索发送者或消息内容…"')
+    expect(html).toContain('font-size: 16px;')
     expect(html).toContain('filtered.slice(windowStart, windowEnd)')
     expect(html).toContain('windowStart = Math.max(0, windowEnd - PAGE_SIZE)')
     expect(html).toContain('scheduleWindowSlide')
@@ -95,6 +96,8 @@ describe('export media', () => {
     search.value = 'needle'
     search.dispatchEvent(new dom.window.Event('input'))
     expect(dom.window.document.querySelectorAll('.message')).toHaveLength(5)
+    expect(dom.window.document.querySelectorAll('.search-highlight')).toHaveLength(5)
+    expect(dom.window.document.querySelectorAll('.locate-all')).toHaveLength(5)
     expect(dom.window.document.querySelectorAll('.timeline-month').length).toBeGreaterThan(1)
     expect(
       dom.window.document.querySelectorAll('.timeline-year[aria-expanded="true"]')
@@ -237,6 +240,7 @@ describe('export media', () => {
     const search = dom.window.document.querySelector('#query') as HTMLInputElement
     search.value = '目标文字'
     search.dispatchEvent(new dom.window.Event('input'))
+    expect(dom.window.document.querySelector('.search-highlight')?.textContent).toBe('目标文字')
     ;(dom.window.document.querySelector('.locate-all') as HTMLElement).click()
     expect(
       dom.window.document.querySelector('[data-kind="all"]')?.classList.contains('active')
@@ -245,6 +249,21 @@ describe('export media', () => {
       '0'
     )
     expect(dom.window.document.querySelector('.message.located')?.textContent).toContain('目标文字')
+
+    search.value = '稍后消息-137'
+    search.dispatchEvent(new dom.window.Event('input'))
+    expect(
+      dom.window.document.querySelector('[data-kind="all"]')?.classList.contains('active')
+    ).toBe(true)
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(1)
+    expect(dom.window.document.querySelector('.search-highlight')?.textContent).toBe('稍后消息-137')
+    ;(dom.window.document.querySelector('.locate-all') as HTMLElement).click()
+    expect(search.value).toBe('')
+    expect(dom.window.document.querySelectorAll('.search-highlight')).toHaveLength(0)
+    expect(dom.window.document.querySelectorAll('.locate-all')).toHaveLength(0)
+    expect(dom.window.document.querySelector('.message.located')?.textContent).toContain(
+      '稍后消息-137'
+    )
     dom.window.close()
   })
 
