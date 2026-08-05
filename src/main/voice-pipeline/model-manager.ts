@@ -1,4 +1,5 @@
 import { createHash } from 'crypto'
+import { net } from 'electron'
 import { createReadStream } from 'fs'
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'fs/promises'
 import { join } from 'path'
@@ -163,7 +164,10 @@ export class VoiceModelManager {
     const target = join(this.modelRoot, file.name)
     const partial = `${target}.partial`
     await rm(partial, { force: true })
-    const response = await fetch(file.url, { signal })
+    // Use Chromium's network stack rather than Node's global fetch so model
+    // downloads follow the operating system proxy configuration. This matters
+    // on networks where Hugging Face is only reachable through a system proxy.
+    const response = await net.fetch(file.url, { signal })
     if (!response.ok || !response.body) throw new Error(`模型下载失败：HTTP ${response.status}`)
 
     const handle = await open(partial, 'w')
