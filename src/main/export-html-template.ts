@@ -91,8 +91,6 @@ body {
   flex-wrap: wrap;
 }
 .title { font-size: 18px; font-weight: 750; }
-.meta { color: var(--muted); margin-left: 12px; font-size: 13px; }
-.archive-heading .meta { margin-left: 0; }
 .controls { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
 .controls input, .filter-button {
   border: 1px solid var(--border);
@@ -137,47 +135,141 @@ body {
 .conversation-filter {
   position: relative;
   display: inline-flex;
-  flex: 0 1 320px;
-  min-width: 210px;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
+  height: 42px;
+  border-radius: 10px;
+  transition: background .15s ease;
 }
 .conversation-filter[hidden] { display: none; }
-.conversation-filter::after {
-  content: '';
-  position: absolute;
-  right: 15px;
-  top: 50%;
-  width: 8px;
-  height: 8px;
-  border-right: 2px solid var(--accent);
-  border-bottom: 2px solid var(--accent);
-  transform: translateY(-65%) rotate(45deg);
-  pointer-events: none;
+.conversation-trigger {
+  display: flex;
+  width: auto;
+  max-width: 280px;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 10px;
+  padding: 5px 9px 5px 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s ease;
 }
-.conversation-select {
-  appearance: none;
+.conversation-trigger:hover, .conversation-trigger[aria-expanded=true] { background: #edf5f1; }
+.conversation-trigger:focus-visible { outline: 2px solid #5b9785; outline-offset: 1px; }
+.conversation-trigger-avatar {
+  position: relative;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  overflow: hidden;
+  border-radius: 8px;
+  place-items: center;
+  background: #dcebe4;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+.conversation-trigger-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.conversation-trigger-avatar.multiple { overflow: visible; background: transparent; }
+.conversation-trigger-avatar.multiple img {
+  position: absolute;
+  width: 21px;
+  height: 21px;
+  border: 2px solid #f7fbf9;
+  border-radius: 6px;
+}
+.conversation-trigger-avatar.multiple img:first-child { top: 0; left: 0; }
+.conversation-trigger-avatar.multiple img:last-child { right: 0; bottom: 0; }
+.conversation-trigger-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-switch-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: #5c6963;
+  stroke-width: 2;
+}
+.conversation-menu {
+  position: absolute;
+  z-index: 12;
+  top: calc(100% + 7px);
+  left: 0;
+  width: max(100%, 240px);
+  max-width: calc(100vw - 32px);
+  max-height: min(360px, 55vh);
+  overflow-y: auto;
+  border: 0;
+  border-radius: 10px;
+  padding: 6px;
+  background: #fff;
+  box-shadow: 0 10px 30px #19392d2b, 0 2px 8px #19392d14;
+}
+.conversation-menu[hidden] { display: none; }
+.conversation-option {
+  display: flex;
   width: 100%;
   min-width: 0;
-  height: 42px;
-  padding: 0 42px 0 14px;
-  border: 1px solid #b8cec5;
-  border-radius: 10px;
-  outline: 0;
-  background: #f7fbf9;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 7px;
+  padding: 8px;
+  background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 17px;
-  font-weight: 700;
+  text-align: left;
   cursor: pointer;
-  box-shadow: 0 2px 8px #29483b12;
-  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
 }
-.conversation-select:hover { border-color: #70a392; background: #fff; }
-.conversation-select:focus {
-  border-color: var(--accent);
-  background: #fff;
-  box-shadow: 0 0 0 3px #176b571c;
+.conversation-option:hover, .conversation-option:focus-visible { background: #f0f6f3; outline: 0; }
+.conversation-option[aria-selected=true] { background: var(--accent-soft); color: var(--accent); }
+.conversation-option-avatar {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  overflow: hidden;
+  border-radius: 8px;
+  place-items: center;
+  background: #dcebe4;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
 }
+.conversation-option-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.conversation-option-avatar.multiple { position: relative; overflow: visible; background: transparent; }
+.conversation-option-avatar.multiple img {
+  position: absolute;
+  width: 21px;
+  height: 21px;
+  border: 2px solid #fff;
+  border-radius: 6px;
+}
+.conversation-option-avatar.multiple img:first-child { top: 0; left: 0; }
+.conversation-option-avatar.multiple img:last-child { right: 0; bottom: 0; }
+.conversation-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-option-check { width: 16px; flex: 0 0 16px; color: var(--accent); text-align: center; }
 .timeline {
   flex: 1;
   overflow: auto;
@@ -583,7 +675,6 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .archive-heading .meta { display: none; }
   .conversation-filter:not([hidden]) {
     display: inline-flex;
     width: 100%;
@@ -592,20 +683,14 @@ body {
     flex: 1 1 auto;
     height: 36px;
   }
-  .conversation-filter::after {
-    right: 10px;
-    width: 6px;
-    height: 6px;
-  }
-  .conversation-select {
-    width: 100%;
-    min-width: 0;
-    height: 36px;
-    padding: 0 24px 0 8px;
-    border-radius: 9px;
-    font-size: 12px;
-    font-weight: 650;
-    box-shadow: none;
+  .conversation-trigger { width: 100%; max-width: none; gap: 6px; padding: 4px 6px 4px 4px; }
+  .conversation-trigger-avatar { width: 26px; height: 26px; flex-basis: 26px; border-radius: 7px; }
+  .conversation-trigger-avatar.multiple img { width: 18px; height: 18px; border-radius: 5px; }
+  .conversation-trigger-name { flex: 1; max-width: none; font-size: 12px; }
+  .conversation-switch-icon { width: 13px; height: 13px; flex-basis: 13px; }
+  .conversation-menu {
+    width: min(250px, calc(100vw - 20px));
+    max-width: none;
   }
   .controls { grid-column: 2; min-width: 0; justify-content: flex-start; }
   .controls input[type=search] {
@@ -736,11 +821,13 @@ const renderExportScript = (name: string): string => `
   const list = document.querySelector('#messages')
   const layout = document.querySelector('.archive-layout')
   const conversationFilter = document.querySelector('#conversation-filter')
-  const conversationSelect = document.querySelector('#conversation-select')
+  const conversationTrigger = document.querySelector('#conversation-trigger')
+  const conversationTriggerAvatar = document.querySelector('#conversation-trigger-avatar')
+  const conversationTriggerName = document.querySelector('#conversation-trigger-name')
+  const conversationMenu = document.querySelector('#conversation-menu')
   const timeline = document.querySelector('#timeline')
   const query = document.querySelector('#query')
   const count = document.querySelector('#count')
-  const meta = document.querySelector('#archive-meta')
   const title = document.querySelector('#archive-title')
   const filters = document.querySelector('#filters')
   const box = document.querySelector('#lightbox')
@@ -1064,12 +1151,78 @@ const renderExportScript = (name: string): string => `
       layout.classList.add('single-conversation')
       return
     }
-    const option = (id, label) => '<option value="' + esc(id) + '">' + esc(label) + '</option>'
     title.hidden = true
     conversationFilter.hidden = false
-    conversationSelect.innerHTML = option('all', '全部聊天') +
-      conversations.map((conversation) => option(conversation.id, conversation.name)).join('')
-    conversationSelect.value = activeConversation
+    const allAvatarUrls = conversations.map((item) => item.avatarUrl).filter(Boolean).slice(0, 2)
+    const avatar = (conversation, urls) => {
+      if (urls.length) {
+        return '<span class="conversation-option-avatar' + (urls.length > 1 ? ' multiple' : '') + '">' +
+          urls.map((url) => '<img src="' + esc(url) + '" alt="">').join('') + '</span>'
+      }
+      return '<span class="conversation-option-avatar">' +
+        esc(conversation ? String(conversation.name || '聊').slice(0, 1) : '全') + '</span>'
+    }
+    const option = (id, label, avatarMarkup) =>
+      '<button class="conversation-option" type="button" role="option" data-conversation-id="' +
+      esc(id) + '" aria-selected="' + String(id === activeConversation) + '">' + avatarMarkup +
+      '<span class="conversation-option-name">' + esc(label) + '</span>' +
+      '<span class="conversation-option-check" aria-hidden="true">' +
+      (id === activeConversation ? '&#10003;' : '') + '</span></button>'
+    conversationMenu.innerHTML = option('all', '全部聊天', avatar(null, allAvatarUrls)) +
+      conversations.map((conversation) => option(
+        conversation.id,
+        conversation.name,
+        avatar(conversation, conversation.avatarUrl ? [conversation.avatarUrl] : [])
+      )).join('')
+    updateConversationTrigger()
+  }
+
+  const updateConversationTrigger = () => {
+    const conversation = conversations.find((item) => item.id === activeConversation)
+    const avatarUrls = activeConversation === 'all'
+      ? conversations.map((item) => item.avatarUrl).filter(Boolean).slice(0, 2)
+      : conversation && conversation.avatarUrl ? [conversation.avatarUrl] : []
+    const label = conversation ? conversation.name : '全部聊天'
+    conversationTriggerName.textContent = label
+    conversationTriggerAvatar.classList.toggle('multiple', avatarUrls.length > 1)
+    if (avatarUrls.length) {
+      conversationTriggerAvatar.innerHTML = avatarUrls.map((url) =>
+        '<img src="' + esc(url) + '" alt="">'
+      ).join('')
+    } else {
+      conversationTriggerAvatar.textContent = conversation
+        ? String(conversation.name || '聊').slice(0, 1)
+        : '全'
+    }
+    conversationMenu.querySelectorAll('[data-conversation-id]').forEach((option) => {
+      const selected = option.dataset.conversationId === activeConversation
+      option.setAttribute('aria-selected', String(selected))
+      const check = option.querySelector('.conversation-option-check')
+      if (check) check.innerHTML = selected ? '&#10003;' : ''
+    })
+  }
+
+  const setConversationMenuOpen = (open, focusSelected = false) => {
+    conversationMenu.hidden = !open
+    conversationTrigger.setAttribute('aria-expanded', String(open))
+    if (open && focusSelected) {
+      nextFrame(() => {
+        const selected = conversationMenu.querySelector('[aria-selected=true]')
+        if (selected) selected.focus()
+      })
+    }
+  }
+
+  const selectConversation = (id) => {
+    if (id !== 'all' && !conversations.some((item) => item.id === id)) return
+    if (id !== activeConversation) {
+      rememberTabPosition()
+      activeConversation = id
+      updateConversationTrigger()
+      applyFilters(true)
+    }
+    setConversationMenuOpen(false)
+    conversationTrigger.focus()
   }
 
   const setExpandedTimelineYear = (year) => {
@@ -1402,10 +1555,34 @@ const renderExportScript = (name: string): string => `
     setActiveKind(button.dataset.kind)
     applyFilters(true)
   })
-  conversationSelect.addEventListener('change', () => {
-    rememberTabPosition()
-    activeConversation = conversationSelect.value
-    applyFilters(true)
+  conversationTrigger.addEventListener('click', () => {
+    setConversationMenuOpen(conversationMenu.hidden)
+  })
+  conversationTrigger.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    event.preventDefault()
+    setConversationMenuOpen(true, true)
+  })
+  conversationMenu.addEventListener('click', (event) => {
+    const option = event.target.closest('[data-conversation-id]')
+    if (option) selectConversation(option.dataset.conversationId)
+  })
+  conversationMenu.addEventListener('keydown', (event) => {
+    const options = Array.from(conversationMenu.querySelectorAll('[data-conversation-id]'))
+    const currentIndex = options.indexOf(document.activeElement)
+    let nextIndex = currentIndex
+    if (event.key === 'ArrowDown') nextIndex = Math.min(options.length - 1, currentIndex + 1)
+    else if (event.key === 'ArrowUp') nextIndex = Math.max(0, currentIndex - 1)
+    else if (event.key === 'Home') nextIndex = 0
+    else if (event.key === 'End') nextIndex = options.length - 1
+    else if (event.key === 'Escape') {
+      event.preventDefault()
+      setConversationMenuOpen(false)
+      conversationTrigger.focus()
+      return
+    } else return
+    event.preventDefault()
+    if (options[nextIndex]) options[nextIndex].focus()
   })
   timeline.addEventListener('click', (event) => {
     const yearButton = event.target.closest('[data-year]')
@@ -1452,15 +1629,16 @@ const renderExportScript = (name: string): string => `
   })
   closeButton.addEventListener('click', closeLightbox)
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeLightbox()
+    if (event.key === 'Escape') {
+      closeLightbox()
+      setConversationMenuOpen(false)
+    }
+  })
+  document.addEventListener('click', (event) => {
+    if (!conversationFilter.contains(event.target)) setConversationMenuOpen(false)
   })
 
   title.textContent = archive.name || ${JSON.stringify(name)}
-  const updatedAt = archive.exportedAt
-    ? new Date(archive.exportedAt).toLocaleString('zh-CN', { hour12: false })
-    : '未知时间'
-  meta.textContent = (conversations.length > 1 ? '' : allMessages.length.toLocaleString() + ' 条消息 · ') +
-    '更新于 ' + updatedAt
   renderConversations()
   applyFilters()
       finishLoading()
@@ -1518,10 +1696,19 @@ export function renderExportPage(name: string): string {
     <header class="toolbar">
       <div class="archive-heading">
         <span class="title" id="archive-title">${safe(name)}</span>
-        <label class="conversation-filter" id="conversation-filter" hidden>
-          <select class="conversation-select" id="conversation-select" aria-label="筛选聊天"></select>
-        </label>
-        <span class="meta" id="archive-meta">正在读取消息…</span>
+        <div class="conversation-filter" id="conversation-filter" hidden>
+          <button class="conversation-trigger" id="conversation-trigger" type="button" aria-label="筛选聊天" aria-haspopup="listbox" aria-expanded="false" aria-controls="conversation-menu">
+            <span class="conversation-trigger-avatar" id="conversation-trigger-avatar">全</span>
+            <span class="conversation-trigger-name" id="conversation-trigger-name">全部聊天</span>
+            <svg class="conversation-switch-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m16 3 4 4-4 4"></path>
+              <path d="M20 7H4"></path>
+              <path d="m8 21-4-4 4-4"></path>
+              <path d="M4 17h16"></path>
+            </svg>
+          </button>
+          <div class="conversation-menu" id="conversation-menu" role="listbox" aria-label="选择聊天" hidden></div>
+        </div>
       </div>
       <div class="controls">
         <input id="query" type="search" placeholder="搜索发送者或消息内容…" aria-label="搜索消息">

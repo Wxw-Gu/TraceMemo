@@ -109,8 +109,22 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
         name: '合并聊天档案',
         exportedAt: '2026-08-04T00:00:00.000Z',
         conversations: [
-          { id: 'alpha', name: '项目群', type: 'group', messageCount: 3 },
-          { id: 'beta', name: '文件传输助手', type: 'user', messageCount: 1 }
+          {
+            id: 'alpha',
+            name: '项目群',
+            type: 'group',
+            avatarUrl:
+              "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath fill='%23176b57' d='M0 0h10v10H0z'/%3E%3C/svg%3E",
+            messageCount: 3
+          },
+          {
+            id: 'beta',
+            name: '文件传输助手',
+            type: 'user',
+            avatarUrl:
+              "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath fill='%23d9f0e2' d='M0 0h10v10H0z'/%3E%3C/svg%3E",
+            messageCount: 1
+          }
         ],
         messages: [
           archiveMessage('alpha-1', 'alpha', '项目群', '项目群第一条', 1_764_547_200),
@@ -140,30 +154,62 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
 
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto(pathToFileURL(offlineIndex).href)
-    const conversationSelect = page.getByLabel('筛选聊天')
-    await expect(conversationSelect).toHaveValue('all')
-    await expect(conversationSelect.locator('option')).toHaveCount(3)
-    await expect(conversationSelect.locator('option')).toHaveText([
-      '全部聊天',
-      '项目群',
-      '文件传输助手'
-    ])
+    const conversationTrigger = page.getByRole('button', { name: '筛选聊天' })
+    const conversationMenu = page.getByRole('listbox', { name: '选择聊天' })
+    const chooseConversation = async (name: string): Promise<void> => {
+      await conversationTrigger.click()
+      await conversationMenu.getByRole('option', { name, exact: true }).click()
+    }
+    await expect(conversationTrigger).toHaveAttribute('aria-expanded', 'false')
+    await expect(conversationMenu).toBeHidden()
+    await expect(conversationTrigger.locator('.conversation-switch-icon')).toBeVisible()
+    await expect(
+      conversationTrigger.locator('.conversation-trigger-name + .conversation-switch-icon')
+    ).toBeVisible()
+    await expect(conversationTrigger.locator('.conversation-chevron')).toHaveCount(0)
+    await expect(page.locator('#conversation-trigger-name')).toHaveText('全部聊天')
+    await expect(page.locator('#conversation-trigger-avatar img')).toHaveCount(2)
     await expect(page.locator('#archive-title')).toBeHidden()
     await expect(page.locator('.archive-heading #conversation-filter')).toBeVisible()
-    await expect(page.locator('#archive-meta')).toHaveText(/^更新于 /)
-    await expect(page.locator('#archive-meta')).not.toContainText('条消息')
+    await expect(page.locator('#archive-meta')).toHaveCount(0)
     await expect(page.locator('.message')).toHaveCount(4)
     await expect(page.locator('.conversation-source')).toHaveCount(4)
+    const desktopSwitcherBounds = await page.evaluate(() => {
+      const trigger = document.querySelector('#conversation-trigger')!.getBoundingClientRect()
+      const name = document.querySelector('#conversation-trigger-name')!.getBoundingClientRect()
+      const icon = document.querySelector('.conversation-switch-icon')!.getBoundingClientRect()
+      return { triggerWidth: trigger.width, nameToIcon: icon.left - name.right }
+    })
+    expect(desktopSwitcherBounds.triggerWidth).toBeLessThan(200)
+    expect(desktopSwitcherBounds.nameToIcon).toBeLessThanOrEqual(12)
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true)
+    await conversationTrigger.click()
+    await expect(conversationTrigger).toHaveAttribute('aria-expanded', 'true')
+    await expect(conversationMenu).toBeVisible()
+    await expect(conversationMenu.getByRole('option')).toHaveCount(3)
+    await expect(conversationMenu.getByRole('option', { name: '全部聊天' })).toBeVisible()
+    await expect(conversationMenu.getByRole('option', { name: '项目群' })).toBeVisible()
+    await expect(conversationMenu.getByRole('option', { name: '文件传输助手' })).toBeVisible()
+    await expect(conversationMenu).not.toContainText('条消息')
+    await expect(conversationMenu.getByRole('option', { name: '全部聊天' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    await expect(conversationTrigger).toHaveCSS('border-top-width', '0px')
+    await page.screenshot({ path: testInfo.outputPath('conversation-menu-1440.png') })
+    await page.keyboard.press('Escape')
+    await expect(conversationMenu).toBeHidden()
     await page.screenshot({ path: testInfo.outputPath('merged-archive-1440.png'), fullPage: true })
 
-    await conversationSelect.selectOption('beta')
+    await chooseConversation('文件传输助手')
     await expect(page.locator('.message')).toHaveCount(1)
+    await expect(page.locator('#conversation-trigger-name')).toHaveText('文件传输助手')
+    await expect(page.locator('#conversation-trigger-avatar img')).toHaveCount(1)
     await expect(page.locator('.conversation-source')).toHaveCount(0)
 
-    await conversationSelect.selectOption('all')
+    await chooseConversation('全部聊天')
     await page.setViewportSize({ width: 390, height: 844 })
     await expect(page.locator('.timeline-year')).toHaveCount(2)
     await expect(page.locator('.timeline-year').first()).toBeVisible()
@@ -188,7 +234,7 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
     expect(positions.documentWidth).toBeLessThanOrEqual(positions.viewportWidth)
     await expect(page.locator('.message')).toHaveCount(4)
     const searchInput = page.getByLabel('搜索消息')
-    await expect(conversationSelect).toBeVisible()
+    await expect(conversationTrigger).toBeVisible()
     const compactControlBounds = await page.evaluate(() => {
       const conversations = document.querySelector('#conversation-filter')!.getBoundingClientRect()
       const search = document.querySelector('#query')!.getBoundingClientRect()
@@ -210,9 +256,22 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
     ).toBeLessThanOrEqual(1)
     expect(compactControlBounds.searchWidth).toBeGreaterThan(compactControlBounds.conversationWidth)
     expect(compactControlBounds.searchFontSize).toBe('16px')
-    await conversationSelect.selectOption('beta')
+    await expect(conversationTrigger.locator('.conversation-switch-icon')).toHaveCSS(
+      'width',
+      '13px'
+    )
+    await conversationTrigger.click()
+    await expect(conversationMenu).toBeVisible()
+    const mobileMenuBounds = await conversationMenu.evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      return { left: bounds.left, right: bounds.right, viewportWidth: window.innerWidth }
+    })
+    expect(mobileMenuBounds.left).toBeGreaterThanOrEqual(0)
+    expect(mobileMenuBounds.right).toBeLessThanOrEqual(mobileMenuBounds.viewportWidth)
+    await page.screenshot({ path: testInfo.outputPath('conversation-menu-390.png') })
+    await conversationMenu.getByRole('option', { name: '文件传输助手' }).click()
     await expect(page.locator('.message')).toHaveCount(1)
-    await conversationSelect.selectOption('all')
+    await chooseConversation('全部聊天')
     await expect(page.locator('.message')).toHaveCount(4)
     await expect(searchInput).toBeVisible()
     await searchInput.fill('个人聊天消息')
@@ -319,7 +378,7 @@ test('EXPORT-ARCHIVE-02 legacy single-chat archive keeps its original layout', a
     await expect(page.locator('#conversation-filter')).toBeHidden()
     await expect(page.locator('#archive-title')).toBeVisible()
     await expect(page.locator('#archive-title')).toHaveText('单聊天档案')
-    await expect(page.locator('#archive-meta')).toContainText('1 条消息 · 更新于 ')
+    await expect(page.locator('#archive-meta')).toHaveCount(0)
     await expect(page.locator('.archive-layout')).toHaveClass(/single-conversation/)
     await expect(page.locator('.message')).toHaveCount(1)
     await page.screenshot({ path: testInfo.outputPath('single-archive-1440.png'), fullPage: true })
