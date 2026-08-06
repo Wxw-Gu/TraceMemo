@@ -69,6 +69,53 @@ function renderPage(
 }
 
 describe('DatabaseConnectionPage', () => {
+  it('renders a discovered nickname and avatar before connection', () => {
+    const { container } = renderPage({
+      mode: 'automatic',
+      accounts: [
+        {
+          id: 'account-a',
+          accountRoot: 'C:\\fixture\\account-a',
+          directoryName: 'account-a',
+          nickname: '首次识别账号',
+          wxid: 'fixture_account',
+          avatar: 'https://wx.qlogo.cn/fixture/avatar',
+          hasSavedDbKey: false,
+          loginStatus: 'unknown',
+          selectedByInput: true
+        }
+      ]
+    })
+
+    expect(screen.getByText('首次识别账号')).toBeVisible()
+    expect(screen.getByText('fixture_account')).toBeVisible()
+    expect(container.querySelector('.database-account-avatar img')).toHaveAttribute(
+      'src',
+      'https://wx.qlogo.cn/fixture/avatar'
+    )
+  })
+
+  it('shows a directory-derived wxid without pretending profile data is available', () => {
+    renderPage({
+      mode: 'automatic',
+      accounts: [
+        {
+          id: 'account-b',
+          accountRoot: 'C:\\fixture\\wxid_fixture_b_ab12',
+          directoryName: 'wxid_fixture_b_ab12',
+          wxid: 'wxid_fixture',
+          hasSavedDbKey: false,
+          loginStatus: 'other',
+          selectedByInput: false
+        }
+      ],
+      selectedAccountId: ''
+    })
+
+    expect(screen.getByText('微信账号 wxid_fixture')).toBeVisible()
+    expect(screen.getByText('昵称和头像需连接此账号后读取')).toBeVisible()
+  })
+
   it('keeps connect disabled until a valid 64-character key is supplied', () => {
     const { rerender, props } = renderPage()
     expect(screen.getByRole('button', { name: '连接数据库' })).toBeDisabled()

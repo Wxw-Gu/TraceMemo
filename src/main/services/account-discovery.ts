@@ -4,6 +4,11 @@ import path from 'path'
 import type { AccountDiscoveryResult, WechatAccountCandidate } from '../../shared/database-key'
 import { DatabaseKeyStore } from '../database-key-store'
 import { getBootstrapCache } from './bootstrap-cache'
+import {
+  accountDirectoryBelongsToIdentity,
+  deriveAccountWxid,
+  readLocalAccountIdentity
+} from './local-account-identity'
 import { validateDbRoot } from './settings-store'
 
 function accountId(accountRoot: string): string {
@@ -27,16 +32,27 @@ export async function discoverAccounts(
         .map((entry) => path.join(normalizedInput, entry.name))
         .filter((candidate) => fs.existsSync(path.join(candidate, 'db_storage')))
 
+  const localIdentity = readLocalAccountIdentity(
+    isAccount ? path.dirname(normalizedInput) : normalizedInput
+  )
+  const identityMatches = localIdentity
+    ? roots.filter((accountRoot) =>
+        accountDirectoryBelongsToIdentity(path.basename(accountRoot), localIdentity.wxid)
+      )
+    : []
+  const identityRoot = identityMatches.length === 1 ? identityMatches[0] : undefined
+
   const accounts: WechatAccountCandidate[] = await Promise.all(
     roots.map(async (accountRoot) => {
       const cached = getBootstrapCache(accountRoot)?.self
+      const identity = identityRoot === accountRoot ? localIdentity : null
       return {
         id: accountId(accountRoot),
         accountRoot,
         directoryName: path.basename(accountRoot),
-        wxid: cached?.wxid,
-        nickname: cached?.nickname,
-        avatar: cached?.avatar,
+        wxid: identity?.wxid || cached?.wxid || deriveAccountWxid(path.basename(accountRoot)),
+        nickname: identity?.nickname || cached?.nickname,
+        avatar: cached?.avatar || identity?.avatar,
         hasSavedDbKey: (await keyStore.getStatus(accountRoot)).saved,
         loginStatus: currentAccountRoot
           ? path.resolve(currentAccountRoot).toLowerCase() ===

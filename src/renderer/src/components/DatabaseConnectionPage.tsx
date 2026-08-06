@@ -338,9 +338,18 @@ export function DatabaseConnectionPage({
                             </span>
                             <span className="database-account-identity">
                               <strong>
-                                {account.nickname || `账号目录 ${account.directoryName || '待识别'}`}
+                                {account.nickname ||
+                                  (account.wxid
+                                    ? `微信账号 ${account.wxid}`
+                                    : `账号目录 ${account.directoryName || '待识别'}`)}
                               </strong>
-                              <small>{account.wxid || '连接后读取微信号'}</small>
+                              <small>
+                                {account.nickname
+                                  ? account.wxid || '微信号未读取'
+                                  : account.wxid
+                                    ? '昵称和头像需连接此账号后读取'
+                                    : '连接后读取微信号、昵称和头像'}
+                              </small>
                               <code title={account.accountRoot}>{account.accountRoot}</code>
                             </span>
                             <span className="database-account-status">
