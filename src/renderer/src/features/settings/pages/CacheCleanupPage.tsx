@@ -12,7 +12,9 @@ function formatBytes(value: number): string {
 
 export function CacheCleanupPage({ onNotice }: { onNotice: (message: string) => void }): React.ReactElement {
   const [summary, setSummary] = useState<CacheSummary | null>(null)
-  const [busyScope, setBusyScope] = useState<'bootstrap' | 'electron' | 'all' | 'local' | null>(null)
+  const [busyScope, setBusyScope] = useState<
+    'bootstrap' | 'electron' | 'knowledge' | 'all' | 'local' | null
+  >(null)
 
   const refresh = useCallback(async (): Promise<void> => {
     setSummary(await window.api.getCacheSummary())
@@ -29,14 +31,22 @@ export function CacheCleanupPage({ onNotice }: { onNotice: (message: string) => 
     onNotice('已清理检索和导出本地缓存')
   }
 
-  const clear = async (scope: 'bootstrap' | 'electron' | 'all'): Promise<void> => {
+  const clear = async (scope: 'bootstrap' | 'electron' | 'knowledge' | 'all'): Promise<void> => {
     setBusyScope(scope)
     try {
+      setSummary(await window.api.clearCache(scope))
       if (scope === 'all') {
         for (const key of SEARCH_CACHE_KEYS) localStorage.removeItem(key)
       }
-      setSummary(await window.api.clearCache(scope))
-      onNotice(scope === 'all' ? '已清理全部可恢复缓存和检索记录' : '缓存已清理')
+      onNotice(
+        scope === 'knowledge'
+          ? '已清理所有账号的本地知识库索引，需要时可在问问微信中重新建立'
+          : scope === 'all'
+            ? '已清理全部可恢复缓存和检索记录'
+            : '缓存已清理'
+      )
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : '清理缓存失败')
     } finally {
       setBusyScope(null)
     }

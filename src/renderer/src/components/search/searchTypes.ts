@@ -1,12 +1,14 @@
 import type { AIRuntimeModelConfig } from '../../../../shared/ai-provider'
 import type { Contact, Message } from '../../../../shared/types'
 
-export type SearchStage = 'idle' | 'loading' | 'result' | 'insufficient'
-export type SearchScope = 'global' | 'conversation'
+export type SearchStage = 'idle' | 'loading' | 'result' | 'partial' | 'insufficient'
+export type SearchScope = 'global' | 'groups' | 'contacts' | 'conversation'
 export type SearchRange = 'today' | '7d' | '30d' | 'all'
 export type SearchIntent = 'general' | 'topic' | 'participants' | 'mixed'
 
 export interface EvidenceItem {
+  /** Program-owned Final Evidence ID. Cached legacy records may omit it. */
+  evidenceId?: string
   contact: Contact
   message: Message
 }

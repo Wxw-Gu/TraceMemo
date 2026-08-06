@@ -8,7 +8,9 @@ export const RANGE_LABELS: Record<SearchRange, string> = {
   all: '全部历史'
 }
 
-export const SEARCH_CACHE_KEY = 'wxe_ai_search_cache_v8'
+// Final Evidence IDs are now program-owned; never replay answers cached under
+// the former candidate-context contract.
+export const SEARCH_CACHE_KEY = 'wxe_ai_search_cache_v9'
 export const SEARCH_HISTORY_KEY = 'wxe_ai_search_history_v1'
 export const SEARCH_CACHE_LIMIT = 20
 export const currentTimestamp = (): number => Date.now()
@@ -270,7 +272,8 @@ export const senderName = (message: Message, contact: Contact, names: Record<str
   return contact.type === 'user' ? contact.m_nsNickName || '联系人' : '群成员'
 }
 
-export const compactCacheItem = ({ contact, message }: EvidenceItem): EvidenceItem => ({
+export const compactCacheItem = ({ evidenceId, contact, message }: EvidenceItem): EvidenceItem => ({
+  evidenceId,
   contact: {
     md5: contact.md5,
     m_nsUsrName: contact.m_nsUsrName,

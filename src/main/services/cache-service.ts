@@ -7,6 +7,11 @@ import type { CacheClearScope, CacheSummary, CacheSummaryItem } from '../../shar
 export type { CacheClearScope } from '../../shared/cache'
 
 const BOOTSTRAP_CACHE_DIR = path.join(app.getPath('userData'), 'cache', 'bootstrap')
+const KNOWLEDGE_CACHE_DIR = path.join(app.getPath('userData'), 'knowledge')
+
+export interface CacheClearOptions {
+  beforeClearKnowledge?: () => Promise<void>
+}
 
 function inspectDirectory(directory: string): { sizeBytes: number; fileCount: number } {
   if (!fs.existsSync(directory)) return { sizeBytes: 0, fileCount: 0 }
@@ -40,6 +45,7 @@ function inspectDirectory(directory: string): { sizeBytes: number; fileCount: nu
 export function getCacheSummary(): CacheSummary {
   const bootstrap = inspectDirectory(BOOTSTRAP_CACHE_DIR)
   const electron = inspectDirectory(path.join(app.getPath('userData'), 'Cache'))
+  const knowledge = inspectDirectory(KNOWLEDGE_CACHE_DIR)
   const items: CacheSummaryItem[] = [
     {
       id: 'bootstrap',
@@ -52,6 +58,12 @@ export function getCacheSummary(): CacheSummary {
       label: '应用临时缓存',
       description: 'Electron 页面资源缓存，清理后会自动重新生成。',
       ...electron
+    },
+    {
+      id: 'knowledge',
+      label: '本地知识库索引',
+      description: '为问问微信建立的所有账号本地检索索引。清理后需手动重新建立，不影响微信原始数据。',
+      ...knowledge
     }
   ]
   return {
@@ -61,13 +73,20 @@ export function getCacheSummary(): CacheSummary {
   }
 }
 
-export async function clearCache(scope: CacheClearScope): Promise<CacheSummary> {
+export async function clearCache(
+  scope: CacheClearScope,
+  options: CacheClearOptions = {}
+): Promise<CacheSummary> {
   if (scope === 'bootstrap' || scope === 'all') {
     clearBootstrapCache()
     await fs.remove(BOOTSTRAP_CACHE_DIR)
   }
   if (scope === 'electron' || scope === 'all') {
     await session.defaultSession.clearCache()
+  }
+  if (scope === 'knowledge' || scope === 'all') {
+    await options.beforeClearKnowledge?.()
+    await fs.remove(KNOWLEDGE_CACHE_DIR)
   }
   return getCacheSummary()
 }

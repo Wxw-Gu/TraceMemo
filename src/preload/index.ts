@@ -29,6 +29,16 @@ import type {
   VoiceModelStatus,
   VoiceRecognitionResult
 } from '../shared/voice-recognition'
+import type {
+  AiSearchPipelineRequest,
+  AiSearchPipelineResult,
+  AiSearchProgressEvent
+} from '../shared/ai-search'
+import type {
+  KnowledgeRuntimeStatus,
+  KnowledgeSearchIpcRequest,
+  KnowledgeSearchIpcResult
+} from '../shared/knowledge'
 
 // 渲染器的自定义 API
 const api = {
@@ -46,7 +56,7 @@ const api = {
     return () => ipcRenderer.removeListener('app-update:state', listener)
   },
   getCacheSummary: (): Promise<CacheSummary> => ipcRenderer.invoke('cache:getSummary'),
-  clearCache: (scope: 'bootstrap' | 'electron' | 'all'): Promise<CacheSummary> =>
+  clearCache: (scope: 'bootstrap' | 'electron' | 'knowledge' | 'all'): Promise<CacheSummary> =>
     ipcRenderer.invoke('cache:clear', scope),
   initDb: (key: string, accountRoot: string) => ipcRenderer.invoke('db:init', key, accountRoot),
   discoverAccounts: (inputPath: string): Promise<AccountDiscoveryResult> =>
@@ -67,6 +77,26 @@ const api = {
   ) => ipcRenderer.invoke('db:getMessages', userMd5, startTime, endTime, options),
   getGroupSnapshot: (userMd5: string) => ipcRenderer.invoke('db:getGroupSnapshot', userMd5),
   search: (keyword: string) => ipcRenderer.invoke('db:search', keyword),
+  searchKnowledge: (request: KnowledgeSearchIpcRequest): Promise<KnowledgeSearchIpcResult> =>
+    ipcRenderer.invoke('knowledge:search', request),
+  runAiSearch: (request: AiSearchPipelineRequest): Promise<AiSearchPipelineResult> =>
+    ipcRenderer.invoke('ai-search:run', request),
+  onAiSearchProgress: (callback: (progress: AiSearchProgressEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: AiSearchProgressEvent): void =>
+      callback(progress)
+    ipcRenderer.on('ai-search:progress', listener)
+    return () => ipcRenderer.removeListener('ai-search:progress', listener)
+  },
+  getKnowledgeStatus: (): Promise<KnowledgeRuntimeStatus> =>
+    ipcRenderer.invoke('knowledge:getStatus'),
+  startKnowledgeIndex: (): Promise<KnowledgeRuntimeStatus> =>
+    ipcRenderer.invoke('knowledge:startIndex'),
+  onKnowledgeStatus: (callback: (status: KnowledgeRuntimeStatus) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: KnowledgeRuntimeStatus): void =>
+      callback(status)
+    ipcRenderer.on('knowledge:status', listener)
+    return () => ipcRenderer.removeListener('knowledge:status', listener)
+  },
   aiChat: (messages: { role: string; content: string }[], options?: AIChatRequestOptions) =>
     ipcRenderer.invoke('ai:chat', messages, options),
   listAIProviders: () => ipcRenderer.invoke('ai:listProviders'),

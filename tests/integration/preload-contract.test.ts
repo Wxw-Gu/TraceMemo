@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { AiSearchPipelineRequest } from '../../src/shared/ai-search'
+import type { KnowledgeSearchIpcRequest } from '../../src/shared/knowledge'
 
 const invoke = vi.fn()
 const on = vi.fn()
@@ -36,6 +38,28 @@ describe('preload IPC contract', () => {
     expect(invoke).toHaveBeenLastCalledWith('db:getMessages', 'fixture-user', 10, 20, {
       limit: 50
     })
+
+    const knowledgeSearch: KnowledgeSearchIpcRequest = {
+      text: '测试 Knowledge Worker 检索',
+      terms: ['Knowledge Worker'],
+      conversationIds: ['fixture-user'],
+      startTime: 10,
+      limit: 20
+    }
+    await api.searchKnowledge(knowledgeSearch)
+    expect(invoke).toHaveBeenLastCalledWith('knowledge:search', knowledgeSearch)
+    const aiSearch: AiSearchPipelineRequest = {
+      requestId: 'fixture-search',
+      text: '最近谁聊过健身',
+      scope: 'global',
+      range: '7d'
+    }
+    await api.runAiSearch(aiSearch)
+    expect(invoke).toHaveBeenLastCalledWith('ai-search:run', aiSearch)
+    await api.startKnowledgeIndex()
+    expect(invoke).toHaveBeenLastCalledWith('knowledge:startIndex')
+    await api.clearCache('knowledge')
+    expect(invoke).toHaveBeenLastCalledWith('cache:clear', 'knowledge')
 
     await api.getImage('fixture-md5', 'fixture.dat', 'fixture-session', {
       force: true,

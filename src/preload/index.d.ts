@@ -52,6 +52,16 @@ import type {
   VoiceModelStatus,
   VoiceRecognitionResult
 } from '../shared/voice-recognition'
+import type {
+  AiSearchPipelineRequest,
+  AiSearchPipelineResult,
+  AiSearchProgressEvent
+} from '../shared/ai-search'
+import type {
+  KnowledgeRuntimeStatus,
+  KnowledgeSearchIpcRequest,
+  KnowledgeSearchIpcResult
+} from '../shared/knowledge'
 
 export type ParsedContent =
   | { type: 'text'; content: string }
@@ -121,7 +131,7 @@ declare global {
       installAppUpdate: () => Promise<{ success: boolean; error?: string }>
       onAppUpdateState: (callback: (state: AppUpdateState) => void) => () => void
       getCacheSummary: () => Promise<CacheSummary>
-      clearCache: (scope: 'bootstrap' | 'electron' | 'all') => Promise<CacheSummary>
+      clearCache: (scope: 'bootstrap' | 'electron' | 'knowledge' | 'all') => Promise<CacheSummary>
       initDb: (
         key: string,
         accountRoot: string
@@ -183,6 +193,12 @@ declare global {
         }[]
       } | null>
       search: (keyword: string) => Promise<string | null>
+      searchKnowledge: (request: KnowledgeSearchIpcRequest) => Promise<KnowledgeSearchIpcResult>
+      runAiSearch: (request: AiSearchPipelineRequest) => Promise<AiSearchPipelineResult>
+      onAiSearchProgress: (callback: (progress: AiSearchProgressEvent) => void) => () => void
+      getKnowledgeStatus: () => Promise<KnowledgeRuntimeStatus>
+      startKnowledgeIndex: () => Promise<KnowledgeRuntimeStatus>
+      onKnowledgeStatus: (callback: (status: KnowledgeRuntimeStatus) => void) => () => void
       aiChat: (
         messages: { role: string; content: string }[],
         options?: AIChatRequestOptions

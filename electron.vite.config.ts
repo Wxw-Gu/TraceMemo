@@ -8,7 +8,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/main/index.ts'),
-          voiceRecognitionWorker: resolve('src/main/voice-pipeline/voice-recognition-worker.ts')
+          voiceRecognitionWorker: resolve('src/main/voice-pipeline/voice-recognition-worker.ts'),
+          knowledgeWorker: resolve('src/main/knowledge/knowledge-worker.ts')
         },
         output: {
           entryFileNames: '[name].js'

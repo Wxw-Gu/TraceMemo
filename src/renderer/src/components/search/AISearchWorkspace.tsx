@@ -1,47 +1,92 @@
 import React, { useMemo, useRef, useState } from 'react'
-import type { Contact, Message } from '../../../../shared/types'
-import { SearchIcon } from '../chat/icons'
+import * as Popover from '@radix-ui/react-popover'
+import { aiSearchIntentLabel } from '../../../../shared/ai-search'
+import type {
+  AiSearchAggregation,
+  AiSearchAgentRun,
+  AiSearchPipelineTimings,
+  AiSearchProgressEvent,
+  AiSearchProgressStage,
+  AiSearchTimeRange
+} from '../../../../shared/ai-search'
+import type { Contact } from '../../../../shared/types'
 
 import type {
   AISearchCacheRecord,
   AISearchWorkspaceProps,
   EvidenceItem,
-  GroupMemberName,
-  SearchPassSummary,
   SearchRange,
   SearchScope,
-  SearchStage,
-  SenderDirectory
+  SearchStage
 } from './searchTypes'
+import type { KnowledgeRuntimeStatus } from '../../../../shared/knowledge'
 import {
   RANGE_LABELS,
   SEARCH_CACHE_KEY,
   SEARCH_HISTORY_KEY,
-  buildLocalSearchPlan,
   buildSearchCacheKey,
   compactCacheItem,
   currentTimestamp,
-  evidenceIdentity,
-  formatMemberName,
-  formatMessageDate,
   formatMessageTime,
-  getRangeStart,
-  includesSearchAlias,
-  messageDateKey,
   messageIdentity,
   messageText,
-  mergeSearchPlans,
-  normalizeSearchText,
   parseSearchCacheKey,
-  parseSearchPlanResponse,
   readSearchCache,
   readSearchCacheByQuery,
-  selectEvenly,
-  selectEvidenceByDate,
   senderName,
   writeSearchCache
 } from './searchUtils'
 import { renderMarkdown } from './searchMarkdown'
+
+type SearchTrace = {
+  knowledgeMessages: number
+  retrievedEvidence: number
+  finalEvidence: number
+  timings: AiSearchPipelineTimings
+  contextEvidence: number
+  inputTokens?: number
+  inputTokensEstimated: boolean
+  aggregation: AiSearchAggregation
+  invalidCitationIds: string[]
+  agent: AiSearchAgentRun
+}
+
+type SearchProgressByStage = Partial<Record<AiSearchProgressStage, AiSearchProgressEvent>>
+
+const formatBytes = (bytes: number): string => {
+  if (!bytes) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`
+}
+
+const formatDuration = (milliseconds: number): string =>
+  milliseconds >= 1000 ? `${(milliseconds / 1000).toFixed(1)}s` : `${milliseconds}ms`
+
+const knowledgeStateLabel = (status: KnowledgeRuntimeStatus | null): string => {
+  if (!status) return '读取中'
+  return {
+    unavailable: '未建立',
+    building: '建立中',
+    syncing: '增量同步',
+    ready: '已同步',
+    error: '异常'
+  }[status.state]
+}
+
+const contactLabel = (contact: Contact | null | undefined): string =>
+  contact?.m_nsNickName ||
+  contact?.remark ||
+  contact?.wechatNickname ||
+  contact?.m_nsUsrName ||
+  '未选择会话'
+
+const fallbackEvidenceContact = (conversationId: string): Contact => ({
+  md5: conversationId,
+  m_nsUsrName: conversationId,
+  m_nsNickName: '未加载的会话',
+  type: conversationId.endsWith('@chatroom') ? 'group' : 'user'
+})
 
 export function AISearchWorkspace({
   contacts,
@@ -54,11 +99,10 @@ export function AISearchWorkspace({
   onNotice
 }: AISearchWorkspaceProps): React.ReactElement {
   const allContacts = useMemo(() => contacts.filter((contact) => contact.md5), [contacts])
-  const availableContacts = allContacts.slice(0, 80)
   const [scope, setScope] = useState<SearchScope>('global')
   const [scopeContactMd5, setScopeContactMd5] = useState(selectedContact?.md5 || '')
   const [range, setRange] = useState<SearchRange>('7d')
-  const [contactFilter, setContactFilter] = useState('')
+  const [timeRangeOverride, setTimeRangeOverride] = useState<AiSearchTimeRange | undefined>()
   const [query, setQuery] = useState('')
   const [stage, setStage] = useState<SearchStage>('idle')
   const [answer, setAnswer] = useState('')
@@ -78,11 +122,19 @@ export function AISearchWorkspace({
   })
   const [senderNames, setSenderNames] = useState<Record<string, string>>({})
   const [cachedAt, setCachedAt] = useState(0)
+  const [knowledgeStatus, setKnowledgeStatus] = useState<KnowledgeRuntimeStatus | null>(null)
+  const [syncStarting, setSyncStarting] = useState(false)
+  const [searchTrace, setSearchTrace] = useState<SearchTrace | null>(null)
+  const [searchProgress, setSearchProgress] = useState<SearchProgressByStage>({})
+  const [agentTrace, setAgentTrace] = useState<AiSearchAgentRun['trace']>([])
+  const [searchDetailsOpen, setSearchDetailsOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [debugEnabled, setDebugEnabled] = useState(false)
   const [debugPanelOpen, setDebugPanelOpen] = useState(false)
   const [debugEntries, setDebugEntries] = useState<string[]>([])
   const [appLogPath, setAppLogPath] = useState('')
   const bypassCacheRef = useRef(false)
+  const searchRequestIdRef = useRef('')
 
   React.useEffect(() => {
     void Promise.all([window.api.getSettings(), window.api.getAppLogPath()]).then(
@@ -92,6 +144,39 @@ export function AISearchWorkspace({
       }
     )
   }, [])
+
+  React.useEffect(() => {
+    let active = true
+    void window.api
+      .getKnowledgeStatus()
+      .then((status) => {
+        if (active) setKnowledgeStatus(status)
+      })
+      .catch(() => undefined)
+    const unsubscribe = window.api.onKnowledgeStatus((status) => {
+      if (active) setKnowledgeStatus(status)
+    })
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [])
+
+  React.useEffect(
+    () =>
+      window.api.onAiSearchProgress((progress) => {
+        if (progress.requestId !== searchRequestIdRef.current) return
+        setSearchProgress((current) => ({ ...current, [progress.stage]: progress }))
+        if (progress.agentTrace) {
+          setAgentTrace((current) =>
+            current.some((item) => item.sequence === progress.agentTrace?.sequence)
+              ? current
+              : [...current, progress.agentTrace as AiSearchAgentRun['trace'][number]]
+          )
+        }
+      }),
+    []
+  )
 
   const addDebugEntry = (message: string, details: Record<string, unknown> = {}): void => {
     const entry = `${new Date().toLocaleTimeString('zh-CN')} ${message} ${JSON.stringify(details)}`
@@ -104,48 +189,42 @@ export function AISearchWorkspace({
   }
 
   const activeContact =
-    availableContacts.find(
-      (contact) => contact.md5 === (scopeContactMd5 || selectedContact?.md5)
-    ) || selectedContact
-  const visibleContacts = availableContacts.filter((contact) => {
-    const keyword = contactFilter.trim().toLowerCase()
-    if (!keyword) return true
-    return (
-      contact.m_nsNickName.toLowerCase().includes(keyword) ||
-      contact.m_nsUsrName.toLowerCase().includes(keyword)
-    )
-  })
-  const sourceLabel =
-    scope === 'conversation' ? activeContact?.m_nsNickName || '未选择会话' : '全局搜索'
+    allContacts.find((contact) => contact.md5 === (scopeContactMd5 || selectedContact?.md5)) ||
+    selectedContact
+  const sourceLabel = {
+    global: '所有聊天记录',
+    groups: '群聊专属',
+    contacts: '联系人专属',
+    conversation: contactLabel(activeContact)
+  }[scope]
+  const currentSyncConversation = knowledgeStatus?.currentConversationId
+    ? contactLabel(
+        allContacts.find((contact) => contact.md5 === knowledgeStatus.currentConversationId)
+      )
+    : ''
   const modelLabel = aiModelConfig.configured
     ? `${aiModelConfig.providerName} · ${aiModelConfig.modelName}`
     : '尚未配置 AI 模型'
 
-  const buildSourceContacts = (): Contact[] => {
-    if (scope === 'conversation') return activeContact ? [activeContact] : []
-    return allContacts
-  }
-
-  const loadSourcePages = async (
-    sourceContacts: Contact[],
-    startTime: number | undefined
-  ): Promise<{ contact: Contact; messages: Message[] }[]> => {
-    const pages = new Array<{ contact: Contact; messages: Message[] }>(sourceContacts.length)
-    let nextIndex = 0
-    const worker = async (): Promise<void> => {
-      while (nextIndex < sourceContacts.length) {
-        const index = nextIndex
-        nextIndex += 1
-        const contact = sourceContacts[index]
-        pages[index] = {
-          contact,
-          messages: await window.api.getMessages(contact.md5, startTime)
-        }
-      }
+  const startKnowledgeSync = async (): Promise<void> => {
+    if (!dbReady) {
+      onNotice('请先连接微信数据后再建立本地知识库')
+      return
     }
-    const workerCount = Math.min(6, sourceContacts.length)
-    await Promise.all(Array.from({ length: workerCount }, () => worker()))
-    return pages
+    setSyncStarting(true)
+    try {
+      const status = await window.api.startKnowledgeIndex()
+      setKnowledgeStatus(status)
+      onNotice(
+        status.state === 'syncing'
+          ? '已开始同步最新聊天记录'
+          : '已开始建立本地知识库，可继续使用软件'
+      )
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : '启动知识库同步失败')
+    } finally {
+      setSyncStarting(false)
+    }
   }
 
   const rememberQuery = (value: string): void => {
@@ -175,23 +254,26 @@ export function AISearchWorkspace({
         localStorage.getItem(SEARCH_CACHE_KEY) || '[]'
       ) as AISearchCacheRecord[]
       const queryKey = historyQuery.trim().toLowerCase()
-      const nextRecords = records.filter((item) => {
-        try {
-          const keyParts = JSON.parse(item.key) as unknown
-          return !(
-            Array.isArray(keyParts) &&
-            typeof keyParts[3] === 'string' &&
-            keyParts[3] === queryKey
-          )
-        } catch {
-          return true
-        }
-      })
-      localStorage.setItem(SEARCH_CACHE_KEY, JSON.stringify(nextRecords))
+      localStorage.setItem(
+        SEARCH_CACHE_KEY,
+        JSON.stringify(
+          records.filter((item) => {
+            try {
+              const keyParts = JSON.parse(item.key) as unknown
+              return !(
+                Array.isArray(keyParts) &&
+                typeof keyParts[3] === 'string' &&
+                keyParts[3] === queryKey
+              )
+            } catch {
+              return true
+            }
+          })
+        )
+      )
     } catch {
       // Cache cleanup is optional and must not interrupt the current workspace.
     }
-    onNotice('已删除这条最近提问')
   }
 
   const applyCachedResult = (cached: AISearchCacheRecord, queryValue = query.trim()): void => {
@@ -206,6 +288,7 @@ export function AISearchWorkspace({
   const restoreHistoryQuery = (historyQuery: string): void => {
     setQuery(historyQuery)
     setSelectedEvidence(0)
+    setHistoryOpen(false)
     const cacheKey = buildSearchCacheKey(
       scope,
       scope === 'conversation' ? activeContact?.md5 || '' : '',
@@ -218,7 +301,7 @@ export function AISearchWorkspace({
       setEvidence([])
       setCachedAt(0)
       setStage('idle')
-      onNotice('这条提问没有可恢复的缓存，请点击开始分析重新读取消息')
+      onNotice('已填入历史问题，点击开始分析可重新查询最新消息')
       return
     }
     const cachedLocation = parseSearchCacheKey(cached.key)
@@ -230,36 +313,13 @@ export function AISearchWorkspace({
     setAnalysisError('')
     applyCachedResult(cached, historyQuery)
     setStage('result')
-    onNotice('已恢复这条提问的检索结果')
+    onNotice('已恢复这条历史问题的最近结果')
   }
 
-  const loadSenderDirectory = async (sourceContacts: Contact[]): Promise<SenderDirectory> => {
-    const groupContacts = sourceContacts.filter((contact) => contact.type === 'group')
-    const snapshots = await Promise.all(
-      groupContacts.map(async (contact) => {
-        const snapshot = (await window.api.getGroupSnapshot(contact.md5)) as {
-          members?: GroupMemberName[]
-        } | null
-        return snapshot?.members || []
-      })
-    )
-    const displayNames: Record<string, string> = {}
-    const aliases: Record<string, string[]> = {}
-    snapshots.flat().forEach((member) => {
-      if (!member.wxid) return
-      displayNames[member.wxid] = formatMemberName(member)
-      aliases[member.wxid] = [
-        member.groupNickname,
-        member.nickname,
-        member.remark,
-        member.wechatNickname,
-        member.wxid
-      ].filter((name): name is string => Boolean(name?.trim()))
-    })
-    return { displayNames, aliases }
-  }
-
-  const runAnalysis = async (event?: React.FormEvent): Promise<void> => {
+  const runAnalysis = async (
+    event?: React.FormEvent,
+    retry?: { range: SearchRange; timeRangeOverride?: AiSearchTimeRange }
+  ): Promise<void> => {
     event?.preventDefault()
     const normalizedQuery = query.trim()
     if (!normalizedQuery) {
@@ -272,259 +332,138 @@ export function AISearchWorkspace({
       setStage('insufficient')
       return
     }
-    if (!aiModelConfig.configured) {
-      setAnalysisError('尚未配置 AI 模型，请先在设置中添加可用的模型供应商')
-      setStage('insufficient')
-      return
-    }
-
-    const sourceContacts = buildSourceContacts()
-    if (!sourceContacts.length) {
-      setAnalysisError('没有可检索的聊天范围')
-      setStage('insufficient')
-      return
-    }
-
     setStage('loading')
     setAnalysisError('')
     setAnswer('')
     setEvidence([])
     setSelectedEvidence(0)
     setCachedAt(0)
+    setSearchTrace(null)
+    setSearchProgress({})
+    setAgentTrace([])
+    setSearchDetailsOpen(false)
+    const effectiveRange = retry?.range || range
+    const effectiveTimeRangeOverride = retry?.timeRangeOverride || timeRangeOverride
     const cacheKey = buildSearchCacheKey(
       scope,
       scope === 'conversation' ? activeContact?.md5 || '' : '',
-      range,
+      effectiveRange,
       normalizedQuery
     )
     try {
       const cached = bypassCacheRef.current ? null : readSearchCache(cacheKey)
       bypassCacheRef.current = false
       if (cached) {
-        addDebugEntry('检索命中缓存', { scope, range, messageCount: cached.messageCount })
+        addDebugEntry('检索命中缓存', {
+          scope,
+          range: effectiveRange,
+          messageCount: cached.messageCount
+        })
         applyCachedResult(cached, normalizedQuery)
         setStage('result')
         onNotice('已使用最近的检索缓存，可点击刷新数据读取最新消息')
         return
       }
-      const localSearchPlan = buildLocalSearchPlan(normalizedQuery)
-      let searchPlan = localSearchPlan
-      try {
-        const planResult = await window.api.aiChat([
-          {
-            role: 'system',
-            content:
-              '你是本地聊天检索规划器，不回答用户问题。请从用户问题中提取用于本地数据库检索的主题词和同义短语，只输出 JSON：{"intent":"general|topic|participants|mixed","keywords":["..."],"variants":["..."]}。删除“全局搜索、我和谁聊过、这个话题”等意图词，不要编造人名或聊天内容。'
-          },
-          {
-            role: 'user',
-            content: `用户问题：${normalizedQuery}`
-          }
-        ])
-        const aiPlan =
-          planResult.success && planResult.data ? parseSearchPlanResponse(planResult.data) : null
-        searchPlan = mergeSearchPlans(localSearchPlan, aiPlan)
-        addDebugEntry('AI 检索规划完成', {
-          source: searchPlan.source,
-          intent: searchPlan.intent,
-          keywords: searchPlan.keywords,
-          variants: searchPlan.variants,
-          aiPlanSuccess: Boolean(aiPlan)
-        })
-      } catch (error) {
-        addDebugEntry('AI 检索规划失败，使用本地规划', {
-          error: error instanceof Error ? error.message : '未知错误',
-          keywords: localSearchPlan.keywords
-        })
-      }
-      const startTime = getRangeStart(range)
-      const pages = await loadSourcePages(sourceContacts, startTime)
-      const sourceMessages = pages.flatMap((page) =>
-        page.messages.map((message) => ({ contact: page.contact, message }))
-      )
-      const uniqueMessages = Array.from(
-        new Map(
-          sourceMessages.map((item) => [
-            `${item.contact.md5}:${messageIdentity(item.message)}`,
-            item
-          ])
-        ).values()
-      ).sort((left, right) => (left.message.createTime || 0) - (right.message.createTime || 0))
-      if (!uniqueMessages.length) {
-        addDebugEntry('检索没有消息', { contactCount: sourceContacts.length, scope, range })
-        setAnalysisError('当前范围内没有找到可分析的消息，请扩大时间范围或更换会话')
-        setStage('insufficient')
-        return
-      }
-
-      const queryKeywords = searchPlan.keywords
-      const fuzzySearchKeywords = searchPlan.variants
-      const contactNamesInQuery = sourceContacts.filter((contact) =>
-        [contact.m_nsNickName, contact.m_nsUsrName, contact.remark, contact.wechatNickname]
-          .filter((name): name is string => Boolean(name?.trim()))
-          .some((name) => includesSearchAlias(normalizedQuery, name))
-      )
-      const senderDirectoryContacts =
-        scope === 'conversation' ? sourceContacts : contactNamesInQuery
-      const querySenderDirectory = await loadSenderDirectory(senderDirectoryContacts)
-      const matchedSenderIds = new Set(
-        Object.entries(querySenderDirectory.aliases)
-          .filter(([, aliases]) =>
-            aliases.some((name) => includesSearchAlias(normalizedQuery, name))
-          )
-          .map(([senderId]) => senderId)
-      )
-      const matchedContactIds = new Set(contactNamesInQuery.map((contact) => contact.md5))
-      const senderMatchedMessages = uniqueMessages.filter(({ message }) => {
-        const senderFields = [message.name, message.senderId, message.from].filter(
-          (value): value is string => Boolean(value?.trim())
-        )
-        return (
-          senderFields.some((value) => matchedSenderIds.has(value)) ||
-          senderFields.some((value) => includesSearchAlias(normalizedQuery, value))
-        )
+      const requestId = globalThis.crypto?.randomUUID?.() || `search-${Date.now()}`
+      searchRequestIdRef.current = requestId
+      const searchResult = await window.api.runAiSearch({
+        requestId,
+        text: normalizedQuery,
+        scope,
+        range: effectiveRange,
+        conversationId: scope === 'conversation' ? activeContact?.md5 : undefined,
+        timeRangeOverride: effectiveTimeRangeOverride
       })
-      const senderMessageIds = new Set(senderMatchedMessages.map(evidenceIdentity))
-      const searchPasses = [
-        { label: '主题精确匹配', keywords: queryKeywords },
-        { label: 'AI 变体匹配', keywords: fuzzySearchKeywords }
-      ]
-      const keywordMatchedMap = new Map<string, EvidenceItem>()
-      const passSummaries: SearchPassSummary[] = []
-      for (const pass of searchPasses) {
-        const passMatches = uniqueMessages.filter(({ message }) => {
-          const text = normalizeSearchText(messageText(message))
-          return pass.keywords.some((keyword) => text.includes(normalizeSearchText(keyword)))
-        })
-        passMatches.forEach((item) => keywordMatchedMap.set(evidenceIdentity(item), item))
-        passSummaries.push({
-          label: pass.label,
-          keywords: pass.keywords,
-          messageCount: passMatches.length
-        })
-      }
-      const keywordMatchedMessages = Array.from(keywordMatchedMap.values())
-      const keywordMessageIds = new Set(keywordMatchedMessages.map(evidenceIdentity))
-      const relevantMessages = uniqueMessages.filter(({ contact, message }) => {
-        if (matchedContactIds.has(contact.md5)) return true
-        const itemKey = evidenceIdentity({ contact, message })
-        return senderMessageIds.has(itemKey) || keywordMessageIds.has(itemKey)
+      addDebugEntry('主进程搜索任务完成', {
+        status: searchResult.status,
+        candidateEvidenceCount: searchResult.candidateEvidenceCount,
+        finalEvidenceCount: searchResult.evidence.length,
+        elapsedMs: searchResult.elapsedMs,
+        errorStage: searchResult.errorStage
       })
-      const hasSearchConstraint =
-        queryKeywords.length > 0 || fuzzySearchKeywords.length > 0 || matchedContactIds.size > 0
-      if (!relevantMessages.length && hasSearchConstraint) {
-        const attemptedTerms = Array.from(new Set([...queryKeywords, ...fuzzySearchKeywords])).join(
-          '、'
-        )
-        const noResultMessage = `${RANGE_LABELS[range]}内没有找到包含“${attemptedTerms || '主题关键词'}”的聊天消息。已完成精确匹配和智能变体匹配，未回退到全量消息；可以扩大时间范围或换一个更具体的词。`
-        addDebugEntry('检索未找到相关消息', {
-          contactCount: sourceContacts.length,
-          uniqueMessageCount: uniqueMessages.length,
-          passSummaries,
-          fallbackToAllMessages: false
-        })
-        setAnalysisError(noResultMessage)
-        setStage('insufficient')
-        return
-      }
-      const analysisMessages = relevantMessages.length ? relevantMessages : uniqueMessages
-      addDebugEntry('检索消息匹配完成', {
-        contactCount: sourceContacts.length,
-        uniqueMessageCount: uniqueMessages.length,
-        contactNameMatchCount: contactNamesInQuery.length,
-        searchIntent: searchPlan.intent,
-        searchPlanSource: searchPlan.source,
-        queryKeywords,
-        fuzzyKeywordCount: fuzzySearchKeywords.length,
-        passSummaries,
-        queryAliasCount: Object.keys(querySenderDirectory.aliases).length,
-        senderMatchCount: matchedSenderIds.size,
-        senderMessageCount: senderMatchedMessages.length,
-        keywordMessageCount: keywordMatchedMessages.length,
-        relevantMessageCount: relevantMessages.length,
-        fallbackToAllMessages: relevantMessages.length === 0
-      })
-      const analysisContactIds = new Set(analysisMessages.map(({ contact }) => contact.md5))
-      const analysisContacts = sourceContacts.filter((contact) =>
-        analysisContactIds.has(contact.md5)
-      )
-      const resolvedSenderNames = {
-        ...querySenderDirectory.displayNames,
-        ...(
-          await loadSenderDirectory(
-            analysisContacts.filter((contact) => !matchedContactIds.has(contact.md5))
-          )
-        ).displayNames
-      }
-      const primaryMessages = senderMatchedMessages.length
-        ? senderMatchedMessages
-        : keywordMatchedMessages
-      const primaryMessageIds = new Set(primaryMessages.map(evidenceIdentity))
-      const selectedEvidenceItems = primaryMessages.length
-        ? selectEvenly(primaryMessages, 8)
-        : selectEvidenceByDate(analysisMessages, 8)
-      const contextItems = primaryMessages.length
-        ? [
-            ...selectEvenly(primaryMessages, Math.min(160, primaryMessages.length)),
-            ...selectEvidenceByDate(
-              analysisMessages.filter((item) => !primaryMessageIds.has(evidenceIdentity(item))),
-              80
-            )
-          ]
-        : selectEvidenceByDate(analysisMessages, 240)
-      const dateCounts = new Map<string, number>()
-      const senderCounts = new Map<string, number>()
-      analysisMessages.forEach(({ contact, message }) => {
-        const date = messageDateKey(message)
-        dateCounts.set(date, (dateCounts.get(date) || 0) + 1)
-        const name = senderName(message, contact, resolvedSenderNames)
-        senderCounts.set(name, (senderCounts.get(name) || 0) + 1)
-      })
-      const dateSummary = Array.from(dateCounts.entries())
-        .map(([date, count]) => `${formatMessageDate(date)} ${count} 条`)
-        .join('、')
-      const senderSummary = Array.from(senderCounts.entries())
-        .sort(([, left], [, right]) => right - left)
-        .slice(0, 12)
-        .map(([name, count]) => `${name} ${count} 条`)
-        .join('、')
-      const asksConversationParticipants =
-        searchPlan.intent === 'participants' || searchPlan.intent === 'mixed'
-      const context = contextItems
-        .map(
-          ({ contact, message }) =>
-            `[${formatMessageTime(message)}] ${contact.m_nsNickName} / ${senderName(message, contact, resolvedSenderNames)}: ${messageText(message)}`
-        )
-        .join('\n')
-      const aiResult = await window.api.aiChat([
-        {
-          role: 'system',
-          content:
-            '你是 WechatExplorer 的本地聊天记录分析助手。只能基于提供的消息回答，不得编造事实。请用中文回答，先给出简短摘要，再列出关键主题、结论和不确定性。对人物问题只能描述群聊中的发言主题和可能角色，不做人格或敏感属性判断。'
-        },
-        {
-          role: 'user',
-          content: `检索范围：${sourceLabel}，时间：${RANGE_LABELS[range]}\n用户问题：${normalizedQuery}\n检索意图：${searchPlan.intent}\n检索关键词：${queryKeywords.join('、') || '未提取到主题关键词'}\n检索变体：${fuzzySearchKeywords.join('、') || '无'}\n相关消息数：${analysisMessages.length}\n目标成员消息数：${senderMatchedMessages.length}\n检索范围消息总数：${uniqueMessages.length}\n覆盖日期：${new Set(analysisMessages.map((item) => messageDateKey(item.message))).size} 天\n按日期统计：${dateSummary}\n主要发言者统计：${senderSummary}\n${asksConversationParticipants ? '\n这是一个“我和谁聊过”的问题，请按聊天会话和联系人归纳，优先列出实际出现主题关键词的会话，不要根据全量消息猜测。' : ''}\n以下是按检索轮次命中的原始消息，优先级最高的消息排在前面，不代表全部消息：\n${context}`
+      const contactsById = new Map(allContacts.map((contact) => [contact.md5, contact]))
+      const evidenceItems: EvidenceItem[] = searchResult.evidence.map((item): EvidenceItem => {
+        // Contacts may still be paging in while the derived database already
+        // has a valid conversation id. Evidence must never be discarded just
+        // because the renderer directory is temporarily incomplete.
+        const contact = contactsById.get(item.conversationId) || {
+          ...fallbackEvidenceContact(item.conversationId),
+          m_nsNickName: item.conversationName,
+          type: item.conversationType
         }
-      ])
-      if (!aiResult.success || !aiResult.data) {
-        setAnalysisError(aiResult.error || 'AI 分析失败，请稍后重试')
+        return {
+          evidenceId: item.id,
+          contact,
+          message: {
+            id: item.messageId,
+            from: item.senderId || 'user',
+            type: '检索消息',
+            datetime: new Date(item.timestamp).toLocaleString('zh-CN', { hour12: false }),
+            content: item.text,
+            isSender: item.sender === '我',
+            name: item.sender,
+            senderId: item.senderId,
+            createTime: Math.floor(item.timestamp / 1000)
+          }
+        }
+      })
+      setSearchTrace({
+        knowledgeMessages: searchResult.knowledge.indexedMessageCount,
+        retrievedEvidence: searchResult.candidateEvidenceCount,
+        finalEvidence: evidenceItems.length,
+        timings: searchResult.timings,
+        contextEvidence: searchResult.contextEvidenceCount,
+        inputTokens: searchResult.ai?.inputTokens,
+        inputTokensEstimated: searchResult.ai?.inputTokensEstimated || false,
+        aggregation: searchResult.aggregation,
+        invalidCitationIds: searchResult.citationValidation?.invalidCitationIds || [],
+        agent: searchResult.agent
+      })
+      setAgentTrace(searchResult.agent.trace)
+      setEvidence(evidenceItems)
+      setSenderNames(
+        Object.fromEntries(
+          evidenceItems
+            .filter(({ message }) => Boolean(message.senderId && message.name))
+            .map(({ message }) => [message.senderId as string, message.name as string])
+        )
+      )
+      setMessageCount(searchResult.knowledge.totalMessages)
+      if (searchResult.status === 'no_evidence') {
+        setAnalysisError(`${RANGE_LABELS[effectiveRange]}内没有找到与问题相关的聊天消息。`)
         setStage('insufficient')
         return
       }
-      setAnswer(aiResult.data)
-      setEvidence(selectedEvidenceItems)
-      setSenderNames(resolvedSenderNames)
-      setMessageCount(uniqueMessages.length)
+      if (searchResult.status === 'retrieval_incomplete') {
+        setAnalysisError(searchResult.error || '当前检索未完整覆盖聊天记录，未生成总结。')
+        setStage('partial')
+        return
+      }
+      if (searchResult.status === 'failed') {
+        setAnalysisError(searchResult.error || '本地搜索暂时无法完成')
+        setStage('insufficient')
+        return
+      }
+      if (searchResult.status === 'ai_failed') {
+        setAnalysisError(searchResult.error || '证据已找到，但 AI 暂时无法生成回答')
+        setStage('partial')
+        return
+      }
+      if (!searchResult.answer) throw new Error('搜索任务未返回回答')
+      setAnswer(searchResult.answer)
       rememberQuery(normalizedQuery)
       writeSearchCache({
         version: 1,
         key: cacheKey,
         createdAt: currentTimestamp(),
-        answer: aiResult.data,
-        evidence: selectedEvidenceItems.map(compactCacheItem),
-        senderNames: resolvedSenderNames,
-        messageCount: uniqueMessages.length
+        answer: searchResult.answer,
+        evidence: evidenceItems.map(compactCacheItem),
+        senderNames: Object.fromEntries(
+          evidenceItems
+            .filter(({ message }) => Boolean(message.senderId && message.name))
+            .map(({ message }) => [message.senderId as string, message.name as string])
+        ),
+        messageCount: searchResult.knowledge.totalMessages
       })
       setStage('result')
     } catch (error) {
@@ -564,32 +503,250 @@ export function AISearchWorkspace({
     </div>
   )
 
-  const renderLoading = (): React.ReactElement => (
-    <div className="ai-search-loading">
-      <div className="ai-search-spinner" aria-hidden />
-      <span className="ai-search-kicker">AI 正在分析</span>
-      <h2>正在读取本地消息并提取证据</h2>
-      <p>
-        范围：{sourceLabel} · {RANGE_LABELS[range]}
-      </p>
-      <div className="ai-search-loading-steps">
-        <span className="done">● 建立本地数据范围</span>
-        <span className="active">● 提取关键消息</span>
-        <span>○ 生成带证据的摘要</span>
+  const renderLoading = (): React.ReactElement => {
+    const plan = searchProgress.search_plan_ready?.plan || searchProgress.query_understanding?.plan
+    const understanding = searchProgress.search_plan_ready || searchProgress.query_understanding
+    const knowledge = searchProgress.knowledge_searching
+    const evidenceProgress = searchProgress.evidence_ready || searchProgress.evidence_ranking
+    const aggregation = searchProgress.aggregation
+    const ai = searchProgress.ai_generating
+    const stepClass = (progress?: AiSearchProgressEvent): string =>
+      progress?.status === 'completed'
+        ? 'done'
+        : progress?.status === 'error'
+          ? 'error'
+          : progress
+            ? 'active'
+            : ''
+    const mark = (progress?: AiSearchProgressEvent): string =>
+      progress?.status === 'completed'
+        ? '✓'
+        : progress?.status === 'error'
+          ? '!'
+          : progress
+            ? '◉'
+            : '○'
+    return (
+      <div className="ai-search-loading">
+        <span className="ai-search-kicker">本地检索进行中</span>
+        <h2>{ai?.status === 'running' ? '正在生成带来源的回答' : '正在理解并查找相关消息'}</h2>
+        <p>
+          范围：{plan?.scopeLabel || sourceLabel} · {plan?.rangeLabel || RANGE_LABELS[range]}
+        </p>
+        <div className="ai-search-pipeline" aria-label="本次检索过程">
+          <section className={`ai-search-pipeline-step ${stepClass(understanding)}`}>
+            <span className="ai-search-pipeline-mark">{mark(understanding)}</span>
+            <div>
+              <strong>理解搜索条件</strong>
+              {understanding?.status === 'running' && <p>{understanding.message}</p>}
+              {plan && (
+                <div className="ai-search-pipeline-details">
+                  {plan.keywords.length > 0 && <span>关键词「{plan.keywords.join('、')}」</span>}
+                  <span>时间「{plan.rangeLabel}」</span>
+                  <span>范围「{plan.scopeLabel}」</span>
+                  {plan.contactNames.map((name) => (
+                    <span key={name}>联系人「{name}」</span>
+                  ))}
+                  <span>目标「{aiSearchIntentLabel(plan.intent)}」</span>
+                </div>
+              )}
+            </div>
+          </section>
+          {agentTrace.length > 0 && (
+            <section className="ai-search-pipeline-step done">
+              <span className="ai-search-pipeline-mark">✓</span>
+              <div>
+                <strong>本地检索策略</strong>
+                {agentTrace
+                  .filter((item) => item.event === 'toolCallEnd' || item.event === 'agentDecision')
+                  .slice(-3)
+                  .map((item) => (
+                    <p key={item.sequence}>
+                      {item.toolName ? `${item.toolName} · ` : ''}
+                      {item.label}
+                      {item.resultCount !== undefined ? ` · ${item.resultCount} 条` : ''}
+                    </p>
+                  ))}
+              </div>
+            </section>
+          )}
+          <section className={`ai-search-pipeline-step ${stepClass(knowledge)}`}>
+            <span className="ai-search-pipeline-mark">{mark(knowledge)}</span>
+            <div>
+              <strong>从本地知识库查找</strong>
+              {knowledge && <p>{knowledge.message}</p>}
+              {knowledge?.stats?.knowledgeMessageCount !== undefined && (
+                <div className="ai-search-pipeline-details">
+                  <span>
+                    知识库已收录 {knowledge.stats.knowledgeMessageCount.toLocaleString()} 条消息
+                  </span>
+                  {knowledge.stats.matchedMessages !== undefined && (
+                    <span>找到 {knowledge.stats.matchedMessages.toLocaleString()} 条相关消息</span>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+          <section className={`ai-search-pipeline-step ${stepClass(evidenceProgress)}`}>
+            <span className="ai-search-pipeline-mark">{mark(evidenceProgress)}</span>
+            <div>
+              <strong>整理原始证据</strong>
+              {evidenceProgress && <p>{evidenceProgress.message}</p>}
+              {evidenceProgress?.stats?.matchedMessages !== undefined && (
+                <div className="ai-search-pipeline-details">
+                  <span>相关消息 {evidenceProgress.stats.matchedMessages.toLocaleString()} 条</span>
+                  {evidenceProgress.stats.evidenceCount !== undefined && (
+                    <span>保留 {evidenceProgress.stats.evidenceCount} 条 Evidence</span>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+          <section className={`ai-search-pipeline-step ${stepClass(aggregation)}`}>
+            <span className="ai-search-pipeline-mark">{mark(aggregation)}</span>
+            <div>
+              <strong>按人物和会话整理</strong>
+              {aggregation && <p>{aggregation.message}</p>}
+              {aggregation?.stats?.peopleCount !== undefined && (
+                <div className="ai-search-pipeline-details">
+                  <span>{aggregation.stats.peopleCount} 人</span>
+                  {aggregation.stats.conversationCount !== undefined && (
+                    <span>{aggregation.stats.conversationCount} 个会话</span>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+          <section className={`ai-search-pipeline-step ${stepClass(ai)}`}>
+            <span className="ai-search-pipeline-mark">{mark(ai)}</span>
+            <div>
+              <strong>生成带来源的回答</strong>
+              {ai && (
+                <p>
+                  {ai.message}
+                  {ai.modelName ? ` · ${ai.modelName}` : ''}
+                </p>
+              )}
+              {ai?.stats?.contextEvidenceCount !== undefined && (
+                <div className="ai-search-pipeline-details">
+                  <span>已提供 {ai.stats.contextEvidenceCount} 条相关消息</span>
+                  {ai.stats.tokenEstimate !== undefined && (
+                    <span>上下文约 {ai.stats.tokenEstimate.toLocaleString()} Tokens</span>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
       </div>
-    </div>
-  )
+    )
+  }
+
+  const renderSearchDetails = (): React.ReactElement | null => {
+    const plan = searchProgress.completed?.plan || searchProgress.search_plan_ready?.plan
+    if (!plan || !searchTrace) return null
+    const ai = searchProgress.completed || searchProgress.ai_generating
+    return (
+      <details
+        className="ai-search-details"
+        open={searchDetailsOpen}
+        onToggle={(event) => setSearchDetailsOpen(event.currentTarget.open)}
+      >
+        <summary>查看检索详情</summary>
+        <div className="ai-search-details-grid">
+          <section>
+            <strong>搜索条件</strong>
+            <span>关键词：{plan.keywords.join('、') || '未识别到明确关键词'}</span>
+            <span>时间范围：{plan.rangeLabel}</span>
+            <span>搜索范围：{plan.scopeLabel}</span>
+            <span>查询意图：{aiSearchIntentLabel(plan.intent)}</span>
+          </section>
+          <section>
+            <strong>本地知识库</strong>
+            <span>已收录消息：{searchTrace.knowledgeMessages.toLocaleString()}</span>
+            <span>候选消息：{searchTrace.retrievedEvidence.toLocaleString()}</span>
+            <span>Final Evidence：{searchTrace.finalEvidence}</span>
+            <span>本地知识库：{formatDuration(searchTrace.timings.knowledgeSearchMs)}</span>
+            <span>
+              Worker 通信 {formatDuration(searchTrace.timings.workerIpcMs)} · FTS{' '}
+              {formatDuration(searchTrace.timings.ftsMs)} · 消息读取{' '}
+              {formatDuration(searchTrace.timings.messageLoadMs)}
+            </span>
+          </section>
+          <section>
+            <strong>AI 回答</strong>
+            <span>上下文消息：{searchTrace.contextEvidence}</span>
+            <span>
+              输入：{(searchTrace.inputTokens || 0).toLocaleString()} Tokens
+              {searchTrace.inputTokensEstimated ? '（估算）' : ''}
+            </span>
+            {ai?.modelName && <span>模型：{ai.modelName}</span>}
+            <span>AI 生成：{formatDuration(searchTrace.timings.aiGenerationMs)}</span>
+            {searchTrace.invalidCitationIds.length > 0 && (
+              <span>已移除无效引用：{searchTrace.invalidCitationIds.join('、')}</span>
+            )}
+          </section>
+          <section>
+            <strong>处理过程</strong>
+            <span>
+              受控检索：
+              {searchTrace.agent.mode === 'agent'
+                ? `${searchTrace.agent.toolCalls} 次 Tool`
+                : '已使用旧检索 fallback'}
+            </span>
+            <span>理解问题：{formatDuration(searchTrace.timings.queryUnderstandingMs)}</span>
+            <span>确认范围：{formatDuration(searchTrace.timings.contactResolutionMs)}</span>
+            <span>
+              Evidence 整理：
+              {formatDuration(
+                searchTrace.timings.candidateRankingMs + searchTrace.timings.evidenceBuildMs
+              )}
+            </span>
+            <span>
+              人物聚合：{searchTrace.aggregation.peopleCount} 人 ·{' '}
+              {searchTrace.aggregation.conversationCount} 个会话 ·{' '}
+              {formatDuration(searchTrace.timings.aggregationMs)}
+            </span>
+            <span>总耗时：{formatDuration(searchTrace.timings.totalMs)}</span>
+          </section>
+          {searchTrace.agent.trace.length > 0 && (
+            <section>
+              <strong>检索轨迹</strong>
+              {searchTrace.agent.trace.map((item) => (
+                <span key={item.sequence}>
+                  {item.toolName ? `${item.toolName}：` : ''}
+                  {item.label}
+                  {item.resultCount !== undefined ? ` · ${item.resultCount} 条` : ''}
+                  {item.elapsedMs !== undefined ? ` · ${formatDuration(item.elapsedMs)}` : ''}
+                </span>
+              ))}
+            </section>
+          )}
+        </div>
+      </details>
+    )
+  }
 
   const renderResult = (): React.ReactElement => (
     <div className="ai-search-result">
       <div className="ai-search-result-header">
         <div>
-          <span className="ai-search-kicker">AI 深度检索结果</span>
+          <span className="ai-search-kicker">✓ 已完成</span>
           <h2>{query}</h2>
           <p>
-            {sourceLabel} · {RANGE_LABELS[range]} · 基于 {messageCount} 条消息 · 证据采样{' '}
-            {evidence.length} 条{cachedAt ? ' · 已使用缓存' : ''}
+            知识库已收录 {messageCount.toLocaleString()} 条消息 → 找到{' '}
+            {searchTrace?.retrievedEvidence || 0} 条相关消息 → {evidence.length} 条 Evidence →
+            已生成回答{cachedAt ? ' · 已使用缓存' : ''}
           </p>
+          {searchTrace && (
+            <div className="ai-search-trace" aria-label="本次检索追踪">
+              <span>总耗时 {formatDuration(searchTrace.timings.totalMs)}</span>
+              <span>本地检索 {formatDuration(searchTrace.timings.knowledgeSearchMs)}</span>
+              <span>AI {formatDuration(searchTrace.timings.aiGenerationMs)}</span>
+              <span>上下文 {searchTrace.contextEvidence} 条</span>
+            </div>
+          )}
+          {renderSearchDetails()}
         </div>
         <div className="ai-search-result-actions">
           <button type="button" onClick={() => void copyAnswer()} title="复制 AI 摘要">
@@ -612,7 +769,22 @@ export function AISearchWorkspace({
           <span />
           摘要
         </div>
-        <div className="ai-search-answer">{renderMarkdown(answer)}</div>
+        <div className="ai-search-answer">
+          {renderMarkdown(answer, {
+            evidenceCount: evidence.length,
+            onEvidenceClick: setSelectedEvidence
+          })}
+        </div>
+        {evidence.length > 0 && (
+          <div className="ai-search-answer-evidence" aria-label="AI 引用证据">
+            <span>引用：</span>
+            {evidence.map((_, index) => (
+              <button key={index} type="button" onClick={() => setSelectedEvidence(index)}>
+                E{index + 1}
+              </button>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   )
@@ -627,12 +799,42 @@ export function AISearchWorkspace({
         type="button"
         className="primary"
         onClick={() => {
-          setRange('30d')
-          setStage('idle')
+          const expandToAll = range === '30d' || range === 'all'
+          setRange(expandToAll ? 'all' : '30d')
+          setTimeRangeOverride(
+            expandToAll
+              ? {
+                  label: '全部历史',
+                  reason: '用户主动扩大到全部历史',
+                  source: 'user_retry'
+                }
+              : undefined
+          )
+          bypassCacheRef.current = true
+          void runAnalysis(undefined, {
+            range: expandToAll ? 'all' : '30d',
+            timeRangeOverride: expandToAll
+              ? {
+                  label: '全部历史',
+                  reason: '用户主动扩大到全部历史',
+                  source: 'user_retry'
+                }
+              : undefined
+          })
         }}
       >
-        扩大到近 30 天
+        {range === '30d' || range === 'all' ? '搜索全部历史' : '扩大到近 30 天'}
       </button>
+    </div>
+  )
+
+  const renderPartial = (): React.ReactElement => (
+    <div className="ai-search-insufficient ai-search-partial">
+      <div className="ai-search-insufficient-icon">!</div>
+      <span className="ai-search-kicker">证据已就绪</span>
+      <h2>证据已找到，但 AI 暂时无法生成回答</h2>
+      <p>{analysisError}。右侧仍可查看并跳转到本次找到的原始消息。</p>
+      {renderSearchDetails()}
     </div>
   )
 
@@ -645,6 +847,10 @@ export function AISearchWorkspace({
           <p>在本地聊天记录中提炼主题、结论和可追溯证据</p>
         </div>
         <div className="ai-search-header-actions">
+          <div className="ai-search-knowledge-pill">
+            <span className="ai-search-knowledge-dot" aria-hidden />
+            Knowledge {knowledgeStateLabel(knowledgeStatus)}
+          </div>
           <div className="ai-search-model-status">
             <span className={aiModelConfig.configured ? 'ready' : 'warning'} />
             <span>{modelLabel}</span>
@@ -690,131 +896,179 @@ export function AISearchWorkspace({
       )}
       <div className="ai-search-grid">
         <aside className="ai-search-scope-panel">
-          <div className="ai-search-panel-heading">
-            <div>
-              <span>范围与过滤</span>
-              <strong>检索范围</strong>
-            </div>
-            <span className="ai-search-local-badge">本地</span>
-          </div>
-          <div className="ai-search-scope-toggle">
-            <button
-              type="button"
-              className={scope === 'global' ? 'active' : ''}
-              onClick={() => setScope('global')}
-            >
-              全局搜索
-            </button>
-            <button
-              type="button"
-              className={scope === 'conversation' ? 'active' : ''}
-              onClick={() => {
-                if (activeContact) {
+          <section className="ai-search-filter-section">
+            <span className="ai-search-field-label">搜索范围</span>
+            <div className="ai-search-secondary-menu">
+              {[
+                ['global', '所有聊天记录'],
+                ['groups', '群聊专属'],
+                ['contacts', '单聊专属']
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={scope === value ? 'active' : ''}
+                  onClick={() => setScope(value as SearchScope)}
+                >
+                  <span aria-hidden>
+                    {value === 'global' ? '▣' : value === 'groups' ? '♧' : '♙'}
+                  </span>
+                  {label}
+                </button>
+              ))}
+              <button
+                type="button"
+                className={scope === 'conversation' ? 'active' : ''}
+                disabled={!activeContact}
+                onClick={() => {
+                  if (!activeContact) {
+                    onNotice('请先在档案中选择一个会话')
+                    return
+                  }
                   setScope('conversation')
                   setScopeContactMd5(activeContact.md5)
-                  return
-                }
-                onNotice('请先从下方选择一个会话')
-              }}
-            >
-              指定会话
-            </button>
-          </div>
-          <p className="ai-search-scope-help">
-            {scope === 'global'
-              ? '全局搜索会读取全部群聊和私聊；左侧列表用于快速指定会话。'
-              : '指定会话只读取当前高亮的一个群聊或私聊。'}
-          </p>
-          <label className="ai-search-field-label" htmlFor="ai-search-contact-filter">
-            会话
-          </label>
-          <div className="ai-search-filter-input">
-            <SearchIcon />
-            <input
-              id="ai-search-contact-filter"
-              value={contactFilter}
-              onChange={(event) => setContactFilter(event.target.value)}
-              placeholder="搜索群聊或联系人"
-            />
-          </div>
-          <div className="ai-search-contact-list">
-            {visibleContacts.map((contact) => (
-              <button
-                key={contact.md5}
-                type="button"
-                className={`ai-search-contact ${scope === 'conversation' && scopeContactMd5 === contact.md5 ? 'active' : ''}`}
-                onClick={() => {
-                  setScope('conversation')
-                  setScopeContactMd5(contact.md5)
-                  onSelectContact(contact)
+                  onSelectContact(activeContact)
                 }}
               >
-                <span className="ai-search-contact-avatar">
-                  {contact.avatar ? (
-                    <img src={contact.avatar} alt="" />
-                  ) : (
-                    contact.m_nsNickName.charAt(0)
-                  )}
-                </span>
-                <span>
-                  <strong>{contact.m_nsNickName || contact.m_nsUsrName}</strong>
-                  <small>{contact.type === 'group' ? '群聊' : '联系人'}</small>
-                </span>
+                <span aria-hidden>⌁</span>
+                当前会话{activeContact ? ` · ${contactLabel(activeContact)}` : ''}
               </button>
-            ))}
-            {!visibleContacts.length && <span className="ai-search-muted">没有匹配的会话</span>}
-          </div>
-          <div className="ai-search-field-heading">
-            <label className="ai-search-field-label">时间范围</label>
-            <span>当前：{RANGE_LABELS[range]}</span>
-          </div>
-          <div className="ai-search-range-grid">
-            {(Object.keys(RANGE_LABELS) as SearchRange[]).map((item) => (
-              <button
-                key={item}
-                type="button"
-                className={range === item ? 'active' : ''}
-                aria-pressed={range === item}
-                onClick={() => setRange(item)}
-              >
-                {RANGE_LABELS[item]}
-              </button>
-            ))}
-          </div>
-          <div className="ai-search-filter-note">
-            <span>●</span> 当前分析只读取本机数据库，不会操作微信。
-          </div>
-          {history.length > 0 && (
-            <div className="ai-search-history">
-              <label className="ai-search-field-label">最近提问</label>
-              {history.map((item) => (
-                <div className="ai-search-history-item" key={item}>
-                  <button
-                    type="button"
-                    onClick={() => restoreHistoryQuery(item)}
-                    title="恢复这条提问"
-                  >
-                    {item}
-                  </button>
-                  <button
-                    type="button"
-                    className="ai-search-history-delete"
-                    aria-label={`删除最近提问：${item}`}
-                    title="删除这条提问"
-                    onClick={() => removeHistoryQuery(item)}
-                  >
-                    ×
-                  </button>
-                </div>
+            </div>
+          </section>
+
+          <section className="ai-search-filter-section ai-search-time-section">
+            <span className="ai-search-field-label">时间范围</span>
+            <div className="ai-search-time-menu">
+              {(Object.keys(RANGE_LABELS) as SearchRange[]).map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  className={range === item ? 'active' : ''}
+                  aria-pressed={range === item}
+                  onClick={() => setRange(item)}
+                >
+                  <span aria-hidden>{item === 'all' ? '▣' : item === 'today' ? '▤' : '◷'}</span>
+                  {item === 'all' ? '不限时间' : RANGE_LABELS[item]}
+                </button>
               ))}
             </div>
-          )}
+          </section>
+
+          <section
+            className={`ai-search-knowledge-card ${knowledgeStatus?.state || 'unavailable'}`}
+            aria-label="知识库同步状态"
+          >
+            <div className="ai-search-knowledge-card-heading">
+              <div>
+                <span>KNOWLEDGE BASE</span>
+                <strong>{knowledgeStateLabel(knowledgeStatus)}</strong>
+              </div>
+              <span className="ai-search-knowledge-dot" aria-hidden />
+            </div>
+            <p className="ai-search-knowledge-description">
+              {knowledgeStatus?.state === 'unavailable'
+                ? '知识库不会自动建立，只有点击下方按钮后才会在后台同步。'
+                : '后台增量同步不会影响原始微信聊天记录。'}
+            </p>
+            {(knowledgeStatus?.state === 'building' || knowledgeStatus?.state === 'syncing') && (
+              <div className="ai-search-sync-progress">
+                <div className="ai-search-sync-progress-top">
+                  <span>
+                    已处理 {knowledgeStatus.processedMessages.toLocaleString()} 条
+                    {knowledgeStatus.totalMessages
+                      ? ` / ${knowledgeStatus.totalMessages.toLocaleString()}`
+                      : ''}
+                  </span>
+                  <span>
+                    {knowledgeStatus.totalMessages
+                      ? `${Math.min(100, Math.round((knowledgeStatus.processedMessages / knowledgeStatus.totalMessages) * 100))}%`
+                      : '统计中'}
+                  </span>
+                </div>
+                <div className="ai-search-sync-progress-track">
+                  <span
+                    style={{
+                      width: knowledgeStatus.totalMessages
+                        ? `${Math.min(100, (knowledgeStatus.processedMessages / knowledgeStatus.totalMessages) * 100)}%`
+                        : '35%'
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+            <div className="ai-search-knowledge-details">
+              <div>
+                <span>已索引消息</span>
+                <strong>{(knowledgeStatus?.indexedMessageCount || 0).toLocaleString()}</strong>
+              </div>
+              <div>
+                <span>知识片段</span>
+                <strong>{(knowledgeStatus?.indexedChunkCount || 0).toLocaleString()}</strong>
+              </div>
+              <div>
+                <span>磁盘占用</span>
+                <strong>
+                  {formatBytes(
+                    (knowledgeStatus?.databaseBytes || 0) +
+                      (knowledgeStatus?.walBytes || 0) +
+                      (knowledgeStatus?.shmBytes || 0)
+                  )}
+                </strong>
+              </div>
+              {knowledgeStatus?.currentConversationId &&
+                (knowledgeStatus.state === 'building' || knowledgeStatus.state === 'syncing') && (
+                  <div>
+                    <span>当前会话</span>
+                    <strong>
+                      {currentSyncConversation === '未选择会话'
+                        ? '正在切换会话'
+                        : currentSyncConversation}
+                    </strong>
+                  </div>
+                )}
+            </div>
+            {knowledgeStatus?.state === 'error' && (
+              <p className="ai-search-knowledge-error">
+                {knowledgeStatus.lastError || '同步异常，旧搜索仍可使用。'}
+              </p>
+            )}
+            <button
+              type="button"
+              className="ai-search-knowledge-action"
+              disabled={
+                syncStarting ||
+                knowledgeStatus?.state === 'building' ||
+                knowledgeStatus?.state === 'syncing'
+              }
+              onClick={() => void startKnowledgeSync()}
+            >
+              {syncStarting ||
+              knowledgeStatus?.state === 'building' ||
+              knowledgeStatus?.state === 'syncing'
+                ? '同步中…'
+                : knowledgeStatus?.state === 'ready'
+                  ? '同步最新记录'
+                  : '建立本地知识库'}
+            </button>
+            <details className="ai-search-knowledge-more">
+              <summary>同步详情</summary>
+              <p>
+                账号：
+                {knowledgeStatus?.accountId
+                  ? `${knowledgeStatus.accountId.slice(0, 12)}…`
+                  : '未连接'}
+              </p>
+              <p>状态：{knowledgeStateLabel(knowledgeStatus)}</p>
+              <p>索引独立保存，不会删除或修改微信原始数据库。</p>
+            </details>
+          </section>
         </aside>
         <main className="ai-search-main">
           <div className="ai-search-main-scroll">
             {stage === 'idle' && renderIdle()}
             {stage === 'loading' && renderLoading()}
             {stage === 'result' && renderResult()}
+            {stage === 'partial' && renderPartial()}
             {stage === 'insufficient' && renderInsufficient()}
           </div>
           <form className="ai-search-composer" onSubmit={(event) => void runAnalysis(event)}>
@@ -822,6 +1076,55 @@ export function AISearchWorkspace({
               <span>正在询问</span>
               <strong>{sourceLabel}</strong>
               <em>{RANGE_LABELS[range]}</em>
+              <Popover.Root open={historyOpen} onOpenChange={setHistoryOpen}>
+                <Popover.Trigger asChild>
+                  <button type="button" className="ai-search-history-trigger">
+                    历史提问{history.length ? ` · ${history.length}` : ''}
+                  </button>
+                </Popover.Trigger>
+                <Popover.Portal>
+                  <Popover.Content
+                    className="ai-search-history-popover"
+                    aria-label="历史提问"
+                    side="top"
+                    align="end"
+                    sideOffset={8}
+                    collisionPadding={16}
+                  >
+                    <div className="ai-search-history-popover-heading">
+                      <strong>历史提问</strong>
+                      <Popover.Close asChild>
+                        <button type="button" aria-label="关闭历史提问">
+                          ×
+                        </button>
+                      </Popover.Close>
+                    </div>
+                    {history.length ? (
+                      history.map((item) => (
+                        <div className="ai-search-history-popover-item" key={item}>
+                          <button
+                            type="button"
+                            onClick={() => restoreHistoryQuery(item)}
+                            title={item}
+                          >
+                            {item}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeHistoryQuery(item)}
+                            aria-label={`删除历史问题：${item}`}
+                            title="删除这条历史问题"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))
+                    ) : (
+                      <span className="ai-search-history-empty">还没有历史提问</span>
+                    )}
+                  </Popover.Content>
+                </Popover.Portal>
+              </Popover.Root>
             </div>
             <div className="ai-search-composer-row">
               <textarea
@@ -851,31 +1154,36 @@ export function AISearchWorkspace({
               <span className="ai-search-count-badge">{evidence.length} 条样本</span>
             )}
           </div>
-          <div className="ai-search-evidence-meta">
-            <span>范围</span>
-            <strong>{sourceLabel}</strong>
-            <span>时间</span>
-            <strong>{RANGE_LABELS[range]}</strong>
-          </div>
           {evidence.length ? (
             evidence.map((item, index) => (
-              <button
+              <article
                 key={`${messageIdentity(item.message)}-${index}`}
-                type="button"
                 className={`ai-search-evidence-card ${selectedEvidence === index ? 'active' : ''}`}
+                style={{ animationDelay: `${Math.min(index, 7) * 45}ms` }}
                 onClick={() => {
                   setSelectedEvidence(index)
-                  onOpenEvidence(item.contact, item.message.createTime)
                 }}
               >
                 <span className="ai-search-evidence-card-top">
-                  <strong>{senderName(item.message, item.contact, senderNames)}</strong>
+                  <strong>
+                    {item.evidenceId || `E${index + 1}`} ·{' '}
+                    {senderName(item.message, item.contact, senderNames)}
+                  </strong>
                   <time>{formatMessageTime(item.message)}</time>
                 </span>
                 <span className="ai-search-evidence-conversation">{item.contact.m_nsNickName}</span>
                 <span className="ai-search-evidence-text">{messageText(item.message)}</span>
-                <span className="ai-search-evidence-link">跳转到档案 ↗</span>
-              </button>
+                <button
+                  type="button"
+                  className="ai-search-evidence-link"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onOpenEvidence(item.contact, item.message.createTime)
+                  }}
+                >
+                  跳转到原聊天 ↗
+                </button>
+              </article>
             ))
           ) : (
             <div className="ai-search-evidence-empty">

@@ -104,6 +104,10 @@ import type { ExportRequest } from '../shared/export'
 import { discoverAccounts } from './services/account-discovery'
 import { VoiceRecognitionUseCase } from './voice-pipeline/voice-recognition-use-case'
 import type { VoiceMessageReference } from '../shared/voice-recognition'
+import type { AiSearchPipelineRequest } from '../shared/ai-search'
+import type { KnowledgeSearchIpcRequest, KnowledgeSearchIpcResult } from '../shared/knowledge'
+import { KnowledgeSearchService } from './knowledge/knowledge-search-service'
+import { AiSearchPipelineService } from './services/ai-search-pipeline-service'
 
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
@@ -112,6 +116,8 @@ installSafeConsole()
 
 let voiceService: VoiceService | null = null
 let voiceRecognition: VoiceRecognitionUseCase | null = null
+let knowledgeSearchService: KnowledgeSearchService | null = null
+let aiSearchPipelineService: AiSearchPipelineService | null = null
 let imageDecryptService: ImageDecryptService | null = null
 let stickerService: StickerService | null = null
 let videoAssetService: VideoAssetService | null = null
@@ -430,6 +436,16 @@ app.whenReady().then(async () => {
     databasePath: join(app.getPath('userData'), 'cache', 'voice-transcripts.sqlite'),
     workerPath: join(__dirname, 'voiceRecognitionWorker.js')
   })
+  knowledgeSearchService = new KnowledgeSearchService(
+    app.getPath('userData'),
+    join(__dirname, 'knowledgeWorker.js')
+  )
+  aiSearchPipelineService = new AiSearchPipelineService(knowledgeSearchService, aiProviderService)
+  knowledgeSearchService.onStatusChange((status) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('knowledge:status', status)
+    }
+  })
   voiceRecognition.modelManager.setProgressListener((status) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send('voice:modelProgress', status)
@@ -501,10 +517,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('app-update:install', () => appUpdateService.install())
   ipcMain.handle('cache:getSummary', () => getCacheSummary())
   ipcMain.handle('cache:clear', async (_, scope: CacheClearScope) => {
-    const allowedScopes: CacheClearScope[] = ['bootstrap', 'electron', 'all']
+    const allowedScopes: CacheClearScope[] = ['bootstrap', 'electron', 'knowledge', 'all']
     if (!allowedScopes.includes(scope)) return getCacheSummary()
     imageDecryptService = null
-    return clearCache(scope)
+    return clearCache(scope, {
+      beforeClearKnowledge: () =>
+        knowledgeSearchService?.prepareForCacheClear() || Promise.resolve()
+    })
   })
 
   ipcMain.handle('db:init', async (_, key: string, accountRoot?: string) => {
@@ -891,6 +910,29 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('db:search', (_, keyword: string) => chat.searchMessages(keyword))
+  ipcMain.handle(
+    'knowledge:search',
+    (_, request: KnowledgeSearchIpcRequest): Promise<KnowledgeSearchIpcResult> => {
+      if (!knowledgeSearchService) {
+        throw new Error('本地知识库服务尚未初始化')
+      }
+      return knowledgeSearchService.search(request)
+    }
+  )
+  ipcMain.handle('knowledge:getStatus', () => {
+    if (!knowledgeSearchService) throw new Error('本地知识库服务尚未初始化')
+    return knowledgeSearchService.getStatus()
+  })
+  ipcMain.handle('knowledge:startIndex', () => {
+    if (!knowledgeSearchService) throw new Error('本地知识库服务尚未初始化')
+    return knowledgeSearchService.startCurrentAccountIndex()
+  })
+  ipcMain.handle('ai-search:run', (event, request: AiSearchPipelineRequest) => {
+    if (!aiSearchPipelineService) throw new Error('本地搜索服务尚未初始化')
+    return aiSearchPipelineService.run(request, (progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send('ai-search:progress', progress)
+    })
+  })
 
   ipcMain.handle(
     'ai:chat',
@@ -1444,7 +1486,8 @@ app.on('before-quit', (event) => {
     const [, nativeCallsDrained] = await Promise.all([
       apiServer.stop().catch(() => undefined),
       chat.closeChatDbForQuit().catch(() => false),
-      voiceRecognition?.dispose().catch(() => undefined)
+      voiceRecognition?.dispose().catch(() => undefined),
+      knowledgeSearchService?.dispose().catch(() => undefined)
     ])
     if (!nativeCallsDrained) {
       console.warn('[Shutdown] WCDB async calls did not fully drain before quit')
