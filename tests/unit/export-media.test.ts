@@ -73,9 +73,7 @@ describe('export media', () => {
     dom.window.eval(inlineScriptOf(html))
 
     expect(dom.window.document.querySelectorAll('.message')).toHaveLength(EXPORT_PAGE_SIZE)
-    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
-      '已显示 240 / 筛选 500 / 全部 500'
-    )
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe('筛选 500 / 全部 500')
     const list = dom.window.document.querySelector('#messages')!
     expect(list.querySelector('.message')?.getAttribute('data-index')).toBe('260')
 
@@ -154,9 +152,7 @@ describe('export media', () => {
       'https://example.com/xi'
     )
     expect(dom.window.document.querySelectorAll('.search-highlight')).toHaveLength(1)
-    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
-      '已显示 1 / 筛选 1 / 全部 2'
-    )
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe('筛选 1 / 全部 2')
     dom.window.close()
   })
 
@@ -191,25 +187,19 @@ describe('export media', () => {
     expect(trigger.textContent).toContain('全部聊天')
     expect(menu.querySelectorAll('[data-conversation-id]')).toHaveLength(3)
     expect(dom.window.document.querySelectorAll('.conversation-source')).toHaveLength(3)
-    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
-      '已显示 3 / 筛选 3 / 全部 3'
-    )
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe('筛选 3 / 全部 3')
     trigger.click()
     ;(menu.querySelector('[data-conversation-id="alpha"]') as HTMLButtonElement).click()
     expect(dom.window.document.querySelectorAll('.message')).toHaveLength(2)
     expect(dom.window.document.querySelectorAll('.conversation-source')).toHaveLength(0)
-    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
-      '已显示 2 / 筛选 2 / 当前聊天 2'
-    )
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe('筛选 2 / 全部 2')
     expect(dom.window.document.querySelectorAll('.timeline-month')).toHaveLength(2)
 
     const search = dom.window.document.querySelector('#query') as HTMLInputElement
     search.value = '共同关键词'
     search.dispatchEvent(new dom.window.Event('input'))
     expect(dom.window.document.querySelectorAll('.message')).toHaveLength(1)
-    expect(dom.window.document.querySelector('#count')?.textContent).toBe(
-      '已显示 1 / 筛选 1 / 当前聊天 2'
-    )
+    expect(dom.window.document.querySelector('#count')?.textContent).toBe('筛选 1 / 全部 2')
     dom.window.close()
   })
 
