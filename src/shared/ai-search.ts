@@ -20,7 +20,7 @@ export interface AiSearchTimeRange {
   endTime?: number
   label: string
   reason: string
-  source: 'ui' | 'query' | 'user_retry'
+  source: 'ui' | 'query' | 'user_retry' | 'user_selected'
 }
 export type AiSearchProgressStage =
   | 'query_understanding'
@@ -58,7 +58,7 @@ export interface AiSearchPipelineRequest {
   scope: AiSearchScope
   range: AiSearchRange
   conversationId?: string
-  /** Explicit user retry takes precedence over natural-language inference. */
+  /** Explicit UI choice or retry takes precedence over natural-language inference. */
   timeRangeOverride?: AiSearchTimeRange
 }
 
@@ -116,8 +116,6 @@ export interface AiSearchAgentTraceItem {
   resultCount?: number
   elapsedMs?: number
   decision?: string
-  /** Bounded local snapshot of the exact decision prompt; never sent to analytics. */
-  decisionInput?: string
 }
 
 export interface AiSearchAgentRun {
@@ -291,6 +289,8 @@ const SEARCH_INTENT_PHRASES = [
   '最近'
 ].sort((left, right) => right.length - left.length)
 
+const RECALL_QUESTION = '聊了什么|聊过什么|说了什么|谈了什么|聊了啥|聊啥|说了啥|说啥'
+
 const SEARCH_STOP_WORDS = new Set([
   '我',
   '谁',
@@ -365,7 +365,7 @@ export const inferAiSearchTimeRange = (
   now = new Date(),
   override?: AiSearchTimeRange
 ): AiSearchTimeRange => {
-  if (override?.source === 'user_retry') return override
+  if (override?.source === 'user_retry' || override?.source === 'user_selected') return override
   const nowSeconds = Math.floor(now.getTime() / 1000)
   const fromQuery = (startTime: number, label: string, reason: string): AiSearchTimeRange => ({
     startTime,
@@ -479,13 +479,20 @@ export const buildLocalAiSearchPlan = (
   const keywords = extractKeywords(query)
   const normalized = query.replace(/[“”"'‘’「」『』]/g, '').trim()
   const recall = normalized.match(
-    /(?:我和|我跟|我与)\s*(.+?)\s*(?:最近|这几天|本周|这个月|本月|今年|上个月|刚刚|刚才)?\s*(?:聊了什么|聊过什么|说了什么|谈了什么)/
+    new RegExp(
+      `(?:我和|我跟|我与)\\s*(.+?)\\s*(?:最近|这几天|本周|这个月|本月|今年|上个月|刚刚|刚才)?\\s*(?:${RECALL_QUESTION})`
+    )
   )
   const reverseRecall = normalized.match(
-    /^\s*(.+?)\s*(?:最近)?(?:跟我|和我|与我)\s*(?:聊了什么|聊过什么|说了什么|谈了什么)/
+    new RegExp(`^\\s*(.+?)\\s*(?:最近)?(?:跟我|和我|与我)\\s*(?:${RECALL_QUESTION})`)
   )
   const namedConversationRecall = normalized.match(
-    /(?:我在|在)\s*(.+?)\s*(?:最近)?\s*(?:聊了什么|聊过什么|说了什么|谈了什么)/
+    new RegExp(`(?:我在|在)\\s*(.+?)\\s*(?:最近)?\\s*(?:${RECALL_QUESTION})`)
+  )
+  const bareNamedConversationRecall = normalized.match(
+    new RegExp(
+      `^\\s*(.{2,32}?(?:群聊|交流群|群))\\s*(?:最近|这几天|本周|这个月|本月|今年|上个月|刚刚|刚才)?\\s*(?:${RECALL_QUESTION})[，,。！？!?]*$`
+    )
   )
   const conversationTopic = normalized.match(
     /(?:我和|我跟|我与)\s*(.+?)\s*(?:最近|这几天|本周|这个月|本月|今年|上个月)?\s*(?:聊过|提过|说过|讨论过)\s*(.+?)(?:吗|么|沒有|没有)?[？?。！!]*$/
@@ -498,6 +505,7 @@ export const buildLocalAiSearchPlan = (
     !reverseRecall &&
     !conversationTopic &&
     !namedConversationRecall &&
+    !bareNamedConversationRecall &&
     !globalTopic &&
     /^[^，,。！？!?]{2,32}(?:群|群聊|交流群)$/.test(normalized)
       ? normalized
@@ -506,7 +514,8 @@ export const buildLocalAiSearchPlan = (
     conversationTopic?.[1] ||
     recall?.[1] ||
     reverseRecall?.[1] ||
-    namedConversationRecall?.[1]
+    namedConversationRecall?.[1] ||
+    bareNamedConversationRecall?.[1]
   )
     ?.replace(/^(?:和|跟|与)\s*/, '')
     .trim()
@@ -517,7 +526,7 @@ export const buildLocalAiSearchPlan = (
     ? 'conversation_topic_search'
     : recall || reverseRecall
       ? 'conversation_recall'
-      : namedConversationRecall
+      : namedConversationRecall || bareNamedConversationRecall
         ? 'conversation_name_search'
         : globalTopic
           ? 'global_topic_search'

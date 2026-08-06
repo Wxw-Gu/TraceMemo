@@ -8,9 +8,10 @@ export const RANGE_LABELS: Record<SearchRange, string> = {
   all: '全部历史'
 }
 
-// Final Evidence IDs are now program-owned; never replay answers cached under
-// the former candidate-context contract.
-export const SEARCH_CACHE_KEY = 'wxe_ai_search_cache_v9'
+// Search intent semantics are program-owned; never replay results produced
+// before the current identity-resolution contract.
+export const SEARCH_CACHE_KEY = 'wxe_ai_search_cache_v11'
+export const SEARCH_ACTIVE_RESULT_KEY = 'wxe_ai_search_active_result_v1'
 export const SEARCH_HISTORY_KEY = 'wxe_ai_search_history_v1'
 export const SEARCH_CACHE_LIMIT = 20
 export const currentTimestamp = (): number => Date.now()
@@ -332,7 +333,7 @@ export const readSearchCache = (key: string): AISearchCacheRecord | null => {
     const records = JSON.parse(
       localStorage.getItem(SEARCH_CACHE_KEY) || '[]'
     ) as AISearchCacheRecord[]
-    const record = records.find((item) => item.version === 1 && item.key === key)
+    const record = records.find((item) => item.version === 3 && item.key === key)
     return record || null
   } catch {
     return null
@@ -349,7 +350,7 @@ export const readSearchCacheByQuery = (
     const normalizedQuery = query.trim().toLowerCase()
     for (const record of records) {
       const location = parseSearchCacheKey(record.key)
-      if (record.version === 1 && location?.query === normalizedQuery) {
+      if (record.version === 3 && location?.query === normalizedQuery) {
         return { record, location }
       }
     }

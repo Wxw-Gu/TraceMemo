@@ -25,6 +25,9 @@ import type {
 } from '../shared/image-decryption'
 import type {
   AIChatRequestOptions,
+  AiSearchExternalAuthorizationRequest,
+  AiSearchExternalAuthorizationResult,
+  AiSearchProviderStatus,
   AIConnectionTestResult,
   AIProviderConfig,
   AIProviderListResult,
@@ -215,6 +218,10 @@ declare global {
       }>
       listAIProviders: () => Promise<AIProviderListResult>
       getAIRuntimeConfig: () => Promise<AIRuntimeModelConfig>
+      getAiSearchProviderStatus: () => Promise<AiSearchProviderStatus>
+      authorizeAiSearchExternalProvider: (
+        request: AiSearchExternalAuthorizationRequest
+      ) => Promise<AiSearchExternalAuthorizationResult>
       saveAIProvider: (provider: AIProviderConfig) => Promise<AIProviderListResult>
       deleteAIProvider: (providerId: string) => Promise<AIProviderListResult>
       setDefaultAIProvider: (providerId: string) => Promise<AIProviderListResult>

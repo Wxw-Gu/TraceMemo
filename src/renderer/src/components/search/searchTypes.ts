@@ -14,7 +14,7 @@ export interface EvidenceItem {
 }
 
 export interface AISearchCacheRecord {
-  version: 1
+  version: 3
   key: string
   createdAt: number
   answer: string

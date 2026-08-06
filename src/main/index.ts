@@ -37,6 +37,7 @@ import type { GroupReportExportRequest } from '../shared/group-report'
 import type { SaveGeneratedReportRequest } from '../shared/report-history'
 import type {
   AIChatRequestOptions,
+  AiSearchExternalAuthorizationRequest,
   AIProviderConfig,
   AIVisionTestRequest,
   LegacyAIConfig
@@ -933,6 +934,14 @@ app.whenReady().then(async () => {
       if (!event.sender.isDestroyed()) event.sender.send('ai-search:progress', progress)
     })
   })
+  ipcMain.handle('ai-search:getProviderStatus', () => aiProviderService.getAiSearchProviderStatus())
+  ipcMain.handle(
+    'ai-search:authorizeExternalProvider',
+    (_, request: AiSearchExternalAuthorizationRequest) => {
+      if (!aiSearchPipelineService) throw new Error('本地搜索服务尚未初始化')
+      return aiSearchPipelineService.authorizeExternalProvider(request)
+    }
+  )
 
   ipcMain.handle(
     'ai:chat',

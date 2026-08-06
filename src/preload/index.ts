@@ -4,6 +4,9 @@ import type { GroupReportExportRequest } from '../shared/group-report'
 import type { SaveGeneratedReportRequest } from '../shared/report-history'
 import type {
   AIChatRequestOptions,
+  AiSearchExternalAuthorizationRequest,
+  AiSearchExternalAuthorizationResult,
+  AiSearchProviderStatus,
   AIProviderConfig,
   AIVisionTestRequest,
   LegacyAIConfig
@@ -101,6 +104,12 @@ const api = {
     ipcRenderer.invoke('ai:chat', messages, options),
   listAIProviders: () => ipcRenderer.invoke('ai:listProviders'),
   getAIRuntimeConfig: () => ipcRenderer.invoke('ai:getRuntimeConfig'),
+  getAiSearchProviderStatus: (): Promise<AiSearchProviderStatus> =>
+    ipcRenderer.invoke('ai-search:getProviderStatus'),
+  authorizeAiSearchExternalProvider: (
+    request: AiSearchExternalAuthorizationRequest
+  ): Promise<AiSearchExternalAuthorizationResult> =>
+    ipcRenderer.invoke('ai-search:authorizeExternalProvider', request),
   saveAIProvider: (provider: AIProviderConfig) => ipcRenderer.invoke('ai:saveProvider', provider),
   deleteAIProvider: (providerId: string) => ipcRenderer.invoke('ai:deleteProvider', providerId),
   setDefaultAIProvider: (providerId: string) =>

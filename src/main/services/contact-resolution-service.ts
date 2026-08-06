@@ -12,13 +12,20 @@ export type ContactResolutionScope = 'any' | 'person' | 'group'
 const displayName = (contact: Contact): string =>
   contact.m_nsNickName || contact.remark || contact.wechatNickname || contact.m_nsUsrName
 
-const aliases = (contact: Contact): Array<{ value: string; primary: boolean }> =>
-  [
+const aliases = (contact: Contact): Array<{ value: string; primary: boolean }> => {
+  const groupName = contact.m_nsNickName?.trim() || ''
+  const safeGroupAlias =
+    contact.type === 'group' && groupName && !/群(?:聊)?$/.test(groupName)
+      ? [{ value: `${groupName}群`, primary: false }]
+      : []
+  return [
     { value: contact.m_nsNickName, primary: true },
     { value: contact.remark || '', primary: false },
     { value: contact.wechatNickname || '', primary: false },
-    { value: contact.m_nsUsrName, primary: false }
+    { value: contact.m_nsUsrName, primary: false },
+    ...safeGroupAlias
   ].filter((item) => Boolean(normalizeContactName(item.value)))
+}
 
 /**
  * The one main-process authority that converts a user/Agent supplied name to
@@ -43,11 +50,11 @@ export function resolveContact(
       const rawExact =
         alias.value.trim().normalize('NFKC').toLocaleLowerCase() ===
         query.trim().normalize('NFKC').toLocaleLowerCase()
-      const matchedBy: ContactResolutionMatch = rawExact
-        ? 'exact'
-        : alias.primary
-          ? 'normalized'
-          : 'alias'
+      const matchedBy: ContactResolutionMatch = alias.primary
+        ? rawExact
+          ? 'exact'
+          : 'normalized'
+        : 'alias'
       const current = matches.get(contact.md5)
       if (!current || (current.matchedBy === 'alias' && matchedBy !== 'alias')) {
         matches.set(contact.md5, { contact, matchedBy })

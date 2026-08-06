@@ -40,6 +40,22 @@ describe('AI search natural-language time ranges', () => {
     })
   })
 
+  it('keeps an explicit UI range above the generic word 最近', () => {
+    expect(
+      inferAiSearchTimeRange('我和张三最近聊了什么？', '7d', NOW, {
+        startTime: Math.floor(NOW.getTime() / 1000) - 7 * 86400,
+        endTime: undefined,
+        label: '近 7 天',
+        reason: '用户在界面选择的时间范围',
+        source: 'user_selected'
+      })
+    ).toMatchObject({
+      label: '近 7 天',
+      source: 'user_selected',
+      startTime: Math.floor(NOW.getTime() / 1000) - 7 * 86400
+    })
+  })
+
   it('classifies a direct person recap as conversation_recall rather than a topic FTS query', () => {
     expect(buildLocalAiSearchPlan('我和张三最近聊了什么？')).toMatchObject({
       intent: 'conversation_recall',
@@ -63,6 +79,16 @@ describe('AI search natural-language time ranges', () => {
       keywords: ['MCP']
     })
     expect(buildLocalAiSearchPlan('技术交流群')).toMatchObject({
+      intent: 'conversation_name_search',
+      contactQuery: '技术交流群',
+      topicQuery: undefined
+    })
+    expect(buildLocalAiSearchPlan('技术交流群最近说了什么')).toMatchObject({
+      intent: 'conversation_name_search',
+      contactQuery: '技术交流群',
+      topicQuery: undefined
+    })
+    expect(buildLocalAiSearchPlan('技术交流群最近聊了啥')).toMatchObject({
       intent: 'conversation_name_search',
       contactQuery: '技术交流群',
       topicQuery: undefined

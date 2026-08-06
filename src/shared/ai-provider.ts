@@ -74,6 +74,25 @@ export interface AIRuntimeModelConfig {
   timeoutMs?: number
 }
 
+export interface AiSearchProviderStatus {
+  configured: boolean
+  requiresConsent: boolean
+  providerId?: string
+  providerName?: string
+  recipient?: string
+}
+
+export interface AiSearchExternalAuthorizationRequest {
+  requestId: string
+  providerId: string
+  recipient: string
+}
+
+export interface AiSearchExternalAuthorizationResult {
+  success: boolean
+  error?: string
+}
+
 export interface LegacyAIConfig {
   apiKey?: string
   baseUrl?: string

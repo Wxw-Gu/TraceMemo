@@ -68,7 +68,7 @@ describe('search cache', () => {
   it('writes and reads an isolated cache record', () => {
     const key = buildSearchCacheKey('conversation', 'fixture-contact', 'today', '图片')
     const record = {
-      version: 1 as const,
+      version: 2 as const,
       key,
       query: '图片',
       answer: '固定假回答',

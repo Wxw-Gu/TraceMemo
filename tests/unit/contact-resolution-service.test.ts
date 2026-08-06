@@ -66,4 +66,40 @@ describe('ContactResolutionService', () => {
       candidates: [expect.any(Object), expect.any(Object)]
     })
   })
+
+  it('resolves one safe group suffix alias but rejects an alias collision', () => {
+    const groups = [
+      {
+        md5: 'technology-group',
+        m_nsUsrName: 'technology-group@chatroom',
+        m_nsNickName: '技术交流',
+        type: 'group' as const
+      }
+    ]
+    expect(resolveContact('技术交流群', groups, 'group')).toMatchObject({
+      matched: true,
+      conversationId: 'technology-group',
+      matchedBy: 'alias',
+      ambiguous: false
+    })
+    expect(
+      resolveContact(
+        '技术交流群',
+        [
+          ...groups,
+          {
+            md5: 'technology-group-direct',
+            m_nsUsrName: 'technology-group-direct@chatroom',
+            m_nsNickName: '技术交流群',
+            type: 'group' as const
+          }
+        ],
+        'group'
+      )
+    ).toMatchObject({
+      matched: false,
+      ambiguous: true,
+      candidates: [expect.any(Object), expect.any(Object)]
+    })
+  })
 })

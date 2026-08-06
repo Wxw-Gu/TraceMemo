@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react'
 import * as Popover from '@radix-ui/react-popover'
-import { aiSearchIntentLabel } from '../../../../shared/ai-search'
+import { aiSearchIntentLabel, aiSearchRangeStart } from '../../../../shared/ai-search'
 import type {
   AiSearchAggregation,
   AiSearchAgentRun,
@@ -22,6 +22,7 @@ import type {
 import type { KnowledgeRuntimeStatus } from '../../../../shared/knowledge'
 import {
   RANGE_LABELS,
+  SEARCH_ACTIVE_RESULT_KEY,
   SEARCH_CACHE_KEY,
   SEARCH_HISTORY_KEY,
   buildSearchCacheKey,
@@ -36,7 +37,7 @@ import {
   senderName,
   writeSearchCache
 } from './searchUtils'
-import { renderMarkdown } from './searchMarkdown'
+import { markdownToPlainText, renderMarkdown } from './searchMarkdown'
 
 type SearchTrace = {
   knowledgeMessages: number
@@ -52,6 +53,11 @@ type SearchTrace = {
 }
 
 type SearchProgressByStage = Partial<Record<AiSearchProgressStage, AiSearchProgressEvent>>
+
+type ExternalProviderConsent = {
+  providerName: string
+  recipient: string
+}
 
 const formatBytes = (bytes: number): string => {
   if (!bytes) return '0 B'
@@ -101,9 +107,10 @@ export function AISearchWorkspace({
   const allContacts = useMemo(() => contacts.filter((contact) => contact.md5), [contacts])
   const [scope, setScope] = useState<SearchScope>('global')
   const [scopeContactMd5, setScopeContactMd5] = useState(selectedContact?.md5 || '')
-  const [range, setRange] = useState<SearchRange>('7d')
+  const [range, setRange] = useState<SearchRange>('30d')
   const [timeRangeOverride, setTimeRangeOverride] = useState<AiSearchTimeRange | undefined>()
   const [query, setQuery] = useState('')
+  const [resultQuery, setResultQuery] = useState('')
   const [stage, setStage] = useState<SearchStage>('idle')
   const [answer, setAnswer] = useState('')
   const [evidence, setEvidence] = useState<EvidenceItem[]>([])
@@ -135,6 +142,88 @@ export function AISearchWorkspace({
   const [appLogPath, setAppLogPath] = useState('')
   const bypassCacheRef = useRef(false)
   const searchRequestIdRef = useRef('')
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const evidenceCardRefs = useRef(new Map<number, HTMLElement>())
+  const externalConsentResolverRef = useRef<((approved: boolean) => void) | null>(null)
+  const [externalProviderConsent, setExternalProviderConsent] =
+    useState<ExternalProviderConsent | null>(null)
+  const [evidenceFlash, setEvidenceFlash] = useState({ index: -1, nonce: 0 })
+
+  const focusEvidence = (index: number): void => {
+    if (!Number.isInteger(index) || index < 0 || index >= evidence.length) return
+    setSelectedEvidence(index)
+    setEvidenceFlash((current) => ({ index, nonce: current.nonce + 1 }))
+  }
+
+  const settleExternalProviderConsent = (approved: boolean): void => {
+    const resolve = externalConsentResolverRef.current
+    externalConsentResolverRef.current = null
+    setExternalProviderConsent(null)
+    resolve?.(approved)
+  }
+
+  const requestExternalProviderConsent = (
+    providerName: string,
+    recipient: string
+  ): Promise<boolean> =>
+    new Promise((resolve) => {
+      externalConsentResolverRef.current = resolve
+      setExternalProviderConsent({ providerName, recipient })
+    })
+
+  React.useEffect(
+    () => () => {
+      externalConsentResolverRef.current?.(false)
+      externalConsentResolverRef.current = null
+    },
+    []
+  )
+
+  React.useEffect(() => {
+    if (!externalProviderConsent) return
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') settleExternalProviderConsent(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [externalProviderConsent])
+
+  React.useEffect(() => {
+    if (evidenceFlash.index < 0) return
+    evidenceCardRefs.current.get(evidenceFlash.index)?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'nearest'
+    })
+  }, [evidenceFlash])
+
+  React.useEffect(() => {
+    try {
+      const cacheKey = sessionStorage.getItem(SEARCH_ACTIVE_RESULT_KEY)
+      if (!cacheKey) return
+      const cached = readSearchCache(cacheKey)
+      const location = parseSearchCacheKey(cacheKey)
+      if (!cached || !location) {
+        sessionStorage.removeItem(SEARCH_ACTIVE_RESULT_KEY)
+        return
+      }
+      setQuery(location.query)
+      setScope(location.scope)
+      setScopeContactMd5(location.contactMd5)
+      setRange(location.range)
+      setTimeRangeOverride({
+        startTime: aiSearchRangeStart(location.range),
+        endTime: undefined,
+        label: RANGE_LABELS[location.range],
+        reason: '恢复上次查看的搜索结果',
+        source: 'user_selected'
+      })
+      setAnalysisError('')
+      applyCachedResult(cached, location.query)
+      setStage('result')
+    } catch {
+      sessionStorage.removeItem(SEARCH_ACTIVE_RESULT_KEY)
+    }
+  }, [])
 
   React.useEffect(() => {
     void Promise.all([window.api.getSettings(), window.api.getAppLogPath()]).then(
@@ -277,12 +366,18 @@ export function AISearchWorkspace({
   }
 
   const applyCachedResult = (cached: AISearchCacheRecord, queryValue = query.trim()): void => {
+    setResultQuery(queryValue)
     setAnswer(cached.answer)
     setEvidence(cached.evidence)
     setSenderNames(cached.senderNames)
     setMessageCount(cached.messageCount)
     setCachedAt(cached.createdAt)
     rememberQuery(queryValue)
+    try {
+      sessionStorage.setItem(SEARCH_ACTIVE_RESULT_KEY, cached.key)
+    } catch {
+      // Result restoration is optional and must not block search.
+    }
   }
 
   const restoreHistoryQuery = (historyQuery: string): void => {
@@ -309,11 +404,36 @@ export function AISearchWorkspace({
       setScope(cachedLocation.scope)
       setRange(cachedLocation.range)
       setScopeContactMd5(cachedLocation.contactMd5)
+      setTimeRangeOverride({
+        startTime: aiSearchRangeStart(cachedLocation.range),
+        endTime: undefined,
+        label: RANGE_LABELS[cachedLocation.range],
+        reason: '恢复历史搜索的时间范围',
+        source: 'user_selected'
+      })
     }
     setAnalysisError('')
     applyCachedResult(cached, historyQuery)
     setStage('result')
     onNotice('已恢复这条历史问题的最近结果')
+  }
+
+  const ensureAiSearchDataConsent = async (requestId: string): Promise<boolean> => {
+    const status = await window.api.getAiSearchProviderStatus()
+    if (!status.configured || !status.requiresConsent) return true
+    if (!status.providerId || !status.recipient) throw new Error('当前 AI 服务信息不完整')
+    const confirmed = await requestExternalProviderConsent(
+      status.providerName || '当前 AI 服务',
+      status.recipient
+    )
+    if (!confirmed) return false
+    const authorized = await window.api.authorizeAiSearchExternalProvider({
+      requestId,
+      providerId: status.providerId,
+      recipient: status.recipient
+    })
+    if (!authorized.success) throw new Error(authorized.error || '无法确认本次数据发送授权')
+    return true
   }
 
   const runAnalysis = async (
@@ -332,16 +452,6 @@ export function AISearchWorkspace({
       setStage('insufficient')
       return
     }
-    setStage('loading')
-    setAnalysisError('')
-    setAnswer('')
-    setEvidence([])
-    setSelectedEvidence(0)
-    setCachedAt(0)
-    setSearchTrace(null)
-    setSearchProgress({})
-    setAgentTrace([])
-    setSearchDetailsOpen(false)
     const effectiveRange = retry?.range || range
     const effectiveTimeRangeOverride = retry?.timeRangeOverride || timeRangeOverride
     const cacheKey = buildSearchCacheKey(
@@ -365,6 +475,25 @@ export function AISearchWorkspace({
         return
       }
       const requestId = globalThis.crypto?.randomUUID?.() || `search-${Date.now()}`
+      try {
+        if (!(await ensureAiSearchDataConsent(requestId))) {
+          onNotice('已取消本次 AI Search，未执行检索，也未向远程 AI 服务发送聊天内容')
+          return
+        }
+      } catch {
+        onNotice('无法确认 AI 服务的数据发送授权，本次检索未执行')
+        return
+      }
+      setStage('loading')
+      setAnalysisError('')
+      setAnswer('')
+      setEvidence([])
+      setSelectedEvidence(0)
+      setCachedAt(0)
+      setSearchTrace(null)
+      setSearchProgress({})
+      setAgentTrace([])
+      setSearchDetailsOpen(false)
       searchRequestIdRef.current = requestId
       const searchResult = await window.api.runAiSearch({
         requestId,
@@ -450,10 +579,11 @@ export function AISearchWorkspace({
         return
       }
       if (!searchResult.answer) throw new Error('搜索任务未返回回答')
+      setResultQuery(normalizedQuery)
       setAnswer(searchResult.answer)
       rememberQuery(normalizedQuery)
-      writeSearchCache({
-        version: 1,
+      const cacheRecord: AISearchCacheRecord = {
+        version: 3,
         key: cacheKey,
         createdAt: currentTimestamp(),
         answer: searchResult.answer,
@@ -464,7 +594,13 @@ export function AISearchWorkspace({
             .map(({ message }) => [message.senderId as string, message.name as string])
         ),
         messageCount: searchResult.knowledge.totalMessages
-      })
+      }
+      writeSearchCache(cacheRecord)
+      try {
+        sessionStorage.setItem(SEARCH_ACTIVE_RESULT_KEY, cacheRecord.key)
+      } catch {
+        // Result restoration is optional and must not block search.
+      }
       setStage('result')
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '读取聊天记录失败'
@@ -476,8 +612,30 @@ export function AISearchWorkspace({
 
   const copyAnswer = async (): Promise<void> => {
     if (!answer) return
-    const result = await window.api.copyText(answer)
+    const result = await window.api.copyText(markdownToPlainText(answer))
     onNotice(result.success ? 'AI 摘要已复制' : result.error || '复制失败')
+  }
+
+  const startNewQuestion = (): void => {
+    bypassCacheRef.current = false
+    setQuery('')
+    setResultQuery('')
+    setStage('idle')
+    setAnswer('')
+    setEvidence([])
+    setSelectedEvidence(0)
+    setAnalysisError('')
+    setCachedAt(0)
+    setSearchTrace(null)
+    setSearchProgress({})
+    setAgentTrace([])
+    setSearchDetailsOpen(false)
+    try {
+      sessionStorage.removeItem(SEARCH_ACTIVE_RESULT_KEY)
+    } catch {
+      // Session restoration is optional and must not block a fresh question.
+    }
+    composerRef.current?.focus()
   }
 
   const renderIdle = (): React.ReactElement => (
@@ -487,7 +645,7 @@ export function AISearchWorkspace({
       </div>
       <span className="ai-search-kicker">LOCAL AI WORKSPACE</span>
       <h2>把聊天记录变成可追问的答案</h2>
-      <p>选择范围，用自然语言提问。AI 只读取本地聊天数据，并为每个结论保留证据。</p>
+      <p>聊天数据在本机检索并保留证据；使用外部 AI 服务前会说明并请求确认发送范围。</p>
       <div className="ai-search-prompts">
         {[
           '交友群"张三"最近聊了什么?',
@@ -732,7 +890,7 @@ export function AISearchWorkspace({
       <div className="ai-search-result-header">
         <div>
           <span className="ai-search-kicker">✓ 已完成</span>
-          <h2>{query}</h2>
+          <h2>{resultQuery || query}</h2>
           <p>
             知识库已收录 {messageCount.toLocaleString()} 条消息 → 找到{' '}
             {searchTrace?.retrievedEvidence || 0} 条相关消息 → {evidence.length} 条 Evidence →
@@ -749,6 +907,9 @@ export function AISearchWorkspace({
           {renderSearchDetails()}
         </div>
         <div className="ai-search-result-actions">
+          <button type="button" onClick={startNewQuestion} title="清空当前结果并提出新问题">
+            新问题
+          </button>
           <button type="button" onClick={() => void copyAnswer()} title="复制 AI 摘要">
             复制摘要
           </button>
@@ -770,16 +931,13 @@ export function AISearchWorkspace({
           摘要
         </div>
         <div className="ai-search-answer">
-          {renderMarkdown(answer, {
-            evidenceCount: evidence.length,
-            onEvidenceClick: setSelectedEvidence
-          })}
+          {renderMarkdown(answer, { evidenceCount: evidence.length, onEvidenceClick: focusEvidence })}
         </div>
         {evidence.length > 0 && (
           <div className="ai-search-answer-evidence" aria-label="AI 引用证据">
             <span>引用：</span>
             {evidence.map((_, index) => (
-              <button key={index} type="button" onClick={() => setSelectedEvidence(index)}>
+              <button key={index} type="button" onClick={() => focusEvidence(index)}>
                 E{index + 1}
               </button>
             ))}
@@ -945,7 +1103,16 @@ export function AISearchWorkspace({
                   type="button"
                   className={range === item ? 'active' : ''}
                   aria-pressed={range === item}
-                  onClick={() => setRange(item)}
+                  onClick={() => {
+                    setRange(item)
+                    setTimeRangeOverride({
+                      startTime: aiSearchRangeStart(item),
+                      endTime: undefined,
+                      label: RANGE_LABELS[item],
+                      reason: '用户在界面选择的时间范围',
+                      source: 'user_selected'
+                    })
+                  }}
                 >
                   <span aria-hidden>{item === 'all' ? '▣' : item === 'today' ? '▤' : '◷'}</span>
                   {item === 'all' ? '不限时间' : RANGE_LABELS[item]}
@@ -1128,6 +1295,7 @@ export function AISearchWorkspace({
             </div>
             <div className="ai-search-composer-row">
               <textarea
+                ref={composerRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="例如：技术交流群最近讨论了哪些 Windows 性能问题？"
@@ -1140,7 +1308,7 @@ export function AISearchWorkspace({
             </div>
             <div className="ai-search-composer-foot">
               <span>Enter 发送 · Shift + Enter 换行</span>
-              <span>AI 只使用当前搜索范围内的消息</span>
+              <span>AI 仅使用当前搜索所需的受控证据</span>
             </div>
           </form>
         </main>
@@ -1157,11 +1325,15 @@ export function AISearchWorkspace({
           {evidence.length ? (
             evidence.map((item, index) => (
               <article
-                key={`${messageIdentity(item.message)}-${index}`}
-                className={`ai-search-evidence-card ${selectedEvidence === index ? 'active' : ''}`}
+                key={`${messageIdentity(item.message)}-${index}-${evidenceFlash.index === index ? evidenceFlash.nonce : 0}`}
+                ref={(node) => {
+                  if (node) evidenceCardRefs.current.set(index, node)
+                  else evidenceCardRefs.current.delete(index)
+                }}
+                className={`ai-search-evidence-card ${selectedEvidence === index ? 'active' : ''} ${evidenceFlash.index === index ? 'focus-flash' : ''}`}
                 style={{ animationDelay: `${Math.min(index, 7) * 45}ms` }}
                 onClick={() => {
-                  setSelectedEvidence(index)
+                  focusEvidence(index)
                 }}
               >
                 <span className="ai-search-evidence-card-top">
@@ -1194,6 +1366,39 @@ export function AISearchWorkspace({
           )}
         </aside>
       </div>
+      {externalProviderConsent && (
+        <div
+          className="ai-search-consent-backdrop"
+          role="presentation"
+          onMouseDown={() => settleExternalProviderConsent(false)}
+        >
+          <section
+            className="ai-search-consent-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-search-consent-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <span className="ai-search-kicker">AI SEARCH</span>
+            <h2 id="ai-search-consent-title">确认发送本次搜索资料</h2>
+            <p>
+              将向 <strong>{externalProviderConsent.providerName}</strong>（{externalProviderConsent.recipient}
+              ）发送当前问题、受控检索所需的受限上下文，以及最多 8 条最终 Evidence。
+            </p>
+            <p className="ai-search-consent-note">
+              不会发送完整微信数据库、全量聊天记录、密钥、绝对路径或内部会话/消息引用 ID。
+            </p>
+            <div className="ai-search-consent-actions">
+              <button type="button" onClick={() => settleExternalProviderConsent(false)}>
+                取消
+              </button>
+              <button type="button" className="primary" onClick={() => settleExternalProviderConsent(true)}>
+                继续并发送
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   )
 }

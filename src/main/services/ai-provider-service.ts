@@ -7,6 +7,7 @@ import type {
   AIProviderConfig,
   AIProviderListResult,
   AIProviderSummary,
+  AiSearchProviderStatus,
   AIRuntimeModelConfig,
   AIVisionTestRequest,
   AIVisionTestResult,
@@ -73,6 +74,25 @@ export class AIProviderService {
     }
   }
 
+  getAiSearchProviderStatus(providerId?: string): AiSearchProviderStatus {
+    const result = this.list()
+    const provider =
+      result.providers.find((item) => item.id === providerId) ||
+      result.providers.find((item) => item.id === result.defaultProviderId) ||
+      result.providers[0]
+    if (!provider) return { configured: false, requiresConsent: false }
+    const configured = Boolean(
+      provider.models.length && (provider.hasApiKey || !needsApiKey(provider))
+    )
+    return {
+      configured,
+      requiresConsent: configured && !isLocalProvider(provider),
+      providerId: provider.id,
+      providerName: provider.name,
+      recipient: normalizeProviderRecipient(provider.baseUrl)
+    }
+  }
+
   save(input: AIProviderConfig): AIProviderListResult {
     const validationError = validateProvider(input)
     if (validationError) return { success: false, providers: [], error: validationError }
@@ -85,11 +105,12 @@ export class AIProviderService {
       return { success: false, providers: [], error: '请填写 API Key' }
     }
 
+    const baseUrl = input.baseUrl.trim().replace(/\/+$/, '')
     const metadata: Omit<AIProviderSummary, 'hasApiKey' | 'isDefault'> = {
       id: input.id,
       name: input.name.trim(),
       type: input.type,
-      baseUrl: input.baseUrl.trim().replace(/\/+$/, ''),
+      baseUrl,
       auth: input.auth,
       models: input.models,
       defaultModel: input.defaultModel,
@@ -354,14 +375,21 @@ export class AIProviderService {
     const data = fs.readJsonSync(filePath) as AIProviderMetadataFile
     if (data.version !== 1 || !Array.isArray(data.providers))
       throw new Error('invalid provider metadata')
+    let removedLegacySearchConsent = false
     // 老配置兼容:补 capabilities.ocr 默认值(vision 派生 OCR)
     for (const provider of data.providers) {
+      const stored = provider as Record<string, unknown>
+      if ('aiSearchDataConsent' in stored) {
+        delete stored.aiSearchDataConsent
+        removedLegacySearchConsent = true
+      }
       for (const model of provider.models) {
         if (typeof model.capabilities.ocr !== 'boolean') {
           model.capabilities.ocr = model.capabilities.vision === true
         }
       }
     }
+    if (removedLegacySearchConsent) this.writeMetadata(data)
     return data
   }
 
@@ -413,6 +441,25 @@ function stripRuntimeFields(
     status: provider.status,
     lastTestedAt: provider.lastTestedAt,
     lastError: provider.lastError
+  }
+}
+
+function isLocalProvider(provider: Pick<AIProviderSummary, 'type' | 'baseUrl'>): boolean {
+  try {
+    const hostname = new URL(provider.baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, '')
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+  } catch {
+    return false
+  }
+}
+
+function normalizeProviderRecipient(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl.trim())
+    const pathname = url.pathname.replace(/\/+$/, '')
+    return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${pathname}${url.search}`
+  } catch {
+    return baseUrl.trim().replace(/\/+$/, '')
   }
 }
 

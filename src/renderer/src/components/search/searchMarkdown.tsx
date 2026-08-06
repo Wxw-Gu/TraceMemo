@@ -5,6 +5,28 @@ type MarkdownOptions = {
   onEvidenceClick?: (index: number) => void
 }
 
+/** Converts AI Markdown into readable clipboard text while preserving evidence IDs. */
+export const markdownToPlainText = (value: string): string =>
+  value
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/^\s{0,3}#{1,6}\s+/, '')
+        .replace(/^\s{0,3}[-*+]\s+/, '• ')
+        .replace(/^\s*>\s?/, '')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
+        .replace(/\*\*(.+?)\*\*/g, '$1')
+        .replace(/__(.+?)__/g, '$1')
+        .replace(/`([^`]+)`/g, '$1')
+        .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '$1')
+        .replace(/(?<!_)_([^_\n]+)_(?!_)/g, '$1')
+        .trimEnd()
+    )
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
 const inlineMarkdown = (
   value: string,
   keyPrefix: string,
