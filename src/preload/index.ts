@@ -167,7 +167,12 @@ const api = {
     imageMd5?: string,
     imageDatNameOrThumb?: string | boolean,
     sessionId?: string,
-    options?: { force?: boolean; preferThumbnail?: boolean; priority?: number }
+    options?: {
+      force?: boolean
+      preferThumbnail?: boolean
+      priority?: number
+      includeData?: boolean
+    }
   ) => ipcRenderer.invoke('db:getImage', imageMd5, imageDatNameOrThumb, sessionId, options),
   getVideo: (
     hashes: string[],

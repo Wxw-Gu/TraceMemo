@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'fs'
+import { createHash } from 'crypto'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -104,5 +105,40 @@ describe('bootstrap cache', () => {
         accountRoot: selfRoot
       }).nickname
     ).toBe('示例昵称')
+  })
+
+  it('migrates the previous startup cache so account discovery can show identity before unlock', () => {
+    const legacyRoot = '/fixture/legacy-account'
+    const digest = createHash('sha1')
+      .update(`${process.platform}:${legacyRoot}`)
+      .digest('hex')
+      .slice(0, 16)
+    const legacyFile = join(userData, 'cache', 'bootstrap', `${process.platform}-${digest}.json`)
+    mkdirSync(join(userData, 'cache', 'bootstrap'), { recursive: true })
+    writeFileSync(
+      legacyFile,
+      JSON.stringify({
+        version: 1,
+        platform: process.platform,
+        accountRoot: legacyRoot,
+        updatedAt: Date.now(),
+        self: {
+          wxid: 'wxid_legacy',
+          nickname: '缓存昵称',
+          avatar: 'data:image/png;base64,fixture',
+          accountRoot: legacyRoot
+        },
+        contacts: []
+      }),
+      'utf8'
+    )
+
+    clearBootstrapCache()
+    expect(getBootstrapCache(legacyRoot)?.self).toMatchObject({
+      wxid: 'wxid_legacy',
+      nickname: '缓存昵称',
+      avatar: 'data:image/png;base64,fixture'
+    })
+    flushBootstrapCacheWritesSync()
   })
 })

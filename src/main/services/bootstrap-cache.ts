@@ -155,14 +155,46 @@ function isCurrentAccountFile(
 function readStartupCacheFile(accountRoot: string): StartupCacheFile | null {
   const normalizedRoot = normalizeRoot(accountRoot)
   if (!normalizedRoot) return null
-  const file = getAccountCachePaths(normalizedRoot).startup
+  const paths = getAccountCachePaths(normalizedRoot)
+  const file = paths.startup
   const scheduled = readScheduledValue<StartupCacheFile>(file)
   if (scheduled) return scheduled
   const memory = startupMemory.get(file)
   if (memory) return memory
 
   try {
-    if (!fs.existsSync(file)) return null
+    if (!fs.existsSync(file)) {
+      // Version 1 stored startup data in one JSON file. Migrate it lazily so
+      // account discovery can still show a cached nickname/avatar before the
+      // database key is entered.
+      if (!fs.existsSync(paths.legacy)) return null
+      const legacy = fs.readJsonSync(paths.legacy) as {
+        version?: number
+        platform?: NodeJS.Platform
+        accountRoot?: string
+        updatedAt?: number
+        self?: CachedSelfInfo
+        contacts?: Contact[]
+      }
+      if (
+        legacy.version !== 1 ||
+        legacy.platform !== process.platform ||
+        normalizeRoot(legacy.accountRoot) !== normalizedRoot
+      ) {
+        return null
+      }
+      const migrated: StartupCacheFile = {
+        version: CACHE_VERSION,
+        platform: process.platform,
+        accountRoot: normalizedRoot,
+        updatedAt: Number(legacy.updatedAt) || 0,
+        self: legacy.self,
+        contacts: Array.isArray(legacy.contacts) ? legacy.contacts : []
+      }
+      startupMemory.set(file, migrated)
+      scheduleWrite(file, migrated, { cleanupFile: paths.legacy })
+      return migrated
+    }
     const raw = fs.readJsonSync(file) as Partial<StartupCacheFile>
     if (!isCurrentAccountFile(raw, normalizedRoot)) return null
     const result: StartupCacheFile = {

@@ -227,6 +227,67 @@
   text-overflow: ellipsis;
 }
 
+.share-message-multi {
+  width: min(310px, 66vw);
+  max-width: 310px;
+  cursor: default;
+}
+
+.share-article-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.share-article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--wxex-border);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.share-article:first-child {
+  border-top: 0;
+}
+
+.share-article-copy {
+  min-width: 0;
+}
+
+.share-article-copy strong,
+.share-article-copy small {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+}
+
+.share-article-copy strong {
+  -webkit-line-clamp: 2;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.share-article-copy small {
+  margin-top: 4px;
+  color: var(--wxex-text-secondary);
+  -webkit-line-clamp: 1;
+  font-size: 11px;
+}
+
+.share-article img {
+  width: 54px;
+  height: 54px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
 .mini-program-message {
   width: min(280px, 48vw);
   overflow: hidden;

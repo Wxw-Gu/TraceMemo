@@ -158,7 +158,31 @@ function CardBubble({ data }: { data: Extract<ParsedContent, { type: 'card' }> }
 }
 
 function ShareBubble({ data }: { data: Extract<ParsedContent, { type: 'share' }> }): JSX.Element {
-  const { title, des, url, appname } = data
+  const { title, des, url, appname, articles } = data
+
+  if (articles?.length) {
+    return (
+      <div className="share-message share-message-multi">
+        {appname && <div className="share-appname">{appname}</div>}
+        <div className="share-article-list">
+          {articles.map((article, index) => (
+            <button
+              type="button"
+              className="share-article"
+              key={`${article.url}-${index}`}
+              onClick={() => article.url && window.open(article.url, '_blank')}
+            >
+              <span className="share-article-copy">
+                <strong>{article.title || '公众号文章'}</strong>
+                {article.description ? <small>{article.description}</small> : null}
+              </span>
+              {article.coverUrl ? <img src={article.coverUrl} alt="" referrerPolicy="no-referrer" /> : null}
+            </button>
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   const handleClick = (): void => {
     if (url) {

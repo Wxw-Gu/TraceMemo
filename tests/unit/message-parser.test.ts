@@ -69,6 +69,23 @@ describe('message parser', () => {
     expect(parsed).toMatchObject({ type: 'share', title: '普通分享', typeVal: '5' })
   })
 
+  it('preserves every article in a public-account multi-article message', () => {
+    const parsed = parseMessageContent(
+      `<appmsg><type>5</type><appname>长江日报</appname><mmreader><category count="3"><item><title><![CDATA[女子吃酒席时意外发现]]></title><url><![CDATA[https://mp.weixin.qq.com/a]]></url><cover><![CDATA[https://img.test/a.jpg]]></cover></item><item><title>霍尔木兹海峡开放临时协议</title><digest>国际油价短期走势</digest><url>https://mp.weixin.qq.com/b</url></item><item><title>东野圭吾新作</title><url>https://mp.weixin.qq.com/c</url></item></category></mmreader></appmsg>`,
+      49
+    )
+
+    expect(parsed).toMatchObject({ type: 'share', appname: '长江日报' })
+    if (parsed.type === 'share') {
+      expect(parsed.articles).toHaveLength(3)
+      expect(parsed.articles?.map((article) => article.title)).toEqual([
+        '女子吃酒席时意外发现',
+        '霍尔木兹海峡开放临时协议',
+        '东野圭吾新作'
+      ])
+    }
+  })
+
   it('uses the quoted group member id instead of the chatroom id', () => {
     const parsed = parseMessageContent(
       '<appmsg><type>57</type><title>回复内容</title><refermsg><type>1</type><fromusr>123456789@chatroom</fromusr><chatusr>wxid_fixture_member</chatusr><content>被引用内容</content></refermsg></appmsg>',

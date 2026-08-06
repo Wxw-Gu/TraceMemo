@@ -34,7 +34,8 @@ declare const window: {
     getImage: (
       imageMd5?: string,
       imageDatNameOrThumb?: string | boolean,
-      sessionId?: string
+      sessionId?: string,
+      options?: { includeData?: boolean }
     ) => Promise<ReportImageReadResult>
   }
 }
@@ -56,6 +57,20 @@ export interface GroupReportFactsSnapshot {
   media: GroupDailyReport['media']
   voiceLeaderboard: ReportVoiceLeaderboardItem[]
   factsPrompt: string
+}
+
+function friendlyImageNotice(warnings: string[]): string {
+  const detail = warnings.join(' ')
+  if (/模型.*不支持|vision|multimodal|image.*support/i.test(detail)) {
+    return '当前 AI 模型暂未通过图片理解验证，已跳过图片精选；文字日报不受影响。'
+  }
+  if (/解密|密钥|未找到|读取失败/.test(detail)) {
+    return '部分图片在本机暂不可用，已跳过图片精选；文字日报不受影响。'
+  }
+  if (/格式.*不支持|图片格式/.test(detail)) {
+    return '部分图片暂不适合 AI 分析，已跳过图片精选；文字日报不受影响。'
+  }
+  return '图片精选暂未生成，文字消息、统计和关键词仍已正常处理。'
 }
 
 export const isInternalIdentifier = (value: string): boolean =>
@@ -90,7 +105,11 @@ export const summaryContent = (message: Message): string => {
     case 'voice':
       return `[语音${data.duration ? ` ${data.duration}秒` : ''}]`
     case 'share':
-      return `[分享] ${data.title}${data.des ? `：${data.des}` : ''}`
+      return data.articles?.length
+        ? `[分享] ${data.articles
+            .map((article) => `${article.title}${article.description ? `：${article.description}` : ''}`)
+            .join('；')}`
+        : `[分享] ${data.title}${data.des ? `：${data.des}` : ''}`
     case 'quote': {
       const reply = data.title || data.content || message.content || '[回复]'
       const quotedSender =
@@ -282,7 +301,8 @@ const buildMediaSection = async (
           const img = await rendererApi.getImage(
             candidate.md5,
             candidate.datName,
-            candidate.sessionId
+            candidate.sessionId,
+            { includeData: true }
           )
           if (!img.success || !img.data) {
             warnings.push(
@@ -336,7 +356,9 @@ const buildMediaSection = async (
           const orig = rawImageCandidates.find((c) => c.sourceMessageIds[0] === item.messageId)
           if (!orig) return item
           try {
-            const img = await rendererApi.getImage(orig.md5, orig.datName, orig.sessionId)
+            const img = await rendererApi.getImage(orig.md5, orig.datName, orig.sessionId, {
+              includeData: true
+            })
             if (img.success && img.data?.startsWith('data:image/')) {
               return { ...item, imageUrl: img.data }
             }
@@ -356,7 +378,9 @@ const buildMediaSection = async (
   const imageCandidates = rendererApi
     ? await Promise.all(
         rawImageCandidates.map(async (item) => {
-          const result = await rendererApi.getImage(item.md5, item.datName, item.sessionId)
+          const result = await rendererApi.getImage(item.md5, item.datName, item.sessionId, {
+            includeData: true
+          })
           if (!result.success || !result.data?.startsWith('data:image/')) return null
           return {
             sender: item.sender,
@@ -637,7 +661,7 @@ export const buildGroupReportFacts = async (
   )
   if (warnings.length) metadata.warnings = [...(metadata.warnings || []), ...warnings]
   if (imageCount > 0 && !media.visionGallery?.length) {
-    metadata.footerNote = `图片识别未成功：${warnings[0] || '当前模型未返回图片理解结果'}。其余内容基于已读取聊天记录生成。`
+    metadata.footerNote = friendlyImageNotice(warnings)
   } else if (media.visionGallery?.length) {
     metadata.footerNote = `基于已读取聊天记录生成；其中 ${media.visionGallery.length} 张图片已由当前视觉模型识别。`
   }
@@ -647,9 +671,7 @@ export const buildGroupReportFacts = async (
     transcriptRows.every((row) => row.content === '[图片]') &&
     !media.visionGallery?.length
   ) {
-    throw new Error(
-      warnings[0] || '所选记录只有图片，但当前图片均未能识别，请检查图片解密密钥和模型视觉能力'
-    )
+    throw new Error('当前范围只有图片，但这些图片暂时无法分析。请改选文字消息，或在设置中验证图片理解能力。')
   }
 
   const factsPrompt = [

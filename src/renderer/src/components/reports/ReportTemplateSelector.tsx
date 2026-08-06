@@ -30,8 +30,8 @@ const TEMPLATES: TemplateMeta[] = [
   },
   {
     id: 'v2',
-    label: '模板2 · 支持图片板块',
-    tagline: '包含热点图片与上下文；需要模型服务商支持图片识别',
+    label: '模板2 · 丰富日报',
+    tagline: '包含更多群聊分析板块；勾选图片后会尝试生成图片精选',
     preview: {
       title: '支持图片板块',
       sections: [
@@ -72,7 +72,7 @@ export const ReportTemplateSelector: React.FC<ReportTemplateSelectorProps> = ({
     <section className="report-section">
       <h3>日报模板</h3>
       <p className="report-section-desc">
-        选择日报呈现风格。模板2 支持图片板块，但需要 AI 模型服务商支持图片识别。
+        选择日报呈现风格。勾选图片后会尝试生成图片精选；识别失败不会影响文字日报。
       </p>
       <div className="report-template-list">
         {TEMPLATES.map((tpl) => {

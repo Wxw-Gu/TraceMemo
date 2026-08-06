@@ -72,3 +72,34 @@ describe('ImageBubble', () => {
     expect(await screen.findByAltText('图片')).toBeVisible()
   })
 })
+
+describe('RichMessageBubble', () => {
+  it('renders every article in a public-account bundle', async () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+
+    render(
+      <RichMessageBubble
+        contentData={{
+          type: 'share',
+          title: 'Article one',
+          url: 'https://example.test/one',
+          appname: 'Fixture Publisher',
+          articles: [
+            { title: 'Article one', url: 'https://example.test/one' },
+            { title: 'Article two', url: 'https://example.test/two' },
+            { title: 'Article three', url: 'https://example.test/three' }
+          ]
+        }}
+      />
+    )
+
+    expect(screen.getByText('Fixture Publisher')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Article one' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Article two' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Article three' })).toBeVisible()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Article three' }))
+    expect(open).toHaveBeenCalledWith('https://example.test/three', '_blank')
+    open.mockRestore()
+  })
+})

@@ -53,6 +53,12 @@ type LocationContent = {
   lng: number
 }
 type CardContent = { type: 'card'; username: string; nickname: string; avatarUrl?: string }
+export type ShareArticle = {
+  title: string
+  description?: string
+  url: string
+  coverUrl?: string
+}
 type ShareContent = {
   type: 'share'
   title: string
@@ -60,6 +66,7 @@ type ShareContent = {
   url: string
   appname?: string
   typeVal?: string
+  articles?: ShareArticle[]
 }
 export type ForwardedMessageItem = {
   messageType: number

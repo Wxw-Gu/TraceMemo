@@ -321,7 +321,7 @@ function getLocalMediaMimeType(filePath: string): string {
   }
 }
 
-function buildImageResponse(image: DecodedImage): {
+function buildImageResponse(image: DecodedImage, includeData = false): {
   success: true
   data: string
   isThumb: boolean
@@ -330,7 +330,7 @@ function buildImageResponse(image: DecodedImage): {
 } {
   const mediaService = image.cacheFilePath ? getImageMediaService() : null
   const data =
-    mediaService && image.cacheFilePath && existsSync(image.cacheFilePath)
+    !includeData && mediaService && image.cacheFilePath && existsSync(image.cacheFilePath)
       ? mediaService.createLocalMediaUrl(image.cacheFilePath)
       : image.data
   return {
@@ -1126,7 +1126,12 @@ app.whenReady().then(async () => {
       imageMd5?: string,
       imageDatNameOrThumb?: string | boolean,
       _sessionId?: string,
-      options?: { force?: boolean; preferThumbnail?: boolean; priority?: number }
+      options?: {
+        force?: boolean
+        preferThumbnail?: boolean
+        priority?: number
+        includeData?: boolean
+      }
     ) => {
       let service = imageDecryptService
       if (!service) {
@@ -1146,6 +1151,7 @@ app.whenReady().then(async () => {
       const imageDatName = typeof imageDatNameOrThumb === 'string' ? imageDatNameOrThumb : undefined
       const force = options?.force === true
       const preferThumbnail = options?.preferThumbnail === true
+      const includeData = options?.includeData === true
       const priority = Number.isFinite(options?.priority) ? Number(options?.priority) : 0
       const imageCacheKey = [
         imageMd5 || '',
@@ -1154,10 +1160,10 @@ app.whenReady().then(async () => {
       ].join('|')
       const mediaService = getImageMediaService()
       const cachedImage = await service.getCachedDecodedImage(imageCacheKey, {
-        includeData: !mediaService
+        includeData: includeData || !mediaService
       })
       if (cachedImage && (!force || !cachedImage.isThumbnail)) {
-        return buildImageResponse(cachedImage)
+        return buildImageResponse(cachedImage, includeData)
       }
 
       return enqueueColdImageLoad(async () => {
@@ -1183,10 +1189,10 @@ app.whenReady().then(async () => {
         // A previous queued request may have populated the cache while this one waited.
         const queuedMediaService = getImageMediaService()
         const queuedCacheHit = await coldService.getCachedDecodedImage(imageCacheKey, {
-          includeData: !queuedMediaService
+          includeData: includeData || !queuedMediaService
         })
         if (queuedCacheHit && (!force || !queuedCacheHit.isThumbnail)) {
-          return buildImageResponse(queuedCacheHit)
+          return buildImageResponse(queuedCacheHit, includeData)
         }
 
         let filePath = force
@@ -1220,7 +1226,7 @@ app.whenReady().then(async () => {
           isThumbnail: coldService.isThumbnailFile(decrypted.filePath)
         }
         await coldService.cacheDecodedImage(imageCacheKey, decodedImage)
-        return buildImageResponse(decodedImage)
+        return buildImageResponse(decodedImage, includeData)
       }, priority)
     }
   )

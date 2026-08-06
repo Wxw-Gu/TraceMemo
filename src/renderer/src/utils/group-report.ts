@@ -850,6 +850,15 @@ export const parseGroupDailyReport = (
   const root = asObject(extractJson(raw))
   const topics = parseTopics(root)
   if (!topics.length) throw new Error('AI 日报中没有有效话题')
+  const keywords = Array.from(
+    new Set([
+      ...asStrings(root.keywords, 15),
+      ...topics.flatMap((topic) => topic.keywords),
+      ...topics.map((topic) => topic.title)
+    ])
+  )
+    .filter(Boolean)
+    .slice(0, 15)
 
   const heroRoot = asObject(root.hero)
   const report: GroupDailyReport = {
@@ -888,7 +897,7 @@ export const parseGroupDailyReport = (
       })),
       voiceLeaderboard
     },
-    keywords: asStrings(root.keywords, 15),
+    keywords,
     media
   }
 

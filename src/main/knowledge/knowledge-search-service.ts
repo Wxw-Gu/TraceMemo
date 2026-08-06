@@ -89,8 +89,11 @@ function sourceTextAndAttachment(message: chat.FormattedMessage): {
   if (content.type === 'share') {
     const title = content.title?.trim() || ''
     const description = content.des?.trim() || ''
+    const articles = (content.articles || []).flatMap((article) =>
+      [article.title, article.description].map((value) => value?.trim()).filter(Boolean)
+    )
     return {
-      text: [text, title, description].filter(Boolean).join('\n') || undefined,
+      text: [text, title, description, ...articles].filter(Boolean).join('\n') || undefined,
       attachment:
         title || content.url
           ? {

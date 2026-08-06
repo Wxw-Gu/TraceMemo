@@ -579,6 +579,19 @@ body {
 }
 .structured-link { color: inherit; text-decoration: none; }
 .structured-link:hover .structured-title { color: var(--accent); }
+.structured-share-articles { display: flex; flex-direction: column; }
+.structured-share-article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  color: inherit;
+  text-decoration: none;
+}
+.structured-share-article:first-child { border-top: 0; }
+.structured-share-article img { width: 54px; height: 54px; border-radius: 4px; object-fit: cover; }
 .location-content {
   gap: 8px;
   padding-top: 8px;
@@ -990,6 +1003,22 @@ const renderExportScript = (name: string): string => `
   }
   const renderShareContent = (data) => {
     const label = shareLabel(data.typeVal)
+    const articles = Array.isArray(data.articles) ? data.articles : []
+    if (articles.length) {
+      const articleMarkup = articles.map((article) => {
+        const href = externalUrl(article.url)
+        const cover = imageUrl(article.coverUrl)
+        const body = '<span><div class="structured-title">' + displayText(article.title || '公众号文章') + '</div>' +
+          (article.description ? '<div class="structured-description">' + displayText(article.description) + '</div>' : '') +
+          '</span>' + (cover ? '<img src="' + cover + '" alt="">' : '')
+        return href
+          ? '<a class="structured-share-article" href="' + href + '" target="_blank" rel="noreferrer noopener">' + body + '</a>'
+          : '<div class="structured-share-article">' + body + '</div>'
+      }).join('')
+      return '<div class="structured-content share-content" data-rich-kind="share">' +
+        '<div class="structured-kicker">' + displayText(data.appname || label) + '</div>' +
+        '<div class="structured-share-articles">' + articleMarkup + '</div></div>'
+    }
     let title = decodeEntities(data.title || label)
     let description = decodeEntities(data.des || '')
     if (String(data.typeVal) === '51' && /当前微信版本不支持展示该内容/.test(title) && description) {

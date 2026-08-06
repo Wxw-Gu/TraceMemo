@@ -8,6 +8,12 @@ type LocationContent = {
   lng: number
 }
 type CardContent = { type: 'card'; username: string; nickname: string; avatarUrl?: string }
+type ShareArticle = {
+  title: string
+  description?: string
+  url: string
+  coverUrl?: string
+}
 type ShareContent = {
   type: 'share'
   title: string
@@ -15,6 +21,7 @@ type ShareContent = {
   url: string
   appname?: string
   typeVal?: string
+  articles?: ShareArticle[]
 }
 type ForwardedMessageItem = {
   messageType: number
@@ -482,17 +489,71 @@ function parseShareMessage(content: string): ParsedContent {
     }
   }
 
-  const title = decodeXmlEntities(extractXmlValue(content, 'title')) || ''
-  const des = extractXmlValue(content, 'des') || extractXmlValue(content, 'desc') || ''
-  const url = extractXmlValue(content, 'url') || ''
-  const appname = extractXmlValue(content, 'appname') || extractXmlValue(content, 'appInfo') || ''
+  const articles = parseShareArticles(content)
+  const title =
+    articles[0]?.title || decodeXmlEntities(extractXmlValue(content, 'title')) || ''
+  const des =
+    articles[0]?.description ||
+    decodeXmlEntities(extractXmlValue(content, 'des') || extractXmlValue(content, 'desc')) ||
+    ''
+  const url = articles[0]?.url || decodeXmlUrl(extractXmlValue(content, 'url')) || ''
+  const appname =
+    decodeXmlEntities(
+      extractXmlValue(content, 'appname') ||
+        extractXmlValue(content, 'publisher') ||
+        extractXmlValue(content, 'appInfo')
+    ) || ''
   const typeVal = extractXmlValue(content, 'type') || ''
 
   if (!title && !url) {
     return { type: 'unknown', raw: content }
   }
 
-  return { type: 'share', title, des, url, appname, typeVal }
+  return {
+    type: 'share',
+    title,
+    des,
+    url,
+    appname,
+    typeVal,
+    articles: articles.length > 1 ? articles : undefined
+  }
+}
+
+function parseShareArticles(content: string): ShareArticle[] {
+  if (!/<mmreader\b/i.test(content)) return []
+  const articles = Array.from(
+    content.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi),
+    (match) => match[1] || ''
+  )
+    .map((item): ShareArticle | null => {
+      const title = decodeXmlEntities(extractXmlValue(item, 'title'))
+      const url = decodeXmlUrl(extractXmlValue(item, 'url'))
+      if (!title && !url) return null
+      const description = decodeXmlEntities(
+        extractXmlValue(item, 'digest') ||
+          extractXmlValue(item, 'summary') ||
+          extractXmlValue(item, 'des')
+      )
+      const coverUrl = decodeXmlUrl(
+        extractXmlValue(item, 'cover') || extractXmlValue(item, 'cover_1_1')
+      )
+      return {
+        title: title || '公众号文章',
+        url,
+        description: description || undefined,
+        coverUrl: coverUrl || undefined
+      }
+    })
+    .filter((article): article is ShareArticle => Boolean(article))
+
+  const seen = new Set<string>()
+  return articles.filter((article) => {
+    const key = `${article.url}|${article.title}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 function parseForwardBundle(content: string): ForwardBundleContent {

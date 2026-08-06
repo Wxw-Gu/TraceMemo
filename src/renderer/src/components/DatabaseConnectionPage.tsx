@@ -333,12 +333,14 @@ export function DatabaseConnectionPage({
                               {account.avatar ? (
                                 <img src={account.avatar} alt="" />
                               ) : (
-                                (account.nickname || '?').charAt(0)
+                                (account.nickname || account.directoryName || '?').charAt(0)
                               )}
                             </span>
                             <span className="database-account-identity">
-                              <strong>{account.nickname || '昵称未识别'}</strong>
-                              <small>{account.wxid || 'wxid 未识别'}</small>
+                              <strong>
+                                {account.nickname || `账号目录 ${account.directoryName || '待识别'}`}
+                              </strong>
+                              <small>{account.wxid || '连接后读取微信号'}</small>
                               <code title={account.accountRoot}>{account.accountRoot}</code>
                             </span>
                             <span className="database-account-status">
