@@ -1,5 +1,6 @@
 type ScheduledTask<T> = {
   key: string
+  priority: number
   run: (signal: AbortSignal) => Promise<T>
   controller: AbortController
   resolve: (value: T) => void
@@ -10,15 +11,27 @@ export class VoiceTaskScheduler {
   private readonly queue: ScheduledTask<unknown>[] = []
   private active: ScheduledTask<unknown> | null = null
 
-  schedule<T>(key: string, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  schedule<T>(
+    key: string,
+    run: (signal: AbortSignal) => Promise<T>,
+    options?: { priority?: 'interactive' | 'background' }
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      // A batch task is deliberately interruptible. The caller can resume its
+      // next item after cancellation, while an explicit chat-bubble request
+      // never waits behind a long background transcription.
+      if (options?.priority !== 'background' && this.active?.priority === 0) {
+        this.active.controller.abort()
+      }
       this.queue.push({
         key,
+        priority: options?.priority === 'background' ? 0 : 1,
         run,
         controller: new AbortController(),
         resolve: resolve as (value: unknown) => void,
         reject
       })
+      this.queue.sort((left, right) => right.priority - left.priority)
       this.pump()
     })
   }

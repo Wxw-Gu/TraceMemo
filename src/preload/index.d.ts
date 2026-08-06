@@ -49,6 +49,10 @@ import type { AppUpdateCheckResult, AppUpdateState } from '../shared/app-update'
 import type { CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress, ExportResult } from '../shared/export'
 import type {
+  VoiceBatchPreflight,
+  VoiceBatchConversationSummary,
+  VoiceBatchProgress,
+  VoiceBatchRequest,
   VoiceMessageReference,
   VoiceModelDownloadResult,
   VoiceModelProgressEvent,
@@ -242,6 +246,15 @@ declare global {
       openVoiceModelDirectory: () => Promise<{ success: boolean; error?: string }>
       recognizeVoice: (reference: VoiceMessageReference) => Promise<VoiceRecognitionResult>
       cancelVoiceRecognition: (reference: VoiceMessageReference) => Promise<{ success: boolean }>
+      getVoiceBatchPreflight: (request: VoiceBatchRequest) => Promise<VoiceBatchPreflight>
+      getVoiceBatchConversationSummaries: (
+        request: VoiceBatchRequest
+      ) => Promise<VoiceBatchConversationSummary[]>
+      getVoiceBatchProgress: () => Promise<VoiceBatchProgress | undefined>
+      startVoiceBatch: (request: VoiceBatchRequest) => Promise<VoiceBatchProgress>
+      cancelVoiceBatch: () => Promise<{ success: boolean }>
+      retryFailedVoiceBatch: () => Promise<VoiceBatchProgress>
+      onVoiceBatchProgress: (callback: (progress: VoiceBatchProgress) => void) => () => void
       onVoiceModelProgress: (callback: (status: VoiceModelProgressEvent) => void) => () => void
       parseMessage: (content: string, messageType: number) => Promise<ParsedContent>
       getImage: (

@@ -104,7 +104,8 @@ import { cancelExport, revealExport, runExport } from './export-service'
 import type { ExportRequest } from '../shared/export'
 import { discoverAccounts } from './services/account-discovery'
 import { VoiceRecognitionUseCase } from './voice-pipeline/voice-recognition-use-case'
-import type { VoiceMessageReference } from '../shared/voice-recognition'
+import { VoiceBatchService } from './voice-pipeline/voice-batch-service'
+import type { VoiceBatchRequest, VoiceMessageReference } from '../shared/voice-recognition'
 import type { AiSearchPipelineRequest } from '../shared/ai-search'
 import type { KnowledgeSearchIpcRequest, KnowledgeSearchIpcResult } from '../shared/knowledge'
 import { KnowledgeSearchService } from './knowledge/knowledge-search-service'
@@ -117,6 +118,7 @@ installSafeConsole()
 
 let voiceService: VoiceService | null = null
 let voiceRecognition: VoiceRecognitionUseCase | null = null
+let voiceBatchService: VoiceBatchService | null = null
 let knowledgeSearchService: KnowledgeSearchService | null = null
 let aiSearchPipelineService: AiSearchPipelineService | null = null
 let imageDecryptService: ImageDecryptService | null = null
@@ -440,6 +442,12 @@ app.whenReady().then(async () => {
   knowledgeSearchService = new KnowledgeSearchService(
     app.getPath('userData'),
     join(__dirname, 'knowledgeWorker.js')
+  )
+  knowledgeSearchService.setVoiceTranscriptResolver((reference) =>
+    voiceRecognition?.getTranscriptSnapshot(reference) || { state: 'pending' }
+  )
+  voiceRecognition.onTranscriptUpdate((update) =>
+    knowledgeSearchService?.indexVoiceTranscript(update)
   )
   aiSearchPipelineService = new AiSearchPipelineService(knowledgeSearchService, aiProviderService)
   knowledgeSearchService.onStatusChange((status) => {
@@ -934,6 +942,12 @@ app.whenReady().then(async () => {
       if (!event.sender.isDestroyed()) event.sender.send('ai-search:progress', progress)
     })
   })
+  voiceBatchService = new VoiceBatchService(voiceRecognition)
+  voiceBatchService.onProgress((progress) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('voice:batchProgress', progress)
+    }
+  })
   ipcMain.handle('ai-search:getProviderStatus', () => aiProviderService.getAiSearchProviderStatus())
   ipcMain.handle(
     'ai-search:authorizeExternalProvider',
@@ -1069,6 +1083,30 @@ app.whenReady().then(async () => {
       return { success: false, code: 'NOT_CONNECTED', error: '语音识别服务尚未初始化' }
     }
     return voiceRecognition.recognize(reference)
+  })
+
+  ipcMain.handle('voice:getBatchPreflight', (_, request: VoiceBatchRequest) => {
+    if (!voiceBatchService) throw new Error('Voice recognition is not initialized')
+    return voiceBatchService.preflight(request)
+  })
+
+  ipcMain.handle('voice:getBatchConversationSummaries', (_, request: VoiceBatchRequest) => {
+    if (!voiceBatchService) throw new Error('Voice recognition is not initialized')
+    return voiceBatchService.conversationSummaries(request)
+  })
+
+  ipcMain.handle('voice:getBatchProgress', () => voiceBatchService?.getProgress())
+
+  ipcMain.handle('voice:startBatch', (_, request: VoiceBatchRequest) => {
+    if (!voiceBatchService) throw new Error('Voice recognition is not initialized')
+    return voiceBatchService.start(request)
+  })
+
+  ipcMain.handle('voice:cancelBatch', () => ({ success: voiceBatchService?.cancel() || false }))
+
+  ipcMain.handle('voice:retryFailedBatch', () => {
+    if (!voiceBatchService) throw new Error('Voice recognition is not initialized')
+    return voiceBatchService.retryFailed()
   })
 
   ipcMain.handle(
@@ -1384,6 +1422,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('db:disconnect', (_, options?: { closeNative?: boolean }) => {
     // 断开操作保持幂等：渲染进程可能已标记断开，或主进程连接已先行失效。
     // 即使当前未就绪，也应让用户正常返回登录页。
+    voiceBatchService?.cancel()
     voiceRecognition?.disconnect()
     voiceService = null
     if (options?.closeNative !== false && chat.isReady()) chat.setChatDb(null)
@@ -1487,6 +1526,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   if (quitCleanupStarted) return
   quitCleanupStarted = true
+  voiceBatchService?.cancel()
   console.log('[Shutdown] cleanup started')
 
   void (async () => {

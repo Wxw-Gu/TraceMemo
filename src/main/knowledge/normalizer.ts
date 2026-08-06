@@ -44,6 +44,7 @@ export function normalizeKnowledgeMessage(
         createTime: source.createTime,
         senderId: source.senderId || '',
         kind: source.kind,
+        voiceTranscriptState: source.voiceTranscriptState || '',
         searchableText
       })
     )

@@ -10,16 +10,30 @@ import type {
   KnowledgeSearchResult,
   KnowledgeSourceMessage
 } from '../../shared/knowledge'
+import type {
+  VoiceMessageReference,
+  VoiceTranscriptSnapshot,
+  VoiceTranscriptUpdate
+} from '../../shared/voice-recognition'
 import {
   DEFAULT_KNOWLEDGE_CHUNKER,
   DEFAULT_KNOWLEDGE_FTS_CONFIG,
   emptyKnowledgeSearchTimings
 } from '../../shared/knowledge'
 import { KnowledgeService } from './knowledge-service'
+import { voiceAccountIdentity, voiceMessageIdentity } from '../voice-pipeline/voice-message-identity'
 
 const FALLBACK_LIMIT = 240
 const MAX_SENDER_NAME_CONVERSATIONS = 8
 const MAX_CONVERSATION_FILTERS_PER_WORKER_SEARCH = 700
+
+type PendingVoiceTranscriptIndex = {
+  update: VoiceTranscriptUpdate
+  waiters: Array<{
+    resolve: () => void
+    reject: (error: unknown) => void
+  }>
+}
 
 function looksLikeOpaqueSenderId(value: string | undefined): boolean {
   const normalized = value?.trim() || ''
@@ -113,11 +127,12 @@ function sourceTextAndAttachment(message: chat.FormattedMessage): {
 function toSourceMessage(
   accountId: string,
   conversationId: string,
-  message: chat.FormattedMessage
+  message: chat.FormattedMessage,
+  transcriptOverride?: string
 ): KnowledgeSourceMessage | null {
   if (!message.createTime) return null
   const extracted = sourceTextAndAttachment(message)
-  const voiceTranscript = message.voiceTranscript?.trim() || undefined
+  const voiceTranscript = transcriptOverride?.trim() || message.voiceTranscript?.trim() || undefined
   if (!extracted.text && !extracted.attachment && !voiceTranscript) return null
   return {
     accountId,
@@ -160,6 +175,12 @@ export class KnowledgeSearchService {
   private readonly statusByAccount = new Map<string, KnowledgeRuntimeStatus>()
   private readonly statusListeners = new Set<(status: KnowledgeRuntimeStatus) => void>()
   private wcdbReadTail: Promise<void> = Promise.resolve()
+  private voiceTranscriptResolver:
+    | ((reference: VoiceMessageReference) => VoiceTranscriptSnapshot)
+    | undefined
+  private voiceIndexTail: Promise<void> = Promise.resolve()
+  private voiceIndexFlushScheduled = false
+  private readonly pendingVoiceIndexes = new Map<string, PendingVoiceTranscriptIndex>()
 
   constructor(userDataPath: string, workerPath: string) {
     this.service = new KnowledgeService(userDataPath, workerPath)
@@ -198,6 +219,73 @@ export class KnowledgeSearchService {
       console.warn('[Knowledge] background index failed:', error)
     })
     return started
+  }
+
+  /**
+   * The voice cache remains owned by the voice pipeline. Knowledge only reads
+   * a current-account snapshot while constructing a derived local index.
+   */
+  setVoiceTranscriptResolver(
+    resolver: (reference: VoiceMessageReference) => VoiceTranscriptSnapshot
+  ): void {
+    this.voiceTranscriptResolver = resolver
+  }
+
+  /**
+   * A successful recognition updates its source conversation. Consecutive
+   * updates for the same conversation are coalesced because a complete
+   * snapshot already includes every finished transcript for that conversation.
+   */
+  indexVoiceTranscript(update: VoiceTranscriptUpdate): Promise<void> {
+    const key = this.voiceIndexKey(update)
+    return new Promise<void>((resolve, reject) => {
+      const existing = this.pendingVoiceIndexes.get(key)
+      if (existing) {
+        existing.update = update
+        existing.waiters.push({ resolve, reject })
+      } else {
+        this.pendingVoiceIndexes.set(key, {
+          update,
+          waiters: [{ resolve, reject }]
+        })
+      }
+      this.scheduleVoiceIndexFlush()
+    })
+  }
+
+  private voiceIndexKey(update: VoiceTranscriptUpdate): string {
+    return `${update.accountIdentity}:${update.reference.sessionId}`
+  }
+
+  private scheduleVoiceIndexFlush(): void {
+    if (this.voiceIndexFlushScheduled) return
+    this.voiceIndexFlushScheduled = true
+    const task = this.voiceIndexTail.then(() => this.flushPendingVoiceIndexes())
+    this.voiceIndexTail = task.catch(() => undefined)
+    void task.then(
+      () => this.finishVoiceIndexFlush(),
+      () => this.finishVoiceIndexFlush()
+    )
+  }
+
+  private async flushPendingVoiceIndexes(): Promise<void> {
+    while (this.pendingVoiceIndexes.size) {
+      const pending = Array.from(this.pendingVoiceIndexes.values())
+      this.pendingVoiceIndexes.clear()
+      for (const entry of pending) {
+        try {
+          await this.indexVoiceTranscriptNow(entry.update)
+          entry.waiters.forEach((waiter) => waiter.resolve())
+        } catch (error) {
+          entry.waiters.forEach((waiter) => waiter.reject(error))
+        }
+      }
+    }
+  }
+
+  private finishVoiceIndexFlush(): void {
+    this.voiceIndexFlushScheduled = false
+    if (this.pendingVoiceIndexes.size) this.scheduleVoiceIndexFlush()
   }
 
   async search(request: KnowledgeSearchIpcRequest): Promise<KnowledgeSearchIpcResult> {
@@ -282,7 +370,7 @@ export class KnowledgeSearchService {
       // background indexing and an interactive fallback search can interleave safely.
       const messages = await this.listMessages(contact.md5)
       const sourceMessages = messages
-        .map((message) => toSourceMessage(accountId, contact.md5, message))
+        .map((message) => this.toSourceMessage(accountId, contact.md5, message))
         .filter((message): message is KnowledgeSourceMessage => Boolean(message))
       await this.service.index(
         {
@@ -352,10 +440,11 @@ export class KnowledgeSearchService {
       const messages = await this.listMessages(contact.md5, request.startTime, request.endTime)
       totalMessages += messages.length
       for (const message of messages) {
+        const hydrated = this.withVoiceTranscript(message)
         matches.push({
           contact,
-          message,
-          score: fallbackTermScore(message, terms)
+          message: hydrated,
+          score: fallbackTermScore(hydrated, terms)
         })
       }
     }
@@ -393,7 +482,12 @@ export class KnowledgeSearchService {
         sender: message.isSender ? '我' : message.name || '未知成员',
         timestamp: (message.createTime || 0) * 1000,
         messageIds: [sourceMessageId(message)],
-        text: sourceTextAndAttachment(message).text || message.content || `[${message.type}]`,
+        sourceKind: sourceKind(message),
+        text:
+          this.toSourceMessage('fallback', contact.md5, message)?.voiceTranscript ||
+          sourceTextAndAttachment(message).text ||
+          message.content ||
+          `[${message.type}]`,
         score: -score
       }))
     }
@@ -466,6 +560,29 @@ export class KnowledgeSearchService {
     const mergeRankingMs = Date.now() - mergeStartedAt
     timings.rankingMs += mergeRankingMs
     timings.totalMs += mergeRankingMs
+    const voiceCoverageParts = partialResults
+      .map((result) => result.voiceCoverage)
+      .filter((coverage): coverage is NonNullable<typeof coverage> => Boolean(coverage))
+    const voiceCoverage = voiceCoverageParts.length
+      ? voiceCoverageParts.reduce(
+          (total, coverage) => ({
+            voiceMessageCount: total.voiceMessageCount + coverage.voiceMessageCount,
+            transcribedVoiceCount: total.transcribedVoiceCount + coverage.transcribedVoiceCount,
+            failedVoiceCount: total.failedVoiceCount + coverage.failedVoiceCount,
+            voiceCoverageComplete: false
+          }),
+          {
+            voiceMessageCount: 0,
+            transcribedVoiceCount: 0,
+            failedVoiceCount: 0,
+            voiceCoverageComplete: false
+          }
+        )
+      : undefined
+    if (voiceCoverage) {
+      voiceCoverage.voiceCoverageComplete =
+        voiceCoverage.voiceMessageCount === voiceCoverage.transcribedVoiceCount
+    }
     return {
       state: partialResults.some((result) => result.state === 'ready')
         ? 'ready'
@@ -475,7 +592,8 @@ export class KnowledgeSearchService {
       indexedMessageCount: Math.max(...partialResults.map((result) => result.indexedMessageCount)),
       indexedChunkCount: Math.max(...partialResults.map((result) => result.indexedChunkCount)),
       evidence: mergedEvidence,
-      timings
+      timings,
+      voiceCoverage
     }
   }
 
@@ -505,6 +623,107 @@ export class KnowledgeSearchService {
     endTime?: number
   ): ReturnType<typeof chat.listMessagesAsync> {
     return this.enqueueWcdbRead(() => chat.listMessagesAsync(conversationId, startTime, endTime))
+  }
+
+  private withVoiceTranscript(message: chat.FormattedMessage): chat.FormattedMessage {
+    const reference = this.voiceReferenceFromMessage(message)
+    if (!reference || !this.voiceTranscriptResolver) return message
+    const snapshot = this.voiceTranscriptResolver(reference)
+    if (snapshot.state !== 'transcribed' || !snapshot.transcript?.trim()) return message
+    return { ...message, voiceTranscript: snapshot.transcript.trim() }
+  }
+
+  private toSourceMessage(
+    accountId: string,
+    conversationId: string,
+    message: chat.FormattedMessage,
+    transcriptOverride?: string,
+    stateOverride?: 'pending' | 'transcribed' | 'failed'
+  ): KnowledgeSourceMessage | null {
+    const reference = this.voiceReferenceFromMessage(message)
+    const snapshot = reference ? this.voiceTranscriptResolver?.(reference) : undefined
+    const hydrated = this.withVoiceTranscript(message)
+    const source = toSourceMessage(
+      accountId,
+      conversationId,
+      hydrated,
+      transcriptOverride
+    )
+    if (!source || source.kind !== 'voice') return source
+    return {
+      ...source,
+      voiceTranscriptState:
+        stateOverride ||
+        (transcriptOverride?.trim() ? 'transcribed' : undefined) ||
+        snapshot?.state ||
+        (source.voiceTranscript ? 'transcribed' : 'pending')
+    }
+  }
+
+  private voiceReferenceFromMessage(
+    message: chat.FormattedMessage
+  ): VoiceMessageReference | undefined {
+    if (message.type !== '语音' || !message.sessionId || message.localId === undefined || !message.createTime) {
+      return undefined
+    }
+    return {
+      sessionId: message.sessionId,
+      localId: message.localId,
+      createTime: message.createTime,
+      svrId: message.serverId
+    }
+  }
+
+  private async indexVoiceTranscriptNow(update: VoiceTranscriptUpdate): Promise<void> {
+    if (!chat.isReady()) return
+    if (update.state === 'transcribed' && !update.transcript?.trim()) return
+    if (voiceAccountIdentity(chat.getCurrentAccountRoot()) !== update.accountIdentity) {
+      return
+    }
+    const accountId = this.currentAccountId()
+    if (!accountId) return
+    const activeIndex = this.indexing.get(accountId)
+    if (activeIndex) await activeIndex
+    if (voiceAccountIdentity(chat.getCurrentAccountRoot()) !== update.accountIdentity) {
+      return
+    }
+    const contacts = await this.listContacts()
+    const contact = contacts.find((item) => item.m_nsUsrName === update.reference.sessionId)
+    if (!contact) return
+    const messages = await this.listMessages(contact.md5)
+    const sourceMessages = messages
+      .map((message) => {
+        const reference = this.voiceReferenceFromMessage(message)
+        const transcriptOverride =
+          reference && voiceMessageIdentity(reference) === update.messageIdentity
+            ? update.transcript
+            : undefined
+        const stateOverride =
+          reference && voiceMessageIdentity(reference) === update.messageIdentity
+            ? update.state
+            : undefined
+        return this.toSourceMessage(
+          accountId,
+          contact.md5,
+          message,
+          transcriptOverride,
+          stateOverride
+        )
+      })
+      .filter((message): message is KnowledgeSourceMessage => Boolean(message))
+    await this.service.index({
+      accountId,
+      conversations: [
+        {
+          conversationId: contact.md5,
+          completeSnapshot: true,
+          messages: sourceMessages
+        }
+      ],
+      chunker: DEFAULT_KNOWLEDGE_CHUNKER,
+      fts: DEFAULT_KNOWLEDGE_FTS_CONFIG
+    })
+    await this.refreshStatus(accountId)
   }
 
   private async toKnowledgeResult(

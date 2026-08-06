@@ -40,6 +40,8 @@ export interface KnowledgeSourceMessage {
   text?: string
   attachment?: KnowledgeAttachmentMetadata
   voiceTranscript?: string
+  /** Local coverage state only. Error text is never copied into the index. */
+  voiceTranscriptState?: 'pending' | 'transcribed' | 'failed'
 }
 
 export interface KnowledgeNormalizedMessage extends KnowledgeSourceMessage {
@@ -171,8 +173,17 @@ export interface KnowledgeEvidence {
   /** Unix epoch milliseconds. */
   timestamp: number
   messageIds: string[]
+  /** The source type belongs to the original message, not the retrieval method. */
+  sourceKind: KnowledgeMessageKind
   text: string
   score?: number
+}
+
+export interface KnowledgeVoiceCoverage {
+  voiceMessageCount: number
+  transcribedVoiceCount: number
+  failedVoiceCount: number
+  voiceCoverageComplete: boolean
 }
 
 /** A bounded, local summary of a single conversation retrieval. */
@@ -255,6 +266,7 @@ export interface KnowledgeSearchResult {
   indexedChunkCount: number
   timings: KnowledgeSearchTimings
   conversationRetrieval?: KnowledgeConversationRetrieval
+  voiceCoverage?: KnowledgeVoiceCoverage
 }
 
 /** Renderer-facing request. Chat timestamps use Unix seconds in the existing UI. */

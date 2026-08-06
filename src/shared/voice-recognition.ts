@@ -7,6 +7,27 @@ export interface VoiceMessageReference {
   svrId?: string | number
 }
 
+export type VoiceRecognitionPriority = 'interactive' | 'background'
+
+export type VoiceTranscriptState = 'pending' | 'transcribed' | 'failed'
+
+export interface VoiceTranscriptUpdate {
+  accountIdentity: string
+  reference: VoiceMessageReference
+  messageIdentity: string
+  state: Exclude<VoiceTranscriptState, 'pending'>
+  transcript?: string
+  error?: string
+  cached: boolean
+}
+
+export interface VoiceTranscriptSnapshot {
+  state: VoiceTranscriptState
+  transcript?: string
+  error?: string
+  updatedAt?: number
+}
+
 export type VoiceModelState =
   | 'missing'
   | 'downloading'
@@ -53,6 +74,55 @@ export interface VoiceRecognitionResult {
   cached?: boolean
   error?: string
   code?: VoiceRecognitionErrorCode
+}
+
+export type VoiceBatchRange = 'recent_30_days' | 'current_year' | 'selected_history'
+
+export interface VoiceBatchRequest {
+  conversationIds: string[]
+  range: VoiceBatchRange
+}
+
+export interface VoiceBatchPreflight {
+  accountIdentity: string
+  conversationCount: number
+  voiceMessageCount: number
+  cachedCount: number
+  pendingCount: number
+  failedCount: number
+  estimatedDurationMs: number | null
+  modelReady: boolean
+}
+
+/**
+ * Lightweight per-conversation counts for the batch-selection UI. Unlike a
+ * preflight this deliberately does not enumerate every voice message.
+ */
+export interface VoiceBatchConversationSummary {
+  conversationId: string
+  voiceMessageCount: number | null
+}
+
+export type VoiceBatchState =
+  | 'idle'
+  | 'pending'
+  | 'processing'
+  | 'completed'
+  | 'partially_failed'
+  | 'cancelled'
+
+export interface VoiceBatchProgress {
+  accountIdentity: string
+  state: VoiceBatchState
+  total: number
+  processed: number
+  cached: number
+  succeeded: number
+  failed: number
+  currentConversationId?: string
+  currentMessageIdentity?: string
+  elapsedMs: number
+  estimatedRemainingMs: number | null
 }
 
 export interface VoiceModelProgressEvent extends VoiceModelStatus {}

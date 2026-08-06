@@ -101,6 +101,55 @@ describe('voice task scheduling', () => {
     releaseFirst?.()
     await first
   })
+
+  it('runs an interactive request before queued background work', async () => {
+    const scheduler = new VoiceTaskScheduler()
+    const order: string[] = []
+    let releaseFirst: (() => void) | undefined
+    const first = scheduler.schedule(
+      'first',
+      () =>
+        new Promise<void>((resolve) => {
+          order.push('first')
+          releaseFirst = resolve
+        })
+    )
+    const background = scheduler.schedule('background', async () => {
+      order.push('background')
+    }, { priority: 'background' })
+    const interactive = scheduler.schedule('interactive', async () => {
+      order.push('interactive')
+    })
+
+    await vi.waitFor(() => expect(order).toEqual(['first']))
+    releaseFirst?.()
+    await Promise.all([first, background, interactive])
+    expect(order).toEqual(['first', 'interactive', 'background'])
+  })
+
+  it('interrupts an active background task for an interactive request', async () => {
+    const scheduler = new VoiceTaskScheduler()
+    const order: string[] = []
+    const background = scheduler.schedule(
+      'background',
+      async (signal) => {
+        order.push('background:start')
+        await new Promise<void>((resolve) => signal.addEventListener('abort', resolve, { once: true }))
+        order.push('background:aborted')
+        throw new DOMException('Recognition cancelled', 'AbortError')
+      },
+      { priority: 'background' }
+    )
+    await vi.waitFor(() => expect(order).toEqual(['background:start']))
+    const interactive = scheduler.schedule('interactive', async () => {
+      order.push('interactive')
+      return 'done'
+    })
+
+    await expect(background).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(interactive).resolves.toBe('done')
+    expect(order).toEqual(['background:start', 'background:aborted', 'interactive'])
+  })
 })
 
 describe('transcript repository', () => {
@@ -136,6 +185,20 @@ describe('transcript repository', () => {
     expect(repository.find(key)).toMatchObject({ transcript: '固定测试文本' })
     expect(repository.find({ ...key, accountId: 'account-b' })).toBeNull()
     expect(repository.find({ ...key, modelFingerprint: 'fingerprint-b' })).toBeNull()
+    expect(repository.findLatest(record.accountId, record.messageIdentity)).toMatchObject({
+      transcript: '固定测试文本'
+    })
+    expect(repository.getMessageStatus(record.accountId, record.messageIdentity)).toMatchObject({
+      state: 'transcribed'
+    })
+    repository.markFailure('account-b', record.messageIdentity, '脱敏失败原因')
+    expect(repository.getMessageStatus('account-b', record.messageIdentity)).toMatchObject({
+      state: 'failed',
+      error: '脱敏失败原因'
+    })
+    expect(repository.getMessageStatus(record.accountId, record.messageIdentity)).toMatchObject({
+      state: 'transcribed'
+    })
     repository.close()
   })
 })

@@ -8,6 +8,7 @@ import type {
   KnowledgeChunk,
   KnowledgeConversationRetrieval,
   KnowledgeEvidence,
+  KnowledgeVoiceCoverage,
   KnowledgeFtsConfig,
   KnowledgeIndexProgress,
   KnowledgeIndexRequest,
@@ -412,7 +413,7 @@ export class KnowledgeStore {
       const messages = asRows(
         this.database
           .prepare(
-            `SELECT message_id, create_time, searchable_text, sender_id, sender_name
+            `SELECT message_id, create_time, searchable_text, kind, sender_id, sender_name
              FROM knowledge_messages
              WHERE conversation_id = ? AND message_id IN (${messageIds.map(() => '?').join(', ')})`
           )
@@ -446,6 +447,7 @@ export class KnowledgeStore {
           sender: String(row.sender_name || row.sender_id || '未知成员'),
           timestamp: Number(row.create_time),
           messageIds,
+          sourceKind: String(row.kind) as KnowledgeEvidence['sourceKind'],
           text: String(row.searchable_text),
           score: Number(chunk.score) - item.termScore / 1000
         })
@@ -518,7 +520,7 @@ export class KnowledgeStore {
     return asRows(
       this.database
         .prepare(
-          `SELECT m.conversation_id, m.message_id, m.create_time, m.searchable_text, m.sender_id, m.sender_name
+          `SELECT m.conversation_id, m.message_id, m.create_time, m.searchable_text, m.kind, m.sender_id, m.sender_name
            FROM knowledge_messages m
            WHERE ${clauses.join(' AND ')}
            ORDER BY m.create_time DESC
@@ -547,6 +549,7 @@ export class KnowledgeStore {
         sender: String(row.sender_name || row.sender_id || '未知成员'),
         timestamp: Number(row.create_time),
         messageIds: [messageId],
+        sourceKind: String(row.kind) as KnowledgeEvidence['sourceKind'],
         text,
         score: -termScore / 1000
       }))
@@ -664,7 +667,7 @@ export class KnowledgeStore {
       evidence: asRows(
         this.database
           .prepare(
-            `SELECT m.conversation_id, m.message_id, m.create_time, m.searchable_text, m.sender_id, m.sender_name
+          `SELECT m.conversation_id, m.message_id, m.create_time, m.searchable_text, m.kind, m.sender_id, m.sender_name
            FROM knowledge_messages m
            WHERE ${clauses.join(' AND ')}
            ORDER BY m.create_time DESC
@@ -691,6 +694,7 @@ export class KnowledgeStore {
       sender: String(row.sender_name || row.sender_id || '未知成员'),
       timestamp: Number(row.create_time),
       messageIds: chunk ? chunk.map((item) => String(item.message_id)) : [messageId],
+      sourceKind: String(row.kind) as KnowledgeEvidence['sourceKind'],
       text: String(row.searchable_text),
       score: String(row.kind) === 'system' ? 1 : 0
     }
@@ -705,7 +709,45 @@ export class KnowledgeStore {
       // safe to query and avoid falling back to a second scan of the source archive.
       evidence: measured?.evidence || [],
       timings: measured?.timings || emptyKnowledgeSearchTimings(),
-      conversationRetrieval: measured?.conversationRetrieval
+      conversationRetrieval: measured?.conversationRetrieval,
+      voiceCoverage: this.getVoiceCoverage(query)
+    }
+  }
+
+  private getVoiceCoverage(query: KnowledgeQuery): KnowledgeVoiceCoverage {
+    const clauses = ["kind = 'voice'"]
+    const values: (string | number)[] = []
+    const conversationIds = Array.from(
+      new Set([...(query.conversationIds || []), ...(query.conversationId ? [query.conversationId] : [])])
+    ).filter(Boolean)
+    if (conversationIds.length) {
+      clauses.push(`conversation_id IN (${conversationIds.map(() => '?').join(', ')})`)
+      values.push(...conversationIds)
+    }
+    if (query.startTime !== undefined) {
+      clauses.push('create_time >= ?')
+      values.push(query.startTime)
+    }
+    if (query.endTime !== undefined) {
+      clauses.push('create_time <= ?')
+      values.push(query.endTime)
+    }
+    const row = this.database
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN voice_transcript IS NOT NULL AND trim(voice_transcript) <> '' THEN 1 ELSE 0 END) AS transcribed,
+                SUM(CASE WHEN voice_transcript_state = 'failed' THEN 1 ELSE 0 END) AS failed
+         FROM knowledge_messages WHERE ${clauses.join(' AND ')}`
+      )
+      .get(...values) as DbRow | undefined
+    const voiceMessageCount = Number(row?.total || 0)
+    const transcribedVoiceCount = Number(row?.transcribed || 0)
+    const failedVoiceCount = Number(row?.failed || 0)
+    return {
+      voiceMessageCount,
+      transcribedVoiceCount,
+      failedVoiceCount,
+      voiceCoverageComplete: voiceMessageCount === transcribedVoiceCount
     }
   }
 
@@ -731,6 +773,7 @@ export class KnowledgeStore {
         sender_name TEXT,
         attachment_json TEXT,
         voice_transcript TEXT,
+        voice_transcript_state TEXT,
         PRIMARY KEY (conversation_id, message_id)
       ) STRICT;
       CREATE INDEX IF NOT EXISTS knowledge_messages_conversation_time
@@ -764,6 +807,14 @@ export class KnowledgeStore {
         updated_at INTEGER NOT NULL
       ) STRICT;
     `)
+    const messageColumns = new Set(
+      asRows(this.database.prepare('PRAGMA table_info(knowledge_messages)').all()).map((row) =>
+        String(row.name)
+      )
+    )
+    if (!messageColumns.has('voice_transcript_state')) {
+      this.database.exec('ALTER TABLE knowledge_messages ADD COLUMN voice_transcript_state TEXT')
+    }
     this.writeMetaIfMissing('schema_version', String(KNOWLEDGE_SCHEMA_VERSION))
     const storedAccount = this.readMeta('account_id')
     if (storedAccount && storedAccount !== this.accountId) {
@@ -921,8 +972,8 @@ export class KnowledgeStore {
     const upsert = this.database.prepare(
       `INSERT INTO knowledge_messages (
         account_id, conversation_id, message_id, create_time, content_hash, searchable_text,
-        kind, sender_id, sender_name, attachment_json, voice_transcript
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        kind, sender_id, sender_name, attachment_json, voice_transcript, voice_transcript_state
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(conversation_id, message_id) DO UPDATE SET
         create_time = excluded.create_time,
         content_hash = excluded.content_hash,
@@ -931,7 +982,8 @@ export class KnowledgeStore {
         sender_id = excluded.sender_id,
         sender_name = excluded.sender_name,
         attachment_json = excluded.attachment_json,
-        voice_transcript = excluded.voice_transcript`
+        voice_transcript = excluded.voice_transcript,
+        voice_transcript_state = excluded.voice_transcript_state`
     )
     for (let index = 0; index < messages.length; index += 1) {
       this.assertNotAborted(signal)
@@ -947,7 +999,8 @@ export class KnowledgeStore {
         message.senderId ?? null,
         message.senderName ?? null,
         message.attachment ? encodedJson(message.attachment) : null,
-        message.voiceTranscript ?? null
+        message.voiceTranscript ?? null,
+        message.voiceTranscriptState ?? null
       )
       if (index % YIELD_EVERY === 0) {
         onProgress(index + 1, 0)

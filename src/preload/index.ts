@@ -26,6 +26,10 @@ import type { ExportRequest, ExportJobProgress } from '../shared/export'
 import type { ImageDecoderSelectionResult, ImageDecoderStatus } from '../shared/image-decryption'
 import type { AccountDiscoveryResult } from '../shared/database-key'
 import type {
+  VoiceBatchConversationSummary,
+  VoiceBatchPreflight,
+  VoiceBatchProgress,
+  VoiceBatchRequest,
   VoiceMessageReference,
   VoiceModelDownloadResult,
   VoiceModelProgressEvent,
@@ -132,6 +136,25 @@ const api = {
     ipcRenderer.invoke('voice:recognize', reference),
   cancelVoiceRecognition: (reference: VoiceMessageReference): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('voice:cancelRecognition', reference),
+  getVoiceBatchPreflight: (request: VoiceBatchRequest): Promise<VoiceBatchPreflight> =>
+    ipcRenderer.invoke('voice:getBatchPreflight', request),
+  getVoiceBatchConversationSummaries: (
+    request: VoiceBatchRequest
+  ): Promise<VoiceBatchConversationSummary[]> =>
+    ipcRenderer.invoke('voice:getBatchConversationSummaries', request),
+  getVoiceBatchProgress: (): Promise<VoiceBatchProgress | undefined> =>
+    ipcRenderer.invoke('voice:getBatchProgress'),
+  startVoiceBatch: (request: VoiceBatchRequest): Promise<VoiceBatchProgress> =>
+    ipcRenderer.invoke('voice:startBatch', request),
+  cancelVoiceBatch: (): Promise<{ success: boolean }> => ipcRenderer.invoke('voice:cancelBatch'),
+  retryFailedVoiceBatch: (): Promise<VoiceBatchProgress> =>
+    ipcRenderer.invoke('voice:retryFailedBatch'),
+  onVoiceBatchProgress: (callback: (progress: VoiceBatchProgress) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: VoiceBatchProgress): void =>
+      callback(progress)
+    ipcRenderer.on('voice:batchProgress', listener)
+    return () => ipcRenderer.removeListener('voice:batchProgress', listener)
+  },
   onVoiceModelProgress: (callback: (status: VoiceModelProgressEvent) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, status: VoiceModelProgressEvent): void =>
       callback(status)

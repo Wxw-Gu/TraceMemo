@@ -19,7 +19,7 @@ import type {
   SearchScope,
   SearchStage
 } from './searchTypes'
-import type { KnowledgeRuntimeStatus } from '../../../../shared/knowledge'
+import type { KnowledgeRuntimeStatus, KnowledgeVoiceCoverage } from '../../../../shared/knowledge'
 import {
   RANGE_LABELS,
   SEARCH_ACTIVE_RESULT_KEY,
@@ -50,6 +50,7 @@ type SearchTrace = {
   aggregation: AiSearchAggregation
   invalidCitationIds: string[]
   agent: AiSearchAgentRun
+  voiceCoverage?: KnowledgeVoiceCoverage
 }
 
 type SearchProgressByStage = Partial<Record<AiSearchProgressStage, AiSearchProgressEvent>>
@@ -522,11 +523,12 @@ export function AISearchWorkspace({
         }
         return {
           evidenceId: item.id,
+          sourceKind: item.sourceKind,
           contact,
           message: {
             id: item.messageId,
             from: item.senderId || 'user',
-            type: '检索消息',
+            type: item.sourceKind === 'voice' ? '语音转写' : '检索消息',
             datetime: new Date(item.timestamp).toLocaleString('zh-CN', { hour12: false }),
             content: item.text,
             isSender: item.sender === '我',
@@ -546,7 +548,8 @@ export function AISearchWorkspace({
         inputTokensEstimated: searchResult.ai?.inputTokensEstimated || false,
         aggregation: searchResult.aggregation,
         invalidCitationIds: searchResult.citationValidation?.invalidCitationIds || [],
-        agent: searchResult.agent
+        agent: searchResult.agent,
+        voiceCoverage: searchResult.knowledge.voiceCoverage
       })
       setAgentTrace(searchResult.agent.trace)
       setEvidence(evidenceItems)
@@ -824,6 +827,17 @@ export function AISearchWorkspace({
             <span>已收录消息：{searchTrace.knowledgeMessages.toLocaleString()}</span>
             <span>候选消息：{searchTrace.retrievedEvidence.toLocaleString()}</span>
             <span>Final Evidence：{searchTrace.finalEvidence}</span>
+            {searchTrace.voiceCoverage && !searchTrace.voiceCoverage.voiceCoverageComplete && (
+                <span className="ai-search-voice-coverage-warning">
+                  当前范围存在{' '}
+                  {Math.max(
+                    0,
+                    searchTrace.voiceCoverage.voiceMessageCount -
+                      searchTrace.voiceCoverage.transcribedVoiceCount
+                  )}{' '}
+                  条未转写语音，回答可能未覆盖这些内容。
+                </span>
+              )}
             <span>本地知识库：{formatDuration(searchTrace.timings.knowledgeSearchMs)}</span>
             <span>
               Worker 通信 {formatDuration(searchTrace.timings.workerIpcMs)} · FTS{' '}
@@ -1344,6 +1358,9 @@ export function AISearchWorkspace({
                   <time>{formatMessageTime(item.message)}</time>
                 </span>
                 <span className="ai-search-evidence-conversation">{item.contact.m_nsNickName}</span>
+                {item.sourceKind === 'voice' && (
+                  <span className="ai-search-evidence-source-kind">语音转写</span>
+                )}
                 <span className="ai-search-evidence-text">{messageText(item.message)}</span>
                 <button
                   type="button"

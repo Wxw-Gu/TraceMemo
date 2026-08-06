@@ -87,4 +87,78 @@ describe('voice recognition settings', () => {
     expect(screen.getByText('正在下载 42%')).toBeInTheDocument()
     finishDownload?.({ success: true, status: readyStatus })
   })
+
+  it('categorizes conversations and shows voice counts before they are selected', async () => {
+    window.api = {
+      ...window.api,
+      getContacts: vi.fn().mockResolvedValue([
+        { md5: 'contact-a', m_nsNickName: '联系人 A', m_nsUsrName: 'contact-a', type: 'user' },
+        { md5: 'group-b', m_nsNickName: '群聊 B', m_nsUsrName: 'group-b@chatroom', type: 'group' }
+      ]),
+      getSelf: vi.fn().mockResolvedValue({
+        ready: true,
+        info: { wxid: 'wxid_fixture', nickname: '测试账号', accountRoot: 'C:/fixture' }
+      }),
+      getVoiceBatchConversationSummaries: vi
+        .fn()
+        .mockResolvedValue([{ conversationId: 'group-b', voiceMessageCount: 7 }]),
+      getVoiceBatchProgress: vi.fn().mockResolvedValue({
+        accountIdentity: 'account-a',
+        state: 'idle',
+        total: 0,
+        processed: 0,
+        cached: 0,
+        succeeded: 0,
+        failed: 0,
+        elapsedMs: 0,
+        estimatedRemainingMs: null
+      }),
+      getVoiceBatchPreflight: vi.fn().mockResolvedValue({
+        accountIdentity: 'account-a',
+        conversationCount: 2,
+        voiceMessageCount: 8,
+        cachedCount: 3,
+        pendingCount: 5,
+        failedCount: 0,
+        estimatedDurationMs: null,
+        modelReady: true
+      }),
+      startVoiceBatch: vi.fn().mockResolvedValue({
+        accountIdentity: 'account-a',
+        state: 'pending',
+        total: 8,
+        processed: 0,
+        cached: 0,
+        succeeded: 0,
+        failed: 0,
+        elapsedMs: 0,
+        estimatedRemainingMs: null
+      }),
+      cancelVoiceBatch: vi.fn().mockResolvedValue({ success: true }),
+      retryFailedVoiceBatch: vi.fn(),
+      onVoiceBatchProgress: vi.fn(() => vi.fn())
+    } as typeof window.api
+    render(<VoiceRecognitionPage onNotice={vi.fn()} />)
+
+    expect(await screen.findByText('群聊 B')).toBeInTheDocument()
+    expect(await screen.findByText('7 条语音')).toBeInTheDocument()
+    expect(window.api.getVoiceBatchConversationSummaries).toHaveBeenCalledWith({
+      conversationIds: ['group-b'],
+      range: 'recent_30_days'
+    })
+    await userEvent.click(screen.getByRole('checkbox', { name: /群聊 B/ }))
+    await userEvent.click(screen.getByRole('tab', { name: /联系人 1/ }))
+    await userEvent.click(await screen.findByRole('checkbox', { name: /联系人 A/ }))
+    expect(screen.getByText('已选会话')).toBeInTheDocument()
+    expect(screen.getByText('2')).toBeInTheDocument()
+    expect(window.api.getVoiceBatchPreflight).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: '开始转写' }))
+
+    await waitFor(() =>
+      expect(window.api.startVoiceBatch).toHaveBeenCalledWith({
+        conversationIds: ['group-b', 'contact-a'],
+        range: 'recent_30_days'
+      })
+    )
+  })
 })

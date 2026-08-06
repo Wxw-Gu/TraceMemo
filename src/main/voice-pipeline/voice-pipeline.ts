@@ -1,4 +1,3 @@
-import { createHash } from 'crypto'
 import type { VoiceMessageReference } from '../../shared/voice-recognition'
 import type { VoiceService } from '../voice-service'
 import type { AudioDecoderRegistry, EncodedVoiceSource } from './audio-decoder'
@@ -9,6 +8,7 @@ import type {
   TranscriptRecord,
   TranscriptRepository
 } from './types'
+import { voiceMessageIdentity } from './voice-message-identity'
 
 export class VoiceSourceResolver implements SourceResolver {
   constructor(private readonly voiceService: VoiceService) {}
@@ -45,11 +45,7 @@ export class VoicePipeline {
     if (signal?.aborted) throw new DOMException('Recognition cancelled', 'AbortError')
     const audio = this.audioProcessor.process(decoded)
     if (audio.samples.length === 0) throw new Error('Voice audio is empty after processing')
-    const messageIdentity = createHash('sha256')
-      .update(
-        `${reference.sessionId}|${reference.localId}|${reference.createTime}|${reference.svrId ?? ''}`
-      )
-      .digest('hex')
+    const messageIdentity = voiceMessageIdentity(reference)
     const key = {
       accountId,
       messageIdentity,
@@ -58,9 +54,9 @@ export class VoicePipeline {
       ...this.recognizer.metadata
     }
     const cached = this.transcripts.find(key)
-    if (cached) {
+    if (cached?.transcript.trim()) {
       return {
-        transcript: cached.transcript,
+        transcript: cached.transcript.trim(),
         language: cached.language,
         durationMs: cached.durationMs,
         cached: true
@@ -68,10 +64,12 @@ export class VoicePipeline {
     }
 
     const output = await this.recognizer.recognize(audio, signal)
+    const transcript = output.text.trim()
+    if (!transcript) throw new Error('Voice recognition produced an empty transcript')
     const now = Date.now()
     const record: TranscriptRecord = {
       ...key,
-      transcript: output.text,
+      transcript,
       language: output.language,
       durationMs: audio.durationMs,
       createdAt: now,
@@ -79,7 +77,7 @@ export class VoicePipeline {
     }
     this.transcripts.save(record)
     return {
-      transcript: output.text,
+      transcript,
       language: output.language,
       durationMs: audio.durationMs,
       cached: false

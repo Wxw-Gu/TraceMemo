@@ -69,6 +69,16 @@ export interface TranscriptRecord extends RecognitionMetadata {
   updatedAt: number
 }
 
+export type TranscriptMessageState = 'pending' | 'transcribed' | 'failed'
+
+export interface TranscriptMessageStatus {
+  accountId: string
+  messageIdentity: string
+  state: TranscriptMessageState
+  updatedAt: number
+  error?: string
+}
+
 export interface TranscriptRepository {
   find(
     key: Omit<
@@ -76,6 +86,9 @@ export interface TranscriptRepository {
       'transcript' | 'language' | 'durationMs' | 'createdAt' | 'updatedAt'
     >
   ): TranscriptRecord | null
+  findLatest(accountId: string, messageIdentity: string): TranscriptRecord | null
+  getMessageStatus(accountId: string, messageIdentity: string): TranscriptMessageStatus
   save(record: TranscriptRecord): void
+  markFailure(accountId: string, messageIdentity: string, error: string): void
   close(): void
 }

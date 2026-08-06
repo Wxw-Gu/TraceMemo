@@ -1,4 +1,5 @@
 import type { AIRuntimeModelConfig } from '../../../../shared/ai-provider'
+import type { KnowledgeMessageKind } from '../../../../shared/knowledge'
 import type { Contact, Message } from '../../../../shared/types'
 
 export type SearchStage = 'idle' | 'loading' | 'result' | 'partial' | 'insufficient'
@@ -9,6 +10,7 @@ export type SearchIntent = 'general' | 'topic' | 'participants' | 'mixed'
 export interface EvidenceItem {
   /** Program-owned Final Evidence ID. Cached legacy records may omit it. */
   evidenceId?: string
+  sourceKind?: KnowledgeMessageKind
   contact: Contact
   message: Message
 }

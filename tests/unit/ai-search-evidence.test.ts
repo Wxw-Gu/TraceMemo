@@ -21,6 +21,7 @@ const candidate = (
   endTime: 1_785_895_200_000 + index,
   timestamp: 1_785_895_200_000 + index,
   messageIds: [`message-${index}`],
+  sourceKind: 'text',
   text: `第 ${index} 条去健身相关消息`,
   score: -index,
   ...options
@@ -62,6 +63,12 @@ describe('Final Evidence builder', () => {
       'conversation-b\u0000same-message-id',
       'conversation-a\u0000same-message-id'
     ])
+  })
+
+  it('preserves voice source type through Final Evidence', () => {
+    const result = buildFinalEvidence([candidate(1, { sourceKind: 'voice' })], 8)
+
+    expect(result.evidence[0]).toMatchObject({ id: 'E1', sourceKind: 'voice' })
   })
 
   it('removes citations which do not resolve to Final Evidence', () => {

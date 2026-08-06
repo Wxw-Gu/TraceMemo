@@ -466,6 +466,20 @@ export async function listMessagesForExport(
   return mergedMessages
 }
 
+/**
+ * Count voice rows without hydrating message content. This is used by the
+ * batch-selection view, where loading every conversation would make opening
+ * Settings noticeably slow.
+ */
+export async function countVoiceMessagesAsync(
+  userMd5: string,
+  startTime?: number,
+  endTime?: number
+): Promise<number | null> {
+  if (!dbRef) return null
+  return dbRef.getUserVoiceMessageCountAsync(userMd5, startTime, endTime)
+}
+
 export function getGroupSnapshot(userMd5: string): GroupSnapshot | null {
   if (!dbRef) return null
   const wcdb4Client = dbRef.getWcdb4Client()

@@ -212,7 +212,7 @@ describe('AiSearchPipelineService', () => {
     )
 
     const answerPrompt = aiProvider.chat.mock.calls[2][0][1].content as string
-    const contextIds = Array.from(answerPrompt.matchAll(/\[E(\d+)\]\nsender:/g)).map(
+    const contextIds = Array.from(answerPrompt.matchAll(/\[E(\d+)\]\nsource:/g)).map(
       (match) => Number(match[1])
     )
     expect(contextIds).toEqual([1, 2, 3, 4, 5, 6, 7, 8])

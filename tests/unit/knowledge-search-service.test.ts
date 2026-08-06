@@ -12,7 +12,20 @@ const { chatState, getGroupSnapshotAsync, listContactsAsync, listMessagesAsync, 
     knowledgeService: {
       dispose: vi.fn().mockResolvedValue(undefined),
       index: vi.fn().mockResolvedValue(undefined),
-      search: vi.fn()
+      search: vi.fn(),
+      status: vi.fn().mockResolvedValue({
+        accountId: 'fixture-account',
+        state: 'ready',
+        indexedMessageCount: 1,
+        indexedChunkCount: 1,
+        sourceMessageCount: 1,
+        processedMessages: 1,
+        totalMessages: 1,
+        estimatedRemainingMs: null,
+        databaseBytes: 0,
+        walBytes: 0,
+        shmBytes: 0
+      })
     }
   }))
 
@@ -30,10 +43,12 @@ vi.mock('../../src/main/knowledge/knowledge-service', () => ({
     dispose = knowledgeService.dispose
     index = knowledgeService.index
     search = knowledgeService.search
+    status = knowledgeService.status
   }
 }))
 
 import { KnowledgeSearchService } from '../../src/main/knowledge/knowledge-search-service'
+import type { VoiceTranscriptUpdate } from '../../src/shared/voice-recognition'
 
 describe('KnowledgeSearchService legacy fallback', () => {
   beforeEach(() => {
@@ -45,6 +60,7 @@ describe('KnowledgeSearchService legacy fallback', () => {
     knowledgeService.dispose.mockClear()
     knowledgeService.index.mockClear()
     knowledgeService.search.mockReset()
+    knowledgeService.status.mockClear()
     listContactsAsync.mockResolvedValue([
       {
         m_nsUsrName: 'fixture-contact',
@@ -95,6 +111,140 @@ describe('KnowledgeSearchService legacy fallback', () => {
         timestamp: 1785895200000
       })
     ])
+    await service.dispose()
+  })
+
+  it('hydrates a cached voice transcript and incrementally indexes only its conversation', async () => {
+    chatState.ready = true
+    chatState.accountId = 'C:/fixtures/account-a'
+    listContactsAsync.mockResolvedValue([
+      {
+        m_nsUsrName: 'voice-contact',
+        m_nsNickName: '语音测试会话',
+        md5: 'voice-conversation',
+        type: 'user'
+      }
+    ])
+    listMessagesAsync.mockResolvedValue([
+      {
+        id: 'voice-message',
+        localId: 18,
+        from: 'user',
+        type: '语音',
+        content: '[语音消息]',
+        isSender: false,
+        senderId: 'fixture-sender',
+        name: '脱敏成员',
+        sessionId: 'voice-contact',
+        createTime: 1_785_895_200
+      }
+    ])
+    const { voiceAccountIdentity, voiceMessageIdentity } = await import(
+      '../../src/main/voice-pipeline/voice-message-identity'
+    )
+    const reference = {
+      sessionId: 'voice-contact',
+      localId: 18,
+      createTime: 1_785_895_200
+    }
+    const service = new KnowledgeSearchService('/tmp/wxe-knowledge-fallback', '/missing-worker.js')
+    service.setVoiceTranscriptResolver(() => ({ state: 'transcribed', transcript: '缓存中的语音文字' }))
+
+    await service.indexVoiceTranscript({
+      accountIdentity: voiceAccountIdentity(chatState.accountId),
+      reference,
+      messageIdentity: voiceMessageIdentity(reference),
+      state: 'transcribed',
+      transcript: '缓存中的语音文字',
+      cached: true
+    })
+
+    expect(knowledgeService.index).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: chatState.accountId,
+        conversations: [
+          expect.objectContaining({
+            conversationId: 'voice-conversation',
+            completeSnapshot: true,
+            messages: [
+              expect.objectContaining({
+                kind: 'voice',
+                voiceTranscript: '缓存中的语音文字',
+                voiceTranscriptState: 'transcribed'
+              })
+            ]
+          })
+        ]
+      })
+    )
+    await service.dispose()
+  })
+
+  it('coalesces consecutive voice updates for the same conversation', async () => {
+    chatState.ready = true
+    chatState.accountId = 'C:/fixtures/account-a'
+    listContactsAsync.mockResolvedValue([
+      {
+        m_nsUsrName: 'voice-contact',
+        m_nsNickName: '语音测试会话',
+        md5: 'voice-conversation',
+        type: 'user'
+      }
+    ])
+    listMessagesAsync.mockResolvedValue([
+      {
+        id: 'voice-message-1',
+        localId: 18,
+        from: 'user',
+        type: '语音',
+        content: '[语音消息]',
+        isSender: false,
+        sessionId: 'voice-contact',
+        createTime: 1_785_895_200
+      },
+      {
+        id: 'voice-message-2',
+        localId: 19,
+        from: 'user',
+        type: '语音',
+        content: '[语音消息]',
+        isSender: false,
+        sessionId: 'voice-contact',
+        createTime: 1_785_895_201
+      }
+    ])
+    let releaseFirstIndex: (() => void) | undefined
+    knowledgeService.index.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseFirstIndex = resolve
+        })
+    )
+    const { voiceAccountIdentity, voiceMessageIdentity } = await import(
+      '../../src/main/voice-pipeline/voice-message-identity'
+    )
+    const service = new KnowledgeSearchService('/tmp/wxe-knowledge-fallback', '/missing-worker.js')
+    const update = (localId: number, createTime: number): VoiceTranscriptUpdate => {
+      const reference = { sessionId: 'voice-contact', localId, createTime }
+      return {
+        accountIdentity: voiceAccountIdentity(chatState.accountId),
+        reference,
+        messageIdentity: voiceMessageIdentity(reference),
+        state: 'transcribed' as const,
+        transcript: `转写 ${localId}`,
+        cached: false
+      }
+    }
+
+    const first = service.indexVoiceTranscript(update(18, 1_785_895_200))
+    await vi.waitFor(() => expect(knowledgeService.index).toHaveBeenCalledTimes(1))
+    const second = service.indexVoiceTranscript(update(19, 1_785_895_201))
+    const third = service.indexVoiceTranscript(update(18, 1_785_895_200))
+    releaseFirstIndex?.()
+
+    await Promise.all([first, second, third])
+    expect(knowledgeService.index).toHaveBeenCalledTimes(2)
+    expect(listMessagesAsync).toHaveBeenCalledTimes(2)
     await service.dispose()
   })
 

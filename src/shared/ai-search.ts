@@ -1,4 +1,8 @@
-import type { KnowledgeEvidence, KnowledgeSearchIpcResult } from './knowledge'
+import type {
+  KnowledgeEvidence,
+  KnowledgeSearchIpcResult,
+  KnowledgeVoiceCoverage
+} from './knowledge'
 
 export type AiSearchScope = 'global' | 'groups' | 'contacts' | 'conversation'
 export type AiSearchRange = 'today' | '7d' | '30d' | 'all'
@@ -210,6 +214,7 @@ export interface AiSearchRetrievalContract {
   fallbackUsed: boolean
   fallbackReason?: string
   suspicious: boolean
+  voiceCoverage?: KnowledgeVoiceCoverage
 }
 
 export interface AiSearchPipelineResult {
@@ -224,6 +229,7 @@ export interface AiSearchPipelineResult {
     | 'indexedMessageCount'
     | 'indexedChunkCount'
     | 'totalMessages'
+    | 'voiceCoverage'
   >
   candidateEvidenceCount: number
   retrieval: AiSearchRetrievalContract

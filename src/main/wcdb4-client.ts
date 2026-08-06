@@ -1026,6 +1026,60 @@ export class Wcdb4Client {
     return messages
   }
 
+  async countVoiceMessagesAsync(
+    username: string,
+    startTime?: number,
+    endTime?: number
+  ): Promise<number | null> {
+    if (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery) return null
+
+    let tables: Wcdb4MessageStore[]
+    try {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbGetMessageTableStats as unknown as KoffiAsyncFunction,
+        username
+      )
+      tables = (Array.isArray(rows) ? rows : [])
+        .map((row) => ({
+          tableName: this.pickString(row, ['table_name', 'tableName', 'name']),
+          dbPath: this.pickString(row, ['db_path', 'dbPath', 'path'])
+        }))
+        .filter((row) => row.tableName && row.dbPath)
+    } catch (error) {
+      console.warn(`[WCDB4] voice count table stats failed username=${username}:`, error)
+      return null
+    }
+
+    const begin = this.normalizeTimestamp(startTime || 0)
+    const end = this.normalizeTimestamp(endTime || 0)
+    const where = [
+      '(("local_type" & 65535) = 34)',
+      begin > 0 ? `"create_time" >= ${begin}` : '',
+      end > 0 ? `"create_time" <= ${end}` : ''
+    ].filter(Boolean)
+
+    let total = 0
+    for (const table of tables) {
+      try {
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          table.dbPath,
+          `SELECT COUNT(*) AS "voice_count" FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${where.join(' AND ')}`
+        )
+        const value = Number(this.pickValue(rows[0] || {}, ['voice_count', 'count', 'COUNT(*)']))
+        if (Number.isFinite(value)) total += value
+      } catch (error) {
+        console.warn(
+          `[WCDB4] voice count failed username=${username} db=${table.dbPath} table=${table.tableName}:`,
+          error
+        )
+        return null
+      }
+    }
+    return total
+  }
+
   private readSessionRows(): Record<string, unknown>[] {
     if (!this.wcdbGetSessions) return []
     const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>

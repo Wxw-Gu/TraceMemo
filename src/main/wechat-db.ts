@@ -233,6 +233,17 @@ export class WechatDb {
     return mergeExportMessages(messages)
   }
 
+  public async getUserVoiceMessageCountAsync(
+    userMd5: string,
+    startTime?: number,
+    endTime?: number
+  ): Promise<number | null> {
+    this.ensureChatTableMapping()
+    const username = this.chatMd5ToUsername.get(userMd5)
+    if (!username) return 0
+    return this.wcdb4Client.countVoiceMessagesAsync(username, startTime, endTime)
+  }
+
   public searchAllMessages(keyword: string): string | null {
     const lowerKeyword = keyword.trim().toLowerCase()
     if (!lowerKeyword) return null

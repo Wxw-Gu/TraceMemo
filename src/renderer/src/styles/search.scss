@@ -1562,9 +1562,17 @@
 
 .ai-search-evidence-card-top,
 .ai-search-evidence-conversation,
+.ai-search-evidence-source-kind,
 .ai-search-evidence-text,
 .ai-search-evidence-link {
   display: block;
+}
+
+.ai-search-evidence-source-kind,
+.ai-search-voice-coverage-warning {
+  color: var(--wxex-brand);
+  font-size: 11px;
+  font-weight: 600;
 }
 .ai-search-evidence-card-top {
   display: flex;

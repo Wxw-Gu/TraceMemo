@@ -215,6 +215,64 @@ describe('knowledge sqlite', () => {
     store.close()
   })
 
+  it('marks voice Evidence and reports scoped transcript coverage without indexing error text', async () => {
+    const root = makeRoot()
+    const store = new KnowledgeStore(root, FIXTURE_ACCOUNT_A, fts)
+    await store.index({
+      conversations: [
+        {
+          conversationId: 'voice-coverage',
+          completeSnapshot: true,
+          messages: [
+            {
+              accountId: FIXTURE_ACCOUNT_A,
+              conversationId: 'voice-coverage',
+              messageId: 'voice-ready',
+              createTime: Date.UTC(2026, 7, 5, 9),
+              senderName: '成员甲',
+              kind: 'voice',
+              text: '[语音消息]',
+              voiceTranscript: '语音里确认今天去健身。',
+              voiceTranscriptState: 'transcribed'
+            },
+            {
+              accountId: FIXTURE_ACCOUNT_A,
+              conversationId: 'voice-coverage',
+              messageId: 'voice-failed',
+              createTime: Date.UTC(2026, 7, 5, 10),
+              senderName: '成员乙',
+              kind: 'voice',
+              text: '[语音消息]',
+              voiceTranscriptState: 'failed'
+            }
+          ]
+        }
+      ],
+      chunker: DEFAULT_KNOWLEDGE_CHUNKER
+    })
+
+    const result = store.searchWithStatus({
+      accountId: FIXTURE_ACCOUNT_A,
+      text: '去健身',
+      terms: ['去健身'],
+      conversationIds: ['voice-coverage'],
+      limit: 10
+    })
+
+    expect(result.evidence[0]).toMatchObject({
+      messageId: 'voice-ready',
+      sourceKind: 'voice'
+    })
+    expect(result.voiceCoverage).toEqual({
+      voiceMessageCount: 2,
+      transcribedVoiceCount: 1,
+      failedVoiceCount: 1,
+      voiceCoverageComplete: false
+    })
+    expect(result.evidence[0].text).not.toContain('失败')
+    store.close()
+  })
+
   it('keeps conversation, sender and time filters when a participant question has no topic terms', async () => {
     const root = makeRoot()
     const store = new KnowledgeStore(root, FIXTURE_ACCOUNT_A, fts)
