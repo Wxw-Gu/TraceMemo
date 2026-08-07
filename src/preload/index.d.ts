@@ -60,6 +60,7 @@ import type {
   VoiceRecognitionResult
 } from '../shared/voice-recognition'
 import type {
+  AiSearchCancelResult,
   AiSearchPipelineRequest,
   AiSearchPipelineResult,
   AiSearchProgressEvent
@@ -202,6 +203,7 @@ declare global {
       search: (keyword: string) => Promise<string | null>
       searchKnowledge: (request: KnowledgeSearchIpcRequest) => Promise<KnowledgeSearchIpcResult>
       runAiSearch: (request: AiSearchPipelineRequest) => Promise<AiSearchPipelineResult>
+      cancelAiSearch: (requestId: string) => Promise<AiSearchCancelResult>
       onAiSearchProgress: (callback: (progress: AiSearchProgressEvent) => void) => () => void
       getKnowledgeStatus: () => Promise<KnowledgeRuntimeStatus>
       startKnowledgeIndex: () => Promise<KnowledgeRuntimeStatus>

@@ -1,8 +1,11 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AISearchWorkspace } from '../../src/renderer/src/components/search/AISearchWorkspace'
-import { SEARCH_CACHE_KEY, buildSearchCacheKey } from '../../src/renderer/src/components/search/searchUtils'
+import {
+  SEARCH_CACHE_KEY,
+  buildSearchCacheKey
+} from '../../src/renderer/src/components/search/searchUtils'
 
 const api = {
   getSettings: vi.fn(),
@@ -12,7 +15,8 @@ const api = {
   onAiSearchProgress: vi.fn(),
   getAiSearchProviderStatus: vi.fn(),
   authorizeAiSearchExternalProvider: vi.fn(),
-  runAiSearch: vi.fn()
+  runAiSearch: vi.fn(),
+  cancelAiSearch: vi.fn()
 }
 
 describe('AISearchWorkspace cache privacy boundary', () => {
@@ -23,7 +27,11 @@ describe('AISearchWorkspace cache privacy boundary', () => {
     Object.defineProperty(window, 'api', { configurable: true, value: api })
     api.getSettings.mockResolvedValue({ settings: { debugEnabled: false } })
     api.getAppLogPath.mockResolvedValue('')
-    api.getKnowledgeStatus.mockResolvedValue({ state: 'ready', processedMessages: 1, totalMessages: 1 })
+    api.getKnowledgeStatus.mockResolvedValue({
+      state: 'ready',
+      processedMessages: 1,
+      totalMessages: 1
+    })
     api.onKnowledgeStatus.mockReturnValue(() => undefined)
     api.onAiSearchProgress.mockReturnValue(() => undefined)
     api.getAiSearchProviderStatus.mockResolvedValue({
@@ -32,6 +40,7 @@ describe('AISearchWorkspace cache privacy boundary', () => {
       providerId: 'remote-provider',
       recipient: 'https://remote.example.test/v1'
     })
+    api.cancelAiSearch.mockResolvedValue({ cancelled: true })
   })
 
   it('uses a local cache hit without opening a remote Provider consent dialog or making an AI request', async () => {
@@ -199,7 +208,9 @@ describe('AISearchWorkspace cache privacy boundary', () => {
     await screen.findByRole('dialog', { name: '确认发送本次搜索资料' })
     await userEvent.click(screen.getByRole('button', { name: '取消' }))
 
-    await waitFor(() => expect(onNotice).toHaveBeenCalledWith(expect.stringContaining('已取消本次 AI Search')))
+    await waitFor(() =>
+      expect(onNotice).toHaveBeenCalledWith(expect.stringContaining('已取消本次 AI Search'))
+    )
     expect(confirm).not.toHaveBeenCalled()
     expect(api.authorizeAiSearchExternalProvider).not.toHaveBeenCalled()
     expect(api.runAiSearch).not.toHaveBeenCalled()
@@ -231,7 +242,13 @@ describe('AISearchWorkspace cache privacy boundary', () => {
         timestamp: 1_785_900_000_000 + index,
         text: `证据 ${index + 1}`
       })),
-      aggregation: { messageCount: 8, peopleCount: 1, conversationCount: 1, people: [], conversations: [] },
+      aggregation: {
+        messageCount: 8,
+        peopleCount: 1,
+        conversationCount: 1,
+        people: [],
+        conversations: []
+      },
       agent: { mode: 'agent', toolCalls: 1, trace: [] },
       timings: {},
       elapsedMs: 1
@@ -275,7 +292,13 @@ describe('AISearchWorkspace cache privacy boundary', () => {
       candidateEvidenceCount: 1,
       contextEvidenceCount: 1,
       evidence: [],
-      aggregation: { messageCount: 1, peopleCount: 1, conversationCount: 1, people: [], conversations: [] },
+      aggregation: {
+        messageCount: 1,
+        peopleCount: 1,
+        conversationCount: 1,
+        people: [],
+        conversations: []
+      },
       agent: { mode: 'agent', toolCalls: 1, trace: [] },
       timings: {},
       elapsedMs: 1
@@ -311,5 +334,89 @@ describe('AISearchWorkspace cache privacy boundary', () => {
     await userEvent.click(screen.getByRole('button', { name: '新问题' }))
     expect(screen.queryByRole('heading', { name: 'first question' })).not.toBeInTheDocument()
     expect(input).toHaveValue('')
+  })
+
+  it('disables and guards analysis while the knowledge base is synchronizing', async () => {
+    api.getKnowledgeStatus.mockResolvedValue({
+      state: 'syncing',
+      processedMessages: 20,
+      totalMessages: 100
+    })
+    const onNotice = vi.fn()
+    render(
+      <AISearchWorkspace
+        contacts={[]}
+        selectedContact={null}
+        dbReady
+        aiModelConfig={{
+          configured: true,
+          providerName: 'Local Provider',
+          model: 'model',
+          modelName: 'Model',
+          status: 'connected'
+        }}
+        onSelectContact={vi.fn()}
+        onOpenEvidence={vi.fn()}
+        onOpenAISettings={vi.fn()}
+        onNotice={onNotice}
+      />
+    )
+
+    await userEvent.type(screen.getByRole('textbox'), '同步时不能分析')
+    const button = await screen.findByRole('button', { name: /同步中，暂不可分析/ })
+    expect(button).toBeDisabled()
+    const form = screen.getByRole('textbox').closest('form')
+    expect(form).not.toBeNull()
+    fireEvent.submit(form as HTMLFormElement)
+
+    await waitFor(() =>
+      expect(onNotice).toHaveBeenCalledWith('知识库正在同步，请等待同步完成后再开始分析')
+    )
+    expect(api.getAiSearchProviderStatus).not.toHaveBeenCalled()
+    expect(api.runAiSearch).not.toHaveBeenCalled()
+  })
+
+  it('cancels an active analysis and ignores its late result', async () => {
+    api.getAiSearchProviderStatus.mockResolvedValue({ configured: true, requiresConsent: false })
+    let resolveSearch: ((value: unknown) => void) | undefined
+    api.runAiSearch.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSearch = resolve
+        })
+    )
+    const onNotice = vi.fn()
+    render(
+      <AISearchWorkspace
+        contacts={[]}
+        selectedContact={null}
+        dbReady
+        aiModelConfig={{
+          configured: true,
+          providerName: 'Local Provider',
+          model: 'model',
+          modelName: 'Model',
+          status: 'connected'
+        }}
+        onSelectContact={vi.fn()}
+        onOpenEvidence={vi.fn()}
+        onOpenAISettings={vi.fn()}
+        onNotice={onNotice}
+      />
+    )
+
+    await userEvent.type(screen.getByRole('textbox'), '这个请求稍后才返回')
+    await userEvent.click(screen.getByRole('button', { name: /开始分析/ }))
+    const cancelButton = await screen.findByRole('button', { name: /取消分析/ })
+    const requestId = api.runAiSearch.mock.calls[0][0].requestId as string
+    await userEvent.click(cancelButton)
+
+    expect(api.cancelAiSearch).toHaveBeenCalledWith(requestId)
+    expect(onNotice).toHaveBeenCalledWith('已取消本次分析')
+    expect(screen.getByRole('button', { name: /开始分析/ })).toBeEnabled()
+
+    resolveSearch?.({ requestId, status: 'completed', answer: '不应显示的迟到结果' })
+    await waitFor(() => expect(screen.queryByText('不应显示的迟到结果')).not.toBeInTheDocument())
+    expect(localStorage.getItem(SEARCH_CACHE_KEY) || '').not.toContain('不应显示的迟到结果')
   })
 })

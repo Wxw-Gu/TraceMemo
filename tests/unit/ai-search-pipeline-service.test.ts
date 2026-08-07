@@ -143,6 +143,140 @@ describe('AiSearchPipelineService', () => {
     expect(result.agent).toMatchObject({ mode: 'agent', toolCalls: 1 })
   })
 
+  it('cancels an active Agent request and aborts the AI call before local retrieval continues', async () => {
+    let observedSignal: AbortSignal | undefined
+    let markStarted: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    aiProvider.chat.mockReset()
+    aiProvider.chat.mockImplementation(
+      (_messages: unknown, _options: unknown, signal?: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          observedSignal = signal
+          markStarted?.()
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+    )
+    const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
+    const resultPromise = service.run(
+      {
+        requestId: 'cancel-active-agent',
+        text: '最近谁聊过健身',
+        scope: 'global',
+        range: '7d'
+      },
+      () => undefined
+    )
+
+    await started
+    expect(service.cancel('cancel-active-agent')).toEqual({ cancelled: true })
+    const result = await resultPromise
+
+    expect(observedSignal?.aborted).toBe(true)
+    expect(result).toMatchObject({ status: 'cancelled', error: '已取消本次分析' })
+    expect(knowledge.search).not.toHaveBeenCalled()
+    expect(service.cancel('cancel-active-agent')).toEqual({ cancelled: false })
+  })
+
+  it('stops after the same retrieval fingerprint adds no new coverage', async () => {
+    aiProvider.chat.mockReset()
+    aiProvider.chat
+      .mockResolvedValueOnce({
+        success: true,
+        data: '{"action":"tool","tool":"search_messages","arguments":{"query":"健身"}}'
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: '{"action":"tool","tool":"search_messages","arguments":{"query":"健身"}}'
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: '小明提到今天下班去健身。[E1]',
+        usage: { input: 120 }
+      })
+    const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
+
+    const result = await service.run(
+      {
+        requestId: 'duplicate-coverage-stop',
+        text: '最近谁聊过健身',
+        scope: 'global',
+        range: '7d'
+      },
+      () => undefined
+    )
+
+    expect(knowledge.search).toHaveBeenCalledTimes(2)
+    expect(result.agent).toMatchObject({ mode: 'agent', toolCalls: 2 })
+    const toolEnds = result.agent.trace.filter((item) => item.event === 'toolCallEnd')
+    expect(toolEnds).toEqual([
+      expect.objectContaining({
+        resultCount: 1,
+        uniqueCandidateCount: 1,
+        newCandidateCount: 1,
+        newEvidenceCount: 1,
+        newConversationCount: 1,
+        newSenderCount: 1,
+        queryFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/)
+      }),
+      expect.objectContaining({
+        resultCount: 1,
+        uniqueCandidateCount: 1,
+        newCandidateCount: 0,
+        newEvidenceCount: 0,
+        newConversationCount: 0,
+        newSenderCount: 0
+      })
+    ])
+    expect(result.agent.trace).toContainEqual(
+      expect.objectContaining({
+        event: 'agentDecision',
+        label: '本地资料已覆盖所选时间范围，可直接整理回答',
+        elapsedMs: 0
+      })
+    )
+    expect(result.retrieval).toMatchObject({ candidateCount: 2, uniqueCandidateCount: 1 })
+  })
+
+  it('uses conversation coverage to stop a reformulated group lookup', async () => {
+    aiProvider.chat.mockReset()
+    aiProvider.chat
+      .mockResolvedValueOnce({
+        success: true,
+        data: '{"action":"tool","tool":"search_messages","arguments":{"query":"健身"}}'
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: '{"action":"tool","tool":"search_messages","arguments":{"query":"健身计划"}}'
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: '健身交流组讨论过健身。[E1]'
+      })
+    const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
+
+    const result = await service.run(
+      {
+        requestId: 'conversation-coverage-stop',
+        text: '哪个群聊过健身？',
+        scope: 'global',
+        range: '7d'
+      },
+      () => undefined
+    )
+
+    expect(result.agent).toMatchObject({ toolCalls: 2 })
+    expect(result.agent.trace.filter((item) => item.event === 'toolCallEnd')).toEqual([
+      expect.objectContaining({ newConversationCount: 1 }),
+      expect.objectContaining({
+        newCandidateCount: 0,
+        newConversationCount: 0,
+        queryFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/)
+      })
+    ])
+  })
+
   it('keeps real evidence when the answer model fails', async () => {
     aiProvider.chat.mockReset()
     aiProvider.chat
@@ -212,8 +346,8 @@ describe('AiSearchPipelineService', () => {
     )
 
     const answerPrompt = aiProvider.chat.mock.calls[2][0][1].content as string
-    const contextIds = Array.from(answerPrompt.matchAll(/\[E(\d+)\]\nsource:/g)).map(
-      (match) => Number(match[1])
+    const contextIds = Array.from(answerPrompt.matchAll(/\[E(\d+)\]\nsource:/g)).map((match) =>
+      Number(match[1])
     )
     expect(contextIds).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
     expect(answerPrompt).not.toContain('candidate-1 去健身')
@@ -832,7 +966,9 @@ describe('AiSearchPipelineService', () => {
     )
 
     const secondAgentCall = aiProvider.chat.mock.calls[1][0] as Array<{ content: string }>
-    expect(secondAgentCall.map((message) => message.content).join('\n')).not.toContain(injectedMessage)
+    expect(secondAgentCall.map((message) => message.content).join('\n')).not.toContain(
+      injectedMessage
+    )
     expect(secondAgentCall[1]?.content).toContain('UNTRUSTED_TOOL_RESULT')
     expect(result.agent.trace).not.toContainEqual(
       expect.objectContaining({ decisionInput: expect.anything() })
@@ -851,7 +987,12 @@ describe('AiSearchPipelineService', () => {
     const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
 
     const result = await service.run(
-      { requestId: 'provider-consent-required', text: '最近聊过健身吗？', scope: 'global', range: '7d' },
+      {
+        requestId: 'provider-consent-required',
+        text: '最近聊过健身吗？',
+        scope: 'global',
+        range: '7d'
+      },
       () => undefined
     )
 
@@ -973,7 +1114,10 @@ describe('AiSearchPipelineService', () => {
       () => undefined
     )
 
-    expect(result).toMatchObject({ status: 'completed', retrieval: { conversationId: 'selected-contact' } })
+    expect(result).toMatchObject({
+      status: 'completed',
+      retrieval: { conversationId: 'selected-contact' }
+    })
     expect(knowledge.search).toHaveBeenCalledWith(
       expect.objectContaining({ conversationIds: ['selected-contact'], terms: [] })
     )
@@ -991,7 +1135,10 @@ describe('AiSearchPipelineService', () => {
         '{"action":"tool","tool":"search_conversations","arguments":{"query":"另一个联系人"}}'
       ]
     ],
-    ['finalizes before reading the selected conversation', ['{"action":"finalize","reason":"足够了"}']],
+    [
+      'finalizes before reading the selected conversation',
+      ['{"action":"finalize","reason":"足够了"}']
+    ],
     [
       'exhausts the selected conversation Tool Budget',
       [
@@ -1127,7 +1274,10 @@ describe('AiSearchPipelineService', () => {
         success: true,
         data: '{"action":"tool","tool":"get_conversation_messages","arguments":{"conversationRef":"conversation-1"}}'
       })
-      .mockResolvedValueOnce({ success: true, data: '{"action":"finalize","reason":"没有可用引用"}' })
+      .mockResolvedValueOnce({
+        success: true,
+        data: '{"action":"finalize","reason":"没有可用引用"}'
+      })
     const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
 
     const result = await service.run(
@@ -1298,36 +1448,39 @@ describe('AiSearchPipelineService', () => {
         recipient: 'https://remote.example.test/v1'
       }
     ]
-  ])('rejects a previously approved request when the Provider %s changes', async (_change, changed) => {
-    aiProvider.getAiSearchProviderStatus.mockReturnValue({
-      configured: true,
-      requiresConsent: true,
-      providerId: 'fixture-provider',
-      recipient: 'https://remote.example.test/v1'
-    })
-    const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
-    expect(
-      service.authorizeExternalProvider({
-        requestId: `provider-change-${_change}`,
+  ])(
+    'rejects a previously approved request when the Provider %s changes',
+    async (_change, changed) => {
+      aiProvider.getAiSearchProviderStatus.mockReturnValue({
+        configured: true,
+        requiresConsent: true,
         providerId: 'fixture-provider',
         recipient: 'https://remote.example.test/v1'
       })
-    ).toMatchObject({ success: true })
-    aiProvider.getAiSearchProviderStatus.mockReturnValue(changed)
-    aiProvider.chat.mockReset()
+      const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
+      expect(
+        service.authorizeExternalProvider({
+          requestId: `provider-change-${_change}`,
+          providerId: 'fixture-provider',
+          recipient: 'https://remote.example.test/v1'
+        })
+      ).toMatchObject({ success: true })
+      aiProvider.getAiSearchProviderStatus.mockReturnValue(changed)
+      aiProvider.chat.mockReset()
 
-    const result = await service.run(
-      {
-        requestId: `provider-change-${_change}`,
-        text: '最近聊过健身吗？',
-        scope: 'global',
-        range: '7d'
-      },
-      () => undefined
-    )
-    expect(result.status).toBe('ai_failed')
-    expect(aiProvider.chat).not.toHaveBeenCalled()
-  })
+      const result = await service.run(
+        {
+          requestId: `provider-change-${_change}`,
+          text: '最近聊过健身吗？',
+          scope: 'global',
+          range: '7d'
+        },
+        () => undefined
+      )
+      expect(result.status).toBe('ai_failed')
+      expect(aiProvider.chat).not.toHaveBeenCalled()
+    }
+  )
 
   it('rejects a valid messageRef when it is paired with a different issued conversationRef', async () => {
     listContactsAsync.mockResolvedValue([

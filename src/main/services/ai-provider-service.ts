@@ -176,7 +176,8 @@ export class AIProviderService {
 
   async chat(
     messages: Array<{ role: string; content: string }>,
-    options?: AIChatRequestOptions
+    options?: AIChatRequestOptions,
+    signal?: AbortSignal
   ): Promise<{
     success: boolean
     data?: string
@@ -184,8 +185,9 @@ export class AIProviderService {
     error?: string
   }> {
     try {
-      return { success: true, ...(await this.request(messages, options)) }
+      return { success: true, ...(await this.request(messages, options, false, signal)) }
     } catch (error) {
+      if (signal?.aborted) throw error
       return { success: false, error: safeAIError(error) }
     }
   }
@@ -263,12 +265,13 @@ export class AIProviderService {
   private async request(
     messages: AIMessage[],
     options?: AIChatRequestOptions,
-    testing = false
+    testing = false,
+    signal?: AbortSignal
   ): Promise<{
     data: string
     usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
   }> {
-    if (options?.apiKey) return this.requestLegacy(messages, options)
+    if (options?.apiKey) return this.requestLegacy(messages, options, signal)
     const resolved = this.resolveProvider(options)
     const provider = options?.timeoutMs
       ? {
@@ -276,7 +279,7 @@ export class AIProviderService {
           advanced: { ...resolved.provider.advanced, timeoutMs: options.timeoutMs }
         }
       : resolved.provider
-    return requestProvider(provider, resolved.key, resolved.model, messages, testing)
+    return requestProvider(provider, resolved.key, resolved.model, messages, testing, signal)
   }
 
   private resolveProvider(options?: { providerId?: string; modelId?: string }): {
@@ -298,14 +301,17 @@ export class AIProviderService {
 
   private async requestLegacy(
     messages: AIMessage[],
-    options: AIChatRequestOptions
+    options: AIChatRequestOptions,
+    signal?: AbortSignal
   ): Promise<AIRequestResult> {
     const provider = deepSeekProvider(options.baseURL, options.model)
     return requestOpenAICompatible(
       provider,
       options.apiKey || '',
       options.model || provider.defaultModel,
-      messages
+      messages,
+      false,
+      signal
     )
   }
 
@@ -499,11 +505,12 @@ function requestProvider(
   apiKey: string,
   model: string,
   messages: AIMessage[],
-  testing = false
+  testing = false,
+  signal?: AbortSignal
 ): Promise<AIRequestResult> {
   return provider.type === 'anthropic-messages'
-    ? requestAnthropic(provider, apiKey, model, messages, testing)
-    : requestOpenAICompatible(provider, apiKey, model, messages, testing)
+    ? requestAnthropic(provider, apiKey, model, messages, testing, signal)
+    : requestOpenAICompatible(provider, apiKey, model, messages, testing, signal)
 }
 
 function toOpenAIMessages(messages: AIMessage[]): Array<{ role: string; content: unknown }> {
@@ -544,7 +551,8 @@ async function requestOpenAICompatible(
   apiKey: string,
   model: string,
   messages: AIMessage[],
-  testing = false
+  testing = false,
+  signal?: AbortSignal
 ): Promise<AIRequestResult> {
   const endpoint = provider.baseUrl.endsWith('/chat/completions')
     ? provider.baseUrl
@@ -561,7 +569,8 @@ async function requestOpenAICompatible(
         max_tokens: testing ? 8 : provider.advanced.maxTokens
       })
     },
-    provider.advanced.timeoutMs
+    provider.advanced.timeoutMs,
+    signal
   )
   const payload = await parseJsonResponse<OpenAIResponsePayload>(response)
   if (!response.ok) throw new Error(payload.error?.message || `AI 请求失败 (${response.status})`)
@@ -583,7 +592,8 @@ async function requestAnthropic(
   apiKey: string,
   model: string,
   messages: AIMessage[],
-  testing = false
+  testing = false,
+  signal?: AbortSignal
 ): Promise<AIRequestResult> {
   const system = messages
     .filter((message) => message.role === 'system')
@@ -615,7 +625,8 @@ async function requestAnthropic(
         max_tokens: testing ? 8 : provider.advanced.maxTokens || 4096
       })
     },
-    provider.advanced.timeoutMs
+    provider.advanced.timeoutMs,
+    signal
   )
   const payload = await parseJsonResponse<AnthropicResponsePayload>(response)
   if (!response.ok)
@@ -641,14 +652,31 @@ async function requestAnthropic(
 async function fetchWithTimeout(
   url: string,
   init: RequestInit,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<Response> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), Math.max(1_000, timeoutMs || 120_000))
+  let timedOut = false
+  const abortFromCaller = (): void =>
+    controller.abort(signal?.reason || new DOMException('AI request cancelled', 'AbortError'))
+  if (signal?.aborted) abortFromCaller()
+  else signal?.addEventListener('abort', abortFromCaller, { once: true })
+  const timer = setTimeout(
+    () => {
+      timedOut = true
+      controller.abort(new DOMException('AI request timed out', 'TimeoutError'))
+    },
+    Math.max(1_000, timeoutMs || 120_000)
+  )
   try {
     return await fetch(url, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException('AI request cancelled', 'AbortError')
+    if (timedOut) throw new DOMException('AI request timed out', 'TimeoutError')
+    throw error
   } finally {
     clearTimeout(timer)
+    signal?.removeEventListener('abort', abortFromCaller)
   }
 }
 
@@ -667,7 +695,8 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
 }
 
 function safeAIError(error: unknown): string {
-  if (error instanceof DOMException && error.name === 'AbortError') return 'AI 请求超时'
+  if (error instanceof DOMException && error.name === 'TimeoutError') return 'AI 请求超时'
+  if (error instanceof DOMException && error.name === 'AbortError') return 'AI 请求已取消'
   const message = error instanceof Error ? error.message : String(error)
   return message.replace(/sk-[a-z0-9_-]+/gi, '***').slice(0, 300)
 }

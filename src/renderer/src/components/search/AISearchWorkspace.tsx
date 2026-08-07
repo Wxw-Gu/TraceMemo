@@ -70,6 +70,9 @@ const formatBytes = (bytes: number): string => {
 const formatDuration = (milliseconds: number): string =>
   milliseconds >= 1000 ? `${(milliseconds / 1000).toFixed(1)}s` : `${milliseconds}ms`
 
+const formatMeasuredDuration = (milliseconds: number | undefined): string =>
+  milliseconds === undefined ? '未测量' : formatDuration(milliseconds)
+
 const knowledgeStateLabel = (status: KnowledgeRuntimeStatus | null): string => {
   if (!status) return '读取中'
   return {
@@ -143,6 +146,7 @@ export function AISearchWorkspace({
   const [appLogPath, setAppLogPath] = useState('')
   const bypassCacheRef = useRef(false)
   const searchRequestIdRef = useRef('')
+  const knowledgeSyncingRef = useRef(false)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const evidenceCardRefs = useRef(new Map<number, HTMLElement>())
   const externalConsentResolverRef = useRef<((approved: boolean) => void) | null>(null)
@@ -295,6 +299,9 @@ export function AISearchWorkspace({
   const modelLabel = aiModelConfig.configured
     ? `${aiModelConfig.providerName} · ${aiModelConfig.modelName}`
     : '尚未配置 AI 模型'
+  const knowledgeSyncing =
+    syncStarting || knowledgeStatus?.state === 'building' || knowledgeStatus?.state === 'syncing'
+  knowledgeSyncingRef.current = knowledgeSyncing
 
   const startKnowledgeSync = async (): Promise<void> => {
     if (!dbReady) {
@@ -437,11 +444,37 @@ export function AISearchWorkspace({
     return true
   }
 
+  const cancelAnalysis = async (): Promise<void> => {
+    const requestId = searchRequestIdRef.current
+    if (!requestId) return
+    searchRequestIdRef.current = ''
+    setStage('idle')
+    setAnalysisError('')
+    setSearchProgress({})
+    setAgentTrace([])
+    setSearchDetailsOpen(false)
+    onNotice('已取消本次分析')
+    composerRef.current?.focus()
+    try {
+      await window.api.cancelAiSearch(requestId)
+    } catch (error) {
+      addDebugEntry('取消检索请求失败', {
+        requestId,
+        error: error instanceof Error ? error.message : String(error)
+      })
+    }
+  }
+
   const runAnalysis = async (
     event?: React.FormEvent,
     retry?: { range: SearchRange; timeRangeOverride?: AiSearchTimeRange }
   ): Promise<void> => {
     event?.preventDefault()
+    if (stage === 'loading') return
+    if (knowledgeSyncingRef.current) {
+      onNotice('知识库正在同步，请等待同步完成后再开始分析')
+      return
+    }
     const normalizedQuery = query.trim()
     if (!normalizedQuery) {
       setAnalysisError('先输入一个想了解的问题')
@@ -461,6 +494,7 @@ export function AISearchWorkspace({
       effectiveRange,
       normalizedQuery
     )
+    let requestId = ''
     try {
       const cached = bypassCacheRef.current ? null : readSearchCache(cacheKey)
       bypassCacheRef.current = false
@@ -475,7 +509,7 @@ export function AISearchWorkspace({
         onNotice('已使用最近的检索缓存，可点击刷新数据读取最新消息')
         return
       }
-      const requestId = globalThis.crypto?.randomUUID?.() || `search-${Date.now()}`
+      requestId = globalThis.crypto?.randomUUID?.() || `search-${Date.now()}`
       try {
         if (!(await ensureAiSearchDataConsent(requestId))) {
           onNotice('已取消本次 AI Search，未执行检索，也未向远程 AI 服务发送聊天内容')
@@ -483,6 +517,10 @@ export function AISearchWorkspace({
         }
       } catch {
         onNotice('无法确认 AI 服务的数据发送授权，本次检索未执行')
+        return
+      }
+      if (knowledgeSyncingRef.current) {
+        onNotice('知识库正在同步，请等待同步完成后再开始分析')
         return
       }
       setStage('loading')
@@ -504,6 +542,7 @@ export function AISearchWorkspace({
         conversationId: scope === 'conversation' ? activeContact?.md5 : undefined,
         timeRangeOverride: effectiveTimeRangeOverride
       })
+      if (searchRequestIdRef.current !== requestId) return
       addDebugEntry('主进程搜索任务完成', {
         status: searchResult.status,
         candidateEvidenceCount: searchResult.candidateEvidenceCount,
@@ -511,6 +550,11 @@ export function AISearchWorkspace({
         elapsedMs: searchResult.elapsedMs,
         errorStage: searchResult.errorStage
       })
+      if (searchResult.status === 'cancelled') {
+        onNotice('已取消本次分析')
+        setStage('idle')
+        return
+      }
       const contactsById = new Map(allContacts.map((contact) => [contact.md5, contact]))
       const evidenceItems: EvidenceItem[] = searchResult.evidence.map((item): EvidenceItem => {
         // Contacts may still be paging in while the derived database already
@@ -606,10 +650,13 @@ export function AISearchWorkspace({
       }
       setStage('result')
     } catch (error) {
+      if (requestId && searchRequestIdRef.current !== requestId) return
       const errorMessage = error instanceof Error ? error.message : '读取聊天记录失败'
       addDebugEntry('检索失败', { error: errorMessage })
       setAnalysisError(errorMessage)
       setStage('insufficient')
+    } finally {
+      if (requestId && searchRequestIdRef.current === requestId) searchRequestIdRef.current = ''
     }
   }
 
@@ -828,21 +875,36 @@ export function AISearchWorkspace({
             <span>候选消息：{searchTrace.retrievedEvidence.toLocaleString()}</span>
             <span>Final Evidence：{searchTrace.finalEvidence}</span>
             {searchTrace.voiceCoverage && !searchTrace.voiceCoverage.voiceCoverageComplete && (
-                <span className="ai-search-voice-coverage-warning">
-                  当前范围存在{' '}
-                  {Math.max(
-                    0,
-                    searchTrace.voiceCoverage.voiceMessageCount -
-                      searchTrace.voiceCoverage.transcribedVoiceCount
-                  )}{' '}
-                  条未转写语音，回答可能未覆盖这些内容。
-                </span>
-              )}
+              <span className="ai-search-voice-coverage-warning">
+                当前范围存在{' '}
+                {Math.max(
+                  0,
+                  searchTrace.voiceCoverage.voiceMessageCount -
+                    searchTrace.voiceCoverage.transcribedVoiceCount
+                )}{' '}
+                条未转写语音，回答可能未覆盖这些内容。
+              </span>
+            )}
             <span>本地知识库：{formatDuration(searchTrace.timings.knowledgeSearchMs)}</span>
             <span>
-              Worker 通信 {formatDuration(searchTrace.timings.workerIpcMs)} · FTS{' '}
-              {formatDuration(searchTrace.timings.ftsMs)} · 消息读取{' '}
+              Worker：排队 {formatMeasuredDuration(searchTrace.timings.workerQueueMs)} · 执行{' '}
+              {formatMeasuredDuration(searchTrace.timings.workerExecutionMs)} · 全库统计{' '}
+              {formatMeasuredDuration(searchTrace.timings.globalCountMs)} · 语音统计{' '}
+              {formatMeasuredDuration(searchTrace.timings.voiceCoverageMs)}
+            </span>
+            <span>
+              SQLite：FTS {formatDuration(searchTrace.timings.ftsMs)} · 消息读取{' '}
               {formatDuration(searchTrace.timings.messageLoadMs)}
+            </span>
+            <span>
+              Sender：{formatMeasuredDuration(searchTrace.timings.senderEnrichmentMs)} · WCDB 排队{' '}
+              {formatMeasuredDuration(searchTrace.timings.wcdbQueueMs)} · WCDB 执行{' '}
+              {formatMeasuredDuration(searchTrace.timings.wcdbExecutionMs)}
+            </span>
+            <span>
+              IPC：{formatMeasuredDuration(searchTrace.timings.ipcMs)} · 序列化{' '}
+              {formatMeasuredDuration(searchTrace.timings.serializationMs)} · Other{' '}
+              {formatMeasuredDuration(searchTrace.timings.otherMs)}
             </span>
           </section>
           <section>
@@ -882,13 +944,28 @@ export function AISearchWorkspace({
             <span>总耗时：{formatDuration(searchTrace.timings.totalMs)}</span>
           </section>
           {searchTrace.agent.trace.length > 0 && (
-            <section>
+            <section className="ai-search-details-trace">
               <strong>检索轨迹</strong>
               {searchTrace.agent.trace.map((item) => (
                 <span key={item.sequence}>
                   {item.toolName ? `${item.toolName}：` : ''}
                   {item.label}
                   {item.resultCount !== undefined ? ` · ${item.resultCount} 条` : ''}
+                  {item.uniqueCandidateCount !== undefined
+                    ? ` · 唯一 ${item.uniqueCandidateCount}`
+                    : ''}
+                  {item.newCandidateCount !== undefined
+                    ? ` · 新候选 ${item.newCandidateCount}`
+                    : ''}
+                  {item.newEvidenceCount !== undefined
+                    ? ` · 新 Evidence ${item.newEvidenceCount}`
+                    : ''}
+                  {item.newConversationCount !== undefined
+                    ? ` · 新会话 ${item.newConversationCount}`
+                    : ''}
+                  {item.newSenderCount !== undefined ? ` · 新 sender ${item.newSenderCount}` : ''}
+                  {item.queryFingerprint ? ` · fp ${item.queryFingerprint}` : ''}
+                  {item.hasMore !== undefined ? ` · hasMore ${item.hasMore ? '是' : '否'}` : ''}
                   {item.elapsedMs !== undefined ? ` · ${formatDuration(item.elapsedMs)}` : ''}
                 </span>
               ))}
@@ -945,7 +1022,10 @@ export function AISearchWorkspace({
           摘要
         </div>
         <div className="ai-search-answer">
-          {renderMarkdown(answer, { evidenceCount: evidence.length, onEvidenceClick: focusEvidence })}
+          {renderMarkdown(answer, {
+            evidenceCount: evidence.length,
+            onEvidenceClick: focusEvidence
+          })}
         </div>
         {evidence.length > 0 && (
           <div className="ai-search-answer-evidence" aria-label="AI 引用证据">
@@ -1315,10 +1395,30 @@ export function AISearchWorkspace({
                 placeholder="例如：技术交流群最近讨论了哪些 Windows 性能问题？"
                 rows={2}
               />
-              <button type="submit" className="primary" disabled={stage === 'loading'}>
-                {stage === 'loading' ? '分析中' : '开始分析'}
-                <span>→</span>
-              </button>
+              {stage === 'loading' ? (
+                <button
+                  type="button"
+                  className="cancel"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    void cancelAnalysis()
+                  }}
+                >
+                  取消分析
+                  <span>×</span>
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  className="primary"
+                  disabled={knowledgeSyncing}
+                  title={knowledgeSyncing ? '知识库同步完成后才能开始分析' : undefined}
+                >
+                  {knowledgeSyncing ? '同步中，暂不可分析' : '开始分析'}
+                  <span>→</span>
+                </button>
+              )}
             </div>
             <div className="ai-search-composer-foot">
               <span>Enter 发送 · Shift + Enter 换行</span>
@@ -1399,7 +1499,8 @@ export function AISearchWorkspace({
             <span className="ai-search-kicker">AI SEARCH</span>
             <h2 id="ai-search-consent-title">确认发送本次搜索资料</h2>
             <p>
-              将向 <strong>{externalProviderConsent.providerName}</strong>（{externalProviderConsent.recipient}
+              将向 <strong>{externalProviderConsent.providerName}</strong>（
+              {externalProviderConsent.recipient}
               ）发送当前问题、受控检索所需的受限上下文，以及最多 8 条最终 Evidence。
             </p>
             <p className="ai-search-consent-note">
@@ -1409,7 +1510,11 @@ export function AISearchWorkspace({
               <button type="button" onClick={() => settleExternalProviderConsent(false)}>
                 取消
               </button>
-              <button type="button" className="primary" onClick={() => settleExternalProviderConsent(true)}>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => settleExternalProviderConsent(true)}
+              >
                 继续并发送
               </button>
             </div>

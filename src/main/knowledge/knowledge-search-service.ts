@@ -21,11 +21,16 @@ import {
   emptyKnowledgeSearchTimings
 } from '../../shared/knowledge'
 import { KnowledgeService } from './knowledge-service'
-import { voiceAccountIdentity, voiceMessageIdentity } from '../voice-pipeline/voice-message-identity'
+import {
+  voiceAccountIdentity,
+  voiceMessageIdentity
+} from '../voice-pipeline/voice-message-identity'
 
 const FALLBACK_LIMIT = 240
 const MAX_SENDER_NAME_CONVERSATIONS = 8
 const MAX_CONVERSATION_FILTERS_PER_WORKER_SEARCH = 700
+const MAX_SENDER_ENRICHMENT_SESSIONS = 32
+const SENDER_ENRICHMENT_SESSION_TTL_MS = 5 * 60 * 1000
 
 type PendingVoiceTranscriptIndex = {
   update: VoiceTranscriptUpdate
@@ -33,6 +38,12 @@ type PendingVoiceTranscriptIndex = {
     resolve: () => void
     reject: (error: unknown) => void
   }>
+}
+
+type SenderEnrichmentSession = {
+  lastUsedAt: number
+  contacts?: Awaited<ReturnType<typeof chat.listContactsAsync>>
+  groupSnapshots: Map<string, Awaited<ReturnType<typeof chat.getGroupSnapshotAsync>> | undefined>
 }
 
 function looksLikeOpaqueSenderId(value: string | undefined): boolean {
@@ -177,7 +188,10 @@ export class KnowledgeSearchService {
   private readonly indexing = new Map<string, Promise<void>>()
   private readonly statusByAccount = new Map<string, KnowledgeRuntimeStatus>()
   private readonly statusListeners = new Set<(status: KnowledgeRuntimeStatus) => void>()
+  private readonly senderEnrichmentSessions = new Map<string, SenderEnrichmentSession>()
   private wcdbReadTail: Promise<void> = Promise.resolve()
+  private wcdbQueueMsTotal = 0
+  private wcdbExecutionMsTotal = 0
   private voiceTranscriptResolver:
     | ((reference: VoiceMessageReference) => VoiceTranscriptSnapshot)
     | undefined
@@ -310,7 +324,7 @@ export class KnowledgeSearchService {
       // An existing derived database can answer while its next incremental pass is running.
       // Never turn an interactive global search into another full WCDB scan during that pass.
       if (result.state === 'ready' || result.evidence.length) {
-        return this.toKnowledgeResult(result)
+        return this.toKnowledgeResult(result, request.retrievalSessionId)
       }
       if (this.indexing.has(accountId)) {
         return {
@@ -494,9 +508,19 @@ export class KnowledgeSearchService {
         score: -score
       }))
     }
+    const beforeQueueMs = this.wcdbQueueMsTotal
+    const beforeExecutionMs = this.wcdbExecutionMsTotal
+    const enrichmentStartedAt = Date.now()
+    const evidence = await this.enrichEvidenceSenders(result.evidence, request.retrievalSessionId)
     return {
       ...result,
-      evidence: await this.enrichEvidenceSenders(result.evidence)
+      evidence,
+      timings: {
+        ...result.timings,
+        senderEnrichmentMs: Date.now() - enrichmentStartedAt,
+        wcdbQueueMs: this.wcdbQueueMsTotal - beforeQueueMs,
+        wcdbExecutionMs: this.wcdbExecutionMsTotal - beforeExecutionMs
+      }
     }
   }
 
@@ -556,7 +580,17 @@ export class KnowledgeSearchService {
         messageLoadMs: total.messageLoadMs + (result.timings?.messageLoadMs || 0),
         chunkExpandMs: total.chunkExpandMs + (result.timings?.chunkExpandMs || 0),
         rankingMs: total.rankingMs + (result.timings?.rankingMs || 0),
-        totalMs: total.totalMs + (result.timings?.totalMs || 0)
+        totalMs: total.totalMs + (result.timings?.totalMs || 0),
+        globalCountMs: (total.globalCountMs || 0) + (result.timings?.globalCountMs || 0),
+        voiceCoverageMs: (total.voiceCoverageMs || 0) + (result.timings?.voiceCoverageMs || 0),
+        workerExecutionMs:
+          (total.workerExecutionMs || 0) +
+          (result.timings?.workerExecutionMs || result.timings?.totalMs || 0),
+        workerQueueMs: (total.workerQueueMs || 0) + (result.timings?.workerQueueMs || 0),
+        ipcMs: (total.ipcMs || 0) + (result.timings?.ipcMs || result.timings?.workerIpcMs || 0),
+        serializationMs:
+          (total.serializationMs || 0) +
+          (result.timings?.serializationMs || result.timings?.responseSerializeMs || 0)
       }),
       emptyKnowledgeSearchTimings()
     )
@@ -606,12 +640,23 @@ export class KnowledgeSearchService {
     const startedAt = Date.now()
     const result = await this.service.search(request)
     const timings = result.timings || emptyKnowledgeSearchTimings()
+    const workerExecutionMs = timings.workerExecutionMs ?? timings.totalMs
+    const ipcMs = timings.ipcMs ?? timings.workerIpcMs
+    const serializationMs = timings.serializationMs ?? timings.responseSerializeMs
     return {
       ...result,
       timings: {
         ...timings,
-        workerIpcMs: timings.workerIpcMs || Math.max(0, Date.now() - startedAt - timings.totalMs),
-        workerSqlMs: timings.workerSqlMs || timings.totalMs
+        // Do not infer IPC by subtracting the Worker timer from wall clock:
+        // that previously hid unmeasured Worker execution inside “通信”.
+        workerIpcMs: timings.workerIpcMs,
+        ipcMs,
+        workerSqlMs: timings.workerSqlMs || timings.totalMs,
+        workerExecutionMs,
+        serializationMs,
+        otherMs:
+          timings.otherMs ??
+          Math.max(0, Date.now() - startedAt - workerExecutionMs - ipcMs - serializationMs)
       }
     }
   }
@@ -646,12 +691,7 @@ export class KnowledgeSearchService {
     const reference = this.voiceReferenceFromMessage(message)
     const snapshot = reference ? this.voiceTranscriptResolver?.(reference) : undefined
     const hydrated = this.withVoiceTranscript(message)
-    const source = toSourceMessage(
-      accountId,
-      conversationId,
-      hydrated,
-      transcriptOverride
-    )
+    const source = toSourceMessage(accountId, conversationId, hydrated, transcriptOverride)
     if (!source || source.kind !== 'voice') return source
     return {
       ...source,
@@ -666,7 +706,12 @@ export class KnowledgeSearchService {
   private voiceReferenceFromMessage(
     message: chat.FormattedMessage
   ): VoiceMessageReference | undefined {
-    if (message.type !== '语音' || !message.sessionId || message.localId === undefined || !message.createTime) {
+    if (
+      message.type !== '语音' ||
+      !message.sessionId ||
+      message.localId === undefined ||
+      !message.createTime
+    ) {
       return undefined
     }
     return {
@@ -730,17 +775,31 @@ export class KnowledgeSearchService {
   }
 
   private async toKnowledgeResult(
-    result: KnowledgeSearchResult
+    result: KnowledgeSearchResult,
+    retrievalSessionId?: string
   ): Promise<KnowledgeSearchIpcResult> {
+    const beforeQueueMs = this.wcdbQueueMsTotal
+    const beforeExecutionMs = this.wcdbExecutionMsTotal
+    const enrichmentStartedAt = Date.now()
+    const evidence = await this.enrichEvidenceSenders(result.evidence, retrievalSessionId)
     return {
       ...result,
-      evidence: await this.enrichEvidenceSenders(result.evidence),
+      evidence,
+      timings: {
+        ...result.timings,
+        senderEnrichmentMs: Date.now() - enrichmentStartedAt,
+        wcdbQueueMs: this.wcdbQueueMsTotal - beforeQueueMs,
+        wcdbExecutionMs: this.wcdbExecutionMsTotal - beforeExecutionMs
+      },
       source: 'knowledge',
       totalMessages: result.indexedMessageCount
     }
   }
 
-  private async enrichEvidenceSenders(evidence: KnowledgeEvidence[]): Promise<KnowledgeEvidence[]> {
+  private async enrichEvidenceSenders(
+    evidence: KnowledgeEvidence[],
+    retrievalSessionId?: string
+  ): Promise<KnowledgeEvidence[]> {
     const candidateConversationIds = Array.from(
       new Set(
         evidence
@@ -750,14 +809,22 @@ export class KnowledgeSearchService {
     ).slice(0, MAX_SENDER_NAME_CONVERSATIONS)
     if (!candidateConversationIds.length) return evidence
 
-    const contacts = await this.listContacts()
+    const session = retrievalSessionId
+      ? this.senderEnrichmentSession(retrievalSessionId)
+      : undefined
+    const contacts = session?.contacts || (await this.listContacts())
+    if (session && !session.contacts) session.contacts = contacts
     const groupConversationIds = new Set(
       contacts.filter((contact) => contact.type === 'group').map((contact) => contact.md5)
     )
     const memberNamesByConversation = new Map<string, Map<string, string>>()
     for (const conversationId of candidateConversationIds) {
       if (!groupConversationIds.has(conversationId)) continue
-      const snapshot = await this.enqueueWcdbRead(() => chat.getGroupSnapshotAsync(conversationId))
+      let snapshot = session?.groupSnapshots.get(conversationId)
+      if (!snapshot) {
+        snapshot = await this.enqueueWcdbRead(() => chat.getGroupSnapshotAsync(conversationId))
+        session?.groupSnapshots.set(conversationId, snapshot)
+      }
       const memberNames = new Map(
         (snapshot?.members || [])
           .map((member) => [member.wxid, groupMemberDisplayName(member)] as const)
@@ -772,8 +839,39 @@ export class KnowledgeSearchService {
     })
   }
 
+  private senderEnrichmentSession(retrievalSessionId: string): SenderEnrichmentSession {
+    const now = Date.now()
+    for (const [key, value] of this.senderEnrichmentSessions) {
+      if (now - value.lastUsedAt > SENDER_ENRICHMENT_SESSION_TTL_MS) {
+        this.senderEnrichmentSessions.delete(key)
+      }
+    }
+    let session = this.senderEnrichmentSessions.get(retrievalSessionId)
+    if (!session) {
+      session = { lastUsedAt: now, groupSnapshots: new Map() }
+      this.senderEnrichmentSessions.set(retrievalSessionId, session)
+    }
+    session.lastUsedAt = now
+    while (this.senderEnrichmentSessions.size > MAX_SENDER_ENRICHMENT_SESSIONS) {
+      const oldest = this.senderEnrichmentSessions.keys().next().value as string | undefined
+      if (!oldest) break
+      this.senderEnrichmentSessions.delete(oldest)
+    }
+    return session
+  }
+
   private enqueueWcdbRead<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.wcdbReadTail.then(operation, operation)
+    const enqueuedAt = Date.now()
+    const run = async (): Promise<T> => {
+      const startedAt = Date.now()
+      this.wcdbQueueMsTotal += Math.max(0, startedAt - enqueuedAt)
+      try {
+        return await operation()
+      } finally {
+        this.wcdbExecutionMsTotal += Date.now() - startedAt
+      }
+    }
+    const result = this.wcdbReadTail.then(run, run)
     // Keep the queue usable after a read failure while returning that failure to its caller.
     this.wcdbReadTail = result.then(
       () => undefined,

@@ -942,6 +942,10 @@ app.whenReady().then(async () => {
       if (!event.sender.isDestroyed()) event.sender.send('ai-search:progress', progress)
     })
   })
+  ipcMain.handle('ai-search:cancel', (_, requestId: string) => {
+    if (!aiSearchPipelineService) throw new Error('本地搜索服务尚未初始化')
+    return aiSearchPipelineService.cancel(requestId)
+  })
   voiceBatchService = new VoiceBatchService(voiceRecognition)
   voiceBatchService.onProgress((progress) => {
     for (const window of BrowserWindow.getAllWindows()) {

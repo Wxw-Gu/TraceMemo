@@ -118,6 +118,13 @@ export interface AiSearchAgentTraceItem {
   /** Sanitized, human-readable arguments only. */
   arguments?: Record<string, string | number | boolean>
   resultCount?: number
+  uniqueCandidateCount?: number
+  newCandidateCount?: number
+  newEvidenceCount?: number
+  newConversationCount?: number
+  newSenderCount?: number
+  queryFingerprint?: string
+  hasMore?: boolean
   elapsedMs?: number
   decision?: string
 }
@@ -177,6 +184,16 @@ export interface AiSearchPipelineTimings {
   workerSqlMs: number
   responseSerializeMs: number
   responseTransferMs: number
+  workerQueueMs: number
+  workerExecutionMs: number
+  globalCountMs: number
+  voiceCoverageMs: number
+  wcdbQueueMs: number
+  wcdbExecutionMs: number
+  senderEnrichmentMs: number
+  ipcMs: number
+  serializationMs: number
+  otherMs: number
   ftsMs: number
   chunkExpandMs: number
   messageLoadMs: number
@@ -208,6 +225,7 @@ export interface AiSearchRetrievalContract {
     | 'conversation_name'
     | 'unresolved_identity'
   candidateCount: number
+  uniqueCandidateCount: number
   sourceMessageCount?: number
   sourceCoverage: 'complete' | 'partial' | 'keyword_match' | 'unknown'
   isComplete: boolean
@@ -219,7 +237,13 @@ export interface AiSearchRetrievalContract {
 
 export interface AiSearchPipelineResult {
   requestId: string
-  status: 'completed' | 'no_evidence' | 'retrieval_incomplete' | 'ai_failed' | 'failed'
+  status:
+    | 'completed'
+    | 'no_evidence'
+    | 'retrieval_incomplete'
+    | 'ai_failed'
+    | 'failed'
+    | 'cancelled'
   plan: AiSearchPlan
   knowledge: Pick<
     KnowledgeSearchIpcResult,
@@ -249,6 +273,10 @@ export interface AiSearchPipelineResult {
   error?: string
   errorStage?: Exclude<AiSearchProgressStage, 'completed' | 'error'>
   elapsedMs: number
+}
+
+export interface AiSearchCancelResult {
+  cancelled: boolean
 }
 
 const RANGE_LABELS: Record<AiSearchRange, string> = {

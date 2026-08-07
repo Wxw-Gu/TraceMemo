@@ -9,6 +9,13 @@ export type AgentAction =
 export interface AgentToolResult {
   summary: Record<string, unknown>
   candidateCount: number
+  uniqueCandidateCount?: number
+  newCandidateCount?: number
+  newEvidenceCount?: number
+  newConversationCount?: number
+  newSenderCount?: number
+  queryFingerprint?: string
+  hasMore?: boolean
   /** A host-owned coverage signal, never supplied by the model. */
   finalizeReason?: string
 }
@@ -22,6 +29,7 @@ export interface ControlledSearchAgentOptions {
   decide: (systemPrompt: string, toolResult: string) => Promise<string | undefined>
   execute: (action: Extract<AgentAction, { action: 'tool' }>) => Promise<AgentToolResult>
   onTrace: (item: Omit<AiSearchAgentTraceItem, 'sequence'>) => void
+  signal?: AbortSignal
 }
 
 export interface ControlledSearchAgentResult {
@@ -114,8 +122,10 @@ export async function runControlledSearchAgent(
 
   const maxToolCalls = options.maxToolCalls || MAX_AGENT_TOOL_CALLS
   while (toolCalls < maxToolCalls) {
+    options.signal?.throwIfAborted()
     const decisionStartedAt = Date.now()
     const output = await options.decide(systemPrompt, previousResult)
+    options.signal?.throwIfAborted()
     const decisionElapsedMs = Date.now() - decisionStartedAt
     const action = parseAction(output)
     if (!action) return { status: 'invalid', toolCalls, reason: 'Agent 返回的控制协议无效' }
@@ -144,13 +154,22 @@ export async function runControlledSearchAgent(
     })
     const toolStartedAt = Date.now()
     try {
+      options.signal?.throwIfAborted()
       const result = await options.execute(action)
+      options.signal?.throwIfAborted()
       const elapsedMs = Date.now() - toolStartedAt
       options.onTrace({
         event: 'toolCallEnd',
         label: '本地检索完成',
         toolName: action.tool,
         resultCount: result.candidateCount,
+        uniqueCandidateCount: result.uniqueCandidateCount,
+        newCandidateCount: result.newCandidateCount,
+        newEvidenceCount: result.newEvidenceCount,
+        newConversationCount: result.newConversationCount,
+        newSenderCount: result.newSenderCount,
+        queryFingerprint: result.queryFingerprint,
+        hasMore: result.hasMore,
         elapsedMs
       })
       previousResult = JSON.stringify(result.summary)
@@ -164,6 +183,7 @@ export async function runControlledSearchAgent(
         return { status: 'finalized', toolCalls, reason: result.finalizeReason }
       }
     } catch (error) {
+      if (options.signal?.aborted) throw error
       const elapsedMs = Date.now() - toolStartedAt
       const message = error instanceof Error ? error.message : '本次本地检索不可用'
       options.onTrace({

@@ -137,6 +137,7 @@ export class KnowledgeStore {
   private readonly database: DatabaseSync
   private readonly databasePath: string
   private readonly ftsExternalContent: boolean
+  private pendingStatsRefreshMs = 0
 
   constructor(
     private readonly databaseRoot: string,
@@ -203,6 +204,7 @@ export class KnowledgeStore {
     let indexedChunks = 0
     let updatedChunks = 0
     let unchangedConversations = 0
+    this.markStatsStale()
     this.setRunState('indexing')
     try {
       for (const conversation of request.conversations) {
@@ -238,6 +240,7 @@ export class KnowledgeStore {
       }
       if (request.sourceMessageCount !== undefined) {
         this.writeMeta('source_message_count', String(request.sourceMessageCount))
+        this.refreshStatsSnapshot()
       }
       this.setRunState('ready')
       return {
@@ -257,6 +260,8 @@ export class KnowledgeStore {
         cancelled ? 'cancelled' : 'error',
         error instanceof Error ? error.message : String(error)
       )
+      // Per-conversation transactions may already have committed. Keep the
+      // snapshot stale so the next status/search/open reconciles it once.
       if (cancelled) {
         return {
           accountId: this.accountId,
@@ -288,13 +293,9 @@ export class KnowledgeStore {
   }
 
   getSearchStatus(): Omit<KnowledgeSearchResult, 'evidence'> {
-    const indexedMessageCount = Number(
-      (this.database.prepare('SELECT COUNT(*) AS count FROM knowledge_messages').get() as DbRow)
-        .count
-    )
-    const indexedChunkCount = Number(
-      (this.database.prepare('SELECT COUNT(*) AS count FROM knowledge_chunks').get() as DbRow).count
-    )
+    this.ensureStatsSnapshot()
+    const indexedMessageCount = this.readStatNumber('stats_message_count')
+    const indexedChunkCount = this.readStatNumber('stats_chunk_count')
     const runState = this.readMeta('run_state')
     return {
       state:
@@ -667,7 +668,7 @@ export class KnowledgeStore {
       evidence: asRows(
         this.database
           .prepare(
-          `SELECT m.conversation_id, m.message_id, m.create_time, m.searchable_text, m.kind, m.sender_id, m.sender_name
+            `SELECT m.conversation_id, m.message_id, m.create_time, m.searchable_text, m.kind, m.sender_id, m.sender_name
            FROM knowledge_messages m
            WHERE ${clauses.join(' AND ')}
            ORDER BY m.create_time DESC
@@ -701,16 +702,28 @@ export class KnowledgeStore {
   }
 
   searchWithStatus(query: KnowledgeQuery): KnowledgeSearchResult {
+    const startedAt = Date.now()
     const status = this.getSearchStatus()
     const measured = status.indexedChunkCount > 0 ? this.searchMeasured(query) : null
+    const voiceStartedAt = Date.now()
+    const voiceCoverage = this.getVoiceCoverage(query)
+    const voiceCoverageMs = Date.now() - voiceStartedAt
+    const workerExecutionMs = Date.now() - startedAt
+    const statsRefreshMs = this.consumeStatsRefreshMs()
     return {
       ...status,
       // A long incremental pass can already have durable chunks. Those chunks are
       // safe to query and avoid falling back to a second scan of the source archive.
       evidence: measured?.evidence || [],
-      timings: measured?.timings || emptyKnowledgeSearchTimings(),
+      timings: {
+        ...(measured?.timings || emptyKnowledgeSearchTimings()),
+        totalMs: workerExecutionMs,
+        globalCountMs: statsRefreshMs,
+        voiceCoverageMs,
+        workerExecutionMs
+      },
       conversationRetrieval: measured?.conversationRetrieval,
-      voiceCoverage: this.getVoiceCoverage(query)
+      voiceCoverage
     }
   }
 
@@ -718,8 +731,24 @@ export class KnowledgeStore {
     const clauses = ["kind = 'voice'"]
     const values: (string | number)[] = []
     const conversationIds = Array.from(
-      new Set([...(query.conversationIds || []), ...(query.conversationId ? [query.conversationId] : [])])
+      new Set([
+        ...(query.conversationIds || []),
+        ...(query.conversationId ? [query.conversationId] : [])
+      ])
     ).filter(Boolean)
+    // The common global query can use the same truthful snapshot as status.
+    // Scoped or time-bounded coverage remains a real SQL aggregation because
+    // its answer depends on the requested slice.
+    if (!conversationIds.length && query.startTime === undefined && query.endTime === undefined) {
+      return {
+        voiceMessageCount: this.readStatNumber('stats_voice_message_count'),
+        transcribedVoiceCount: this.readStatNumber('stats_transcribed_voice_count'),
+        failedVoiceCount: this.readStatNumber('stats_failed_voice_count'),
+        voiceCoverageComplete:
+          this.readStatNumber('stats_voice_message_count') ===
+          this.readStatNumber('stats_transcribed_voice_count')
+      }
+    }
     if (conversationIds.length) {
       clauses.push(`conversation_id IN (${conversationIds.map(() => '?').join(', ')})`)
       values.push(...conversationIds)
@@ -828,6 +857,7 @@ export class KnowledgeStore {
     }
     this.writeMetaIfMissing('fts_config', fingerprint)
     this.createFtsTable()
+    this.ensureStatsSnapshot()
   }
 
   private createFtsTable(): void {
@@ -1140,6 +1170,61 @@ export class KnowledgeStore {
         'INSERT INTO knowledge_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
       )
       .run(key, value)
+  }
+
+  /**
+   * Counts are a database-state snapshot, not a per-search query. The snapshot
+   * is marked stale before indexing and refreshed only after the final request
+   * in a complete source pass. If the process is reopened while stale (for
+   * example after an incremental update, cancellation or crash), the first
+   * Worker operation reconciles it once before serving status/search.
+   */
+  private ensureStatsSnapshot(): void {
+    if (this.readMeta('stats_state') === 'fresh') return
+    this.refreshStatsSnapshot()
+  }
+
+  private markStatsStale(): void {
+    this.writeMeta('stats_state', 'stale')
+  }
+
+  private refreshStatsSnapshot(): void {
+    const startedAt = Date.now()
+    const messageCount = Number(
+      (this.database.prepare('SELECT COUNT(*) AS count FROM knowledge_messages').get() as DbRow)
+        .count
+    )
+    const chunkCount = Number(
+      (this.database.prepare('SELECT COUNT(*) AS count FROM knowledge_chunks').get() as DbRow).count
+    )
+    const voice = this.database
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN voice_transcript IS NOT NULL AND trim(voice_transcript) <> '' THEN 1 ELSE 0 END) AS transcribed,
+                SUM(CASE WHEN voice_transcript_state = 'failed' THEN 1 ELSE 0 END) AS failed
+         FROM knowledge_messages WHERE kind = 'voice'`
+      )
+      .get() as DbRow
+    this.writeMeta('stats_message_count', String(messageCount))
+    this.writeMeta('stats_chunk_count', String(chunkCount))
+    this.writeMeta('stats_voice_message_count', String(Number(voice.total || 0)))
+    this.writeMeta('stats_transcribed_voice_count', String(Number(voice.transcribed || 0)))
+    this.writeMeta('stats_failed_voice_count', String(Number(voice.failed || 0)))
+    this.writeMeta('stats_updated_at', String(Date.now()))
+    this.writeMeta('stats_state', 'fresh')
+    this.pendingStatsRefreshMs += Date.now() - startedAt
+  }
+
+  private readStatNumber(key: string): number {
+    const raw = this.readMeta(key)
+    const value = raw === null ? NaN : Number(raw)
+    return Number.isFinite(value) && value >= 0 ? value : 0
+  }
+
+  private consumeStatsRefreshMs(): number {
+    const value = this.pendingStatsRefreshMs
+    this.pendingStatsRefreshMs = 0
+    return value
   }
 
   private databaseBytes(): number {

@@ -139,16 +139,18 @@ describe('KnowledgeSearchService legacy fallback', () => {
         createTime: 1_785_895_200
       }
     ])
-    const { voiceAccountIdentity, voiceMessageIdentity } = await import(
-      '../../src/main/voice-pipeline/voice-message-identity'
-    )
+    const { voiceAccountIdentity, voiceMessageIdentity } =
+      await import('../../src/main/voice-pipeline/voice-message-identity')
     const reference = {
       sessionId: 'voice-contact',
       localId: 18,
       createTime: 1_785_895_200
     }
     const service = new KnowledgeSearchService('/tmp/wxe-knowledge-fallback', '/missing-worker.js')
-    service.setVoiceTranscriptResolver(() => ({ state: 'transcribed', transcript: '缓存中的语音文字' }))
+    service.setVoiceTranscriptResolver(() => ({
+      state: 'transcribed',
+      transcript: '缓存中的语音文字'
+    }))
 
     await service.indexVoiceTranscript({
       accountIdentity: voiceAccountIdentity(chatState.accountId),
@@ -220,9 +222,8 @@ describe('KnowledgeSearchService legacy fallback', () => {
           releaseFirstIndex = resolve
         })
     )
-    const { voiceAccountIdentity, voiceMessageIdentity } = await import(
-      '../../src/main/voice-pipeline/voice-message-identity'
-    )
+    const { voiceAccountIdentity, voiceMessageIdentity } =
+      await import('../../src/main/voice-pipeline/voice-message-identity')
     const service = new KnowledgeSearchService('/tmp/wxe-knowledge-fallback', '/missing-worker.js')
     const update = (localId: number, createTime: number): VoiceTranscriptUpdate => {
       const reference = { sessionId: 'voice-contact', localId, createTime }
@@ -353,6 +354,58 @@ describe('KnowledgeSearchService legacy fallback', () => {
       expect.objectContaining({ senderId: 'wxid_member', sender: '健身同学' })
     ])
     expect(getGroupSnapshotAsync).toHaveBeenCalledWith('fixture-group')
+    await service.dispose()
+  })
+
+  it('reuses contacts and group members only within the same retrieval session', async () => {
+    listContactsAsync.mockResolvedValue([
+      { md5: 'fixture-group', m_nsNickName: '脱敏群聊', type: 'group' }
+    ])
+    listMessagesAsync.mockResolvedValue([
+      {
+        id: 'group-message',
+        from: 'wxid_member',
+        type: '普通文本',
+        content: '今天继续健身。',
+        isSender: false,
+        senderId: 'wxid_member',
+        name: 'wxid_member',
+        createTime: 1785895200
+      }
+    ])
+    getGroupSnapshotAsync.mockResolvedValue({
+      roomId: 'fixture-group@chatroom',
+      memberCount: 1,
+      members: [
+        {
+          wxid: 'wxid_member',
+          nickname: '微信昵称',
+          groupNickname: '健身同学',
+          wechatNickname: '微信昵称',
+          remark: '',
+          avatar: ''
+        }
+      ]
+    })
+
+    const service = new KnowledgeSearchService('/tmp/wxe-knowledge-fallback', '/missing-worker.js')
+    const request = {
+      text: '健身',
+      terms: ['健身'],
+      retrievalSessionId: 'retrieval-a',
+      limit: 10
+    }
+    const first = await service.search(request)
+    const second = await service.search(request)
+
+    expect(first.evidence).toEqual(second.evidence)
+    expect(listContactsAsync).toHaveBeenCalledTimes(3)
+    // Each fallback search needs contacts for scope selection; enrichment is
+    // the only layer cached, so the second search avoids one extra lookup.
+    expect(getGroupSnapshotAsync).toHaveBeenCalledTimes(1)
+
+    await service.search({ ...request, retrievalSessionId: 'retrieval-b' })
+    expect(getGroupSnapshotAsync).toHaveBeenCalledTimes(2)
     await service.dispose()
   })
 })

@@ -44,9 +44,9 @@ describe('AI Search provider identity', () => {
       requiresConsent: true,
       recipient: 'https://first.example.test/v1'
     })
-    expect(service.save({ ...provider('https://remote.example.test'), type: 'ollama' }).success).toBe(
-      true
-    )
+    expect(
+      service.save({ ...provider('https://remote.example.test'), type: 'ollama' }).success
+    ).toBe(true)
     expect(service.getAiSearchProviderStatus()).toMatchObject({ requiresConsent: true })
     expect(service.save(provider('http://localhost:11434/')).success).toBe(true)
     expect(service.getAiSearchProviderStatus()).toMatchObject({
@@ -96,5 +96,35 @@ describe('AI Search provider identity', () => {
     expect(JSON.stringify(request)).not.toContain('conversationId')
     expect(JSON.stringify(request)).not.toContain('messageId')
     vi.unstubAllGlobals()
+  })
+
+  it('aborts the provider fetch when the caller cancels an AI request', async () => {
+    const service = new AIProviderService()
+    service.save(provider('http://127.0.0.1:11434'))
+    let fetchSignal: AbortSignal | undefined
+    const fetchMock = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          fetchSignal = init?.signal || undefined
+          fetchSignal?.addEventListener('abort', () => reject(fetchSignal?.reason), { once: true })
+        })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+
+    try {
+      const result = service.chat(
+        [{ role: 'user', content: 'cancel this request' }],
+        undefined,
+        controller.signal
+      )
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+      controller.abort(new DOMException('cancelled by test', 'AbortError'))
+
+      await expect(result).rejects.toMatchObject({ name: 'AbortError' })
+      expect(fetchSignal?.aborted).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

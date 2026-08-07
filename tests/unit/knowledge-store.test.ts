@@ -2,6 +2,7 @@ import { mkdtempSync, existsSync } from 'fs'
 import { rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DEFAULT_KNOWLEDGE_CHUNKER, type KnowledgeFtsConfig } from '../../src/shared/knowledge'
 import { chunkConversation } from '../../src/main/knowledge/chunker'
@@ -270,6 +271,84 @@ describe('knowledge sqlite', () => {
       voiceCoverageComplete: false
     })
     expect(result.evidence[0].text).not.toContain('失败')
+    store.close()
+  })
+
+  it('keeps truthful count snapshots off the repeated-search hot path', async () => {
+    const root = makeRoot()
+    const store = new KnowledgeStore(root, FIXTURE_ACCOUNT_A, fts)
+    const source = createSyntheticConversation(FIXTURE_ACCOUNT_A, 'stats-snapshot', 0, 12, 'mixed')
+    await store.index({ conversations: [source], chunker: DEFAULT_KNOWLEDGE_CHUNKER })
+
+    const first = store.searchWithStatus({
+      accountId: FIXTURE_ACCOUNT_A,
+      text: '本地知识库',
+      terms: ['本地知识库'],
+      limit: 10
+    })
+    const second = store.searchWithStatus({
+      accountId: FIXTURE_ACCOUNT_A,
+      text: '本地知识库',
+      terms: ['本地知识库'],
+      limit: 10
+    })
+
+    expect(first).toMatchObject({
+      indexedMessageCount: 12,
+      indexedChunkCount: expect.any(Number)
+    })
+    expect(first.timings.globalCountMs).toBeGreaterThanOrEqual(0)
+    expect(second.timings).toMatchObject({
+      globalCountMs: 0,
+      voiceCoverageMs: expect.any(Number),
+      workerExecutionMs: expect.any(Number)
+    })
+    expect(second.indexedMessageCount).toBe(first.indexedMessageCount)
+    expect(second.indexedChunkCount).toBe(first.indexedChunkCount)
+    store.close()
+
+    const reopened = new KnowledgeStore(root, FIXTURE_ACCOUNT_A, fts)
+    expect(reopened.getSearchStatus()).toMatchObject({
+      indexedMessageCount: 12,
+      indexedChunkCount: first.indexedChunkCount
+    })
+    reopened.close()
+  })
+
+  it('refreshes statistics only on the final request of a complete source pass', async () => {
+    const root = makeRoot()
+    const store = new KnowledgeStore(root, FIXTURE_ACCOUNT_A, fts)
+    const first = createSyntheticConversation(FIXTURE_ACCOUNT_A, 'stats-first', 0, 4, 'mixed')
+    const second = createSyntheticConversation(FIXTURE_ACCOUNT_A, 'stats-second', 4, 3, 'mixed')
+    await store.index({
+      conversations: [first],
+      chunker: DEFAULT_KNOWLEDGE_CHUNKER,
+      sourceMessageCount: 4
+    })
+
+    const inspect = new DatabaseSync(getKnowledgeDatabasePath(root, FIXTURE_ACCOUNT_A))
+    const readMeta = (key: string): string | undefined =>
+      (
+        inspect.prepare('SELECT value FROM knowledge_meta WHERE key = ?').get(key) as
+          | { value: string }
+          | undefined
+      )?.value
+
+    expect(readMeta('stats_state')).toBe('fresh')
+    expect(readMeta('stats_message_count')).toBe('4')
+
+    await store.index({ conversations: [second], chunker: DEFAULT_KNOWLEDGE_CHUNKER })
+    expect(readMeta('stats_state')).toBe('stale')
+    expect(readMeta('stats_message_count')).toBe('4')
+
+    await store.index({
+      conversations: [second],
+      chunker: DEFAULT_KNOWLEDGE_CHUNKER,
+      sourceMessageCount: 7
+    })
+    expect(readMeta('stats_state')).toBe('fresh')
+    expect(readMeta('stats_message_count')).toBe('7')
+    inspect.close()
     store.close()
   })
 

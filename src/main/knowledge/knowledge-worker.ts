@@ -30,7 +30,8 @@ function send(
 function sendSearchResult(
   request: KnowledgeWorkerRequest,
   payload: KnowledgeWorkerResponse['payload'],
-  workerReceivedAt: number
+  workerReceivedAt: number,
+  workerQueueMs: number
 ): void {
   const serializeStartedAt = Date.now()
   // This measures the actual payload encoding workload before Node IPC performs
@@ -39,7 +40,13 @@ function sendSearchResult(
   const responseSerializeMs = Date.now() - serializeStartedAt
   send(
     { version: 1, type: 'result', requestId: request.requestId, payload },
-    { workerReceivedAt, workerCompletedAt: Date.now(), responseSerializeMs }
+    {
+      messageReceivedAt: workerReceivedAt - workerQueueMs,
+      workerReceivedAt,
+      workerCompletedAt: Date.now(),
+      responseSerializeMs,
+      workerQueueMs
+    }
   )
 }
 
@@ -92,9 +99,12 @@ async function handlePreflight(
 
 async function handleSearch(
   request: KnowledgeWorkerRequest,
-  payload: KnowledgeSearchRequest
+  payload: KnowledgeSearchRequest,
+  messageReceivedAt: number
 ): Promise<void> {
   const workerReceivedAt = Date.now()
+  const workerQueueMs = Math.max(0, workerReceivedAt - messageReceivedAt)
+  const workerExecutionStartedAt = Date.now()
   const path = getKnowledgeDatabasePath(payload.databaseRoot, payload.accountId)
   if (!existsSync(path)) {
     sendSearchResult(
@@ -106,12 +116,24 @@ async function handleSearch(
         indexedChunkCount: 0,
         timings: emptyKnowledgeSearchTimings()
       },
-      workerReceivedAt
+      workerReceivedAt,
+      workerQueueMs
     )
     return
   }
   const result = getStore(payload).searchWithStatus(payload)
-  sendSearchResult(request, result, workerReceivedAt)
+  sendSearchResult(
+    request,
+    {
+      ...result,
+      timings: {
+        ...result.timings,
+        workerExecutionMs: Date.now() - workerExecutionStartedAt
+      }
+    },
+    workerReceivedAt,
+    workerQueueMs
+  )
 }
 
 async function handleStatus(
@@ -144,7 +166,7 @@ async function handleStatus(
   })
 }
 
-async function handle(request: KnowledgeWorkerRequest): Promise<void> {
+async function handle(request: KnowledgeWorkerRequest, messageReceivedAt: number): Promise<void> {
   try {
     if (request.type === 'cancel') {
       const payload = request.payload as { targetRequestId: string }
@@ -172,7 +194,7 @@ async function handle(request: KnowledgeWorkerRequest): Promise<void> {
       return
     }
     if (request.type === 'search') {
-      await handleSearch(request, request.payload as KnowledgeSearchRequest)
+      await handleSearch(request, request.payload as KnowledgeSearchRequest, messageReceivedAt)
       return
     }
     if (request.type === 'status') {
@@ -196,5 +218,5 @@ async function handle(request: KnowledgeWorkerRequest): Promise<void> {
 
 process.on('message', (message: KnowledgeWorkerRequest) => {
   if (message?.version !== 1) return
-  void handle(message)
+  void handle(message, Date.now())
 })

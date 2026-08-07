@@ -56,6 +56,8 @@ describe('preload IPC contract', () => {
     }
     await api.runAiSearch(aiSearch)
     expect(invoke).toHaveBeenLastCalledWith('ai-search:run', aiSearch)
+    await api.cancelAiSearch(aiSearch.requestId)
+    expect(invoke).toHaveBeenLastCalledWith('ai-search:cancel', aiSearch.requestId)
     await api.startKnowledgeIndex()
     expect(invoke).toHaveBeenLastCalledWith('knowledge:startIndex')
     await api.clearCache('knowledge')

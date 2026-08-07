@@ -243,6 +243,26 @@ export interface KnowledgeSearchTimings {
   rankingMs: number
   /** Worker-side local search total. */
   totalMs: number
+  /** Time spent refreshing a stale on-disk statistics snapshot. */
+  globalCountMs?: number
+  /** Voice coverage aggregation time for this query. */
+  voiceCoverageMs?: number
+  /** Full Worker handler execution, including status and coverage bookkeeping. */
+  workerExecutionMs?: number
+  /** Worker queue wait in the main-process host, when observable. */
+  workerQueueMs?: number
+  /** Main-process WCDB FIFO wait, when observable. */
+  wcdbQueueMs?: number
+  /** Main-process WCDB operation execution, when observable. */
+  wcdbExecutionMs?: number
+  /** Main-process sender/contact enrichment duration. */
+  senderEnrichmentMs?: number
+  /** Main-process IPC/transport duration, when separated from Worker execution. */
+  ipcMs?: number
+  /** Serialization/encoding duration outside the Worker SQL timer. */
+  serializationMs?: number
+  /** Other unclassified waiting in the retrieval path. */
+  otherMs?: number
 }
 
 export const emptyKnowledgeSearchTimings = (): KnowledgeSearchTimings => ({
@@ -273,6 +293,8 @@ export interface KnowledgeSearchResult {
 export interface KnowledgeSearchIpcRequest {
   text: string
   terms: string[]
+  /** Bounded request/session cache key for sender enrichment only. */
+  retrievalSessionId?: string
   conversationIds?: string[]
   senderIds?: string[]
   startTime?: number
@@ -341,9 +363,12 @@ export interface KnowledgeWorkerResponse {
     | { removed: true }
   error?: string
   transport?: {
+    /** IPC message arrival timestamp in the Worker event loop. */
+    messageReceivedAt?: number
     workerReceivedAt: number
     workerCompletedAt: number
     responseSerializeMs: number
+    workerQueueMs?: number
   }
 }
 

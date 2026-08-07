@@ -37,6 +37,7 @@ import type {
   VoiceRecognitionResult
 } from '../shared/voice-recognition'
 import type {
+  AiSearchCancelResult,
   AiSearchPipelineRequest,
   AiSearchPipelineResult,
   AiSearchProgressEvent
@@ -88,6 +89,8 @@ const api = {
     ipcRenderer.invoke('knowledge:search', request),
   runAiSearch: (request: AiSearchPipelineRequest): Promise<AiSearchPipelineResult> =>
     ipcRenderer.invoke('ai-search:run', request),
+  cancelAiSearch: (requestId: string): Promise<AiSearchCancelResult> =>
+    ipcRenderer.invoke('ai-search:cancel', requestId),
   onAiSearchProgress: (callback: (progress: AiSearchProgressEvent) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, progress: AiSearchProgressEvent): void =>
       callback(progress)

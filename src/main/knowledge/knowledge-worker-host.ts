@@ -169,8 +169,12 @@ export class KnowledgeWorkerHost {
         workerBootMs,
         dispatchMs,
         workerSqlMs: result.timings.totalMs,
+        workerExecutionMs: result.timings.workerExecutionMs ?? result.timings.totalMs,
+        workerQueueMs: transport.workerQueueMs ?? 0,
         responseSerializeMs: transport.responseSerializeMs,
         responseTransferMs,
+        serializationMs: transport.responseSerializeMs,
+        ipcMs: workerBootMs + dispatchMs + responseTransferMs,
         workerIpcMs: workerBootMs + dispatchMs + responseTransferMs
       }
     }
