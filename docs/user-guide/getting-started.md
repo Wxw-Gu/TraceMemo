@@ -224,7 +224,7 @@ Windows 当前不会扫描二级目录，请确认目录没有多选或少选一
 4. 复制安装指令，粘贴给对应 Agent 执行。
 5. 安装完成后，让 Agent 读取和总结本地聊天。
 
-本地 API 默认地址为 `http://127.0.0.1:6131`，默认仅监听本机且无鉴权。详细端点和参数见 [Reader Skill 文档](../skill/wechatexplorer-reader/SKILL.md)。
+本地 API 默认地址为 `http://127.0.0.1:6131`，默认仅监听本机。除 health 外的数据接口需要 Bearer Token；Token 可在 API Center 中显示或复制。详细端点和参数见 [Reader Skill 文档](../skill/wechatexplorer-reader/SKILL.md)。
 
 ### Agent Hub
 
@@ -235,7 +235,7 @@ Windows 当前不会扫描二级目录，请确认目录没有多选或少选一
 - WechatExplorer 只读取你有权访问的本机微信数据。
 - 不使用 AI 时，应用不会因为读取聊天记录而自动上传聊天内容。
 - 使用 AI 问问微信、日报或图片理解时，相关内容会发送到你配置的模型服务。
-- 本地 API 默认监听 `127.0.0.1`，且无鉴权。不要将它暴露在不可信的局域网环境中。
+- 本地 API 默认监听 `127.0.0.1`，并要求 Bearer Token。它仍面向个人本机使用，不建议暴露到公网或不受信任网络。
 
 ## 仍然无法解决？
 

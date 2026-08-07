@@ -11,6 +11,7 @@ import type {
   ApiResponse,
   ApiServiceState,
   ApiSettings,
+  ApiTokenStatus,
   RequestHistoryItem,
   SkillStatus
 } from '../model/types'
@@ -19,12 +20,15 @@ import {
   buildSkillInstallInstruction,
   buildSkillVerificationPrompt
 } from '../utils/buildSkillInstallInstruction'
+import { confirmApiTokenRotation } from '../utils/confirmApiTokenRotation'
 
 type RequestState = 'idle' | 'loading' | 'success' | 'error'
 
 interface State {
   settings: ApiSettings | null
   service: ApiServiceState | null
+  tokenStatus: ApiTokenStatus | null
+  revealedToken: string
   skill: SkillStatus | null
   endpointId: string
   params: Record<string, string>
@@ -39,7 +43,13 @@ interface State {
 }
 
 type Action =
-  | { type: 'loaded'; settings: ApiSettings; service: ApiServiceState; skill: SkillStatus }
+  | {
+      type: 'loaded'
+      settings: ApiSettings
+      service: ApiServiceState
+      skill: SkillStatus
+      tokenStatus: ApiTokenStatus
+    }
   | { type: 'endpoint'; endpointId: string; talker?: string }
   | { type: 'params'; params: Record<string, string> }
   | { type: 'body'; body: string }
@@ -49,10 +59,15 @@ type Action =
   | { type: 'markdown'; content: string | null }
   | { type: 'toast'; message: string }
   | { type: 'installTarget'; target: AgentInstallTarget }
+  | { type: 'tokenRevealed'; token: string }
+  | { type: 'tokenHidden' }
+  | { type: 'tokenStatus'; status: ApiTokenStatus }
 
 const initialState: State = {
   settings: null,
   service: null,
+  tokenStatus: null,
+  revealedToken: '',
   skill: null,
   endpointId: 'health',
   params: {},
@@ -69,7 +84,13 @@ const initialState: State = {
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'loaded':
-      return { ...state, settings: action.settings, service: action.service, skill: action.skill }
+      return {
+        ...state,
+        settings: action.settings,
+        service: action.service,
+        skill: action.skill,
+        tokenStatus: action.tokenStatus
+      }
     case 'endpoint': {
       const preset =
         action.endpointId === 'report'
@@ -108,6 +129,12 @@ function reducer(state: State, action: Action): State {
       return { ...state, toast: action.message }
     case 'installTarget':
       return { ...state, installTarget: action.target }
+    case 'tokenRevealed':
+      return { ...state, revealedToken: action.token }
+    case 'tokenHidden':
+      return { ...state, revealedToken: '' }
+    case 'tokenStatus':
+      return { ...state, tokenStatus: action.status, revealedToken: '' }
   }
 }
 
@@ -124,6 +151,11 @@ export function useApiCenterController(selectedContact: Contact | null): {
   reportError: (error: string) => void
   showToast: (message: string) => void
   copyText: (text: string, successMessage: string) => Promise<void>
+  copyCurl: () => Promise<void>
+  revealToken: () => Promise<void>
+  hideToken: () => void
+  copyToken: () => Promise<void>
+  rotateToken: () => Promise<void>
   setInstallTarget: (target: AgentInstallTarget) => void
   copyInstallInstruction: () => Promise<void>
   copyVerificationPrompt: () => Promise<void>
@@ -135,12 +167,13 @@ export function useApiCenterController(selectedContact: Contact | null): {
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      const [{ settings }, service, skill] = await Promise.all([
+      const [{ settings }, service, skill, tokenStatus] = await Promise.all([
         window.api.getSettings(),
         window.api.apiStatus(),
-        window.api.getReaderSkillStatus()
+        window.api.getReaderSkillStatus(),
+        window.api.apiTokenStatus()
       ])
-      dispatch({ type: 'loaded', settings, service, skill })
+      dispatch({ type: 'loaded', settings, service, skill, tokenStatus })
     } catch (error) {
       dispatch({
         type: 'error',
@@ -265,6 +298,31 @@ export function useApiCenterController(selectedContact: Contact | null): {
     },
     [showToast]
   )
+  const revealToken = useCallback(async (): Promise<void> => {
+    const result = await window.api.revealApiToken()
+    if (result.token) dispatch({ type: 'tokenRevealed', token: result.token })
+    else dispatch({ type: 'error', error: result.error || '无法读取 API Token' })
+  }, [])
+  const hideToken = useCallback((): void => dispatch({ type: 'tokenHidden' }), [])
+  const copyToken = useCallback(async (): Promise<void> => {
+    const result = await window.api.copyApiToken()
+    showToast(result.success ? 'Token 已复制' : result.error || 'Token 复制失败')
+  }, [showToast])
+  const rotateToken = useCallback(async (): Promise<void> => {
+    if (!confirmApiTokenRotation()) return
+    const result = await window.api.rotateApiToken()
+    dispatch({ type: 'tokenStatus', status: result })
+    showToast(result.success ? 'Token 已重新生成' : result.error || 'Token 重新生成失败')
+  }, [showToast])
+  const copyCurl = useCallback(async (): Promise<void> => {
+    const endpoint = findEndpoint(state.endpointId)
+    const result = await window.api.copyLocalApiCurl({
+      endpointId: endpoint.id,
+      query: state.params,
+      body: state.body
+    })
+    showToast(result.success ? 'curl 命令已复制' : result.error || 'curl 命令复制失败')
+  }, [showToast, state.body, state.endpointId, state.params])
   const setInstallTarget = useCallback(
     (target: AgentInstallTarget): void => dispatch({ type: 'installTarget', target }),
     []
@@ -318,6 +376,11 @@ export function useApiCenterController(selectedContact: Contact | null): {
     reportError,
     showToast,
     copyText,
+    copyCurl,
+    revealToken,
+    hideToken,
+    copyToken,
+    rotateToken,
     setInstallTarget,
     copyInstallInstruction,
     copyVerificationPrompt,

@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import http, { IncomingMessage, ServerResponse, Server } from 'http'
 import {
   isReady,
@@ -12,6 +13,7 @@ import { GroupReportExportRequest } from '../shared/group-report'
 import { generateAgentGroupReport } from './services/agent-group-report-service'
 import { agentHubService } from './services/agent-hub-service'
 import { safeError, safeLog, safeWarn } from './safe-log'
+import { apiTokenStore } from './api-token-store'
 
 export const DEFAULT_HTTP_HOST = '127.0.0.1'
 export const DEFAULT_HTTP_PORT = 6131
@@ -29,6 +31,10 @@ interface RouteContext {
   body?: unknown
 }
 
+export interface HttpServerOptions {
+  tokenProvider?: () => string | null
+}
+
 type RouteHandler = (ctx: RouteContext) => void | Promise<void>
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -36,10 +42,48 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
-    'Access-Control-Allow-Origin': '*',
     'Cache-Control': 'no-store'
   })
   res.end(body)
+}
+
+function isAllowedCorsOrigin(origin: string): boolean {
+  if (!/^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(origin)) return false
+  try {
+    const parsed = new URL(origin)
+    if (parsed.protocol !== 'http:') return false
+    if (parsed.username || parsed.password) return false
+    return ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+function applyCorsHeaders(req: IncomingMessage, res: ServerResponse): boolean {
+  const origin = req.headers.origin
+  if (!origin) return true
+  if (!isAllowedCorsOrigin(origin)) return false
+  res.setHeader('Access-Control-Allow-Origin', origin)
+  res.setHeader('Vary', 'Origin')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  return true
+}
+
+function isAuthorized(req: IncomingMessage, expectedToken: string | null): boolean {
+  const header = req.headers.authorization
+  const match = typeof header === 'string' ? /^Bearer ([A-Za-z0-9_-]+)$/.exec(header) : null
+  if (!match || !expectedToken) return false
+  const actualDigest = crypto.createHash('sha256').update(match[1], 'utf8').digest()
+  const expectedDigest = crypto.createHash('sha256').update(expectedToken, 'utf8').digest()
+  return crypto.timingSafeEqual(actualDigest, expectedDigest)
+}
+
+function sendUnauthorized(res: ServerResponse): void {
+  sendJson(res, 401, {
+    error: 'unauthorized',
+    message: 'Valid API token required'
+  })
 }
 
 function sendError(res: ServerResponse, status: number, message: string, extra?: unknown): void {
@@ -301,23 +345,27 @@ const routes: Record<string, RouteHandler> = {
 
 export function startHttpServer(
   host: string = DEFAULT_HTTP_HOST,
-  port: number = DEFAULT_HTTP_PORT
+  port: number = DEFAULT_HTTP_PORT,
+  options: HttpServerOptions = {}
 ): Promise<HttpServerHandle> {
+  const tokenProvider = options.tokenProvider || (() => apiTokenStore.getTokenForAuthentication())
   return new Promise((resolve, reject) => {
     const server: Server = http.createServer(async (req, res) => {
       try {
         const url = new URL(req.url || '/', `http://${host}:${port}`)
+        if (!applyCorsHeaders(req, res)) {
+          return sendError(res, 403, 'Origin 不允许访问本地 API')
+        }
         if (req.method === 'OPTIONS') {
-          res.writeHead(204, {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': '*'
-          })
+          res.writeHead(204)
           return res.end()
         }
         const handler = routes[url.pathname]
         if (!handler) {
           return sendError(res, 404, `端点不存在: ${url.pathname}`)
+        }
+        if (url.pathname !== '/api/v1/health' && !isAuthorized(req, tokenProvider())) {
+          return sendUnauthorized(res)
         }
         let body: string | undefined
         if (req.method && req.method !== 'GET' && req.method !== 'HEAD') {
@@ -391,11 +439,24 @@ export const apiServer = {
       return this.getState()
     }
 
+    const token = apiTokenStore.ensureToken()
+    if (!token.success) {
+      singletonState = {
+        running: false,
+        host,
+        port,
+        error: token.error || 'API Token 安全存储不可用'
+      }
+      return { ...singletonState }
+    }
+
     const maxAttempts = 4
     let lastError: (NodeJS.ErrnoException & { friendlyMessage?: string }) | null = null
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        singleton = await startHttpServer(host, port)
+        singleton = await startHttpServer(host, port, {
+          tokenProvider: () => apiTokenStore.getTokenForAuthentication()
+        })
         singletonState = {
           running: true,
           host: singleton.host,

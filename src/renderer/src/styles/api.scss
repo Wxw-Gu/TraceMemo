@@ -631,6 +631,23 @@
   color: #915d1e;
   font: 12px/18px var(--wxex-font);
 }
+.api-token-value {
+  display: block;
+  overflow-wrap: anywhere;
+  margin: 10px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-sm);
+  background: var(--wxex-bg-subtle);
+  color: var(--wxex-text-primary);
+  font:
+    12px/18px ui-monospace,
+    monospace;
+  user-select: text;
+}
+.api-token-section .api-runtime-actions button:last-child {
+  grid-column: 1 / -1;
+}
 .api-response-summary {
   display: flex;
   align-items: center;

@@ -38,6 +38,17 @@ export interface LocalApiTestResponse {
   contentType?: string
   json?: unknown
   bodyText?: string
-  errorCode?: 'API_NOT_RUNNING' | 'CONNECTION_REFUSED' | 'TIMEOUT' | 'INVALID_REQUEST' | 'UNKNOWN'
+  errorCode?:
+    | 'API_NOT_RUNNING'
+    | 'TOKEN_UNAVAILABLE'
+    | 'CONNECTION_REFUSED'
+    | 'TIMEOUT'
+    | 'INVALID_REQUEST'
+    | 'UNKNOWN'
+  error?: string
+}
+
+export interface LocalApiCurlCopyResult {
+  success: boolean
   error?: string
 }

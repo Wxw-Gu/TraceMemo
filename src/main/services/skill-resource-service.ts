@@ -48,7 +48,7 @@ function getStatus(): SkillResourceStatus {
   }
   return {
     available: true,
-    version: 'v1.0',
+    version: 'v1.1',
     filePath,
     directoryPath,
     source,

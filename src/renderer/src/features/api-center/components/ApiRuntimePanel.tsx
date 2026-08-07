@@ -1,26 +1,43 @@
-import type { ApiResponse, ApiServiceState, RequestHistoryItem } from '../model/types'
+import type {
+  ApiResponse,
+  ApiServiceState,
+  ApiTokenStatus,
+  RequestHistoryItem
+} from '../model/types'
 import { type ReactElement } from 'react'
 import { isLoopbackHost } from '../utils/buildApiUrl'
 import { formatJson, formatResponseSize, inferResponseCount } from '../utils/formatResponse'
 
 interface Props {
   service: ApiServiceState | null
+  tokenStatus: ApiTokenStatus | null
+  revealedToken: string
   dbReady: boolean
   response: ApiResponse | null
   history: RequestHistoryItem[]
   onControl: (action: 'start' | 'stop' | 'restart') => void
   onOpenSettings: () => void
   onCopy: (text: string, message: string) => Promise<void>
+  onRevealToken: () => Promise<void>
+  onHideToken: () => void
+  onCopyToken: () => Promise<void>
+  onRotateToken: () => Promise<void>
 }
 
 export function ApiRuntimePanel({
   service,
+  tokenStatus,
+  revealedToken,
   dbReady,
   response,
   history,
   onControl,
   onOpenSettings,
-  onCopy
+  onCopy,
+  onRevealToken,
+  onHideToken,
+  onCopyToken,
+  onRotateToken
 }: Props): ReactElement {
   const host = service?.host || '127.0.0.1'
   const port = service?.port || 6131
@@ -33,7 +50,7 @@ export function ApiRuntimePanel({
           <div className="api-runtime-title">
             <h2>运行状态</h2>
             <span className={service?.running ? 'ready' : 'stopped'}>
-              {service?.running ? '运行中' : '已停止'}
+              {service?.running ? 'API 已启用' : '已停止'}
             </span>
           </div>
           <dl>
@@ -49,7 +66,7 @@ export function ApiRuntimePanel({
             </div>
             <div>
               <dt>鉴权方式</dt>
-              <dd>无需鉴权</dd>
+              <dd>{tokenStatus?.hasToken ? 'Bearer Token' : '不可用'}</dd>
             </div>
             <div>
               <dt>访问范围</dt>
@@ -85,8 +102,45 @@ export function ApiRuntimePanel({
           </div>
         </section>
         {!localOnly && (
-          <p className="api-security-warning">当前服务可能被局域网设备访问，且 API 暂无鉴权。</p>
+          <p className="api-security-warning">
+            当前服务可能被局域网设备访问。Bearer Token 不能替代可信网络边界。
+          </p>
         )}
+        <section className="api-token-section">
+          <div className="api-runtime-title">
+            <h3>API Token</h3>
+            <span className={tokenStatus?.hasToken ? 'ready' : 'stopped'}>
+              {tokenStatus?.hasToken ? 'Token 已生成' : 'Token 不可用'}
+            </span>
+          </div>
+          <code className="api-token-value">
+            {revealedToken || tokenStatus?.maskedToken || '••••••••••••••••'}
+          </code>
+          {tokenStatus?.error && <p className="api-inline-error">{tokenStatus.error}</p>}
+          <div className="api-runtime-actions">
+            <button
+              type="button"
+              disabled={!tokenStatus?.hasToken}
+              onClick={() => void (revealedToken ? onHideToken() : onRevealToken())}
+            >
+              {revealedToken ? '隐藏 Token' : '显示 Token'}
+            </button>
+            <button
+              type="button"
+              disabled={!tokenStatus?.hasToken}
+              onClick={() => void onCopyToken()}
+            >
+              复制 Token
+            </button>
+            <button
+              type="button"
+              disabled={!tokenStatus?.available}
+              onClick={() => void onRotateToken()}
+            >
+              重新生成 Token
+            </button>
+          </div>
+        </section>
         <section>
           <h3>最近响应</h3>
           {response ? (
@@ -142,7 +196,7 @@ export function ApiRuntimePanel({
           <p>
             {localOnly
               ? '本地 API 默认监听 127.0.0.1。WechatExplorer 不会通过该接口自动把聊天内容发送到云端。外部 Agent 是否调用第三方模型，取决于其自身配置。'
-              : '当前服务并非仅本机访问。请确认局域网环境可信，且注意 API 暂无鉴权。'}
+              : '当前服务并非仅本机访问。请确认局域网环境可信；API Token 不等同于公网安全防护。'}
           </p>
         </section>
       </div>

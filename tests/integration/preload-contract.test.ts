@@ -105,6 +105,22 @@ describe('preload IPC contract', () => {
     expect(api).not.toHaveProperty('send')
   })
 
+  it('exposes only the intentional API token IPC operations', async () => {
+    const api = await loadApi()
+    invoke.mockResolvedValue({ available: true, hasToken: true, maskedToken: '••••' })
+
+    await api.apiTokenStatus()
+    expect(invoke).toHaveBeenLastCalledWith('api:tokenStatus')
+    await api.revealApiToken()
+    expect(invoke).toHaveBeenLastCalledWith('api:revealToken')
+    await api.copyApiToken()
+    expect(invoke).toHaveBeenLastCalledWith('api:copyToken')
+    await api.rotateApiToken()
+    expect(invoke).toHaveBeenLastCalledWith('api:rotateToken')
+    await api.copyLocalApiCurl({ endpointId: 'contact' })
+    expect(invoke).toHaveBeenLastCalledWith('api:copyCurl', { endpointId: 'contact' })
+  })
+
   it('unsubscribes the same listener registered for native database changes', async () => {
     const api = await loadApi()
     const callback = vi.fn()

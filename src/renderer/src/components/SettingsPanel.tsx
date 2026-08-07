@@ -73,9 +73,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [settingsPath, setSettingsPath] = useState('')
   const [apiState, setApiState] = useState<ApiState | null>(null)
-  const [testStatus, setTestStatus] = useState<
-    { kind: 'idle' | 'ok' | 'fail'; message: string; wxid?: string; accountRoot?: string }
-  >({ kind: 'idle', message: '' })
+  const [testStatus, setTestStatus] = useState<{
+    kind: 'idle' | 'ok' | 'fail'
+    message: string
+    wxid?: string
+    accountRoot?: string
+  }>({ kind: 'idle', message: '' })
   const [reopenStatus, setReopenStatus] = useState<string>('')
   const [imageKeyStatus, setImageKeyStatus] = useState<{
     kind: 'idle' | 'ok' | 'fail'
@@ -135,7 +138,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         setTestStatus({ kind: 'fail', message: result.error || '连接失败' })
       }
     } catch (error) {
-      setTestStatus({ kind: 'fail', message: error instanceof Error ? error.message : String(error) })
+      setTestStatus({
+        kind: 'fail',
+        message: error instanceof Error ? error.message : String(error)
+      })
     } finally {
       setBusy(false)
     }
@@ -226,7 +232,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <div className="settings-self">
                 <div className="settings-self-avatar">
                   {selfInfo.avatar ? (
-                    <img src={selfInfo.avatar} alt={selfInfo.nickname} referrerPolicy="no-referrer" />
+                    <img
+                      src={selfInfo.avatar}
+                      alt={selfInfo.nickname}
+                      referrerPolicy="no-referrer"
+                    />
                   ) : (
                     (selfInfo.nickname || selfInfo.wxid || '?').charAt(0)
                   )}
@@ -334,7 +344,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </div>
             )}
             <div className="settings-hint">
-              目录默认使用数据库根目录，用于查找图片模板文件。Windows 会直接扫描微信内存，请先在微信中打开 2-3 张图片大图。
+              目录默认使用数据库根目录，用于查找图片模板文件。Windows
+              会直接扫描微信内存，请先在微信中打开 2-3 张图片大图。
             </div>
           </section>
 
@@ -346,24 +357,23 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 type="text"
                 className="settings-input"
                 value={settings?.dbRoot ?? ''}
-                onChange={(e) => setSettings(settings ? { ...settings, dbRoot: e.target.value } : null)}
+                onChange={(e) =>
+                  setSettings(settings ? { ...settings, dbRoot: e.target.value } : null)
+                }
                 onBlur={(e) => handleSave({ dbRoot: e.target.value })}
                 placeholder={dbRootPlaceholder}
                 spellCheck={false}
               />
             </div>
             <div className="settings-row">
-              <button
-                className="settings-btn"
-                onClick={handleReopen}
-                disabled={busy || !dbReady}
-              >
+              <button className="settings-btn" onClick={handleReopen} disabled={busy || !dbReady}>
                 应用并重新初始化
               </button>
               {reopenStatus && <span className="settings-status">{reopenStatus}</span>}
             </div>
             <div className="settings-hint">
-              可填写微信数据总目录或具体账号目录。Windows 通常是 Documents\WeChat Files，macOS 通常是 xwechat_files；程序会自动选择包含 db_storage/session.db 的账号目录。
+              可填写微信数据总目录或具体账号目录。Windows 通常是 Documents\WeChat Files，macOS
+              通常是 xwechat_files；程序会自动选择包含 db_storage/session.db 的账号目录。
             </div>
           </section>
 
@@ -412,8 +422,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               />
             </div>
             <div className="settings-hint">
-              所选内容会发送至你配置的模型服务进行处理。配置沿用原有本地
-              localStorage 保存方式。
+              所选内容会发送至你配置的模型服务进行处理。配置沿用原有本地 localStorage 保存方式。
             </div>
           </section>
 
@@ -442,7 +451,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 type="text"
                 className="settings-input settings-input-half"
                 value={settings?.apiHost ?? ''}
-                onChange={(e) => setSettings(settings ? { ...settings, apiHost: e.target.value } : null)}
+                onChange={(e) =>
+                  setSettings(settings ? { ...settings, apiHost: e.target.value } : null)
+                }
                 onBlur={(e) => handleSave({ apiHost: e.target.value })}
                 placeholder="host"
                 spellCheck={false}
@@ -452,7 +463,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 className="settings-input settings-input-quarter"
                 value={settings?.apiPort ?? 6131}
                 onChange={(e) =>
-                  setSettings(settings ? { ...settings, apiPort: Number(e.target.value) || 6131 } : null)
+                  setSettings(
+                    settings ? { ...settings, apiPort: Number(e.target.value) || 6131 } : null
+                  )
                 }
                 onBlur={(e) => handleSave({ apiPort: Number(e.target.value) || 6131 })}
                 placeholder="port"
@@ -462,7 +475,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </button>
             </div>
             <div className="settings-hint">
-              API 仅本机访问,无鉴权。关闭后 Claude / Codex 等客户端无法读取聊天数据。
+              API 默认仅监听本机，并通过 Bearer Token 保护数据接口。Token 请在 API Center
+              中显示或复制。关闭后 Claude / Codex 等客户端无法读取聊天数据。
               <br />
               配置文档:<code>docs/skill/wechatexplorer-reader/SKILL.md</code>
             </div>

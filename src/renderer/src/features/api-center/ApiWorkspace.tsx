@@ -54,7 +54,7 @@ export function ApiWorkspace({ selectedContact, dbReady, onOpenSettings }: Props
             onBody={controller.updateBody}
             onSend={controller.runRequest}
             onClear={clear}
-            onCopyCurl={(command) => controller.copyText(command, 'curl 命令已复制')}
+            onCopyCurl={controller.copyCurl}
           />
         </div>
         {state.rawMarkdown && (
@@ -67,12 +67,18 @@ export function ApiWorkspace({ selectedContact, dbReady, onOpenSettings }: Props
       </main>
       <ApiRuntimePanel
         service={state.service}
+        tokenStatus={state.tokenStatus}
+        revealedToken={state.revealedToken}
         dbReady={dbReady}
         response={state.response}
         history={state.history}
         onControl={controller.controlService}
         onOpenSettings={onOpenSettings}
         onCopy={controller.copyText}
+        onRevealToken={controller.revealToken}
+        onHideToken={controller.hideToken}
+        onCopyToken={controller.copyToken}
+        onRotateToken={controller.rotateToken}
       />
       {state.toast && <div className="app-toast">{state.toast}</div>}
     </div>

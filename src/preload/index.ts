@@ -253,6 +253,10 @@ const api = {
   disconnectDb: (options?: { closeNative?: boolean }) =>
     ipcRenderer.invoke('db:disconnect', options),
   apiStatus: () => ipcRenderer.invoke('api:getStatus'),
+  apiTokenStatus: () => ipcRenderer.invoke('api:tokenStatus'),
+  revealApiToken: () => ipcRenderer.invoke('api:revealToken'),
+  copyApiToken: () => ipcRenderer.invoke('api:copyToken'),
+  rotateApiToken: () => ipcRenderer.invoke('api:rotateToken'),
   apiStart: (host?: string, port?: number) => ipcRenderer.invoke('api:start', host, port),
   apiStop: () => ipcRenderer.invoke('api:stop'),
   apiToggle: (enabled: boolean) => ipcRenderer.invoke('api:toggle', enabled),
@@ -261,6 +265,7 @@ const api = {
   revealReaderSkill: () => ipcRenderer.invoke('api:revealSkill'),
   openReaderSkillGithub: () => ipcRenderer.invoke('api:openSkillGithub'),
   testLocalApiRequest: (request) => ipcRenderer.invoke('api:testLocalRequest', request),
+  copyLocalApiCurl: (request) => ipcRenderer.invoke('api:copyCurl', request),
   copyText: (text: string) => ipcRenderer.invoke('api:copyText', text),
   // ============================================================
   // AI 图片理解基础设施(ImageInsightService)

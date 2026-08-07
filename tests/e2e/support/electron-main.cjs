@@ -316,6 +316,31 @@ handle('app-log:reveal', () => undefined)
 handle('cache:getSummary', () => ({ bootstrapBytes: 0, electronBytes: 0, totalBytes: 0 }))
 handle('cache:clear', () => ({ bootstrapBytes: 0, electronBytes: 0, totalBytes: 0 }))
 handle('api:getStatus', () => ({ running: false, host: settings.apiHost, port: settings.apiPort }))
+handle('api:tokenStatus', () => ({
+  success: true,
+  available: true,
+  hasToken: true,
+  maskedToken: '••••••••••••••••'
+}))
+handle('api:revealToken', () => ({
+  available: true,
+  hasToken: true,
+  maskedToken: '••••••••••••••••',
+  token: 'fixture-api-token'
+}))
+handle('api:copyToken', () => ({
+  success: true,
+  available: true,
+  hasToken: true,
+  maskedToken: '••••••••••••••••'
+}))
+handle('api:rotateToken', () => ({
+  success: true,
+  available: true,
+  hasToken: true,
+  maskedToken: '••••••••••••••••'
+}))
+handle('api:copyCurl', () => ({ success: true }))
 handle('api:start', () => ({ running: true, host: settings.apiHost, port: settings.apiPort }))
 handle('api:stop', () => ({ running: false, host: settings.apiHost, port: settings.apiPort }))
 handle('api:toggle', (enabled) => ({

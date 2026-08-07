@@ -114,6 +114,25 @@ test('NAV-01 NAV-02 every top-level page is unique and switchable', async () => 
   }
 })
 
+test('API-01 masks, reveals, and confirms rotation of the local API token', async () => {
+  const fixture = await launchTestApp()
+  try {
+    await fixture.page.getByRole('button', { name: 'API' }).click()
+    await expect(fixture.page.getByText('API Token', { exact: true })).toBeVisible()
+    await expect(fixture.page.getByText('••••••••••••••••')).toBeVisible()
+    await expect(fixture.page.getByText('fixture-api-token')).toHaveCount(0)
+
+    await fixture.page.getByRole('button', { name: '显示 Token' }).click()
+    await expect(fixture.page.getByText('fixture-api-token')).toBeVisible()
+
+    fixture.page.once('dialog', (dialog) => dialog.accept())
+    await fixture.page.getByRole('button', { name: '重新生成 Token' }).click()
+    await expect(fixture.page.getByText('Token 已生成')).toBeVisible()
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('EXPORT-01 multi-chat selection stays local to export and forces HTML', async () => {
   const fixture = await launchTestApp()
   try {

@@ -43,6 +43,7 @@ import type {
   LegacyAIConfig
 } from '../shared/ai-provider'
 import { DatabaseKeyStore } from './database-key-store'
+import { apiTokenStore } from './api-token-store'
 import { ImageKeyConfigService } from './services/image-key-config-service'
 import { AIProviderService } from './services/ai-provider-service'
 import { imageInsightService } from './services/image-insight-service'
@@ -58,7 +59,7 @@ import { KeyService as KeyServiceWin } from './key-service-win'
 import * as chat from './services/chat-service'
 import { apiServer } from './http-server'
 import { skillResourceService } from './services/skill-resource-service'
-import { testLocalApiRequest } from './services/local-api-test-service'
+import { buildLocalApiCurlCommand, testLocalApiRequest } from './services/local-api-test-service'
 import { isWechatRunning } from './services/wechat-process-status'
 import {
   inspectImageDecryptionStatus,
@@ -321,7 +322,10 @@ function getLocalMediaMimeType(filePath: string): string {
   }
 }
 
-function buildImageResponse(image: DecodedImage, includeData = false): {
+function buildImageResponse(
+  image: DecodedImage,
+  includeData = false
+): {
   success: true
   data: string
   isThumb: boolean
@@ -443,8 +447,8 @@ app.whenReady().then(async () => {
     app.getPath('userData'),
     join(__dirname, 'knowledgeWorker.js')
   )
-  knowledgeSearchService.setVoiceTranscriptResolver((reference) =>
-    voiceRecognition?.getTranscriptSnapshot(reference) || { state: 'pending' }
+  knowledgeSearchService.setVoiceTranscriptResolver(
+    (reference) => voiceRecognition?.getTranscriptSnapshot(reference) || { state: 'pending' }
   )
   voiceRecognition.onTranscriptUpdate((update) =>
     knowledgeSearchService?.indexVoiceTranscript(update)
@@ -1441,6 +1445,25 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('api:getStatus', () => apiServer.getState())
 
+  ipcMain.handle('api:tokenStatus', () => apiTokenStore.ensureToken())
+  ipcMain.handle('api:revealToken', () => apiTokenStore.revealToken())
+  ipcMain.handle('api:copyToken', () => {
+    const result = apiTokenStore.revealToken()
+    if (!result.token) return { ...result, success: false }
+    try {
+      clipboard.writeText(result.token)
+      return {
+        success: true,
+        available: result.available,
+        hasToken: result.hasToken,
+        maskedToken: result.maskedToken
+      }
+    } catch {
+      return { ...apiTokenStore.getStatus(), success: false, error: 'API Token 复制失败' }
+    }
+  })
+  ipcMain.handle('api:rotateToken', () => apiTokenStore.rotateToken())
+
   ipcMain.handle('api:start', async (_, host?: string, port?: number) => {
     const settings = loadSettings()
     const target = {
@@ -1466,6 +1489,16 @@ app.whenReady().then(async () => {
   ipcMain.handle('api:revealSkill', () => skillResourceService.reveal())
   ipcMain.handle('api:openSkillGithub', () => skillResourceService.openGithub())
   ipcMain.handle('api:testLocalRequest', (_, request) => testLocalApiRequest(request))
+  ipcMain.handle('api:copyCurl', (_, request) => {
+    const result = buildLocalApiCurlCommand(request)
+    if (!result.success || !result.command) return { success: false, error: result.error }
+    try {
+      clipboard.writeText(result.command)
+      return { success: true }
+    } catch {
+      return { success: false, error: 'curl 命令复制失败' }
+    }
+  })
   ipcMain.handle('api:copyText', (_, text: unknown) => {
     if (typeof text !== 'string' || text.length > 1024 * 1024) {
       return { success: false, error: '复制内容无效或过大' }
@@ -1499,6 +1532,9 @@ app.whenReady().then(async () => {
 
   // 启动本地 HTTP API（由 settings.apiEnabled 控制）
   const settings = loadSettings()
+  // v2.1.8 and earlier did not have an API token. Generate it once during
+  // upgrade/startup without changing any existing API or database settings.
+  apiTokenStore.ensureToken()
   if (settings.apiEnabled) {
     await apiServer.start(settings.apiHost, settings.apiPort)
   }

@@ -14,7 +14,7 @@ interface Props {
   onBody: (body: string) => void
   onSend: () => void
   onClear: () => void
-  onCopyCurl: (command: string) => Promise<void>
+  onCopyCurl: () => Promise<void>
 }
 
 export function ApiRequestTester({
@@ -32,13 +32,6 @@ export function ApiRequestTester({
   onCopyCurl
 }: Props): ReactElement {
   const url = settings ? buildApiUrl(settings.apiHost, settings.apiPort, endpoint.path, params) : ''
-  const copyCurl = (): void => {
-    const command =
-      endpoint.method === 'POST'
-        ? `curl -X POST '${url}' -H 'Content-Type: application/json' -d '${body.replaceAll("'", "\\'")}'`
-        : `curl '${url}'`
-    void onCopyCurl(command)
-  }
   const update = (key: string, value: string): void => onParams({ ...params, [key]: value })
   const selectTestImage = async (): Promise<void> => {
     const result = await window.api.selectAgentHubTestImage()
@@ -100,7 +93,7 @@ export function ApiRequestTester({
         <button type="button" onClick={onClear}>
           清空
         </button>
-        <button type="button" onClick={copyCurl}>
+        <button type="button" onClick={() => void onCopyCurl()}>
           复制 curl
         </button>
         <button

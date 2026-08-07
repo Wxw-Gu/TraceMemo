@@ -445,6 +445,10 @@ declare global {
         port: number
         error?: string
       }>
+      apiTokenStatus: () => Promise<import('../shared/local-api-auth').ApiTokenStatus>
+      revealApiToken: () => Promise<import('../shared/local-api-auth').ApiTokenRevealResult>
+      copyApiToken: () => Promise<import('../shared/local-api-auth').ApiTokenActionResult>
+      rotateApiToken: () => Promise<import('../shared/local-api-auth').ApiTokenActionResult>
       apiStart: (
         host?: string,
         port?: number
@@ -469,6 +473,9 @@ declare global {
       revealReaderSkill: () => Promise<{ success: boolean; error?: string }>
       openReaderSkillGithub: () => Promise<{ success: boolean; error?: string }>
       testLocalApiRequest: (request: LocalApiTestRequest) => Promise<LocalApiTestResponse>
+      copyLocalApiCurl: (
+        request: LocalApiTestRequest
+      ) => Promise<import('../shared/local-api-test').LocalApiCurlCopyResult>
       copyText: (text: string) => Promise<{ success: boolean; error?: string }>
       // ============================================================
       // AI 图片理解基础设施(ImageInsightService)

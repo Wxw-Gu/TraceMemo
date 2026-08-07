@@ -11,7 +11,8 @@ description: 通过本地 HTTP API 读取 WechatExplorer 解锁后的微信聊�
 
 - **本服务由 WechatExplorer.app 提供**,数据完全在本地处理,不会上传任何服务器
 - 用户必须在 WechatExplorer 主窗口完成**首次密钥配置**(解锁 WCDB 数据库)
-- 默认监听 `127.0.0.1:6131`,仅本机可访问,无需鉴权
+- 默认监听 `127.0.0.1:6131`,仅本机可访问
+- 除 health 外的 API 均要求 Bearer Token。Token 获取路径:WeChatExplorer → API Center → API Token → 显示/复制 Token
 
 ## 前置条件
 
@@ -19,21 +20,48 @@ description: 通过本地 HTTP API 读取 WechatExplorer 解锁后的微信聊�
 2. **首次启动时完成密钥配置**:在主界面第一步输入微信数据库密钥(64 位 hex),完成 WCDB 初始化
 3. **如需 7×24 提供 API**:用 `WXE_TRAY=1` 或 `--tray` 参数启动 app,启用菜单栏常驻模式(主窗口关闭后服务仍在)
 
+## Authentication
+
+WechatExplorer Reader 使用的是 **WechatExplorer Local HTTP API**,不是 MCP Server。
+
+1. 在 WechatExplorer 中打开 **API Center**。
+2. 在 **API Token** 区域点击“复制 Token”。
+3. 把 Token 保存到 Agent 自己的本地环境配置中:
+
+```bash
+export WECHATEXPLORER_API_TOKEN="<YOUR_API_TOKEN>"
+```
+
+health 可以不带 Token:
+
+```bash
+curl http://127.0.0.1:6131/api/v1/health
+```
+
+除 health 外,所有请求必须使用标准 Bearer header:
+
+```bash
+curl -H "Authorization: Bearer $WECHATEXPLORER_API_TOKEN" \
+  http://127.0.0.1:6131/api/v1/recent_chat
+```
+
+本文件后续写出的所有 `GET` / `POST` 数据请求都默认包含上述 Authorization header。禁止把 Token 放入 URL query、路径、Skill 文件或仓库。
+
 ## API 列表
 
 GET 用于读取数据,`POST /api/v1/report` 用于生成群日报(HTML + 长图)。所有端点返回 JSON。
 
-| 端点 | 用途 | 关键参数 |
-|------|------|---------|
-| `GET /api/v1/health` | 健康检查 + 是否已初始化 | — |
-| `GET /api/v1/current_time` | 获取当前本地时间(用于"今天/昨天"换算) | — |
-| `GET /api/v1/contact` | 联系人 / 群聊列表 | `filter`(昵称模糊)、`type`(`user` \| `group`) |
-| `GET /api/v1/chatroom` | 群聊列表(等同 contact?type=group) | `keyword` |
-| `GET /api/v1/recent_chat` | 最近会话 | `limit`(默认 50) |
-| `GET /api/v1/chatlog` | 聊天记录 | `talker`、`time` 或 `startTime`/`endTime` |
-| `GET /api/v1/group_snapshot` | 群成员快照 | `md5` |
-| `GET /api/v1/resolve` | 把昵称/wxid/md5 解析成 md5 | `q` |
-| `POST /api/v1/report` | 生成群聊日报 HTML + 长图 PNG | JSON body(见下文,推荐传 `metadata.talker` 让服务端自动反推真头像) |
+| 端点                         | 用途                                  | 关键参数                                                          |
+| ---------------------------- | ------------------------------------- | ----------------------------------------------------------------- |
+| `GET /api/v1/health`         | 健康检查 + 是否已初始化               | —                                                                 |
+| `GET /api/v1/current_time`   | 获取当前本地时间(用于"今天/昨天"换算) | —                                                                 |
+| `GET /api/v1/contact`        | 联系人 / 群聊列表                     | `filter`(昵称模糊)、`type`(`user` \| `group`)                     |
+| `GET /api/v1/chatroom`       | 群聊列表(等同 contact?type=group)     | `keyword`                                                         |
+| `GET /api/v1/recent_chat`    | 最近会话                              | `limit`(默认 50)                                                  |
+| `GET /api/v1/chatlog`        | 聊天记录                              | `talker`、`time` 或 `startTime`/`endTime`                         |
+| `GET /api/v1/group_snapshot` | 群成员快照                            | `md5`                                                             |
+| `GET /api/v1/resolve`        | 把昵称/wxid/md5 解析成 md5            | `q`                                                               |
+| `POST /api/v1/report`        | 生成群聊日报 HTML + 长图 PNG          | JSON body(见下文,推荐传 `metadata.talker` 让服务端自动反推真头像) |
 
 ### `talker` 参数可接受的值
 
@@ -51,8 +79,8 @@ GET 用于读取数据,`POST /api/v1/report` 用于生成群日报(HTML + 长图
 
 ```json
 {
-  "m_nsUsrName": "49023470180@chatroom",   // wxid, 用作 chatlog 的 talker
-  "m_nsNickName": { "buffer": "...", "type": "Buffer" },  // nickname 原 buffer
+  "m_nsUsrName": "49023470180@chatroom", // wxid, 用作 chatlog 的 talker
+  "m_nsNickName": { "buffer": "...", "type": "Buffer" }, // nickname 原 buffer
   "type": "group",
   "md5": "..."
 }
@@ -64,12 +92,12 @@ GET 用于读取数据,`POST /api/v1/report` 用于生成群日报(HTML + 长图
 
 支持以下格式:
 
-| 输入 | 含义 |
-|------|------|
-| `2026-07-03` | 单日 00:00:00 ~ 23:59:59 |
-| `2026-07-01~2026-07-03` | 日期范围(闭区间) |
-| `2026-07-03/14:30` | 单分钟(从 14:30:00 起 60 秒) |
-| `2026-07-03/14:30~2026-07-03/15:30` | 精确到分钟的范围 |
+| 输入                                | 含义                         |
+| ----------------------------------- | ---------------------------- |
+| `2026-07-03`                        | 单日 00:00:00 ~ 23:59:59     |
+| `2026-07-01~2026-07-03`             | 日期范围(闭区间)             |
+| `2026-07-03/14:30`                  | 单分钟(从 14:30:00 起 60 秒) |
+| `2026-07-03/14:30~2026-07-03/15:30` | 精确到分钟的范围             |
 
 也可以直接传 unix 秒级时间戳作为 `startTime` 和 `endTime`。
 
@@ -92,6 +120,7 @@ GET 用于读取数据,`POST /api/v1/report` 用于生成群日报(HTML + 长图
 **步骤 3**:用计算后的参数调 `chatlog`。
 
 示例:
+
 - 用户: "今天 摸鱼交流群 聊了啥?"
 - AI: 先 `GET /api/v1/current_time` → 得到 `2026-07-03T14:30:00+08:00` → 计算 `time=2026-07-03` → `GET /api/v1/chatlog?talker=摸鱼交流群&time=2026-07-03`
 
@@ -119,33 +148,41 @@ GET 用于读取数据,`POST /api/v1/report` 用于生成群日报(HTML + 长图
       {
         "title": "话题标题",
         "timeRange": "10:00-12:30",
-        "heat": "高",            // "高" | "中" | "低"
+        "heat": "高", // "高" | "中" | "低"
         "participants": ["张三", "李四"],
         "summary": "本话题讨论了什么",
         "conclusion": "可选,达成的结论",
         "keywords": ["关键词1", "关键词2"]
       }
     ],
-    "resources": [
-      { "title": "链接/文件标题", "description": "为什么重要", "sender": "张三" }
-    ],
+    "resources": [{ "title": "链接/文件标题", "description": "为什么重要", "sender": "张三" }],
     "importantMessages": [
       { "sender": "张三", "time": "10:23", "content": "原消息文本", "note": "为什么重要" }
     ],
     "quotes": [
       {
-        "messages": [{ "sender": "李四", "content": "原话1" }, { "sender": "王五", "content": "原话2" }],
+        "messages": [
+          { "sender": "李四", "content": "原话1" },
+          { "sender": "王五", "content": "原话2" }
+        ],
         "note": "为什么这些话值得引用"
       }
     ],
-    "qa": [
-      { "question": "Q", "answer": "A", "answerer": "解答人(可选)" }
-    ],
+    "qa": [{ "question": "Q", "answer": "A", "answerer": "解答人(可选)" }],
     "unresolved": [
-      { "question": "待跟进问题", "owner": "相关人(可选)", "status": "待跟进", "note": "为什么还没结束" }
+      {
+        "question": "待跟进问题",
+        "owner": "相关人(可选)",
+        "status": "待跟进",
+        "note": "为什么还没结束"
+      }
     ],
     "storylines": [
-      { "title": "剧情线", "stages": [{ "time": "10:12", "event": "提出问题" }], "result": "可选结果" }
+      {
+        "title": "剧情线",
+        "stages": [{ "time": "10:12", "event": "提出问题" }],
+        "result": "可选结果"
+      }
     ],
     "reversals": [
       { "topic": "某话题", "initialView": "最初判断", "finalView": "最终判断", "note": "可选说明" }
@@ -191,7 +228,7 @@ GET 用于读取数据,`POST /api/v1/report` 用于生成群日报(HTML + 长图
 {
   "success": true,
   "htmlPath": "/Users/.../Desktop/技术交流_日报_2026-07-03.html",
-  "pngPath":  "/Users/.../Desktop/技术交流_日报_2026-07-03.png",
+  "pngPath": "/Users/.../Desktop/技术交流_日报_2026-07-03.png",
   "imageDataUrl": "data:image/png;base64,iVBORw0K..."
 }
 ```
@@ -254,12 +291,12 @@ GET 用于读取数据,`POST /api/v1/report` 用于生成群日报(HTML + 长图
 
 模板顶部的 4 个统计格(`消息数 / 活跃人数 / 时间跨度 / 主要话题`)宽度均分,内容过长会被截断或换行:
 
-| 字段 | 推荐格式 | 反例(会撑爆格子) |
-|------|---------|----------------|
-| `metadata.messageCount` | 纯数字 `"1234"` | `"约 1.2k 条"` |
-| `metadata.activeUsers` | 纯数字 `"56"` | `"大约 50 多人"` |
-| `metadata.timeSpan` | **持续时长紧凑半角** `"1 h"` / `"30 min"` / `"2 d"` | `"1 小时"` / `"7 小时"` / `"1天3小时"` |
-| `metadata.topicCount` 等 | 数字 / 短中文 | 长句子 |
+| 字段                     | 推荐格式                                            | 反例(会撑爆格子)                       |
+| ------------------------ | --------------------------------------------------- | -------------------------------------- |
+| `metadata.messageCount`  | 纯数字 `"1234"`                                     | `"约 1.2k 条"`                         |
+| `metadata.activeUsers`   | 纯数字 `"56"`                                       | `"大约 50 多人"`                       |
+| `metadata.timeSpan`      | **持续时长紧凑半角** `"1 h"` / `"30 min"` / `"2 d"` | `"1 小时"` / `"7 小时"` / `"1天3小时"` |
+| `metadata.topicCount` 等 | 数字 / 短中文                                       | 长句子                                 |
 
 `timeSpan` 是**首条到末条消息的持续时长**,不是时间区间。**单位用半角空格分隔**:
 
@@ -295,17 +332,20 @@ GET 用于读取数据,`POST /api/v1/report` 用于生成群日报(HTML + 长图
 ## 典型工作流示例
 
 **示例 1:今日群聊总结(纯文本)**
+
 1. `GET /api/v1/current_time` → 获取今天日期
 2. `GET /api/v1/chatroom?keyword=技术交流` → 找到目标群 md5
 3. `GET /api/v1/chatlog?talker=技术交流&time=2026-07-03` → 拉取今天的聊天
 4. AI 用 LLM 生成总结报告(话题 TOP N、最活跃发言者等)
 
 **示例 2:搜索特定消息上下文**
+
 1. `GET /api/v1/chatlog?talker=摸鱼群&time=2026-07-01~2026-07-03` → 粗查近 3 天
 2. 在返回的消息中定位关键词出现的时间点 T1, T2, ...
 3. 对每个 Ti 分别查 `chatlog?talker=摸鱼群&time=Ti-15min~Ti+15min`,分析上下文
 
 **示例 3:群日报(可视化长图)**
+
 1. `GET /api/v1/chatlog?talker=技术交流&time=2026-07-03` → 拉今天聊天
 2. LLM 按上方 `GroupDailyReport` schema 总结出 `report` + `metadata`
 3. `POST /api/v1/report` body = 上述 JSON → 拿到 `htmlPath` / `pngPath` / `imageDataUrl`
@@ -313,6 +353,7 @@ GET 用于读取数据,`POST /api/v1/report` 用于生成群日报(HTML + 长图
 
 ## 错误处理
 
+- `401 unauthorized` → Token 缺失、格式错误、已被重新生成或配置不正确;请回到 API Center 复制当前 Token
 - `503` → WechatExplorer 未初始化(密钥未配置),提示用户在主窗口完成配置
 - `404 talker not found` → talker 不存在,先调 `contact` 或 `resolve` 确认 md5/wxid
 - `400 missing required parameter` → 检查必填参数(talker / md5 / q)
@@ -321,35 +362,11 @@ GET 用于读取数据,`POST /api/v1/report` 用于生成群日报(HTML + 长图
 - `400 请求体为空 / 需包含 report 和 metadata` → 调用 `/report` 时 body 必须是非空 JSON,且有这两个顶层字段
 - `500 success=false` → 模板渲染失败,通常因 `report` 字段缺失或 `metadata.groupName/reportDate` 为空,检查后重试
 
-## 配置 Claude Desktop
+## 配置 Codex / Claude Code / OpenClaw
 
-把以下加入 `~/Library/Application Support/Claude/claude_desktop_config.json`:
+- **Codex**:安装本 Skill,并在启动 Codex 的本地 shell 或项目私有环境中设置 `WECHATEXPLORER_API_TOKEN`。
+- **Claude Code**:安装本 Skill,并在启动 Claude Code 的本地 shell 或私有环境配置中设置 `WECHATEXPLORER_API_TOKEN`。
+- **OpenClaw**:安装本 Skill,把 `WECHATEXPLORER_API_TOKEN` 放入 OpenClaw 自己的本地 secret / environment 配置。
+- **其他 Agent**:确保执行 HTTP 请求的本地进程能读取 `WECHATEXPLORER_API_TOKEN`。
 
-```json
-{
-  "mcpServers": {
-    "wechatexplorer": {
-      "command": "npx",
-      "args": ["-y", "@wechatexplorer/mcp-bridge"]
-    }
-  }
-}
-```
-
-(待 P3 实现 — MCP bridge 包,在此之前可直接用 `curl` 调用 HTTP API,或通过 mcp-remote 桥接。)
-
-## 配置 Claude Code / Codex
-
-在 `~/.claude/settings.json` 或项目级 `.claude/settings.local.json` 中:
-
-```json
-{
-  "mcpServers": {
-    "wechatexplorer": {
-      "url": "http://127.0.0.1:6131"
-    }
-  }
-}
-```
-
-(视 MCP over HTTP 支持情况调整)
+不要把 `http://127.0.0.1:6131` 配置成 `mcpServers.url`;6131 提供的是 Local HTTP API,不是 MCP Server。

@@ -1,4 +1,5 @@
 export type ApiMethod = 'GET' | 'POST'
+export type { ApiTokenStatus } from '../../../../../shared/local-api-auth'
 
 export interface ApiParameter {
   key: string
