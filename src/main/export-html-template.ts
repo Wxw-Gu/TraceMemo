@@ -802,8 +802,8 @@ body {
     overscroll-behavior-x: none;
     touch-action: pan-y;
   }
-  .message:not(.system) .bubble { max-width: calc(100% - 50px); }
-  .message:not(.system) .row.has-locate .bubble { max-width: calc(100% - 90px); }
+  .message:not(.system) .message-stack { max-width: calc(100% - 50px); }
+  .message:not(.system) .row.has-locate .message-stack { max-width: calc(100% - 90px); }
   .audio-wrap { width: min(260px, 100%); }
 }
 `
@@ -1396,12 +1396,10 @@ const renderExportScript = (name: string): string => `
     })
   }
   const updateCount = () => {
-    const shown = Math.max(0, windowEnd - windowStart)
     const scopeTotal = activeConversation === 'all'
       ? allMessages.length
       : allMessages.filter((message) => message.exportConversationId === activeConversation).length
-    const scopeLabel = activeConversation === 'all' ? '全部' : '当前聊天'
-    count.textContent = '已显示 ' + shown + ' / 筛选 ' + filtered.length + ' / ' + scopeLabel + ' ' + scopeTotal
+    count.textContent = '筛选 ' + filtered.length + ' / 全部 ' + scopeTotal
   }
   const setScrollTop = (value) => {
     scrollLoadSuppressed = true

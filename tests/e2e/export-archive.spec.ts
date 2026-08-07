@@ -256,6 +256,21 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
     ).toBeLessThanOrEqual(1)
     expect(compactControlBounds.searchWidth).toBeGreaterThan(compactControlBounds.conversationWidth)
     expect(compactControlBounds.searchFontSize).toBe('16px')
+    const personalMessageContent = page
+      .locator('.message')
+      .filter({ hasText: '个人聊天消息' })
+      .locator('.content')
+    const expectPersonalMessageOnOneLine = async (): Promise<void> => {
+      const metrics = await personalMessageContent.evaluate((element) => {
+        const styles = getComputedStyle(element)
+        return {
+          height: element.getBoundingClientRect().height,
+          lineHeight: Number.parseFloat(styles.lineHeight)
+        }
+      })
+      expect(metrics.height).toBeLessThanOrEqual(metrics.lineHeight + 1)
+    }
+    await expectPersonalMessageOnOneLine()
     await expect(conversationTrigger.locator('.conversation-switch-icon')).toHaveCSS(
       'width',
       '13px'
@@ -276,6 +291,7 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
     await expect(searchInput).toBeVisible()
     await searchInput.fill('个人聊天消息')
     await expect(page.locator('.search-highlight')).toHaveText('个人聊天消息')
+    await expectPersonalMessageOnOneLine()
     const mobileSearchResult = page.locator('.message')
     const mobileLocateButton = mobileSearchResult.getByRole('button', {
       name: '定位到聊天位置'
