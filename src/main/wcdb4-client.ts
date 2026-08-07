@@ -39,6 +39,11 @@ export interface Wcdb4SessionQueryOptions {
   hydrateStatuses?: boolean
 }
 
+export interface WindowsNativePathBridgeOptions {
+  platform?: NodeJS.Platform
+  publicRoot?: string
+}
+
 type Wcdb4MessageStore = {
   tableName: string
   dbPath: string
@@ -236,11 +241,58 @@ type WcdbHandleOut = [number]
 
 const nodeRequire = createRequire(import.meta.url)
 
+function isAsciiPath(value: string): boolean {
+  return /^[\x20-\x7e]+$/.test(value)
+}
+
+export function resolveWindowsNativeAccountRoot(
+  accountRoot: string,
+  options: WindowsNativePathBridgeOptions = {}
+): string {
+  const platform = options.platform || process.platform
+  if (platform !== 'win32' || isAsciiPath(accountRoot)) return accountRoot
+
+  const publicRoot = [
+    options.publicRoot,
+    process.env.PUBLIC,
+    path.join(process.env.SystemDrive || 'C:', 'Users', 'Public')
+  ]
+    .map((candidate) => String(candidate || '').trim())
+    .find((candidate) => candidate && isAsciiPath(candidate))
+  if (!publicRoot || !isAsciiPath(publicRoot)) return accountRoot
+
+  const bridgeRoot = path.join(publicRoot, 'WechatExplorer', 'path-bridges')
+  const bridgePath = path.join(
+    bridgeRoot,
+    crypto
+      .createHash('sha256')
+      .update(path.resolve(accountRoot).toLowerCase())
+      .digest('hex')
+      .slice(0, 24)
+  )
+  try {
+    fs.ensureDirSync(bridgeRoot)
+    if (fs.existsSync(bridgePath)) {
+      const existingTarget = fs.realpathSync.native(bridgePath)
+      if (path.resolve(existingTarget).toLowerCase() === path.resolve(accountRoot).toLowerCase()) {
+        return bridgePath
+      }
+      fs.removeSync(bridgePath)
+    }
+    fs.symlinkSync(path.resolve(accountRoot), bridgePath, 'junction')
+    return bridgePath
+  } catch (error) {
+    console.warn('[WCDB4] 无法为中文数据目录建立 native 路径别名:', error)
+    return accountRoot
+  }
+}
+
 export class Wcdb4Client {
   static readonly defaultRoot = Wcdb4Client.findExistingDefaultRoot()
 
   private readonly key: string
   private readonly accountRoot: string
+  private readonly nativeAccountRoot: string
   private readonly wxid: string
   private readonly dbStoragePath: string
   private readonly sessionDbPath: string
@@ -352,8 +404,9 @@ export class Wcdb4Client {
     this.accountRoot = accountRoot
       ? Wcdb4Client.resolveAccountRoot(accountRoot)
       : Wcdb4Client.findLatestAccountRoot()
+    this.nativeAccountRoot = resolveWindowsNativeAccountRoot(this.accountRoot)
     this.wxid = Wcdb4Client.cleanAccountDirName(path.basename(this.accountRoot))
-    this.dbStoragePath = path.join(this.accountRoot, 'db_storage')
+    this.dbStoragePath = path.join(this.nativeAccountRoot, 'db_storage')
     this.sessionDbPath = this.findSessionDb()
 
     if (!this.sessionDbPath) {
@@ -931,7 +984,7 @@ export class Wcdb4Client {
     )
     try {
       const cursorMessages = this.getMessagesByCursor(username, startTime, endTime, maxRows)
-      if (cursorMessages) {
+      if (cursorMessages && cursorMessages.length > 0) {
         const recoveredMessages = this.readRecallJournal(username, startTime, endTime)
         const mergedMessages = this.mergeMessageRows(cursorMessages, recoveredMessages, maxRows)
         console.log(
@@ -1035,16 +1088,7 @@ export class Wcdb4Client {
 
     let tables: Wcdb4MessageStore[]
     try {
-      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
-        this.wcdbGetMessageTableStats as unknown as KoffiAsyncFunction,
-        username
-      )
-      tables = (Array.isArray(rows) ? rows : [])
-        .map((row) => ({
-          tableName: this.pickString(row, ['table_name', 'tableName', 'name']),
-          dbPath: this.pickString(row, ['db_path', 'dbPath', 'path'])
-        }))
-        .filter((row) => row.tableName && row.dbPath)
+      tables = await this.listMessageStoresAsync(username)
     } catch (error) {
       console.warn(`[WCDB4] voice count table stats failed username=${username}:`, error)
       return null
@@ -1094,7 +1138,7 @@ export class Wcdb4Client {
     endTime?: number,
     limit?: number
   ): Wcdb4Message[] {
-    if (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery) return []
+    if (!this.wcdbExecQuery) return []
 
     let tables: Wcdb4MessageStore[] = []
     try {
@@ -1139,20 +1183,11 @@ export class Wcdb4Client {
     endTime?: number,
     limit?: number
   ): Promise<Wcdb4Message[]> {
-    if (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery) return []
+    if (!this.wcdbExecQuery) return []
 
     let tables: Wcdb4MessageStore[] = []
     try {
-      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
-        this.wcdbGetMessageTableStats as unknown as KoffiAsyncFunction,
-        username
-      )
-      tables = (Array.isArray(rows) ? rows : [])
-        .map((row) => ({
-          tableName: this.pickString(row, ['table_name', 'tableName', 'name']),
-          dbPath: this.pickString(row, ['db_path', 'dbPath', 'path'])
-        }))
-        .filter((row) => row.tableName && row.dbPath)
+      tables = await this.listMessageStoresAsync(username)
     } catch (error) {
       console.warn(`[WCDB4] async message table stats failed username=${username}:`, error)
       throw new Error(
@@ -1231,16 +1266,101 @@ export class Wcdb4Client {
   }
 
   private listMessageStores(username: string): Wcdb4MessageStore[] {
-    if (!this.wcdbGetMessageTableStats) return []
-    const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
-      this.wcdbGetMessageTableStats!(handle, username, outJson)
-    )
+    let stores: Wcdb4MessageStore[] = []
+    if (this.wcdbGetMessageTableStats) {
+      try {
+        const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+          this.wcdbGetMessageTableStats!(handle, username, outJson)
+        )
+        stores = this.parseMessageStores(rows)
+      } catch (error) {
+        if (!username.startsWith('gh_')) throw error
+      }
+    }
+    return stores.length > 0 ? stores : this.listBizMessageStores(username)
+  }
+
+  private async listMessageStoresAsync(username: string): Promise<Wcdb4MessageStore[]> {
+    let stores: Wcdb4MessageStore[] = []
+    if (this.wcdbGetMessageTableStats) {
+      try {
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbGetMessageTableStats as unknown as KoffiAsyncFunction,
+          username
+        )
+        stores = this.parseMessageStores(rows)
+      } catch (error) {
+        if (!username.startsWith('gh_')) throw error
+      }
+    }
+    return stores.length > 0 ? stores : this.listBizMessageStoresAsync(username)
+  }
+
+  private parseMessageStores(rows: Record<string, unknown>[]): Wcdb4MessageStore[] {
     return (Array.isArray(rows) ? rows : [])
       .map((row) => ({
         tableName: this.pickString(row, ['table_name', 'tableName', 'name']),
         dbPath: this.pickString(row, ['db_path', 'dbPath', 'path'])
       }))
       .filter((row) => row.tableName && row.dbPath)
+  }
+
+  private getBizMessageDatabasePaths(): string[] {
+    const messageRoot = path.join(this.dbStoragePath, 'message')
+    try {
+      return fs
+        .readdirSync(messageRoot)
+        .filter((name) => /^biz_message(?:_\d+)?\.db$/i.test(name))
+        .sort()
+        .map((name) => path.join(messageRoot, name))
+    } catch {
+      return []
+    }
+  }
+
+  private listBizMessageStores(username: string): Wcdb4MessageStore[] {
+    if (!this.wcdbExecQuery || !username.startsWith('gh_')) return []
+    const tableName = `Msg_${this.md5(username)}`
+    const escapedTableName = tableName.replace(/'/g, "''")
+    const stores: Wcdb4MessageStore[] = []
+    for (const dbPath of this.getBizMessageDatabasePaths()) {
+      try {
+        const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+          this.wcdbExecQuery!(
+            handle,
+            'message',
+            dbPath,
+            `SELECT name FROM sqlite_master WHERE type='table' AND name='${escapedTableName}'`,
+            outJson
+          )
+        )
+        if (Array.isArray(rows) && rows.length > 0) stores.push({ tableName, dbPath })
+      } catch {
+        // Older biz shards may be absent or use a different key; continue scanning.
+      }
+    }
+    return stores
+  }
+
+  private async listBizMessageStoresAsync(username: string): Promise<Wcdb4MessageStore[]> {
+    if (!this.wcdbExecQuery || !username.startsWith('gh_')) return []
+    const tableName = `Msg_${this.md5(username)}`
+    const escapedTableName = tableName.replace(/'/g, "''")
+    const stores: Wcdb4MessageStore[] = []
+    for (const dbPath of this.getBizMessageDatabasePaths()) {
+      try {
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          dbPath,
+          `SELECT name FROM sqlite_master WHERE type='table' AND name='${escapedTableName}'`
+        )
+        if (Array.isArray(rows) && rows.length > 0) stores.push({ tableName, dbPath })
+      } catch {
+        // Older biz shards may be absent or use a different key; continue scanning.
+      }
+    }
+    return stores
   }
 
   private executeMessageSql(store: Wcdb4MessageStore, sql: string): Record<string, unknown>[] {
@@ -1889,7 +2009,7 @@ export class Wcdb4Client {
 
     try {
       return this.callJson<Wcdb4ImageHardlink>((handle, outJson) =>
-        this.wcdbResolveImageHardlink!(handle, normalizedMd5, this.accountRoot, outJson)
+        this.wcdbResolveImageHardlink!(handle, normalizedMd5, this.nativeAccountRoot, outJson)
       )
     } catch (error) {
       console.warn('[WCDB4] resolve image hardlink failed:', error)
@@ -1908,7 +2028,7 @@ export class Wcdb4Client {
       return await this.callJsonAsync<Wcdb4ImageHardlink>(
         this.wcdbResolveImageHardlink as unknown as KoffiAsyncFunction,
         normalizedMd5,
-        this.accountRoot
+        this.nativeAccountRoot
       )
     } catch (error) {
       console.warn('[WCDB4] async image hardlink resolve failed:', error)
@@ -2287,8 +2407,8 @@ export class Wcdb4Client {
     const candidates = [
       path.join(this.dbStoragePath, 'emoticon', 'emoticon.db'),
       path.join(this.dbStoragePath, 'emotion', 'emoticon.db'),
-      path.join(this.accountRoot, this.wxid, 'db_storage', 'emoticon', 'emoticon.db'),
-      path.join(this.accountRoot, this.wxid, 'db_storage', 'emotion', 'emoticon.db')
+      path.join(this.nativeAccountRoot, this.wxid, 'db_storage', 'emoticon', 'emoticon.db'),
+      path.join(this.nativeAccountRoot, this.wxid, 'db_storage', 'emotion', 'emoticon.db')
     ]
     for (const candidate of candidates) {
       if (fs.existsSync(candidate)) return candidate

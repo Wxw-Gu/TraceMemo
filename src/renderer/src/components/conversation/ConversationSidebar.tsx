@@ -26,7 +26,7 @@ export interface ConversationSidebarProps {
   onRefresh: (filterKeyword: string) => Promise<void>
 }
 
-type SectionName = 'groups' | 'folded' | 'contacts'
+type SectionName = 'groups' | 'folded' | 'officialAccounts' | 'contacts'
 type ConversationRow =
   | { kind: 'header'; id: string; title: string; count: number; section: SectionName }
   | { kind: 'contact'; id: string; contact: Contact }
@@ -48,13 +48,24 @@ export function ConversationSidebar({
   const [expandedSections, setExpandedSections] = useState<Record<SectionName, boolean>>({
     groups: true,
     folded: false,
+    officialAccounts: false,
     contacts: false
   })
   const listRef = useRef<HTMLDivElement>(null)
 
   const groups = contacts.filter((contact) => contact.type === 'group' && !contact.isFolded)
   const foldedGroups = contacts.filter((contact) => contact.type === 'group' && contact.isFolded)
-  const users = contacts.filter((contact) => contact.type === 'user')
+  const officialAccounts = contacts.filter(
+    (contact) =>
+      contact.type === 'user' &&
+      (contact.isOfficialAccount || contact.m_nsUsrName.startsWith('gh_'))
+  )
+  const users = contacts.filter(
+    (contact) =>
+      contact.type === 'user' &&
+      !contact.isOfficialAccount &&
+      !contact.m_nsUsrName.startsWith('gh_')
+  )
   const rows = useMemo<ConversationRow[]>(
     () => [
       {
@@ -89,6 +100,24 @@ export function ConversationSidebar({
               : [])
           ]
         : []),
+      ...(officialAccounts.length
+        ? [
+            {
+              kind: 'header' as const,
+              id: 'official-accounts-header',
+              title: '公众号',
+              count: officialAccounts.length,
+              section: 'officialAccounts' as const
+            },
+            ...(expandedSections.officialAccounts
+              ? officialAccounts.map((contact) => ({
+                  kind: 'contact' as const,
+                  id: `official-${contact.md5}`,
+                  contact
+                }))
+              : [])
+          ]
+        : []),
       {
         kind: 'header',
         id: 'contacts-header',
@@ -104,8 +133,10 @@ export function ConversationSidebar({
       expandedSections.contacts,
       expandedSections.folded,
       expandedSections.groups,
+      expandedSections.officialAccounts,
       foldedGroups,
       groups,
+      officialAccounts,
       users
     ]
   )

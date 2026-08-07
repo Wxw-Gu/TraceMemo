@@ -34,6 +34,7 @@ export interface FormattedContact {
   m_nsNickName: string
   md5: string
   type: 'user' | 'group'
+  isOfficialAccount?: boolean
   avatar?: string
   wechatNickname?: string
   remark?: string
@@ -157,6 +158,7 @@ export function listContacts(filter?: string): FormattedContact[] {
       m_nsNickName: user.nickname || '未知用户',
       md5,
       type: isGroup ? 'group' : 'user',
+      isOfficialAccount: !isGroup && user.m_nsUsrName.startsWith('gh_'),
       avatar: typeof user.avatar === 'string' ? user.avatar : undefined,
       wechatNickname: user.wechatNickname,
       remark: user.remark,

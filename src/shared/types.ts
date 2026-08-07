@@ -3,6 +3,7 @@ export interface Contact {
   m_nsNickName: string
   md5: string
   type: 'user' | 'group'
+  isOfficialAccount?: boolean
   avatar?: string
   wechatNickname?: string
   remark?: string
