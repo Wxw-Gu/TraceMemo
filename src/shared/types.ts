@@ -111,6 +111,7 @@ type VideoContent = {
   md5?: string
   newMd5?: string
   rawMd5?: string
+  byteLength?: number
   duration?: number
   width?: number
   height?: number

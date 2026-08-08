@@ -5,6 +5,7 @@ interface VideoBubbleProps {
   newMd5?: string
   rawMd5?: string
   createTime?: number
+  byteLength?: number
   duration?: number
   width?: number
   height?: number
@@ -15,6 +16,7 @@ export function VideoBubble({
   newMd5,
   rawMd5,
   createTime,
+  byteLength,
   duration,
   width,
   height
@@ -28,7 +30,7 @@ export function VideoBubble({
   useEffect(() => {
     let cancelled = false
     window.api
-      .getVideo(hashes, { createTime, duration, width, height })
+      .getVideo(hashes, { createTime, byteLength, duration, width, height })
       .then((result) => {
         if (!cancelled) setMedia(result.success ? result : { error: result.error })
       })
@@ -38,7 +40,7 @@ export function VideoBubble({
     return () => {
       cancelled = true
     }
-  }, [createTime, duration, hashes, height, width])
+  }, [byteLength, createTime, duration, hashes, height, width])
 
   if (!media.url) {
     return <div className="video-placeholder">{media.error || '视频加载中…'}</div>

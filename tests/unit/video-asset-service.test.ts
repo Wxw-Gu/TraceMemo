@@ -119,6 +119,30 @@ describe('VideoAssetService local fallback', () => {
     expect(service.pathForUrl(result.poster!)).toBe(posterPath)
   })
 
+  it('finds an MD5-less video by byte length, thumbnail size, and duration', async () => {
+    const { accountRoot, service } = createService()
+    const month = join(accountRoot, 'msg', 'video', '2026-08')
+    mkdirSync(month, { recursive: true })
+    const targetStem = '9a3b17272822a65ce6e396ecded9ccdc'
+    const otherStem = '47e890579eacf48c46187ae998332202'
+    const target = mp4Fixture(30, 'target-video-with-distinct-byte-length')
+    writeFileSync(join(month, `${targetStem}.mp4`), target)
+    writeFileSync(join(month, `${targetStem}_thumb.jpg`), jpegFixture(224, 398))
+    writeFileSync(join(month, `${otherStem}.mp4`), mp4Fixture(30, 'other'))
+    writeFileSync(join(month, `${otherStem}_thumb.jpg`), jpegFixture(224, 398))
+
+    const result = await service.resolve([], {
+      createTime: monthTimestamp(2026, 8),
+      byteLength: target.length,
+      duration: 30,
+      width: 224,
+      height: 398
+    })
+
+    expect(result.success).toBe(true)
+    expect(service.pathForUrl(result.url!)).toBe(join(month, `${targetStem}.mp4`))
+  })
+
   it('does not guess when multiple files match the same metadata', async () => {
     const { accountRoot, service } = createService()
     const month = join(accountRoot, 'msg', 'video', '2026-02')

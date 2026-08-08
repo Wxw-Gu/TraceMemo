@@ -30,6 +30,7 @@ const state = vi.hoisted(() => ({
   voiceLookups: [] as number[],
   videoLookups: [] as {
     createTime?: number
+    byteLength?: number
     duration?: number
     width?: number
     height?: number
@@ -163,7 +164,13 @@ vi.mock('../../src/main/video-asset-service', () => ({
   VideoAssetService: class {
     resolve(
       _hashes: string[],
-      options?: { createTime?: number; duration?: number; width?: number; height?: number }
+      options?: {
+        createTime?: number
+        byteLength?: number
+        duration?: number
+        width?: number
+        height?: number
+      }
     ): { success: boolean; url: string } {
       state.videoLookups.push(options || {})
       return { success: true, url: 'wxe-media://local/fixture-video' }
@@ -255,7 +262,7 @@ describe('media export flow', () => {
         type: '视频',
         contentData: {
           type: 'video',
-          md5: 'b'.repeat(32),
+          byteLength: 6402169,
           duration: 68,
           width: 279,
           height: 630
@@ -326,6 +333,7 @@ describe('media export flow', () => {
     })
     expect(state.videoLookups[0]).toEqual({
       createTime: 1_785_549_600,
+      byteLength: 6402169,
       duration: 68,
       width: 279,
       height: 630

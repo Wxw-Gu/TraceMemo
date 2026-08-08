@@ -16,6 +16,24 @@ describe('message parser', () => {
     ).toMatchObject({ type: 'sticker', md5: 'abcdefabcdefabcdefabcdefabcdefab' })
   })
 
+  it('keeps video metadata when WeChat omits every MD5 field', () => {
+    const parsed = parseMessageContent(
+      '<msg><videomsg length="6402169" playlength="30" cdnthumbwidth="224" cdnthumbheight="398" aeskey="25201cc658042689d1ad6747cea2b240" rawmd5="" /></msg>',
+      43
+    )
+
+    expect(parsed).toEqual({
+      type: 'video',
+      md5: undefined,
+      newMd5: undefined,
+      rawMd5: undefined,
+      byteLength: 6402169,
+      duration: 30,
+      width: 224,
+      height: 398
+    })
+  })
+
   it('parses merged forwards and preserves nested visible text', () => {
     const parsed = parseMessageContent(
       '<appmsg><type>19</type><title>转发多条内容</title><recorditem><dataitem datatype="1"><sourcename>测试成员</sourcename><datadesc>脱敏内容</datadesc></dataitem></recorditem></appmsg>',

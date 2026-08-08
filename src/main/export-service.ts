@@ -1152,11 +1152,10 @@ export async function runExport(
           ].filter((value): value is string => Boolean(value))
           if (!videoService) {
             keepMediaError(request, message, '数据库未连接，无法定位本地视频')
-          } else if (hashes.length === 0) {
-            keepMediaError(request, message, '视频标识不完整，无法定位本地视频')
           } else {
             const resolved = await videoService.resolve(hashes, {
               createTime: message.createTime,
+              byteLength: message.contentData.byteLength,
               duration: message.contentData.duration,
               width: message.contentData.width,
               height: message.contentData.height

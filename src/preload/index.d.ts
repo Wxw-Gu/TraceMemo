@@ -102,6 +102,7 @@ export type ParsedContent =
       md5?: string
       newMd5?: string
       rawMd5?: string
+      byteLength?: number
       duration?: number
       width?: number
       height?: number
@@ -278,7 +279,13 @@ declare global {
       }>
       getVideo: (
         hashes: string[],
-        options?: { createTime?: number; duration?: number; width?: number; height?: number }
+        options?: {
+          createTime?: number
+          byteLength?: number
+          duration?: number
+          width?: number
+          height?: number
+        }
       ) => Promise<{ success: boolean; url?: string; poster?: string; error?: string }>
       getSticker: (
         cdnUrl?: string,

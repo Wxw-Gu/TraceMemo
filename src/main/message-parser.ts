@@ -65,6 +65,7 @@ type VideoContent = {
   md5?: string
   newMd5?: string
   rawMd5?: string
+  byteLength?: number
   duration?: number
   width?: number
   height?: number
@@ -160,12 +161,11 @@ function parseVideoMessage(content: string): ParsedContent {
   const md5 = normalizeMd5(extractXmlAttribute(decoded, 'videomsg', 'md5'))
   const newMd5 = normalizeMd5(extractXmlAttribute(decoded, 'videomsg', 'newmd5'))
   const rawMd5 = normalizeMd5(extractXmlAttribute(decoded, 'videomsg', 'rawmd5'))
-  if (!md5 && !newMd5 && !rawMd5) return { type: 'unknown', raw: content }
-
+  const byteLength = Number(extractXmlAttribute(decoded, 'videomsg', 'length')) || undefined
   const duration = Number(extractXmlAttribute(decoded, 'videomsg', 'playlength')) || undefined
   const width = Number(extractXmlAttribute(decoded, 'videomsg', 'cdnthumbwidth')) || undefined
   const height = Number(extractXmlAttribute(decoded, 'videomsg', 'cdnthumbheight')) || undefined
-  return { type: 'video', md5, newMd5, rawMd5, duration, width, height }
+  return { type: 'video', md5, newMd5, rawMd5, byteLength, duration, width, height }
 }
 
 function parseSystemMessage(content: string): ParsedContent {

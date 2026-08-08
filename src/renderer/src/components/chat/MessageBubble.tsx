@@ -82,6 +82,7 @@ export function MessageBubble({
             newMd5={message.contentData.newMd5}
             rawMd5={message.contentData.rawMd5}
             createTime={message.createTime}
+            byteLength={message.contentData.byteLength}
             duration={message.contentData.duration}
             width={message.contentData.width}
             height={message.contentData.height}

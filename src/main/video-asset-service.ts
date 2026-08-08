@@ -10,6 +10,7 @@ type VideoAsset = {
 
 export type VideoResolveOptions = {
   createTime?: number
+  byteLength?: number
   duration?: number
   width?: number
   height?: number
@@ -52,7 +53,13 @@ export class VideoAssetService {
           .filter((value) => /^[a-f0-9]{32}$/.test(value))
       )
     )
-    if (candidates.length === 0) return { success: false, error: '视频标识为空' }
+    const hasMetadata =
+      Number(options.byteLength) > 0 ||
+      Number(options.duration) > 0 ||
+      (Number(options.width) > 0 && Number(options.height) > 0)
+    if (candidates.length === 0 && !hasMetadata) {
+      return { success: false, error: '视频标识为空' }
+    }
 
     const hardlinkDb = path.join(
       this.client.getAccountRoot(),
@@ -178,6 +185,21 @@ export class VideoAssetService {
 
     let narrowed = assets
     let appliedCriteria = 0
+    const byteLength = Number(options.byteLength)
+    if (byteLength > 0) {
+      const matches = narrowed.filter((asset) => {
+        try {
+          return fs.statSync(asset.filePath).size === byteLength
+        } catch {
+          return false
+        }
+      })
+      if (matches.length > 0) {
+        narrowed = matches
+        appliedCriteria += 1
+      }
+    }
+
     const width = Number(options.width)
     const height = Number(options.height)
     if (width > 0 && height > 0) {
