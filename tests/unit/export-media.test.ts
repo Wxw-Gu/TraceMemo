@@ -15,8 +15,8 @@ describe('export media', () => {
     const repeated = getImageExportAttempts({ preferOriginal: true, fallbackThumbnail: true })
 
     expect(first).toEqual([
-      { allowThumbnail: false, preferThumbnail: false, fallback: false },
-      { allowThumbnail: true, preferThumbnail: true, fallback: true }
+      { allowThumbnail: false, preferThumbnail: false },
+      { allowThumbnail: true, preferThumbnail: true }
     ])
     expect(repeated).toEqual(first)
   })

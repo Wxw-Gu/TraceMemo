@@ -1,3 +1,5 @@
+import type { ExportImageQuality } from './image-quality'
+
 export interface Contact {
   m_nsUsrName: string
   m_nsNickName: string
@@ -36,6 +38,7 @@ export interface Message {
   exportMediaUrl?: string
   exportMediaType?: 'image' | 'video' | 'sticker' | 'file'
   exportMediaName?: string
+  exportMediaQuality?: ExportImageQuality
   exportShowAvatar?: boolean
   exportMediaError?: string
   exportAvatarUrl?: string

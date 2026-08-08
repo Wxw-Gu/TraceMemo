@@ -7,6 +7,7 @@ import { execFile } from 'child_process'
 import { Worker } from 'worker_threads'
 import ffmpegStaticPath from 'ffmpeg-static'
 import type { ImageDecoderSource, ImageDecoderStatus } from '../shared/image-decryption'
+import { imageFileQuality, imageQualityRank } from '../shared/image-quality'
 import { loadSettings } from './services/settings-store'
 import { Wcdb4Client } from './wcdb4-client'
 
@@ -206,6 +207,13 @@ function normalizeDatBase(value) {
 function isThumbnailName(fileName) {
   const lower = fileName.toLowerCase()
   return /(?:_t(?:_m)?|_thumb|\.thumb|_b|_w|_c)\.dat$/i.test(lower)
+}
+
+function imageQualityRank(fileName) {
+  const lower = fileName.toLowerCase()
+  if (/(?:_t(?:_m)?|_thumb|\.thumb|_b|_w|_c)\.dat$/i.test(lower)) return 1
+  if (/(?:_hd|\.hd|_h_m|_h|\.h)\.dat$/i.test(lower)) return 3
+  return 2
 }
 
 function buildPreferredDatNames(baseName) {
@@ -436,8 +444,8 @@ function collectCandidates(datPath, allowThumbnail) {
     .map((name) => path.join(directory, name))
     .filter((candidate) => fs.existsSync(candidate))
     .sort((left, right) => {
-      const thumbnailOrder = Number(isThumbnailName(path.basename(left))) - Number(isThumbnailName(path.basename(right)))
-      return thumbnailOrder || fs.statSync(right).size - fs.statSync(left).size
+      const qualityOrder = imageQualityRank(path.basename(right)) - imageQualityRank(path.basename(left))
+      return qualityOrder || fs.statSync(right).size - fs.statSync(left).size
     })
   return Array.from(new Set(candidates.concat(siblings)))
 }
@@ -1824,17 +1832,17 @@ export class ImageDecryptService {
         .sort((left, right) => right.size - left.size)
 
     const thumbnail = toSized(
-      paths.filter((candidate) => this.isThumbnailName(basename(candidate)))
+      paths.filter((candidate) => imageFileQuality(candidate) === 'thumbnail')
     )
     if (preferThumbnail && thumbnail[0]) return thumbnail[0].candidate
-    const nonThumb = toSized(
-      paths.filter((candidate) => !this.isThumbnailName(basename(candidate)))
-    )
-    if (nonThumb[0]) return nonThumb[0].candidate
-    if (!allowThumbnail) return null
-
-    const existing = toSized(paths)
-    return existing[0]?.candidate || null
+    const allowed = toSized(paths)
+      .filter((entry) => allowThumbnail || imageFileQuality(entry.candidate) !== 'thumbnail')
+      .sort(
+        (left, right) =>
+          imageQualityRank(imageFileQuality(right.candidate)) -
+            imageQualityRank(imageFileQuality(left.candidate)) || right.size - left.size
+      )
+    return allowed[0]?.candidate || null
   }
 
   private async getLargestExistingPathAsync(
@@ -1858,17 +1866,21 @@ export class ImageDecryptService {
       .sort((left, right) => right.size - left.size)
 
     if (preferThumbnail) {
-      const thumbnail = sized.find((entry) => this.isThumbnailName(basename(entry.candidate)))
+      const thumbnail = sized.find((entry) => imageFileQuality(entry.candidate) === 'thumbnail')
       if (thumbnail) return thumbnail.candidate
     }
-    const nonThumbnail = sized.find((entry) => !this.isThumbnailName(basename(entry.candidate)))
-    if (nonThumbnail) return nonThumbnail.candidate
-    return allowThumbnail ? sized[0]?.candidate || null : null
+    const allowed = sized
+      .filter((entry) => allowThumbnail || imageFileQuality(entry.candidate) !== 'thumbnail')
+      .sort(
+        (left, right) =>
+          imageQualityRank(imageFileQuality(right.candidate)) -
+            imageQualityRank(imageFileQuality(left.candidate)) || right.size - left.size
+      )
+    return allowed[0]?.candidate || null
   }
 
   private isThumbnailName(fileName: string): boolean {
-    const lower = fileName.toLowerCase()
-    return /(?:_t(?:_m)?|_thumb|\.thumb|_b|_w|_c)\.dat$/i.test(lower)
+    return imageFileQuality(fileName) === 'thumbnail'
   }
 
   isThumbnailFile(filePath: string): boolean {

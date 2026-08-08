@@ -41,7 +41,10 @@ const state = vi.hoisted(() => ({
     sessionId?: string
     sessionMd5?: string
     createTime?: number
-  }[]
+  }[],
+  imageFilePath: 'fixture_h.dat',
+  imageData:
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII='
 }))
 
 vi.mock('electron', () => ({
@@ -128,7 +131,7 @@ vi.mock('../../src/main/image-decrypt-service', () => ({
       }
     ): string {
       state.imageLookups.push(options)
-      return 'fixture-original.dat'
+      return state.imageFilePath
     }
     async findImageFileAsync(
       md5: string,
@@ -145,8 +148,8 @@ vi.mock('../../src/main/image-decrypt-service', () => ({
     }
     decryptImageToBase64WithFallback(): { data: string; filePath: string } {
       return {
-        data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=',
-        filePath: 'fixture-original.dat'
+        data: state.imageData,
+        filePath: state.imageFilePath
       }
     }
     async decryptImageToBase64WithFallbackAsync(): Promise<{
@@ -229,6 +232,9 @@ describe('media export flow', () => {
       Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex')
     )
     state.imageLookups = []
+    state.imageFilePath = 'fixture_h.dat'
+    state.imageData =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII='
     state.videoLookups = []
     state.messagesByUser = {}
     state.exportReads = []
@@ -593,6 +599,88 @@ describe('media export flow', () => {
     expect(state.voiceLookups).toEqual([1, 2, 2, 1, 2])
     expect(existsSync(voicePath)).toBe(true)
     expect(existsSync(imagePath)).toBe(true)
+  })
+
+  it('rechecks a previous low-quality image and upgrades it when an original appears', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    const request = {
+      targets: [target('fixture-user', '图片升级会话')],
+      format: 'html' as const,
+      outputName: 'image-quality-upgrade-fixture',
+      kinds: ['image'] as const,
+      includeMedia: true,
+      preferOriginal: true,
+      fallbackThumbnail: true,
+      keepMissing: true
+    }
+    state.messages = [
+      message({
+        id: 'upgrade-image',
+        type: '图片',
+        sessionId: 'fixture-session',
+        contentData: { type: 'image', md5: 'c'.repeat(32), datName: 'upgrade.dat' }
+      })
+    ]
+    state.imageFilePath = 'upgrade_t.dat'
+    state.imageData = `data:image/png;base64,${Buffer.from('thumbnail-image').toString('base64')}`
+
+    const first = await runExport(
+      { ...request, jobId: 'image-quality-upgrade-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success, first.error).toBe(true)
+    const firstImage = readArchive(first.outputPath!).messages[0]
+    const firstImagePath = join(dirname(first.outputPath!), firstImage.exportMediaUrl!)
+    expect(firstImage.exportMediaQuality).toBe('thumbnail')
+    expect(firstImage.exportMediaError).toBe('原图不可用，已降级使用缩略图')
+
+    state.imageFilePath = 'upgrade_h.dat'
+    state.imageData = `data:image/png;base64,${Buffer.from('high-resolution-image').toString('base64')}`
+    const second = await runExport(
+      { ...request, jobId: 'image-quality-upgrade-second', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(second.success, second.error).toBe(true)
+    const upgradedImage = readArchive(second.outputPath!).messages[0]
+    expect(state.imageLookups).toHaveLength(2)
+    expect(upgradedImage.exportMediaQuality).toBe('original')
+    expect(upgradedImage.exportMediaError).toBeUndefined()
+    expect(upgradedImage.exportMediaUrl).not.toBe(firstImage.exportMediaUrl)
+    expect(existsSync(join(dirname(second.outputPath!), upgradedImage.exportMediaUrl!))).toBe(true)
+    expect(existsSync(firstImagePath)).toBe(false)
+  })
+
+  it('does not show a warning for a medium-quality image', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    state.messages = [
+      message({
+        id: 'medium-image',
+        type: '图片',
+        contentData: { type: 'image', md5: 'd'.repeat(32), datName: 'medium.dat' }
+      })
+    ]
+    state.imageFilePath = 'medium.dat'
+
+    const result = await runExport(
+      {
+        jobId: 'medium-image-export',
+        targets: [target()],
+        format: 'html',
+        outputName: 'medium-image-fixture',
+        kinds: ['image'],
+        includeMedia: true,
+        preferOriginal: true,
+        fallbackThumbnail: true,
+        keepMissing: true
+      },
+      { isDestroyed: () => true, webContents: { send: vi.fn() } } as never
+    )
+
+    expect(result.success, result.error).toBe(true)
+    const exported = readArchive(result.outputPath!).messages[0]
+    expect(exported.exportMediaQuality).toBe('medium')
+    expect(exported.exportMediaError).toBeUndefined()
   })
 
   it('keeps historical avatars and creates a new version only after a real visual change', async () => {

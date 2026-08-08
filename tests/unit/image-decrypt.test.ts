@@ -13,6 +13,7 @@ vi.mock('../../src/main/services/settings-store', () => ({
 vi.mock('../../src/main/wcdb4-client', () => ({ Wcdb4Client: class {} }))
 
 import { ImageDecryptService } from '../../src/main/image-decrypt-service'
+import { imageFileQuality } from '../../src/shared/image-quality'
 
 const aesKey = '0123456789abcdef'
 const xorKey = 0x40
@@ -109,6 +110,7 @@ describe('DAT image decryption', () => {
       mediumFile
     )
     expect(service.decryptImageToBase64(mediumFile)).toMatch(/^data:image\/png;base64,/)
+    expect(imageFileQuality(mediumFile)).toBe('medium')
     expect(service.getLastDecodeDiagnostic()).toMatchObject({
       code: 'DIRECT_IMAGE',
       imageFormat: 'PNG'
@@ -121,6 +123,7 @@ describe('DAT image decryption', () => {
     const thumbnailFile = join(imageDirectory, `${thumbnailBase}_t_M.dat`)
     writeFileSync(thumbnailFile, Buffer.from([0xff, 0xd8, 0xff, 0x00]))
     expect(service.isThumbnailFile(thumbnailFile)).toBe(true)
+    expect(imageFileQuality(thumbnailFile)).toBe('thumbnail')
     await expect(
       service.findImageFileAsync(undefined, `${thumbnailBase}_t_M.dat`, {
         allowThumbnail: false,
@@ -164,5 +167,22 @@ describe('DAT image decryption', () => {
     await expect(service.findImageFileAsync(undefined, bubbleBase, bubbleOptions)).resolves.toBe(
       bubblePreview
     )
+
+    const qualityBase = '6a62000000000000000000000000cafe'
+    const standardFile = join(imageDirectory, `${qualityBase}.dat`)
+    const highFile = join(imageDirectory, `${qualityBase}_h.dat`)
+    const largeThumbnailFile = join(imageDirectory, `${qualityBase}_t.dat`)
+    writeFileSync(standardFile, Buffer.alloc(200, 1))
+    writeFileSync(highFile, Buffer.alloc(20, 2))
+    writeFileSync(largeThumbnailFile, Buffer.alloc(400, 3))
+    expect(imageFileQuality(highFile)).toBe('original')
+    await expect(
+      service.findImageFileAsync(undefined, qualityBase, {
+        allowThumbnail: false,
+        accountDir: accountRoot,
+        sessionMd5,
+        createTime: Math.floor(new Date(2025, 9, 15).getTime() / 1000)
+      })
+    ).resolves.toBe(highFile)
   })
 })

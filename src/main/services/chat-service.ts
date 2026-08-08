@@ -10,6 +10,7 @@ import type {
   DatabaseKeyValidationResult
 } from '../../shared/database-key'
 import { mergeRecallArchiveMessages, recordRecallArchiveMessages } from './recall-archive-service'
+import type { ExportImageQuality } from '../../shared/image-quality'
 
 export function getCurrentKey(): string {
   if (!dbRef) return ''
@@ -60,6 +61,7 @@ export interface FormattedMessage {
   exportMediaUrl?: string
   exportMediaType?: 'image' | 'video' | 'sticker' | 'file'
   exportMediaName?: string
+  exportMediaQuality?: ExportImageQuality
   exportShowAvatar?: boolean
   exportMediaError?: string
   exportAvatarUrl?: string
