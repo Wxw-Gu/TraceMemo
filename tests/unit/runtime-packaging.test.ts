@@ -11,11 +11,13 @@ const asar = nodeRequire('@electron/asar') as {
 const {
   validateAsarRuntimeDependencies,
   validateFfmpegRuntime,
+  validateReaderSkillRuntime,
   validateSherpaRuntime,
   validateSilkWasmRuntime
 } = nodeRequire('../../scripts/after-pack.cjs') as {
   validateAsarRuntimeDependencies: (runtimeResources: string) => void
   validateFfmpegRuntime: (runtimeResources: string, platform?: NodeJS.Platform) => void
+  validateReaderSkillRuntime: (runtimeResources: string) => string
   validateSherpaRuntime: (runtimeResources: string, platform: NodeJS.Platform, arch: string) => void
   validateSilkWasmRuntime: (runtimeResources: string) => void
 }
@@ -33,6 +35,22 @@ describe('production runtime packaging', () => {
     expect(() => validateSilkWasmRuntime(join(root, 'resources'))).toThrow(/silk\.wasm/)
     writeFileSync(join(packagePath, 'lib', 'silk.wasm'), Buffer.from([0, 97, 115, 109]))
     expect(() => validateSilkWasmRuntime(join(root, 'resources'))).not.toThrow()
+  })
+
+  it('requires the bundled Reader Skill declared by extraResources', () => {
+    const resources = join(root, 'reader-skill-resources')
+    const skillPath = join(resources, 'skill', 'wechatexplorer-reader', 'SKILL.md')
+    const config = readFileSync(resolve(__dirname, '../../electron-builder.yml'), 'utf8')
+
+    expect(config).toContain('docs/skill/wechatexplorer-reader')
+    expect(config).toContain('to: skill/wechatexplorer-reader')
+    expect(() => validateReaderSkillRuntime(resources)).toThrow(
+      /Missing bundled WechatExplorer Reader Skill/
+    )
+
+    mkdirSync(dirname(skillPath), { recursive: true })
+    writeFileSync(skillPath, '# WechatExplorer Reader\n')
+    expect(validateReaderSkillRuntime(resources)).toBe(skillPath)
   })
 
   it('keeps silk-wasm in electron-builder asarUnpack', () => {

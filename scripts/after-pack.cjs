@@ -103,9 +103,18 @@ function setPlistValue(plistPath, key, value) {
   execFileSync('/usr/libexec/PlistBuddy', ['-c', `Set :${key} ${value}`, plistPath])
 }
 
+function validateReaderSkillRuntime(runtimeResources) {
+  const skillPath = path.join(runtimeResources, 'skill', 'wechatexplorer-reader', 'SKILL.md')
+  if (!existsSync(skillPath)) {
+    throw new Error(`Missing bundled WechatExplorer Reader Skill: ${skillPath}`)
+  }
+  return skillPath
+}
+
 exports.default = async function afterPack(context) {
   const runtimeResources = getRuntimeResources(context)
   validateAsarRuntimeDependencies(runtimeResources)
+  validateReaderSkillRuntime(runtimeResources)
   validateSilkWasmRuntime(runtimeResources)
   const ffmpegPath = validateFfmpegRuntime(runtimeResources, context.electronPlatformName)
   validateSherpaRuntime(
@@ -182,6 +191,7 @@ exports.default = async function afterPack(context) {
 
 exports.getRuntimeResources = getRuntimeResources
 exports.validateAsarRuntimeDependencies = validateAsarRuntimeDependencies
+exports.validateReaderSkillRuntime = validateReaderSkillRuntime
 exports.validateFfmpegRuntime = validateFfmpegRuntime
 exports.validateSilkWasmRuntime = validateSilkWasmRuntime
 exports.validateSherpaRuntime = validateSherpaRuntime

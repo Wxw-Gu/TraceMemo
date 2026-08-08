@@ -13,7 +13,9 @@ WechatExplorer 的文档按“你想完成什么”组织，而不是按源码�
 - [建立本地知识库](./user-guide/knowledge.md)
 - [生成群聊日报和总结](./user-guide/report.md)
 - [语音转文字](./user-guide/voice.md)
-- [导出聊天和报告](./user-guide/export.md)
+- [导出聊天档案](./user-guide/export.md)
+- [防撤回](./user-guide/recall-protection.md)
+- [在微信里向 WechatExplorer 提问](./agent/agent-hub.md)
 - [数据、隐私与安全](./user-guide/privacy.md)
 - [常见问题与排查](./user-guide/troubleshooting.md)
 
@@ -22,14 +24,20 @@ WechatExplorer 的文档按“你想完成什么”组织，而不是按源码�
 - [如何核对 AI 的回答来源](./concepts/answer-sources.md)：用用户语言解释依据、来源标记和查找过程。
 - [从微信数据到回答、日报和导出](./concepts/how-it-works.md)：了解哪些步骤在本机完成，哪些步骤可能调用 Provider。
 
-## 如果你想连接 Agent
+## 微信机器人和外部 Agent
 
-WechatExplorer 有两种不同的 Agent 使用方式，请先按你的目标选择：
+WechatExplorer 有两种不同的接入方式。微信机器人是普通用户可以直接使用的产品能力；Reader Skill 和 Local HTTP API 面向已经在使用 Codex、Claude Code、OpenClaw 等外部 Agent 的用户。
 
-| 你想做什么 | 应该看哪里 |
-| --- | --- |
+| 你想做什么                                                            | 应该看哪里                                                                 |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| 在微信里给机器人发消息，让本机读取数据、生成总结并回复                | [Agent Hub](./agent/agent-hub.md)                                          |
 | 在 Codex、Claude Code、OpenClaw 等外部 Agent 中主动查询过去的微信数据 | [Reader Skill](./agent/reader-skill.md) + [Local HTTP API](./agent/api.md) |
-| 在微信里给机器人发消息，让本机读取数据、生成总结并回复 | [Agent Hub](./agent/agent-hub.md) |
+
+### 在微信里提问
+
+打开应用一级导航中的“Agent”，进入“Agent Hub”后扫码登录微信机器人。机器人收到文字消息后，可以查询最近会话、读取联系人聊天、生成群聊总结图片或总结群成员发言，并把结果回复给发消息的人。它需要本地微信数据库已经连接；依赖 AI 的任务还需要配置 AI 服务。
+
+- [Agent Hub](./agent/agent-hub.md)：连接机器人、查看运行状态和了解实时交互边界。
 
 ### 让外部 Agent 查询历史微信
 
@@ -42,12 +50,6 @@ WechatExplorer 有两种不同的 Agent 使用方式，请先按你的目标选�
 - [Reader Skill](./agent/reader-skill.md)：安装并让外部 Agent 按需读取聊天。
 - [Local HTTP API](./agent/api.md)：完整端点和请求示例。
 - [API 安全](./agent/api-security.md)：Bearer Token、CORS、轮换和边界。
-
-### 让微信机器人参与实时工作
-
-打开应用主导航中的“Agent”，进入“Agent Hub”后扫码登录微信机器人。机器人收到文字消息后，可以查询最近会话、读取联系人聊天、生成群聊总结图片或总结群成员发言，并把结果回复给发消息的人。它需要本地微信数据库已经连接；依赖 AI 的任务还需要配置 AI 服务。
-
-- [Agent Hub](./agent/agent-hub.md)：连接机器人、查看运行状态和了解实时交互边界。
 
 ## 开发与平台
 

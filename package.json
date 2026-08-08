@@ -2,14 +2,20 @@
   "name": "wechatexplorer",
   "version": "2.1.9",
   "packageManager": "pnpm@7.33.7",
-  "description": "macOS / Windows 微信聊天记录查看与 AI 群聊总结助手",
+  "description": "macOS / Windows 本地优先的微信聊天记录搜索与 AI 工作台",
   "keywords": [
     "wechat",
-    "chat",
+    "wechat chat",
+    "wechat history",
     "mac微信",
     "windows微信",
     "微信聊天记录",
-    "AI群聊总结助手"
+    "微信聊天记录搜索",
+    "微信AI",
+    "微信机器人",
+    "AI聊天搜索",
+    "AI群聊总结",
+    "本地AI"
   ],
   "author": "Qingmao",
   "repository": {

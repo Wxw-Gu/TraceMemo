@@ -6,34 +6,81 @@ import { isPackagedRuntime } from '../runtime-mode'
 const SKILL_RELATIVE_PATH = join('skill', 'wechatexplorer-reader', 'SKILL.md')
 const GITHUB_URL =
   'https://github.com/Wxw-Gu/WechatExplorer/tree/main/docs/skill/wechatexplorer-reader'
+const SKILL_VERSION = 'v1.1'
+
+type SkillResourceSource = 'development' | 'bundled'
+
+interface SkillPathEnvironment {
+  appPath: string
+  cwd: string
+  resourcesPath: string
+  execPath: string
+  packaged: boolean
+}
+
+interface SkillCandidate {
+  path: string
+  source: SkillResourceSource
+}
 
 export interface SkillResourceStatus {
   available: boolean
   version?: string
   filePath?: string
   directoryPath?: string
-  source: 'development' | 'bundled'
+  source: SkillResourceSource
   githubUrl: string
   error?: string
 }
 
-function getSkillCandidates(): { path: string; source: 'development' | 'bundled' }[] {
-  const developmentPath = join(app.getAppPath(), 'docs', SKILL_RELATIVE_PATH)
-  const bundledPaths = [
-    join(process.resourcesPath, SKILL_RELATIVE_PATH),
-    join(dirname(app.getAppPath()), SKILL_RELATIVE_PATH),
-    join(dirname(process.execPath), 'resources', SKILL_RELATIVE_PATH)
-  ]
-  return isPackagedRuntime()
-    ? bundledPaths.map((path) => ({ path, source: 'bundled' as const }))
-    : [
-        { path: developmentPath, source: 'development' as const },
-        ...bundledPaths.map((path) => ({ path, source: 'bundled' as const }))
-      ]
+function currentEnvironment(): SkillPathEnvironment {
+  return {
+    appPath: app.getAppPath(),
+    cwd: process.cwd(),
+    resourcesPath: process.resourcesPath || '',
+    execPath: process.execPath,
+    packaged: isPackagedRuntime()
+  }
 }
 
-function getStatus(): SkillResourceStatus {
-  const candidates = getSkillCandidates()
+function uniqueCandidates(candidates: SkillCandidate[]): SkillCandidate[] {
+  const seen = new Set<string>()
+  return candidates.filter((candidate) => {
+    if (!candidate.path || seen.has(candidate.path)) return false
+    seen.add(candidate.path)
+    return true
+  })
+}
+
+export function getSkillCandidates(environment?: SkillPathEnvironment): SkillCandidate[] {
+  const runtime = environment || currentEnvironment()
+  const developmentPaths = [
+    join(runtime.appPath, 'docs', SKILL_RELATIVE_PATH),
+    join(runtime.cwd, 'docs', SKILL_RELATIVE_PATH),
+    join(dirname(runtime.appPath), 'docs', SKILL_RELATIVE_PATH)
+  ]
+  const execDirectory = dirname(runtime.execPath)
+  const bundledPaths = [
+    join(runtime.resourcesPath, SKILL_RELATIVE_PATH),
+    join(runtime.resourcesPath, 'resources', SKILL_RELATIVE_PATH),
+    join(dirname(runtime.appPath), SKILL_RELATIVE_PATH),
+    join(execDirectory, 'resources', SKILL_RELATIVE_PATH),
+    join(dirname(execDirectory), 'Resources', SKILL_RELATIVE_PATH)
+  ]
+  return uniqueCandidates(
+    runtime.packaged
+      ? bundledPaths.map((path) => ({ path, source: 'bundled' }))
+      : [
+          ...developmentPaths.map((path) => ({ path, source: 'development' as const })),
+          ...bundledPaths.map((path) => ({ path, source: 'bundled' as const }))
+        ]
+  )
+}
+
+export function resolveSkillResourceStatus(
+  environment?: SkillPathEnvironment
+): SkillResourceStatus {
+  const candidates = getSkillCandidates(environment)
   const resolved = candidates.find((candidate) => existsSync(candidate.path))
   const filePath = resolved?.path || candidates[0].path
   const source = resolved?.source || candidates[0].source
@@ -48,12 +95,16 @@ function getStatus(): SkillResourceStatus {
   }
   return {
     available: true,
-    version: 'v1.1',
+    version: SKILL_VERSION,
     filePath,
     directoryPath,
     source,
     githubUrl: GITHUB_URL
   }
+}
+
+function getStatus(): SkillResourceStatus {
+  return resolveSkillResourceStatus()
 }
 
 export const skillResourceService = {

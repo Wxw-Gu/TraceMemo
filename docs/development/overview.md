@@ -32,16 +32,17 @@ pnpm test:e2e:build
 
 ## 代码变更对应文档
 
-| 代码区域 | 需要同步检查的文档 |
-| --- | --- |
-| `src/shared/ai-search.ts`、AI Search pipeline | `user-guide/ai-search.md`、`concepts/answer-sources.md` |
-| `src/shared/knowledge.ts`、`src/main/knowledge/` | `user-guide/knowledge.md`、`concepts/how-it-works.md` |
-| `src/shared/voice-recognition.ts` | `user-guide/voice.md` |
-| `src/shared/group-report.ts`、报告 UI | `user-guide/report.md`、API/Agent 文档 |
-| `src/shared/export.ts`、导出服务/UI | `user-guide/export.md` |
-| `src/shared/local-api-test.ts`、`src/main/http-server.ts` | `agent/api.md`、`api-security.md`、打包 Skill |
-| Agent Hub service/UI | `agent/agent-hub.md`、`user-guide/privacy.md` |
-| 设置导航、连接页面 | `user-guide/getting-started.md`、`docs/README.md` |
+| 代码区域                                                  | 需要同步检查的文档                                         |
+| --------------------------------------------------------- | ---------------------------------------------------------- |
+| `src/shared/ai-search.ts`、AI Search pipeline             | `user-guide/ai-search.md`、`concepts/answer-sources.md`    |
+| `src/shared/knowledge.ts`、`src/main/knowledge/`          | `user-guide/knowledge.md`、`concepts/how-it-works.md`      |
+| `src/shared/voice-recognition.ts`                         | `user-guide/voice.md`                                      |
+| `src/shared/group-report.ts`、报告 UI                     | `user-guide/report.md`、API/Agent 文档                     |
+| `src/shared/export.ts`、导出服务/UI                       | `user-guide/export.md`                                     |
+| `src/main/services/recall-archive-service.ts`、防撤回设置 | `user-guide/recall-protection.md`、`user-guide/privacy.md` |
+| `src/shared/local-api-test.ts`、`src/main/http-server.ts` | `agent/api.md`、`api-security.md`、打包 Skill              |
+| Agent Hub service/UI                                      | `agent/agent-hub.md`、`user-guide/privacy.md`              |
+| 设置导航、连接页面                                        | `user-guide/getting-started.md`、`docs/README.md`          |
 
 ## 文档检查
 
