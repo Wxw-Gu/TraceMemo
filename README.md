@@ -47,6 +47,13 @@ WechatExplorer 是一个本地优先的微信聊天记录搜索与 AI 工作台�
 
 它和普通聊天记录查看器最大的不同，是 AI 不只是告诉你答案，还会告诉你答案来自哪里。你可以看到答案参考了哪些内容、来自哪个会话和时间，再回到原始消息确认它有没有理解错。
 
+## 💬 交流与反馈
+
+<p align="center">
+  <img src="./public/二维码.jpg" alt="WechatExplorer 交流与售后群二维码" width="280" />
+</p>
+
+
 ## 从你的任务开始
 
 | 我现在想做什么                            | 在应用里打开                                            | 需要准备什么                         |
@@ -246,3 +253,35 @@ pnpm test:e2e:build
 ## 许可说明
 
 仓库中的第三方组件、模型和连接器遵循各自的许可证。当前仓库根目录未提供独立的项目 `LICENSE` 文件；贡献、复制或再分发前，请先向维护者确认 WechatExplorer 本身的许可范围。
+
+## 致谢
+
+<details>
+  <summary>展开致谢与参考项目</summary>
+
+WechatExplorer 在开发过程中参考了多个优秀的开源项目，感谢这些项目作者的工作与分享。
+
+特别感谢：
+
+- **[WechatMessageExplorer](https://github.com/svcvit/WechatMessageExplorer)**
+  - 提供了微信数据库解析相关思路。
+- **[WeFlow](https://github.com/hicccc77/WeFlow)**
+  - 参考了数据库密钥获取、图片解密等实现思路。
+- **[chatlog](https://github.com/sjzar/chatlog)**
+  - 提供了聊天记录导出与数据处理方面的参考。
+
+在此基础上，WechatExplorer 进行了重新设计与实现，包括：
+
+- AI 问问微信
+- AI 群聊日报
+- 本地 HTTP API
+- Reader Skill
+- Agent Hub
+- 新手引导
+- Electron + React 全新界面
+- 本地优先 AI 工作流
+
+感谢所有开源作者。
+
+</details>
+
