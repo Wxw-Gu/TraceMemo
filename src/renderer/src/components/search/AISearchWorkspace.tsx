@@ -1392,6 +1392,13 @@ export function AISearchWorkspace({
                 ref={composerRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+                    return
+                  }
+                  event.preventDefault()
+                  void runAnalysis()
+                }}
                 placeholder="例如：技术交流群最近讨论了哪些 Windows 性能问题？"
                 rows={2}
               />

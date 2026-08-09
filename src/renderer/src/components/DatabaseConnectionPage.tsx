@@ -1,5 +1,6 @@
 import React from 'react'
 import type { DatabaseKeyEnvironment, WechatAccountCandidate } from '../../../shared/database-key'
+import { WINDOWS_VC_RUNTIME_DOWNLOAD_URL } from '../../../shared/windows-runtime'
 
 const GUIDE_URL =
   'https://github.com/Wxw-Gu/WechatExplorer/blob/main/docs/user-guide/getting-started.md'
@@ -461,7 +462,12 @@ export function DatabaseConnectionPage({
                     </a>
                   </>
                 ) : (
-                  'Windows 已完整支持，不需要关闭 SIP。'
+                  <>
+                    Windows 需要 Microsoft Visual C++ 2015-2022 x64 运行库。{' '}
+                    <a href={WINDOWS_VC_RUNTIME_DOWNLOAD_URL} target="_blank" rel="noreferrer">
+                      下载运行库
+                    </a>
+                  </>
                 )}
               </p>
               {showMacKeyFaq && isMac && (
@@ -521,6 +527,14 @@ export function DatabaseConnectionPage({
                 </div>
               )}
               {status && <div className={`database-login-message ${statusKind}`}>{status}</div>}
+              {platform === 'win32' && (
+                <p className="database-login-platform-note">
+                  无法加载数据库组件时，请安装 Microsoft Visual C++ 2015-2022 x64 运行库。{' '}
+                  <a href={WINDOWS_VC_RUNTIME_DOWNLOAD_URL} target="_blank" rel="noreferrer">
+                    下载运行库
+                  </a>
+                </p>
+              )}
               <button
                 type="button"
                 className="database-login-primary"

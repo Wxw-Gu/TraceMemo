@@ -180,4 +180,16 @@ describe('DatabaseConnectionPage', () => {
     expect(screen.getByRole('button', { name: '返回上一步' })).toBeEnabled()
     expect(screen.getByRole('button', { name: '取消并重新检查' })).toBeEnabled()
   })
+  it('provides the official Visual C++ runtime download on Windows', () => {
+    renderPage({
+      status: '当前 Windows 缺少 Microsoft Visual C++ 运行库',
+      statusKind: 'error'
+    })
+
+    expect(screen.getByRole('link', { name: '下载运行库' })).toHaveAttribute(
+      'href',
+      'https://aka.ms/vc14/vc_redist.x64.exe'
+    )
+  })
+
 })

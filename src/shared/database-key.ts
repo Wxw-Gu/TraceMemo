@@ -4,7 +4,17 @@ export type DatabaseKeyValidationCode =
   | 'ACCOUNT_MISMATCH'
   | 'ROOT_UNAVAILABLE'
   | 'DATABASE_FILE_MISSING'
+  | 'VC_RUNTIME_MISSING'
   | 'UNKNOWN_VALIDATION_ERROR'
+
+export type DatabaseInitCode = DatabaseKeyValidationCode | 'ACCOUNT_SELECTION_REQUIRED'
+
+export interface DatabaseInitResult {
+  success: boolean
+  code?: DatabaseInitCode
+  error?: string
+  monitoring?: boolean
+}
 
 export interface DatabaseKeyValidationResult {
   success: boolean

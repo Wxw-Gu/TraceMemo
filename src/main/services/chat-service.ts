@@ -9,6 +9,10 @@ import type {
   DatabaseKeyValidationCode,
   DatabaseKeyValidationResult
 } from '../../shared/database-key'
+import {
+  isWindowsVcRuntimeMissingError,
+  WINDOWS_VC_RUNTIME_ERROR_MESSAGE
+} from '../../shared/windows-runtime'
 import { mergeRecallArchiveMessages, recordRecallArchiveMessages } from './recall-archive-service'
 import type { ExportImageQuality } from '../../shared/image-quality'
 
@@ -675,11 +679,13 @@ const DATABASE_KEY_ERROR_MESSAGES: Record<DatabaseKeyValidationCode, string> = {
   ACCOUNT_MISMATCH: '密钥与当前账号不匹配',
   ROOT_UNAVAILABLE: '当前数据库目录不可用',
   DATABASE_FILE_MISSING: '数据库文件缺失',
+  VC_RUNTIME_MISSING: WINDOWS_VC_RUNTIME_ERROR_MESSAGE,
   UNKNOWN_VALIDATION_ERROR: '未知验证错误'
 }
 
 function mapConnectionError(detail: string): DatabaseKeyValidationCode {
   const normalized = detail.toLowerCase()
+  if (isWindowsVcRuntimeMissingError(detail, process.platform)) return 'VC_RUNTIME_MISSING'
   if (normalized.includes('-1005') || normalized.includes('不匹配')) return 'ACCOUNT_MISMATCH'
   if (normalized.includes('session.db') || normalized.includes('数据库文件')) {
     return 'DATABASE_FILE_MISSING'

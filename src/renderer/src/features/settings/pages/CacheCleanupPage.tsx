@@ -10,10 +10,14 @@ function formatBytes(value: number): string {
   return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`
 }
 
-export function CacheCleanupPage({ onNotice }: { onNotice: (message: string) => void }): React.ReactElement {
+export function CacheCleanupPage({
+  onNotice
+}: {
+  onNotice: (message: string) => void
+}): React.ReactElement {
   const [summary, setSummary] = useState<CacheSummary | null>(null)
   const [busyScope, setBusyScope] = useState<
-    'bootstrap' | 'electron' | 'knowledge' | 'all' | 'local' | null
+    'bootstrap' | 'electron' | 'knowledge' | 'knowledge-directory' | 'all' | 'local' | null
   >(null)
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -47,6 +51,19 @@ export function CacheCleanupPage({ onNotice }: { onNotice: (message: string) => 
       )
     } catch (error) {
       onNotice(error instanceof Error ? error.message : '清理缓存失败')
+    } finally {
+      setBusyScope(null)
+    }
+  }
+
+  const openKnowledge = async (): Promise<void> => {
+    setBusyScope('knowledge-directory')
+    try {
+      const result = await window.api.openKnowledgeDirectory()
+      if (!result.success) throw new Error(result.error || '无法打开知识库文件夹')
+      onNotice('已打开知识库文件夹')
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : '无法打开知识库文件夹')
     } finally {
       setBusyScope(null)
     }
@@ -88,15 +105,28 @@ export function CacheCleanupPage({ onNotice }: { onNotice: (message: string) => 
                 <div>
                   <h3>{item.label}</h3>
                   <p>{item.description}</p>
-                  <small>{formatBytes(item.sizeBytes)} · {item.fileCount} 个文件</small>
+                  <small>
+                    {formatBytes(item.sizeBytes)} · {item.fileCount} 个文件
+                  </small>
                 </div>
-                <button
-                  type="button"
-                  disabled={busyScope !== null}
-                  onClick={() => void clear(item.id)}
-                >
-                  {busyScope === item.id ? '清理中...' : '清理'}
-                </button>
+                <div className="settings-cache-actions">
+                  {item.id === 'knowledge' && (
+                    <button
+                      type="button"
+                      disabled={busyScope !== null}
+                      onClick={() => void openKnowledge()}
+                    >
+                      {busyScope === 'knowledge-directory' ? '打开中...' : '打开文件夹'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={busyScope !== null}
+                    onClick={() => void clear(item.id)}
+                  >
+                    {busyScope === item.id ? '清理中...' : '清理'}
+                  </button>
+                </div>
               </section>
             ))}
             <section className="settings-card settings-cache-item">
@@ -113,7 +143,9 @@ export function CacheCleanupPage({ onNotice }: { onNotice: (message: string) => 
 
           <div className="settings-inline-note">
             <strong>说明</strong>
-            <span>缓存没有过期时间，只有在这里手动清理，或应用检测到格式需要迁移时才会被替换。</span>
+            <span>
+              缓存没有过期时间，只有在这里手动清理，或应用检测到格式需要迁移时才会被替换。
+            </span>
           </div>
         </div>
       </div>

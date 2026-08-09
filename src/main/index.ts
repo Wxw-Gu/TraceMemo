@@ -97,7 +97,7 @@ import { agentHubService } from './services/agent-hub-service'
 import { appLogger } from './app-logger'
 import type { AppLogEntry } from '../shared/app-log'
 import { appUpdateService } from './services/app-update-service'
-import { clearCache, getCacheSummary } from './services/cache-service'
+import { clearCache, getCacheSummary, openKnowledgeDirectory } from './services/cache-service'
 import type { CacheClearScope } from './services/cache-service'
 import { configureRecallArchive, RecallArchiveMonitor } from './services/recall-archive-service'
 import { VideoAssetService } from './video-asset-service'
@@ -109,6 +109,10 @@ import { VoiceBatchService } from './voice-pipeline/voice-batch-service'
 import type { VoiceBatchRequest, VoiceMessageReference } from '../shared/voice-recognition'
 import type { AiSearchPipelineRequest } from '../shared/ai-search'
 import type { KnowledgeSearchIpcRequest, KnowledgeSearchIpcResult } from '../shared/knowledge'
+import {
+  isWindowsVcRuntimeMissingError,
+  WINDOWS_VC_RUNTIME_ERROR_MESSAGE
+} from '../shared/windows-runtime'
 import { KnowledgeSearchService } from './knowledge/knowledge-search-service'
 import { AiSearchPipelineService } from './services/ai-search-pipeline-service'
 
@@ -506,6 +510,13 @@ app.whenReady().then(async () => {
   wcdbBootstrapPromise = bootstrapWcdbNativeAsync().then(() => {
     console.log('[WCDB4] async bootstrap complete')
   })
+  void wcdbBootstrapPromise.catch((error) => {
+    appLogger.write({
+      level: 'error',
+      scope: 'wcdb-bootstrap',
+      message: error instanceof Error ? error.message : String(error)
+    })
+  })
 
   // 设置应用程序用户模型 ID
   electronApp.setAppUserModelId('com.wechatexplorer.app')
@@ -529,6 +540,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('app-update:download', () => appUpdateService.download())
   ipcMain.handle('app-update:install', () => appUpdateService.install())
   ipcMain.handle('cache:getSummary', () => getCacheSummary())
+  ipcMain.handle('cache:openKnowledgeDirectory', () => openKnowledgeDirectory())
   ipcMain.handle('cache:clear', async (_, scope: CacheClearScope) => {
     const allowedScopes: CacheClearScope[] = ['bootstrap', 'electron', 'knowledge', 'all']
     if (!allowedScopes.includes(scope)) return getCacheSummary()
@@ -625,7 +637,16 @@ app.whenReady().then(async () => {
         return { success: true, monitoring }
       } catch (error) {
         console.error('Failed to init DB:', error)
-        return { success: false, error: error instanceof Error ? error.message : String(error) }
+        const detail = error instanceof Error ? error.message : String(error)
+        if (isWindowsVcRuntimeMissingError(detail, process.platform)) {
+          return {
+            success: false,
+            code: 'VC_RUNTIME_MISSING',
+            error: WINDOWS_VC_RUNTIME_ERROR_MESSAGE,
+            monitoring: false
+          }
+        }
+        return { success: false, error: detail }
       } finally {
         dbInitInFlight = null
       }

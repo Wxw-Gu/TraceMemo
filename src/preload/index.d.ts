@@ -10,6 +10,7 @@ import {
 } from '../shared/report-history'
 import type {
   DatabaseKeyEnvironment,
+  DatabaseInitResult,
   DatabaseKeyStorageResult,
   DatabaseKeyValidationResult,
   AccountDiscoveryResult
@@ -141,10 +142,8 @@ declare global {
       onAppUpdateState: (callback: (state: AppUpdateState) => void) => () => void
       getCacheSummary: () => Promise<CacheSummary>
       clearCache: (scope: 'bootstrap' | 'electron' | 'knowledge' | 'all') => Promise<CacheSummary>
-      initDb: (
-        key: string,
-        accountRoot: string
-      ) => Promise<boolean | { success: boolean; error?: string; monitoring?: boolean }>
+      openKnowledgeDirectory: () => Promise<{ success: boolean; error?: string }>
+      initDb: (key: string, accountRoot: string) => Promise<boolean | DatabaseInitResult>
       discoverAccounts: (inputPath: string) => Promise<AccountDiscoveryResult>
       getBootstrapCache: () => Promise<{
         self?: { wxid: string; nickname: string; avatar?: string; accountRoot: string }

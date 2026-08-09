@@ -376,6 +376,56 @@ describe('AISearchWorkspace cache privacy boundary', () => {
     expect(api.runAiSearch).not.toHaveBeenCalled()
   })
 
+  it('submits with Enter and keeps Shift+Enter available for a new line', async () => {
+    api.getAiSearchProviderStatus.mockResolvedValue({ configured: true, requiresConsent: false })
+    api.runAiSearch.mockResolvedValue({
+      requestId: 'enter-submit',
+      status: 'completed',
+      answer: 'answer',
+      plan: { intent: 'global_topic_search' },
+      knowledge: { indexedMessageCount: 1, indexedChunkCount: 1, totalMessages: 1 },
+      candidateEvidenceCount: 0,
+      contextEvidenceCount: 0,
+      evidence: [],
+      aggregation: {
+        messageCount: 0,
+        peopleCount: 0,
+        conversationCount: 0,
+        people: [],
+        conversations: []
+      },
+      agent: { mode: 'agent', toolCalls: 1, trace: [] },
+      timings: {},
+      elapsedMs: 1
+    } as never)
+    render(
+      <AISearchWorkspace
+        contacts={[]}
+        selectedContact={null}
+        dbReady
+        aiModelConfig={{
+          configured: true,
+          providerName: 'Local Provider',
+          model: 'model',
+          modelName: 'Model',
+          status: 'connected'
+        }}
+        onSelectContact={vi.fn()}
+        onOpenEvidence={vi.fn()}
+        onOpenAISettings={vi.fn()}
+        onNotice={vi.fn()}
+      />
+    )
+
+    const input = screen.getByRole('textbox')
+    await userEvent.type(input, 'Enter submit question')
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    expect(api.runAiSearch).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(api.runAiSearch).toHaveBeenCalledOnce())
+  })
+
   it('cancels an active analysis and ignores its late result', async () => {
     api.getAiSearchProviderStatus.mockResolvedValue({ configured: true, requiresConsent: false })
     let resolveSearch: ((value: unknown) => void) | undefined

@@ -66,6 +66,8 @@ const api = {
   getCacheSummary: (): Promise<CacheSummary> => ipcRenderer.invoke('cache:getSummary'),
   clearCache: (scope: 'bootstrap' | 'electron' | 'knowledge' | 'all'): Promise<CacheSummary> =>
     ipcRenderer.invoke('cache:clear', scope),
+  openKnowledgeDirectory: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('cache:openKnowledgeDirectory'),
   initDb: (key: string, accountRoot: string) => ipcRenderer.invoke('db:init', key, accountRoot),
   discoverAccounts: (inputPath: string): Promise<AccountDiscoveryResult> =>
     ipcRenderer.invoke('accounts:discover', inputPath),

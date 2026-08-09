@@ -2,6 +2,7 @@
 .settings-primary-button,
 .settings-danger-button,
 .settings-cache-item > button,
+.settings-cache-actions button,
 .about-links-card button {
   border: 1px solid var(--wxex-border);
   border-radius: var(--wxex-radius-sm);
@@ -99,6 +100,12 @@
     color: var(--wxex-text-muted);
     font-size: 11px;
   }
+}
+
+.settings-cache-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
 }
 
 .settings-inline-note,
@@ -819,5 +826,13 @@
   .update-card {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .settings-cache-actions {
+    width: 100%;
+
+    button {
+      flex: 1;
+    }
   }
 }

@@ -62,6 +62,8 @@ describe('preload IPC contract', () => {
     expect(invoke).toHaveBeenLastCalledWith('knowledge:startIndex')
     await api.clearCache('knowledge')
     expect(invoke).toHaveBeenLastCalledWith('cache:clear', 'knowledge')
+    await api.openKnowledgeDirectory()
+    expect(invoke).toHaveBeenLastCalledWith('cache:openKnowledgeDirectory')
 
     await api.getImage('fixture-md5', 'fixture.dat', 'fixture-session', {
       force: true,

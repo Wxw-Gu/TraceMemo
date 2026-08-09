@@ -1,4 +1,4 @@
-import { app, session } from 'electron'
+import { app, session, shell } from 'electron'
 import fs from 'fs-extra'
 import path from 'path'
 import { clearBootstrapCache } from './bootstrap-cache'
@@ -62,7 +62,8 @@ export function getCacheSummary(): CacheSummary {
     {
       id: 'knowledge',
       label: '本地知识库索引',
-      description: '为问问微信建立的所有账号本地检索索引。清理后需手动重新建立，不影响微信原始数据。',
+      description:
+        '为问问微信建立的所有账号本地检索索引。清理后需手动重新建立，不影响微信原始数据。',
       ...knowledge
     }
   ]
@@ -89,4 +90,14 @@ export async function clearCache(
     await fs.remove(KNOWLEDGE_CACHE_DIR)
   }
   return getCacheSummary()
+}
+
+export async function openKnowledgeDirectory(): Promise<{ success: boolean; error?: string }> {
+  try {
+    await fs.ensureDir(KNOWLEDGE_CACHE_DIR)
+    const error = await shell.openPath(KNOWLEDGE_CACHE_DIR)
+    return error ? { success: false, error } : { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
 }
