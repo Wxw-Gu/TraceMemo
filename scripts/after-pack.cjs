@@ -88,7 +88,9 @@ function validateAsarRuntimeDependencies(runtimeResources) {
   const asarPath = path.join(runtimeResources, 'app.asar')
   if (!existsSync(asarPath)) throw new Error(`Missing packaged application archive: ${asarPath}`)
 
-  const entries = new Set(asar.listPackage(asarPath))
+  // @electron/asar returns platform-native separators. Normalize to POSIX
+  // paths so validation behaves consistently on Windows and macOS/Linux.
+  const entries = new Set(asar.listPackage(asarPath).map((entry) => entry.replaceAll('\\', '/')))
   const missingPackages = REQUIRED_RUNTIME_PACKAGES.filter(
     (packageName) => !entries.has(`/node_modules/${packageName}/package.json`)
   )

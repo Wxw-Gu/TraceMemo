@@ -71,6 +71,30 @@ describe('production runtime packaging', () => {
     )
   })
 
+  it('accepts runtime dependencies when asar uses Windows path separators', async () => {
+    const resources = join(root, 'asar-complete-resources')
+    const source = join(root, 'asar-complete-source')
+    const packages = [
+      '@electron-toolkit/preload',
+      '@electron-toolkit/utils',
+      'archiver',
+      'electron-updater',
+      'ffmpeg-static',
+      'fs-extra',
+      'jsonrepair',
+      'koffi'
+    ]
+    for (const packageName of packages) {
+      const packagePath = join(source, 'node_modules', ...packageName.split('/'))
+      mkdirSync(packagePath, { recursive: true })
+      writeFileSync(join(packagePath, 'package.json'), '{}')
+    }
+    mkdirSync(resources, { recursive: true })
+    await asar.createPackage(source, join(resources, 'app.asar'))
+
+    expect(() => validateAsarRuntimeDependencies(resources)).not.toThrow()
+  })
+
   it('requires and unpacks the bundled ffmpeg-static executable', () => {
     const resources = join(root, 'ffmpeg-resources')
     const ffmpegPath = join(
