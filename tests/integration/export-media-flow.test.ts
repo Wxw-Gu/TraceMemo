@@ -27,6 +27,21 @@ const state = vi.hoisted(() => ({
   messages: [] as Message[],
   messagesByUser: {} as Record<string, Message[]>,
   exportReads: [] as string[],
+  selfInfoReads: 0,
+  groupSnapshotReads: [] as string[],
+  groupSnapshots: {} as Record<
+    string,
+    {
+      members: Array<{
+        wxid: string
+        nickname: string
+        groupNickname: string
+        wechatNickname: string
+        remark: string
+        avatar: string
+      }>
+    }
+  >,
   voiceLookups: [] as number[],
   videoLookups: [] as {
     createTime?: number
@@ -87,12 +102,19 @@ vi.mock('../../src/main/services/chat-service', () => ({
     })
   }),
   getContactAvatars: () => ({ ...state.avatarMap }),
-  getSelfAccountInfoAsync: async () => ({
-    wxid: 'fixture_account',
-    nickname: '示例昵称',
-    avatar: state.selfAvatar,
-    accountRoot: state.accountRoot
-  })
+  getGroupSnapshotAsync: async (userMd5: string) => {
+    state.groupSnapshotReads.push(userMd5)
+    return structuredClone(state.groupSnapshots[userMd5] || null)
+  },
+  getSelfAccountInfoAsync: async () => {
+    state.selfInfoReads += 1
+    return {
+      wxid: 'fixture_account',
+      nickname: '示例昵称',
+      avatar: state.selfAvatar,
+      accountRoot: state.accountRoot
+    }
+  }
 }))
 vi.mock('../../src/main/services/image-key-config-service', () => ({
   ImageKeyConfigService: class {
@@ -238,6 +260,9 @@ describe('media export flow', () => {
     state.videoLookups = []
     state.messagesByUser = {}
     state.exportReads = []
+    state.selfInfoReads = 0
+    state.groupSnapshotReads = []
+    state.groupSnapshots = {}
     state.voiceLookups = []
     const fileMonth = join(state.accountRoot, 'msg', 'file', '2026-08')
     mkdirSync(fileMonth, { recursive: true })
@@ -922,6 +947,206 @@ describe('media export flow', () => {
     for (const imagePath of imagePaths) {
       expect(existsSync(join(dirname(result.outputPath!), imagePath!))).toBe(true)
     }
+  })
+
+  it('exports more than five chats in all scope and refreshes a changing conversation set', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const progress: Array<{ phase: string; currentTargetName?: string; percent?: number }> = []
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        send: (
+          _channel: string,
+          item: { phase: string; currentTargetName?: string; percent?: number }
+        ) => progress.push(item)
+      }
+    }
+    const targets: ExportTarget[] = Array.from({ length: 6 }, (_, index) => ({
+      userMd5: `all-${index + 1}`,
+      name: `聊天 ${index + 1}`,
+      type: index === 5 ? 'group' : 'user',
+      nameMode: 'groupNickname'
+    }))
+    state.messagesByUser = Object.fromEntries(
+      targets.map((item, index) => [
+        item.userMd5,
+        [
+          message({
+            id: `message-${index + 1}`,
+            senderId: index === 5 ? 'wxid-group-member' : `wxid-${index + 1}`,
+            content: `会话 ${index + 1}`,
+            createTime: 100 + index
+          })
+        ]
+      ])
+    )
+    state.groupSnapshots['all-6'] = {
+      members: [
+        {
+          wxid: 'wxid-group-member',
+          nickname: '兼容名称',
+          groupNickname: '群内名称',
+          wechatNickname: '微信名称',
+          remark: '通讯录备注',
+          avatar: ''
+        }
+      ]
+    }
+
+    const request = {
+      scope: 'all' as const,
+      targets,
+      format: 'html' as const,
+      outputName: 'all-conversations',
+      kinds: ['text'] as const,
+      includeMedia: false
+    }
+    const legacyOutputDir = join(state.documents, 'WechatExplorer', '导出', 'all-conversations')
+    mkdirSync(join(legacyOutputDir, 'data'), { recursive: true })
+    writeFileSync(join(legacyOutputDir, 'index.html'), 'legacy combined archive')
+    writeFileSync(join(legacyOutputDir, 'data', 'messages.js'), 'legacy data')
+    const first = await runExport(
+      { ...request, jobId: 'all-conversations-first', kinds: [...request.kinds] },
+      win as never
+    )
+
+    expect(first.success, first.error).toBe(true)
+    expect(first.messageCount).toBe(6)
+    const outputDir = first.outputPath!
+    const firstUserArchive = readArchive(join(outputDir, '联系人', '聊天 1', 'index.html'))
+    const firstGroupArchive = readArchive(join(outputDir, '群聊', '聊天 6', 'index.html'))
+    expect(firstUserArchive.conversations).toHaveLength(1)
+    expect(firstGroupArchive.messages.find((item) => item.id === 'message-6')?.name).toBe(
+      '群内名称'
+    )
+    expect(state.groupSnapshotReads).toEqual(['all-6'])
+    expect(state.selfInfoReads).toBe(1)
+    const manifest = JSON.parse(readFileSync(join(outputDir, '导出清单.json'), 'utf8')) as {
+      conversations: Array<{ id: string }>
+    }
+    expect(manifest.conversations).toHaveLength(6)
+    expect(readFileSync(join(outputDir, '旧版合并档案', 'index.html'), 'utf8')).toBe(
+      'legacy combined archive'
+    )
+    expect(existsSync(join(outputDir, '群聊', '聊天 6', 'data', 'messages.js'))).toBe(true)
+    expect(existsSync(join(outputDir, '联系人', '聊天 1', 'data', 'messages.js'))).toBe(true)
+    expect(progress.some((item) => item.currentTargetName === '聊天 6')).toBe(true)
+    expect(progress.at(-1)).toMatchObject({ phase: 'completed', percent: 100 })
+
+    const second = await runExport(
+      {
+        ...request,
+        jobId: 'all-conversations-second',
+        targets: targets.slice(0, 5),
+        kinds: [...request.kinds]
+      },
+      win as never
+    )
+    expect(second.success, second.error).toBe(true)
+    const secondManifest = JSON.parse(
+      readFileSync(join(second.outputPath!, '导出清单.json'), 'utf8')
+    ) as { conversations: Array<{ id: string }> }
+    expect(secondManifest.conversations).toHaveLength(5)
+    expect(secondManifest.conversations.some((item) => item.id === 'all-6')).toBe(false)
+  })
+
+  it('writes every all-export CSV inside its group or contact conversation folder', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = {
+      isDestroyed: () => false,
+      webContents: { send: vi.fn() }
+    }
+    const targets: ExportTarget[] = [
+      { ...target('csv-group', '测试群聊'), type: 'group' },
+      target('csv-user', '测试联系人')
+    ]
+    state.messagesByUser = {
+      'csv-group': [message({ id: 'group-text', content: '群聊消息' })],
+      'csv-user': [message({ id: 'user-text', content: '联系人消息' })]
+    }
+
+    const result = await runExport(
+      {
+        jobId: 'all-conversations-csv',
+        scope: 'all',
+        allContactTypes: ['group', 'user'],
+        targets,
+        format: 'csv',
+        outputName: '全部聊天记录',
+        kinds: ['text'],
+        includeMedia: false
+      },
+      win as never
+    )
+
+    expect(result.success, result.error).toBe(true)
+    const outputDir = result.outputPath!
+    const groupDir = join(outputDir, '群聊', '测试群聊')
+    const userDir = join(outputDir, '联系人', '测试联系人')
+    const groupFiles = readdirSync(groupDir)
+    const userFiles = readdirSync(userDir)
+    expect(groupFiles).toHaveLength(1)
+    expect(userFiles).toHaveLength(1)
+    expect(groupFiles[0]).toMatch(/^测试群聊_\d{8}_\d{6}\.csv$/)
+    expect(userFiles[0]).toMatch(/^测试联系人_\d{8}_\d{6}\.csv$/)
+    expect(readFileSync(join(groupDir, groupFiles[0]), 'utf8')).toContain('群聊消息')
+    expect(readFileSync(join(userDir, userFiles[0]), 'utf8')).toContain('联系人消息')
+    expect(existsSync(join(outputDir, 'index.html'))).toBe(false)
+  })
+
+  it('cancels an all-export task between conversations without starting the next database read', async () => {
+    const { cancelExport, runExport } = await import('../../src/main/export-service')
+    const jobId = 'all-export-cancel'
+    const targets = [
+      target('cancel-1', '联系人一'),
+      target('cancel-2', '联系人二'),
+      target('cancel-3', '联系人三')
+    ]
+    state.messagesByUser = Object.fromEntries(
+      targets.map((item, index) => [
+        item.userMd5,
+        [message({ id: `cancel-message-${index}`, content: item.name })]
+      ])
+    )
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        send: (
+          _channel: string,
+          progress: { phase: string; currentTargetIndex?: number }
+        ): void => {
+          if (progress.phase === 'reading' && progress.currentTargetIndex === 2) {
+            cancelExport(jobId)
+          }
+        }
+      }
+    }
+
+    const result = await runExport(
+      {
+        jobId,
+        scope: 'all',
+        allContactTypes: ['user'],
+        targets,
+        format: 'html',
+        outputName: 'cancelled-all-conversations',
+        kinds: ['text'],
+        includeMedia: false
+      },
+      win as never
+    )
+
+    expect(result).toEqual({ success: false, error: '已取消' })
+    expect(state.exportReads).toEqual(['cancel-1'])
+    const outputDir = join(state.documents, 'WechatExplorer', '导出', 'cancelled-all-conversations')
+    expect(existsSync(join(outputDir, '联系人', '联系人一', 'index.html'))).toBe(true)
+    expect(existsSync(join(outputDir, '联系人', '联系人二', 'index.html'))).toBe(false)
+    const partialManifest = JSON.parse(readFileSync(join(outputDir, '导出清单.json'), 'utf8')) as {
+      status: string
+      conversations: Array<{ id: string }>
+    }
+    expect(partialManifest.status).toBe('cancelled')
+    expect(partialManifest.conversations.map((item) => item.id)).toEqual(['cancel-1'])
   })
 
   it('creates a replaceable ZIP containing the complete top-level archive folder', async () => {

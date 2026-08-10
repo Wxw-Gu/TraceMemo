@@ -13,6 +13,7 @@ import { ModelSummary } from './ModelSummary'
 import { ReportDensitySelector } from './ReportDensitySelector'
 import { ReportRangeSelector } from './ReportRangeSelector'
 import { ReportMemberNameSelector } from './ReportMemberNameSelector'
+import { ReportGroupMemberSelector } from './ReportGroupMemberSelector'
 import { ReportSectionSelector } from './ReportSectionSelector'
 import { ReportTemplateId, ReportTemplateSelector } from './ReportTemplateSelector'
 
@@ -169,6 +170,7 @@ export function AiReportWorkspace({
           onChange={onMemberNamePreferenceChange}
           disabled={configDisabled}
         />
+        <ReportGroupMemberSelector sourceContact={sourceContact} disabled={configDisabled} />
         <ModelSummary config={modelConfig} onOpenSettings={onOpenModelSettings} />
         <section className="report-config-section report-timeout-section">
           <div>

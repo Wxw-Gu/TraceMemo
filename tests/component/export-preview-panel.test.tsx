@@ -9,6 +9,7 @@ const baseProps = {
   previewBytes: 0,
   selfInfo: null,
   selectedCount: 1,
+  allExport: false,
   jobId: 'fixture-job',
   onCancel: vi.fn(),
   onReveal: vi.fn()
@@ -69,5 +70,35 @@ describe('export progress panel', () => {
     const progressbar = screen.getByRole('progressbar', { name: '导出进度' })
     expect(progressbar).toHaveAttribute('aria-valuenow', '31')
     expect(progressbar.querySelector('span')).toHaveStyle({ width: '31%' })
+  })
+
+  it('shows the current conversation and overall position for all export', () => {
+    render(
+      <ExportPreviewPanel
+        {...baseProps}
+        allExport
+        selectedCount={30}
+        progress={{
+          jobId: 'fixture-job',
+          phase: 'media',
+          processed: 5,
+          total: 12,
+          percent: 36,
+          currentTargetIndex: 11,
+          currentTargetCount: 30,
+          currentTargetName: '项目讨论群',
+          currentTargetType: 'group'
+        }}
+        includeVoiceTranscripts={false}
+        zip={false}
+      />
+    )
+
+    expect(screen.getByText('群聊')).toBeVisible()
+    expect(screen.getByText('第 11/30 个：项目讨论群')).toBeVisible()
+    expect(screen.getByRole('progressbar', { name: '导出进度' })).toHaveAttribute(
+      'aria-valuenow',
+      '36'
+    )
   })
 })

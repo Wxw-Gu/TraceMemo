@@ -1707,7 +1707,13 @@ export class Wcdb4Client {
           'contactRemark',
           'contact_remark'
         ])
-        const memberNickname = this.pickString(row, ['displayName', 'display_name', 'name'])
+        const rowGroupNickname = this.pickString(row, [
+          'groupNickname',
+          'group_nickname',
+          'displayName',
+          'display_name'
+        ])
+        const memberNickname = this.pickString(row, ['name'])
         const avatar = this.pickString(row, [
           'avatarUrl',
           'avatar_url',
@@ -1721,8 +1727,8 @@ export class Wcdb4Client {
 
         return {
           m_nsUsrName: username,
-          nickname: groupNicknames.get(username) || remark || wechatNickname || memberNickname,
-          groupNickname: groupNicknames.get(username) || '',
+          nickname: wechatNickname || memberNickname || remark || rowGroupNickname,
+          groupNickname: groupNicknames.get(username) || rowGroupNickname,
           wechatNickname: wechatNickname || memberNickname,
           remark,
           m_nsHeadImgUrl: avatar
@@ -1843,7 +1849,13 @@ export class Wcdb4Client {
           'contactRemark',
           'contact_remark'
         ])
-        const memberNickname = this.pickString(row, ['displayName', 'display_name', 'name'])
+        const rowGroupNickname = this.pickString(row, [
+          'groupNickname',
+          'group_nickname',
+          'displayName',
+          'display_name'
+        ])
+        const memberNickname = this.pickString(row, ['name'])
         const avatar = this.pickString(row, [
           'avatarUrl',
           'avatar_url',
@@ -1853,8 +1865,8 @@ export class Wcdb4Client {
         if (username && avatar) this.avatarCache.set(username, avatar)
         return {
           m_nsUsrName: username,
-          nickname: groupNicknames.get(username) || remark || wechatNickname || memberNickname,
-          groupNickname: groupNicknames.get(username) || '',
+          nickname: wechatNickname || memberNickname || remark || rowGroupNickname,
+          groupNickname: groupNicknames.get(username) || rowGroupNickname,
           wechatNickname: wechatNickname || memberNickname,
           remark,
           m_nsHeadImgUrl: avatar

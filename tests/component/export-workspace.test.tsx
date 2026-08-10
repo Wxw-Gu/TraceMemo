@@ -38,7 +38,8 @@ describe('ExportWorkspace multi-chat selection', () => {
   })
 
   const renderWorkspace = (
-    onStartExport = vi.fn(async () => ({ success: false }))
+    onStartExport = vi.fn(async () => ({ success: false })),
+    exportTasks: ExportTaskRecord[] = []
   ): { loadPreviewMessages: ReturnType<typeof vi.fn> } => {
     const loadPreviewMessages = vi.fn(async (contact: Contact) => [previewMessage(contact)])
     render(
@@ -49,7 +50,7 @@ describe('ExportWorkspace multi-chat selection', () => {
         dbReady
         loadPreviewMessages={loadPreviewMessages}
         onOpenSettings={vi.fn()}
-        exportTasks={[]}
+        exportTasks={exportTasks}
         onStartExport={onStartExport}
         onCancelExport={vi.fn(async () => undefined)}
       />
@@ -111,6 +112,90 @@ describe('ExportWorkspace multi-chat selection', () => {
     await userEvent.click(screen.getByRole('button', { name: /聊天 B/ }))
     expect(screen.getByText('已选 4 / 5 个')).toBeVisible()
     expect(screen.getByRole('button', { name: /聊天 F/ })).toBeEnabled()
+  })
+
+  it('exports every chat into its own format folder without loading every preview', async () => {
+    const onStartExport = vi.fn(async () => ({ success: false }))
+    const { loadPreviewMessages } = renderWorkspace(onStartExport)
+    await screen.findByText('聊天 A 的预览')
+
+    await userEvent.click(screen.getByRole('button', { name: /全部导出/ }))
+
+    expect(screen.getByText(/全部群聊 1 个和全部联系人 5 个/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'CSV' })).toHaveClass('active')
+    expect(screen.getByRole('button', { name: 'JSON' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Markdown' })).toBeEnabled()
+    expect(loadPreviewMessages).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(screen.getByRole('button', { name: '开始导出' }))
+    await waitFor(() => expect(onStartExport).toHaveBeenCalledOnce())
+    expect(onStartExport.mock.calls[0][0]).toMatchObject({
+      scope: 'all',
+      allContactTypes: ['group', 'user'],
+      format: 'csv',
+      outputName: '全部聊天记录'
+    })
+    expect(onStartExport.mock.calls[0][0].targets).toHaveLength(contacts.length)
+    expect(window.api.getGroupSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('allows all export to include only groups and replaces the single-chat avatars', async () => {
+    const onStartExport = vi.fn(async () => ({ success: false }))
+    renderWorkspace(onStartExport)
+    await userEvent.click(screen.getByRole('button', { name: /全部导出/ }))
+
+    expect(document.querySelector('.export-all-chat-avatar.group')).toHaveTextContent('群')
+    expect(document.querySelector('.export-all-chat-avatar.user')).toHaveTextContent('联')
+    await userEvent.click(screen.getByRole('checkbox', { name: '导出全部联系人' }))
+    expect(document.querySelector('.export-all-chat-avatar.user')).not.toBeInTheDocument()
+    expect(screen.getAllByText(/全部群聊 1 个/)).toHaveLength(2)
+    expect(screen.getByRole('button', { name: /聊天 A/ })).toHaveAttribute('aria-pressed', 'false')
+
+    await userEvent.click(screen.getByRole('button', { name: '开始导出' }))
+    await waitFor(() => expect(onStartExport).toHaveBeenCalledOnce())
+    expect(onStartExport.mock.calls[0][0]).toMatchObject({
+      scope: 'all',
+      allContactTypes: ['group'],
+      startTime: undefined,
+      endTime: undefined
+    })
+    expect(onStartExport.mock.calls[0][0].targets).toEqual([
+      expect.objectContaining({ userMd5: 'contact-3', type: 'group' })
+    ])
+  })
+
+  it('restores a running all-export task after returning to the page', async () => {
+    const runningTask: ExportTaskRecord = {
+      jobId: 'background-all',
+      scope: 'all',
+      allContactTypes: ['group'],
+      targetIds: [],
+      targetNames: [],
+      targetLabel: '全部 1 个聊天',
+      format: 'html',
+      status: 'running',
+      progress: {
+        jobId: 'background-all',
+        phase: 'media',
+        processed: 4,
+        total: 10,
+        percent: 48,
+        currentTargetIndex: 1,
+        currentTargetCount: 1,
+        currentTargetName: '聊天 C',
+        currentTargetType: 'group'
+      },
+      createdAt: Date.now()
+    }
+    const { loadPreviewMessages } = renderWorkspace(undefined, [runningTask])
+
+    expect(await screen.findByText('第 1/1 个：聊天 C')).toBeVisible()
+    expect(screen.getByRole('checkbox', { name: '导出全部群聊' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: '导出全部联系人' })).not.toBeChecked()
+    expect(document.querySelector('.export-all-chat-avatar.group')).toHaveTextContent('群')
+    expect(document.querySelector('.export-all-chat-avatar.user')).not.toBeInTheDocument()
+    expect(loadPreviewMessages).not.toHaveBeenCalled()
   })
 })
 

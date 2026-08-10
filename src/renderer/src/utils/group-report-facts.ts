@@ -103,11 +103,16 @@ export const summaryContent = (message: Message): string => {
     case 'sticker':
       return '[表情]'
     case 'voice':
-      return `[语音${data.duration ? ` ${data.duration}秒` : ''}]`
+      return message.voiceTranscript?.trim()
+        ? `[语音${data.duration ? ` ${data.duration}秒` : ''}] ${message.voiceTranscript.trim()}`
+        : `[语音${data.duration ? ` ${data.duration}秒` : ''}]`
     case 'share':
       return data.articles?.length
         ? `[分享] ${data.articles
-            .map((article) => `${article.title}${article.description ? `：${article.description}` : ''}`)
+            .map(
+              (article) =>
+                `${article.title}${article.description ? `：${article.description}` : ''}`
+            )
             .join('；')}`
         : `[分享] ${data.title}${data.des ? `：${data.des}` : ''}`
     case 'quote': {
@@ -671,7 +676,9 @@ export const buildGroupReportFacts = async (
     transcriptRows.every((row) => row.content === '[图片]') &&
     !media.visionGallery?.length
   ) {
-    throw new Error('当前范围只有图片，但这些图片暂时无法分析。请改选文字消息，或在设置中验证图片理解能力。')
+    throw new Error(
+      '当前范围只有图片，但这些图片暂时无法分析。请改选文字消息，或在设置中验证图片理解能力。'
+    )
   }
 
   const factsPrompt = [

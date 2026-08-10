@@ -52,4 +52,42 @@ describe('export task center', () => {
     expect(writeText.mock.calls[0][0]).toContain('EPERM: operation not permitted, copyfile')
     expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument()
   })
+
+  it('shows the current conversation for a background all-export task', () => {
+    render(
+      <ExportTaskCenter
+        open
+        taskCount={1}
+        tasks={[
+          {
+            jobId: 'all-export',
+            scope: 'all',
+            allContactTypes: ['group', 'user'],
+            targetIds: [],
+            targetNames: [],
+            targetLabel: '全部 20 个聊天',
+            format: 'html',
+            status: 'running',
+            progress: {
+              jobId: 'all-export',
+              phase: 'media',
+              processed: 3,
+              total: 8,
+              percent: 42,
+              currentTargetIndex: 9,
+              currentTargetCount: 20,
+              currentTargetName: '项目群',
+              currentTargetType: 'group'
+            },
+            createdAt: Date.now()
+          }
+        ]}
+        onToggle={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText('第 9/20 个：项目群')).toBeVisible()
+    expect(screen.getByText('42%')).toBeVisible()
+  })
 })

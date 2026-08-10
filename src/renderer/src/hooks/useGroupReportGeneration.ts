@@ -12,6 +12,14 @@ import {
   SummaryMessageType
 } from '../utils/group-report'
 import { ReportTemplateId } from '../components/reports/ReportTemplateSelector'
+import {
+  transcribeVoiceMessages as transcribeReportVoiceMessages,
+  type VoiceTranscriptionProgress
+} from '../utils/voice-message-reference'
+import type { VoiceModelStatus } from '../../../shared/voice-recognition'
+import { resolveMemberName } from '../../../shared/member-names'
+
+export type { VoiceTranscriptionProgress } from '../utils/voice-message-reference'
 
 const REPORT_STEP_TIMEOUT_MS = 90_000
 const REPORT_MODEL_TIMEOUT_BUFFER_MS = 10_000
@@ -19,6 +27,7 @@ const REPORT_MODEL_TIMEOUT_BUFFER_MS = 10_000
 export type ReportGenerationPhase =
   | 'idle'
   | 'loadingMessages'
+  | 'transcribingVoice'
   | 'preparingInput'
   | 'requestingModel'
   | 'exportingReport'
@@ -80,6 +89,7 @@ export interface ReportTaskStep {
 
 export const REPORT_TASK_STEPS: ReportTaskStep[] = [
   { id: 'loadingMessages', label: '读取并筛选聊天记录' },
+  { id: 'transcribingVoice', label: '转写语音消息' },
   { id: 'preparingInput', label: '整理日报输入' },
   { id: 'requestingModel', label: '调用模型生成内容' },
   { id: 'exportingReport', label: '导出 HTML 与 PNG' }
@@ -210,17 +220,10 @@ const applyGroupMemberNames = async (
     const senderId = String(message.senderId || message.name || '')
     const member = memberMap.get(senderId)
     if (!member) return message
-    const preferredNames: Record<ReportMemberNamePreference, string[]> = {
-      // Keep the three modes semantically distinct. `member.nickname` may
-      // already be a contact remark, so it must not leak into the first two.
-      groupNickname: [member.groupNickname, member.wechatNickname],
-      wechatNickname: [member.wechatNickname, member.groupNickname],
-      remark: [member.remark, member.groupNickname, member.wechatNickname, member.nickname]
-    }
-    const name = preferredNames[preference].find((value) => value && !isInternalName(value))
+    const name = resolveMemberName({ ...member, wxid: senderId }, preference)
     return {
       ...message,
-      name: name || (preference === 'remark' ? message.name : ''),
+      name: !isInternalName(name) ? name : preference === 'remark' ? message.name : '',
       img: message.img || member.avatar
     }
   })
@@ -238,6 +241,7 @@ export function useGroupReportGeneration({
   reportMessages: Message[]
   messageTypeCounts: Record<SummaryMessageType, number>
   rangeState: RangeMessageState
+  voiceTranscriptionProgress: VoiceTranscriptionProgress | null
   generatedImage: string | null
   reportPaths: ReportPaths | null
   generationMetadata: ReportGenerationMetadata
@@ -260,6 +264,8 @@ export function useGroupReportGeneration({
   const [error, setError] = useState('')
   const [rangeMessages, setRangeMessages] = useState<Message[]>([])
   const [rangeState, setRangeState] = useState<RangeMessageState>({ status: 'idle', error: '' })
+  const [voiceTranscriptionProgress, setVoiceTranscriptionProgress] =
+    useState<VoiceTranscriptionProgress | null>(null)
   const [generatedImage, setGeneratedImage] = useState<string | null>(null)
   const [reportPaths, setReportPaths] = useState<ReportPaths | null>(null)
   const [templateId, setTemplateId] = useState<ReportTemplateId>('v1')
@@ -290,6 +296,7 @@ export function useGroupReportGeneration({
 
   const isGenerating =
     phase === 'loadingMessages' ||
+    phase === 'transcribingVoice' ||
     phase === 'preparingInput' ||
     phase === 'requestingModel' ||
     phase === 'exportingReport'
@@ -367,8 +374,25 @@ export function useGroupReportGeneration({
     setError('')
     setGeneratedImage(null)
     setReportPaths(null)
+    setVoiceTranscriptionProgress(null)
     setGenerationMetadata({ generationLogs: [] })
   }, [])
+
+  const transcribeSelectedVoiceMessages = useCallback(
+    async (messages: Message[]): Promise<Message[]> => {
+      setVoiceTranscriptionProgress(null)
+      return transcribeReportVoiceMessages(messages, {
+        getModelStatus: () =>
+          withTimeout(
+            window.api.getVoiceModelStatus(),
+            '检查语音模型'
+          ) as Promise<VoiceModelStatus>,
+        recognize: (reference) => withTimeout(window.api.recognizeVoice(reference), '语音转写'),
+        onProgress: setVoiceTranscriptionProgress
+      })
+    },
+    []
+  )
 
   const generate = useCallback(async (): Promise<void> => {
     if (isGenerating) return
@@ -446,12 +470,16 @@ export function useGroupReportGeneration({
         filteredMessageCount: filteredMessages.length
       })
 
-      setPhase('preparingInput')
+      setPhase(selectedTypes.has('语音') ? 'transcribingVoice' : 'preparingInput')
       failedAt = '整理日报输入'
       const input = await trackStep('整理输入', async () => {
+        const messagesWithTranscripts = selectedTypes.has('语音')
+          ? await transcribeSelectedVoiceMessages(filteredMessages)
+          : filteredMessages
+        setPhase('preparingInput')
         const namedReportMessages = await applyGroupMemberNames(
           sourceContact,
-          filteredMessages,
+          messagesWithTranscripts,
           memberNamePreference
         )
         return buildGroupReportInput(namedReportMessages, sourceContact, true, 'full')
@@ -610,7 +638,8 @@ export function useGroupReportGeneration({
     sourceContact,
     summaryDateRange,
     summaryMessageTypes,
-    templateId
+    templateId,
+    transcribeSelectedVoiceMessages
   ])
 
   const clearError = useCallback((): void => {
@@ -639,6 +668,7 @@ export function useGroupReportGeneration({
     reportMessages,
     messageTypeCounts,
     rangeState,
+    voiceTranscriptionProgress,
     generatedImage,
     reportPaths,
     generationMetadata,

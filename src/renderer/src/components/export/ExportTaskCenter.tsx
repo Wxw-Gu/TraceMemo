@@ -22,6 +22,9 @@ const phaseLabels: Record<ExportTaskRecord['progress']['phase'], string> = {
 }
 
 const taskDetail = (task: ExportTaskRecord): string | null => {
+  if (task.status === 'running' && task.progress.currentTargetName) {
+    return `第 ${task.progress.currentTargetIndex || 1}/${task.progress.currentTargetCount || '?'} 个：${task.progress.currentTargetName}`
+  }
   if (task.status === 'completed') {
     return `成功导出 ${task.progress.total ?? task.progress.processed} 条消息`
   }
@@ -48,6 +51,7 @@ export function ExportTaskCenter({
       `格式：${task.format.toUpperCase()}`,
       `状态：${task.progress.phase}`,
       `进度：${task.progress.percent ?? 0}%`,
+      `当前聊天：${task.progress.currentTargetName || '未开始'}`,
       `错误：${task.progress.error || '未记录具体错误'}`
     ].join('\n')
     await navigator.clipboard.writeText(log)

@@ -13,6 +13,7 @@ interface ExportPreviewPanelProps {
   includeVoiceTranscripts: boolean
   zip: boolean
   selectedCount: number
+  allExport: boolean
   jobId: string
   onCancel: (jobId: string) => void
   onReveal: (path: string) => void
@@ -28,6 +29,7 @@ export function ExportPreviewPanel({
   includeVoiceTranscripts,
   zip,
   selectedCount,
+  allExport,
   jobId,
   onCancel,
   onReveal
@@ -61,6 +63,9 @@ export function ExportPreviewPanel({
             : phase === 'parsing'
               ? `正在解析消息内容... ${percent}%`
               : `正在读取消息... ${percent}%`
+  const currentTargetText = progress?.currentTargetName
+    ? `第 ${progress.currentTargetIndex || 1}/${progress.currentTargetCount || selectedCount} 个：${progress.currentTargetName}`
+    : ''
 
   return (
     <aside className={`export-preview-panel ${status !== 'idle' ? `status-${status}` : ''}`}>
@@ -69,23 +74,39 @@ export function ExportPreviewPanel({
           <div className="export-preview-heading">
             <strong>导出预览</strong>
             <span>
-              {selectedCount > 1 ? `${selectedCount} 个聊天 · 合并预览` : '仅预览最近 20 条'}
+              {allExport
+                ? `${selectedCount} 个聊天 · 分目录导出`
+                : selectedCount > 1
+                  ? `${selectedCount} 个聊天 · 合并预览`
+                  : '仅预览最近 20 条'}
             </span>
           </div>
           <div className="export-message-preview">
-            <div className="export-preview-date">最近消息</div>
-            {(previewItems.length
-              ? previewItems
-              : [
+            <div className="export-preview-date">{allExport ? '全量归档' : '最近消息'}</div>
+            {(allExport
+              ? [
                   {
-                    id: 'empty',
-                    from: 'user',
-                    content: '导出预览将在这里显示',
-                    type: '文字',
+                    id: 'all-export',
+                    from: 'system',
+                    content: '每个聊天将保存为独立 HTML 档案',
+                    type: '系统消息',
                     datetime: '',
-                    isSender: false
+                    isSender: false,
+                    contentData: { type: 'system' as const, content: '全量归档' }
                   }
                 ]
+              : previewItems.length
+                ? previewItems
+                : [
+                    {
+                      id: 'empty',
+                      from: 'user',
+                      content: '导出预览将在这里显示',
+                      type: '文字',
+                      datetime: '',
+                      isSender: false
+                    }
+                  ]
             ).map((message) => (
               <div
                 key={`${message.exportConversationId || 'single'}:${message.id}`}
@@ -146,6 +167,12 @@ export function ExportPreviewPanel({
         <div className="export-job-state">
           <h2>正在导出</h2>
           <p>导出任务在后台运行，不影响档案浏览。</p>
+          {currentTargetText && (
+            <div className="export-current-target">
+              <span>{progress?.currentTargetType === 'group' ? '群聊' : '联系人'}</span>
+              <strong>{currentTargetText}</strong>
+            </div>
+          )}
           <ol>
             <li className="done">准备导出</li>
             {steps.map((step, index) => (
@@ -197,7 +224,7 @@ export function ExportPreviewPanel({
             className="export-primary-button"
             onClick={() => progress?.outputPath && onReveal(progress.outputPath)}
           >
-            打开档案
+            {allExport ? '打开导出目录' : '打开档案'}
           </button>
           <button
             type="button"

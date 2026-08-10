@@ -1,5 +1,6 @@
 import type { Contact, Message } from '../../../../shared/types'
 import type { ExportFormat, GroupMemberName } from './exportTypes'
+import { resolveMemberName } from '../../../../shared/member-names'
 
 export const messageKinds = [
   ['text', '文字'],
@@ -43,13 +44,10 @@ export function buildNameMap(
   const map: Record<string, string> = {}
   if (activeContact?.type === 'group') {
     for (const member of groupMembers) {
-      const value =
-        nameMode === 'groupNickname'
-          ? member.groupNickname || member.nickname || member.wxid
-          : nameMode === 'remark'
-            ? member.remark || member.wechatNickname || member.wxid
-            : member.wechatNickname || member.wxid
-      map[member.wxid] = value
+      map[member.wxid] = resolveMemberName(
+        member,
+        nameMode as 'groupNickname' | 'remark' | 'wechatNickname'
+      )
     }
   } else if (activeContact) {
     map[activeContact.m_nsUsrName] =

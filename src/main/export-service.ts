@@ -21,9 +21,10 @@ import { VideoAssetService } from './video-asset-service'
 import { StickerService } from './sticker-service'
 import { getImageExportAttempts } from '../shared/export-media'
 import { FileAssetService } from './file-asset-service'
-import { mergeCachedSelfInfo } from './services/bootstrap-cache'
+import { mergeCachedSelfInfo, type CachedSelfInfo } from './services/bootstrap-cache'
 import type { VoiceRecognitionUseCase } from './voice-pipeline/voice-recognition-use-case'
 import { imageFileQuality } from '../shared/image-quality'
+import { resolveMemberName } from '../shared/member-names'
 
 const jobs = new Set<string>()
 const activeArchives = new Map<string, Archiver>()
@@ -321,7 +322,8 @@ export function stripHtmlArchiveInlineAvatars(messages: Message[]): Message[] {
 export async function readHtmlArchive(
   outputDir: string,
   targets: ExportTarget[],
-  name: string
+  name: string,
+  allowTargetChanges = false
 ): Promise<HtmlExportArchive> {
   const dataPath = join(outputDir, 'data', 'messages.js')
   let source = ''
@@ -383,7 +385,7 @@ export async function readHtmlArchive(
   const actualIds = (Array.isArray(parsed.conversations) ? parsed.conversations : [])
     .map((conversation) => conversation.id)
     .sort()
-  if (actualIds.join('|') !== expectedIds.join('|')) {
+  if (!allowTargetChanges && actualIds.join('|') !== expectedIds.join('|')) {
     throw new Error('同名导出目录的聊天集合不同，请修改文件名称后重试')
   }
   return {
@@ -463,6 +465,20 @@ export async function writeHtmlArchive(
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
   const source = `${archiveDataPrefix}${JSON.stringify(archive)};\n`
+  await fs.writeFile(
+    join(dataDir, 'conversations.json'),
+    JSON.stringify(
+      {
+        version: archive.version,
+        name: archive.name,
+        exportedAt: archive.exportedAt,
+        conversations: archive.conversations
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
   await fs.writeFile(temporaryPath, source, 'utf8')
   try {
     await fs.rename(temporaryPath, dataPath)
@@ -624,19 +640,129 @@ function render(format: ExportRequest['format'], messages: Message[], name: stri
   ].join('\n')
 }
 
-export async function runExport(
+interface SingleExportOptions {
+  outputRoot?: string
+  outputFolderName?: string
+  manageJob?: boolean
+  sendProgress?: (progress: ExportJobProgress) => void
+  selfInfo?: CachedSelfInfo | null
+}
+
+interface AllExportManifestEntry {
+  id: string
+  name: string
+  type: ExportTarget['type']
+  folder: string
+  messageCount: number
+}
+
+const writeAllExportManifest = async (
+  outputDir: string,
+  conversations: AllExportManifestEntry[],
+  messageCount: number,
+  status: 'running' | 'completed' | 'cancelled' | 'failed',
+  error?: string
+): Promise<void> => {
+  const manifestPath = join(outputDir, '导出清单.json')
+  const temporaryPath = `${manifestPath}.tmp-${process.pid}-${Date.now()}`
+  await fs.writeFile(
+    temporaryPath,
+    JSON.stringify(
+      {
+        version: 1,
+        status,
+        exportedAt: new Date().toISOString(),
+        messageCount,
+        conversations,
+        error
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  try {
+    await fs.rename(temporaryPath, manifestPath)
+  } catch (error) {
+    if (!['EEXIST', 'EPERM'].includes((error as NodeJS.ErrnoException).code || '')) throw error
+    await fs.rm(manifestPath, { force: true })
+    await fs.rename(temporaryPath, manifestPath)
+  } finally {
+    await fs.rm(temporaryPath, { force: true })
+  }
+}
+
+const conversationFolderNames = (targets: ExportTarget[]): Map<string, string> => {
+  const names = new Map<string, string>()
+  const used = new Set<string>()
+  for (const target of targets) {
+    const base = safeFilePart(target.name).slice(0, 80).trim() || '未命名聊天'
+    let candidate = base
+    const usedKey = (value: string): string => `${target.type}:${value.toLowerCase()}`
+    if (used.has(usedKey(candidate))) {
+      candidate = `${base}_${hashPart(target.userMd5, 8)}`
+    }
+    let suffix = 2
+    while (used.has(usedKey(candidate))) {
+      candidate = `${base}_${hashPart(target.userMd5, 8)}_${suffix}`
+      suffix += 1
+    }
+    used.add(usedKey(candidate))
+    names.set(target.userMd5, candidate)
+  }
+  return names
+}
+
+const pathExists = async (value: string): Promise<boolean> => {
+  try {
+    await fs.stat(value)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
+
+const preserveLegacyCombinedArchive = async (outputDir: string): Promise<void> => {
+  const legacyIndex = join(outputDir, 'index.html')
+  const legacyData = join(outputDir, 'data', 'messages.js')
+  if (!(await pathExists(legacyIndex)) || !(await pathExists(legacyData))) return
+
+  let legacyDir = join(outputDir, '旧版合并档案')
+  if (await pathExists(legacyDir)) {
+    legacyDir = join(outputDir, `旧版合并档案_${exportStamp()}`)
+  }
+  await fs.mkdir(legacyDir, { recursive: true })
+  for (const entry of ['index.html', 'data', 'avatars', 'media', 'voices', 'files']) {
+    const source = join(outputDir, entry)
+    if (await pathExists(source)) await fs.rename(source, join(legacyDir, entry))
+  }
+}
+
+async function runSingleExport(
   request: ExportRequest,
   win: BrowserWindow,
-  voiceRecognition?: Pick<VoiceRecognitionUseCase, 'recognize'>
+  voiceRecognition?: Pick<VoiceRecognitionUseCase, 'recognize'>,
+  options: SingleExportOptions = {}
 ): Promise<ExportResult> {
-  jobs.add(request.jobId)
-  const send = (p: ExportJobProgress): void => {
-    if (!win.isDestroyed()) win.webContents.send('export:progress', p)
-  }
+  const manageJob = options.manageJob !== false
+  if (manageJob) jobs.add(request.jobId)
+  const send =
+    options.sendProgress ||
+    ((p: ExportJobProgress): void => {
+      if (!win.isDestroyed()) win.webContents.send('export:progress', p)
+    })
   try {
-    const targets = request.targets || []
-    if (targets.length < 1 || targets.length > 5) {
-      throw new Error('一次导出必须选择 1 到 5 个聊天')
+    const targets = (request.targets || []).map((target) => ({
+      ...target,
+      nameMap: { ...(target.nameMap || {}) },
+      avatarUrls: { ...(target.avatarUrls || {}) }
+    }))
+    const targetLimit = request.scope === 'all' ? null : 5
+    if (targets.length < 1 || (targetLimit !== null && targets.length > targetLimit)) {
+      throw new Error(
+        targetLimit === null ? '全部导出至少需要一个聊天' : '一次导出必须选择 1 到 5 个聊天'
+      )
     }
     if (new Set(targets.map((target) => target.userMd5)).size !== targets.length) {
       throw new Error('导出聊天不能重复')
@@ -653,6 +779,25 @@ export async function runExport(
       if (!jobs.has(request.jobId)) {
         send({ jobId: request.jobId, phase: 'cancelled', processed: 0, percent: 5 })
         return { success: false, error: '已取消' }
+      }
+      if (
+        target.type === 'group' &&
+        (request.scope === 'all' || !Object.keys(target.nameMap || {}).length)
+      ) {
+        const snapshot = await chat.getGroupSnapshotAsync(target.userMd5)
+        for (const member of snapshot?.members || []) {
+          target.nameMap![member.wxid] = resolveMemberName(
+            {
+              wxid: member.wxid,
+              nickname: member.nickname,
+              groupNickname: member.groupNickname,
+              wechatNickname: member.wechatNickname,
+              remark: member.remark
+            },
+            target.nameMode || 'groupNickname'
+          )
+          if (member.avatar) target.avatarUrls![member.wxid] = member.avatar
+        }
       }
       const targetMessages = (
         await chat.listMessagesForExport(target.userMd5, request.startTime, request.endTime)
@@ -684,8 +829,12 @@ export async function runExport(
         return left.messageOrder - right.messageOrder
       })
       .map((entry) => entry.message)
-    const rawSelfInfo = await chat.getSelfAccountInfoAsync()
-    const selfInfo = rawSelfInfo ? mergeCachedSelfInfo(rawSelfInfo.accountRoot, rawSelfInfo) : null
+    const selfInfo =
+      options.selfInfo !== undefined
+        ? options.selfInfo
+        : await chat
+            .getSelfAccountInfoAsync()
+            .then((value) => (value ? mergeCachedSelfInfo(value.accountRoot, value) : null))
     const client = chat.getChatDb()?.getWcdb4Client()
     const isUsableSelfName = (value: string | undefined): value is string => {
       const name = String(value || '').trim()
@@ -759,12 +908,12 @@ export async function runExport(
       total: messages.length,
       percent: request.format === 'html' ? 18 : 20
     })
-    const root = join(app.getPath('documents'), 'WechatExplorer', '导出')
+    const root = options.outputRoot || join(app.getPath('documents'), 'WechatExplorer', '导出')
     await fs.mkdir(root, { recursive: true })
     const ext = request.format === 'markdown' ? 'md' : request.format
     const outputFolder =
       request.format === 'html'
-        ? safeFilePart(request.outputName)
+        ? options.outputFolderName || safeFilePart(request.outputName)
         : `${safeFilePart(request.outputName)}_${exportStamp()}`
     const outputDir = join(root, outputFolder)
     const outputPath =
@@ -772,12 +921,24 @@ export async function runExport(
         ? join(outputDir, 'index.html')
         : join(root, `${outputFolder}.${ext}`)
     if (request.format === 'html') {
-      const previousArchive = await readHtmlArchive(outputDir, targets, archiveName)
+      const previousArchive = await readHtmlArchive(
+        outputDir,
+        targets,
+        archiveName,
+        request.scope === 'all'
+      )
+      const currentTargetIds = new Set(targets.map((target) => target.userMd5))
+      const previousMessages =
+        request.scope === 'all'
+          ? previousArchive.messages.filter((message) =>
+              currentTargetIds.has(message.exportConversationId || targets[0].userMd5)
+            )
+          : previousArchive.messages
       const previousMessagesByKey = new Map(
-        previousArchive.messages.map((message) => [exportMessageKey(message), message])
+        previousMessages.map((message) => [exportMessageKey(message), message])
       )
       const latestPreviousAvatarUrls = new Map<string, string>()
-      for (const message of previousArchive.messages) {
+      for (const message of previousMessages) {
         if (!message.exportAvatarUrl) continue
         const conversationId = message.exportConversationId || targets[0].userMd5
         latestPreviousAvatarUrls.set(
@@ -1232,7 +1393,7 @@ export async function runExport(
         })
       }
       const mergedMessages = mergeHtmlArchiveMessages(
-        previousArchive.messages,
+        previousMessages,
         messages,
         '',
         targets.map((target) => target.userMd5)
@@ -1320,8 +1481,192 @@ export async function runExport(
     send({ jobId: request.jobId, phase: 'failed', processed: 0, error: message })
     return { success: false, error: message }
   } finally {
+    if (manageJob) jobs.delete(request.jobId)
+  }
+}
+
+async function runAllExport(
+  request: ExportRequest,
+  win: BrowserWindow,
+  voiceRecognition?: Pick<VoiceRecognitionUseCase, 'recognize'>
+): Promise<ExportResult> {
+  jobs.add(request.jobId)
+  const send = (progress: ExportJobProgress): void => {
+    if (!win.isDestroyed()) win.webContents.send('export:progress', progress)
+  }
+  let outputDir = ''
+  const manifest: AllExportManifestEntry[] = []
+  let totalMessages = 0
+  try {
+    const targets = [...(request.targets || [])].sort((left, right) =>
+      left.type === right.type ? 0 : left.type === 'group' ? -1 : 1
+    )
+    if (!targets.length) throw new Error('全部导出至少需要一个聊天')
+    if (new Set(targets.map((target) => target.userMd5)).size !== targets.length) {
+      throw new Error('导出聊天不能重复')
+    }
+
+    const exportRoot = join(app.getPath('documents'), 'WechatExplorer', '导出')
+    const outputFolder = safeFilePart(request.outputName)
+    outputDir = join(exportRoot, outputFolder)
+    const folderNames = conversationFolderNames(targets)
+    let lastProgressAt = 0
+    let lastProgressKey = ''
+    await fs.mkdir(outputDir, { recursive: true })
+    await preserveLegacyCombinedArchive(outputDir)
+    const selectedTypes = request.allContactTypes?.length
+      ? request.allContactTypes
+      : Array.from(new Set(targets.map((target) => target.type)))
+    for (const type of selectedTypes) {
+      await fs.mkdir(join(outputDir, type === 'group' ? '群聊' : '联系人'), { recursive: true })
+    }
+    await writeAllExportManifest(outputDir, manifest, totalMessages, 'running')
+    const rawSelfInfo = await chat.getSelfAccountInfoAsync()
+    const selfInfo = rawSelfInfo ? mergeCachedSelfInfo(rawSelfInfo.accountRoot, rawSelfInfo) : null
+
+    for (const [targetIndex, target] of targets.entries()) {
+      if (!jobs.has(request.jobId)) throw new Error('已取消')
+      const categoryName = target.type === 'group' ? '群聊' : '联系人'
+      const categoryDir = join(outputDir, categoryName)
+      const folderName = folderNames.get(target.userMd5) || safeFilePart(target.name)
+      await fs.mkdir(categoryDir, { recursive: true })
+      const conversationOutputRoot =
+        request.format === 'html' ? categoryDir : join(categoryDir, folderName)
+      const basePercent = Math.floor((targetIndex / targets.length) * 100)
+      send({
+        jobId: request.jobId,
+        phase: 'reading',
+        processed: 0,
+        percent: basePercent,
+        currentTargetIndex: targetIndex + 1,
+        currentTargetCount: targets.length,
+        currentTargetName: target.name,
+        currentTargetType: target.type
+      })
+
+      const result = await runSingleExport(
+        {
+          ...request,
+          targets: [target],
+          outputName: target.name,
+          zip: false
+        },
+        win,
+        voiceRecognition,
+        {
+          outputRoot: conversationOutputRoot,
+          outputFolderName: request.format === 'html' ? folderName : undefined,
+          manageJob: false,
+          selfInfo,
+          sendProgress: (childProgress) => {
+            const childPercent = Math.max(0, Math.min(100, childProgress.percent || 0))
+            const percent = Math.min(
+              99,
+              Math.floor(((targetIndex + childPercent / 100) / targets.length) * 100)
+            )
+            const phase = childProgress.phase === 'completed' ? 'writing' : childProgress.phase
+            const now = Date.now()
+            const progressKey = `${targetIndex}:${phase}:${percent}`
+            const terminal = phase === 'failed' || phase === 'cancelled'
+            if (!terminal && progressKey === lastProgressKey && now - lastProgressAt < 500) return
+            lastProgressKey = progressKey
+            lastProgressAt = now
+            send({
+              ...childProgress,
+              jobId: request.jobId,
+              phase,
+              percent,
+              outputPath: undefined,
+              currentTargetIndex: targetIndex + 1,
+              currentTargetCount: targets.length,
+              currentTargetName: target.name,
+              currentTargetType: target.type
+            })
+          }
+        }
+      )
+      if (!result.success) {
+        if (result.error === '已取消') throw new Error('已取消')
+        throw new Error(`${target.name}：${result.error || '导出失败'}`)
+      }
+
+      const messageCount = result.messageCount || 0
+      totalMessages += messageCount
+      manifest.push({
+        id: target.userMd5,
+        name: target.name,
+        type: target.type,
+        folder: `${categoryName}/${folderName}`,
+        messageCount
+      })
+      await writeAllExportManifest(outputDir, manifest, totalMessages, 'running')
+    }
+
+    await writeAllExportManifest(outputDir, manifest, totalMessages, 'completed')
+
+    let completedPath = outputDir
+    if (request.zip) {
+      if (!jobs.has(request.jobId)) throw new Error('已取消')
+      const zipPath = join(exportRoot, `${outputFolder}.zip`)
+      send({
+        jobId: request.jobId,
+        phase: 'compressing',
+        processed: totalMessages,
+        total: totalMessages,
+        percent: 99
+      })
+      await writeZipArchive(outputDir, zipPath, outputFolder, request.jobId)
+      completedPath = zipPath
+    }
+
+    send({
+      jobId: request.jobId,
+      phase: 'completed',
+      processed: totalMessages,
+      total: totalMessages,
+      percent: 100,
+      outputPath: completedPath,
+      currentTargetIndex: targets.length,
+      currentTargetCount: targets.length,
+      currentTargetName: targets.at(-1)?.name,
+      currentTargetType: targets.at(-1)?.type
+    })
+    return { success: true, outputPath: completedPath, messageCount: totalMessages }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const cancelled = !jobs.has(request.jobId) || message === '已取消'
+    if (outputDir) {
+      try {
+        await writeAllExportManifest(
+          outputDir,
+          manifest,
+          totalMessages,
+          cancelled ? 'cancelled' : 'failed',
+          cancelled ? undefined : message
+        )
+      } catch (manifestError) {
+        console.warn('[Export] failed to update all-export manifest:', manifestError)
+      }
+    }
+    if (cancelled) {
+      send({ jobId: request.jobId, phase: 'cancelled', processed: 0, error: '已取消' })
+      return { success: false, error: '已取消' }
+    }
+    send({ jobId: request.jobId, phase: 'failed', processed: 0, error: message })
+    return { success: false, error: message }
+  } finally {
     jobs.delete(request.jobId)
   }
+}
+
+export async function runExport(
+  request: ExportRequest,
+  win: BrowserWindow,
+  voiceRecognition?: Pick<VoiceRecognitionUseCase, 'recognize'>
+): Promise<ExportResult> {
+  return request.scope === 'all'
+    ? runAllExport(request, win, voiceRecognition)
+    : runSingleExport(request, win, voiceRecognition)
 }
 export function cancelExport(jobId: string): void {
   jobs.delete(jobId)

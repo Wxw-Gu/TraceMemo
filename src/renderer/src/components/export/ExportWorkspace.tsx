@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import type { Message } from '../../../../shared/types'
 import type {
+  ExportContactType,
   ExportJobProgress,
   ExportMessageKind,
   ExportNameMode,
@@ -20,6 +21,11 @@ import type {
 } from './exportTypes'
 import { displayName, formatLabels, formatOrder, messageKinds } from './exportUtils'
 import type { VoiceModelStatus } from '../../../../shared/voice-recognition'
+import { resolveMemberName } from '../../../../shared/member-names'
+
+const ALL_CONTACT_TYPES: ExportContactType[] = ['group', 'user']
+const contactTypeKey = (types: ExportContactType[] | undefined): string =>
+  [...(types?.length ? types : ALL_CONTACT_TYPES)].sort().join('|')
 
 export function ExportWorkspace({
   contacts,
@@ -33,17 +39,26 @@ export function ExportWorkspace({
   onCancelExport
 }: ExportWorkspaceProps): React.ReactElement {
   const initialSelection = initialContact || contacts[0] || null
+  const runningAllTask = exportTasks.find(
+    (task) => task.scope === 'all' && task.status === 'running'
+  )
   const initialContactRef = React.useRef<Contact | null>(initialSelection)
   const previewLoadingRef = React.useRef(new Set<string>())
   const [contactFilter, setContactFilter] = useState('')
   const [contactType, setContactType] = useState<'all' | 'group' | 'user'>('all')
   const [selectionMode, setSelectionMode] = useState(false)
+  const [exportAll, setExportAll] = useState(() => Boolean(runningAllTask))
+  const [allContactTypes, setAllContactTypes] = useState<ExportContactType[]>(() =>
+    runningAllTask?.allContactTypes?.length
+      ? [...runningAllTask.allContactTypes]
+      : [...ALL_CONTACT_TYPES]
+  )
   const [selectedContacts, setSelectedContacts] = useState<Contact[]>(() =>
     initialSelection ? [initialSelection] : []
   )
   const [activeContactId, setActiveContactId] = useState(initialSelection?.md5 || '')
   const [previewByContact, setPreviewByContact] = useState<Record<string, Message[]>>({})
-  const [range, setRange] = useState<ExportRange>('today')
+  const [range, setRange] = useState<ExportRange>(() => (runningAllTask ? 'all' : 'today'))
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [selectedKinds, setSelectedKinds] = useState<Set<string>>(() => new Set(['text']))
@@ -57,8 +72,8 @@ export function ExportWorkspace({
   const [preferOriginal, setPreferOriginal] = useState(true)
   const [fallbackThumbnail, setFallbackThumbnail] = useState(true)
   const [keepMissing, setKeepMissing] = useState(true)
-  const [format, setFormat] = useState<ExportFormat>('csv')
-  const [zip, setZip] = useState(false)
+  const [format, setFormat] = useState<ExportFormat>(() => runningAllTask?.format || 'csv')
+  const [zip, setZip] = useState(() => runningAllTask?.zip === true)
   const [fileName, setFileName] = useState('')
   const [status, setStatus] = useState<ExportStatus>('idle')
   const [jobId, setJobId] = useState('')
@@ -80,6 +95,7 @@ export function ExportWorkspace({
   }, [contacts, initialContact, selectedContacts.length])
 
   React.useEffect(() => {
+    if (exportAll) return
     for (const contact of selectedContacts) {
       if (previewByContact[contact.md5] || previewLoadingRef.current.has(contact.md5)) continue
       previewLoadingRef.current.add(contact.md5)
@@ -88,7 +104,7 @@ export function ExportWorkspace({
         setPreviewByContact((current) => ({ ...current, [contact.md5]: items }))
       })
     }
-  }, [loadPreviewMessages, previewByContact, selectedContacts])
+  }, [exportAll, loadPreviewMessages, previewByContact, selectedContacts])
 
   const filteredContacts = useMemo(() => {
     const keyword = contactFilter.trim().toLowerCase()
@@ -105,31 +121,48 @@ export function ExportWorkspace({
     selectedContacts.find((contact) => contact.md5 === activeContactId) ||
     selectedContacts[0] ||
     null
-  const selectedTargetKey = selectedContacts
-    .map((contact) => contact.md5)
-    .sort()
-    .join('|')
-  const currentTask = exportTasks.find(
-    (task) => [...task.targetIds].sort().join('|') === selectedTargetKey
+  const exportContacts = exportAll
+    ? contacts.filter((contact) => allContactTypes.includes(contact.type))
+    : selectedContacts
+  const selectedTargetKey = exportAll
+    ? ''
+    : selectedContacts
+        .map((contact) => contact.md5)
+        .sort()
+        .join('|')
+  const currentTask = exportTasks.find((task) =>
+    exportAll
+      ? task.scope === 'all' &&
+        contactTypeKey(task.allContactTypes) === contactTypeKey(allContactTypes)
+      : task.scope !== 'all' && [...task.targetIds].sort().join('|') === selectedTargetKey
   )
   const taskCount = exportTasks.filter((task) => task.status === 'running').length
   const activeName = displayName(activeContact)
   const selectedNames = selectedContacts.map(displayName)
-  const selectedLabel =
-    selectedNames.length > 1
+  const allGroupCount = exportContacts.filter((contact) => contact.type === 'group').length
+  const allUserCount = exportContacts.length - allGroupCount
+  const selectedLabel = exportAll
+    ? allContactTypes.length === 2
+      ? `全部群聊 ${allGroupCount.toLocaleString()} 个、联系人 ${allUserCount.toLocaleString()} 个`
+      : allContactTypes[0] === 'group'
+        ? `全部群聊 ${allGroupCount.toLocaleString()} 个`
+        : `全部联系人 ${allUserCount.toLocaleString()} 个`
+    : selectedNames.length > 1
       ? `${selectedNames.join('、')} · 共 ${selectedNames.length} 个聊天`
       : selectedNames[0] || '未选择聊天'
-  const preview = selectedContacts
-    .flatMap((contact) =>
-      (previewByContact[contact.md5] || []).map((message) => ({
-        ...message,
-        exportConversationId: contact.md5,
-        exportConversationName: displayName(contact),
-        exportConversationAvatarUrl: contact.avatar
-      }))
-    )
-    .sort((left, right) => Number(left.createTime || 0) - Number(right.createTime || 0))
-    .slice(-20)
+  const preview = exportAll
+    ? []
+    : selectedContacts
+        .flatMap((contact) =>
+          (previewByContact[contact.md5] || []).map((message) => ({
+            ...message,
+            exportConversationId: contact.md5,
+            exportConversationName: displayName(contact),
+            exportConversationAvatarUrl: contact.avatar
+          }))
+        )
+        .sort((left, right) => Number(left.createTime || 0) - Number(right.createTime || 0))
+        .slice(-20)
   const previewMediaCount = preview.filter(
     (message) =>
       ['image', 'video', 'voice', 'sticker'].includes(message.contentData?.type || '') ||
@@ -139,12 +172,13 @@ export function ExportWorkspace({
     (total, message) => total + (message.content?.length || 0) * 2 + (message.img ? 1024 : 0),
     0
   )
-  const defaultOutputName =
-    selectedContacts.length > 1
+  const defaultOutputName = exportAll
+    ? '全部聊天记录'
+    : selectedContacts.length > 1
       ? `${selectedNames[0]}等${selectedContacts.length}个聊天_合并档案`
       : `${activeName}_聊天档案`
   const outputName = fileName.trim() || defaultOutputName
-  const nameOptions: { value: ExportNameMode; label: string }[] = selectedContacts.some(
+  const nameOptions: { value: ExportNameMode; label: string }[] = exportContacts.some(
     (contact) => contact.type === 'group'
   )
     ? [
@@ -170,6 +204,10 @@ export function ExportWorkspace({
   }))
 
   const handleSelectContact = (contact: Contact): void => {
+    if (exportAll) {
+      setExportAll(false)
+      setRange('today')
+    }
     if (!selectionMode) {
       setSelectedContacts([contact])
       setActiveContactId(contact.md5)
@@ -190,6 +228,26 @@ export function ExportWorkspace({
     setSelectedContacts(next)
     setActiveContactId(contact.md5)
     setFormat('html')
+    setStatus('idle')
+  }
+
+  const handleExportAll = (): void => {
+    if (!contacts.length || status === 'running') return
+    setExportAll(true)
+    setAllContactTypes([...ALL_CONTACT_TYPES])
+    setSelectionMode(false)
+    setRange('all')
+    setStatus('idle')
+  }
+
+  const toggleAllContactType = (type: ExportContactType): void => {
+    if (status === 'running') return
+    setAllContactTypes((current) => {
+      if (current.includes(type)) {
+        return current.length === 1 ? current : current.filter((item) => item !== type)
+      }
+      return ALL_CONTACT_TYPES.filter((item) => item === type || current.includes(item))
+    })
     setStatus('idle')
   }
 
@@ -214,10 +272,11 @@ export function ExportWorkspace({
   }
 
   const handleStart = async (): Promise<void> => {
-    if (!activeContact || selectedContacts.length === 0 || status === 'running') return
+    if (!activeContact || exportContacts.length === 0 || status === 'running') return
     // Runs only from the export button event; a fresh id is required for each job.
     const nextJobId = `export-${Date.now()}`
-    const exportFormat = selectedContacts.length > 1 ? 'html' : format
+    const exportFormat = !exportAll && exportContacts.length > 1 ? 'html' : format
+    const shouldZip = exportFormat === 'html' && zip
     const shouldIncludeVoiceTranscripts =
       includeVoiceTranscripts &&
       includeMedia &&
@@ -226,31 +285,28 @@ export function ExportWorkspace({
       voiceModelStatus?.state === 'ready'
     setJobId(nextJobId)
     setProgress(null)
-    setActiveJobOptions({ includeVoiceTranscripts: shouldIncludeVoiceTranscripts, zip })
+    setActiveJobOptions({ includeVoiceTranscripts: shouldIncludeVoiceTranscripts, zip: shouldZip })
     setStatus('running')
     const targets: ExportTarget[] = await Promise.all(
-      selectedContacts.map(async (contact) => {
+      exportContacts.map(async (contact) => {
         const nameMap: Record<string, string> = {}
         const avatarUrls: Record<string, string> = {}
         if (contact.type === 'group') {
-          const snapshot = await window.api.getGroupSnapshot(contact.md5)
-          for (const member of (snapshot?.members || []) as GroupMemberName[]) {
-            nameMap[member.wxid] =
-              nameMode === 'groupNickname'
-                ? member.groupNickname || member.nickname || member.wxid
-                : nameMode === 'remark'
-                  ? member.remark || member.wechatNickname || member.wxid
-                  : member.wechatNickname || member.wxid
-            if (member.avatar) avatarUrls[member.wxid] = member.avatar
+          if (!exportAll) {
+            const snapshot = await window.api.getGroupSnapshot(contact.md5)
+            for (const member of (snapshot?.members || []) as GroupMemberName[]) {
+              nameMap[member.wxid] = resolveMemberName(member, nameMode)
+              if (member.avatar) avatarUrls[member.wxid] = member.avatar
+            }
           }
-        } else {
+        } else if (!exportAll) {
           nameMap[contact.m_nsUsrName] =
             nameMode === 'remark'
               ? contact.remark || contact.m_nsNickName || contact.m_nsUsrName
               : contact.wechatNickname || contact.m_nsUsrName
           if (contact.avatar) avatarUrls[contact.m_nsUsrName] = contact.avatar
         }
-        if (selfInfo?.wxid) {
+        if (selfInfo?.wxid && (!exportAll || contact.type === 'group')) {
           nameMap[selfInfo.wxid] = selfInfo.nickname || selfInfo.wxid
           if (selfInfo.avatar) avatarUrls[selfInfo.wxid] = selfInfo.avatar
         }
@@ -273,19 +329,25 @@ export function ExportWorkspace({
       : null
     const request: ExportRequest = {
       jobId: nextJobId,
+      scope: exportAll ? 'all' : 'selected',
+      allContactTypes: exportAll ? allContactTypes : undefined,
       targets,
       format: exportFormat,
       outputName,
-      startTime: startOfRange
-        ? Math.floor(startOfRange.getTime() / 1000)
-        : range === 'custom' && startDate
-          ? Math.floor(new Date(startDate).getTime() / 1000)
-          : undefined,
-      endTime: startOfRange
-        ? Math.floor(endOfToday.getTime() / 1000)
-        : range === 'custom' && endDate
-          ? Math.floor(new Date(endDate).getTime() / 1000)
-          : undefined,
+      startTime: exportAll
+        ? undefined
+        : startOfRange
+          ? Math.floor(startOfRange.getTime() / 1000)
+          : range === 'custom' && startDate
+            ? Math.floor(new Date(startDate).getTime() / 1000)
+            : undefined,
+      endTime: exportAll
+        ? undefined
+        : startOfRange
+          ? Math.floor(endOfToday.getTime() / 1000)
+          : range === 'custom' && endDate
+            ? Math.floor(new Date(endDate).getTime() / 1000)
+            : undefined,
       kinds: Array.from(selectedKinds) as ExportMessageKind[],
       includeMedia,
       includeVoiceTranscripts: shouldIncludeVoiceTranscripts,
@@ -293,7 +355,7 @@ export function ExportWorkspace({
       fallbackThumbnail,
       keepMissing,
       includeAvatars,
-      zip
+      zip: shouldZip
     }
     const result = await onStartExport(request)
     if (result.success) {
@@ -330,6 +392,8 @@ export function ExportWorkspace({
       includeVoiceTranscripts: currentTask.includeVoiceTranscripts === true,
       zip: currentTask.zip === true
     })
+    setFormat(currentTask.format)
+    setZip(currentTask.zip === true)
     setStatus(
       currentTask.status === 'running'
         ? 'running'
@@ -344,6 +408,8 @@ export function ExportWorkspace({
     setSelectedContacts(contact ? [contact] : [])
     setActiveContactId(contact?.md5 || '')
     setSelectionMode(false)
+    setExportAll(false)
+    setAllContactTypes([...ALL_CONTACT_TYPES])
     setRange('today')
     setStartDate('')
     setEndDate('')
@@ -363,8 +429,11 @@ export function ExportWorkspace({
     setActiveJobOptions({ includeVoiceTranscripts: false, zip: false })
   }
 
-  const targetPath =
-    format === 'html'
+  const targetPath = exportAll
+    ? format === 'html' && zip
+      ? `文稿/WechatExplorer/导出/${outputName}.zip`
+      : `文稿/WechatExplorer/导出/${outputName}/`
+    : format === 'html'
       ? zip
         ? `文稿/WechatExplorer/导出/${outputName}.zip`
         : `文稿/WechatExplorer/导出/${outputName}/`
@@ -378,6 +447,9 @@ export function ExportWorkspace({
         activeContact={activeContact}
         selectedContactIds={selectedContacts.map((contact) => contact.md5)}
         selectionMode={selectionMode}
+        exportAll={exportAll}
+        allContactTypes={allContactTypes}
+        exportRunning={status === 'running'}
         selectionLimit={selectionLimit}
         selfInfo={selfInfo}
         dbReady={dbReady}
@@ -387,6 +459,8 @@ export function ExportWorkspace({
         onContactTypeChange={setContactType}
         onSelectContact={handleSelectContact}
         onCompleteSelection={() => setSelectionMode(false)}
+        onExportAll={handleExportAll}
+        onToggleAllContactType={toggleAllContactType}
         onOpenSettings={onOpenSettings}
       />
 
@@ -401,15 +475,24 @@ export function ExportWorkspace({
           />
           <header className="export-config-header">
             <span className="export-chat-avatar-stack" aria-hidden>
-              {selectedContacts.slice(0, 3).map((contact) => (
-                <span className="export-chat-avatar" key={contact.md5}>
-                  {contact.avatar ? (
-                    <img src={contact.avatar} alt="" />
-                  ) : (
-                    displayName(contact).slice(0, 1)
-                  )}
-                </span>
-              ))}
+              {exportAll
+                ? allContactTypes.map((type) => (
+                    <span
+                      className={`export-chat-avatar export-all-chat-avatar ${type}`}
+                      key={type}
+                    >
+                      {type === 'group' ? '群' : '联'}
+                    </span>
+                  ))
+                : selectedContacts.slice(0, 3).map((contact) => (
+                    <span className="export-chat-avatar" key={contact.md5}>
+                      {contact.avatar ? (
+                        <img src={contact.avatar} alt="" />
+                      ) : (
+                        displayName(contact).slice(0, 1)
+                      )}
+                    </span>
+                  ))}
             </span>
             <span className="export-config-title">
               <h1>导出设置</h1>
@@ -418,9 +501,13 @@ export function ExportWorkspace({
             <button
               type="button"
               className="export-add-chat-button"
-              onClick={() => setSelectionMode((current) => !current)}
+              disabled={exportAll}
+              onClick={() => {
+                setExportAll(false)
+                setSelectionMode((current) => !current)
+              }}
             >
-              {selectionMode ? '完成选择' : '+ 添加聊天'}
+              {exportAll ? '已选择全部聊天' : selectionMode ? '完成选择' : '+ 添加聊天'}
             </button>
           </header>
 
@@ -432,7 +519,7 @@ export function ExportWorkspace({
                   key={value}
                   type="button"
                   className={format === value ? 'active' : ''}
-                  disabled={selectedContacts.length > 1 && value !== 'html'}
+                  disabled={!exportAll && exportContacts.length > 1 && value !== 'html'}
                   onClick={() => setFormat(value)}
                 >
                   <strong>{formatLabels[value].label}</strong>
@@ -441,9 +528,11 @@ export function ExportWorkspace({
               ))}
             </div>
             <p className="export-helper-text">
-              {selectedContacts.length > 1
-                ? '多聊天合并仅支持 HTML，会保留每条消息所属的聊天。'
-                : 'CSV 默认最快；HTML 会包含图片、引用和其他媒体，导出时间可能较长。'}
+              {exportAll
+                ? '全部导出固定使用全部时间；每个群聊或联系人都会在自己的目录中生成所选格式的独立档案。'
+                : selectedContacts.length > 1
+                  ? '多聊天合并仅支持 HTML，会保留每条消息所属的聊天。'
+                  : 'CSV 默认最快；HTML 会包含图片、引用和其他媒体，导出时间可能较长。'}
             </p>
             {format === 'html' && (
               <>
@@ -482,34 +571,45 @@ export function ExportWorkspace({
             <div className="export-range-toggle">
               <button
                 type="button"
-                className={range === 'today' ? 'active' : ''}
-                onClick={() => setRange('today')}
+                className={range === 'all' ? 'active' : ''}
+                onClick={() => setRange('all')}
               >
-                今天
+                全部时间
               </button>
-              <button
-                type="button"
-                className={range === 'threeDays' ? 'active' : ''}
-                onClick={() => setRange('threeDays')}
-              >
-                最近 3 天
-              </button>
-              <button
-                type="button"
-                className={range === 'sevenDays' ? 'active' : ''}
-                onClick={() => setRange('sevenDays')}
-              >
-                最近 7 天
-              </button>
-              <button
-                type="button"
-                className={range === 'custom' ? 'active' : ''}
-                onClick={() => setRange('custom')}
-              >
-                自定义时间
-              </button>
+              {!exportAll && (
+                <>
+                  <button
+                    type="button"
+                    className={range === 'today' ? 'active' : ''}
+                    onClick={() => setRange('today')}
+                  >
+                    今天
+                  </button>
+                  <button
+                    type="button"
+                    className={range === 'threeDays' ? 'active' : ''}
+                    onClick={() => setRange('threeDays')}
+                  >
+                    最近 3 天
+                  </button>
+                  <button
+                    type="button"
+                    className={range === 'sevenDays' ? 'active' : ''}
+                    onClick={() => setRange('sevenDays')}
+                  >
+                    最近 7 天
+                  </button>
+                  <button
+                    type="button"
+                    className={range === 'custom' ? 'active' : ''}
+                    onClick={() => setRange('custom')}
+                  >
+                    自定义时间
+                  </button>
+                </>
+              )}
             </div>
-            {range === 'custom' && (
+            {!exportAll && range === 'custom' && (
               <div className="export-date-fields">
                 <label>
                   开始时间
@@ -683,7 +783,7 @@ export function ExportWorkspace({
           <button
             type="button"
             className="export-primary-button"
-            disabled={!activeContact || status === 'running'}
+            disabled={!activeContact || !exportContacts.length || status === 'running'}
             onClick={handleStart}
           >
             {status === 'running' ? '正在导出' : status === 'completed' ? '再次导出' : '开始导出'}
@@ -700,7 +800,8 @@ export function ExportWorkspace({
         progress={progress}
         includeVoiceTranscripts={activeJobOptions.includeVoiceTranscripts}
         zip={activeJobOptions.zip}
-        selectedCount={selectedContacts.length}
+        selectedCount={exportContacts.length}
+        allExport={exportAll}
         jobId={jobId}
         onCancel={(exportJobId) => {
           void window.api.cancelExport(exportJobId)

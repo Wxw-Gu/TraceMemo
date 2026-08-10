@@ -13,6 +13,7 @@ export type ExportMessageKind =
   | 'system'
 
 export type ExportNameMode = 'groupNickname' | 'remark' | 'wechatNickname'
+export type ExportContactType = 'group' | 'user'
 
 export interface ExportTarget {
   userMd5: string
@@ -26,6 +27,8 @@ export interface ExportTarget {
 
 export interface ExportRequest {
   jobId: string
+  scope?: 'selected' | 'all'
+  allContactTypes?: ExportContactType[]
   targets: ExportTarget[]
   format: ExportFormat
   outputName: string
@@ -58,10 +61,16 @@ export interface ExportJobProgress {
   percent?: number
   outputPath?: string
   error?: string
+  currentTargetIndex?: number
+  currentTargetCount?: number
+  currentTargetName?: string
+  currentTargetType?: ExportContactType
 }
 
 export interface ExportTaskRecord {
   jobId: string
+  scope?: 'selected' | 'all'
+  allContactTypes?: ExportContactType[]
   targetIds: string[]
   targetNames: string[]
   targetLabel: string

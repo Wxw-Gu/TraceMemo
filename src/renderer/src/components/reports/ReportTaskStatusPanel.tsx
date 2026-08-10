@@ -1,31 +1,29 @@
 import React, { useEffect, useState } from 'react'
-import { ReportGenerationPhase } from '../../hooks/useGroupReportGeneration'
+import {
+  REPORT_TASK_STEPS,
+  ReportGenerationPhase,
+  VoiceTranscriptionProgress
+} from '../../hooks/useGroupReportGeneration'
 
 interface ReportTaskStatusPanelProps {
   phase: ReportGenerationPhase
   error: string
+  voiceTranscriptionProgress: VoiceTranscriptionProgress | null
+  voiceTranscriptionEnabled: boolean
   onRetry: () => void
 }
-
-const TASK_STEPS: Array<{
-  id: Exclude<ReportGenerationPhase, 'idle' | 'success' | 'error'>
-  label: string
-}> = [
-  { id: 'loadingMessages', label: '读取聊天记录' },
-  { id: 'preparingInput', label: '整理日报输入' },
-  { id: 'requestingModel', label: '调用模型生成内容' },
-  { id: 'exportingReport', label: '导出 HTML 与 PNG' }
-]
-
-const phaseIndex = (phase: ReportGenerationPhase): number =>
-  TASK_STEPS.findIndex((step) => step.id === phase)
 
 export function ReportTaskStatusPanel({
   phase,
   error,
+  voiceTranscriptionProgress,
+  voiceTranscriptionEnabled,
   onRetry
 }: ReportTaskStatusPanelProps): React.ReactElement {
-  const activeIndex = phaseIndex(phase)
+  const taskSteps = voiceTranscriptionEnabled
+    ? REPORT_TASK_STEPS
+    : REPORT_TASK_STEPS.filter((step) => step.id !== 'transcribingVoice')
+  const activeIndex = taskSteps.findIndex((step) => step.id === phase)
   const completedAll = phase === 'success'
   const [logPath, setLogPath] = useState('')
 
@@ -46,12 +44,12 @@ export function ReportTaskStatusPanel({
             : phase === 'error'
               ? '生成失败'
               : activeIndex >= 0
-                ? `${activeIndex + 1}/${TASK_STEPS.length}`
+                ? `${activeIndex + 1}/${taskSteps.length}`
                 : '等待开始'}
         </p>
       </div>
       <div className="report-task-steps">
-        {TASK_STEPS.map((step, index) => {
+        {taskSteps.map((step, index) => {
           const state =
             completedAll || (activeIndex >= 0 && index < activeIndex)
               ? 'done'
@@ -71,6 +69,25 @@ export function ReportTaskStatusPanel({
           )
         })}
       </div>
+      {phase === 'transcribingVoice' && voiceTranscriptionProgress && (
+        <div className="report-voice-progress">
+          <div>
+            <span>语音转写</span>
+            <strong>
+              {voiceTranscriptionProgress.processed}/{voiceTranscriptionProgress.total}
+            </strong>
+          </div>
+          <progress
+            value={voiceTranscriptionProgress.processed}
+            max={Math.max(1, voiceTranscriptionProgress.total)}
+            aria-label="语音转写进度"
+          />
+          <small>
+            成功 {voiceTranscriptionProgress.succeeded} 条，失败 {voiceTranscriptionProgress.failed}{' '}
+            条
+          </small>
+        </div>
+      )}
       {phase === 'error' && (
         <div className="report-task-error">
           <b>错误摘要</b>

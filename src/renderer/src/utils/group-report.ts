@@ -958,7 +958,7 @@ export const SUMMARY_TYPE_OPTIONS: {
     value: 'voice',
     label: '语音',
     messageTypes: ['语音'],
-    description: '当前不转写语音，仅参与数量和活跃度统计。'
+    description: '使用本地离线语音识别，将转写内容提供给日报模型。'
   },
   {
     value: 'share',

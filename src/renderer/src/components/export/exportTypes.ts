@@ -8,7 +8,7 @@ import type {
   ExportTaskRecord
 } from '../../../../shared/export'
 
-export type ExportRange = 'today' | 'threeDays' | 'sevenDays' | 'custom'
+export type ExportRange = 'all' | 'today' | 'threeDays' | 'sevenDays' | 'custom'
 export type ExportFormat = 'html' | 'csv' | 'json' | 'markdown'
 export type ExportStatus = 'idle' | 'running' | 'completed'
 

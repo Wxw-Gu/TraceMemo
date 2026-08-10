@@ -378,12 +378,19 @@ function App(): React.ReactElement {
   const handleStartExport = async (
     request: ExportRequest
   ): Promise<import('../../shared/export').ExportResult> => {
-    const targetNames = request.targets.map((target) => target.name)
-    const targetLabel =
-      targetNames.length > 1 ? `${targetNames[0]} 等 ${targetNames.length} 个聊天` : targetNames[0]
+    const exportAll = request.scope === 'all'
+    const targetCount = request.targets.length
+    const targetNames = exportAll ? [] : request.targets.map((target) => target.name)
+    const targetLabel = exportAll
+      ? `全部 ${targetCount} 个聊天`
+      : targetNames.length > 1
+        ? `${targetNames[0]} 等 ${targetNames.length} 个聊天`
+        : targetNames[0]
     const task: ExportTaskRecord = {
       jobId: request.jobId,
-      targetIds: request.targets.map((target) => target.userMd5),
+      scope: request.scope,
+      allContactTypes: request.allContactTypes,
+      targetIds: exportAll ? [] : request.targets.map((target) => target.userMd5),
       targetNames,
       targetLabel,
       format: request.format,
@@ -1677,6 +1684,8 @@ function App(): React.ReactElement {
         <ReportTaskStatusPanel
           phase={reportGeneration.phase}
           error={reportGeneration.error}
+          voiceTranscriptionProgress={reportGeneration.voiceTranscriptionProgress}
+          voiceTranscriptionEnabled={summaryMessageTypes.includes('voice')}
           onRetry={() => {
             reportGeneration.resetGenerationStatus()
             void reportGeneration.retry()
