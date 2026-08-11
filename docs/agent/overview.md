@@ -1,6 +1,6 @@
-# 在微信机器人或外部 Agent 中使用 WechatExplorer
+# 在微信机器人或外部 Agent 中使用 TraceMemo
 
-WechatExplorer 提供两条不同路径。先按你实际想做的事选择，不需要先理解 Agent、Skill 或 API 等术语。
+TraceMemo 提供两条不同路径。先按你实际想做的事选择，不需要先理解 Agent、Skill 或 API 等术语。
 
 | 你想做什么                                           | 使用方式                      | 需要什么                                                  |
 | ---------------------------------------------------- | ----------------------------- | --------------------------------------------------------- |
@@ -9,7 +9,7 @@ WechatExplorer 提供两条不同路径。先按你实际想做的事选择，�
 
 ## 直接在微信里提问
 
-打开应用一级导航中的“Agent”，进入“Agent Hub”，扫码登录一个微信机器人账号。之后用另一个微信账号向机器人发送文字，它会调用 WechatExplorer 的本机数据，必要时使用已配置的 AI，再把结果回复给发送者。
+打开应用一级导航中的“Agent”，进入“Agent Hub”，扫码登录一个微信机器人账号。之后用另一个微信账号向机器人发送文字，它会调用 TraceMemo 的本机数据，必要时使用已配置的 AI，再把结果回复给发送者。
 
 可以先尝试：
 
@@ -23,7 +23,7 @@ WechatExplorer 提供两条不同路径。先按你实际想做的事选择，�
 
 ## 在外部 Agent 中查询历史微信
 
-Reader Skill 是给外部 Agent 的操作说明。安装后，Codex、Claude Code、OpenClaw 或其他本地 Agent 可以通过 WechatExplorer Local HTTP API 按需读取联系人、群聊、最近会话、指定时间范围的聊天和群成员信息。
+Reader Skill 是给外部 Agent 的操作说明。安装后，Codex、Claude Code、OpenClaw 或其他本地 Agent 可以通过 TraceMemo Local HTTP API 按需读取联系人、群聊、最近会话、指定时间范围的聊天和群成员信息。
 
 典型问题包括：
 
@@ -35,7 +35,7 @@ Reader Skill 是给外部 Agent 的操作说明。安装后，Codex、Claude Cod
 
 ## 外部 Agent 的安装步骤
 
-1. 启动 WechatExplorer 并完成微信数据库连接。
+1. 启动 TraceMemo 并完成微信数据库连接。
 2. 打开一级导航“API”（页面为“API Center”），确认本地 API、数据库和 Reader Skill 都可用。
 3. 选择目标 Agent，点击“复制安装指令”。
 4. 在 Agent 自己的 Skill/配置目录执行或粘贴指令。

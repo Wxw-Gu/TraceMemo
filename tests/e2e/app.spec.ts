@@ -9,7 +9,7 @@ test('APP-01 first launch renders a usable connection screen without uncaught er
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await expect(fixture.page.getByRole('heading', { name: 'WechatExplorer' })).toBeVisible()
+    await expect(fixture.page.getByRole('heading', { name: 'TraceMemo（迹忆）' })).toBeVisible()
     await expect(fixture.page.getByRole('main')).not.toBeEmpty()
     expect(pageErrors).toEqual([])
   } finally {

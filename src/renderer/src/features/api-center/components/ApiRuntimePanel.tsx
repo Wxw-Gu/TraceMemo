@@ -195,7 +195,7 @@ export function ApiRuntimePanel({
           <h3>隐私说明</h3>
           <p>
             {localOnly
-              ? '本地 API 默认监听 127.0.0.1。WechatExplorer 不会通过该接口自动把聊天内容发送到云端。外部 Agent 是否调用第三方模型，取决于其自身配置。'
+              ? '本地 API 默认监听 127.0.0.1。TraceMemo 不会通过该接口自动把聊天内容发送到云端。外部 Agent 是否调用第三方模型，取决于其自身配置。'
               : '当前服务并非仅本机访问。请确认局域网环境可信；API Token 不等同于公网安全防护。'}
           </p>
         </section>

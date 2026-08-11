@@ -1,6 +1,6 @@
-# 第一次使用 WechatExplorer
+# 第一次使用 TraceMemo
 
-如果你刚下载 WechatExplorer，只需要完成一条主线：
+如果你刚下载 TraceMemo，只需要完成一条主线：
 
 > 安装应用 → 连接微信数据 → 确认聊天已加载 → 搜索或提问。
 
@@ -14,7 +14,7 @@
 | Windows | [微信 Windows `4.1.9.57`](https://github.com/iibob/wechat-win-archive/releases#release-v4.1.9.57) | 首次使用时请确认微信数据目录；Windows 不需要关闭 SIP                           |
 
 - 上表是当前实际测试过的客户端版本，不代表只有这些版本可以使用。其他微信 4.x 版本可能可以连接，但尚未逐一验证。
-- WechatExplorer 必须取得当前微信账号对应的数据库密钥，才能读取聊天记录。
+- TraceMemo 必须取得当前微信账号对应的数据库密钥，才能读取聊天记录。
 - 你需要有权访问要读取的微信账号和聊天数据。
 - 如果要使用 AI 问答、群聊日报或图片理解，还需要在应用中配置一个 AI 服务。
 
@@ -26,23 +26,23 @@
 
 ### Windows
 
-1. 从 Releases 下载 Windows x64 的 `WechatExplorer-<版本号>-setup.exe` 安装包。
+1. 从 Releases 下载 Windows x64 的 `TraceMemo-<版本号>-setup.exe` 安装包。
 2. 双击安装包，按向导完成安装。
-3. 启动 WechatExplorer。
-4. 如果安装完成后软件无法启动，请安装 Microsoft Visual C++ x64 运行库：[vc_redist.x64.exe](https://aka.ms/vc14/vc_redist.x64.exe)，安装完成后重新启动 WechatExplorer。
+3. 启动 TraceMemo。
+4. 如果安装完成后软件无法启动，请安装 Microsoft Visual C++ x64 运行库：[vc_redist.x64.exe](https://aka.ms/vc14/vc_redist.x64.exe)，安装完成后重新启动 TraceMemo。
 
 ### macOS
 
 1. 根据处理器下载对应的 `.dmg`：Apple Silicon（M 系列）选择 `arm64`，Intel Mac 选择 `x64`。
-2. 打开 DMG，将 WechatExplorer 拖入“应用程序”文件夹。
+2. 打开 DMG，将 TraceMemo 拖入“应用程序”文件夹。
 3. 如果系统提示“无法打开，因为开发者无法验证”，前往“系统设置 → 隐私与安全性”，点击“仍要打开”。
 4. 如果系统提示应用已损坏，可在终端执行：
 
    ```bash
-   xattr -cr "/Applications/WechatExplorer.app"
+   xattr -cr "/Applications/TraceMemo.app"
    ```
 
-5. 启动 WechatExplorer。首次自动获取数据库密钥时，按连接页面显示的授权要求操作；只有页面明确提示时才按[关闭 SIP 教程](../mac-disable-sip.md)处理。关闭 SIP 会降低系统安全性，完成密钥配置后应重新开启。
+5. 启动 TraceMemo。首次自动获取数据库密钥时，按连接页面显示的授权要求操作；只有页面明确提示时才按[关闭 SIP 教程](../mac-disable-sip.md)处理。关闭 SIP 会降低系统安全性，完成密钥配置后应重新开启。
 
 更完整的权限和安全边界见 [macOS 数据访问说明](../platform/macos.md)。
 
@@ -107,12 +107,12 @@
 - [转写微信语音](./voice.md)
 - [导出聊天档案](./export.md)
 - [可选开启防撤回](./recall-protection.md)
-- [在微信里向 WechatExplorer 提问](../agent/agent-hub.md)
+- [在微信里向 TraceMemo 提问](../agent/agent-hub.md)
 - [让外部 Agent 查询微信历史](../agent/overview.md)
 
 ## 7. 想直接在微信里提问
 
-如果你希望直接在微信里向 WechatExplorer 提问，而不是另外配置 Codex 等外部 Agent，请使用 Agent Hub：
+如果你希望直接在微信里向 TraceMemo 提问，而不是另外配置 Codex 等外部 Agent，请使用 Agent Hub：
 
 1. 先完成上面的微信数据库连接，并确认“档案”里能看到聊天。
 2. 打开应用主导航中的“Agent”；页面标题为“Agent Hub”。

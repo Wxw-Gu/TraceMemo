@@ -1,6 +1,6 @@
-# WechatExplorer 文档
+# TraceMemo 文档
 
-WechatExplorer 的文档按“你想完成什么”组织，而不是按源码模块组织。
+TraceMemo 的文档按“你想完成什么”组织，而不是按源码模块组织。
 
 ## 从这里开始
 
@@ -15,7 +15,7 @@ WechatExplorer 的文档按“你想完成什么”组织，而不是按源码�
 - [语音转文字](./user-guide/voice.md)
 - [导出聊天档案](./user-guide/export.md)
 - [防撤回](./user-guide/recall-protection.md)
-- [在微信里向 WechatExplorer 提问](./agent/agent-hub.md)
+- [在微信里向 TraceMemo 提问](./agent/agent-hub.md)
 - [数据、隐私与安全](./user-guide/privacy.md)
 - [常见问题与排查](./user-guide/troubleshooting.md)
 
@@ -26,7 +26,7 @@ WechatExplorer 的文档按“你想完成什么”组织，而不是按源码�
 
 ## 微信机器人和外部 Agent
 
-WechatExplorer 有两种不同的接入方式。微信机器人是普通用户可以直接使用的产品能力；Reader Skill 和 Local HTTP API 面向已经在使用 Codex、Claude Code、OpenClaw 等外部 Agent 的用户。
+TraceMemo 有两种不同的接入方式。微信机器人是普通用户可以直接使用的产品能力；Reader Skill 和 Local HTTP API 面向已经在使用 Codex、Claude Code、OpenClaw 等外部 Agent 的用户。
 
 | 你想做什么                                                            | 应该看哪里                                                                 |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
@@ -57,4 +57,4 @@ WechatExplorer 有两种不同的接入方式。微信机器人是普通用户�
 - [开发、测试与构建](./development/overview.md)
 - [v2.1.9 API 鉴权迁移说明](./agent/release-notes-v2.1.9.md)
 
-当前工作区版本：**2.1.9**。文档只描述当前代码已经实现的能力；版本兼容性、AI Provider 行为和媒体读取结果可能随系统、微信客户端和服务商变化。
+当前工作区版本：**2.2.0**。文档只描述当前代码已经实现的能力；版本兼容性、AI Provider 行为和媒体读取结果可能随系统、微信客户端和服务商变化。

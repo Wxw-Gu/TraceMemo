@@ -75,7 +75,7 @@ export function AIImageUnderstandingTest({
       </label>
 
       <p className="ai-vision-privacy">
-        图片只会发送给你配置的 AI 服务，不会上传到 WechatExplorer 的其他服务器，也不会写入本地缓存。
+        图片只会发送给你配置的 AI 服务，不会上传到 TraceMemo 的其他服务器，也不会写入本地缓存。
       </p>
 
       {state.error ? <p className="ai-vision-error">{state.error}</p> : null}

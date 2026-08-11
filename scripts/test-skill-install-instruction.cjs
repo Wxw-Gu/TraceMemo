@@ -34,7 +34,7 @@ const local = {
 for (const [target, expected] of [
   ['codex', 'Codex 项目或用户 Skill 目录'],
   ['claude-code', '按照 SKILL\.md 调用本地 HTTP API'],
-  ['openclaw', '作为 WechatExplorer Reader Skill 安装'],
+  ['openclaw', '作为 TraceMemo Reader Skill 安装'],
   ['generic', '读取并安装']
 ]) {
   const text = buildSkillInstallInstruction({

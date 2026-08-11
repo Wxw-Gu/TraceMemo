@@ -73,7 +73,7 @@ func (m *Monitor) Run(ctx context.Context) error {
 			log.Printf("[monitor] GetUpdates error (%d/%d, backoff=%s): %v",
 				m.failures, maxConsecutiveFailures, backoff, err)
 			if m.failures == maxConsecutiveFailures {
-				log.Printf("[monitor] WARNING: %d consecutive failures; reconnect from WechatExplorer if this persists.", maxConsecutiveFailures)
+                log.Printf("[monitor] WARNING: %d consecutive failures; reconnect from TraceMemo if this persists.", maxConsecutiveFailures)
 			}
 			select {
 			case <-time.After(backoff):
@@ -96,7 +96,7 @@ func (m *Monitor) Run(ctx context.Context) error {
 			} else {
 				// Sync buf already empty but still getting session expired:
 				// the bot token itself has expired. The user needs to re-login.
-				log.Printf("[monitor] WARNING: WeChat session expired and cannot be auto-recovered; reconnect from WechatExplorer.")
+                log.Printf("[monitor] WARNING: WeChat session expired and cannot be auto-recovered; reconnect from TraceMemo.")
 			}
 			select {
 			case <-time.After(sessionExpiredBackoff):

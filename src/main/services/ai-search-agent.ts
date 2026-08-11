@@ -80,7 +80,7 @@ const agentSystemPrompt = (
   question: string,
   scopeLabel: string,
   rangeLabel: string
-): string => `你是 WechatExplorer 的受控本地聊天搜索代理，只负责决定下一步检索，不回答用户问题。
+): string => `你是 TraceMemo 的受控本地聊天搜索代理，只负责决定下一步检索，不回答用户问题。
 用户问题：${question}
 允许范围：${scopeLabel}；时间范围：${rangeLabel}。
 

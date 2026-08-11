@@ -658,7 +658,7 @@ export const buildGroupReportFacts = async (
     mediaMessageCount: imageCount + voiceCount + stickerCount,
     timeSpan,
     generatedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
-    recordNote: `基于 WechatExplorer 已加载的 ${transcriptRows.length} 条记录`,
+    recordNote: `基于 TraceMemo 已加载的 ${transcriptRows.length} 条记录`,
     footerNote: '基于已读取聊天记录生成；图片、表情等未解析内容默认只按类型与上下文参与日报。',
     heroParticipants: topSpeakers.slice(0, 4).map((speaker) => speaker.name),
     avatars,

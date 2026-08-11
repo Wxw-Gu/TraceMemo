@@ -44,6 +44,18 @@ const exportStamp = (): string => {
   const pad = (value: number): string => String(value).padStart(2, '0')
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
 }
+const defaultExportRoot = (): string => join(app.getPath('documents'), 'TraceMemo', '导出')
+const legacyExportRoot = (): string => join(app.getPath('documents'), 'WechatExplorer', '导出')
+const resolveDefaultExportRoot = async (outputFolder?: string): Promise<string> => {
+  if (!outputFolder) return defaultExportRoot()
+  try {
+    await fs.access(join(legacyExportRoot(), outputFolder))
+    // Continue incremental exports in the legacy folder when it already exists.
+    return legacyExportRoot()
+  } catch {
+    return defaultExportRoot()
+  }
+}
 const imageKeys = new ImageKeyConfigService()
 
 export interface HtmlExportConversation {
@@ -908,13 +920,13 @@ async function runSingleExport(
       total: messages.length,
       percent: request.format === 'html' ? 18 : 20
     })
-    const root = options.outputRoot || join(app.getPath('documents'), 'WechatExplorer', '导出')
-    await fs.mkdir(root, { recursive: true })
     const ext = request.format === 'markdown' ? 'md' : request.format
     const outputFolder =
       request.format === 'html'
         ? options.outputFolderName || safeFilePart(request.outputName)
         : `${safeFilePart(request.outputName)}_${exportStamp()}`
+    const root = options.outputRoot || (await resolveDefaultExportRoot(outputFolder))
+    await fs.mkdir(root, { recursive: true })
     const outputDir = join(root, outputFolder)
     const outputPath =
       request.format === 'html'
@@ -1506,8 +1518,8 @@ async function runAllExport(
       throw new Error('导出聊天不能重复')
     }
 
-    const exportRoot = join(app.getPath('documents'), 'WechatExplorer', '导出')
     const outputFolder = safeFilePart(request.outputName)
+    const exportRoot = await resolveDefaultExportRoot(outputFolder)
     outputDir = join(exportRoot, outputFolder)
     const folderNames = conversationFolderNames(targets)
     let lastProgressAt = 0

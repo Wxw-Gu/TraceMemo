@@ -1,6 +1,6 @@
 // src/shared/image-insight.ts
 // ImageInsight:微信图片的 AI 理解结果持久化数据结构
-// 与 WechatExplorer 整体 AI 知识平台定位一致 — 图片理解结果可索引、可缓存、可复用。
+// 与 TraceMemo 整体 AI 知识平台定位一致 — 图片理解结果可索引、可缓存、可复用。
 
 export type ImageCategory =
   | 'screenshot' // 截图

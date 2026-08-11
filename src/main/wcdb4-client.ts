@@ -261,6 +261,7 @@ export function resolveWindowsNativeAccountRoot(
     .find((candidate) => candidate && isAsciiPath(candidate))
   if (!publicRoot || !isAsciiPath(publicRoot)) return accountRoot
 
+  // Preserve the legacy ASCII bridge path so existing junctions remain reusable.
   const bridgeRoot = path.join(publicRoot, 'WechatExplorer', 'path-bridges')
   const bridgePath = path.join(
     bridgeRoot,

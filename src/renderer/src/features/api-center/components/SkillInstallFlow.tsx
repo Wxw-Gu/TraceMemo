@@ -43,7 +43,7 @@ export function SkillInstallFlow({
         <section className={service?.running && dbReady ? 'done' : 'active'}>
           <b>1</b>
           <div>
-            <h3>确认 WechatExplorer 已就绪</h3>
+            <h3>确认 TraceMemo 已就绪</h3>
             <p>
               本地 API：{service?.running ? '运行中' : '已停止'} · {address}
             </p>

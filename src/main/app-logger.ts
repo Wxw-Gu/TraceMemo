@@ -34,7 +34,7 @@ export class AppLogger {
   }
 
   get logPath(): string {
-    return path.join(this.logDir, 'wechatexplorer.log')
+    return path.join(this.logDir, 'tracememo.log')
   }
 
   private rotateIfNeeded(): void {

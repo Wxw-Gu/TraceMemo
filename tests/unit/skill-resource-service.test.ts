@@ -27,7 +27,7 @@ function environment(root: string, packaged: boolean) {
 
 function writeSkill(filePath: string): void {
   mkdirSync(dirname(filePath), { recursive: true })
-  writeFileSync(filePath, '# WechatExplorer Reader\n', 'utf8')
+  writeFileSync(filePath, '# TraceMemo Reader\n', 'utf8')
 }
 
 describe('Reader Skill resource resolution', () => {

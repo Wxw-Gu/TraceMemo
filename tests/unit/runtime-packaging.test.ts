@@ -45,11 +45,11 @@ describe('production runtime packaging', () => {
     expect(config).toContain('docs/skill/wechatexplorer-reader')
     expect(config).toContain('to: skill/wechatexplorer-reader')
     expect(() => validateReaderSkillRuntime(resources)).toThrow(
-      /Missing bundled WechatExplorer Reader Skill/
+      /Missing bundled TraceMemo Reader Skill/
     )
 
     mkdirSync(dirname(skillPath), { recursive: true })
-    writeFileSync(skillPath, '# WechatExplorer Reader\n')
+    writeFileSync(skillPath, '# TraceMemo Reader\n')
     expect(validateReaderSkillRuntime(resources)).toBe(skillPath)
   })
 

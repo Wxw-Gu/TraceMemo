@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
-# WechatExplorer v2.1.9 Local HTTP API 手动验收脚本
+# TraceMemo v2.2.0 Local HTTP API 手动验收脚本
 # 仅用于 macOS Terminal；不会写入或输出真实 API Token。
 
 set -u
 
 API_BASE_URL="${API_BASE_URL:-http://127.0.0.1:6131}"
 API_BASE_URL="${API_BASE_URL%/}"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/wechatexplorer-api-test.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tracememo-api-test.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 PASS_COUNT=0
@@ -18,7 +18,7 @@ pass() { PASS_COUNT=$((PASS_COUNT + 1)); printf 'PASS  %s\n' "$1"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf 'FAIL  %s%s\n' "$1" "${2:+ ($2)}"; }
 skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); printf 'SKIP  %s\n' "$1"; }
 
-printf 'WechatExplorer Local HTTP API 手动测试\n'
+printf 'TraceMemo Local HTTP API 手动测试\n'
 printf 'API 地址: %s\n\n' "$API_BASE_URL"
 read -r -s -p '请输入 API Token（不会显示）: ' API_TOKEN
 printf '\n'

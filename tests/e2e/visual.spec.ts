@@ -14,7 +14,7 @@ test('NAV-01 login page visual @visual', async () => {
   const fixture = await launchTestApp({ mode: 'disconnected' })
   try {
     await fixture.page.setViewportSize(visualViewport)
-    await expect(fixture.page.getByRole('heading', { name: 'WechatExplorer' })).toBeVisible()
+    await expect(fixture.page.getByRole('heading', { name: 'TraceMemo（迹忆）' })).toBeVisible()
     await expect(fixture.page).toHaveScreenshot('login-page.png', {
       animations: 'disabled',
       caret: 'hide'

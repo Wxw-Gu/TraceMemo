@@ -30,7 +30,7 @@ export function DatabaseKeyAutoDetect({
       <div className="database-key-auto-heading">
         <div>
           <strong>Windows 自动获取</strong>
-          <p>WechatExplorer 可在微信桌面端正在运行时，通过本机内存扫描尝试获取数据库密钥。</p>
+          <p>TraceMemo 可在微信桌面端正在运行时，通过本机内存扫描尝试获取数据库密钥。</p>
         </div>
         <button
           type="button"

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(__dirname, '..')
 const templatePath = path.join(root, 'resources', 'mobile_daily_report.html')
-const outputDir = path.join(os.tmpdir(), 'wechatexplorer-report-fixtures')
+const outputDir = path.join(os.tmpdir(), 'tracememo-report-fixtures')
 
 const escapeHtml = (value) =>
   String(value ?? '')

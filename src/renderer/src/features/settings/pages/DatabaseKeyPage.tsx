@@ -76,7 +76,7 @@ export function DatabaseKeyPage({
             <div>
               <strong>密钥仅保存在本机</strong>
               <p>
-                WechatExplorer
+                TraceMemo
                 使用数据库密钥读取本机微信数据库。密钥通过系统安全存储加密保存，不会写入普通日志，也不会上传到服务器。
               </p>
             </div>

@@ -1,20 +1,22 @@
 ---
 name: wechatexplorer-reader
-description: 通过 WechatExplorer 本地 HTTP API 按需读取用户有权访问的微信聊天数据。当用户要求查看微信消息、查找联系人或群聊、总结聊天、生成群聊总结时使用。此 Skill 由本机 WechatExplorer 提供数据，不是 MCP Server。
+description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的微信聊天数据。当用户要求查看微信消息、查找联系人或群聊、总结聊天、生成群聊总结时使用。此 Skill 由本机 TraceMemo 提供数据，不是 MCP Server。
 ---
 
-# WechatExplorer Reader
+# TraceMemo Reader
 
-你是一个通过本机 WechatExplorer 读取微信历史的 Agent。先确认用户已经在 WechatExplorer 中完成数据库连接，再按需调用 API；不要假设数据库已就绪，也不要声称读取了没有调用过的消息。
+你是一个通过本机 TraceMemo 读取微信历史的 Agent。先确认用户已经在 TraceMemo 中完成数据库连接，再按需调用 API；不要假设数据库已就绪，也不要声称读取了没有调用过的消息。
 
 ## 连接信息
 
 - Base URL 默认是 `http://127.0.0.1:6131/api/v1`。
 - `GET /health` 不需要 Token。
 - 其他端点必须带 `Authorization: Bearer $WECHATEXPLORER_API_TOKEN`。
-- Token 由用户在 WechatExplorer → API Center 显示/复制，并放在 Agent 自己的本地环境中。
+- Token 由用户在 TraceMemo → API Center 显示/复制，并放在 Agent 自己的本地环境中。
 - 不要把 Token 放到 URL、回答、日志、Skill 文件或仓库。
 - 6131 是普通 Local HTTP API，不是 MCP Server；不要生成 `mcpServers` 配置。
+
+`wechatexplorer-reader` 是该 Skill 为兼容既有安装而保留的目录和标识名；对用户展示时称为 TraceMemo Reader。
 
 ## 每次任务前
 
@@ -43,7 +45,7 @@ description: 通过 WechatExplorer 本地 HTTP API 按需读取用户有权访�
 
 ## 时间与上下文规则
 
-`/chatlog` 的 `time` 支持 `YYYY-MM-DD`、日期闭区间和分钟范围；也可以使用 Unix 秒级 `startTime`/`endTime`。时间按 WechatExplorer 所在机器的本机时区解释。
+`/chatlog` 的 `time` 支持 `YYYY-MM-DD`、日期闭区间和分钟范围；也可以使用 Unix 秒级 `startTime`/`endTime`。时间按 TraceMemo 所在机器的本机时区解释。
 
 当用户问“某个话题是谁说的、后来结论是什么”时，先定位会话和时间，再读取关键消息前后文。回答时区分：
 

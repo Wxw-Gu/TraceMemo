@@ -17,7 +17,7 @@ describe('connection diagnostics', () => {
       encryptionAvailable: true
     })
 
-    expect(summary).toContain('WechatExplorer: v2.1.6')
+    expect(summary).toContain('TraceMemo: v2.1.6')
     expect(summary).toContain('微信客户端: 4.1.9.57')
     expect(summary).not.toContain('0123456789abcdef')
     expect(summary).not.toContain('C:\\Users\\fixture\\xwechat_files\\wxid_secret')

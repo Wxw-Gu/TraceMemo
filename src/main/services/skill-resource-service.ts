@@ -90,7 +90,7 @@ export function resolveSkillResourceStatus(
       available: false,
       source,
       githubUrl: GITHUB_URL,
-      error: `未找到 WechatExplorer Reader Skill 文件（已检查：${candidates.map((item) => item.path).join('；')}）`
+      error: `未找到 TraceMemo Reader Skill 文件（已检查：${candidates.map((item) => item.path).join('；')}）`
     }
   }
   return {

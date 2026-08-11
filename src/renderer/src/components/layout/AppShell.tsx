@@ -26,7 +26,7 @@ interface AppShellProps {
 
 function BrandLogo(): React.ReactElement {
   return (
-    <div className="app-brand" title="WechatExplorer" aria-label="WechatExplorer">
+    <div className="app-brand" title="TraceMemo（迹忆）" aria-label="TraceMemo（迹忆）">
       <img src={brandIcon} alt="" aria-hidden="true" />
     </div>
   )

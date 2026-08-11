@@ -37,13 +37,13 @@ export function ReaderSkillOverview({
         <div className="api-workspace-heading">
           <div>
             <div className="api-title-line">
-              <h1>WechatExplorer Reader</h1>
+              <h1>TraceMemo Reader</h1>
               <span className={`api-skill-status ${skill?.available ? 'ready' : 'error'}`}>
                 {skill?.available ? '已安装' : '文件不可用'}
               </span>
               <span className="api-version">{skill?.version || 'v1.0'}</span>
             </div>
-            <p>通过本地 HTTP API 读取 WechatExplorer 已解锁的微信聊天数据</p>
+            <p>通过本地 HTTP API 读取 TraceMemo 已解锁的微信聊天数据</p>
           </div>
           <div className="api-header-actions">
             <button type="button" onClick={onPreview} disabled={!skill?.available}>
@@ -79,9 +79,9 @@ export function ReaderSkillOverview({
         <div className="api-introduction">
           <h2>能力简介</h2>
           <p>
-            WechatExplorer Reader 让本地 AI Agent
+            TraceMemo Reader 让本地 AI Agent
             在用户授权和本地服务运行时，读取联系人、群聊、聊天记录和群成员信息，并调用内置模板导出群聊日报。聊天数据由
-            WechatExplorer 本地服务提供，不会由该 API 自动上传到其他服务器。
+            TraceMemo 本地服务提供，不会由该 API 自动上传到其他服务器。
           </p>
           <div className="api-flow">
             <span>AI Agent</span>

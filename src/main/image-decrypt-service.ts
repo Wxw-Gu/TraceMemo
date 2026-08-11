@@ -562,7 +562,7 @@ export class ImageDecryptService {
   }
 
   /**
-   * 根据 md5 查找图片文件 (WechatExplorer 风格)
+   * 根据 md5 查找图片文件
    */
   findImageFile(md5?: string, imageDatName?: string, options?: ImageFindOptions): string | null {
     const allowThumbnail = options?.allowThumbnail !== false
@@ -648,7 +648,7 @@ export class ImageDecryptService {
       }
     }
 
-    // 尝试 WechatExplorer 的目录结构: msg/attach/{hash}/{YYYY-MM}/Img/
+    // 尝试 TraceMemo 兼容的微信目录结构: msg/attach/{hash}/{YYYY-MM}/Img/
     if (!existsSync(attachDir)) {
       imageDecryptLog('[ImageDecrypt] attach dir not found:', attachDir)
       return rememberPath(

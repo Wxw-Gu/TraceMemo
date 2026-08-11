@@ -2,15 +2,17 @@
 
 ## 先理解它能做什么
 
-Reader Skill 是一份给 Agent 的操作说明。安装后，Codex、Claude Code、OpenClaw 或其他本地 Agent 可以按需调用 WechatExplorer，读取联系人、群聊、最近会话、指定时间的聊天和群成员信息。
+Reader Skill 是一份给 Agent 的操作说明。安装后，Codex、Claude Code、OpenClaw 或其他本地 Agent 可以按需调用 TraceMemo，读取联系人、群聊、最近会话、指定时间的聊天和群成员信息。
 
-它使用的是 WechatExplorer Local HTTP API，不是 MCP Server。
+它使用的是 TraceMemo Local HTTP API，不是 MCP Server。
 
 Reader Skill 只负责“外部 Agent 主动查询历史微信数据”。它不负责二维码登录、监听微信实时消息、接收机器人消息或管理 Agent Hub。想让机器人收到微信消息后处理并回复，请阅读[Agent Hub](./agent-hub.md)。
 
+Reader Skill 的展示名称已迁移为 TraceMemo Reader；安装目录和 `WECHATEXPLORER_API_TOKEN` 环境变量仍保留历史兼容标识，以便旧 Agent 配置继续工作。
+
 ## 推荐安装流程
 
-1. 启动 WechatExplorer 并完成数据库连接。
+1. 启动 TraceMemo 并完成数据库连接。
 2. 打开“API Center”，确认 API 服务和数据库状态正常。
 3. 在 Reader Skill 区域选择目标 Agent，点击“复制安装指令”。
 4. 把指令粘贴到对应 Agent 的 Skill/配置目录；应用会根据本机路径生成适合 Codex、Claude Code、OpenClaw 或通用 Agent 的说明。
@@ -22,7 +24,7 @@ Reader Skill 只负责“外部 Agent 主动查询历史微信数据”。它不
 
 6. 先执行 health 检查，再读取数据端点。
 
-WechatExplorer 不会自动把 Token 写进 Agent 配置。重新生成 Token 后，必须同步更新 Agent 环境。
+TraceMemo 不会自动把 Token 写进 Agent 配置。重新生成 Token 后，必须同步更新 Agent 环境。
 
 ## Agent 的读取顺序
 

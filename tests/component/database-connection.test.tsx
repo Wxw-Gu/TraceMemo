@@ -23,7 +23,7 @@ function renderPage(
       wechatVersion: '4.1.9.57',
       dataStructureVersion: '微信 4.x（WCDB）',
       dataDirectoryDetected: true,
-      diagnosticSummary: 'WechatExplorer: v2.1.6',
+      diagnosticSummary: 'TraceMemo: v2.1.6',
       autoDetectSupported: true,
       wechatRunning: true,
       accountIdentified: false,

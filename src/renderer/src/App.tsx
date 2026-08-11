@@ -805,7 +805,7 @@ function App(): React.ReactElement {
         })
         setStartupProgress({
           title: '正在加载账号信息...',
-          subtitle: '即将进入 WechatExplorer',
+          subtitle: '即将进入 TraceMemo',
           detail: '正在读取联系人和当前账号',
           percent: 70
         })
@@ -1813,7 +1813,7 @@ function App(): React.ReactElement {
         ? autoConnectSource === 'env'
           ? '检测到环境变量中的密钥'
           : '使用上次安全保存的密钥'
-        : 'WechatExplorer')
+        : 'TraceMemo')
     return (
       <div className={`boot-splash ${appearanceSettings.showStartupProgress ? '' : 'is-quiet'}`}>
         <div className="boot-splash-spinner" aria-hidden />

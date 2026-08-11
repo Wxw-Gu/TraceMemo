@@ -63,7 +63,7 @@ export function DatabaseKeyDangerZone({
           >
             <h2 id="database-key-confirm-title">确认清除数据库密钥？</h2>
             <p>
-              清除后 WechatExplorer
+              清除后 TraceMemo
               将暂时无法读取聊天记录，需要重新输入或获取密钥。该操作不会删除微信原始数据。
             </p>
             <div>
@@ -99,7 +99,7 @@ export function DatabaseKeyDangerZone({
           >
             <h2 id="database-key-return-confirm-title">返回登录界面？</h2>
             <p>
-              WechatExplorer
+              TraceMemo
               将断开当前数据库连接并回到密钥输入界面。已保存的数据库密钥和微信原始数据不会被删除。
             </p>
             <div>

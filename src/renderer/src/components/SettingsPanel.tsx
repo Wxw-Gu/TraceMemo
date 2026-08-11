@@ -478,7 +478,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               API 默认仅监听本机，并通过 Bearer Token 保护数据接口。Token 请在 API Center
               中显示或复制。关闭后 Claude / Codex 等客户端无法读取聊天数据。
               <br />
-              配置文档:<code>docs/skill/wechatexplorer-reader/SKILL.md</code>
+              配置文档（兼容路径）:<code>docs/skill/wechatexplorer-reader/SKILL.md</code>
             </div>
           </section>
 

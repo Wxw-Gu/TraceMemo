@@ -19,9 +19,12 @@ const downloadCache = new Map<string, Promise<StickerResult>>()
 
 export class StickerService {
   private readonly cacheDir: string
+  private readonly legacyCacheDir: string
 
   constructor(private readonly wcdb4Client?: Wcdb4Client | null) {
-    this.cacheDir = path.join(os.homedir(), 'Documents', 'WechatExplorer', 'Emojis')
+    this.cacheDir = path.join(os.homedir(), 'Documents', 'TraceMemo', 'Emojis')
+    // Keep reading the former directory so existing sticker caches remain usable.
+    this.legacyCacheDir = path.join(os.homedir(), 'Documents', 'WechatExplorer', 'Emojis')
   }
 
   async resolveSticker(cdnUrl?: string, md5?: string): Promise<StickerResult> {
@@ -69,7 +72,7 @@ export class StickerService {
     const extensions = ['.gif', '.png', '.webp', '.jpg', '.jpeg']
     const cacheDirs = [
       this.cacheDir,
-      path.join(os.homedir(), 'Documents', 'WechatExplorer', 'Emojis')
+      this.legacyCacheDir
     ]
     for (const cacheDir of cacheDirs) {
       for (const ext of extensions) {
@@ -128,7 +131,7 @@ export class StickerService {
         url,
         {
           headers: {
-            'User-Agent': 'Mozilla/5.0 MicroMessenger WechatExplorer',
+            'User-Agent': 'Mozilla/5.0 MicroMessenger TraceMemo',
             Referer: 'https://weixin.qq.com/'
           }
         },

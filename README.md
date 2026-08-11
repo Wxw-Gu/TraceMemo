@@ -1,7 +1,7 @@
-# WechatExplorer
+# TraceMemo（迹忆）
 
 <p align="center">
-  <img src="./build/icon.png" width="120" alt="WechatExplorer Logo" />
+  <img src="./build/icon.png" width="120" alt="TraceMemo Logo" />
 </p>
 
 <h2 align="center">把微信聊过的事，找回来、问清楚、留下来</h2>
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Wxw-Gu/WechatExplorer/releases"><b>下载 WechatExplorer</b></a>
+  <a href="https://github.com/Wxw-Gu/WechatExplorer/releases"><b>下载 TraceMemo</b></a>
   ·
   <a href="./docs/user-guide/getting-started.md"><b>第一次使用</b></a>
   ·
@@ -26,16 +26,30 @@
 </p>
 
 <p align="center">
-  <img src="./public/software-1.png" alt="WechatExplorer 主界面" />
+  <img src="./public/software-1.png" alt="TraceMemo 主界面" />
 </p>
 
 <p align="center">
-  <img src="./public/机器人.png" alt="WechatExplorer 主界面" />
+  <img src="./public/机器人.png" alt="TraceMemo 主界面" />
 </p>
 
-## WechatExplorer 是什么
+## TraceMemo（迹忆）是什么
 
-WechatExplorer 是一个本地优先的微信聊天记录搜索与 AI 工作台。
+TraceMemo（迹忆）是一款本地优先、可追溯的 AI 微信知识与分析工作台。
+
+TraceMemo（迹忆）原名 WechatExplorer，是一次从“微信聊天记录探索工具”向“可追溯的本地 AI 知识工作台”演进后的正式品牌升级。
+
+## 为什么叫 TraceMemo（迹忆）
+
+`Trace` 代表聊天记录留下的痕迹、可以追溯的信息来源、AI 搜索过程，以及从结果回到原始聊天上下文并核对证据的能力。
+
+`Memo` 代表记忆、知识沉淀和长期保存：让聊天中产生的信息逐渐形成个人知识。
+
+“迹忆”可以理解为“留下痕迹的记忆”。TraceMemo 不是单纯查看微信聊天记录的工具，而是希望让聊天中产生的信息留下痕迹，并能够被再次找到、理解、验证和沉淀。
+
+> **品牌说明**
+>
+> TraceMemo（迹忆）原名 WechatExplorer。WechatExplorer 最初是一个用于查看和探索微信聊天记录的工具。随着本地搜索、AI 问答、来源追溯、知识库、日报、语音转写和 Agent 能力逐渐形成，项目已经从单纯的聊天记录查看器发展为本地 AI 知识与分析工作台，因此在 v2.2.0 正式更名为 TraceMemo（迹忆）。
 
 它可以帮你浏览、搜索和整理微信历史，也可以让 AI 帮你找回聊过的内容，并回到原始消息核对答案。
 
@@ -50,7 +64,7 @@ WechatExplorer 是一个本地优先的微信聊天记录搜索与 AI 工作台�
 ## 💬 交流与反馈
 
 <p align="center">
-  <img src="./public/二维码.jpg" alt="WechatExplorer 交流与售后群二维码" width="280" />
+  <img src="./public/二维码.jpg" alt="TraceMemo 交流与售后群二维码" width="280" />
 </p>
 
 
@@ -65,7 +79,7 @@ WechatExplorer 是一个本地优先的微信聊天记录搜索与 AI 工作台�
 | 把微信语音变成可搜索的文字                | [设置 → 语音转文字](./docs/user-guide/voice.md)         | 准备本地语音模型                     |
 | 把聊天保存成 HTML、Markdown、CSV 或 JSON  | [导出](./docs/user-guide/export.md)                     | 选择聊天、时间和格式，不需要 AI      |
 | 尽量保留之后捕获到的撤回消息              | [设置 → 防撤回](./docs/user-guide/recall-protection.md) | 默认关闭；开启前先了解写入和性能边界 |
-| 直接在微信里向 WechatExplorer 提问        | [微信机器人](./docs/agent/agent-hub.md)                 | 扫码连接机器人；总结类任务需要 AI    |
+| 直接在微信里向 TraceMemo 提问            | [微信机器人](./docs/agent/agent-hub.md)                 | 扫码连接机器人；总结类任务需要 AI    |
 | 让 Codex 等外部 Agent 查询微信历史        | [外部 Agent](./docs/agent/overview.md)                  | 安装 Reader Skill 并配置本机 Token   |
 
 ## 最核心的三个能力
@@ -83,7 +97,7 @@ WechatExplorer 是一个本地优先的微信聊天记录搜索与 AI 工作台�
 
 打开“问问微信”，选择搜索范围和时间，然后像提问一样描述你想找的内容。
 
-WechatExplorer 会先在本机查找候选消息，再把整理后的少量来源交给你配置的 AI 模型生成回答。你可以查看答案参考了哪些聊天、来自哪个人和时间，并从来源标记跳回原始消息核对；“查看检索详情”还会展示本次查找经历了哪些阶段。
+TraceMemo 会先在本机查找候选消息，再把整理后的少量来源交给你配置的 AI 模型生成回答。你可以查看答案参考了哪些聊天、来自哪个人和时间，并从来源标记跳回原始消息核对；“查看检索详情”还会展示本次查找经历了哪些阶段。
 
 <p align="center">
   <img src="./public/问一问.png" alt="问问微信与聊天来源" />
@@ -93,11 +107,11 @@ WechatExplorer 会先在本机查找候选消息，再把整理后的少量来�
 
 ### 直接在微信里问你的历史聊天
 
-打开应用中的“Agent”入口（页面标题为“Agent Hub”，对应微信机器人功能），扫码连接一个微信机器人账号。例如，你可以直接给机器人发送“最近 5 个会话”“张三最近和我聊了什么”，或者让它生成指定群聊的总结图片。WechatExplorer 会在本机读取已连接的聊天数据并把结果回复到微信。
+打开应用中的“Agent”入口（页面标题为“Agent Hub”，对应微信机器人功能），扫码连接一个微信机器人账号。例如，你可以直接给机器人发送“最近 5 个会话”“张三最近和我聊了什么”，或者让它生成指定群聊的总结图片。TraceMemo 会在本机读取已连接的聊天数据并把结果回复到微信。
 
 这个入口不要求另外安装 Codex、Claude Code 等外部 Agent。当前主要处理文字消息，不支持群发、定时任务或通用自主操作微信；总结和自然语言理解需要先配置 AI 服务。
 
-详细步骤和能力边界见[在微信里向 WechatExplorer 提问](./docs/agent/agent-hub.md)。
+详细步骤和能力边界见[在微信里向 TraceMemo 提问](./docs/agent/agent-hub.md)。
 
 ## 其他能力
 
@@ -126,13 +140,13 @@ WechatExplorer 会先在本机查找候选消息，再把整理后的少量来�
 
 ### 转写微信语音
 
-WechatExplorer 支持在本机转写单条或批量微信语音，结果可以参与本地知识库检索和 HTML 导出。转写本身不要求把语音文件发送给在线 AI；随后用于 AI 问答或日报时，文字会按对应功能的规则处理。
+TraceMemo 支持在本机转写单条或批量微信语音，结果可以参与本地知识库检索和 HTML 导出。转写本身不要求把语音文件发送给在线 AI；随后用于 AI 问答或日报时，文字会按对应功能的规则处理。
 
 详细说明：[语音转文字](./docs/user-guide/voice.md)
 
 ### 防撤回
 
-可选开启后，WechatExplorer 会尽量保留开启期间捕获到的撤回消息。该能力受微信版本和应用运行状态影响，不保证找回所有内容，也不能恢复开启前已经撤回的消息。
+可选开启后，TraceMemo 会尽量保留开启期间捕获到的撤回消息。该能力受微信版本和应用运行状态影响，不保证找回所有内容，也不能恢复开启前已经撤回的消息。
 
 详细说明：[防撤回](./docs/user-guide/recall-protection.md)
 
@@ -152,7 +166,7 @@ WechatExplorer 支持在本机转写单条或批量微信语音，结果可以�
 
 ```mermaid
 flowchart LR
-    A[本机微信数据] --> B[WechatExplorer 读取与解析]
+    A[本机微信数据] --> B[TraceMemo 读取与解析]
     B --> C[聊天档案]
     B --> D[本地知识库与搜索]
     D --> E[筛选相关聊天来源]
@@ -187,7 +201,7 @@ flowchart LR
 ## 快速开始
 
 1. 从 [GitHub Releases](https://github.com/Wxw-Gu/WechatExplorer/releases) 下载安装包。
-2. 启动 WechatExplorer，按照“第一次使用”页面选择微信数据目录。
+2. 启动 TraceMemo，按照“第一次使用”页面选择微信数据目录。
 3. 第一次使用请先点击“开始连接”，按页面提示准备连接组件并获取数据库密钥；只有已经有密钥的高级用户才需要“手动连接”。
 4. 连接成功后打开“档案”，确认联系人和聊天消息已经出现。
 5. 先在“档案”里搜索一句你记得的原话；这一步不需要 AI。
@@ -198,7 +212,7 @@ Windows 安装后无法启动时，请先安装 [Microsoft Visual C++ x64 运行
 
 如果 macOS 页面提示处理 SIP，请先阅读对应说明。具体步骤和限制见[第一次使用](./docs/user-guide/getting-started.md)。
 
-完整步骤：[第一次使用 WechatExplorer](./docs/user-guide/getting-started.md)
+完整步骤：[第一次使用 TraceMemo](./docs/user-guide/getting-started.md)
 
 ## 配置 AI
 
@@ -248,20 +262,20 @@ pnpm test:e2e:build
 
 ## 支持与反馈
 
-遇到问题时，先查看[常见问题与排查](./docs/user-guide/troubleshooting.md)。提交 Issue 时请提供操作系统、微信版本、WechatExplorer 版本、复现步骤和已遮挡敏感信息的截图。
+遇到问题时，先查看[常见问题与排查](./docs/user-guide/troubleshooting.md)。提交 Issue 时请提供操作系统、微信版本、TraceMemo 版本、复现步骤和已遮挡敏感信息的截图。
 
 请仅处理你有权访问的数据，并遵守适用的法律法规、组织政策和微信使用规则。数据库读取、解密、自动化和机器人能力都可能受平台版本与账号环境影响。
 
 ## 许可说明
 
-仓库中的第三方组件、模型和连接器遵循各自的许可证。当前仓库根目录未提供独立的项目 `LICENSE` 文件；贡献、复制或再分发前，请先向维护者确认 WechatExplorer 本身的许可范围。
+仓库中的第三方组件、模型和连接器遵循各自的许可证。当前仓库根目录未提供独立的项目 `LICENSE` 文件；贡献、复制或再分发前，请先向维护者确认 TraceMemo 本身的许可范围。
 
 ## 致谢
 
 <details>
   <summary>展开致谢与参考项目</summary>
 
-WechatExplorer 在开发过程中参考了多个优秀的开源项目，感谢这些项目作者的工作与分享。
+TraceMemo 在开发过程中参考了多个优秀的开源项目，感谢这些项目作者的工作与分享。
 
 特别感谢：
 
@@ -272,7 +286,7 @@ WechatExplorer 在开发过程中参考了多个优秀的开源项目，感谢�
 - **[chatlog](https://github.com/sjzar/chatlog)**
   - 提供了聊天记录导出与数据处理方面的参考。
 
-在此基础上，WechatExplorer 进行了重新设计与实现，包括：
+在此基础上，TraceMemo 进行了重新设计与实现，包括：
 
 - AI 问问微信
 - AI 群聊日报

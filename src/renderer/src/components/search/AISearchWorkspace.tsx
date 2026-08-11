@@ -1094,7 +1094,7 @@ export function AISearchWorkspace({
     <div className="ai-search-workspace">
       <header className="ai-search-header">
         <div>
-          <span className="ai-search-kicker">WechatExplorer · LOCAL INTELLIGENCE</span>
+          <span className="ai-search-kicker">TraceMemo · LOCAL INTELLIGENCE</span>
           <h1>问问你的微信</h1>
           <p>在本地聊天记录中提炼主题、结论和可追溯证据</p>
         </div>

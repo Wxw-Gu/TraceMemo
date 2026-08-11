@@ -2,9 +2,11 @@
 
 ## 当前安全边界
 
-WechatExplorer 的本地 API 默认监听 `127.0.0.1:6131`。它面向同一台电脑上的 API Center、Reader Skill、CLI 和 Agent，不是公网网关，也不是带用户账户和细粒度权限 Scope 的服务。
+TraceMemo 的本地 API 默认监听 `127.0.0.1:6131`。它面向同一台电脑上的 API Center、Reader Skill、CLI 和 Agent，不是公网网关，也不是带用户账户和细粒度权限 Scope 的服务。
 
 ## Bearer Token
+
+文档中的 `WECHATEXPLORER_API_TOKEN` 是历史兼容环境变量名；TraceMemo v2.2.0 继续支持这一名称，以免已安装的 Reader Skill 和 Agent 配置失效。
 
 - `/api/v1/health` 是公开健康检查；
 - 其他所有端点都要求 `Authorization: Bearer <TOKEN>`；

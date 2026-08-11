@@ -1138,7 +1138,7 @@ describe('media export flow', () => {
 
     expect(result).toEqual({ success: false, error: '已取消' })
     expect(state.exportReads).toEqual(['cancel-1'])
-    const outputDir = join(state.documents, 'WechatExplorer', '导出', 'cancelled-all-conversations')
+    const outputDir = join(state.documents, 'TraceMemo', '导出', 'cancelled-all-conversations')
     expect(existsSync(join(outputDir, '联系人', '联系人一', 'index.html'))).toBe(true)
     expect(existsSync(join(outputDir, '联系人', '联系人二', 'index.html'))).toBe(false)
     const partialManifest = JSON.parse(readFileSync(join(outputDir, '导出清单.json'), 'utf8')) as {
@@ -1195,7 +1195,7 @@ describe('media export flow', () => {
     expect(firstSize).toBeGreaterThan(0)
     expect(readFileSync(second.outputPath!).subarray(0, 2).toString()).toBe('PK')
     const entries = execFileSync('unzip', ['-Z1', second.outputPath!], { encoding: 'utf8' })
-    const htmlPath = join(state.documents, 'WechatExplorer', '导出', 'zip-fixture', 'index.html')
+    const htmlPath = join(state.documents, 'TraceMemo', '导出', 'zip-fixture', 'index.html')
     const archive = readArchive(htmlPath)
     expect(entries).toContain('zip-fixture/index.html')
     expect(entries).toContain('zip-fixture/data/messages.js')
@@ -1209,7 +1209,7 @@ describe('media export flow', () => {
       true
     )
     expect(
-      readdirSync(join(state.documents, 'WechatExplorer', '导出')).some((name) =>
+      readdirSync(join(state.documents, 'TraceMemo', '导出')).some((name) =>
         name.startsWith('zip-fixture.zip.tmp-')
       )
     ).toBe(false)
@@ -1250,7 +1250,7 @@ describe('media export flow', () => {
     expect(cancelled).toEqual({ success: false, error: '已取消' })
     expect(readFileSync(first.outputPath!)).toEqual(completeZip)
     expect(
-      readdirSync(join(state.documents, 'WechatExplorer', '导出')).some((name) =>
+      readdirSync(join(state.documents, 'TraceMemo', '导出')).some((name) =>
         name.startsWith('zip-cancel-fixture.zip.tmp-')
       )
     ).toBe(false)

@@ -51,7 +51,7 @@ export function ImageDecryptionPage({
             </svg>
             <div>
               <strong>图片仅在本机解析</strong>
-              <p>WechatExplorer 不会上传您的微信图片。所有图片解析和缓存处理均在本地完成。</p>
+              <p>TraceMemo 不会上传您的微信图片。所有图片解析和缓存处理均在本地完成。</p>
             </div>
           </section>
 

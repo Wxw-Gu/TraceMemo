@@ -117,7 +117,7 @@ handle('key:getEnvironment', () => ({
   wechatVersion: '4.1.9.57',
   dataStructureVersion: settings.dbRoot === 'fixture-account' ? '微信 4.x（WCDB）' : '未检测到',
   dataDirectoryDetected: settings.dbRoot === 'fixture-account',
-  diagnosticSummary: 'WechatExplorer: v2.1.6\n数据目录: 已检测到',
+  diagnosticSummary: 'TraceMemo: v2.1.6\n数据目录: 已检测到',
   autoDetectSupported: true,
   wechatRunning: true,
   accountIdentified: connected,
@@ -371,7 +371,7 @@ handle('image:testConfig', () => ({
   fileFound: true,
   decrypted: true,
   readable: true,
-  diagnosticLog: 'WechatExplorer 图片解析测试日志（已脱敏）\n测试结果：成功（SUCCESS）'
+  diagnosticLog: 'TraceMemo 图片解析测试日志（已脱敏）\n测试结果：成功（SUCCESS）'
 }))
 handle('image:clearConfig', () => ({ success: true }))
 handle('image:getDecoderStatus', () => ({

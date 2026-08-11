@@ -141,12 +141,12 @@ export function DatabaseConnectionPage({
 
   return (
     <main className="database-login-page">
-      <section className="database-login-brand" aria-label="WechatExplorer 产品说明">
+      <section className="database-login-brand" aria-label="TraceMemo（迹忆）产品说明">
         <div className="database-login-brand-content">
           <div className="database-login-logo" aria-hidden="true">
             <LineIcon name="database" />
           </div>
-          <h1>WechatExplorer</h1>
+          <h1>TraceMemo（迹忆）</h1>
           <p className="database-login-tagline">让 AI 读懂你的微信</p>
           <p className="database-login-description">
             连接成功后，你可以搜索聊天记录、生成群聊日报，并按需使用 AI 分析。
@@ -261,7 +261,7 @@ export function DatabaseConnectionPage({
                             '确认下方检测结果；没有找到目录时可以手动选择。',
                             '请退出当前微信账号，让微信停留在登录页面，然后点击“我已准备好”。',
                             '开始后请按页面提示完成系统授权。',
-                            '正在准备连接组件，请不要关闭微信或 WechatExplorer。',
+                            '正在准备连接组件，请不要关闭微信或 TraceMemo。',
                             '请回到微信完成登录，登录成功后再回来验证。',
                             '正在验证密钥和本地数据库，请稍候。'
                           ][guideStep - 1]}
@@ -567,7 +567,7 @@ export function DatabaseConnectionPage({
             <button type="button" onClick={onClearKey}>
               清除已保存密钥
             </button>
-            <span>WechatExplorer</span>
+            <span>TraceMemo</span>
           </div>
         </div>
       </section>

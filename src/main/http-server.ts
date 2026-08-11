@@ -167,7 +167,7 @@ const routes: Record<string, RouteHandler> = {
     sendJson(res, 200, {
       ok: true,
       ready: isReady(),
-      service: 'WechatExplorer Reader',
+      service: 'TraceMemo Reader',
       version: '1.0.0',
       timestamp: new Date().toISOString()
     })
@@ -186,7 +186,7 @@ const routes: Record<string, RouteHandler> = {
   },
 
   '/api/v1/contact': ({ res, url }) => {
-    if (!isReady()) return sendError(res, 503, 'WechatExplorer 数据库未初始化')
+    if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const filter = url.searchParams.get('filter') || undefined
     const type = url.searchParams.get('type') || undefined
     let contacts = listContacts(filter)
@@ -197,7 +197,7 @@ const routes: Record<string, RouteHandler> = {
   },
 
   '/api/v1/chatroom': ({ res, url }) => {
-    if (!isReady()) return sendError(res, 503, 'WechatExplorer 数据库未初始化')
+    if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const keyword = url.searchParams.get('keyword') || ''
     let groups = listContacts().filter((c) => c.type === 'group')
     if (keyword) {
@@ -212,14 +212,14 @@ const routes: Record<string, RouteHandler> = {
   },
 
   '/api/v1/recent_chat': ({ res, url }) => {
-    if (!isReady()) return sendError(res, 503, 'WechatExplorer 数据库未初始化')
+    if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const limit = parseNumeric(url.searchParams.get('limit'), 50)
     const items = listRecentChat(limit)
     sendJson(res, 200, { count: items.length, items })
   },
 
   '/api/v1/chatlog': ({ res, url }) => {
-    if (!isReady()) return sendError(res, 503, 'WechatExplorer 数据库未初始化')
+    if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const talker = url.searchParams.get('talker')
     if (!talker) return sendError(res, 400, '缺少必要参数 talker')
 
@@ -257,7 +257,7 @@ const routes: Record<string, RouteHandler> = {
   },
 
   '/api/v1/group_snapshot': ({ res, url }) => {
-    if (!isReady()) return sendError(res, 503, 'WechatExplorer 数据库未初始化')
+    if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const md5 = url.searchParams.get('md5')
     if (!md5) return sendError(res, 400, '缺少必要参数 md5')
     const snapshot = getGroupSnapshot(md5)
@@ -266,7 +266,7 @@ const routes: Record<string, RouteHandler> = {
   },
 
   '/api/v1/resolve': ({ res, url }) => {
-    if (!isReady()) return sendError(res, 503, 'WechatExplorer 数据库未初始化')
+    if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const q = url.searchParams.get('q')
     if (!q) return sendError(res, 400, '缺少必要参数 q')
     const contact = resolveMd5(q)
@@ -276,7 +276,7 @@ const routes: Record<string, RouteHandler> = {
 
   '/api/v1/report': async ({ req, res, body }) => {
     if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
-    if (!isReady()) return sendError(res, 503, 'WechatExplorer 数据库未初始化')
+    if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     if (typeof body !== 'string' || !body.trim()) {
       return sendError(res, 400, '请求体为空,需 POST GroupReportExportRequest JSON')
     }
@@ -300,7 +300,7 @@ const routes: Record<string, RouteHandler> = {
 
   '/api/v1/agent/group-report': async ({ req, res, body }) => {
     if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
-    if (!isReady()) return sendError(res, 503, 'WechatExplorer 数据库未初始化')
+    if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     let request: { group?: string; range?: 'today' | 'yesterday' | '7days' }
     try {
       request = JSON.parse(typeof body === 'string' ? body : '{}')

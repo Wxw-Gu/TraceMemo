@@ -95,7 +95,7 @@ describe('Local API authentication', () => {
     const health = await fetch(`${baseUrl(handle)}/api/v1/health`)
     expect(health.status).toBe(200)
     const healthBody = await health.json()
-    expect(healthBody).toMatchObject({ ok: true, service: 'WechatExplorer Reader' })
+    expect(healthBody).toMatchObject({ ok: true, service: 'TraceMemo Reader' })
     expect(JSON.stringify(healthBody)).not.toMatch(
       /token|authorization|wxid|databasePath|provider/i
     )

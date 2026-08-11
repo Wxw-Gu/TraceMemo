@@ -8,14 +8,14 @@
 
 1. 确认下载的是 GitHub Releases 中的 Windows x64 `-setup.exe`，并已完成安装。
 2. 安装 [Microsoft Visual C++ x64 运行库](https://aka.ms/vc14/vc_redist.x64.exe)。
-3. 安装完成后重新启动 WechatExplorer；如果仍无响应，再重新运行安装包进行覆盖安装。
+3. 安装完成后重新启动 TraceMemo；如果仍无响应，再重新运行安装包进行覆盖安装。
 
 ### macOS
 
 - 提示“无法打开，因为开发者无法验证”时，前往“系统设置 → 隐私与安全性”并点击“仍要打开”。
-- 提示应用已损坏时，确认应用位于“应用程序”目录，再执行 `xattr -cr "/Applications/WechatExplorer.app"`。
+- 提示应用已损坏时，确认应用位于“应用程序”目录，再执行 `xattr -cr "/Applications/TraceMemo.app"`。
 
-完整安装步骤见[第一次使用 WechatExplorer](./getting-started.md#2-安装并启动)。
+完整安装步骤见[第一次使用 TraceMemo](./getting-started.md#2-安装并启动)。
 
 ## 连接微信失败
 
@@ -69,7 +69,7 @@ AI Search 失败时可能仍保留部分来源；不要把部分结果当成完�
 
 确认：
 
-1. WechatExplorer 正在运行且 API Center 显示本地服务在线；
+1. TraceMemo 正在运行且 API Center 显示本地服务在线；
 2. Agent 使用的是当前 Reader Skill，而不是旧的 MCP 配置；
 3. 请求地址为 `http://127.0.0.1:6131`；
 4. 非 health 请求带有最新 `Authorization: Bearer <TOKEN>`；
@@ -91,4 +91,4 @@ Agent Hub 和外部 Agent 是两条路径。机器人异常时依次确认：
 
 ## 防撤回没有保留消息
 
-防撤回只能尽量保留开启后且应用成功捕获到的撤回变化。确认开启时数据库已经连接、WechatExplorer 在撤回发生时保持运行，并检查聊天加载是否明显变慢。开启前已经消失、应用未捕获或微信结构无法识别的消息不能保证恢复；详见[防撤回](./recall-protection.md)。
+防撤回只能尽量保留开启后且应用成功捕获到的撤回变化。确认开启时数据库已经连接、TraceMemo 在撤回发生时保持运行，并检查聊天加载是否明显变慢。开启前已经消失、应用未捕获或微信结构无法识别的消息不能保证恢复；详见[防撤回](./recall-protection.md)。

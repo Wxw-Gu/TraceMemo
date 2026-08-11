@@ -455,7 +455,7 @@ class AgentHubService {
 
   private async replyRecentChats(inbound: InboundMessage, limit: number): Promise<void> {
     if (!isReady()) {
-      await this.sendConnector(inbound, 'WechatExplorer 本地数据库尚未连接，请连接后再试。')
+      await this.sendConnector(inbound, 'TraceMemo 本地数据库尚未连接，请连接后再试。')
       return
     }
     const items = listRecentChat(limit)
@@ -474,7 +474,7 @@ class AgentHubService {
     const result = await agentAIProvider.chat([
       {
         role: 'system',
-        content: `你是 WechatExplorer 微信机器人的意图理解器。只能输出一行 JSON，不要 Markdown。
+        content: `你是 TraceMemo 微信机器人的意图理解器。只能输出一行 JSON，不要 Markdown。
 支持的工具：
 1. recent：查看最近会话，参数 limit 为 1-20。
 2. contact：查看我与某个联系人的最近聊天，参数 contact 和 limit。
@@ -544,7 +544,7 @@ class AgentHubService {
     intent: ContactChatIntent
   ): Promise<void> {
     if (!isReady()) {
-      await this.sendConnector(inbound, 'WechatExplorer 本地数据库尚未连接，请连接后再试。')
+      await this.sendConnector(inbound, 'TraceMemo 本地数据库尚未连接，请连接后再试。')
       return
     }
 
@@ -580,7 +580,7 @@ class AgentHubService {
   ): Promise<void> {
     try {
       if (!isReady()) {
-        await this.sendConnector(inbound, 'WechatExplorer 本地数据库尚未连接，请连接后再试。')
+        await this.sendConnector(inbound, 'TraceMemo 本地数据库尚未连接，请连接后再试。')
         return
       }
       const contact = resolveMd5(intent.contact)
@@ -642,7 +642,7 @@ class AgentHubService {
   ): Promise<void> {
     try {
       if (!isReady()) {
-        await this.sendConnector(inbound, 'WechatExplorer 本地数据库尚未连接，请连接后再试。')
+        await this.sendConnector(inbound, 'TraceMemo 本地数据库尚未连接，请连接后再试。')
         return
       }
       const group = this.resolveGroup(intent.group)

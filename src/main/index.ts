@@ -1,3 +1,4 @@
+import './app-data-bootstrap'
 import './preload-env'
 import {
   app,
@@ -272,17 +273,6 @@ protocol.registerSchemesAsPrivileged([
   }
 ])
 
-// WCDB's Windows runtime checks the host application name during wcdb_init.
-// Mirroring WeFlow's name unblocks the -1006 init failure on Windows.
-app.setName(
-  process.platform === 'win32'
-    ? 'WeFlow'
-    : process.env['WXE_USER_DATA']
-      ? 'WechatExplorer Dev'
-      : 'WechatExplorer'
-)
-const isolatedUserData = process.env['WXE_USER_DATA']
-if (isolatedUserData) app.setPath('userData', isolatedUserData)
 let dbInitInFlight: Promise<{ success: boolean; monitoring?: boolean; error?: string }> | null =
   null
 let appShutdownRequested = false
@@ -435,7 +425,7 @@ function createWindow(): void {
     void dialog
       .showMessageBox(mainWindow, {
         type: 'question',
-        title: '关闭 WechatExplorer',
+        title: '关闭 TraceMemo',
         message: '请选择关闭方式',
         detail: '你可以将窗口隐藏到系统托盘，或退出整个应用进程。',
         buttons: ['最小化到系统托盘', '关闭进程', '取消'],
@@ -516,11 +506,11 @@ app.whenReady().then(async () => {
       return new Response('Media unavailable', { status: 500 })
     }
   })
-  console.log(`WechatExplorer main build: ${BUILD_MARK}`)
+  console.log(`TraceMemo main build: ${BUILD_MARK}`)
   appLogger.write({
     level: 'info',
     scope: 'lifecycle',
-    message: 'WechatExplorer 启动',
+    message: 'TraceMemo 启动',
     details: { build: BUILD_MARK, platform: process.platform, version: app.getVersion() }
   })
   process.on('uncaughtException', (error) => {
@@ -1695,7 +1685,7 @@ function buildTrayMenu(): Menu {
     },
     { type: 'separator' },
     {
-      label: '退出 WechatExplorer',
+      label: '退出 TraceMemo',
       click: () => {
         tray?.destroy()
         tray = null
@@ -1714,7 +1704,7 @@ function setupTray(): void {
       ? nativeImage.createEmpty()
       : image.resize({ width: traySize, height: traySize, quality: 'best' })
     tray = new Tray(trayImage)
-    tray.setToolTip('WechatExplorer')
+    tray.setToolTip('TraceMemo')
     // macOS may show a Tray context menu on a primary click when it is set
     // directly on the Tray. Keep the menu for an explicit secondary click so
     // the primary click only restores the main window.

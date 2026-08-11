@@ -33,5 +33,5 @@ try {
   process.env.WEFLOW_PROJECT_NAME = process.env.WEFLOW_PROJECT_NAME || 'WeFlow'
   prependPath(dllDirs.filter((dir) => fs.existsSync(dir)))
 } catch (error) {
-  console.error('[WechatExplorer] failed to enforce local DLL priority:', error)
+  console.error('[TraceMemo] failed to enforce local DLL priority:', error)
 }
