@@ -286,6 +286,7 @@ if (isolatedUserData) app.setPath('userData', isolatedUserData)
 let dbInitInFlight: Promise<{ success: boolean; monitoring?: boolean; error?: string }> | null =
   null
 let appShutdownRequested = false
+let isQuitting = false
 const BUILD_MARK = 'wechat4-local-http-api-2026-07-03'
 const TRAY_MODE =
   process.argv.includes('--tray') || (process.env['WXE_TRAY'] || '').toString() === '1'
@@ -420,9 +421,46 @@ function createWindow(): void {
       sandbox: false
     }
   })
+  let closePromptInFlight = false
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+  })
+
+  mainWindow.on('close', (event) => {
+    if (isQuitting || appShutdownRequested) return
+    event.preventDefault()
+    if (closePromptInFlight) return
+    closePromptInFlight = true
+    void dialog
+      .showMessageBox(mainWindow, {
+        type: 'question',
+        title: '关闭 WechatExplorer',
+        message: '请选择关闭方式',
+        detail: '你可以将窗口隐藏到系统托盘，或退出整个应用进程。',
+        buttons: ['最小化到系统托盘', '关闭进程', '取消'],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true
+      })
+      .then(({ response }) => {
+        if (response === 0) {
+          setupTray()
+          mainWindow.hide()
+          if (process.platform === 'darwin') app.dock?.hide()
+          return
+        }
+        if (response === 1) {
+          isQuitting = true
+          app.quit()
+        }
+      })
+      .catch((error) => {
+        console.warn('[Window] close prompt failed:', error)
+      })
+      .finally(() => {
+        closePromptInFlight = false
+      })
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -1572,10 +1610,8 @@ app.whenReady().then(async () => {
 
   await agentHubService.start(settings)
 
-  if (TRAY_MODE) {
-    app.dock?.hide()
-    setupTray()
-  }
+  setupTray()
+  if (TRAY_MODE) app.dock?.hide()
 
   app.on('activate', function () {
     // 在 macOS 上点击 Dock 图标且没有其他窗口打开时，
@@ -1599,6 +1635,7 @@ let quitCleanupComplete = false
 
 app.on('before-quit', (event) => {
   if (quitCleanupComplete) return
+  isQuitting = true
   appShutdownRequested = true
   event.preventDefault()
   if (quitCleanupStarted) return
@@ -1638,7 +1675,7 @@ app.on('before-quit', (event) => {
 })
 
 function showMainWindow(): void {
-  if (TRAY_MODE) app.dock?.show().catch(() => undefined)
+  if (process.platform === 'darwin') app.dock?.show().catch(() => undefined)
   const wins = BrowserWindow.getAllWindows()
   if (wins.length === 0) {
     createWindow()
@@ -1654,10 +1691,6 @@ function buildTrayMenu(): Menu {
   return Menu.buildFromTemplate([
     {
       label: '打开主窗口',
-      click: () => showMainWindow()
-    },
-    {
-      label: 'API 状态',
       click: () => showMainWindow()
     },
     { type: 'separator' },
@@ -1682,8 +1715,11 @@ function setupTray(): void {
       : image.resize({ width: traySize, height: traySize, quality: 'best' })
     tray = new Tray(trayImage)
     tray.setToolTip('WechatExplorer')
-    tray.setContextMenu(buildTrayMenu())
+    // macOS may show a Tray context menu on a primary click when it is set
+    // directly on the Tray. Keep the menu for an explicit secondary click so
+    // the primary click only restores the main window.
     tray.on('click', () => showMainWindow())
+    tray.on('right-click', () => tray?.popUpContextMenu(buildTrayMenu()))
   } catch (error) {
     console.warn('[Tray] Failed to create tray:', error)
   }
