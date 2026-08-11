@@ -1,4 +1,4 @@
-import './app-data-bootstrap'
+import { userDataSelection } from './app-data-bootstrap'
 import './preload-env'
 import {
   app,
@@ -512,6 +512,26 @@ app.whenReady().then(async () => {
     scope: 'lifecycle',
     message: 'TraceMemo 启动',
     details: { build: BUILD_MARK, platform: process.platform, version: app.getVersion() }
+  })
+  appLogger.write({
+    level: userDataSelection.legacyConflict ? 'warn' : 'info',
+    scope: 'app-data-bootstrap',
+    message: userDataSelection.legacyConflict
+      ? '检测到两个独立的 legacy userData，已按兼容优先级选择 WechatExplorer'
+      : 'userData 路径选择完成',
+    details: {
+      selectedPath: userDataSelection.selected,
+      selectedKind: userDataSelection.selectedKind,
+      reason: userDataSelection.reason,
+      legacyExists: userDataSelection.directories.legacy,
+      legacyPackageExists: userDataSelection.directories.legacyPackage,
+      currentExists: userDataSelection.directories.current,
+      legacyAssets: userDataSelection.assets.legacy,
+      legacyPackageAssets: userDataSelection.assets.legacyPackage,
+      currentAssets: userDataSelection.assets.current,
+      legacyRootsEquivalent: userDataSelection.legacyRootsEquivalent,
+      legacyConflict: userDataSelection.legacyConflict
+    }
   })
   process.on('uncaughtException', (error) => {
     appLogger.write({

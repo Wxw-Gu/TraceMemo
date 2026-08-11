@@ -2,7 +2,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { chooseUserDataRoot, getUserDataRoots, hasValidUserAssets } from '../../src/main/app-data-paths'
+import {
+  chooseUserDataRoot,
+  getUserDataRoots,
+  hasValidUserAssets,
+  selectUserDataRoot,
+  type UserDataRoots
+} from '../../src/main/app-data-paths'
 
 let root = ''
 
@@ -23,12 +29,84 @@ function writeMarker(filePath: string): void {
   writeFileSync(filePath, 'fixture')
 }
 
+function selectWithAssets(
+  roots: UserDataRoots,
+  validRoots: string[],
+  legacyRootsEquivalent = false
+): ReturnType<typeof selectUserDataRoot> {
+  return selectUserDataRoot(roots, {
+    directoryExists: (candidate) => validRoots.includes(candidate),
+    hasAssets: (candidate) => validRoots.includes(candidate),
+    areSameDirectory: () => legacyRootsEquivalent
+  })
+}
+
 describe('app data compatibility root selection', () => {
   it('chooses the new root for a clean install', () => {
     const roots = fixtureRoots()
     expect(hasValidUserAssets(roots.legacy)).toBe(false)
     expect(hasValidUserAssets(roots.current)).toBe(false)
     expect(chooseUserDataRoot(roots)).toBe(roots.current)
+  })
+
+  it('chooses WechatExplorer when only the display-name legacy root exists', () => {
+    const roots = fixtureRoots()
+    const selection = selectWithAssets(roots, [roots.legacy])
+    expect(selection).toMatchObject({
+      selected: roots.legacy,
+      selectedKind: 'legacy-display',
+      reason: 'legacy-display-assets',
+      directories: { legacy: true, legacyPackage: false, current: false },
+      legacyConflict: false
+    })
+  })
+
+  it('chooses wechatexplorer when only the v2.1.9 package-name legacy root exists', () => {
+    const roots = fixtureRoots()
+    const selection = selectWithAssets(roots, [roots.legacyPackage])
+    expect(selection).toMatchObject({
+      selected: roots.legacyPackage,
+      selectedKind: 'legacy-package',
+      reason: 'legacy-package-assets',
+      directories: { legacy: false, legacyPackage: true, current: false },
+      legacyConflict: false
+    })
+  })
+
+  it('chooses WechatExplorer deterministically and reports a conflict when both exist', () => {
+    const roots = fixtureRoots()
+    const selection = selectWithAssets(roots, [roots.legacy, roots.legacyPackage])
+    expect(selection).toMatchObject({
+      selected: roots.legacy,
+      selectedKind: 'legacy-display',
+      reason: 'legacy-conflict-display-preferred',
+      directories: { legacy: true, legacyPackage: true, current: false },
+      legacyRootsEquivalent: false,
+      legacyConflict: true
+    })
+  })
+
+  it('chooses tracememo when neither legacy root exists', () => {
+    const roots = fixtureRoots()
+    const selection = selectWithAssets(roots, [])
+    expect(selection).toMatchObject({
+      selected: roots.current,
+      selectedKind: 'current',
+      reason: 'clean-install',
+      directories: { legacy: false, legacyPackage: false, current: false },
+      legacyConflict: false
+    })
+  })
+
+  it('does not report a conflict when both legacy spellings resolve to one directory', () => {
+    const roots = fixtureRoots()
+    const selection = selectWithAssets(roots, [roots.legacy, roots.legacyPackage], true)
+    expect(selection).toMatchObject({
+      selected: roots.legacy,
+      reason: 'legacy-shared-assets',
+      legacyRootsEquivalent: true,
+      legacyConflict: false
+    })
   })
 
   it('ignores runtime-only Chromium files', () => {

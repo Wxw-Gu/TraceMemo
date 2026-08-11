@@ -1,10 +1,6 @@
 import { app } from 'electron'
 import path from 'path'
-import {
-  chooseUserDataRoot,
-  getUserDataRoots,
-  LEGACY_USER_DATA_NAME
-} from './app-data-paths'
+import { getUserDataRoots, LEGACY_USER_DATA_NAME, selectUserDataRoot } from './app-data-paths'
 
 // This module must remain the first main-process import. Static imports in
 // settings/cache services can otherwise resolve Electron paths before the
@@ -13,10 +9,11 @@ app.setName(process.platform === 'win32' ? 'WeFlow' : LEGACY_USER_DATA_NAME)
 
 const isolatedUserData = process.env['WXE_USER_DATA']
 const roots = getUserDataRoots(app.getPath('appData'))
-const selectedUserData = chooseUserDataRoot({
+const userDataSelection = selectUserDataRoot({
   ...roots,
   isolated: isolatedUserData
 })
+const selectedUserData = userDataSelection.selected
 
 app.setPath('userData', selectedUserData)
 app.setPath('sessionData', selectedUserData)
@@ -28,4 +25,4 @@ if (process.platform === 'darwin') {
   app.setPath('logs', path.join(app.getPath('home'), 'Library', 'Logs', 'TraceMemo'))
 }
 
-export { roots, selectedUserData }
+export { roots, selectedUserData, userDataSelection }
