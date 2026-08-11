@@ -69,6 +69,17 @@
         gap: 3px;
         flex: 0 0 auto;
       }
+      .avatar-grid.avatar-count-1 {
+        width: 28px;
+        height: 28px;
+        grid-template-columns: 1fr;
+      }
+      .avatar-grid.avatar-count-2 {
+        height: 28px;
+      }
+      .avatar-grid.empty-section {
+        display: none;
+      }
       .avatar-grid img,
       .avatar {
         width: 100%;
@@ -695,7 +706,7 @@
             <h1>{{GROUP_NAME}}日报</h1>
             <div class="sub">{{DATE_RANGE}}<br />{{RECORD_NOTE}}</div>
           </div>
-          <div class="avatar-grid">{{HERO_AVATARS}}</div>
+          <div class="avatar-grid {{HERO_AVATAR_CLASS}}">{{HERO_AVATARS}}</div>
         </div>
         <div class="hero-headline">
           <b>{{HERO_HEADLINE}}</b>

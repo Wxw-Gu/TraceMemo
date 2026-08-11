@@ -76,6 +76,17 @@
         gap: 3px;
         flex: 0 0 auto;
       }
+      .avatar-grid.avatar-count-1 {
+        width: 28px;
+        height: 28px;
+        grid-template-columns: 1fr;
+      }
+      .avatar-grid.avatar-count-2 {
+        height: 28px;
+      }
+      .avatar-grid.empty-section {
+        display: none;
+      }
       .avatar-grid img,
       .avatar {
         width: 100%;
@@ -523,7 +534,7 @@
               <div class="overview">{{OVERVIEW}}</div>
             </div>
           </div>
-          <div class="avatar-grid">{{HERO_AVATARS}}</div>
+          <div class="avatar-grid {{HERO_AVATAR_CLASS}}">{{HERO_AVATARS}}</div>
         </div>
         <div class="stats">
           <div class="stat"><b>{{MESSAGE_COUNT}}</b><span>消息数</span></div>

@@ -2,7 +2,8 @@ import type { Message } from '../../../shared/types'
 import type {
   VoiceMessageReference,
   VoiceModelStatus,
-  VoiceRecognitionResult
+  VoiceRecognitionResult,
+  VoiceTranscriptSnapshot
 } from '../../../shared/voice-recognition'
 
 export interface VoiceTranscriptionProgress {
@@ -14,6 +15,7 @@ export interface VoiceTranscriptionProgress {
 
 interface VoiceTranscriptionDependencies {
   getModelStatus: () => Promise<VoiceModelStatus>
+  getCachedTranscript?: (reference: VoiceMessageReference) => Promise<VoiceTranscriptSnapshot>
   recognize: (reference: VoiceMessageReference) => Promise<VoiceRecognitionResult>
   onProgress: (progress: VoiceTranscriptionProgress) => void
 }
@@ -52,18 +54,12 @@ export async function transcribeVoiceMessages(
   }
   dependencies.onProgress({ ...progress })
 
-  const hasPendingVoice = voiceItems.some(
-    (item) => item.reference && !item.message.voiceTranscript?.trim()
-  )
-  if (hasPendingVoice) {
-    const modelStatus = await dependencies.getModelStatus()
-    if (modelStatus.state !== 'ready') {
-      throw new Error('请先在设置中准备离线语音识别模型，再生成包含语音转写的日报')
-    }
-  }
-
   const result = messages.map((message) => ({ ...message }))
+  const pendingItems: typeof voiceItems = []
   for (const item of voiceItems) {
+    if (!result[item.index].contentData) {
+      result[item.index].contentData = { type: 'voice' }
+    }
     const cachedTranscript = item.message.voiceTranscript?.trim()
     if (cachedTranscript) {
       result[item.index].voiceTranscript = cachedTranscript
@@ -72,19 +68,40 @@ export async function transcribeVoiceMessages(
       result[item.index].voiceTranscriptError = '语音标识不完整，无法定位本地语音'
       progress.failed += 1
     } else {
-      const recognition = await dependencies.recognize(item.reference)
-      const transcript = recognition.transcript?.trim()
-      if (recognition.success && transcript) {
-        result[item.index].voiceTranscript = transcript
+      const snapshot = await dependencies.getCachedTranscript?.(item.reference)
+      if (snapshot?.state === 'transcribed' && snapshot.transcript?.trim()) {
+        result[item.index].voiceTranscript = snapshot.transcript.trim()
         result[item.index].voiceTranscriptError = undefined
         progress.succeeded += 1
       } else {
-        result[item.index].voiceTranscriptError = recognition.error || '语音转写失败'
-        progress.failed += 1
+        pendingItems.push(item)
+        continue
       }
     }
     progress.processed += 1
     dependencies.onProgress({ ...progress })
+  }
+
+  if (pendingItems.length) {
+    const modelStatus = await dependencies.getModelStatus()
+    if (modelStatus.state !== 'ready') {
+      throw new Error('请先在设置中准备离线语音识别模型，再生成包含语音转写的日报')
+    }
+  }
+
+  for (const item of pendingItems) {
+    const recognition = await dependencies.recognize(item.reference!)
+    const transcript = recognition.transcript?.trim()
+    if (recognition.success && transcript) {
+      result[item.index].voiceTranscript = transcript
+      result[item.index].voiceTranscriptError = undefined
+      progress.succeeded += 1
+    } else {
+      result[item.index].voiceTranscriptError = recognition.error || '语音转写失败'
+      progress.failed += 1
+    }
+    dependencies.onProgress({ ...progress, processed: progress.processed + 1 })
+    progress.processed += 1
   }
   return result
 }

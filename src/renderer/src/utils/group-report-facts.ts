@@ -76,11 +76,15 @@ function friendlyImageNotice(warnings: string[]): string {
 export const isInternalIdentifier = (value: string): boolean =>
   /@chatroom$/i.test(value) || /^wxid_/i.test(value) || /^[a-z0-9_-]{18,}$/i.test(value)
 
+const isSystemMessage = (message: Message): boolean =>
+  message.from === 'system' || message.type === '系统消息' || message.contentData?.type === 'system'
+
 export const summarySender = (
   message: Message,
   contact: Contact | null,
   isGroup: boolean
 ): string => {
+  if (isSystemMessage(message)) return '微信系统消息'
   if (message.from === 'assistant') {
     const ownGroupNickname = message.name?.trim()
     if (isGroup && ownGroupNickname && !isInternalIdentifier(ownGroupNickname)) {
@@ -95,6 +99,11 @@ export const summarySender = (
 
 export const summaryContent = (message: Message): string => {
   const data = message.contentData
+  if (message.type === '语音' || data?.type === 'voice') {
+    return message.voiceTranscript?.trim()
+      ? `[语音${data?.type === 'voice' && data.duration ? ` ${data.duration}秒` : ''}] ${message.voiceTranscript.trim()}`
+      : `[语音${data?.type === 'voice' && data.duration ? ` ${data.duration}秒` : ''}]`
+  }
   if (!data) return message.content?.trim() || `[${message.type || '消息'}]`
 
   switch (data.type) {
@@ -102,10 +111,6 @@ export const summaryContent = (message: Message): string => {
       return '[图片]'
     case 'sticker':
       return '[表情]'
-    case 'voice':
-      return message.voiceTranscript?.trim()
-        ? `[语音${data.duration ? ` ${data.duration}秒` : ''}] ${message.voiceTranscript.trim()}`
-        : `[语音${data.duration ? ` ${data.duration}秒` : ''}]`
     case 'share':
       return data.articles?.length
         ? `[分享] ${data.articles
@@ -588,12 +593,14 @@ export const buildGroupReportFacts = async (
   for (const message of messages) {
     const sender = summarySender(message, contact, isGroup)
     const timestamp = parseTimestamp(message)
-    speakerCounts.set(sender, (speakerCounts.get(sender) || 0) + 1)
+    if (!isSystemMessage(message)) {
+      speakerCounts.set(sender, (speakerCounts.get(sender) || 0) + 1)
+      if (message.img && !avatars[sender]) avatars[sender] = message.img
+    }
     if (Number.isFinite(timestamp)) {
       const hour = new Date(timestamp).getHours()
       hourCounts.set(hour, (hourCounts.get(hour) || 0) + 1)
     }
-    if (message.img && !avatars[sender]) avatars[sender] = message.img
     if (message.contentData?.type === 'image') imageCount += 1
     if (message.contentData?.type === 'sticker') stickerCount += 1
     if (message.contentData?.type === 'voice') {

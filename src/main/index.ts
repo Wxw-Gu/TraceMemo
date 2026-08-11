@@ -1114,6 +1114,10 @@ app.whenReady().then(async () => {
     return voiceRecognition.recognize(reference)
   })
 
+  ipcMain.handle('voice:getTranscriptSnapshot', (_, reference: VoiceMessageReference) => {
+    return voiceRecognition?.getTranscriptSnapshot(reference) || { state: 'pending' as const }
+  })
+
   ipcMain.handle('voice:getBatchPreflight', (_, request: VoiceBatchRequest) => {
     if (!voiceBatchService) throw new Error('Voice recognition is not initialized')
     return voiceBatchService.preflight(request)

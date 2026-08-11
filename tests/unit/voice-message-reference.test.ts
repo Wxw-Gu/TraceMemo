@@ -74,6 +74,20 @@ describe('daily report voice transcription', () => {
     })
   })
 
+  it('normalizes legacy voice messages without contentData for report facts', async () => {
+    const legacy = { ...voice('legacy', 4), contentData: undefined }
+    const result = await transcribeVoiceMessages([legacy], {
+      getModelStatus: vi.fn(async () => status('ready')),
+      recognize: vi.fn(async () => ({ success: true, transcript: '日报语音内容' })),
+      onProgress: vi.fn()
+    })
+
+    expect(result[0]).toMatchObject({
+      voiceTranscript: '日报语音内容',
+      contentData: { type: 'voice' }
+    })
+  })
+
   it('does not require the model when every transcript is cached', async () => {
     const getModelStatus = vi.fn(async () => status('missing'))
     const recognize = vi.fn()
@@ -84,6 +98,26 @@ describe('daily report voice transcription', () => {
     })
 
     expect(result[0].voiceTranscript).toBe('已有文本')
+    expect(getModelStatus).not.toHaveBeenCalled()
+    expect(recognize).not.toHaveBeenCalled()
+  })
+
+  it('hydrates persisted transcript cache before invoking recognition', async () => {
+    const getModelStatus = vi.fn(async () => status('missing'))
+    const getCachedTranscript = vi.fn(async () => ({
+      state: 'transcribed' as const,
+      transcript: '持久化缓存内容'
+    }))
+    const recognize = vi.fn()
+    const result = await transcribeVoiceMessages([voice('persisted', 8)], {
+      getModelStatus,
+      getCachedTranscript,
+      recognize,
+      onProgress: vi.fn()
+    })
+
+    expect(result[0].voiceTranscript).toBe('持久化缓存内容')
+    expect(getCachedTranscript).toHaveBeenCalledOnce()
     expect(getModelStatus).not.toHaveBeenCalled()
     expect(recognize).not.toHaveBeenCalled()
   })

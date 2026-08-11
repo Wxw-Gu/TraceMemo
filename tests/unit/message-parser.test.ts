@@ -8,6 +8,7 @@ describe('message parser', () => {
       md5: '0123456789abcdef0123456789abcdef'
     })
     expect(parseMessageContent('voice fixture', 34)).toEqual({ type: 'voice' })
+    expect(parseMessageContent('', 34)).toEqual({ type: 'voice' })
     expect(
       parseMessageContent(
         '<emoji md5="abcdefabcdefabcdefabcdefabcdefab" cdnurl="https://fixture.invalid/a" />',

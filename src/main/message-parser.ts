@@ -123,6 +123,9 @@ export type ParsedContent =
   | UnknownContent
 
 export function parseMessageContent(content: string, messageType: number): ParsedContent {
+  // Voice rows may keep their binary payload outside msgContent, so an empty
+  // content string is still a valid voice message.
+  if (messageType === 34) return { type: 'voice' }
   if (!content || typeof content !== 'string') {
     return { type: 'unknown', raw: content || '' }
   }
@@ -132,8 +135,6 @@ export function parseMessageContent(content: string, messageType: number): Parse
   switch (messageType) {
     case 1:
       return { type: 'text', content: normalized }
-    case 34:
-      return { type: 'voice' }
     case 3:
       return parseImageMessage(normalized)
     case 42:
@@ -490,8 +491,7 @@ function parseShareMessage(content: string): ParsedContent {
   }
 
   const articles = parseShareArticles(content)
-  const title =
-    articles[0]?.title || decodeXmlEntities(extractXmlValue(content, 'title')) || ''
+  const title = articles[0]?.title || decodeXmlEntities(extractXmlValue(content, 'title')) || ''
   const des =
     articles[0]?.description ||
     decodeXmlEntities(extractXmlValue(content, 'des') || extractXmlValue(content, 'desc')) ||
