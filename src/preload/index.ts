@@ -34,7 +34,8 @@ import type {
   VoiceModelDownloadResult,
   VoiceModelProgressEvent,
   VoiceModelStatus,
-  VoiceRecognitionResult
+  VoiceRecognitionResult,
+  VoiceTranscriptSnapshot
 } from '../shared/voice-recognition'
 import type {
   AiSearchCancelResult,
@@ -139,6 +140,10 @@ const api = {
     ipcRenderer.invoke('voice:openModelDirectory'),
   recognizeVoice: (reference: VoiceMessageReference): Promise<VoiceRecognitionResult> =>
     ipcRenderer.invoke('voice:recognize', reference),
+  getVoiceTranscriptSnapshot: (
+    reference: VoiceMessageReference
+  ): Promise<VoiceTranscriptSnapshot> =>
+    ipcRenderer.invoke('voice:getTranscriptSnapshot', reference),
   cancelVoiceRecognition: (reference: VoiceMessageReference): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('voice:cancelRecognition', reference),
   getVoiceBatchPreflight: (request: VoiceBatchRequest): Promise<VoiceBatchPreflight> =>

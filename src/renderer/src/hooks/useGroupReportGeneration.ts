@@ -387,6 +387,8 @@ export function useGroupReportGeneration({
             window.api.getVoiceModelStatus(),
             '检查语音模型'
           ) as Promise<VoiceModelStatus>,
+        getCachedTranscript: (reference) =>
+          withTimeout(window.api.getVoiceTranscriptSnapshot(reference), '读取语音缓存'),
         recognize: (reference) => withTimeout(window.api.recognizeVoice(reference), '语音转写'),
         onProgress: setVoiceTranscriptionProgress
       })

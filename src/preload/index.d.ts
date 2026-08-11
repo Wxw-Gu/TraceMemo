@@ -58,7 +58,8 @@ import type {
   VoiceModelDownloadResult,
   VoiceModelProgressEvent,
   VoiceModelStatus,
-  VoiceRecognitionResult
+  VoiceRecognitionResult,
+  VoiceTranscriptSnapshot
 } from '../shared/voice-recognition'
 import type {
   AiSearchCancelResult,
@@ -247,6 +248,9 @@ declare global {
       removeVoiceModel: () => Promise<VoiceModelStatus>
       openVoiceModelDirectory: () => Promise<{ success: boolean; error?: string }>
       recognizeVoice: (reference: VoiceMessageReference) => Promise<VoiceRecognitionResult>
+      getVoiceTranscriptSnapshot: (
+        reference: VoiceMessageReference
+      ) => Promise<VoiceTranscriptSnapshot>
       cancelVoiceRecognition: (reference: VoiceMessageReference) => Promise<{ success: boolean }>
       getVoiceBatchPreflight: (request: VoiceBatchRequest) => Promise<VoiceBatchPreflight>
       getVoiceBatchConversationSummaries: (

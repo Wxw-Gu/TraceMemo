@@ -301,7 +301,7 @@ function listSourceMessages(
       /<appmsg\b|<refermsg\b|&lt;appmsg\b|&lt;refermsg\b/i.test(content)
         ? 49
         : msgType
-    if (!isPatMessage && [3, 42, 43, 47, 48, 49, 50, 10000, 10002].includes(inferredMsgType)) {
+    if (!isPatMessage && [3, 34, 42, 43, 47, 48, 49, 50, 10000, 10002].includes(inferredMsgType)) {
       try {
         const isQuotePayload = /<refermsg\b/i.test(content)
         const hasStickerPayload =

@@ -1,5 +1,9 @@
 export type ReportHeat = '高' | '中' | '低'
 export type ReportMode = 'compact' | 'full'
+
+export const selectHeroParticipantNames = (names: string[]): string[] =>
+  Array.from(new Set(names.map((name) => name.trim()).filter(Boolean))).slice(0, 4)
+
 export type ReportSectionKey =
   | 'hero'
   | 'topics'

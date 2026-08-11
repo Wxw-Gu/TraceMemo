@@ -7,7 +7,8 @@ import {
   GroupReportExportResult,
   GroupReportMetadata,
   ReportHeat,
-  ReportSectionMeta
+  ReportSectionMeta,
+  selectHeroParticipantNames
 } from '../shared/group-report'
 import { resolveMd5, getGroupSnapshot } from './services/chat-service'
 import { imageInsightService } from './services/image-insight-service'
@@ -186,11 +187,11 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
   )
   const avatar = (name: string): string => avatars.get(name) || fallbackAvatar(name)
 
-  const heroNames = metadata.heroParticipants.slice(0, 4)
-  while (heroNames.length < 4) heroNames.push(metadata.groupName)
+  const heroNames = selectHeroParticipantNames(metadata.heroParticipants)
   const heroAvatars = heroNames
     .map((name) => `<img src="${avatar(name)}" alt="${escapeHtml(name)}">`)
     .join('')
+  const heroAvatarClass = heroNames.length ? `avatar-count-${heroNames.length}` : 'empty-section'
 
   const topicCards = report.topics
     .map(
@@ -218,10 +219,18 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
                   if (insight) {
                     // insight 不含 imageUrl,需要按 md5/datName 重新拿;这里通过 ImageDecryptService 间接获取
                     // 走 ImageDecryptService.findImageFile + decryptImageToBase64
-                    const decryptService = (globalThis as { __imageDecrypt?: { findImageFile: (md5?: string, dat?: string) => string | null; decryptImageToBase64: (p: string) => string | null } }).__imageDecrypt
+                    const decryptService = (
+                      globalThis as {
+                        __imageDecrypt?: {
+                          findImageFile: (md5?: string, dat?: string) => string | null
+                          decryptImageToBase64: (p: string) => string | null
+                        }
+                      }
+                    ).__imageDecrypt
                     if (decryptService) {
                       const filePath = decryptService.findImageFile(insight.md5, insight.datName)
-                      if (filePath) imageUrl = decryptService.decryptImageToBase64(filePath) || undefined
+                      if (filePath)
+                        imageUrl = decryptService.decryptImageToBase64(filePath) || undefined
                     }
                   }
                 }
@@ -451,7 +460,9 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     DATE_RANGE: escapeHtml(metadata.dateRange),
     RECORD_NOTE: escapeHtml(metadata.recordNote),
     // v1 模板使用的 OVERVIEW(经典版以概览段落呈现)
-    OVERVIEW: escapeHtml(report.overview || report.hero?.summary || '基于已读取聊天记录生成的群聊日报'),
+    OVERVIEW: escapeHtml(
+      report.overview || report.hero?.summary || '基于已读取聊天记录生成的群聊日报'
+    ),
     // v2 模板使用的 hero-*
     HERO_HEADLINE: escapeHtml(report.hero?.headline || '今日群聊速览'),
     HERO_SUMMARY: escapeHtml(report.hero?.summary || report.overview),
@@ -462,6 +473,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     HERO_TAKEAWAY_EMPTY_CLASS: report.hero?.keyTakeaway ? '' : 'empty-section',
     HERO_PENDING_EMPTY_CLASS: report.hero?.pendingNote ? '' : 'empty-section',
     HERO_AVATARS: heroAvatars,
+    HERO_AVATAR_CLASS: heroAvatarClass,
     MESSAGE_COUNT: String(summaryStats.messageCount),
     ACTIVE_USERS: String(summaryStats.activeUsers),
     TIME_SPAN: escapeHtml(metadata.timeSpan || ''),
@@ -473,13 +485,21 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     RESOURCES_EMPTY_CLASS: sectionClass(request, 'resources', report.resources.length > 0),
     RESOURCE_ITEMS: resourceItems,
     RESOURCES_MORE_NOTE: overflowNote(request, 'resources'),
-    MESSAGES_EMPTY_CLASS: sectionClass(request, 'importantMessages', report.importantMessages.length > 0),
+    MESSAGES_EMPTY_CLASS: sectionClass(
+      request,
+      'importantMessages',
+      report.importantMessages.length > 0
+    ),
     IMPORTANT_MESSAGES: importantMessages,
     MESSAGES_MORE_NOTE: overflowNote(request, 'importantMessages'),
     QUOTES_EMPTY_CLASS: sectionClass(request, 'moments', report.quotes.length > 0),
     QUOTE_BLOCKS: quoteBlocks,
     QUOTES_MORE_NOTE: overflowNote(request, 'moments'),
-    ACTIONS_EMPTY_CLASS: sectionClass(request, 'actions', report.todos.length + report.unresolved.length > 0),
+    ACTIONS_EMPTY_CLASS: sectionClass(
+      request,
+      'actions',
+      report.todos.length + report.unresolved.length > 0
+    ),
     TODO_EMPTY_CLASS: report.todos.length ? '' : 'empty-section',
     TODO_CARDS: todoCards,
     UNRESOLVED_EMPTY_CLASS: report.unresolved?.length ? '' : 'empty-section',
@@ -511,7 +531,11 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     VOICE_EMPTY_CLASS: sectionClass(request, 'voices', report.media?.voiceHighlights?.length > 0),
     VOICE_CARDS: voiceCards,
     VOICE_MORE_NOTE: overflowNote(request, 'voices'),
-    VOICE_RANK_EMPTY_CLASS: sectionClass(request, 'voices', report.analytics.voiceLeaderboard?.length > 0),
+    VOICE_RANK_EMPTY_CLASS: sectionClass(
+      request,
+      'voices',
+      report.analytics.voiceLeaderboard?.length > 0
+    ),
     VOICE_RANK_CARDS: voiceRankCards,
     BADGES_EMPTY_CLASS: sectionClass(request, 'badges', report.media?.funBadges?.length > 0),
     BADGE_CARDS: badgeCards,
