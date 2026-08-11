@@ -1,5 +1,4 @@
-# Keep the legacy appId so existing userData directories and upgrades remain readable.
-appId: com.wechatexplorer.app
+appId: com.tracememo.app
 productName: TraceMemo
 afterPack: scripts/after-pack.cjs
 directories:
@@ -26,8 +25,8 @@ extraResources:
     to: resources
     filter:
       - '**/*'
-  - from: docs/skill/wechatexplorer-reader
-    to: skill/wechatexplorer-reader
+  - from: docs/skill/tracememo-reader
+    to: skill/tracememo-reader
     filter:
       - '**/*'
 win:
@@ -47,9 +46,8 @@ mac:
   icon: icon.icns
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
-    # The bundled WCDB bridge accepts Electron as its internal host name. The
-    # legacy bundle identifier remains unchanged for upgrade compatibility;
-    # the public display name is migrated to TraceMemo.
+    # The bundled WCDB bridge still uses Electron as its internal executable
+    # compatibility name; the public product and bundle identity are TraceMemo.
     CFBundleName: Electron
     CFBundleDisplayName: TraceMemo
     NSCameraUsageDescription: Application requests access to the device's camera.

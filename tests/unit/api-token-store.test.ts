@@ -62,4 +62,19 @@ describe('ApiTokenStore', () => {
     expect(fs.existsSync(filePath)).toBe(false)
     expect(store.revealToken().token).toBeUndefined()
   })
+
+  it('does not silently replace a legacy token when migration is deferred', () => {
+    const store = new ApiTokenStore(filePath)
+    store.setAutomaticGenerationBlocked('legacy token migration pending')
+
+    expect(store.ensureToken()).toMatchObject({
+      success: false,
+      hasToken: false,
+      error: 'legacy token migration pending'
+    })
+    expect(fs.existsSync(filePath)).toBe(false)
+
+    expect(store.rotateToken()).toMatchObject({ success: true, hasToken: true })
+    expect(fs.existsSync(filePath)).toBe(true)
+  })
 })

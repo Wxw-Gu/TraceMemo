@@ -3,7 +3,8 @@ import path from 'path'
 
 export const LEGACY_USER_DATA_NAME = 'WechatExplorer'
 export const LEGACY_PACKAGE_USER_DATA_NAME = 'wechatexplorer'
-export const CURRENT_USER_DATA_NAME = 'tracememo'
+export const CURRENT_USER_DATA_NAME = 'TraceMemo'
+export const TRACE_MEMO_RUNTIME_NAME = 'TraceMemo'
 
 export interface UserDataRoots {
   legacy: string
@@ -97,7 +98,7 @@ function hasKnowledgeDatabase(root: string): boolean {
   }
 }
 
-function isExistingDirectory(directoryPath: string): boolean {
+export function isExistingDirectory(directoryPath: string): boolean {
   try {
     return fs.statSync(directoryPath).isDirectory()
   } catch {
@@ -105,7 +106,7 @@ function isExistingDirectory(directoryPath: string): boolean {
   }
 }
 
-function areSameExistingDirectory(firstPath: string, secondPath: string): boolean {
+export function areSameExistingDirectory(firstPath: string, secondPath: string): boolean {
   try {
     const first = fs.statSync(firstPath)
     const second = fs.statSync(secondPath)

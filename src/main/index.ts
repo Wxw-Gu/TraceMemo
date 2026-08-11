@@ -1,4 +1,8 @@
-import { userDataSelection } from './app-data-bootstrap'
+import {
+  isLegacyMigrationHelper,
+  isUserDataIsolated,
+  roots as appDataRoots
+} from './app-data-bootstrap'
 import './preload-env'
 import {
   app,
@@ -116,6 +120,8 @@ import {
 } from '../shared/windows-runtime'
 import { KnowledgeSearchService } from './knowledge/knowledge-search-service'
 import { AiSearchPipelineService } from './services/ai-search-pipeline-service'
+import { runLegacySafeStorageHelper } from './legacy-safe-storage-helper'
+import { runFirstLaunchMigration } from './app-data-migration'
 
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
@@ -470,6 +476,74 @@ function createWindow(): void {
 // Electron 初始化完成并准备创建浏览器窗口后，将调用此方法
 // 某些 API 只能在此事件发生后使用
 app.whenReady().then(async () => {
+  if (isLegacyMigrationHelper) {
+    try {
+      runLegacySafeStorageHelper()
+      app.exit(0)
+    } catch {
+      app.exit(1)
+    }
+    return
+  }
+
+  try {
+    const migration = isUserDataIsolated ? null : await runFirstLaunchMigration(appDataRoots)
+    apiTokenStore.setAutomaticGenerationBlocked(migration?.tokenBlockReason)
+    if (!migration) {
+      appLogger.write({
+        level: 'info',
+        scope: 'app-data-migration',
+        message: '隔离 userData 已启用，跳过真实用户数据迁移'
+      })
+    } else {
+      appLogger.write({
+        level: migration.assessment.selection.legacyConflict ? 'warn' : 'info',
+        scope: 'app-data-migration',
+        message: migration.assessment.selection.legacyConflict
+          ? '检测到两个独立的 legacy userData，已按兼容优先级选择 WechatExplorer 作为迁移源'
+          : 'TraceMemo 数据身份检查完成',
+        details: {
+          action: migration.action,
+          reason: migration.assessment.reason,
+          sourceRoot: migration.assessment.sourceRoot,
+          targetRoot: appDataRoots.current,
+          legacyExists: migration.assessment.selection.directories.legacy,
+          legacyPackageExists: migration.assessment.selection.directories.legacyPackage,
+          legacyAssets: migration.assessment.selection.assets.legacy,
+          legacyPackageAssets: migration.assessment.selection.assets.legacyPackage,
+          legacyRootsEquivalent: migration.assessment.selection.legacyRootsEquivalent,
+          legacyConflict: migration.assessment.selection.legacyConflict,
+          migrationStatus: migration.execution?.state.status,
+          tokenGenerationBlocked: migration.tokenGenerationBlocked
+        }
+      })
+    }
+  } catch (error) {
+    const targetToken = join(appDataRoots.current, 'local-api-token.bin')
+    const legacyTokenExists = [appDataRoots.legacy, appDataRoots.legacyPackage].some((root) =>
+      existsSync(join(root, 'local-api-token.bin'))
+    )
+    if (!existsSync(targetToken) && legacyTokenExists) {
+      apiTokenStore.setAutomaticGenerationBlocked(
+        '旧版 API Token 迁移未完成，本地 API 已安全停用。请保留旧数据并重新启动迁移。'
+      )
+    }
+    appLogger.write({
+      level: 'error',
+      scope: 'app-data-migration',
+      message: 'TraceMemo 数据迁移初始化失败',
+      details: { error: error instanceof Error ? error.message : String(error) }
+    })
+    await dialog.showMessageBox({
+      type: 'warning',
+      title: 'TraceMemo 数据迁移',
+      message: '旧数据迁移未能启动',
+      detail:
+        '旧目录没有被修改或删除。请保留 WechatExplorer 数据并重新启动 TraceMemo；旧 API Token 不会被静默替换。',
+      buttons: ['好']
+    })
+  }
+
   voiceRecognition = new VoiceRecognitionUseCase({
     modelRoot: join(app.getPath('userData'), 'models', 'sensevoice-small-int8'),
     databasePath: join(app.getPath('userData'), 'cache', 'voice-transcripts.sqlite'),
@@ -513,26 +587,6 @@ app.whenReady().then(async () => {
     message: 'TraceMemo 启动',
     details: { build: BUILD_MARK, platform: process.platform, version: app.getVersion() }
   })
-  appLogger.write({
-    level: userDataSelection.legacyConflict ? 'warn' : 'info',
-    scope: 'app-data-bootstrap',
-    message: userDataSelection.legacyConflict
-      ? '检测到两个独立的 legacy userData，已按兼容优先级选择 WechatExplorer'
-      : 'userData 路径选择完成',
-    details: {
-      selectedPath: userDataSelection.selected,
-      selectedKind: userDataSelection.selectedKind,
-      reason: userDataSelection.reason,
-      legacyExists: userDataSelection.directories.legacy,
-      legacyPackageExists: userDataSelection.directories.legacyPackage,
-      currentExists: userDataSelection.directories.current,
-      legacyAssets: userDataSelection.assets.legacy,
-      legacyPackageAssets: userDataSelection.assets.legacyPackage,
-      currentAssets: userDataSelection.assets.current,
-      legacyRootsEquivalent: userDataSelection.legacyRootsEquivalent,
-      legacyConflict: userDataSelection.legacyConflict
-    }
-  })
   process.on('uncaughtException', (error) => {
     appLogger.write({
       level: 'error',
@@ -567,7 +621,7 @@ app.whenReady().then(async () => {
   })
 
   // 设置应用程序用户模型 ID
-  electronApp.setAppUserModelId('com.wechatexplorer.app')
+  electronApp.setAppUserModelId('com.tracememo.app')
 
   if (process.platform === 'darwin') app.dock?.setIcon(appIconPath)
 

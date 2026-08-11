@@ -56,7 +56,7 @@ TraceMemo 有两种不同的接入方式。微信机器人是普通用户可以�
 - [macOS 数据访问说明](./platform/macos.md)
 - [开发、测试与构建](./development/overview.md)
 - [本地启动排障](./development/local-startup-troubleshooting.md)
-- [v2.2.0 品牌升级与本地数据兼容](./agent/release-notes-v2.2.0.md)
+- [v2.2.0 正式品牌身份与安全升级迁移](./agent/release-notes-v2.2.0.md)
 - [v2.1.9 API 鉴权迁移说明](./agent/release-notes-v2.1.9.md)
 
 当前工作区版本：**2.2.0**。文档只描述当前代码已经实现的能力；版本兼容性、AI Provider 行为和媒体读取结果可能随系统、微信客户端和服务商变化。

@@ -106,7 +106,7 @@ function setPlistValue(plistPath, key, value) {
 }
 
 function validateReaderSkillRuntime(runtimeResources) {
-  const skillPath = path.join(runtimeResources, 'skill', 'wechatexplorer-reader', 'SKILL.md')
+  const skillPath = path.join(runtimeResources, 'skill', 'tracememo-reader', 'SKILL.md')
   if (!existsSync(skillPath)) {
     throw new Error(`Missing bundled TraceMemo Reader Skill: ${skillPath}`)
   }

@@ -8,7 +8,7 @@ Reader Skill 是一份给 Agent 的操作说明。安装后，Codex、Claude Cod
 
 Reader Skill 只负责“外部 Agent 主动查询历史微信数据”。它不负责二维码登录、监听微信实时消息、接收机器人消息或管理 Agent Hub。想让机器人收到微信消息后处理并回复，请阅读[Agent Hub](./agent-hub.md)。
 
-Reader Skill 的展示名称已迁移为 TraceMemo Reader；安装目录和 `WECHATEXPLORER_API_TOKEN` 环境变量仍保留历史兼容标识，以便旧 Agent 配置继续工作。
+正式 Reader Skill 名称和目录是 `tracememo-reader`，新安装使用 `TRACEMEMO_API_TOKEN`。已安装的旧 `wechatexplorer-reader` 可在 v2.2.0 兼容期内继续使用旧变量。
 
 ## 推荐安装流程
 
@@ -19,7 +19,7 @@ Reader Skill 的展示名称已迁移为 TraceMemo Reader；安装目录和 `WEC
 5. 在 API Center 复制 Token，在 Agent 自己的本地环境设置：
 
    ```bash
-   export WECHATEXPLORER_API_TOKEN="<YOUR_API_TOKEN>"
+   export TRACEMEMO_API_TOKEN="<YOUR_API_TOKEN>"
    ```
 
 6. 先执行 health 检查，再读取数据端点。
@@ -41,7 +41,7 @@ TraceMemo 不会自动把 Token 写进 Agent 配置。重新生成 Token 后，�
 ```bash
 curl http://127.0.0.1:6131/api/v1/health
 
-curl -H "Authorization: Bearer $WECHATEXPLORER_API_TOKEN" \
+curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
   "http://127.0.0.1:6131/api/v1/recent_chat?limit=20"
 ```
 

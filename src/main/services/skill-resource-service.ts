@@ -3,10 +3,12 @@ import { existsSync, promises as fs } from 'fs'
 import { dirname, join } from 'path'
 import { isPackagedRuntime } from '../runtime-mode'
 
-const SKILL_RELATIVE_PATH = join('skill', 'wechatexplorer-reader', 'SKILL.md')
-const GITHUB_URL =
-  'https://github.com/Wxw-Gu/WechatExplorer/tree/main/docs/skill/wechatexplorer-reader'
-const SKILL_VERSION = 'v1.1'
+const SKILL_RELATIVE_PATHS = [
+  join('skill', 'tracememo-reader', 'SKILL.md'),
+  join('skill', 'wechatexplorer-reader', 'SKILL.md')
+]
+const GITHUB_URL = 'https://github.com/Wxw-Gu/WechatExplorer/tree/main/docs/skill/tracememo-reader'
+const SKILL_VERSION = 'v1.2'
 
 type SkillResourceSource = 'development' | 'bundled'
 
@@ -54,19 +56,19 @@ function uniqueCandidates(candidates: SkillCandidate[]): SkillCandidate[] {
 
 export function getSkillCandidates(environment?: SkillPathEnvironment): SkillCandidate[] {
   const runtime = environment || currentEnvironment()
-  const developmentPaths = [
-    join(runtime.appPath, 'docs', SKILL_RELATIVE_PATH),
-    join(runtime.cwd, 'docs', SKILL_RELATIVE_PATH),
-    join(dirname(runtime.appPath), 'docs', SKILL_RELATIVE_PATH)
-  ]
+  const developmentPaths = SKILL_RELATIVE_PATHS.flatMap((relativePath) => [
+    join(runtime.appPath, 'docs', relativePath),
+    join(runtime.cwd, 'docs', relativePath),
+    join(dirname(runtime.appPath), 'docs', relativePath)
+  ])
   const execDirectory = dirname(runtime.execPath)
-  const bundledPaths = [
-    join(runtime.resourcesPath, SKILL_RELATIVE_PATH),
-    join(runtime.resourcesPath, 'resources', SKILL_RELATIVE_PATH),
-    join(dirname(runtime.appPath), SKILL_RELATIVE_PATH),
-    join(execDirectory, 'resources', SKILL_RELATIVE_PATH),
-    join(dirname(execDirectory), 'Resources', SKILL_RELATIVE_PATH)
-  ]
+  const bundledPaths = SKILL_RELATIVE_PATHS.flatMap((relativePath) => [
+    join(runtime.resourcesPath, relativePath),
+    join(runtime.resourcesPath, 'resources', relativePath),
+    join(dirname(runtime.appPath), relativePath),
+    join(execDirectory, 'resources', relativePath),
+    join(dirname(execDirectory), 'Resources', relativePath)
+  ])
   return uniqueCandidates(
     runtime.packaged
       ? bundledPaths.map((path) => ({ path, source: 'bundled' }))

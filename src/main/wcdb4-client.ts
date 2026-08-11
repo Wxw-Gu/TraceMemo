@@ -272,21 +272,38 @@ export function resolveWindowsNativeAccountRoot(
     .find((candidate) => candidate && isAsciiPath(candidate))
   if (!publicRoot || !isAsciiPath(publicRoot)) return accountRoot
 
-  // Preserve the legacy ASCII bridge path so existing junctions remain reusable.
-  const bridgeRoot = path.join(publicRoot, 'WechatExplorer', 'path-bridges')
-  const bridgePath = path.join(
-    bridgeRoot,
-    crypto
-      .createHash('sha256')
-      .update(path.resolve(accountRoot).toLowerCase())
-      .digest('hex')
-      .slice(0, 24)
-  )
+  const bridgeId = crypto
+    .createHash('sha256')
+    .update(path.resolve(accountRoot).toLowerCase())
+    .digest('hex')
+    .slice(0, 24)
+  const legacyBridgePath = path.join(publicRoot, 'WechatExplorer', 'path-bridges', bridgeId)
+  try {
+    if (fs.existsSync(legacyBridgePath)) {
+      const legacyTarget = fs.realpathSync.native(legacyBridgePath)
+      const canonicalAccountRoot = fs.realpathSync.native(accountRoot)
+      if (
+        path.resolve(legacyTarget).toLowerCase() ===
+        path.resolve(canonicalAccountRoot).toLowerCase()
+      ) {
+        return legacyBridgePath
+      }
+    }
+  } catch {
+    // An unreadable legacy junction is left untouched; TraceMemo creates its own bridge below.
+  }
+
+  const bridgeRoot = path.join(publicRoot, 'TraceMemo', 'path-bridges')
+  const bridgePath = path.join(bridgeRoot, bridgeId)
   try {
     fs.ensureDirSync(bridgeRoot)
     if (fs.existsSync(bridgePath)) {
       const existingTarget = fs.realpathSync.native(bridgePath)
-      if (path.resolve(existingTarget).toLowerCase() === path.resolve(accountRoot).toLowerCase()) {
+      const canonicalAccountRoot = fs.realpathSync.native(accountRoot)
+      if (
+        path.resolve(existingTarget).toLowerCase() ===
+        path.resolve(canonicalAccountRoot).toLowerCase()
+      ) {
         return bridgePath
       }
       fs.removeSync(bridgePath)

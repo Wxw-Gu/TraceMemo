@@ -33,7 +33,7 @@ export function buildSkillInstallInstruction({
     source.type === 'local'
       ? `${opening(target)}\n\n${source.directoryPath}\n\n请先阅读该目录中的 SKILL.md，然后调用：`
       : `请从以下地址安装 TraceMemo Reader Skill：\n\n${source.installUrl}\n\n阅读 SKILL.md 后，调用：`
-  return `${sourceText}\n\n${healthUrl}\n\n先调用公开的 health 接口验证服务。然后请用户在 TraceMemo → API Center → API Token 中点击“复制 Token”，并把 Token 配置为 Agent 本机环境变量 WECHATEXPLORER_API_TOKEN。读取联系人、会话或聊天记录时，必须发送 Authorization: Bearer $WECHATEXPLORER_API_TOKEN。此服务是 Local HTTP API，不是 MCP Server。安装完成后告诉我验证结果。`
+  return `${sourceText}\n\n${healthUrl}\n\n先调用公开的 health 接口验证服务。然后请用户在 TraceMemo → API Center → API Token 中点击“复制 Token”，并把 Token 配置为 Agent 本机环境变量 TRACEMEMO_API_TOKEN。读取联系人、会话或聊天记录时，必须发送 Authorization: Bearer $TRACEMEMO_API_TOKEN。若旧配置尚未升级，可兼容读取 WECHATEXPLORER_API_TOKEN，但新配置必须优先使用 TRACEMEMO_API_TOKEN。此服务是 Local HTTP API，不是 MCP Server。安装完成后告诉我验证结果。`
 }
 
 export function buildSkillVerificationPrompt(): string {

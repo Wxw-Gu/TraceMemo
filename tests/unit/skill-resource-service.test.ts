@@ -38,13 +38,13 @@ describe('Reader Skill resource resolution', () => {
   it('finds the repository Skill from the current working directory in development', () => {
     const root = fixtureRoot()
     const runtime = environment(root, false)
-    const skillPath = join(runtime.cwd, 'docs', 'skill', 'wechatexplorer-reader', 'SKILL.md')
+    const skillPath = join(runtime.cwd, 'docs', 'skill', 'tracememo-reader', 'SKILL.md')
     writeSkill(skillPath)
 
     expect(resolveSkillResourceStatus(runtime)).toMatchObject({
       available: true,
       source: 'development',
-      version: 'v1.1',
+      version: 'v1.2',
       filePath: skillPath,
       directoryPath: dirname(skillPath)
     })
@@ -63,12 +63,25 @@ describe('Reader Skill resource resolution', () => {
     expect(status).toMatchObject({
       available: true,
       source: 'development',
-      version: 'v1.1',
-      filePath: join(workspace, 'docs', 'skill', 'wechatexplorer-reader', 'SKILL.md')
+      version: 'v1.2',
+      filePath: join(workspace, 'docs', 'skill', 'tracememo-reader', 'SKILL.md')
     })
   })
 
   it('uses the extraResources Skill directory in a packaged runtime', () => {
+    const root = fixtureRoot()
+    const runtime = environment(root, true)
+    const skillPath = join(runtime.resourcesPath, 'skill', 'tracememo-reader', 'SKILL.md')
+    writeSkill(skillPath)
+
+    expect(resolveSkillResourceStatus(runtime)).toMatchObject({
+      available: true,
+      source: 'bundled',
+      filePath: skillPath
+    })
+  })
+
+  it('falls back to the legacy Skill directory for one compatibility release', () => {
     const root = fixtureRoot()
     const runtime = environment(root, true)
     const skillPath = join(runtime.resourcesPath, 'skill', 'wechatexplorer-reader', 'SKILL.md')

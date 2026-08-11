@@ -20,6 +20,7 @@ interface TokenReadResult {
 
 export class ApiTokenStore {
   private cachedToken: string | null = null
+  private automaticGenerationBlockedReason: string | null = null
 
   constructor(private readonly filePathOverride?: string) {}
 
@@ -42,8 +43,16 @@ export class ApiTokenStore {
       available: true,
       hasToken: result.success && Boolean(result.token),
       maskedToken: MASKED_TOKEN,
-      ...(result.success ? {} : { error: result.error })
+      ...(result.success
+        ? result.token || !this.automaticGenerationBlockedReason
+          ? {}
+          : { error: this.automaticGenerationBlockedReason }
+        : { error: result.error })
     }
+  }
+
+  setAutomaticGenerationBlocked(reason?: string): void {
+    this.automaticGenerationBlockedReason = reason?.trim() || null
   }
 
   ensureToken(): ApiTokenActionResult {
@@ -59,6 +68,9 @@ export class ApiTokenStore {
     const current = this.read()
     if (!current.success) return this.actionError(current.error)
     if (current.token) return this.actionSuccess()
+    if (this.automaticGenerationBlockedReason) {
+      return this.actionError(this.automaticGenerationBlockedReason)
+    }
     return this.persist(this.generateToken())
   }
 
@@ -70,7 +82,9 @@ export class ApiTokenStore {
 
   rotateToken(): ApiTokenActionResult {
     if (!safeStorage.isEncryptionAvailable()) return this.ensureToken()
-    return this.persist(this.generateToken())
+    const result = this.persist(this.generateToken())
+    if (result.success) this.automaticGenerationBlockedReason = null
+    return result
   }
 
   getTokenForAuthentication(): string | null {

@@ -21,8 +21,8 @@ export function SkillDetails({
           <dd>TraceMemo Reader</dd>
         </div>
         <div>
-          <dt>兼容标识</dt>
-          <dd>wechatexplorer-reader</dd>
+          <dt>标识</dt>
+          <dd>tracememo-reader</dd>
         </div>
         <div>
           <dt>版本</dt>

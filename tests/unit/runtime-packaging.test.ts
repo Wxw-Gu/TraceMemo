@@ -39,11 +39,11 @@ describe('production runtime packaging', () => {
 
   it('requires the bundled Reader Skill declared by extraResources', () => {
     const resources = join(root, 'reader-skill-resources')
-    const skillPath = join(resources, 'skill', 'wechatexplorer-reader', 'SKILL.md')
+    const skillPath = join(resources, 'skill', 'tracememo-reader', 'SKILL.md')
     const config = readFileSync(resolve(__dirname, '../../electron-builder.yml'), 'utf8')
 
-    expect(config).toContain('docs/skill/wechatexplorer-reader')
-    expect(config).toContain('to: skill/wechatexplorer-reader')
+    expect(config).toContain('docs/skill/tracememo-reader')
+    expect(config).toContain('to: skill/tracememo-reader')
     expect(() => validateReaderSkillRuntime(resources)).toThrow(
       /Missing bundled TraceMemo Reader Skill/
     )

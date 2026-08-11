@@ -39,7 +39,7 @@ Reader Skill 是给外部 Agent 的操作说明。安装后，Codex、Claude Cod
 2. 打开一级导航“API”（页面为“API Center”），确认本地 API、数据库和 Reader Skill 都可用。
 3. 选择目标 Agent，点击“复制安装指令”。
 4. 在 Agent 自己的 Skill/配置目录执行或粘贴指令。
-5. 在 API Center 复制当前 Token，并在 Agent 运行环境中设置 `WECHATEXPLORER_API_TOKEN`。
+5. 在 API Center 复制当前 Token，并在 Agent 运行环境中设置 `TRACEMEMO_API_TOKEN`。
 6. 先让 Agent 调用 health，再尝试查询最近会话。
 
 详细说明：[Reader Skill](./reader-skill.md)、[Local HTTP API](./api.md)、[API 安全](./api-security.md)。

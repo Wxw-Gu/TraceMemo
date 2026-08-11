@@ -26,8 +26,8 @@ new Function('exports', 'require', 'module', output)(moduleExports, require, {
 const { buildSkillInstallInstruction } = moduleExports
 const local = {
   type: 'local',
-  directoryPath: 'C:/skill/wechatexplorer-reader',
-  skillPath: 'C:/skill/wechatexplorer-reader/SKILL.md',
+  directoryPath: 'C:/skill/tracememo-reader',
+  skillPath: 'C:/skill/tracememo-reader/SKILL.md',
   version: 'v1.0'
 }
 
@@ -44,6 +44,7 @@ for (const [target, expected] of [
   })
   assert.match(text, new RegExp(expected))
   assert.match(text, /http:\/\/127\.0\.0\.1:6131\/api\/v1\/health/)
+  assert.match(text, /TRACEMEMO_API_TOKEN/)
   assert.match(text, /WECHATEXPLORER_API_TOKEN/)
   assert.match(text, /Authorization: Bearer/)
   assert.doesNotMatch(text, /mcpServers/)

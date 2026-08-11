@@ -1,5 +1,5 @@
 ---
-name: wechatexplorer-reader
+name: tracememo-reader
 description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的微信聊天数据。当用户要求查看微信消息、查找联系人或群聊、总结聊天、生成群聊总结时使用。此 Skill 由本机 TraceMemo 提供数据，不是 MCP Server。
 ---
 
@@ -11,12 +11,11 @@ description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的�
 
 - Base URL 默认是 `http://127.0.0.1:6131/api/v1`。
 - `GET /health` 不需要 Token。
-- 其他端点必须带 `Authorization: Bearer $WECHATEXPLORER_API_TOKEN`。
+- 其他端点必须带 `Authorization: Bearer $TRACEMEMO_API_TOKEN`。
+- 新配置优先读取 `TRACEMEMO_API_TOKEN`；为兼容已安装的旧 Reader，可在新变量缺失时回退到 `WECHATEXPLORER_API_TOKEN`。
 - Token 由用户在 TraceMemo → API Center 显示/复制，并放在 Agent 自己的本地环境中。
 - 不要把 Token 放到 URL、回答、日志、Skill 文件或仓库。
 - 6131 是普通 Local HTTP API，不是 MCP Server；不要生成 `mcpServers` 配置。
-
-`wechatexplorer-reader` 是该 Skill 为兼容既有安装而保留的目录和标识名；对用户展示时称为 TraceMemo Reader。
 
 ## 每次任务前
 
@@ -28,20 +27,20 @@ description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的�
 
 ## 端点速查
 
-| 方法 | 路径 | 用途 |
-| --- | --- | --- |
-| GET | `/health` | 健康和数据库状态 |
-| GET | `/current_time` | 本机时间与时区 |
-| GET | `/contact` | 联系人/群聊列表；可传 `filter`、`type` |
-| GET | `/chatroom` | 群聊列表；可传 `keyword` |
-| GET | `/recent_chat` | 最近会话；可传 `limit` |
-| GET | `/chatlog` | 会话消息；必填 `talker`，可传 `time` 或时间戳范围 |
-| GET | `/group_snapshot` | 群成员快照；必填 `md5` |
-| GET | `/resolve` | 昵称、wxid、md5 解析；必填 `q` |
-| POST | `/report` | 将已有日报结构渲染为 HTML/PNG |
-| GET | `/agent/status` | Agent Hub、连接器和数据库状态 |
-| POST | `/agent/group-report` | 按群和 `today`/`yesterday`/`7days` 生成总结图片 |
-| POST | `/agent/send` | 已连接机器人发送测试 |
+| 方法 | 路径                  | 用途                                              |
+| ---- | --------------------- | ------------------------------------------------- |
+| GET  | `/health`             | 健康和数据库状态                                  |
+| GET  | `/current_time`       | 本机时间与时区                                    |
+| GET  | `/contact`            | 联系人/群聊列表；可传 `filter`、`type`            |
+| GET  | `/chatroom`           | 群聊列表；可传 `keyword`                          |
+| GET  | `/recent_chat`        | 最近会话；可传 `limit`                            |
+| GET  | `/chatlog`            | 会话消息；必填 `talker`，可传 `time` 或时间戳范围 |
+| GET  | `/group_snapshot`     | 群成员快照；必填 `md5`                            |
+| GET  | `/resolve`            | 昵称、wxid、md5 解析；必填 `q`                    |
+| POST | `/report`             | 将已有日报结构渲染为 HTML/PNG                     |
+| GET  | `/agent/status`       | Agent Hub、连接器和数据库状态                     |
+| POST | `/agent/group-report` | 按群和 `today`/`yesterday`/`7days` 生成总结图片   |
+| POST | `/agent/send`         | 已连接机器人发送测试                              |
 
 ## 时间与上下文规则
 

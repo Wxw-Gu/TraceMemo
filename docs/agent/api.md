@@ -17,31 +17,31 @@
 curl http://127.0.0.1:6131/api/v1/health
 
 # 读取数据
-export WECHATEXPLORER_API_TOKEN="<从 API Center 复制的 Token>"
-curl -H "Authorization: Bearer $WECHATEXPLORER_API_TOKEN" \
+export TRACEMEMO_API_TOKEN="<从 API Center 复制的 Token>"
+curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
   "http://127.0.0.1:6131/api/v1/recent_chat?limit=20"
 ```
 
 不要把 Token 放入 URL、Skill 文件、仓库或命令历史可被共享的脚本中。
 
-`WECHATEXPLORER_API_TOKEN` 是历史兼容环境变量名，TraceMemo v2.2.0 继续沿用它以保持 Reader Skill 和外部 Agent 兼容。
+新配置必须优先使用 `TRACEMEMO_API_TOKEN`。已安装的旧 Reader Skill 可在 v2.2.0 兼容期内继续读取 `WECHATEXPLORER_API_TOKEN`；如果两个变量都存在，以新变量为准。
 
 ## 端点
 
-| 方法 | 路径 | 作用 | 参数/请求体 |
-| --- | --- | --- | --- |
-| GET | `/api/v1/health` | 服务与数据库健康状态 | 无 |
-| GET | `/api/v1/current_time` | 本机时间、时区和 Unix 时间戳 | 无 |
-| GET | `/api/v1/contact` | 联系人和群聊列表 | `filter`、`type=user\|group` |
-| GET | `/api/v1/chatroom` | 群聊列表 | `keyword` |
-| GET | `/api/v1/recent_chat` | 最近会话 | `limit`，默认 50 |
-| GET | `/api/v1/chatlog` | 指定会话的聊天记录 | 必填 `talker`；可选 `time` 或 `startTime`/`endTime` |
-| GET | `/api/v1/group_snapshot` | 群成员快照 | 必填 `md5` |
-| GET | `/api/v1/resolve` | 将昵称、wxid 或 md5 解析为会话 | 必填 `q` |
-| POST | `/api/v1/report` | 将结构化日报渲染为 HTML 与 PNG | `GroupReportExportRequest` JSON |
-| GET | `/api/v1/agent/status` | Agent Hub、连接器和数据库状态 | 无 |
-| POST | `/api/v1/agent/group-report` | 读取群聊并生成总结图片 | `{ "group": "群名或标识", "range": "today\|yesterday\|7days" }` |
-| POST | `/api/v1/agent/send` | 通过已连接机器人测试发送文字或本地图片 | `{ "to": "接收者", "text": "...", "media_url": "..." }` |
+| 方法 | 路径                         | 作用                                   | 参数/请求体                                                     |
+| ---- | ---------------------------- | -------------------------------------- | --------------------------------------------------------------- |
+| GET  | `/api/v1/health`             | 服务与数据库健康状态                   | 无                                                              |
+| GET  | `/api/v1/current_time`       | 本机时间、时区和 Unix 时间戳           | 无                                                              |
+| GET  | `/api/v1/contact`            | 联系人和群聊列表                       | `filter`、`type=user\|group`                                    |
+| GET  | `/api/v1/chatroom`           | 群聊列表                               | `keyword`                                                       |
+| GET  | `/api/v1/recent_chat`        | 最近会话                               | `limit`，默认 50                                                |
+| GET  | `/api/v1/chatlog`            | 指定会话的聊天记录                     | 必填 `talker`；可选 `time` 或 `startTime`/`endTime`             |
+| GET  | `/api/v1/group_snapshot`     | 群成员快照                             | 必填 `md5`                                                      |
+| GET  | `/api/v1/resolve`            | 将昵称、wxid 或 md5 解析为会话         | 必填 `q`                                                        |
+| POST | `/api/v1/report`             | 将结构化日报渲染为 HTML 与 PNG         | `GroupReportExportRequest` JSON                                 |
+| GET  | `/api/v1/agent/status`       | Agent Hub、连接器和数据库状态          | 无                                                              |
+| POST | `/api/v1/agent/group-report` | 读取群聊并生成总结图片                 | `{ "group": "群名或标识", "range": "today\|yesterday\|7days" }` |
+| POST | `/api/v1/agent/send`         | 通过已连接机器人测试发送文字或本地图片 | `{ "to": "接收者", "text": "...", "media_url": "..." }`         |
 
 ### 这些端点与实时机器人有什么关系
 
@@ -67,7 +67,7 @@ curl -H "Authorization: Bearer $WECHATEXPLORER_API_TOKEN" \
 
 ```bash
 BASE="http://127.0.0.1:6131/api/v1"
-AUTH="Authorization: Bearer $WECHATEXPLORER_API_TOKEN"
+AUTH="Authorization: Bearer ${TRACEMEMO_API_TOKEN:-$WECHATEXPLORER_API_TOKEN}"
 
 curl -H "$AUTH" "$BASE/resolve?q=技术交流群"
 curl -H "$AUTH" "$BASE/chatlog?talker=技术交流群&time=2026-08-07"

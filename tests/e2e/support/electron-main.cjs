@@ -4,7 +4,7 @@ const fs = require('fs')
 const path = require('path')
 
 const root = path.resolve(__dirname, '../../..')
-const fixture = require(path.join(root, 'tests/fixtures/chat-data.json'))
+const fixture = structuredClone(require(path.join(root, 'tests/fixtures/chat-data.json')))
 const userData = process.env.WXE_E2E_USER_DATA
 if (!userData) throw new Error('WXE_E2E_USER_DATA is required')
 app.setPath('userData', userData)
@@ -15,6 +15,151 @@ const VALID_KEY = 'a'.repeat(64)
 const imageData =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII='
 const voiceData = 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA='
+
+const formatFixtureDateTime = (timestampSeconds) => {
+  const date = new Date(timestampSeconds * 1000)
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+const allFixtureMessages = Object.values(fixture.messages).flat()
+const latestFixtureTime = Math.max(...allFixtureMessages.map((message) => message.createTime || 0))
+const fixtureTimeOffset = Math.floor(Date.now() / 1000) - 3600 - latestFixtureTime
+for (const message of allFixtureMessages) {
+  message.createTime = (message.createTime || latestFixtureTime) + fixtureTimeOffset
+  message.datetime = formatFixtureDateTime(message.createTime)
+}
+
+const emptyTimings = () => ({
+  queryUnderstandingMs: 0,
+  contactResolutionMs: 0,
+  knowledgeSearchMs: 0,
+  workerIpcMs: 0,
+  workerBootMs: 0,
+  dispatchMs: 0,
+  workerSqlMs: 0,
+  responseSerializeMs: 0,
+  responseTransferMs: 0,
+  workerQueueMs: 0,
+  workerExecutionMs: 0,
+  globalCountMs: 0,
+  voiceCoverageMs: 0,
+  wcdbQueueMs: 0,
+  wcdbExecutionMs: 0,
+  senderEnrichmentMs: 0,
+  ipcMs: 0,
+  serializationMs: 0,
+  otherMs: 0,
+  ftsMs: 0,
+  chunkExpandMs: 0,
+  messageLoadMs: 0,
+  rankingMs: 0,
+  candidateRankingMs: 0,
+  evidenceBuildMs: 0,
+  aggregationMs: 0,
+  contextPreparationMs: 0,
+  agentDecisionMs: 0,
+  agentToolMs: 0,
+  aiGenerationMs: 0,
+  totalMs: 1
+})
+
+const aiSearchResult = (request) => {
+  const failure = process.env.WXE_E2E_AI_FAILURE
+  const evidence = [
+    {
+      id: 'E1',
+      chunkId: 'fixture-chunk',
+      conversationId: 'group-regular-md5',
+      conversationName: '产品测试群',
+      conversationType: 'group',
+      startTime: fixture.messages['group-regular-md5'][0].createTime * 1000,
+      endTime: fixture.messages['group-regular-md5'][0].createTime * 1000,
+      messageId: 'msg-text',
+      senderId: 'wxid_fixture_member',
+      sender: '测试成员',
+      timestamp: fixture.messages['group-regular-md5'][0].createTime * 1000,
+      messageIds: ['msg-text'],
+      sourceKind: 'text',
+      text: '这是一条脱敏测试消息',
+      score: 1
+    }
+  ]
+  return {
+    requestId: request.requestId,
+    status: failure ? 'ai_failed' : 'completed',
+    plan: {
+      intent: 'general',
+      keywords: ['测试'],
+      variants: [],
+      source: 'local',
+      scopeLabel: '全局搜索',
+      rangeLabel: '近 30 天',
+      timeRange: {
+        startTime: Math.floor(Date.now() / 1000) - 30 * 86400,
+        endTime: Math.floor(Date.now() / 1000),
+        label: '近 30 天',
+        reason: 'E2E fixture',
+        source: 'ui'
+      },
+      contactNames: []
+    },
+    knowledge: {
+      source: 'knowledge',
+      state: 'ready',
+      indexedMessageCount: allFixtureMessages.length,
+      indexedChunkCount: 1,
+      totalMessages: allFixtureMessages.length,
+      voiceCoverage: {
+        voiceMessageCount: 1,
+        transcribedVoiceCount: 1,
+        failedVoiceCount: 0,
+        voiceCoverageComplete: true
+      }
+    },
+    candidateEvidenceCount: 1,
+    retrieval: {
+      intent: 'general',
+      timeRange: {
+        startTime: Math.floor(Date.now() / 1000) - 30 * 86400,
+        endTime: Math.floor(Date.now() / 1000),
+        label: '近 30 天',
+        reason: 'E2E fixture',
+        source: 'ui'
+      },
+      retrievalMode: 'global_fts',
+      candidateCount: 1,
+      uniqueCandidateCount: 1,
+      sourceMessageCount: allFixtureMessages.length,
+      sourceCoverage: 'complete',
+      isComplete: true,
+      fallbackUsed: false,
+      suspicious: false
+    },
+    evidence,
+    contextEvidenceCount: 1,
+    aggregation: {
+      messageCount: 1,
+      peopleCount: 1,
+      conversationCount: 1,
+      people: [],
+      conversations: []
+    },
+    agent: { mode: 'fallback', toolCalls: 0, trace: [], fallbackReason: 'E2E fixture' },
+    citationValidation: { status: 'valid', invalidCitationIds: [] },
+    timings: emptyTimings(),
+    answer: failure ? undefined : '固定假回答：测试数据中的核心流程正常。',
+    ai: {
+      providerName: '本地假服务',
+      modelName: '固定响应模型',
+      inputTokens: 10,
+      inputTokensEstimated: false
+    },
+    error: failure ? `本地假服务错误 ${failure}` : undefined,
+    errorStage: failure ? 'ai_generating' : undefined,
+    elapsedMs: 1
+  }
+}
 const reportJson = JSON.stringify({
   overview: '固定脱敏日报',
   hero: {
@@ -88,7 +233,7 @@ const handle = (channel, fn) => {
 const startupCache = () => ({
   self: fixture.self,
   contacts,
-  updatedAt: 1785553200000
+  updatedAt: Date.now()
 })
 
 handle('settings:get', () => ({ settings, settingsPath: path.join(userData, 'settings.json') }))
@@ -113,11 +258,11 @@ handle('key:clearSavedDbKey', () => {
 handle('key:getEnvironment', () => ({
   platform: process.platform,
   osVersion: process.platform === 'win32' ? 'Windows fixture' : 'macOS fixture',
-  appVersion: 'v2.1.6',
+  appVersion: 'v2.2.0',
   wechatVersion: '4.1.9.57',
   dataStructureVersion: settings.dbRoot === 'fixture-account' ? '微信 4.x（WCDB）' : '未检测到',
   dataDirectoryDetected: settings.dbRoot === 'fixture-account',
-  diagnosticSummary: 'TraceMemo: v2.1.6\n数据目录: 已检测到',
+  diagnosticSummary: 'TraceMemo: v2.2.0\n数据目录: 已检测到',
   autoDetectSupported: true,
   wechatRunning: true,
   accountIdentified: connected,
@@ -287,6 +432,45 @@ handle('ai:chat', (messages) => {
   }
   return { success: true, data: '固定假回答：测试数据中的核心流程正常。' }
 })
+handle('knowledge:getStatus', () => ({
+  accountId: fixture.self.wxid,
+  state: 'ready',
+  indexedMessageCount: allFixtureMessages.length,
+  indexedChunkCount: 1,
+  sourceMessageCount: allFixtureMessages.length,
+  processedMessages: allFixtureMessages.length,
+  totalMessages: allFixtureMessages.length,
+  estimatedRemainingMs: 0,
+  databaseBytes: 1024,
+  walBytes: 0,
+  shmBytes: 0
+}))
+handle('knowledge:startIndex', () => ({ success: true }))
+handle('knowledge:search', () => ({
+  source: 'knowledge',
+  state: 'ready',
+  evidence: [],
+  indexedMessageCount: allFixtureMessages.length,
+  indexedChunkCount: 1,
+  totalMessages: allFixtureMessages.length,
+  timings: {
+    workerIpcMs: 0,
+    workerBootMs: 0,
+    dispatchMs: 0,
+    workerSqlMs: 0,
+    responseTransferMs: 0,
+    responseSerializeMs: 0,
+    ftsMs: 0,
+    messageLoadMs: 0,
+    chunkExpandMs: 0,
+    rankingMs: 0,
+    totalMs: 0
+  }
+}))
+handle('ai-search:getProviderStatus', () => ({ configured: true, requiresConsent: false }))
+handle('ai-search:authorizeExternalProvider', () => ({ success: true }))
+handle('ai-search:run', (request) => aiSearchResult(request))
+handle('ai-search:cancel', () => ({ cancelled: true }))
 
 handle('report:export', () => {
   const htmlPath = path.join(userData, 'fixture-report.html')
@@ -424,7 +608,7 @@ handle('accounts:discover', (inputPath) =>
 )
 handle('agent-hub:getStatus', () => ({ state: 'disconnected', connected: false }))
 handle('agent-hub:getLogs', () => [])
-handle('app-update:getState', () => ({ status: 'idle', currentVersion: '2.1.6' }))
+handle('app-update:getState', () => ({ status: 'idle', currentVersion: '2.2.0' }))
 
 for (const channel of [
   'export:start',

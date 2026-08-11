@@ -1,4 +1,5 @@
 import fs from 'fs-extra'
+import crypto from 'crypto'
 import os from 'os'
 import path from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -114,6 +115,28 @@ describe('WCDB message shard pagination', () => {
 
     expect(first).toBe(second)
     expect(first).not.toContain('微信聊天记录')
+    expect(first).toContain(path.join('TraceMemo', 'path-bridges'))
     expect(fs.realpathSync(first)).toBe(fs.realpathSync(accountRoot))
+  })
+
+  it('reuses an existing legacy Windows path bridge without creating a new one', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wxe-legacy-path-bridge-'))
+    temporaryDirectories.push(root)
+    const publicRoot = path.join(root, 'Public')
+    const accountRoot = path.join(root, '微信聊天记录', 'wxid_legacy')
+    fs.ensureDirSync(path.join(accountRoot, 'db_storage'))
+    const bridgeId = crypto
+      .createHash('sha256')
+      .update(path.resolve(accountRoot).toLowerCase())
+      .digest('hex')
+      .slice(0, 24)
+    const legacyBridge = path.join(publicRoot, 'WechatExplorer', 'path-bridges', bridgeId)
+    fs.ensureDirSync(path.dirname(legacyBridge))
+    fs.symlinkSync(accountRoot, legacyBridge, 'junction')
+
+    expect(resolveWindowsNativeAccountRoot(accountRoot, { platform: 'win32', publicRoot })).toBe(
+      legacyBridge
+    )
+    expect(fs.existsSync(path.join(publicRoot, 'TraceMemo'))).toBe(false)
   })
 })

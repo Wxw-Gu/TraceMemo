@@ -6,7 +6,7 @@ TraceMemo 的本地 API 默认监听 `127.0.0.1:6131`。它面向同一台电脑
 
 ## Bearer Token
 
-文档中的 `WECHATEXPLORER_API_TOKEN` 是历史兼容环境变量名；TraceMemo v2.2.0 继续支持这一名称，以免已安装的 Reader Skill 和 Agent 配置失效。
+新 Agent 配置使用 `TRACEMEMO_API_TOKEN`。v2.2.0 仍兼容读取历史变量 `WECHATEXPLORER_API_TOKEN`，优先级为新变量高于旧变量。
 
 - `/api/v1/health` 是公开健康检查；
 - 其他所有端点都要求 `Authorization: Bearer <TOKEN>`；
@@ -19,7 +19,7 @@ TraceMemo 的本地 API 默认监听 `127.0.0.1:6131`。它面向同一台电脑
 应用不会自动把 Token 写入 Codex、Claude Code、OpenClaw 或其他 Agent 配置。请把它放进 Agent 自己的本地 secret/environment，例如：
 
 ```bash
-export WECHATEXPLORER_API_TOKEN="<TOKEN>"
+export TRACEMEMO_API_TOKEN="<TOKEN>"
 ```
 
 ## CORS 与 Origin
