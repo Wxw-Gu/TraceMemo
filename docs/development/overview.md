@@ -18,6 +18,8 @@ pnpm install
 pnpm dev
 ```
 
+本地依赖安装、Go 环境和 Electron 二进制下载异常，请查看[本地启动排障](./local-startup-troubleshooting.md)。
+
 常用检查：
 
 ```bash
