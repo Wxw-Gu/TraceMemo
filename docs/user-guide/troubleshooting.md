@@ -2,6 +2,21 @@
 
 先按现象定位，不要为了“重置”而直接删除微信数据库或整个应用目录。
 
+## 安装后软件无法打开
+
+### Windows
+
+1. 确认下载的是 GitHub Releases 中的 Windows x64 `-setup.exe`，并已完成安装。
+2. 安装 [Microsoft Visual C++ x64 运行库](https://aka.ms/vc14/vc_redist.x64.exe)。
+3. 安装完成后重新启动 WechatExplorer；如果仍无响应，再重新运行安装包进行覆盖安装。
+
+### macOS
+
+- 提示“无法打开，因为开发者无法验证”时，前往“系统设置 → 隐私与安全性”并点击“仍要打开”。
+- 提示应用已损坏时，确认应用位于“应用程序”目录，再执行 `xattr -cr "/Applications/WechatExplorer.app"`。
+
+完整安装步骤见[第一次使用 WechatExplorer](./getting-started.md#2-安装并启动)。
+
 ## 连接微信失败
 
 依次检查：

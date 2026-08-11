@@ -177,12 +177,12 @@ flowchart LR
 
 ## 支持平台与安装包
 
-| 平台    | 处理器架构                           | Releases 安装包 |
-| ------- | ------------------------------------ | --------------- |
-| Windows | x64                                  | `-setup.exe`    |
-| macOS   | Intel（x64）、Apple Silicon（arm64） | `.dmg`          |
+| 平台    | 处理器架构                    | Releases 安装包 |
+| ------- | ----------------------------- | --------------- |
+| Windows | x64                           | `-setup.exe`    |
+| macOS   | Apple Silicon（M 系列、arm64） | `.dmg`          |
 
-当前代码面向微信 4.x 数据结构。实际连接结果仍会受到微信客户端版本、账号数据状态和系统权限影响；macOS 首次连接可能需要按页面提示完成额外授权。
+当前版本不支持 Intel 芯片的 Mac。当前代码面向微信 4.x 数据结构。实际连接结果仍会受到微信客户端版本、账号数据状态和系统权限影响；macOS 首次连接可能需要按页面提示完成额外授权。
 
 ## 快速开始
 
@@ -193,6 +193,8 @@ flowchart LR
 5. 先在“档案”里搜索一句你记得的原话；这一步不需要 AI。
 6. 需要 AI 问答或日报时，在“设置 → AI 模型”添加并测试 AI 服务，再打开“问问微信”或“日报”。
 7. 想直接在微信里提问时，打开“Agent”扫码连接微信机器人；想让 Codex 等外部 Agent 查询时，再进入“API”。
+
+Windows 安装后无法启动时，请先安装 [Microsoft Visual C++ x64 运行库](https://aka.ms/vc14/vc_redist.x64.exe)。当前完整测试过的微信客户端为 Windows `4.1.9.57` 和 macOS `4.1.8.100`；下载地址与连接要求见[第一次使用](./docs/user-guide/getting-started.md)。
 
 如果 macOS 页面提示处理 SIP，请先阅读对应说明。具体步骤和限制见[第一次使用](./docs/user-guide/getting-started.md)。
 
@@ -284,4 +286,3 @@ WechatExplorer 在开发过程中参考了多个优秀的开源项目，感谢�
 感谢所有开源作者。
 
 </details>
-
