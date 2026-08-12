@@ -102,11 +102,12 @@ export class VoiceService {
         candidates: this.buildCandidates(reference.sessionId)
       }))
     )
+    const failed: Array<{ index: number; reference: VoiceReference }> = []
     for (const [{ index, reference }, source] of missing.map(
       (item, sourceIndex) => [item, sources[sourceIndex]] as const
     )) {
       if (!source?.success || !source.hex) {
-        results[index] = { success: false, error: source?.error || '获取语音数据失败' }
+        failed.push({ index, reference })
         continue
       }
       const silkData = this.decodeVoiceBlob(source.hex)
@@ -137,6 +138,19 @@ export class VoiceService {
         }
       }
     }
+    const retried = await Promise.all(
+      failed.map(({ reference }) =>
+        this.resolveVoice(
+          reference.sessionId,
+          reference.localId,
+          reference.createTime,
+          reference.svrId
+        )
+      )
+    )
+    failed.forEach(({ index }, retryIndex) => {
+      results[index] = retried[retryIndex]
+    })
     return results as Array<{ success: boolean; data?: string; error?: string }>
   }
 

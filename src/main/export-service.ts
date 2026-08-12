@@ -275,6 +275,8 @@ const mergeArchiveMessage = (previous: Message, current: Message): Message => {
   if (!current.exportMediaUrl && !current.voiceDataUrl && previous.exportMediaError) {
     merged.exportMediaError = previous.exportMediaError
   }
+  if (merged.voiceDataUrl) delete merged.exportMediaError
+  if (merged.voiceTranscript) delete merged.voiceTranscriptError
   return merged
 }
 

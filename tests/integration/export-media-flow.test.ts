@@ -494,6 +494,29 @@ describe('media export flow', () => {
     ])
   })
 
+  it('clears stale missing errors when an incremental merge restores playable voice data', async () => {
+    const { mergeHtmlArchiveMessages } = await import('../../src/main/export-service')
+    const previous = message({
+      id: 'voice-incremental',
+      type: '语音',
+      voiceDataUrl: 'voices/existing.wav',
+      voiceTranscript: '已有转写',
+      voiceTranscriptError: '旧转写错误'
+    })
+    const current = message({
+      id: 'voice-incremental',
+      type: '语音',
+      exportMediaError: '语音文件缺失：获取语音数据失败'
+    })
+
+    const [merged] = mergeHtmlArchiveMessages([previous], [current])
+
+    expect(merged.voiceDataUrl).toBe('voices/existing.wav')
+    expect(merged.voiceTranscript).toBe('已有转写')
+    expect(merged.exportMediaError).toBeUndefined()
+    expect(merged.voiceTranscriptError).toBeUndefined()
+  })
+
   it('uses the customized file name as the HTML archive title', async () => {
     const { runExport } = await import('../../src/main/export-service')
     const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
