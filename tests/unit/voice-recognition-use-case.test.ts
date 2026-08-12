@@ -72,7 +72,9 @@ describe('VoiceRecognitionUseCase transcript updates', () => {
 
   it('does not publish a transcript after the account generation changes mid-recognition', async () => {
     const useCase = createUseCase()
-    let finish: ((value: { transcript: string; durationMs: number; cached: boolean }) => void) | undefined
+    let finish:
+      | ((value: { transcript: string; durationMs: number; cached: boolean }) => void)
+      | undefined
     const state = useCase as unknown as {
       accountGeneration: number
       pipeline: { run: ReturnType<typeof vi.fn> }
@@ -96,6 +98,26 @@ describe('VoiceRecognitionUseCase transcript updates', () => {
 
     await expect(pending).resolves.toMatchObject({ success: false, code: 'CANCELLED' })
     expect(listener).not.toHaveBeenCalled()
+    await useCase.dispose()
+  })
+
+  it('publishes an explicit cached transcript for a coalesced export index refresh', async () => {
+    const useCase = createUseCase()
+    const listener = vi.fn().mockResolvedValue(undefined)
+    useCase.onTranscriptUpdate(listener)
+    const reference = { sessionId: 'fixture-contact', localId: 11, createTime: 1_785_895_202 }
+
+    await useCase.publishTranscript(reference, '缓存导出文字', true)
+
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountIdentity: 'account-a',
+        reference,
+        state: 'transcribed',
+        transcript: '缓存导出文字',
+        cached: true
+      })
+    )
     await useCase.dispose()
   })
 })

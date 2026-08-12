@@ -97,36 +97,44 @@ export class VoiceRecognitionUseCase {
     const generation = this.accountGeneration
     const accountIdentity = this.accountId
     return this.scheduler
-      .schedule(key, async (signal) => {
-        const status = await this.modelManager.getStatus()
-        if (status.state !== 'ready') {
-          return { success: false, code: 'MODEL_NOT_READY', error: '请先下载语音识别模型' } as const
-        }
-        const result = await pipeline.run(accountId, reference, signal)
-        if (signal.aborted || !this.isCurrentAccount(accountId, generation)) {
-          throw new DOMException('Recognition cancelled', 'AbortError')
-        }
-        const transcript = result.transcript.trim()
-        if (
-          transcript &&
-          options?.publishTranscriptUpdate !== false &&
-          this.isCurrentAccount(accountId, generation)
-        ) {
-          try {
-            await this.publishTranscriptUpdate({
-              accountIdentity,
-              reference,
-              messageIdentity: voiceMessageIdentity(reference),
-              state: 'transcribed',
-              transcript,
-              cached: result.cached
-            })
-          } catch (error) {
-            console.warn('[Voice] transcript indexed asynchronously failed:', error)
+      .schedule(
+        key,
+        async (signal) => {
+          const status = await this.modelManager.getStatus()
+          if (status.state !== 'ready') {
+            return {
+              success: false,
+              code: 'MODEL_NOT_READY',
+              error: '请先下载语音识别模型'
+            } as const
           }
-        }
-        return { success: true, ...result, transcript } as const
-      }, { priority: options?.priority })
+          const result = await pipeline.run(accountId, reference, signal)
+          if (signal.aborted || !this.isCurrentAccount(accountId, generation)) {
+            throw new DOMException('Recognition cancelled', 'AbortError')
+          }
+          const transcript = result.transcript.trim()
+          if (
+            transcript &&
+            options?.publishTranscriptUpdate !== false &&
+            this.isCurrentAccount(accountId, generation)
+          ) {
+            try {
+              await this.publishTranscriptUpdate({
+                accountIdentity,
+                reference,
+                messageIdentity: voiceMessageIdentity(reference),
+                state: 'transcribed',
+                transcript,
+                cached: result.cached
+              })
+            } catch (error) {
+              console.warn('[Voice] transcript indexed asynchronously failed:', error)
+            }
+          }
+          return { success: true, ...result, transcript } as const
+        },
+        { priority: options?.priority }
+      )
       .catch((error): VoiceRecognitionResult => {
         if (error instanceof DOMException && error.name === 'AbortError') {
           return { success: false, code: 'CANCELLED', error: '语音识别已取消' }
@@ -173,18 +181,25 @@ export class VoiceRecognitionUseCase {
   }
 
   async publishTranscriptSnapshot(reference: VoiceMessageReference): Promise<void> {
-    const accountIdentity = this.accountId
-    if (!accountIdentity) return
     const snapshot = this.getTranscriptSnapshot(reference)
     if (snapshot.state === 'pending') return
+    await this.publishTranscript(reference, snapshot.transcript, snapshot.state === 'transcribed')
+  }
+
+  async publishTranscript(
+    reference: VoiceMessageReference,
+    transcript?: string,
+    cached = true
+  ): Promise<void> {
+    const accountIdentity = this.accountId
+    if (!accountIdentity || !transcript?.trim()) return
     await this.publishTranscriptUpdate({
       accountIdentity,
       reference,
       messageIdentity: voiceMessageIdentity(reference),
-      state: snapshot.state,
-      transcript: snapshot.transcript,
-      error: snapshot.error,
-      cached: snapshot.state === 'transcribed'
+      state: 'transcribed',
+      transcript: transcript.trim(),
+      cached
     })
   }
 

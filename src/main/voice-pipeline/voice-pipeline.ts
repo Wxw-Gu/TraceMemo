@@ -39,13 +39,28 @@ export class VoicePipeline {
     reference: VoiceMessageReference,
     signal?: AbortSignal
   ): Promise<{ transcript: string; language?: string; durationMs: number; cached: boolean }> {
+    const messageIdentity = voiceMessageIdentity(reference)
+    const compatible = this.transcripts.findCompatible({
+      accountId,
+      messageIdentity,
+      processorVersion: this.audioProcessor.version,
+      ...this.recognizer.metadata
+    })
+    if (compatible?.transcript.trim()) {
+      return {
+        transcript: compatible.transcript.trim(),
+        language: compatible.language,
+        durationMs: compatible.durationMs,
+        cached: true
+      }
+    }
+
     const source = await this.sourceResolver.resolve(reference)
     if (signal?.aborted) throw new DOMException('Recognition cancelled', 'AbortError')
     const decoded = await this.decoderRegistry.decode(source)
     if (signal?.aborted) throw new DOMException('Recognition cancelled', 'AbortError')
     const audio = this.audioProcessor.process(decoded)
     if (audio.samples.length === 0) throw new Error('Voice audio is empty after processing')
-    const messageIdentity = voiceMessageIdentity(reference)
     const key = {
       accountId,
       messageIdentity,

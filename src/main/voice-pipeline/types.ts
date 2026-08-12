@@ -43,6 +43,7 @@ export class SpeechRecognizerRegistry {
 }
 
 export interface AudioProcessor {
+  readonly version: string
   process(input: {
     pcm: Buffer
     sampleRate: number
@@ -87,6 +88,17 @@ export interface TranscriptRepository {
     >
   ): TranscriptRecord | null
   findLatest(accountId: string, messageIdentity: string): TranscriptRecord | null
+  findCompatible(
+    key: Pick<
+      TranscriptRecord,
+      | 'accountId'
+      | 'messageIdentity'
+      | 'processorVersion'
+      | 'recognizerId'
+      | 'modelVersion'
+      | 'modelFingerprint'
+    >
+  ): TranscriptRecord | null
   getMessageStatus(accountId: string, messageIdentity: string): TranscriptMessageStatus
   save(record: TranscriptRecord): void
   markFailure(accountId: string, messageIdentity: string, error: string): void

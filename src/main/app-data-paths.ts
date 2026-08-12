@@ -131,7 +131,8 @@ export function hasValidUserAssets(root: string): boolean {
     'wechat-db-key.bin',
     'wechat-image-keys.bin',
     'image-insights.json',
-    'wechat-share-service.bin'
+    'wechat-share-service.bin',
+    path.join('cache', 'voice-transcripts.sqlite')
   ]
   if (markers.some((marker) => isNonEmptyFile(path.join(root, marker)))) return true
   if (hasKnowledgeDatabase(root)) return true

@@ -1,16 +1,39 @@
 import { dirname } from 'path'
 import { mkdirSync } from 'fs'
 import { DatabaseSync } from 'node:sqlite'
-import type {
-  TranscriptMessageStatus,
-  TranscriptRecord,
-  TranscriptRepository
-} from './types'
+import type { TranscriptMessageStatus, TranscriptRecord, TranscriptRepository } from './types'
 
 type TranscriptKey = Omit<
   TranscriptRecord,
   'transcript' | 'language' | 'durationMs' | 'createdAt' | 'updatedAt'
 >
+
+type CompatibleTranscriptKey = Pick<
+  TranscriptRecord,
+  | 'accountId'
+  | 'messageIdentity'
+  | 'processorVersion'
+  | 'recognizerId'
+  | 'modelVersion'
+  | 'modelFingerprint'
+>
+
+function transcriptRecord(row: Record<string, unknown>): TranscriptRecord {
+  return {
+    accountId: String(row.account_id),
+    messageIdentity: String(row.message_identity),
+    audioHash: String(row.audio_hash),
+    processorVersion: String(row.processor_version),
+    recognizerId: String(row.recognizer_id),
+    modelVersion: String(row.model_version),
+    modelFingerprint: String(row.model_fingerprint),
+    transcript: String(row.transcript),
+    language: row.language ? String(row.language) : undefined,
+    durationMs: Number(row.duration_ms),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at)
+  }
+}
 
 export class SqliteTranscriptRepository implements TranscriptRepository {
   private readonly database: DatabaseSync
@@ -70,20 +93,7 @@ export class SqliteTranscriptRepository implements TranscriptRepository {
         key.modelFingerprint
       ) as Record<string, unknown> | undefined
     if (!row) return null
-    return {
-      accountId: String(row.account_id),
-      messageIdentity: String(row.message_identity),
-      audioHash: String(row.audio_hash),
-      processorVersion: String(row.processor_version),
-      recognizerId: String(row.recognizer_id),
-      modelVersion: String(row.model_version),
-      modelFingerprint: String(row.model_fingerprint),
-      transcript: String(row.transcript),
-      language: row.language ? String(row.language) : undefined,
-      durationMs: Number(row.duration_ms),
-      createdAt: Number(row.created_at),
-      updatedAt: Number(row.updated_at)
-    }
+    return transcriptRecord(row)
   }
 
   findLatest(accountId: string, messageIdentity: string): TranscriptRecord | null {
@@ -99,19 +109,86 @@ export class SqliteTranscriptRepository implements TranscriptRepository {
       )
       .get(accountId, messageIdentity) as Record<string, unknown> | undefined
     if (!row) return null
-    return {
-      accountId: String(row.account_id),
-      messageIdentity: String(row.message_identity),
-      audioHash: String(row.audio_hash),
-      processorVersion: String(row.processor_version),
-      recognizerId: String(row.recognizer_id),
-      modelVersion: String(row.model_version),
-      modelFingerprint: String(row.model_fingerprint),
-      transcript: String(row.transcript),
-      language: row.language ? String(row.language) : undefined,
-      durationMs: Number(row.duration_ms),
-      createdAt: Number(row.created_at),
-      updatedAt: Number(row.updated_at)
+    return transcriptRecord(row)
+  }
+
+  findCompatible(key: CompatibleTranscriptKey): TranscriptRecord | null {
+    const row = this.database
+      .prepare(
+        `SELECT account_id, message_identity, audio_hash, processor_version,
+                recognizer_id, model_version, model_fingerprint, transcript,
+                language, duration_ms, created_at, updated_at
+         FROM voice_transcripts
+         WHERE account_id = ? AND message_identity = ? AND processor_version = ?
+           AND recognizer_id = ? AND model_version = ? AND model_fingerprint = ?
+           AND trim(transcript) <> ''
+         ORDER BY updated_at DESC
+         LIMIT 1`
+      )
+      .get(
+        key.accountId,
+        key.messageIdentity,
+        key.processorVersion,
+        key.recognizerId,
+        key.modelVersion,
+        key.modelFingerprint
+      ) as Record<string, unknown> | undefined
+    return row ? transcriptRecord(row) : null
+  }
+
+  mergeFrom(databasePath: string): number {
+    this.database.prepare('ATTACH DATABASE ? AS legacy_voice').run(databasePath)
+    try {
+      const hasTranscripts = this.database
+        .prepare(
+          `SELECT 1 FROM legacy_voice.sqlite_master
+           WHERE type = 'table' AND name = 'voice_transcripts'`
+        )
+        .get()
+      if (!hasTranscripts)
+        throw new Error('Legacy voice transcript database has no transcript table')
+
+      this.database.exec('BEGIN IMMEDIATE')
+      try {
+        this.database.exec(`
+          INSERT OR IGNORE INTO main.voice_transcripts (
+            account_id, message_identity, audio_hash, processor_version,
+            recognizer_id, model_version, model_fingerprint, transcript,
+            language, duration_ms, created_at, updated_at
+          )
+          SELECT account_id, message_identity, audio_hash, processor_version,
+                 recognizer_id, model_version, model_fingerprint, transcript,
+                 language, duration_ms, created_at, updated_at
+          FROM legacy_voice.voice_transcripts
+          WHERE trim(transcript) <> ''
+        `)
+        const inserted = Number(
+          (
+            this.database.prepare('SELECT changes() AS count').get() as
+              | Record<string, unknown>
+              | undefined
+          )?.count || 0
+        )
+        this.database.exec(`
+          INSERT INTO main.voice_transcript_message_states (
+            account_id, message_identity, state, error, updated_at
+          )
+          SELECT account_id, message_identity, 'transcribed', NULL, MAX(updated_at)
+          FROM legacy_voice.voice_transcripts
+          WHERE trim(transcript) <> ''
+          GROUP BY account_id, message_identity
+          ON CONFLICT (account_id, message_identity) DO UPDATE SET
+            state = 'transcribed', error = NULL, updated_at = excluded.updated_at
+          WHERE excluded.updated_at > voice_transcript_message_states.updated_at
+        `)
+        this.database.exec('COMMIT')
+        return inserted
+      } catch (error) {
+        this.database.exec('ROLLBACK')
+        throw error
+      }
+    } finally {
+      this.database.exec('DETACH DATABASE legacy_voice')
     }
   }
 

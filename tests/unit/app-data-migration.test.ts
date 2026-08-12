@@ -30,8 +30,15 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { assessMigration, executeMigration } from '../../src/main/app-data-migration'
-import { getUserDataRoots } from '../../src/main/app-data-paths'
+import {
+  assessMigration,
+  executeMigration,
+  migrateLegacyVoiceTranscripts,
+  runFirstLaunchMigration
+} from '../../src/main/app-data-migration'
+import { getUserDataRoots, type UserDataRoots } from '../../src/main/app-data-paths'
+import { SqliteTranscriptRepository } from '../../src/main/voice-pipeline/transcript-repository'
+import type { TranscriptRecord } from '../../src/main/voice-pipeline/types'
 
 let root = ''
 
@@ -43,7 +50,7 @@ afterEach(() => {
   fs.removeSync(root)
 })
 
-function roots() {
+function roots(): UserDataRoots {
   return getUserDataRoots(path.join(root, 'Application Support'))
 }
 
@@ -69,6 +76,16 @@ describe('TraceMemo app data migration', () => {
     expect(assessMigration(fixture)).toMatchObject({
       shouldPrompt: false,
       reason: 'legacy-empty'
+    })
+  })
+
+  it('recognizes a legacy voice transcript cache as user-owned data', () => {
+    const fixture = roots()
+    writeFixture(path.join(fixture.legacy, 'cache', 'voice-transcripts.sqlite'))
+    expect(assessMigration(fixture)).toMatchObject({
+      shouldPrompt: true,
+      reason: 'legacy-assets-detected',
+      sourceRoot: fixture.legacy
     })
   })
 
@@ -179,5 +196,114 @@ describe('TraceMemo app data migration', () => {
       'current'
     )
     expect(fs.readFileSync(path.join(fixture.legacy, 'settings.json'), 'utf8')).toContain('legacy')
+  })
+
+  it('supplements legacy voice transcripts into an existing TraceMemo cache', async () => {
+    const fixture = roots()
+    const legacyPath = path.join(fixture.legacy, 'cache', 'voice-transcripts.sqlite')
+    const currentPath = path.join(fixture.current, 'cache', 'voice-transcripts.sqlite')
+    const record: TranscriptRecord = {
+      accountId: 'account-a',
+      messageIdentity: 'message-a',
+      audioHash: 'audio-a',
+      processorVersion: 'processor-v1',
+      recognizerId: 'sensevoice',
+      modelVersion: 'model-v1',
+      modelFingerprint: 'fingerprint-a',
+      transcript: '已经转写过的文字',
+      durationMs: 800,
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const legacy = new SqliteTranscriptRepository(legacyPath)
+    legacy.save(record)
+    legacy.close()
+
+    expect(await migrateLegacyVoiceTranscripts(fixture.legacy, fixture.current)).toBe('migrated')
+    expect(await migrateLegacyVoiceTranscripts(fixture.legacy, fixture.current)).toBe('skipped')
+    const current = new SqliteTranscriptRepository(currentPath)
+    expect(current.findLatest('account-a', 'message-a')?.transcript).toBe('已经转写过的文字')
+    current.close()
+  })
+
+  it('backfills voice transcripts after the original migration was already completed', async () => {
+    const fixture = roots()
+    const legacyPath = path.join(fixture.legacy, 'cache', 'voice-transcripts.sqlite')
+    const legacy = new SqliteTranscriptRepository(legacyPath)
+    legacy.save({
+      accountId: 'account-a',
+      messageIdentity: 'message-a',
+      audioHash: 'audio-a',
+      processorVersion: 'processor-v1',
+      recognizerId: 'sensevoice',
+      modelVersion: 'model-v1',
+      modelFingerprint: 'fingerprint-a',
+      transcript: '补迁文字',
+      durationMs: 800,
+      createdAt: 1,
+      updatedAt: 1
+    })
+    legacy.close()
+    fs.ensureDirSync(fixture.current)
+    fs.writeJsonSync(path.join(fixture.current, 'tracememo-migration-v1.json'), {
+      version: 1,
+      status: 'completed',
+      sourceRoot: fixture.legacy,
+      updatedAt: '2026-08-11T00:00:00.000Z',
+      items: { 'settings.json': 'migrated' },
+      secretFailures: []
+    })
+
+    const result = await runFirstLaunchMigration(fixture)
+
+    expect(result.action).toBe('migrated')
+    expect(result.execution?.state.items['cache/voice-transcripts.sqlite']).toBe('migrated')
+    expect(result.execution?.state.status).toBe('completed')
+    const current = new SqliteTranscriptRepository(
+      path.join(fixture.current, 'cache', 'voice-transcripts.sqlite')
+    )
+    expect(current.findLatest('account-a', 'message-a')?.transcript).toBe('补迁文字')
+    current.close()
+  })
+
+  it('does not retry a voice transcript backfill after it was marked failed', async () => {
+    const fixture = roots()
+    writeFixture(path.join(fixture.legacy, 'settings.json'), '{}')
+    writeFixture(path.join(fixture.legacy, 'cache', 'voice-transcripts.sqlite'), 'invalid sqlite')
+    fs.ensureDirSync(fixture.current)
+    fs.writeJsonSync(path.join(fixture.current, 'tracememo-migration-v1.json'), {
+      version: 1,
+      status: 'completed',
+      sourceRoot: fixture.legacy,
+      updatedAt: '2026-08-11T00:00:00.000Z',
+      items: { 'cache/voice-transcripts.sqlite': 'failed' },
+      secretFailures: []
+    })
+
+    const result = await runFirstLaunchMigration(fixture)
+
+    expect(result.action).toBe('none')
+    expect(result.execution).toBeUndefined()
+    expect(fs.existsSync(path.join(fixture.current, 'cache', 'voice-transcripts.sqlite'))).toBe(
+      false
+    )
+  })
+
+  it('treats a failed voice transcript migration as a non-blocking downgrade', async () => {
+    const fixture = roots()
+    writeFixture(path.join(fixture.legacy, 'settings.json'), '{}')
+    writeFixture(path.join(fixture.legacy, 'cache', 'voice-transcripts.sqlite'), 'invalid sqlite')
+
+    const result = await executeMigration(fixture.legacy, fixture.current, {
+      decryptLegacySecrets: async () => ({ databaseKeys: {}, failures: [] }),
+      agentRoots: () => ({
+        legacy: path.join(root, 'agent-legacy'),
+        current: path.join(root, 'agent-current')
+      }),
+      now: () => new Date('2026-08-11T00:00:00.000Z')
+    })
+
+    expect(result.state.status).toBe('completed')
+    expect(result.state.items['cache/voice-transcripts.sqlite']).toBe('failed')
   })
 })

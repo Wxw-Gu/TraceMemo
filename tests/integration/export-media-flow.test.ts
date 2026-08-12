@@ -43,6 +43,7 @@ const state = vi.hoisted(() => ({
     }
   >,
   voiceLookups: [] as number[],
+  voiceBatches: [] as number[][],
   videoLookups: [] as {
     createTime?: number
     byteLength?: number
@@ -136,6 +137,13 @@ vi.mock('../../src/main/voice-service', () => ({
             data: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA='
           }
         : { success: false, error: '本地未找到语音数据' }
+    }
+
+    async resolveVoices(
+      references: Array<{ localId: number }>
+    ): Promise<Array<{ success: boolean; data?: string; error?: string }>> {
+      state.voiceBatches.push(references.map((reference) => reference.localId))
+      return Promise.all(references.map((reference) => this.resolveVoice('', reference.localId)))
     }
   }
 }))
@@ -264,6 +272,7 @@ describe('media export flow', () => {
     state.groupSnapshotReads = []
     state.groupSnapshots = {}
     state.voiceLookups = []
+    state.voiceBatches = []
     const fileMonth = join(state.accountRoot, 'msg', 'file', '2026-08')
     mkdirSync(fileMonth, { recursive: true })
     writeFileSync(join(fileMonth, '测试附件.txt'), '附件内容')
@@ -391,7 +400,10 @@ describe('media export flow', () => {
         send: (_channel: string, payload: (typeof progress)[number]) => progress.push(payload)
       }
     }
-    const recognize = vi.fn(async () => ({ success: true as const, transcript: '固定转写文本' }))
+    const recognize = vi.fn(async () => {
+      expect(state.voiceLookups).toEqual([])
+      return { success: true as const, transcript: '固定转写文本' }
+    })
 
     const result = await runExport(
       {
@@ -421,6 +433,65 @@ describe('media export flow', () => {
       processed: 1,
       total: 1
     })
+  })
+
+  it('uses compatible transcript results and waits for one coalesced knowledge update per chat', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    state.messages = [
+      message({
+        id: 'voice-cache-a',
+        type: '语音',
+        sessionId: 'fixture-session',
+        localId: 1,
+        createTime: 1_785_549_600,
+        contentData: { type: 'voice', duration: 1 }
+      }),
+      message({
+        id: 'voice-cache-b',
+        type: '语音',
+        sessionId: 'fixture-session',
+        localId: 2,
+        createTime: 1_785_549_601,
+        contentData: { type: 'voice', duration: 1 }
+      })
+    ]
+    const recognize = vi.fn(async (reference: { localId: number }) => ({
+      success: true as const,
+      transcript: `缓存文字-${reference.localId}`,
+      cached: true
+    }))
+    const publishTranscript = vi.fn().mockResolvedValue(undefined)
+
+    const result = await runExport(
+      {
+        jobId: 'voice-cache-coalesced-index',
+        targets: [target()],
+        format: 'html',
+        outputName: 'voice-cache-coalesced-index',
+        kinds: ['voice'],
+        includeMedia: true,
+        includeVoiceTranscripts: true
+      },
+      { isDestroyed: () => true, webContents: { send: vi.fn() } } as never,
+      { recognize, publishTranscript }
+    )
+
+    expect(result.success, result.error).toBe(true)
+    expect(recognize).toHaveBeenCalledTimes(2)
+    expect(recognize).toHaveBeenNthCalledWith(1, expect.objectContaining({ localId: 1 }), {
+      publishTranscriptUpdate: false
+    })
+    expect(publishTranscript).toHaveBeenCalledOnce()
+    expect(publishTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'fixture-session', localId: 2 }),
+      '缓存文字-2',
+      true
+    )
+    expect(state.voiceBatches).toEqual([[1, 2]])
+    expect(readArchive(result.outputPath!).messages.map((item) => item.voiceTranscript)).toEqual([
+      '缓存文字-1',
+      '缓存文字-2'
+    ])
   })
 
   it('uses the customized file name as the HTML archive title', async () => {

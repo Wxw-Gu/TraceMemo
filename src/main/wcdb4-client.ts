@@ -250,6 +250,20 @@ type KoffiAsyncFunction = ((...args: unknown[]) => unknown) & {
 type WcdbVoidOut = [unknown]
 type WcdbHandleOut = [number]
 
+export interface Wcdb4VoiceDataRequest {
+  sessionId: string
+  createTime: number
+  candidates: string[]
+  localId?: number
+  svrId?: string | number
+}
+
+export interface Wcdb4VoiceDataResult {
+  success: boolean
+  hex?: string
+  error: string
+}
+
 const nodeRequire = createRequire(import.meta.url)
 
 function isAsciiPath(value: string): boolean {
@@ -409,6 +423,7 @@ export class Wcdb4Client {
         outHex: WcdbVoidOut
       ) => number)
     | null = null
+  private wcdbGetVoiceDataBatch: KoffiAsyncFunction | null = null
   private wcdbResolveImageHardlink:
     | ((handle: number, md5: string, accountDir: string, outJson: WcdbVoidOut) => number)
     | null = null
@@ -1953,32 +1968,104 @@ export class Wcdb4Client {
     }
 
     const handle = this.ensureHandle()
-    const outHex: WcdbVoidOut = [null]
-
-    try {
-      const result = this.wcdbGetVoiceData(
+    const fn = this.wcdbGetVoiceData as unknown as KoffiAsyncFunction
+    return this.createTrackedNativeCall<Wcdb4VoiceDataResult>((resolve, reject) => {
+      const outHex: WcdbVoidOut = [null]
+      fn.async(
         handle,
         sessionId,
         createTime,
         localId,
         BigInt(svrId || 0),
         JSON.stringify(candidates),
-        outHex
+        outHex,
+        (error: unknown, code: unknown) => {
+          if (error) {
+            reject(error)
+            return
+          }
+          try {
+            const result = Number(code)
+            if (result !== 0 || !outHex[0]) {
+              resolve({ success: false, error: `获取语音数据失败: ${result}` })
+              return
+            }
+            const hex = this.decodeHexPtr(outHex[0])
+            resolve(
+              hex === null
+                ? { success: false, error: '解析语音数据失败' }
+                : { success: true, hex, error: '' }
+            )
+          } finally {
+            this.wcdbFreeString?.(outHex[0])
+          }
+        }
       )
+    })
+  }
 
-      if (result !== 0 || !outHex[0]) {
-        return { success: false, error: `获取语音数据失败: ${result}` }
-      }
-
-      const hex = this.decodeHexPtr(outHex[0])
-      if (hex === null) {
-        return { success: false, error: '解析语音数据失败' }
-      }
-
-      return { success: true, hex, error: '' }
-    } finally {
-      this.wcdbFreeString?.(outHex[0])
+  async getVoiceDataBatch(requests: Wcdb4VoiceDataRequest[]): Promise<Wcdb4VoiceDataResult[]> {
+    if (!requests.length) return []
+    if (!this.wcdbGetVoiceDataBatch) {
+      return this.getVoiceDataIndividually(requests)
     }
+
+    try {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbGetVoiceDataBatch,
+        JSON.stringify(
+          requests.map((request, index) => ({
+            session_id: request.sessionId,
+            create_time: request.createTime,
+            local_id: request.localId || 0,
+            svr_id: String(request.svrId || 0),
+            candidates: request.candidates,
+            index
+          }))
+        )
+      )
+      const byIndex = new Map(
+        (Array.isArray(rows) ? rows : []).map((row) => [Number(row.index), row])
+      )
+      return requests.map((_, index) => {
+        const row = byIndex.get(index)
+        const rawHex = row?.hex ?? row?.data
+        const rawSuccess = row?.success ?? row?.Success
+        const hex = typeof rawHex === 'string' ? rawHex : undefined
+        const success = (rawSuccess === true || Number(rawSuccess) === 1) && Boolean(hex)
+        return {
+          success,
+          hex: success ? hex : undefined,
+          error:
+            typeof row?.error === 'string' && row.error
+              ? row.error
+              : success
+                ? ''
+                : '获取语音数据失败'
+        }
+      })
+    } catch (error) {
+      console.warn('[WCDB4] batch voice lookup failed, using single-item fallback:', error)
+      return this.getVoiceDataIndividually(requests)
+    }
+  }
+
+  private async getVoiceDataIndividually(
+    requests: Wcdb4VoiceDataRequest[]
+  ): Promise<Wcdb4VoiceDataResult[]> {
+    const results: Wcdb4VoiceDataResult[] = []
+    for (const request of requests) {
+      results.push(
+        await this.getVoiceData(
+          request.sessionId,
+          request.createTime,
+          request.candidates,
+          request.localId,
+          request.svrId
+        )
+      )
+    }
+    return results
   }
 
   private decodeHexPtr(ptr: unknown): string | null {
@@ -2277,6 +2364,14 @@ export class Wcdb4Client {
       ) => number
     } catch {
       this.wcdbGetVoiceData = null
+    }
+
+    try {
+      this.wcdbGetVoiceDataBatch = lib.func(
+        'int32 wcdb_get_voice_data_batch(int64 handle, const char* requestsJson, _Out_ void** outJson)'
+      )
+    } catch {
+      this.wcdbGetVoiceDataBatch = null
     }
 
     try {
