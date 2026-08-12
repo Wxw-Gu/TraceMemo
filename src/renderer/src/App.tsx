@@ -31,6 +31,8 @@ import {
   sortMessagesChronologically
 } from './utils/message-pages'
 import { enrichQuotedMessages } from './utils/quoted-messages'
+import type { SelectableReportTemplateId } from '../../shared/report-templates'
+import { switchGeneratedReportTemplate } from './utils/report-template-switch'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -1462,7 +1464,9 @@ function App(): React.ReactElement {
       reportGeneration.phase !== 'success' ||
       !reportSourceContact ||
       !reportGeneration.generatedImage ||
-      !reportGeneration.reportPaths
+      !reportGeneration.reportPaths ||
+      !reportGeneration.reportSnapshot ||
+      !reportGeneration.reportMetadata
     ) {
       return
     }
@@ -1472,6 +1476,8 @@ function App(): React.ReactElement {
     lastCapturedReportKeyRef.current = recordKey
     setLatestGeneratedReportId(null)
     setIsSavingGeneratedReport(true)
+    const reportSnapshot = reportGeneration.reportSnapshot
+    const reportMetadata = reportGeneration.reportMetadata
 
     const saveReport = async (): Promise<void> => {
       const result = await window.api.saveGeneratedReport({
@@ -1492,7 +1498,10 @@ function App(): React.ReactElement {
         duration: reportGeneration.generationMetadata.durationMs,
         modelName: reportGeneration.generationMetadata.modelName || aiModelConfig.model,
         tokenUsage: reportGeneration.generationMetadata.tokenUsage,
-        generationLogs: reportGeneration.generationMetadata.generationLogs
+        generationLogs: reportGeneration.generationMetadata.generationLogs,
+        reportSnapshot,
+        reportMetadata,
+        templateId: reportGeneration.templateId
       })
 
       if (!result.success || !result.record) {
@@ -1517,7 +1526,10 @@ function App(): React.ReactElement {
     reportGeneration.generationMetadata,
     reportGeneration.phase,
     reportGeneration.reportMessages.length,
+    reportGeneration.reportMetadata,
     reportGeneration.reportPaths,
+    reportGeneration.reportSnapshot,
+    reportGeneration.templateId,
     reportSourceContact,
     summaryDateRange
   ])
@@ -1562,6 +1574,30 @@ function App(): React.ReactElement {
     const filePath = report.pngPath || report.htmlPath
     if (!filePath) return { success: false, error: '当前报告缺少文件路径' }
     return window.api.revealGroupReport(filePath)
+  }
+
+  const handleSwitchReportTemplate = async (
+    report: GeneratedReportRecord,
+    templateId: SelectableReportTemplateId
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const updated = await withTimeout(
+        switchGeneratedReportTemplate(report, templateId, window.api),
+        120_000,
+        '模板切换超时，请稍后重试'
+      )
+      if (!updated.success || !updated.record) {
+        return { success: false, error: updated.error || '日报模板更新失败' }
+      }
+
+      setGeneratedReports((current) =>
+        current.map((item) => (item.id === report.id ? updated.record! : item))
+      )
+      reportGeneration.setTemplateId(templateId)
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   const handleDeleteReport = async (
@@ -1634,6 +1670,7 @@ function App(): React.ReactElement {
           onRegenerate={handleRegenerateReport}
           onCopyImage={handleCopyReportImage}
           onReveal={handleRevealReport}
+          onSwitchTemplate={handleSwitchReportTemplate}
         />
         <ReportInfoPanel report={selectedReport} onReveal={handleRevealReport} />
       </div>
@@ -1686,10 +1723,13 @@ function App(): React.ReactElement {
           error={reportGeneration.error}
           voiceTranscriptionProgress={reportGeneration.voiceTranscriptionProgress}
           voiceTranscriptionEnabled={summaryMessageTypes.includes('voice')}
-          onRetry={() => {
-            reportGeneration.resetGenerationStatus()
-            void reportGeneration.retry()
-          }}
+          preparationProgress={reportGeneration.preparationProgress}
+          imageInsightSummary={reportGeneration.imageInsightSummary}
+          canRetryModelStep={reportGeneration.canRetryModelStep}
+          currentModel={aiModelConfig}
+          onRetry={(model) => void reportGeneration.retry(model)}
+          onContinueAfterImageFailures={() => void reportGeneration.continueAfterImageFailures()}
+          onCancelAfterImageFailures={reportGeneration.cancelAfterImageFailures}
         />
       </div>
     )

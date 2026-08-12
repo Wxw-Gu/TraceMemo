@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildGroupReportInput,
   parseGroupDailyReport
@@ -28,6 +28,16 @@ const media = {
   voiceHighlights: [],
   funBadges: []
 }
+
+const previousWindow = (globalThis as { window?: unknown }).window
+
+afterEach(() => {
+  if (previousWindow === undefined) {
+    Reflect.deleteProperty(globalThis, 'window')
+  } else {
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow })
+  }
+})
 
 describe('group report parsing', () => {
   it('keeps only distinct real participants in the hero avatar list', () => {
@@ -113,6 +123,109 @@ describe('group report parsing', () => {
     expect(input.prompt).toContain('微信系统消息：由于账号安全原因，无法加入当前群聊。')
   })
 
+  it('injects successful image insights into the model prompt and reports partial failures', async () => {
+    const messages: Message[] = [
+      {
+        id: 'image-1',
+        from: 'member',
+        type: '图片',
+        datetime: '2026-08-12 10:00:00',
+        content: '[图片]',
+        name: '成员一',
+        isSender: false,
+        sessionId: 'group@chatroom',
+        contentData: { type: 'image', md5: 'a'.repeat(32), datName: 'one.dat' }
+      },
+      {
+        id: 'image-2',
+        from: 'member',
+        type: '图片',
+        datetime: '2026-08-12 10:01:00',
+        content: '[图片]',
+        name: '成员二',
+        isSender: false,
+        sessionId: 'group@chatroom',
+        contentData: { type: 'image', md5: 'b'.repeat(32), datName: 'two.dat' }
+      }
+    ]
+    const progress = vi.fn()
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        api: {
+          imageListCandidates: vi.fn(async () => ({
+            success: true,
+            candidates: [
+              {
+                messageId: 'image-1',
+                imageHash: 'a'.repeat(32),
+                md5: 'a'.repeat(32),
+                datName: 'one.dat',
+                sessionId: 'group@chatroom',
+                sender: '成员一',
+                sentAt: new Date('2026-08-12 10:00:00').getTime(),
+                heatScore: 10
+              },
+              {
+                messageId: 'image-2',
+                imageHash: 'b'.repeat(32),
+                md5: 'b'.repeat(32),
+                datName: 'two.dat',
+                sessionId: 'group@chatroom',
+                sender: '成员二',
+                sentAt: new Date('2026-08-12 10:01:00').getTime(),
+                heatScore: 9
+              }
+            ]
+          })),
+          getImage: vi.fn(async () => ({
+            success: true,
+            data: 'data:image/png;base64,fixture'
+          })),
+          imageAnalyze: vi
+            .fn()
+            .mockResolvedValueOnce({
+              success: true,
+              insight: {
+                id: 'insight-1',
+                messageId: 'image-1',
+                imageHash: 'a'.repeat(32),
+                description: '一张表格型网页截图，包含多列数据。',
+                ocrText: '项目 状态 负责人',
+                tags: ['表格', '管理界面'],
+                category: 'screenshot',
+                importance: 'medium',
+                provider: 'vision-provider',
+                model: 'vision-model',
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                sender: '成员一',
+                sentAt: new Date('2026-08-12 10:00:00').getTime(),
+                sessionId: 'group@chatroom'
+              }
+            })
+            .mockResolvedValueOnce({ success: false, error: 'fetch failed' })
+        }
+      }
+    })
+
+    const input = await buildGroupReportInput(messages, null, true, 'full', {
+      onProgress: progress
+    })
+
+    expect(input.prompt).toContain('AI 图片识别摘要：')
+    expect(input.prompt).toContain('一张表格型网页截图，包含多列数据。')
+    expect(input.prompt).toContain('OCR: 项目 状态 负责人')
+    expect(input.imageInsightSummary).toMatchObject({ total: 2, succeeded: 1, failed: 1 })
+    expect(input.imageInsightSummary.failures[0]).toMatchObject({
+      messageId: 'image-2',
+      error: 'fetch failed'
+    })
+    expect(progress).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: 'recognizingImages', completed: 2, total: 2 })
+    )
+  })
+
   it('falls back to topic keywords when the model omits top-level keywords', () => {
     const report = parseGroupDailyReport(
       JSON.stringify({
@@ -132,5 +245,67 @@ describe('group report parsing', () => {
     )
 
     expect(report.keywords).toEqual(['肌酸', '训练', '健身安排'])
+  })
+
+  it('does not render the legacy gallery even when old report data contains it', () => {
+    const report = parseGroupDailyReport(
+      JSON.stringify({
+        topics: [{ title: '图片话题', summary: '围绕图片展开讨论。', keywords: ['图片'] }]
+      }),
+      [],
+      '',
+      [],
+      metadata,
+      {
+        gallery: [
+          {
+            sender: '成员一',
+            time: '10:00',
+            imageUrl: 'data:image/png;base64,fixture',
+            note: '旧相册数据'
+          }
+        ],
+        voiceHighlights: [],
+        funBadges: []
+      }
+    )
+
+    expect(report.media.gallery).toEqual([])
+    expect(report.sectionMeta?.gallery).toMatchObject({ enabled: false, displayedCount: 0 })
+  })
+
+  it('allows a text report with zero AI images when no image reaches the hot threshold', async () => {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        api: {
+          imageListCandidates: vi.fn(async () => ({ success: true, candidates: [] })),
+          getImage: vi.fn(),
+          imageAnalyze: vi.fn()
+        }
+      }
+    })
+
+    const input = await buildGroupReportInput(
+      [
+        {
+          id: 'cold-image',
+          from: 'member',
+          type: '图片',
+          datetime: '2026-08-12 10:00:00',
+          content: '[图片]',
+          name: '成员一',
+          isSender: false,
+          sessionId: 'group@chatroom',
+          contentData: { type: 'image', md5: 'c'.repeat(32), datName: 'cold.dat' }
+        }
+      ],
+      null,
+      true,
+      'full'
+    )
+
+    expect(input.imageInsightSummary).toMatchObject({ total: 0, succeeded: 0, failed: 0 })
+    expect(input.media.gallery).toEqual([])
   })
 })

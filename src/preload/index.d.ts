@@ -1,12 +1,19 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import { Contact, Message } from '../shared/types'
-import { GroupReportExportRequest, GroupReportExportResult } from '../shared/group-report'
+import {
+  GroupReportExportRequest,
+  GroupReportExportResult,
+  GroupReportRenderSnapshotExportRequest
+} from '../shared/group-report'
 import { LocalApiTestRequest, LocalApiTestResponse } from '../shared/local-api-test'
 import {
   DeleteGeneratedReportResult,
   ReportHistoryResult,
   SaveGeneratedReportRequest,
-  SaveGeneratedReportResult
+  SaveGeneratedReportResult,
+  PrepareGeneratedReportTemplateSwitchResult,
+  UpdateGeneratedReportTemplateRequest,
+  UpdateGeneratedReportTemplateResult
 } from '../shared/report-history'
 import type {
   DatabaseKeyEnvironment,
@@ -305,10 +312,19 @@ declare global {
       revealExport: (path: string) => Promise<{ success: boolean; error?: string }>
       onExportProgress: (callback: (progress: ExportJobProgress) => void) => () => void
       exportGroupReport: (request: GroupReportExportRequest) => Promise<GroupReportExportResult>
+      exportGroupReportSnapshot: (
+        request: GroupReportRenderSnapshotExportRequest
+      ) => Promise<GroupReportExportResult>
+      prepareGeneratedReportTemplateSwitch: (
+        reportId: string
+      ) => Promise<PrepareGeneratedReportTemplateSwitchResult>
       listGeneratedReports: () => Promise<ReportHistoryResult>
       saveGeneratedReport: (
         request: SaveGeneratedReportRequest
       ) => Promise<SaveGeneratedReportResult>
+      updateGeneratedReportTemplate: (
+        request: UpdateGeneratedReportTemplateRequest
+      ) => Promise<UpdateGeneratedReportTemplateResult>
       deleteGeneratedReport: (reportId: string) => Promise<DeleteGeneratedReportResult>
       revealGroupReport: (filePath: string) => Promise<{ success: boolean; error?: string }>
       getSavedDbKey: (accountRoot: string) => Promise<DatabaseKeyStorageResult>

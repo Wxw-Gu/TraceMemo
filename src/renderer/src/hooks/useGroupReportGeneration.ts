@@ -11,7 +11,12 @@ import {
   SummaryDateRange,
   SummaryMessageType
 } from '../utils/group-report'
-import { ReportTemplateId } from '../components/reports/ReportTemplateSelector'
+import type { GroupDailyReport, GroupReportMetadata } from '../../../shared/group-report'
+import type {
+  ReportImageInsightSummary,
+  ReportPreparationProgress
+} from '../utils/group-report-facts'
+import { SelectableReportTemplateId } from '../components/reports/ReportTemplateSelector'
 import {
   transcribeVoiceMessages as transcribeReportVoiceMessages,
   type VoiceTranscriptionProgress
@@ -29,6 +34,7 @@ export type ReportGenerationPhase =
   | 'loadingMessages'
   | 'transcribingVoice'
   | 'preparingInput'
+  | 'awaitingImageDecision'
   | 'requestingModel'
   | 'exportingReport'
   | 'success'
@@ -82,6 +88,12 @@ interface UseGroupReportGenerationArgs {
   modelConfig: AiModelConfig
 }
 
+interface PreparedReportContext {
+  input: Awaited<ReturnType<typeof buildGroupReportInput>>
+  startedAt: number
+  logs: ReportGenerationLog[]
+}
+
 export interface ReportTaskStep {
   id: Exclude<ReportGenerationPhase, 'idle' | 'success' | 'error'>
   label: string
@@ -99,6 +111,21 @@ export interface RangeMessageState {
   status: 'idle' | 'loading' | 'success' | 'error'
   error: string
 }
+
+const EMPTY_IMAGE_INSIGHT_SUMMARY: ReportImageInsightSummary = {
+  total: 0,
+  succeeded: 0,
+  failed: 0,
+  items: [],
+  failures: []
+}
+
+const createStepLog = (label: string, startedAt: Date, endedAt: Date): ReportGenerationLog => ({
+  label,
+  startedAt: startedAt.toISOString(),
+  endedAt: endedAt.toISOString(),
+  duration: endedAt.getTime() - startedAt.getTime()
+})
 
 const withTimeout = async <T>(
   promise: Promise<T>,
@@ -242,19 +269,27 @@ export function useGroupReportGeneration({
   messageTypeCounts: Record<SummaryMessageType, number>
   rangeState: RangeMessageState
   voiceTranscriptionProgress: VoiceTranscriptionProgress | null
+  preparationProgress: ReportPreparationProgress | null
+  imageInsightSummary: ReportImageInsightSummary
   generatedImage: string | null
   reportPaths: ReportPaths | null
+  reportSnapshot: GroupDailyReport | null
+  reportMetadata: GroupReportMetadata | null
   generationMetadata: ReportGenerationMetadata
   isGenerating: boolean
   generate: () => Promise<void>
-  retry: () => Promise<void>
+  retry: (modelOverride?: AiModelConfig) => Promise<void>
+  continueAfterImageFailures: () => Promise<void>
+  cancelAfterImageFailures: () => void
+  canRetryModelStep: boolean
+  failedAt: string
   resetGenerationStatus: () => void
   clearError: () => void
   closeResult: () => void
   copyImage: () => Promise<{ success: boolean; error?: string }>
   revealReport: () => Promise<{ success: boolean; error?: string }>
-  templateId: ReportTemplateId
-  setTemplateId: (value: ReportTemplateId) => void
+  templateId: SelectableReportTemplateId
+  setTemplateId: (value: SelectableReportTemplateId) => void
   memberNamePreference: ReportMemberNamePreference
   setMemberNamePreference: (value: ReportMemberNamePreference) => void
   reportTimeoutSeconds: number
@@ -266,9 +301,18 @@ export function useGroupReportGeneration({
   const [rangeState, setRangeState] = useState<RangeMessageState>({ status: 'idle', error: '' })
   const [voiceTranscriptionProgress, setVoiceTranscriptionProgress] =
     useState<VoiceTranscriptionProgress | null>(null)
+  const [preparationProgress, setPreparationProgress] = useState<ReportPreparationProgress | null>(
+    null
+  )
+  const [imageInsightSummary, setImageInsightSummary] = useState<ReportImageInsightSummary>(
+    EMPTY_IMAGE_INSIGHT_SUMMARY
+  )
+  const [failedAt, setFailedAt] = useState('')
   const [generatedImage, setGeneratedImage] = useState<string | null>(null)
   const [reportPaths, setReportPaths] = useState<ReportPaths | null>(null)
-  const [templateId, setTemplateId] = useState<ReportTemplateId>('v1')
+  const [reportSnapshot, setReportSnapshot] = useState<GroupDailyReport | null>(null)
+  const [reportMetadata, setReportMetadata] = useState<GroupReportMetadata | null>(null)
+  const [templateId, setTemplateIdState] = useState<SelectableReportTemplateId>('v1')
   const [memberNamePreference, setMemberNamePreferenceState] = useState<ReportMemberNamePreference>(
     () => {
       const saved = localStorage.getItem('group_report_member_name_preference')
@@ -283,10 +327,14 @@ export function useGroupReportGeneration({
     generationLogs: []
   })
   const rangeRequestIdRef = useRef(0)
+  const preparedContextRef = useRef<PreparedReportContext | null>(null)
 
   const setMemberNamePreference = useCallback((value: ReportMemberNamePreference): void => {
     localStorage.setItem('group_report_member_name_preference', value)
     setMemberNamePreferenceState(value)
+  }, [])
+  const setTemplateId = useCallback((value: SelectableReportTemplateId): void => {
+    setTemplateIdState(value)
   }, [])
   const setReportTimeoutSeconds = useCallback((value: number): void => {
     const normalized = Math.max(30, Math.min(1800, Math.round(Number(value) || 300)))
@@ -298,6 +346,7 @@ export function useGroupReportGeneration({
     phase === 'loadingMessages' ||
     phase === 'transcribingVoice' ||
     phase === 'preparingInput' ||
+    phase === 'awaitingImageDecision' ||
     phase === 'requestingModel' ||
     phase === 'exportingReport'
 
@@ -374,7 +423,13 @@ export function useGroupReportGeneration({
     setError('')
     setGeneratedImage(null)
     setReportPaths(null)
+    setReportSnapshot(null)
+    setReportMetadata(null)
     setVoiceTranscriptionProgress(null)
+    setPreparationProgress(null)
+    setImageInsightSummary(EMPTY_IMAGE_INSIGHT_SUMMARY)
+    setFailedAt('')
+    preparedContextRef.current = null
     setGenerationMetadata({ generationLogs: [] })
   }, [])
 
@@ -396,45 +451,238 @@ export function useGroupReportGeneration({
     []
   )
 
+  const runPreparedReport = useCallback(
+    async (context: PreparedReportContext, selectedModel: AiModelConfig): Promise<void> => {
+      if (!selectedModel.configured || !selectedModel.model) {
+        setFailedAt('调用模型生成内容')
+        setError('请选择一个已配置的 AI 模型')
+        setPhase('error')
+        return
+      }
+
+      let currentFailedAt = '调用模型生成内容'
+      const pushLog = (log: ReportGenerationLog): void => {
+        context.logs.push(log)
+        setGenerationMetadata({
+          modelName: selectedModel.model,
+          generationLogs: [...context.logs]
+        })
+      }
+      const trackStep = async <T>(label: string, task: () => Promise<T>): Promise<T> => {
+        const startedAt = new Date()
+        try {
+          return await task()
+        } finally {
+          pushLog(createStepLog(label, startedAt, new Date()))
+        }
+      }
+
+      setError('')
+      setFailedAt('')
+      setPhase('requestingModel')
+      setPreparationProgress({ stage: 'summarizingInput', label: '整理总结中' })
+      setGenerationMetadata({
+        modelName: selectedModel.model,
+        generationLogs: [...context.logs]
+      })
+      writeReportLog('info', '调用模型生成日报内容', {
+        providerName: selectedModel.providerName,
+        model: selectedModel.model,
+        reusedPreparedInput: true,
+        imageInsights: context.input.imageInsightSummary.succeeded
+      })
+
+      try {
+        const aiMessages = [
+          { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
+          { role: 'user', content: context.input.prompt }
+        ]
+        const result = await trackStep(`AI 生成（${selectedModel.model}）`, () =>
+          withTimeout(
+            window.api.aiChat(aiMessages, {
+              providerId: selectedModel.providerId,
+              modelId: selectedModel.model,
+              timeoutMs: reportTimeoutSeconds * 1000
+            }),
+            'AI 生成日报',
+            reportTimeoutSeconds * 1000 + REPORT_MODEL_TIMEOUT_BUFFER_MS
+          )
+        )
+        if (!result.success || !result.data) throw new Error(result.error || 'AI 请求失败')
+        writeReportLog('info', '模型响应完成', {
+          outputLength: result.data.length,
+          usage: result.usage
+        })
+
+        let tokenUsage =
+          result.usage && result.usage.total
+            ? result.usage
+            : estimateTokenUsage(aiMessages, result.data)
+
+        let report: ReturnType<typeof parseGroupDailyReport>
+        try {
+          report = parseGroupDailyReport(
+            result.data,
+            context.input.topSpeakers,
+            context.input.activeTimeline,
+            context.input.voiceLeaderboard || [],
+            context.input.metadata,
+            context.input.media
+          )
+        } catch (parseError) {
+          writeReportLog('warn', '本地修复日报 JSON 失败，尝试由模型纠正', {
+            ...jsonErrorContext(result.data, parseError),
+            retry: 1
+          })
+          const repairMessages = [
+            { role: 'system', content: GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT },
+            { role: 'user', content: result.data }
+          ]
+          const repairResult = await trackStep(`AI 修复 JSON（${selectedModel.model}）`, () =>
+            withTimeout(
+              window.api.aiChat(repairMessages, {
+                providerId: selectedModel.providerId,
+                modelId: selectedModel.model,
+                timeoutMs: reportTimeoutSeconds * 1000
+              }),
+              'AI 修复日报 JSON',
+              reportTimeoutSeconds * 1000 + REPORT_MODEL_TIMEOUT_BUFFER_MS
+            )
+          )
+          if (!repairResult.success || !repairResult.data) {
+            throw new Error(repairResult.error || 'AI 修复日报 JSON 失败', {
+              cause: parseError
+            })
+          }
+          const repairUsage =
+            repairResult.usage && repairResult.usage.total
+              ? repairResult.usage
+              : estimateTokenUsage(repairMessages, repairResult.data)
+          tokenUsage = mergeTokenUsage(tokenUsage, repairUsage)
+          try {
+            report = parseGroupDailyReport(
+              repairResult.data,
+              context.input.topSpeakers,
+              context.input.activeTimeline,
+              context.input.voiceLeaderboard || [],
+              context.input.metadata,
+              context.input.media
+            )
+            writeReportLog('info', '模型已纠正日报 JSON', {
+              retry: 1,
+              outputLength: repairResult.data.length
+            })
+          } catch (retryParseError) {
+            writeReportLog(
+              'error',
+              '日报 JSON 重试后仍解析失败',
+              jsonErrorContext(repairResult.data, retryParseError)
+            )
+            throw retryParseError
+          }
+        }
+
+        setPhase('exportingReport')
+        currentFailedAt = '导出 HTML 与 PNG'
+        const exported = await withTimeout(
+          window.api.exportGroupReport({
+            report,
+            metadata: context.input.metadata,
+            templateId
+          }),
+          '日报图片导出'
+        )
+        if (
+          !exported.success ||
+          !exported.imageDataUrl ||
+          !exported.htmlPath ||
+          !exported.pngPath
+        ) {
+          throw new Error(exported.error || '日报文件生成失败')
+        }
+        if (exported.exportTimings?.html) {
+          pushLog({ label: 'HTML 导出', ...exported.exportTimings.html })
+        }
+        if (exported.exportTimings?.png) {
+          pushLog({ label: 'PNG 导出', ...exported.exportTimings.png })
+        }
+        const exportFinishedAt =
+          exported.exportTimings?.png?.endedAt || exported.exportTimings?.html?.endedAt
+        const exportFinishTime = exportFinishedAt ? Date.parse(exportFinishedAt) : Date.now()
+
+        setGeneratedImage(exported.imageDataUrl)
+        setReportPaths({ htmlPath: exported.htmlPath, pngPath: exported.pngPath })
+        setReportSnapshot(report)
+        setReportMetadata(context.input.metadata)
+        setGenerationMetadata({
+          durationMs:
+            Number.isFinite(exportFinishTime) && exportFinishTime > context.startedAt
+              ? exportFinishTime - context.startedAt
+              : Date.now() - context.startedAt,
+          modelName: selectedModel.model,
+          tokenUsage,
+          generationLogs: [...context.logs]
+        })
+        preparedContextRef.current = null
+        setPreparationProgress(null)
+        setPhase('success')
+        writeReportLog('info', '群聊日报生成成功', {
+          durationMs: Date.now() - context.startedAt,
+          htmlPath: exported.htmlPath,
+          pngPath: exported.pngPath,
+          providerName: selectedModel.providerName,
+          model: selectedModel.model
+        })
+      } catch (generateError) {
+        const message = errorMessage(generateError)
+        writeReportLog('error', '群聊日报生成失败', {
+          error: message,
+          failedAt: currentFailedAt,
+          durationMs: Date.now() - context.startedAt,
+          reusablePreparedInput: currentFailedAt === '调用模型生成内容'
+        })
+        setFailedAt(currentFailedAt)
+        setError(message)
+        setPhase('error')
+      }
+    },
+    [reportTimeoutSeconds, templateId]
+  )
+
   const generate = useCallback(async (): Promise<void> => {
     if (isGenerating) return
     if (!sourceContact) {
+      setFailedAt('初始化')
       setPhase('error')
       setError('请先选择一个群聊')
       return
     }
     if (!isGroupContact(sourceContact)) {
+      setFailedAt('初始化')
       setPhase('error')
       setError('AI 群聊日报仅支持群聊')
       return
     }
     if (!modelConfig.configured) {
+      setFailedAt('调用模型生成内容')
       setPhase('error')
       setError('尚未配置可用的默认 AI 模型')
       return
     }
     if (!summaryMessageTypes.length) {
+      setFailedAt('初始化')
       setPhase('error')
       setError('请至少选择一种消息类型')
       return
     }
 
     const startGenerateTime = Date.now()
-    let failedAt = '初始化'
+    let currentFailedAt = '初始化'
     const logs: ReportGenerationLog[] = []
     const pushLog = (log: ReportGenerationLog): void => {
       logs.push(log)
-      setGenerationMetadata({
-        modelName: modelConfig.model,
-        generationLogs: [...logs]
-      })
+      setGenerationMetadata({ modelName: modelConfig.model, generationLogs: [...logs] })
     }
-    const createStepLog = (label: string, startedAt: Date, endedAt: Date): ReportGenerationLog => ({
-      label,
-      startedAt: startedAt.toISOString(),
-      endedAt: endedAt.toISOString(),
-      duration: endedAt.getTime() - startedAt.getTime()
-    })
     const trackStep = async <T>(label: string, task: () => Promise<T>): Promise<T> => {
       const startedAt = new Date()
       try {
@@ -444,13 +692,17 @@ export function useGroupReportGeneration({
       }
     }
 
+    preparedContextRef.current = null
     setError('')
+    setFailedAt('')
     setGeneratedImage(null)
     setReportPaths(null)
-    setGenerationMetadata({
-      modelName: modelConfig.model,
-      generationLogs: []
-    })
+    setReportSnapshot(null)
+    setReportMetadata(null)
+    setVoiceTranscriptionProgress(null)
+    setPreparationProgress(null)
+    setImageInsightSummary(EMPTY_IMAGE_INSIGHT_SUMMARY)
+    setGenerationMetadata({ modelName: modelConfig.model, generationLogs: [] })
     writeReportLog('info', '开始生成群聊日报', {
       groupName: sourceContact.m_nsNickName || sourceContact.m_nsUsrName,
       dateRange: summaryDateRange,
@@ -461,9 +713,8 @@ export function useGroupReportGeneration({
     })
 
     try {
-      failedAt = '读取聊天记录'
+      currentFailedAt = '读取聊天记录'
       const sourceMessages = await trackStep('读取聊天记录', () => loadRangeMessages(true))
-
       const selectedTypes = selectedMessageTypeSet(summaryMessageTypes)
       const filteredMessages = sourceMessages.filter((message) => selectedTypes.has(message.type))
       if (!filteredMessages.length) throw new Error('当前范围没有可总结消息')
@@ -473,7 +724,7 @@ export function useGroupReportGeneration({
       })
 
       setPhase(selectedTypes.has('语音') ? 'transcribingVoice' : 'preparingInput')
-      failedAt = '整理日报输入'
+      currentFailedAt = '整理日报输入'
       const input = await trackStep('整理输入', async () => {
         const messagesWithTranscripts = selectedTypes.has('语音')
           ? await transcribeSelectedVoiceMessages(filteredMessages)
@@ -484,150 +735,40 @@ export function useGroupReportGeneration({
           messagesWithTranscripts,
           memberNamePreference
         )
-        return buildGroupReportInput(namedReportMessages, sourceContact, true, 'full')
-      })
-
-      setPhase('requestingModel')
-      failedAt = '调用模型生成内容'
-      const aiMessages = [
-        { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
-        { role: 'user', content: input.prompt }
-      ]
-      const result = await trackStep('AI 生成', () =>
-        withTimeout(
-          window.api.aiChat(aiMessages, {
-            providerId: modelConfig.providerId,
-            modelId: modelConfig.model,
-            timeoutMs: reportTimeoutSeconds * 1000
-          }),
-          'AI 生成日报',
-          reportTimeoutSeconds * 1000 + REPORT_MODEL_TIMEOUT_BUFFER_MS
-        )
-      )
-      if (!result.success || !result.data) throw new Error(result.error || 'AI 请求失败')
-      writeReportLog('info', '模型响应完成', {
-        outputLength: result.data.length,
-        usage: result.usage
-      })
-
-      let tokenUsage =
-        result.usage && result.usage.total
-          ? result.usage
-          : estimateTokenUsage(aiMessages, result.data)
-
-      let report: ReturnType<typeof parseGroupDailyReport>
-      try {
-        report = parseGroupDailyReport(
-          result.data,
-          input.topSpeakers,
-          input.activeTimeline,
-          input.voiceLeaderboard || [],
-          input.metadata,
-          input.media
-        )
-      } catch (parseError) {
-        writeReportLog('warn', '本地修复日报 JSON 失败，尝试由模型纠正', {
-          ...jsonErrorContext(result.data, parseError),
-          retry: 1
+        return buildGroupReportInput(namedReportMessages, sourceContact, true, 'full', {
+          onProgress: setPreparationProgress
         })
-        const repairMessages = [
-          {
-            role: 'system',
-            content: GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT
-          },
-          { role: 'user', content: result.data }
-        ]
-        const repairResult = await trackStep('AI 修复 JSON', () =>
-          withTimeout(
-            window.api.aiChat(repairMessages, {
-              providerId: modelConfig.providerId,
-              modelId: modelConfig.model,
-              timeoutMs: reportTimeoutSeconds * 1000
-            }),
-            'AI 修复日报 JSON',
-            reportTimeoutSeconds * 1000 + REPORT_MODEL_TIMEOUT_BUFFER_MS
-          )
-        )
-        if (!repairResult.success || !repairResult.data) {
-          throw new Error(repairResult.error || 'AI 修复日报 JSON 失败', { cause: parseError })
-        }
-        const repairUsage =
-          repairResult.usage && repairResult.usage.total
-            ? repairResult.usage
-            : estimateTokenUsage(repairMessages, repairResult.data)
-        tokenUsage = mergeTokenUsage(tokenUsage, repairUsage)
-        try {
-          report = parseGroupDailyReport(
-            repairResult.data,
-            input.topSpeakers,
-            input.activeTimeline,
-            input.voiceLeaderboard || [],
-            input.metadata,
-            input.media
-          )
-          writeReportLog('info', '模型已纠正日报 JSON', {
-            retry: 1,
-            outputLength: repairResult.data.length
-          })
-        } catch (retryParseError) {
-          writeReportLog(
-            'error',
-            '日报 JSON 重试后仍解析失败',
-            jsonErrorContext(repairResult.data, retryParseError)
-          )
-          throw retryParseError
-        }
-      }
-
-      setPhase('exportingReport')
-      failedAt = '导出 HTML 与 PNG'
-      const exported = await withTimeout(
-        window.api.exportGroupReport({ report, metadata: input.metadata, templateId }),
-        '日报图片导出'
-      )
-      if (!exported.success || !exported.imageDataUrl || !exported.htmlPath || !exported.pngPath) {
-        throw new Error(exported.error || '日报文件生成失败')
-      }
-      if (exported.exportTimings?.html) {
-        pushLog({
-          label: 'HTML 导出',
-          ...exported.exportTimings.html
-        })
-      }
-      if (exported.exportTimings?.png) {
-        pushLog({
-          label: 'PNG 导出',
-          ...exported.exportTimings.png
-        })
-      }
-      const exportFinishedAt =
-        exported.exportTimings?.png?.endedAt || exported.exportTimings?.html?.endedAt
-      const exportFinishTime = exportFinishedAt ? Date.parse(exportFinishedAt) : Date.now()
-
-      setGeneratedImage(exported.imageDataUrl)
-      setReportPaths({ htmlPath: exported.htmlPath, pngPath: exported.pngPath })
-      setGenerationMetadata({
-        durationMs:
-          Number.isFinite(exportFinishTime) && exportFinishTime > startGenerateTime
-            ? exportFinishTime - startGenerateTime
-            : Date.now() - startGenerateTime,
-        modelName: modelConfig.model,
-        tokenUsage,
-        generationLogs: [...logs]
       })
-      setPhase('success')
-      writeReportLog('info', '群聊日报生成成功', {
-        durationMs: Date.now() - startGenerateTime,
-        htmlPath: exported.htmlPath,
-        pngPath: exported.pngPath
+
+      setImageInsightSummary(input.imageInsightSummary)
+      writeReportLog('info', '日报输入整理完成', {
+        imageCandidates: input.imageInsightSummary.total,
+        imageInsightSucceeded: input.imageInsightSummary.succeeded,
+        imageInsightFailed: input.imageInsightSummary.failed,
+        imageInsightsInjectedIntoPrompt:
+          input.imageInsightSummary.succeeded > 0 && input.prompt.includes('AI 图片识别摘要：')
       })
+      const context: PreparedReportContext = { input, startedAt: startGenerateTime, logs }
+      preparedContextRef.current = context
+      if (input.imageInsightSummary.failed > 0) {
+        setPreparationProgress({
+          stage: 'summarizingInput',
+          label: '等待确认是否继续文字总结',
+          completed: input.imageInsightSummary.succeeded,
+          total: input.imageInsightSummary.total
+        })
+        setPhase('awaitingImageDecision')
+        return
+      }
+      await runPreparedReport(context, modelConfig)
     } catch (generateError) {
       const message = errorMessage(generateError)
       writeReportLog('error', '群聊日报生成失败', {
         error: message,
-        failedAt,
+        failedAt: currentFailedAt,
         durationMs: Date.now() - startGenerateTime
       })
+      setFailedAt(currentFailedAt)
       setError(message)
       setPhase('error')
     }
@@ -636,7 +777,7 @@ export function useGroupReportGeneration({
     loadRangeMessages,
     memberNamePreference,
     modelConfig,
-    reportTimeoutSeconds,
+    runPreparedReport,
     sourceContact,
     summaryDateRange,
     summaryMessageTypes,
@@ -644,8 +785,48 @@ export function useGroupReportGeneration({
     transcribeSelectedVoiceMessages
   ])
 
+  const retry = useCallback(
+    async (modelOverride?: AiModelConfig): Promise<void> => {
+      const context = preparedContextRef.current
+      if (failedAt === '调用模型生成内容' && context) {
+        await runPreparedReport(context, modelOverride || modelConfig)
+        return
+      }
+      await generate()
+    },
+    [failedAt, generate, modelConfig, runPreparedReport]
+  )
+
+  const continueAfterImageFailures = useCallback(async (): Promise<void> => {
+    const context = preparedContextRef.current
+    if (!context || phase !== 'awaitingImageDecision') return
+    writeReportLog('warn', '用户选择忽略图片识别失败并继续文字总结', {
+      imageInsightSucceeded: context.input.imageInsightSummary.succeeded,
+      imageInsightFailed: context.input.imageInsightSummary.failed
+    })
+    await runPreparedReport(context, modelConfig)
+  }, [modelConfig, phase, runPreparedReport])
+
+  const cancelAfterImageFailures = useCallback((): void => {
+    const summary = preparedContextRef.current?.input.imageInsightSummary
+    preparedContextRef.current = null
+    setError('')
+    setFailedAt('')
+    setPreparationProgress(null)
+    setPhase('idle')
+    writeReportLog('warn', '用户因图片识别失败停止本次日报生成', {
+      imageInsightSucceeded: summary?.succeeded || 0,
+      imageInsightFailed: summary?.failed || 0
+    })
+  }, [])
+
+  const canRetryModelStep =
+    phase === 'error' && failedAt === '调用模型生成内容' && Boolean(preparedContextRef.current)
+
   const clearError = useCallback((): void => {
     setError('')
+    setFailedAt('')
+    preparedContextRef.current = null
     setPhase('idle')
   }, [])
 
@@ -671,12 +852,20 @@ export function useGroupReportGeneration({
     messageTypeCounts,
     rangeState,
     voiceTranscriptionProgress,
+    preparationProgress,
+    imageInsightSummary,
     generatedImage,
     reportPaths,
+    reportSnapshot,
+    reportMetadata,
     generationMetadata,
     isGenerating,
     generate,
-    retry: generate,
+    retry,
+    continueAfterImageFailures,
+    cancelAfterImageFailures,
+    canRetryModelStep,
+    failedAt,
     resetGenerationStatus,
     clearError,
     closeResult,

@@ -1,6 +1,8 @@
 export type ReportHeat = '高' | '中' | '低'
 export type ReportMode = 'compact' | 'full'
 
+import type { ReportTemplateRequestId } from './report-templates'
+
 export const selectHeroParticipantNames = (names: string[]): string[] =>
   Array.from(new Set(names.map((name) => name.trim()).filter(Boolean))).slice(0, 4)
 
@@ -283,8 +285,8 @@ export interface GroupReportMetadata {
 export interface GroupReportExportRequest {
   report: GroupDailyReport
   metadata: GroupReportMetadata
-  /** 模板 ID:'v1' 经典 / 'v2' 当前。缺省或未知值用默认(v2) */
-  templateId?: 'v1' | 'v2'
+  /** v1 是默认经典模板，v2 仅保留旧调用兼容；另有五套新版产品模板。 */
+  templateId?: ReportTemplateRequestId
 }
 
 export interface GroupReportExportResult {
@@ -306,4 +308,19 @@ export interface GroupReportExportResult {
   }
   warnings?: string[]
   error?: string
+}
+
+/**
+ * 旧版历史日报没有保存 GroupDailyReport 时，从已生成 HTML 提取的模板占位值。
+ * values 中的卡片字段是本地日报已经转义/渲染好的 HTML，只用于本地模板重排版。
+ */
+export interface GroupReportRenderSnapshot {
+  groupName: string
+  reportDate: string
+  values: Record<string, string>
+}
+
+export interface GroupReportRenderSnapshotExportRequest {
+  snapshot: GroupReportRenderSnapshot
+  templateId: ReportTemplateRequestId
 }

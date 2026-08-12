@@ -465,32 +465,6 @@
         font-style: normal;
         color: #98a2b3;
       }
-      .gallery-card {
-        display: grid;
-        grid-template-columns: 112px 1fr;
-        gap: 12px;
-        margin-top: 10px;
-        padding: 12px;
-        background: #f7faf9;
-        border-radius: 14px;
-      }
-      .gallery-image {
-        width: 112px;
-        height: 112px;
-        border-radius: 12px;
-        object-fit: cover;
-        background: #e5e7eb;
-      }
-      .gallery-stats {
-        display: inline-flex;
-        margin-top: 7px;
-        padding: 4px 8px;
-        border-radius: 999px;
-        background: #eef5ff;
-        color: #1677ff;
-        font-size: 11px;
-        font-weight: 700;
-      }
       .badge-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -645,7 +619,6 @@
         padding: 11px;
       }
       .compact .important-card,
-      .compact .gallery-card,
       .compact .chat-block {
         padding: 10px;
       }
@@ -801,11 +774,6 @@
         {{VISION_CARDS}}
       </section>
 
-      <section class="section {{GALLERY_EMPTY_CLASS}}">
-        <div class="section-title">今日群相册</div>
-        {{GALLERY_CARDS}}
-        {{GALLERY_MORE_NOTE}}
-      </section>
 
       <section class="section {{VOICE_EMPTY_CLASS}}">
         <div class="section-title">语音之最</div>

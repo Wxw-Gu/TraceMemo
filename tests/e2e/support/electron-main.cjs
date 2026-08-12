@@ -479,10 +479,29 @@ handle('report:export', () => {
   fs.writeFileSync(pngPath, Buffer.from(imageData.split(',')[1], 'base64'))
   return { success: true, imageDataUrl: imageData, htmlPath, pngPath }
 })
+handle('report:exportSnapshot', () => {
+  const htmlPath = path.join(userData, 'fixture-report-snapshot.html')
+  const pngPath = path.join(userData, 'fixture-report-snapshot.png')
+  fs.writeFileSync(htmlPath, '<!doctype html><h1>固定脱敏模板快照日报</h1>', 'utf8')
+  fs.writeFileSync(pngPath, Buffer.from(imageData.split(',')[1], 'base64'))
+  return { success: true, imageDataUrl: imageData, htmlPath, pngPath }
+})
+handle('report:prepareTemplateSwitch', () => ({
+  success: true,
+  snapshot: {
+    groupName: '固定脱敏群',
+    reportDate: '2026-08-12',
+    values: { REPORT_TITLE: '固定脱敏群日报' }
+  }
+}))
 handle('report:listGenerated', () => ({ success: true, reports: [] }))
 handle('report:saveGenerated', (request) => ({
   success: true,
   record: { id: 'fixture-report-record', ...request }
+}))
+handle('report:updateGeneratedTemplate', (request) => ({
+  success: true,
+  record: { id: request.reportId, templateId: request.templateId }
 }))
 handle('report:deleteGenerated', () => ({ success: true }))
 handle('report:reveal', () => ({ success: true }))

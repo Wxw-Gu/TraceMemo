@@ -1,3 +1,10 @@
+import type {
+  GroupDailyReport,
+  GroupReportMetadata,
+  GroupReportRenderSnapshot
+} from './group-report'
+import type { SelectableReportTemplateId } from './report-templates'
+
 export type ReportAssetStatus = 'ready' | 'missing'
 
 export interface GeneratedReportRecord {
@@ -37,6 +44,11 @@ export interface GeneratedReportRecord {
     endedAt: string
     duration: number
   }[]
+  /** 新版报告保存结构化快照，模板切换时只重新渲染，不再调用 AI。 */
+  reportSnapshot?: GroupDailyReport
+  reportMetadata?: GroupReportMetadata
+  reportRenderSnapshot?: GroupReportRenderSnapshot
+  templateId?: SelectableReportTemplateId
 }
 
 export interface SaveGeneratedReportRequest {
@@ -63,6 +75,27 @@ export interface SaveGeneratedReportRequest {
     endedAt: string
     duration: number
   }[]
+  reportSnapshot?: GroupDailyReport
+  reportMetadata?: GroupReportMetadata
+  templateId?: SelectableReportTemplateId
+}
+
+export interface UpdateGeneratedReportTemplateRequest {
+  reportId: string
+  templateId: SelectableReportTemplateId
+  generatedImage?: string
+  htmlPath?: string
+  pngPath?: string
+}
+
+export interface PrepareGeneratedReportTemplateSwitchRequest {
+  reportId: string
+}
+
+export interface PrepareGeneratedReportTemplateSwitchResult {
+  success: boolean
+  snapshot?: GroupReportRenderSnapshot
+  error?: string
 }
 
 export interface ReportHistoryResult {
@@ -76,6 +109,8 @@ export interface SaveGeneratedReportResult {
   record?: GeneratedReportRecord
   error?: string
 }
+
+export type UpdateGeneratedReportTemplateResult = SaveGeneratedReportResult
 
 export interface DeleteGeneratedReportResult {
   success: boolean

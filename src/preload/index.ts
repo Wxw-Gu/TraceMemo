@@ -1,7 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { GroupReportExportRequest } from '../shared/group-report'
-import type { SaveGeneratedReportRequest } from '../shared/report-history'
+import type {
+  GroupReportExportRequest,
+  GroupReportRenderSnapshotExportRequest
+} from '../shared/group-report'
+import type {
+  SaveGeneratedReportRequest,
+  UpdateGeneratedReportTemplateRequest
+} from '../shared/report-history'
 import type {
   AIChatRequestOptions,
   AiSearchExternalAuthorizationRequest,
@@ -206,9 +212,15 @@ const api = {
   },
   exportGroupReport: (request: GroupReportExportRequest) =>
     ipcRenderer.invoke('report:export', request),
+  exportGroupReportSnapshot: (request: GroupReportRenderSnapshotExportRequest) =>
+    ipcRenderer.invoke('report:exportSnapshot', request),
+  prepareGeneratedReportTemplateSwitch: (reportId: string) =>
+    ipcRenderer.invoke('report:prepareTemplateSwitch', { reportId }),
   listGeneratedReports: () => ipcRenderer.invoke('report:listGenerated'),
   saveGeneratedReport: (request: SaveGeneratedReportRequest) =>
     ipcRenderer.invoke('report:saveGenerated', request),
+  updateGeneratedReportTemplate: (request: UpdateGeneratedReportTemplateRequest) =>
+    ipcRenderer.invoke('report:updateGeneratedTemplate', request),
   deleteGeneratedReport: (reportId: string) =>
     ipcRenderer.invoke('report:deleteGenerated', reportId),
   revealGroupReport: (filePath: string) => ipcRenderer.invoke('report:reveal', filePath),

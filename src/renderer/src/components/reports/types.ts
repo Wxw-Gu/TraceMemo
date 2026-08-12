@@ -4,7 +4,9 @@ export type {
   ReportAssetStatus,
   ReportHistoryResult,
   SaveGeneratedReportRequest,
-  SaveGeneratedReportResult
+  SaveGeneratedReportResult,
+  UpdateGeneratedReportTemplateRequest,
+  UpdateGeneratedReportTemplateResult
 } from '../../../../shared/report-history'
 
 export type ReportWorkspaceView = 'configure' | 'result'

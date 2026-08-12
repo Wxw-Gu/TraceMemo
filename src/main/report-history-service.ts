@@ -7,8 +7,11 @@ import type {
   ReportAssetStatus,
   ReportHistoryResult,
   SaveGeneratedReportRequest,
-  SaveGeneratedReportResult
+  SaveGeneratedReportResult,
+  UpdateGeneratedReportTemplateRequest,
+  UpdateGeneratedReportTemplateResult
 } from '../shared/report-history'
+import type { GroupReportRenderSnapshot } from '../shared/group-report'
 
 const REPORTS_DIR = 'reports'
 
@@ -184,7 +187,10 @@ export async function saveGeneratedReport(
         html: await readFileSize(savedHtmlPath),
         png: await readFileSize(savedPngPath)
       },
-      generationLogs: request.generationLogs
+      generationLogs: request.generationLogs,
+      reportSnapshot: request.reportSnapshot,
+      reportMetadata: request.reportMetadata,
+      templateId: request.templateId
     }
 
     await fs.writeFile(jsonPath, JSON.stringify(record, null, 2), 'utf8')
@@ -195,6 +201,124 @@ export async function saveGeneratedReport(
         generatedImage: savedPngPath ? await readPngAsDataUrl(savedPngPath) : undefined
       }
     }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export async function updateGeneratedReportTemplate(
+  request: UpdateGeneratedReportTemplateRequest
+): Promise<UpdateGeneratedReportTemplateResult> {
+  try {
+    const jsonFiles = await walkJsonFiles(getReportsRoot())
+    for (const jsonPath of jsonFiles) {
+      try {
+        const content = await fs.readFile(jsonPath, 'utf8')
+        const record = JSON.parse(content) as GeneratedReportRecord
+        if (record.id !== request.reportId) continue
+        if ((!record.reportSnapshot || !record.reportMetadata) && !record.reportRenderSnapshot) {
+          return { success: false, error: '旧报告未保存结构化数据，无法无损切换模板' }
+        }
+
+        const directory = path.dirname(jsonPath)
+        const baseName = path.basename(jsonPath, '.json')
+        const htmlPath = record.htmlPath || path.join(directory, `${baseName}.html`)
+        const pngPath = record.pngPath || path.join(directory, `${baseName}.png`)
+
+        const imageBuffer = request.generatedImage ? parseDataUrl(request.generatedImage) : null
+        const hasPngFile = Boolean(request.pngPath && (await exists(request.pngPath)))
+        if (!request.htmlPath || !(await exists(request.htmlPath))) {
+          return { success: false, error: '新模板 HTML 文件不存在' }
+        }
+        if (!imageBuffer && !hasPngFile) {
+          return { success: false, error: '新模板 PNG 文件不存在' }
+        }
+        await fs.copyFile(request.htmlPath, htmlPath)
+        if (imageBuffer) {
+          await fs.writeFile(pngPath, imageBuffer)
+        } else if (request.pngPath) {
+          await fs.copyFile(request.pngPath, pngPath)
+        }
+
+        const updated: GeneratedReportRecord = {
+          ...record,
+          htmlPath,
+          pngPath,
+          jsonPath,
+          htmlStatus: 'ready',
+          pngStatus: 'ready',
+          imageSize: await readPngSize(pngPath),
+          fileSize: {
+            html: await readFileSize(htmlPath),
+            png: await readFileSize(pngPath)
+          },
+          templateId: request.templateId
+        }
+        delete updated.generatedImage
+        await fs.writeFile(jsonPath, JSON.stringify(updated, null, 2), 'utf8')
+        return {
+          success: true,
+          record: {
+            ...updated,
+            generatedImage: await readPngAsDataUrl(pngPath)
+          }
+        }
+      } catch (error) {
+        console.warn(
+          `[ReportHistory] skip invalid report record while switching template: ${jsonPath}`,
+          error
+        )
+      }
+    }
+    return { success: false, error: '未找到要切换模板的日报记录' }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export async function prepareGeneratedReportTemplateSwitch(
+  reportId: string,
+  extractSnapshot: (
+    htmlPath: string,
+    fallback: {
+      groupName: string
+      reportDate: string
+      dateRange: string
+      messageCount: number
+      generatedAt: string
+    }
+  ) => Promise<GroupReportRenderSnapshot>
+): Promise<import('../shared/report-history').PrepareGeneratedReportTemplateSwitchResult> {
+  try {
+    const jsonFiles = await walkJsonFiles(getReportsRoot())
+    for (const jsonPath of jsonFiles) {
+      try {
+        const content = await fs.readFile(jsonPath, 'utf8')
+        const record = JSON.parse(content) as GeneratedReportRecord
+        if (record.id !== reportId) continue
+        if (record.reportRenderSnapshot)
+          return { success: true, snapshot: record.reportRenderSnapshot }
+        if (!record.htmlPath || !(await exists(record.htmlPath))) {
+          return { success: false, error: '当前日报缺少 HTML 文件，无法迁移旧模板数据' }
+        }
+        const snapshot = await extractSnapshot(record.htmlPath, {
+          groupName: record.contactName,
+          reportDate: record.reportDate,
+          dateRange: record.dateRange,
+          messageCount: record.messageCount,
+          generatedAt: record.generatedAt
+        })
+        const updated = { ...record, reportRenderSnapshot: snapshot }
+        await fs.writeFile(jsonPath, JSON.stringify(updated, null, 2), 'utf8')
+        return { success: true, snapshot }
+      } catch (error) {
+        console.warn(
+          `[ReportHistory] skip invalid report record while preparing template switch: ${jsonPath}`,
+          error
+        )
+      }
+    }
+    return { success: false, error: '未找到要切换模板的日报记录' }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
   }

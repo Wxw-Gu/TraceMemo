@@ -32,14 +32,27 @@ import {
   inspectImageDecoderStatus,
   type DecodedImage
 } from './image-decrypt-service'
-import { exportGroupReport } from './group-report-service'
+import {
+  exportGroupReport,
+  exportGroupReportSnapshot,
+  extractGroupReportRenderSnapshot
+} from './group-report-service'
 import {
   deleteGeneratedReport,
   listGeneratedReports,
-  saveGeneratedReport
+  prepareGeneratedReportTemplateSwitch,
+  saveGeneratedReport,
+  updateGeneratedReportTemplate
 } from './report-history-service'
-import type { GroupReportExportRequest } from '../shared/group-report'
-import type { SaveGeneratedReportRequest } from '../shared/report-history'
+import type {
+  GroupReportExportRequest,
+  GroupReportRenderSnapshotExportRequest
+} from '../shared/group-report'
+import type {
+  SaveGeneratedReportRequest,
+  PrepareGeneratedReportTemplateSwitchRequest,
+  UpdateGeneratedReportTemplateRequest
+} from '../shared/report-history'
 import type {
   AIChatRequestOptions,
   AiSearchExternalAuthorizationRequest,
@@ -1132,6 +1145,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('report:export', async (_, request: GroupReportExportRequest) => {
     return exportGroupReport(request)
   })
+  ipcMain.handle(
+    'report:exportSnapshot',
+    async (_, request: GroupReportRenderSnapshotExportRequest) => exportGroupReportSnapshot(request)
+  )
 
   ipcMain.handle('export:start', async (event, request: ExportRequest) => {
     const window = BrowserWindow.fromWebContents(event.sender)
@@ -1157,6 +1174,19 @@ app.whenReady().then(async () => {
   ipcMain.handle('report:saveGenerated', async (_, request: SaveGeneratedReportRequest) => {
     return saveGeneratedReport(request)
   })
+
+  ipcMain.handle(
+    'report:updateGeneratedTemplate',
+    async (_, request: UpdateGeneratedReportTemplateRequest) => {
+      return updateGeneratedReportTemplate(request)
+    }
+  )
+
+  ipcMain.handle(
+    'report:prepareTemplateSwitch',
+    async (_, request: PrepareGeneratedReportTemplateSwitchRequest) =>
+      prepareGeneratedReportTemplateSwitch(request.reportId, extractGroupReportRenderSnapshot)
+  )
 
   ipcMain.handle('report:deleteGenerated', async (_, reportId: string) => {
     return deleteGeneratedReport(reportId)

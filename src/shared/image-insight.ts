@@ -94,7 +94,7 @@ export interface ImageCandidateQuery {
   sessionId: string
   startTime: number
   endTime: number
-  /** 取 Top N,默认 3 */
+  /** 最多取 N 张,默认 3；服务端会将其限制在 0–3 */
   limit?: number
   /** 由 renderer 从已加载消息中提取的图片候选(包含热度信息) */
   inputs?: Array<{
@@ -108,3 +108,20 @@ export interface ImageCandidateQuery {
     interactionCount: number
   }>
 }
+
+/**
+ * A picture is considered hot only when it has observable follow-up activity.
+ * A bare image message (or a single passive reply) is not enough to enter the
+ * daily report's AI image selection. This keeps the "top 3" value an upper
+ * bound rather than a quota that fills every available slot.
+ */
+export const isHotImageCandidate = (input: {
+  responseCount: number
+  interactionCount: number
+}): boolean =>
+  input.responseCount >= 2 || (input.responseCount >= 1 && input.interactionCount >= 1)
+
+export const calculateImageHeatScore = (input: {
+  responseCount: number
+  interactionCount: number
+}): number => input.responseCount * 3 + input.interactionCount * 2 + 1

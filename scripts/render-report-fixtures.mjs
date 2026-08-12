@@ -182,7 +182,6 @@ fullRequest.report.sectionMeta = {
   qa: { enabled: true, importance: 0.62, confidence: 0.8, totalCount: 2, displayedCount: 2 },
   storylines: { enabled: true, importance: 0.68, confidence: 0.74, totalCount: 2, displayedCount: 2 },
   reversals: { enabled: true, importance: 0.55, confidence: 0.72, totalCount: 1, displayedCount: 1 },
-  gallery: { enabled: true, importance: 0.64, confidence: 0.82, totalCount: 2, displayedCount: 2 },
   voices: { enabled: true, importance: 0.6, confidence: 0.83, totalCount: 2, displayedCount: 2 },
   badges: { enabled: true, importance: 0.45, confidence: 0.68, totalCount: 2, displayedCount: 2 },
   chains: { enabled: true, importance: 0.58, confidence: 0.72, totalCount: 1, displayedCount: 1 }
@@ -218,24 +217,7 @@ fullRequest.report.reversals = [
   { topic: '接口异常', initialView: '最初以为后端服务不稳定。', finalView: '最终判断更像缓存与配置问题。', note: '多轮验证后，排查方向明显收敛。' }
 ]
 fullRequest.report.media = {
-  gallery: [
-    {
-      sender: '阿宇',
-      time: '09:52',
-      imageUrl: sampleImage,
-      note: '图片发出后，群里立刻围绕异常现象、返回结构和复现环境展开讨论。',
-      stats: '12 条后续消息 · 6 人接话',
-      inferenceLabel: '基于图片后的聊天上下文推断'
-    },
-    {
-      sender: '佩佩',
-      time: '17:14',
-      imageUrl: sampleImage,
-      note: '第二张图带起一轮轻松但有效的快速确认。',
-      stats: '5 条后续消息 · 3 人接话',
-      inferenceLabel: '基于图片后的聊天上下文推断'
-    }
-  ],
+  gallery: [],
   voiceHighlights: [
     { title: '语音输出王', sender: '老周', note: '共发送 3 条语音，累计 97 秒。' },
     { title: '连续发言时刻', sender: '阿宇', note: '16:32 连发 2 条语音，共 54 秒。' }
@@ -281,7 +263,6 @@ async function renderRequest(request, targetBase) {
   const qaCards = (report.qa || []).map((item) => `<div class="qa-card"><b>Q：${escapeHtml(item.question)}</b><div>A：${escapeHtml(item.answer)}${item.answerer ? ` — ${escapeHtml(item.answerer)}` : ''}</div></div>`).join('')
   const storylineCards = (report.storylines || []).map((item) => `<div class="card storyline-card"><div class="topic-title-row"><h3>${escapeHtml(item.title)}</h3></div><div class="storyline-steps">${item.stages.map((stage) => `<div class="storyline-step"><span>${escapeHtml(stage.time)}</span><b>${escapeHtml(stage.event)}</b></div>`).join('')}</div>${item.result ? `<p class="muted">${escapeHtml(item.result)}</p>` : ''}</div>`).join('')
   const reversalCards = (report.reversals || []).map((item) => `<div class="qa-card"><b>${escapeHtml(item.topic)}</b><div>最初：${escapeHtml(item.initialView)}</div><div>后来：${escapeHtml(item.finalView)}</div>${item.note ? `<div>${escapeHtml(item.note)}</div>` : ''}</div>`).join('')
-  const galleryCards = (report.media.gallery || []).map((item) => `<div class="gallery-card"><img class="gallery-image" src="${item.imageUrl}" alt=""><div class="gallery-body"><div class="important-meta"><b>${escapeHtml(item.sender)}</b><span>${escapeHtml(item.time)}</span></div>${item.stats ? `<div class="gallery-stats">${escapeHtml(item.stats)}</div>` : ''}<div class="important-text">${escapeHtml(item.note)}</div>${item.inferenceLabel ? `<div class="topic-meta">${escapeHtml(item.inferenceLabel)}</div>` : ''}</div></div>`).join('')
   const voiceCards = (report.media.voiceHighlights || []).map((item) => `<div class="qa-card"><b>${escapeHtml(item.title)} · ${escapeHtml(item.sender)}</b><div>${escapeHtml(item.note)}</div></div>`).join('')
   const voiceRankCards = (report.analytics.voiceLeaderboard || []).map((item, index) => `<div class="rank"><img src="${avatars[item.sender] || avatarSvg(item.sender[0], '#e5e7eb')}" alt=""><b>${index + 1}. ${escapeHtml(item.sender)}</b><span>${item.count} 条 · ${item.durationSec} 秒</span></div>`).join('')
   const badgeCards = (report.media.funBadges || []).map((item) => `<div class="badge-card"><span class="tag">${escapeHtml(item.title)}</span><b>${escapeHtml(item.owner)}</b><p>${escapeHtml(item.note)}</p></div>`).join('')
@@ -343,9 +324,6 @@ async function renderRequest(request, targetBase) {
     REVERSALS_EMPTY_CLASS: report.sectionMeta.reversals?.enabled ? '' : 'empty-section',
     REVERSAL_CARDS: reversalCards,
     REVERSALS_MORE_NOTE: '',
-    GALLERY_EMPTY_CLASS: report.sectionMeta.gallery?.enabled ? '' : 'empty-section',
-    GALLERY_CARDS: galleryCards,
-    GALLERY_MORE_NOTE: '',
     VOICE_EMPTY_CLASS: report.sectionMeta.voices?.enabled ? '' : 'empty-section',
     VOICE_CARDS: voiceCards,
     VOICE_MORE_NOTE: '',

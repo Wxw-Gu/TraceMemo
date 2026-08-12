@@ -6,21 +6,23 @@ import {
   GroupReportExportRequest,
   GroupReportExportResult,
   GroupReportMetadata,
+  GroupReportRenderSnapshot,
+  GroupReportRenderSnapshotExportRequest,
   ReportHeat,
   ReportSectionMeta,
   selectHeroParticipantNames
 } from '../shared/group-report'
 import { resolveMd5, getGroupSnapshot } from './services/chat-service'
 import { imageInsightService } from './services/image-insight-service'
+import { getReportTemplate } from '../shared/report-templates'
 
-const TEMPLATE_FILES: Record<string, string> = {
+const LEGACY_TEMPLATE_FILES: Record<string, string> = {
   v1: 'mobile_daily_report_v1.html',
   v2: 'mobile_daily_report_v2.html'
 }
-const DEFAULT_TEMPLATE = TEMPLATE_FILES.v1
 
 const templatePath = (templateId?: string): string => {
-  const name = TEMPLATE_FILES[templateId || ''] || DEFAULT_TEMPLATE
+  const name = LEGACY_TEMPLATE_FILES[templateId || ''] || getReportTemplate(templateId).resourceFile
   const candidates = [
     path.join(process.resourcesPath, 'resources', name),
     path.join(app.getAppPath(), 'resources', name),
@@ -168,6 +170,7 @@ const overflowNote = (
 
 const renderReportHtml = async (request: GroupReportExportRequest): Promise<string> => {
   const { report, metadata } = request
+  const template = getReportTemplate(request.templateId)
   const avatarNames = new Set<string>(metadata.heroParticipants)
   report.topics.forEach((topic) => topic.participants.forEach((name) => avatarNames.add(name)))
   report.importantMessages.forEach((message) => avatarNames.add(message.sender))
@@ -175,7 +178,6 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     quote.messages.forEach((message) => avatarNames.add(message.sender))
   )
   report.analytics.topSpeakers.forEach((speaker) => avatarNames.add(speaker.name))
-  report.media?.gallery?.forEach((item) => avatarNames.add(item.sender))
   report.media?.voiceHighlights?.forEach((item) => avatarNames.add(item.sender))
   report.media?.funBadges?.forEach((item) => avatarNames.add(item.owner))
 
@@ -341,20 +343,6 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     )
     .join('')
 
-  const galleryCards = (report.media?.gallery || [])
-    .map(
-      (item) => `<div class="gallery-card">
-        <img class="gallery-image" src="${item.imageUrl}" alt="群聊图片">
-        <div class="gallery-body">
-          <div class="important-meta"><b>${escapeHtml(item.sender)}</b><span>${escapeHtml(item.time)}</span></div>
-          ${item.stats ? `<div class="gallery-stats">${escapeHtml(item.stats)}</div>` : ''}
-          <div class="important-text">${escapeHtml(item.note)}</div>
-          ${item.inferenceLabel ? `<div class="topic-meta">${escapeHtml(item.inferenceLabel)}</div>` : ''}
-        </div>
-      </div>`
-    )
-    .join('')
-
   // AI 图片理解结果板块(ImageInsight)
   // 内容由 ImageInsightService.analyze 生成,真实看图 + 看上下文
   const visionCards = (report.media?.visionGallery || [])
@@ -411,11 +399,12 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     .join('')
 
   // v1 模板使用的水平条形热度图,渲染 top speakers 排行
-  const heatBarsHtml = report.analytics.topSpeakers
-    .slice(0, 8)
+  const heatSpeakers = report.analytics.topSpeakers.slice(0, 8)
+  const maxSpeakerCount = Math.max(1, ...heatSpeakers.map((speaker) => Math.max(0, speaker.count)))
+  const heatBarsHtml = heatSpeakers
     .map((speaker) => {
       const count = Math.max(0, speaker.count)
-      const width = Math.min(100, count * 12)
+      const width = Math.max(4, Math.round((count / maxSpeakerCount) * 100))
       return `<div class="heat-row">
         <span class="heat-name">${escapeHtml(speaker.name)}</span>
         <span class="heat-bar"><i style="width:${width}%"></i></span>
@@ -454,7 +443,11 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
 
   let html = await fs.readFile(templatePath(request.templateId), 'utf8')
   const values: Record<string, string> = {
+    TEMPLATE_CLASS: template.cssClass,
+    TEMPLATE_LABEL: escapeHtml(template.label),
+    TEMPLATE_NAME: escapeHtml(template.name),
     REPORT_TITLE: escapeHtml(`${metadata.groupName}日报`),
+    REPORT_DATE: escapeHtml(metadata.reportDate),
     REPORT_MODE_CLASS: metadata.reportMode === 'full' ? 'full' : 'compact',
     GROUP_NAME: escapeHtml(metadata.groupName),
     DATE_RANGE: escapeHtml(metadata.dateRange),
@@ -525,9 +518,6 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     ),
     VISION_CARDS: visionCards,
     VISION_TITLE: '📸 AI 识别的图片精选',
-    GALLERY_EMPTY_CLASS: sectionClass(request, 'gallery', report.media?.gallery?.length > 0),
-    GALLERY_CARDS: galleryCards,
-    GALLERY_MORE_NOTE: overflowNote(request, 'gallery'),
     VOICE_EMPTY_CLASS: sectionClass(request, 'voices', report.media?.voiceHighlights?.length > 0),
     VOICE_CARDS: voiceCards,
     VOICE_MORE_NOTE: overflowNote(request, 'voices'),
@@ -560,11 +550,242 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
   return html
 }
 
-const captureFullPage = async (htmlPath: string, pngPath: string): Promise<string> => {
+const renderReportSnapshotHtml = async (
+  request: GroupReportRenderSnapshotExportRequest
+): Promise<string> => {
+  const template = getReportTemplate(request.templateId)
+  let html = await fs.readFile(templatePath(request.templateId), 'utf8')
+  const values = {
+    ...request.snapshot.values,
+    TEMPLATE_CLASS: template.cssClass,
+    TEMPLATE_LABEL: escapeHtml(template.label),
+    TEMPLATE_NAME: escapeHtml(template.name),
+    REPORT_TITLE:
+      request.snapshot.values.REPORT_TITLE || escapeHtml(`${request.snapshot.groupName}日报`),
+    REPORT_DATE: request.snapshot.values.REPORT_DATE || escapeHtml(request.snapshot.reportDate)
+  }
+  for (const [key, value] of Object.entries(values)) html = replacePlaceholder(html, key, value)
+  return html.replace(/\{\{[A-Z0-9_]+\}\}/g, '')
+}
+
+export const extractGroupReportRenderSnapshot = async (
+  htmlPath: string,
+  fallback: {
+    groupName: string
+    reportDate: string
+    dateRange: string
+    messageCount: number
+    generatedAt: string
+  }
+): Promise<GroupReportRenderSnapshot> => {
+  let reportWindow: BrowserWindow | null = null
+  try {
+    reportWindow = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false
+      }
+    })
+    await reportWindow.loadFile(htmlPath)
+    const extracted = (await reportWindow.webContents.executeJavaScript(`(() => {
+      const one = (selector) => document.querySelector(selector)
+      const text = (...selectors) => {
+        for (const selector of selectors) {
+          const value = one(selector)?.textContent?.trim()
+          if (value) return value
+        }
+        return ''
+      }
+      const html = (...selectors) => {
+        for (const selector of selectors) {
+          const value = one(selector)?.innerHTML
+          if (value?.trim()) return value
+        }
+        return ''
+      }
+      const sectionChildren = (selector) => {
+        const section = one(selector)
+        if (!section) return ''
+        return Array.from(section.children)
+          .filter((child) => !child.classList.contains('section-title'))
+          .map((child) => child.outerHTML)
+          .join('')
+      }
+      const sectionClass = (...selectors) => {
+        for (const selector of selectors) {
+          const section = one(selector)
+          if (!section) continue
+          return section.classList.contains('empty-section') || !sectionChildren(selector).trim()
+            ? 'empty-section'
+            : ''
+        }
+        return 'empty-section'
+      }
+      const statValues = Array.from(document.querySelectorAll('.hero .stat b, .report-stats .stat-block strong'))
+        .map((node) => node.textContent?.trim() || '')
+      const activity = Array.from(document.querySelectorAll('.analytics > .card, .section-analytics-heat .card'))
+        .find((node) => node.textContent?.includes('活跃时间线'))
+        ?.textContent?.replace(/^.*?活跃时间线[：:]?/, '')
+        .trim() || ''
+      const legacyRanks = Array.from(document.querySelectorAll('.analytics .rank'))
+        .map((node) => node.outerHTML)
+        .join('')
+      const legacyHeat = Array.from(document.querySelectorAll('.analytics > .heat-row'))
+        .map((node) => node.outerHTML)
+        .join('')
+      const footerText = text('.footer', '.report-footer')
+        .replaceAll('\\n', ' ')
+        .replaceAll('\\r', ' ')
+        .replaceAll('\\t', ' ')
+      return {
+        reportTitle: text('.hero h1', '.report-masthead h1', 'title'),
+        reportDate: text('.report-date strong'),
+        overview: text('.overview', '.report-lede'),
+        recordNote: text('.record-note'),
+        heroAvatars: html('.avatar-grid', '.report-hero-avatars'),
+        messageCount: statValues[0] || '',
+        activeUsers: statValues[1] || '',
+        timeSpan: statValues[2] || '',
+        topicCount: statValues[3] || '',
+        topicCards: sectionChildren('.topics') || html('.section-topics .topics-grid'),
+        importantMessages: sectionChildren('.messages') || html('.section-messages .section-body'),
+        quoteBlocks: sectionChildren('.quotes') || html('.section-quotes .section-body'),
+        qaCards: sectionChildren('.qa') || html('.section-qa .section-body'),
+        resourceItems: sectionChildren('.resources') || html('.section-resources .section-body'),
+        visionCards: sectionChildren('.vision') || html('.section-vision .vision-grid'),
+        rankItems: legacyRanks || html('.section-analytics-rank .rank-list'),
+        heatBars: legacyHeat || html('.section-analytics-heat .section-body'),
+        activityTimeline: activity,
+        cloudTags: html('.cloud-tags', '.section-keywords .cloud-tags'),
+        footerText,
+        classes: {
+          topics: sectionClass('.topics', '.section-topics'),
+          messages: sectionClass('.messages', '.section-messages'),
+          quotes: sectionClass('.quotes', '.section-quotes'),
+          qa: sectionClass('.qa', '.section-qa'),
+          resources: sectionClass('.resources', '.section-resources'),
+          vision: sectionClass('.vision', '.section-vision'),
+          keywords: sectionClass('.cloud', '.section-keywords')
+        }
+      }
+    })()`)) as {
+      reportTitle: string
+      reportDate: string
+      overview: string
+      recordNote: string
+      heroAvatars: string
+      messageCount: string
+      activeUsers: string
+      timeSpan: string
+      topicCount: string
+      topicCards: string
+      importantMessages: string
+      quoteBlocks: string
+      qaCards: string
+      resourceItems: string
+      visionCards: string
+      rankItems: string
+      heatBars: string
+      activityTimeline: string
+      cloudTags: string
+      footerText: string
+      classes: Record<string, string>
+    }
+    if (!extracted.reportTitle || !extracted.topicCards) {
+      throw new Error('旧日报 HTML 缺少可迁移的标题或主题内容')
+    }
+
+    const values: Record<string, string> = {
+      REPORT_TITLE: escapeHtml(extracted.reportTitle),
+      REPORT_DATE: escapeHtml(extracted.reportDate || fallback.reportDate),
+      DATE_RANGE: escapeHtml(fallback.dateRange),
+      TIME_SPAN: escapeHtml(extracted.timeSpan),
+      HERO_SUMMARY: escapeHtml(extracted.overview),
+      HERO_TAKEAWAY: '',
+      HERO_PENDING: '',
+      HERO_STATUS_LINE: '',
+      HERO_TAKEAWAY_EMPTY_CLASS: 'empty-section',
+      HERO_PENDING_EMPTY_CLASS: 'empty-section',
+      HERO_STATUS_EMPTY_CLASS: 'empty-section',
+      HERO_AVATARS: extracted.heroAvatars,
+      HERO_AVATAR_CLASS: extracted.heroAvatars ? '' : 'empty-section',
+      MESSAGE_COUNT: escapeHtml(extracted.messageCount || String(fallback.messageCount)),
+      ACTIVE_USERS: escapeHtml(extracted.activeUsers),
+      TOPIC_COUNT: escapeHtml(extracted.topicCount),
+      RECORD_NOTE: escapeHtml(extracted.recordNote),
+      GENERATED_AT: escapeHtml(fallback.generatedAt),
+      FOOTER_NOTE: escapeHtml(extracted.footerText),
+      TOPIC_CARDS: extracted.topicCards,
+      IMPORTANT_MESSAGES: extracted.importantMessages,
+      QUOTE_BLOCKS: extracted.quoteBlocks,
+      QA_CARDS: extracted.qaCards,
+      RESOURCE_ITEMS: extracted.resourceItems,
+      VISION_TITLE: '📸 AI 识别的图片精选',
+      VISION_CARDS: extracted.visionCards,
+      RANK_ITEMS: extracted.rankItems,
+      HEAT_BARS: extracted.heatBars,
+      ACTIVITY_TIMELINE: escapeHtml(extracted.activityTimeline),
+      CLOUD_TAGS: extracted.cloudTags,
+      TOPICS_EMPTY_CLASS: extracted.classes.topics,
+      MESSAGES_EMPTY_CLASS: extracted.classes.messages,
+      QUOTES_EMPTY_CLASS: extracted.classes.quotes,
+      QA_EMPTY_CLASS: extracted.classes.qa,
+      RESOURCES_EMPTY_CLASS: extracted.classes.resources,
+      VISION_EMPTY_CLASS: extracted.classes.vision,
+      KEYWORDS_EMPTY_CLASS: extracted.classes.keywords,
+      ANALYTICS_EMPTY_CLASS: extracted.heatBars || extracted.rankItems ? '' : 'empty-section',
+      ACTIONS_EMPTY_CLASS: 'empty-section',
+      STORYLINES_EMPTY_CLASS: 'empty-section',
+      REVERSALS_EMPTY_CLASS: 'empty-section',
+      CHAINS_EMPTY_CLASS: 'empty-section',
+      VOICE_EMPTY_CLASS: 'empty-section',
+      VOICE_RANK_EMPTY_CLASS: 'empty-section',
+      BADGES_EMPTY_CLASS: 'empty-section',
+      TODO_CARDS: '',
+      UNRESOLVED_CARDS: '',
+      STORYLINE_CARDS: '',
+      REVERSAL_CARDS: '',
+      CHAIN_CARDS: '',
+      VOICE_CARDS: '',
+      VOICE_RANK_CARDS: '',
+      BADGE_CARDS: '',
+      TOPICS_MORE_NOTE: '',
+      MESSAGES_MORE_NOTE: '',
+      QUOTES_MORE_NOTE: '',
+      QA_MORE_NOTE: '',
+      RESOURCES_MORE_NOTE: '',
+      ACTIONS_MORE_NOTE: '',
+      STORYLINES_MORE_NOTE: '',
+      REVERSALS_MORE_NOTE: '',
+      CHAINS_MORE_NOTE: '',
+      VOICE_MORE_NOTE: '',
+      BADGES_MORE_NOTE: '',
+      KEYWORDS_MORE_NOTE: ''
+    }
+    return {
+      groupName: fallback.groupName,
+      reportDate: extracted.reportDate || fallback.reportDate,
+      values
+    }
+  } finally {
+    if (reportWindow && !reportWindow.isDestroyed()) reportWindow.destroy()
+  }
+}
+
+const captureFullPage = async (
+  htmlPath: string,
+  pngPath: string,
+  templateId?: string
+): Promise<string> => {
+  const template = getReportTemplate(templateId)
+  const captureWidth = LEGACY_TEMPLATE_FILES[templateId || ''] ? 430 : template.captureWidth
+  const maxCaptureWidth = LEGACY_TEMPLATE_FILES[templateId || ''] ? 1200 : template.maxCaptureWidth
   console.log(`[GroupReport] capture begin html=${htmlPath}`)
   const reportWindow = new BrowserWindow({
     show: false,
-    width: 430,
+    width: captureWidth,
     height: 800,
     frame: false,
     backgroundColor: '#f3f5f7',
@@ -583,10 +804,10 @@ const captureFullPage = async (htmlPath: string, pngPath: string): Promise<strin
     ])`)
     console.log('[GroupReport] capture assets ready')
     const metrics = (await reportWindow.webContents.executeJavaScript(`({
-      width: Math.ceil(Math.max(document.documentElement.scrollWidth, document.body.scrollWidth, 430)),
+      width: Math.ceil(Math.max(document.documentElement.scrollWidth, document.body.scrollWidth, ${captureWidth})),
       height: Math.ceil(Math.max(document.documentElement.scrollHeight, document.body.scrollHeight, 800))
     })`)) as { width: number; height: number }
-    const width = Math.max(430, Math.min(1200, Math.ceil(metrics.width)))
+    const width = Math.max(captureWidth, Math.min(maxCaptureWidth, Math.ceil(metrics.width)))
     const height = Math.max(800, Math.min(20000, Math.ceil(metrics.height)))
     reportWindow.setContentSize(width, height)
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -611,7 +832,12 @@ export const exportGroupReport = async (
 
     const outputDir = path.join(os.homedir(), 'Documents', '微信聊天记录')
     await fs.ensureDir(outputDir)
-    const templateLabel = request.templateId === 'v1' ? '经典版' : '模板2'
+    const templateLabel =
+      request.templateId === 'v1'
+        ? '经典版'
+        : request.templateId === 'v2'
+          ? '丰富版'
+          : getReportTemplate(request.templateId).fileLabel
     const baseName = `${sanitizeFileName(request.metadata.groupName)}日报_${request.metadata.reportDate}_${templateLabel}`
     const htmlPath = path.join(outputDir, `${baseName}.html`)
     const pngPath = path.join(outputDir, `${baseName}.png`)
@@ -620,7 +846,7 @@ export const exportGroupReport = async (
     await fs.writeFile(htmlPath, html, 'utf8')
     const htmlEndedAt = new Date()
     const pngStartedAt = new Date()
-    const imageDataUrl = await captureFullPage(htmlPath, pngPath)
+    const imageDataUrl = await captureFullPage(htmlPath, pngPath, request.templateId)
     const pngEndedAt = new Date()
     return {
       success: true,
@@ -643,6 +869,46 @@ export const exportGroupReport = async (
     }
   } catch (error) {
     console.error('[GroupReport] export failed:', error)
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export const exportGroupReportSnapshot = async (
+  request: GroupReportRenderSnapshotExportRequest
+): Promise<GroupReportExportResult> => {
+  try {
+    const outputDir = path.join(os.homedir(), 'Documents', '微信聊天记录')
+    await fs.ensureDir(outputDir)
+    const templateLabel = getReportTemplate(request.templateId).fileLabel
+    const baseName = `${sanitizeFileName(request.snapshot.groupName)}日报_${request.snapshot.reportDate}_${templateLabel}`
+    const htmlPath = path.join(outputDir, `${baseName}.html`)
+    const pngPath = path.join(outputDir, `${baseName}.png`)
+    const htmlStartedAt = new Date()
+    const html = await renderReportSnapshotHtml(request)
+    await fs.writeFile(htmlPath, html, 'utf8')
+    const htmlEndedAt = new Date()
+    const pngStartedAt = new Date()
+    const imageDataUrl = await captureFullPage(htmlPath, pngPath, request.templateId)
+    const pngEndedAt = new Date()
+    return {
+      success: true,
+      htmlPath,
+      pngPath,
+      imageDataUrl,
+      exportTimings: {
+        html: {
+          startedAt: htmlStartedAt.toISOString(),
+          endedAt: htmlEndedAt.toISOString(),
+          duration: htmlEndedAt.getTime() - htmlStartedAt.getTime()
+        },
+        png: {
+          startedAt: pngStartedAt.toISOString(),
+          endedAt: pngEndedAt.toISOString(),
+          duration: pngEndedAt.getTime() - pngStartedAt.getTime()
+        }
+      }
+    }
+  } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
   }
 }

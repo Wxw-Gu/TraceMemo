@@ -5,7 +5,7 @@
 // 1. base64 不走 IPC,只在 main 内部流转(renderer 只看到 ImageInsight 结构化结果)
 // 2. 同图(imageHash)走缓存,绝不重复调 AI
 // 3. 失败不抛,日志记录 + 返回原状(不阻塞日报)
-// 4. 第一阶段:Top 3 热点图 + 缓存命中即返回,未命中并发调 AI
+// 4. 日报最多识别 3 张达到热点门槛的图片；缓存命中即返回,未命中并发调 AI
 
 import crypto from 'crypto'
 import { randomUUID } from 'crypto'
@@ -21,6 +21,10 @@ import type {
   ImageCandidate,
   ImageCandidateQuery,
   ImageInsight
+} from '../../shared/image-insight'
+import {
+  calculateImageHeatScore,
+  isHotImageCandidate
 } from '../../shared/image-insight'
 
 /**
@@ -234,7 +238,7 @@ class ImageInsightService {
     query: ImageCandidateQuery,
     inputs: ImageCandidateInput[] = []
   ): Promise<ImageCandidate[]> {
-    const limit = query.limit ?? 3
+    const limit = Math.min(3, Math.max(0, query.limit ?? 3))
     const candidates: ImageCandidate[] = []
     console.log('[ImageInsightService] listTopHotImages received %d inputs', inputs.length)
     for (const input of inputs) {
@@ -248,7 +252,16 @@ class ImageInsightService {
         )
         continue
       }
-      const heatScore = input.responseCount * 3 + input.interactionCount * 2 + 1
+      if (!isHotImageCandidate(input)) {
+        console.log(
+          '[ImageInsightService] skip %s: not hot (responses=%d interactions=%d)',
+          input.messageId,
+          input.responseCount,
+          input.interactionCount
+        )
+        continue
+      }
+      const heatScore = calculateImageHeatScore(input)
       const candidate: ImageCandidate = {
         messageId: input.messageId,
         imageHash: hash,

@@ -21,6 +21,7 @@ import {
 import { Contact, Message } from '../../../shared/types'
 import { jsonrepair } from 'jsonrepair'
 import { buildGroupReportFacts } from './group-report-facts'
+import type { BuildGroupReportFactsOptions, ReportImageInsightSummary } from './group-report-facts'
 
 export const GROUP_REPORT_SYSTEM_PROMPT = `你是微信群聊日报编辑。请仅根据用户提供的聊天记录生成结构化中文日报。
 
@@ -85,6 +86,7 @@ export interface GroupReportInput {
   activeTimeline: string
   voiceLeaderboard: ReportVoiceLeaderboardItem[]
   media: GroupDailyReport['media']
+  imageInsightSummary: ReportImageInsightSummary
 }
 
 const REPORT_MODE_LABEL: Record<ReportMode, string> = {
@@ -103,7 +105,6 @@ interface ReportModeConfig {
   maxStorylines: number
   maxReversals: number
   maxChains: number
-  maxGallery: number
   maxVoiceHighlights: number
   maxBadges: number
   maxResources: number
@@ -125,7 +126,6 @@ const REPORT_MODE_CONFIG: Record<ReportMode, ReportModeConfig> = {
     maxStorylines: 0,
     maxReversals: 0,
     maxChains: 0,
-    maxGallery: 0,
     maxVoiceHighlights: 0,
     maxBadges: 0,
     maxResources: 0,
@@ -153,7 +153,6 @@ const REPORT_MODE_CONFIG: Record<ReportMode, ReportModeConfig> = {
     maxStorylines: 2,
     maxReversals: 2,
     maxChains: 3,
-    maxGallery: 4,
     maxVoiceHighlights: 2,
     maxBadges: 3,
     maxResources: 4,
@@ -173,7 +172,6 @@ const REPORT_MODE_CONFIG: Record<ReportMode, ReportModeConfig> = {
       'storylines',
       'reversals',
       'vision',
-      'gallery',
       'voices',
       'badges',
       'chains'
@@ -185,9 +183,10 @@ export const buildGroupReportInput = async (
   messages: Message[],
   contact: Contact | null,
   isGroup: boolean,
-  reportMode: ReportMode
+  reportMode: ReportMode,
+  options: BuildGroupReportFactsOptions = {}
 ): Promise<GroupReportInput> => {
-  const facts = await buildGroupReportFacts(messages, contact, isGroup, reportMode)
+  const facts = await buildGroupReportFacts(messages, contact, isGroup, reportMode, options)
   const desiredTopicCount =
     facts.metadata.messageCount >= 1000
       ? '建议提炼 6-8 个互不重复的主要话题'
@@ -222,7 +221,8 @@ ${transcript}`
     topSpeakers: facts.topSpeakers,
     activeTimeline: facts.activeTimeline,
     voiceLeaderboard: facts.voiceLeaderboard,
-    media: facts.media
+    media: facts.media,
+    imageInsightSummary: facts.imageInsightSummary
   }
 }
 
@@ -531,53 +531,6 @@ const topicLimitForMessageVolume = (
   return config
 }
 
-const attachHighImpactImage = (
-  topics: ReportTopic[],
-  gallery: GroupDailyReport['media']['gallery'],
-  visionGallery?: GroupDailyReport['media']['visionGallery']
-): ReportTopic[] => {
-  if (!gallery.length && !visionGallery?.length) return topics
-  // 优先用 visionGallery(AI 真实识别的 description)
-  const firstVision = visionGallery?.find((it) => it.importance !== 'low')
-  const [firstImage, ...rest] = gallery
-  const nextTopics = topics.map((topic, index) => {
-    if (index !== 0) return topic
-    if (firstVision) {
-      // AI 真实识别路径:note 直接用 description,不带"根据推断"前缀
-      const noteParts = [firstVision.description]
-      if (firstVision.ocrText) noteParts.push(`文字:${firstVision.ocrText}`)
-      if (firstVision.tags.length) noteParts.push(`标签:${firstVision.tags.join('/')}`)
-      return {
-        ...topic,
-        image: {
-          note: noteParts.join(' · '),
-          sourceMessageIds: firstVision.sourceMessageIds
-          // 注意:不填 imageUrl,因为 unknown imageHash 等问题可能导致 main 取不到原图,
-          // 让 renderer 在 buildGroupReportFacts 阶段就把 dataUrl 预先加载好塞到 gallery 里,
-          // 这里走 gallery 路径自然带 imageUrl
-        }
-      }
-    }
-    if (firstImage?.replyCount && firstImage.replyCount >= 3) {
-      return {
-        ...topic,
-        image: {
-          imageUrl: firstImage.imageUrl,
-          note: `该图片引发 ${firstImage.replyCount} 条回复。${firstImage.note.startsWith('根据') ? firstImage.note : `根据图片前后对话推断，${firstImage.note}`}`,
-          sourceMessageIds: firstImage.sourceMessageIds
-        }
-      }
-    }
-    return topic
-  })
-  if (firstVision) {
-    // visionGallery 用过的不再展示
-    return nextTopics
-  }
-  gallery.splice(0, rest.length >= 0 ? 1 : 0)
-  return nextTopics
-}
-
 const postProcessReport = (
   report: GroupDailyReport,
   mode: ReportMode,
@@ -591,12 +544,7 @@ const postProcessReport = (
     (item) => item.sourceMessageIds || [],
     (item) => createSignature(item.title, item.summary)
   )
-  const gallery = [...report.media.gallery]
-  const topics = attachHighImpactImage(
-    clampTopics(topicsDeduped, config),
-    gallery,
-    report.media.visionGallery
-  )
+  const topics = clampTopics(topicsDeduped, config)
 
   const importantMessagesRaw = sortByScore(report.importantMessages, (item) =>
     Math.max(item.importance || 0, item.confidence || 0.6)
@@ -784,13 +732,9 @@ const postProcessReport = (
       0.72,
       0.9
     ),
-    gallery: buildSectionMeta(
-      config.enabledSections.includes('gallery'),
-      gallery.length,
-      report.media.gallery.length,
-      0.6,
-      0.8
-    ),
+    // gallery remains in the type for historical reports, but is disabled for
+    // every newly generated report because AI vision is the single image source.
+    gallery: buildSectionMeta(false, 0, 0, 0, 0),
     voices: buildSectionMeta(
       config.enabledSections.includes('voices'),
       voiceHighlights.length,
@@ -830,7 +774,7 @@ const postProcessReport = (
     participantChains,
     keywords,
     media: {
-      gallery,
+      gallery: [],
       visionGallery: report.media.visionGallery,
       voiceHighlights,
       funBadges
