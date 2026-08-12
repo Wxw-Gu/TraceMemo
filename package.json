@@ -2,7 +2,7 @@
   "name": "tracememo",
   "version": "2.2.0",
   "packageManager": "pnpm@7.33.7",
-  "description": "macOS / Windows 本地优先、可追溯的 AI 微信知识与分析工作台",
+  "description": "TraceMemo（迹忆）是一款本地优先、可追溯的 AI 微信知识与分析工作台。 原名 WechatExplorer，支持聊天记录搜索、知识库、AI 总结和 Agent 助手。",
   "keywords": [
     "wechat",
     "wechat chat",
@@ -20,7 +20,7 @@
   "author": "Qingmao",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Wxw-Gu/WechatExplorer.git"
+    "url": "https://github.com/Wxw-Gu/TraceMemo.git"
   },
   "main": "./out/main/index.js",
   "scripts": {
