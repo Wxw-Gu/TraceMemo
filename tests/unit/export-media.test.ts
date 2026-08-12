@@ -33,7 +33,7 @@ describe('export media', () => {
     expect(html).toContain('aria-expanded="')
     expect(html).toContain('setExpandedTimelineYear')
     expect(html).toContain('data-kind="media"')
-    expect(html).toContain('placeholder="搜索发送者或消息内容…"')
+    expect(html).toContain('placeholder="搜索发送者、消息内容或媒体文件名（不含后缀）…"')
     expect(html).toContain('font-size: 16px;')
     expect(html).toContain('filtered.slice(windowStart, windowEnd)')
     expect(html).toContain('windowStart = Math.max(0, windowEnd - PAGE_SIZE)')
@@ -153,6 +153,61 @@ describe('export media', () => {
     )
     expect(dom.window.document.querySelectorAll('.search-highlight')).toHaveLength(1)
     expect(dom.window.document.querySelector('#count')?.textContent).toBe('筛选 1 / 全部 2')
+    dom.window.close()
+  })
+
+  it('matches exported image and video filenames exactly without their extension', () => {
+    const html = renderExportPage('媒体文件名搜索')
+    const dom = new JSDOM(html, { runScripts: 'outside-only' })
+    const imageFileName = 'image_0123456789abcdef.jpg'
+    const videoFileName = 'video_fedcba9876543210.mp4'
+    const messages: Message[] = [
+      {
+        ...messageForArchive('image-name', 'fixture', '媒体文件名搜索', '', 1),
+        type: '图片',
+        exportMediaType: 'image',
+        exportMediaUrl: `media/${imageFileName}`,
+        contentData: { type: 'image' }
+      },
+      {
+        ...messageForArchive('video-name', 'fixture', '媒体文件名搜索', '', 2),
+        type: '视频',
+        exportMediaType: 'video',
+        exportMediaUrl: `media/${videoFileName}`,
+        contentData: { type: 'video' }
+      }
+    ]
+    Object.assign(dom.window, {
+      __WECHAT_EXPORT__: {
+        version: 1,
+        sourceId: 'fixture',
+        name: '媒体文件名搜索',
+        messages
+      }
+    })
+
+    dom.window.eval(inlineScriptOf(html))
+    const search = dom.window.document.querySelector('#query') as HTMLInputElement
+
+    search.value = 'IMAGE_0123456789ABCDEF'
+    search.dispatchEvent(new dom.window.Event('input'))
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(1)
+    expect(dom.window.document.querySelectorAll('img.media-image')).toHaveLength(1)
+    expect(dom.window.document.querySelectorAll('video.media-image')).toHaveLength(0)
+
+    search.value = '0123456789abcdef'
+    search.dispatchEvent(new dom.window.Event('input'))
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(0)
+
+    search.value = 'video_fedcba9876543210'
+    search.dispatchEvent(new dom.window.Event('input'))
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(1)
+    expect(dom.window.document.querySelectorAll('img.media-image')).toHaveLength(0)
+    expect(dom.window.document.querySelectorAll('video.media-image')).toHaveLength(1)
+
+    search.value = videoFileName
+    search.dispatchEvent(new dom.window.Event('input'))
+    expect(dom.window.document.querySelectorAll('.message')).toHaveLength(0)
     dom.window.close()
   })
 
