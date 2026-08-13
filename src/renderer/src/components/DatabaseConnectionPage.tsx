@@ -249,7 +249,7 @@ export function DatabaseConnectionPage({
                             '让微信停在登录页面',
                             '确认开始准备',
                             `正在完成 ${isMac ? 'macOS' : 'Windows'} 授权`,
-                            '现在可以登录微信',
+                            '获取成功, 现在可以重新登录微信了',
                             '验证数据库连接'
                           ][guideStep - 1]}
                     </strong>
@@ -426,7 +426,7 @@ export function DatabaseConnectionPage({
                   onClick={onValidateConnection}
                   disabled={!dbKey || isConnecting}
                 >
-                  {isConnecting ? '正在验证…' : '微信已登录，验证连接'}
+                  {isConnecting ? '正在验证…' : '验证连接'}
                 </button>
               )}
               {guideStep === 6 && (

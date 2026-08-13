@@ -87,7 +87,7 @@ export class KeyServiceMac {
           code,
           error:
             '内存扫描失败：未匹配到目标函数特征（Sink pattern not found），当前微信版本可能暂未适配。\n' +
-            '建议步骤：降级微信到 4.1.7 -> 重启电脑（冷启动） -> 自动获取密钥 -> 成功后再升级微信。\n' +
+            '建议步骤：降级微信到 4.1.8 (点击顶部"上手教程"获取下载链接) -> 重启电脑（冷启动） -> 自动获取密钥 -> 成功后再升级微信。\n' +
             '请不要连续重试，以免触发微信安全模式或系统内存保护。'
         }
       }
@@ -141,7 +141,7 @@ export class KeyServiceMac {
         'return "ERR::" & errNum & "::" & errMsg',
         'end try'
       ]
-      onStatus?.('授权后请保持微信登录界面 并点击登录微信...')
+      onStatus?.('授权后 需要在微信登录界面 点击登录微信')
       const { stdout } = await execFileAsync(
         '/usr/bin/osascript',
         scriptLines.flatMap((line) => ['-e', line]),
