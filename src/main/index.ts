@@ -135,6 +135,12 @@ import { KnowledgeSearchService } from './knowledge/knowledge-search-service'
 import { AiSearchPipelineService } from './services/ai-search-pipeline-service'
 import { runLegacySafeStorageHelper } from './legacy-safe-storage-helper'
 import { runFirstLaunchMigration } from './app-data-migration'
+import { WechatShareConfigStore } from './wechat-share-config-store'
+import { WechatShareCardService } from './wechat-share-card-service'
+import type {
+  PublishWechatShareCardRequest,
+  WechatShareServiceConfig
+} from '../shared/wechat-share-card'
 
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
@@ -154,6 +160,8 @@ const imageKeyConfigService = new ImageKeyConfigService()
 const aiProviderService = new AIProviderService()
 const keyServiceMac = new KeyServiceMac()
 const keyServiceWin = new KeyServiceWin()
+const wechatShareConfigStore = new WechatShareConfigStore()
+const wechatShareCardService = new WechatShareCardService(wechatShareConfigStore)
 let tray: Tray | null = null
 let recallArchiveMonitor: RecallArchiveMonitor | null = null
 let recallProtectionGeneration = 0
@@ -1200,6 +1208,14 @@ app.whenReady().then(async () => {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
+
+  ipcMain.handle('wechat-share:getConfig', async () => wechatShareConfigStore.status())
+  ipcMain.handle('wechat-share:saveConfig', async (_, config: WechatShareServiceConfig) =>
+    wechatShareConfigStore.save(config)
+  )
+  ipcMain.handle('wechat-share:publish', async (_, request: PublishWechatShareCardRequest) =>
+    wechatShareCardService.publish(request)
+  )
 
   ipcMain.handle(
     'db:getVoiceData',

@@ -9,6 +9,7 @@ import type {
   AIProviderSummary,
   AiSearchProviderStatus,
   AIRuntimeModelConfig,
+  AIVisionRuntimeConfig,
   AIVisionTestRequest,
   AIVisionTestResult,
   LegacyAIConfig
@@ -71,6 +72,60 @@ export class AIProviderService {
       ),
       status: provider?.status || 'untested',
       timeoutMs: provider?.advanced.timeoutMs
+    }
+  }
+
+  getVisionRuntimeConfig(): AIVisionRuntimeConfig {
+    const result = this.list()
+    const defaultProvider = result.providers.find((item) => item.id === result.defaultProviderId)
+    const defaultModel = defaultProvider?.models.find(
+      (item) => item.id === defaultProvider.defaultModel
+    )
+    if (
+      defaultProvider &&
+      defaultModel &&
+      (defaultProvider.hasApiKey || !needsApiKey(defaultProvider)) &&
+      (defaultModel.capabilities.vision || defaultModel.capabilities.ocr)
+    ) {
+      return {
+        providerId: defaultProvider.id,
+        providerName: defaultProvider.name,
+        model: defaultModel.id,
+        modelName: defaultModel.name || defaultModel.id,
+        configured: true,
+        status: defaultProvider.status,
+        timeoutMs: defaultProvider.advanced.timeoutMs,
+        source: 'default-model'
+      }
+    }
+
+    for (const provider of result.providers) {
+      if (!provider.hasApiKey && needsApiKey(provider)) continue
+      const model =
+        provider.models.find(
+          (item) =>
+            item.id === provider.defaultModel && (item.capabilities.vision || item.capabilities.ocr)
+        ) || provider.models.find((item) => item.capabilities.vision || item.capabilities.ocr)
+      if (!model) continue
+      return {
+        providerId: provider.id,
+        providerName: provider.name,
+        model: model.id,
+        modelName: model.name || model.id,
+        configured: true,
+        status: provider.status,
+        timeoutMs: provider.advanced.timeoutMs,
+        source: 'vision-capability'
+      }
+    }
+
+    return {
+      providerName: '尚未配置',
+      model: '',
+      modelName: '尚未验证图片理解模型',
+      configured: false,
+      status: 'untested',
+      source: 'unavailable'
     }
   }
 

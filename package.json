@@ -78,6 +78,7 @@
     "jsonrepair": "^3.15.0",
     "koffi": "^3.1.0",
     "openai": "^6.10.0",
+    "qrcode": "^1.5.4",
     "sherpa-onnx-node": "1.13.3",
     "silk-wasm": "^3.7.1",
     "wechat-emojis": "^1.0.2"
@@ -95,6 +96,7 @@
     "@types/archiver": "^8.0.0",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^22.19.1",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
@@ -113,7 +115,8 @@
     "sass": "^1.102.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.6",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wrangler": "^4.28.1"
   },
   "pnpm": {
     "supportedArchitectures": {

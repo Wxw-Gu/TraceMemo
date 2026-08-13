@@ -108,8 +108,12 @@ export function ReportInfoPanel({ report, onReveal }: ReportInfoPanelProps): Rea
                 <b>{formatDuration(report.duration)}</b>
               </div>
               <div>
-                <span>模型</span>
-                <b>{modelLabel(report.modelName)}</b>
+                <span>文字模型</span>
+                <b>{modelLabel(report.textModelName || report.modelName)}</b>
+              </div>
+              <div>
+                <span>图片模型</span>
+                <b>{modelLabel(report.imageModelName)}</b>
               </div>
               <div>
                 <span>Token 来源</span>

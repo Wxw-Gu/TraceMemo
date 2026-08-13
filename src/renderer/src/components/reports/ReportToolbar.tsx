@@ -7,6 +7,7 @@ import {
 interface ReportToolbarProps {
   canCopyImage: boolean
   canReveal: boolean
+  canShare: boolean
   canSwitchTemplate: boolean
   currentTemplateId?: SelectableReportTemplateId
   isSwitchingTemplate: boolean
@@ -14,18 +15,21 @@ interface ReportToolbarProps {
   onRegenerate: () => void
   onCopyImage: () => void
   onReveal: () => void
+  onShare: () => void
 }
 
 export function ReportToolbar({
   canCopyImage,
   canReveal,
+  canShare,
   canSwitchTemplate,
   currentTemplateId,
   isSwitchingTemplate,
   onSwitchTemplate,
   onRegenerate,
   onCopyImage,
-  onReveal
+  onReveal,
+  onShare
 }: ReportToolbarProps): React.ReactElement {
   const [moreOpen, setMoreOpen] = useState(false)
   const [templateOpen, setTemplateOpen] = useState(false)
@@ -87,6 +91,9 @@ export function ReportToolbar({
       </button>
       <button type="button" className="primary" disabled={!canReveal} onClick={onReveal}>
         打开报告
+      </button>
+      <button type="button" disabled={!canShare} onClick={onShare}>
+        生成微信卡片
       </button>
       <div className="report-more-menu" ref={menuRef}>
         <button type="button" onClick={() => setMoreOpen((open) => !open)}>

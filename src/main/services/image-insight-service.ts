@@ -3,7 +3,7 @@
 //
 // 设计原则:
 // 1. base64 不走 IPC,只在 main 内部流转(renderer 只看到 ImageInsight 结构化结果)
-// 2. 同图(imageHash)走缓存,绝不重复调 AI
+// 2. 同图(imageHash)在 10 分钟内走缓存,过期后重新调 AI
 // 3. 失败不抛,日志记录 + 返回原状(不阻塞日报)
 // 4. 日报最多识别 3 张达到热点门槛的图片；缓存命中即返回,未命中并发调 AI
 
@@ -24,6 +24,7 @@ import type {
 } from '../../shared/image-insight'
 import {
   calculateImageHeatScore,
+  isFreshImageInsight,
   isHotImageCandidate
 } from '../../shared/image-insight'
 
@@ -46,6 +47,13 @@ export interface ImageCandidateInput {
 
 interface ProviderServiceLike {
   list(): ProviderSummaryLike
+  getVisionRuntimeConfig(): {
+    providerId?: string
+    providerName: string
+    model: string
+    modelName: string
+    configured: boolean
+  }
   analyzeImage(
     messages: Array<{
       role: string
@@ -81,7 +89,7 @@ interface ProviderSummaryLike {
 class ImageInsightService {
   private providerService: ProviderServiceLike | null = null
   private decryptService: DecryptServiceLike | null = null
-  /** 最近一次实际使用的默认 AI provider/model，仅用于写入分析元数据 */
+  /** 最近一次实际使用的视觉 provider/model，仅用于写入分析元数据 */
   private runtimeProviderId: string | undefined = undefined
   private runtimeModelId: string | undefined = undefined
 
@@ -97,13 +105,11 @@ class ImageInsightService {
       this.runtimeProviderId,
       this.runtimeModelId
     )
-    // 读取默认 provider/model(后续 analyze 时使用)
+    // 读取当前视觉 provider/model(后续 analyze 时仍会刷新，避免配置变化后继续用旧模型)
     try {
-      const list = deps.providerService.list()
-      const provider =
-        list.providers.find((p) => p.id === list.defaultProviderId) || list.providers[0]
-      this.runtimeProviderId = provider?.id
-      this.runtimeModelId = provider?.defaultModel
+      const runtime = deps.providerService.getVisionRuntimeConfig()
+      this.runtimeProviderId = runtime.providerId
+      this.runtimeModelId = runtime.model || undefined
       console.log(
         '[ImageInsightService] bind loaded default provider=%s model=%s',
         this.runtimeProviderId,
@@ -145,7 +151,7 @@ class ImageInsightService {
 
   /**
    * 主入口:分析一张图片。
-   * 1. 通过 imageHash 查缓存,命中即返回
+   * 1. 通过 imageHash 查 10 分钟缓存,新鲜则返回
    * 2. 未命中:解密图片 → 调 AI → 解析响应 → 落库 → 返回
    * 3. 任意步骤失败:记录日志,返回 success=false,**不抛**
    */
@@ -153,8 +159,15 @@ class ImageInsightService {
     try {
       if (!request.force) {
         const cached = imageInsightsStore.getByHash(request.imageHash)
+        if (isFreshImageInsight(cached)) {
+          return { success: true, insight: cached || undefined, fromCache: true }
+        }
         if (cached) {
-          return { success: true, insight: cached, fromCache: true }
+          console.log(
+            '[ImageInsightService] cache expired hash=%s ageMs=%d',
+            request.imageHash,
+            Date.now() - Number(cached.updatedAt || 0)
+          )
         }
       }
 
@@ -184,11 +197,24 @@ class ImageInsightService {
         }
       ]
 
-      const list = this.providerService.list()
-      const provider =
-        list.providers.find((item) => item.id === list.defaultProviderId) || list.providers[0]
-      this.runtimeProviderId = provider?.id
-      this.runtimeModelId = provider?.defaultModel
+      const runtime =
+        request.providerId && request.modelId
+          ? {
+              providerId: request.providerId,
+              model: request.modelId,
+              configured: true
+            }
+          : this.providerService.getVisionRuntimeConfig()
+      if (!runtime.configured || !runtime.providerId || !runtime.model) {
+        return { success: false, error: '尚未配置或验证支持图片理解的 AI 模型' }
+      }
+      this.runtimeProviderId = runtime.providerId
+      this.runtimeModelId = runtime.model
+      console.log(
+        '[ImageInsightService] analyze using vision provider=%s model=%s',
+        this.runtimeProviderId,
+        this.runtimeModelId
+      )
       const result = await this.providerService.analyzeImage(messages, {
         providerId: this.runtimeProviderId,
         modelId: this.runtimeModelId
@@ -273,7 +299,7 @@ class ImageInsightService {
         heatScore
       }
       const cached = imageInsightsStore.getByHash(hash)
-      if (cached) candidate.insight = cached
+      if (isFreshImageInsight(cached) && cached) candidate.insight = cached
       candidates.push(candidate)
     }
     candidates.sort((a, b) => b.heatScore - a.heatScore)
@@ -286,7 +312,6 @@ class ImageInsightService {
   listBySession(sessionId: string, limit?: number): ImageInsight[] {
     return imageInsightsStore.listBySession(sessionId, limit)
   }
-
 }
 
 export const imageInsightService = new ImageInsightService()

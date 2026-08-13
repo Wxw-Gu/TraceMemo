@@ -81,6 +81,7 @@ const normalizeRecord = async (
   const pngStatus = await fileStatus(record.pngPath)
   return {
     ...record,
+    textModelName: record.textModelName || record.modelName,
     jsonPath,
     htmlStatus,
     pngStatus,
@@ -181,6 +182,8 @@ export async function saveGeneratedReport(
       pngStatus: savedPngPath ? 'ready' : 'missing',
       imageSize: await readPngSize(savedPngPath),
       duration: request.duration,
+      textModelName: request.textModelName || request.modelName,
+      imageModelName: request.imageModelName,
       modelName: request.modelName,
       tokenUsage: request.tokenUsage,
       fileSize: {

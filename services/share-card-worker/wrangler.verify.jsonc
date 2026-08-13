@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wechatexplorer-share-card",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-23",
+  "routes": [
+    {
+      "pattern": "share.example.com",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "PUBLIC_ORIGIN": "https://share.example.com",
+    "DEFAULT_EXPIRY_DAYS": "7"
+  }
+}

@@ -411,9 +411,44 @@ handle('ai:getRuntimeConfig', () => ({
   status: 'connected',
   timeoutMs: 5000
 }))
+handle('ai:getVisionRuntimeConfig', () => ({
+  providerId: 'fixture-vision-provider',
+  providerName: '本地图片假服务',
+  model: 'fixture-vision-model',
+  modelName: '固定图片识别模型',
+  configured: true,
+  status: 'connected',
+  timeoutMs: 5000,
+  source: 'vision-capability'
+}))
 handle('ai:listProviders', () => ({
   success: true,
-  providers: [],
+  providers: [
+    {
+      id: 'fixture-provider',
+      name: '本地假服务',
+      type: 'openai-compatible',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      auth: { type: 'none' },
+      models: [
+        {
+          id: 'fixture-model',
+          name: '固定响应模型',
+          capabilities: { chat: true, vision: false, ocr: false, longContext: true }
+        },
+        {
+          id: 'fixture-vision-model',
+          name: '固定图片识别模型',
+          capabilities: { chat: true, vision: true, ocr: true, longContext: true }
+        }
+      ],
+      defaultModel: 'fixture-model',
+      advanced: { timeoutMs: 5000, extraHeaders: {} },
+      hasApiKey: true,
+      isDefault: true,
+      status: 'connected'
+    }
+  ],
   defaultProviderId: 'fixture-provider'
 }))
 handle('ai:migrateLegacy', () => ({ success: true, providers: [] }))

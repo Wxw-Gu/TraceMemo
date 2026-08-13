@@ -4,6 +4,7 @@ import { ReportEmptyState } from './ReportEmptyState'
 import { ReportToolbar } from './ReportToolbar'
 import { ReportZoomBar } from './ReportZoomBar'
 import type { SelectableReportTemplateId } from '../../../../shared/report-templates'
+import { WechatShareCardDialog } from './WechatShareCardDialog'
 
 interface ReportViewerProps {
   report: GeneratedReportRecord | null
@@ -49,6 +50,7 @@ export function ReportViewer({
   const [status, setStatus] = useState('')
   const [imageError, setImageError] = useState('')
   const [isSwitchingTemplate, setIsSwitchingTemplate] = useState(false)
+  const [shareDialogOpen, setShareDialogOpen] = useState(false)
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
 
@@ -57,6 +59,7 @@ export function ReportViewer({
       setStatus('')
       setImageError('')
       setIsSwitchingTemplate(false)
+      setShareDialogOpen(false)
       setZoom(1)
       setFitZoom(1)
       setNaturalSize(null)
@@ -165,6 +168,7 @@ export function ReportViewer({
         <ReportToolbar
           canCopyImage={Boolean(report.generatedImage)}
           canReveal={Boolean(report.pngPath || report.htmlPath)}
+          canShare={Boolean(report.pngPath)}
           canSwitchTemplate={Boolean(
             (report.reportSnapshot && report.reportMetadata) ||
             report.reportRenderSnapshot ||
@@ -176,6 +180,7 @@ export function ReportViewer({
           onRegenerate={onRegenerate}
           onCopyImage={() => void handleCopy()}
           onReveal={() => void handleReveal()}
+          onShare={() => setShareDialogOpen(true)}
         />
       </header>
       {status && <div className="report-viewer-status">{status}</div>}
@@ -233,6 +238,14 @@ export function ReportViewer({
         onFitPage={fitPage}
         onActualSize={showActualSize}
       />
+      {shareDialogOpen && report.pngPath && (
+        <WechatShareCardDialog
+          pngPath={report.pngPath}
+          initialTitle={`${report.contactName}日报 · ${report.reportDate}`}
+          initialDescription={`基于 ${report.messageCount} 条群聊消息生成的 AI 日报`}
+          onClose={() => setShareDialogOpen(false)}
+        />
+      )}
     </main>
   )
 }

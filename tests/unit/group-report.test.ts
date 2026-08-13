@@ -210,8 +210,23 @@ describe('group report parsing', () => {
     })
 
     const input = await buildGroupReportInput(messages, null, true, 'full', {
-      onProgress: progress
+      onProgress: progress,
+      visionModel: {
+        providerId: 'selected-vision-provider',
+        providerName: '视觉服务',
+        model: 'selected-vision-model',
+        modelName: '视觉模型',
+        configured: true,
+        status: 'connected'
+      }
     })
+
+    expect(window.api.imageAnalyze).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: 'selected-vision-provider',
+        modelId: 'selected-vision-model'
+      })
+    )
 
     expect(input.prompt).toContain('AI 图片识别摘要：')
     expect(input.prompt).toContain('一张表格型网页截图，包含多列数据。')

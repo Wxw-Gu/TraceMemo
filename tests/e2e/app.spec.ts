@@ -273,6 +273,12 @@ test('REPORT-01 REPORT-02 generates a fixed report with non-empty local assets',
     await fixture.page.getByRole('button', { name: '日报' }).click()
     await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
     await expect(fixture.page.getByRole('heading', { name: '生成群聊日报' })).toBeVisible()
+    const textModel = fixture.page.getByRole('combobox', { name: '文字总结模型' })
+    const visionModel = fixture.page.getByRole('combobox', { name: '图片理解模型' })
+    await expect(textModel).toHaveValue('fixture-provider::fixture-model')
+    await expect(visionModel).toHaveValue('fixture-provider::fixture-vision-model')
+    await expect(textModel.locator('option')).toHaveCount(2)
+    await expect(visionModel.locator('option')).toHaveCount(1)
     await fixture.page.locator('.report-source-item').filter({ hasText: '产品测试群' }).click()
     await fixture.page.getByRole('button', { name: '近 7 天' }).click()
     const generate = fixture.page.getByRole('button', { name: '开始生成日报' })
@@ -281,6 +287,20 @@ test('REPORT-01 REPORT-02 generates a fixed report with non-empty local assets',
     await expect(fixture.page.getByAltText('产品测试群 群聊日报')).toBeVisible({
       timeout: 15_000
     })
+    await expect(fixture.page.getByText('文字模型')).toBeVisible()
+    await expect(fixture.page.getByText('固定响应模型')).toBeVisible()
+    await expect(fixture.page.getByText('图片模型')).toBeVisible()
+    await expect(fixture.page.getByText('固定图片识别模型')).toBeVisible()
+    await expect(fixture.page.getByRole('button', { name: '生成微信卡片' })).toHaveCount(0)
+    await fixture.page.getByRole('button', { name: '更多' }).click()
+    await expect(fixture.page.getByRole('button', { name: '生成微信卡片' })).toBeVisible()
+
+    await fixture.page.setViewportSize({ width: 1024, height: 760 })
+    const reportTitle = fixture.page.getByRole('heading', { name: '产品测试群 群聊日报' })
+    await expect(reportTitle).toBeVisible()
+    expect((await reportTitle.boundingBox())?.width || 0).toBeGreaterThan(170)
+    await expect(fixture.page.getByRole('button', { name: '放大' })).toBeEnabled()
+    await fixture.page.getByRole('button', { name: '放大' }).click()
 
     const exported = await fixture.page.evaluate(async () =>
       window.api.exportGroupReport({
@@ -308,7 +328,8 @@ test('REPORT-03 report failure is retryable and leaves other pages usable', asyn
     await fixture.page.getByRole('button', { name: '近 7 天' }).click()
     await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
     await expect(fixture.page.getByText(/本地假服务错误 401/).first()).toBeVisible()
-    await expect(fixture.page.getByRole('button', { name: '重试' })).toBeEnabled()
+    await expect(fixture.page.getByRole('button', { name: '使用所选模型重新生成' })).toBeEnabled()
+    await expect(fixture.page.getByText(/从第三步继续/)).toBeVisible()
     await fixture.page.getByRole('button', { name: '档案' }).click()
     await expect(fixture.page.locator('main.app-shell-main[aria-label="档案"]')).toBeVisible()
     await expect(

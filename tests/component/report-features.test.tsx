@@ -4,6 +4,9 @@ import { ReportGroupMemberSelector } from '../../src/renderer/src/components/rep
 import { ReportTaskStatusPanel } from '../../src/renderer/src/components/reports/ReportTaskStatusPanel'
 import { ReportTemplateSelector } from '../../src/renderer/src/components/reports/ReportTemplateSelector'
 import { ReportViewer } from '../../src/renderer/src/components/reports/ReportViewer'
+import { ReportInfoPanel } from '../../src/renderer/src/components/reports/ReportInfoPanel'
+import { ReportToolbar } from '../../src/renderer/src/components/reports/ReportToolbar'
+import { ModelSummary } from '../../src/renderer/src/components/reports/ModelSummary'
 import type { Contact } from '../../src/shared/types'
 import type { GeneratedReportRecord } from '../../src/shared/report-history'
 
@@ -211,6 +214,61 @@ describe('daily report controls', () => {
     expect(screen.getByText(/从第三步继续/)).toBeVisible()
   })
 
+  it('selects separate text-summary and image-understanding models with the 10-minute cache rule', () => {
+    const onTextModelChange = vi.fn()
+    const onVisionModelChange = vi.fn()
+    const textModels = [
+      {
+        providerId: 'deepseek',
+        providerName: 'DeepSeek',
+        model: 'deepseek-chat',
+        modelName: 'DeepSeek Chat',
+        configured: true as const,
+        status: 'connected' as const
+      },
+      {
+        providerId: 'openai',
+        providerName: 'OpenAI',
+        model: 'gpt-5.6-sol',
+        modelName: 'GPT-5.6 Sol',
+        configured: true as const,
+        status: 'connected' as const
+      }
+    ]
+    const visionModels = [
+      {
+        providerId: 'sol-provider',
+        providerName: 'OpenAI',
+        model: 'gpt-5.6-sol',
+        modelName: 'GPT-5.6 Sol',
+        configured: true as const,
+        status: 'connected' as const
+      }
+    ]
+    render(
+      <ModelSummary
+        config={textModels[0]}
+        visionConfig={visionModels[0]}
+        textModels={textModels}
+        visionModels={visionModels}
+        onTextModelChange={onTextModelChange}
+        onVisionModelChange={onVisionModelChange}
+        onOpenSettings={vi.fn()}
+      />
+    )
+
+    const textSelect = screen.getByRole('combobox', { name: '文字总结模型' })
+    const visionSelect = screen.getByRole('combobox', { name: '图片理解模型' })
+    expect(textSelect).toHaveValue('deepseek::deepseek-chat')
+    expect(visionSelect).toHaveValue('sol-provider::gpt-5.6-sol')
+    expect(screen.getAllByRole('option', { name: 'OpenAI · GPT-5.6 Sol' })).toHaveLength(2)
+    fireEvent.change(textSelect, { target: { value: 'openai::gpt-5.6-sol' } })
+    fireEvent.change(visionSelect, { target: { value: 'sol-provider::gpt-5.6-sol' } })
+    expect(onTextModelChange).toHaveBeenCalledWith(textModels[1])
+    expect(onVisionModelChange).toHaveBeenCalledWith(visionModels[0])
+    expect(screen.getByText(/图片识别缓存 10 分钟/)).toBeVisible()
+  })
+
   it('zooms relative to a full-image fit constrained by viewport width and height', () => {
     const originalResizeObserver = globalThis.ResizeObserver
     globalThis.ResizeObserver = class {
@@ -270,6 +328,116 @@ describe('daily report controls', () => {
     fireEvent.click(screen.getByRole('button', { name: '完整显示' }))
     expect(image.style.width).toBe('200px')
     globalThis.ResizeObserver = originalResizeObserver
+  })
+
+  it('keeps zoom working when a newly saved report replaces the initial result', () => {
+    const originalResizeObserver = globalThis.ResizeObserver
+    globalThis.ResizeObserver = class {
+      observe(): void {
+        return undefined
+      }
+      disconnect(): void {
+        return undefined
+      }
+      unobserve(): void {
+        return undefined
+      }
+    }
+    const baseReport: GeneratedReportRecord = {
+      id: 'temporary-result',
+      contactId: 'group-md5',
+      contactName: '测试群',
+      dateRange: '今天',
+      messageCount: 10,
+      generatedAt: '2026-08-13T10:00:00.000Z',
+      reportDate: '2026-08-13',
+      htmlStatus: 'ready',
+      pngStatus: 'ready',
+      generatedImage: 'data:image/png;base64,fixture'
+    }
+    const props = {
+      hasReports: true,
+      onBackToConfigure: vi.fn(),
+      onRegenerate: vi.fn(),
+      onCopyImage: vi.fn(async () => ({ success: true })),
+      onReveal: vi.fn(async () => ({ success: true })),
+      onSwitchTemplate: vi.fn(async () => ({ success: true }))
+    }
+    const { rerender } = render(<ReportViewer report={baseReport} {...props} />)
+    let image = screen.getByAltText('测试群 群聊日报') as HTMLImageElement
+    Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 1000 })
+    Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 2000 })
+    Object.defineProperty(image.parentElement?.parentElement, 'clientWidth', {
+      configurable: true,
+      value: 544
+    })
+    Object.defineProperty(image.parentElement?.parentElement, 'clientHeight', {
+      configurable: true,
+      value: 1044
+    })
+    fireEvent.load(image)
+    expect(image.style.width).toBe('500px')
+
+    rerender(<ReportViewer report={{ ...baseReport, id: 'saved-result' }} {...props} />)
+    image = screen.getByAltText('测试群 群聊日报') as HTMLImageElement
+    Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 1000 })
+    Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 2000 })
+    Object.defineProperty(image.parentElement?.parentElement, 'clientWidth', {
+      configurable: true,
+      value: 544
+    })
+    Object.defineProperty(image.parentElement?.parentElement, 'clientHeight', {
+      configurable: true,
+      value: 1044
+    })
+    fireEvent.load(image)
+    fireEvent.click(screen.getByRole('button', { name: '放大' }))
+    expect(image.style.width).toBe('625px')
+    globalThis.ResizeObserver = originalResizeObserver
+  })
+
+  it('keeps secondary report actions inside More and labels both AI model roles', () => {
+    render(
+      <>
+        <ReportToolbar
+          canCopyImage
+          canReveal
+          canShare
+          canSwitchTemplate
+          currentTemplateId="v1"
+          isSwitchingTemplate={false}
+          onSwitchTemplate={vi.fn()}
+          onRegenerate={vi.fn()}
+          onCopyImage={vi.fn()}
+          onReveal={vi.fn()}
+          onShare={vi.fn()}
+        />
+        <ReportInfoPanel
+          report={{
+            id: 'model-info',
+            contactId: 'group-md5',
+            contactName: '测试群',
+            dateRange: '今天',
+            messageCount: 10,
+            generatedAt: '2026-08-13T10:00:00.000Z',
+            reportDate: '2026-08-13',
+            htmlStatus: 'ready',
+            pngStatus: 'ready',
+            textModelName: 'deepseek-chat',
+            imageModelName: 'gpt-5.6-sol'
+          }}
+          onReveal={vi.fn(async () => ({ success: true }))}
+        />
+      </>
+    )
+
+    expect(screen.queryByRole('button', { name: '生成微信卡片' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '更多' }))
+    expect(screen.getByRole('button', { name: '生成微信卡片' })).toBeVisible()
+    expect(screen.getByText('文字模型')).toBeVisible()
+    expect(screen.getByText('DeepSeek Chat')).toBeVisible()
+    expect(screen.getByText('图片模型')).toBeVisible()
+    expect(screen.getByText('gpt-5.6-sol')).toBeVisible()
   })
 
   it('switches templates from the top toolbar using the saved report snapshot', async () => {

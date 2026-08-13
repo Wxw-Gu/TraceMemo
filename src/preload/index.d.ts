@@ -79,6 +79,12 @@ import type {
   KnowledgeSearchIpcRequest,
   KnowledgeSearchIpcResult
 } from '../shared/knowledge'
+import type {
+  PublishWechatShareCardRequest,
+  PublishWechatShareCardResult,
+  WechatShareServiceConfig,
+  WechatShareServiceConfigResult
+} from '../shared/wechat-share-card'
 
 export type ParsedContent =
   | { type: 'text'; content: string }
@@ -327,6 +333,13 @@ declare global {
       ) => Promise<UpdateGeneratedReportTemplateResult>
       deleteGeneratedReport: (reportId: string) => Promise<DeleteGeneratedReportResult>
       revealGroupReport: (filePath: string) => Promise<{ success: boolean; error?: string }>
+      getWechatShareConfig: () => Promise<WechatShareServiceConfigResult>
+      saveWechatShareConfig: (
+        config: WechatShareServiceConfig
+      ) => Promise<WechatShareServiceConfigResult>
+      publishWechatShareCard: (
+        request: PublishWechatShareCardRequest
+      ) => Promise<PublishWechatShareCardResult>
       getSavedDbKey: (accountRoot: string) => Promise<DatabaseKeyStorageResult>
       getDatabaseKeyEnvironment: () => Promise<DatabaseKeyEnvironment>
       readDatabaseKeyClipboard: () => Promise<{

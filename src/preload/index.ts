@@ -54,6 +54,10 @@ import type {
   KnowledgeSearchIpcRequest,
   KnowledgeSearchIpcResult
 } from '../shared/knowledge'
+import type {
+  PublishWechatShareCardRequest,
+  WechatShareServiceConfig
+} from '../shared/wechat-share-card'
 
 // 渲染器的自定义 API
 const api = {
@@ -224,6 +228,11 @@ const api = {
   deleteGeneratedReport: (reportId: string) =>
     ipcRenderer.invoke('report:deleteGenerated', reportId),
   revealGroupReport: (filePath: string) => ipcRenderer.invoke('report:reveal', filePath),
+  getWechatShareConfig: () => ipcRenderer.invoke('wechat-share:getConfig'),
+  saveWechatShareConfig: (config: WechatShareServiceConfig) =>
+    ipcRenderer.invoke('wechat-share:saveConfig', config),
+  publishWechatShareCard: (request: PublishWechatShareCardRequest) =>
+    ipcRenderer.invoke('wechat-share:publish', request),
   getSavedDbKey: (accountRoot: string) => ipcRenderer.invoke('key:getSavedDbKey', accountRoot),
   getDatabaseKeyEnvironment: () => ipcRenderer.invoke('key:getEnvironment'),
   readDatabaseKeyClipboard: () => ipcRenderer.invoke('key:readClipboardDbKey'),

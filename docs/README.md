@@ -12,6 +12,8 @@ TraceMemo 的文档按“你想完成什么”组织，而不是按源码模块�
 
 - [建立本地知识库](./user-guide/knowledge.md)
 - [生成群聊日报和总结](./user-guide/report.md)
+- [实验性：自托管微信分享卡片](./deployment/experimental-wechat-share-card.md)
+- [交给 Agent 自动部署微信分享卡片](./skill/setup-wechat-share-card/SKILL.md)
 - [语音转文字](./user-guide/voice.md)
 - [导出聊天档案](./user-guide/export.md)
 - [防撤回](./user-guide/recall-protection.md)

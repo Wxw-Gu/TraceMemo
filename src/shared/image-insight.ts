@@ -12,6 +12,21 @@ export type ImageCategory =
 
 export type ImageImportance = 'low' | 'medium' | 'high'
 
+/** 日报图片理解结果最多复用 10 分钟；旧记录保留在磁盘，仅不再作为缓存命中。 */
+export const IMAGE_INSIGHT_CACHE_TTL_MS = 10 * 60 * 1000
+
+export const isFreshImageInsight = (
+  insight: Pick<ImageInsight, 'updatedAt'> | null | undefined,
+  now = Date.now()
+): boolean =>
+  Boolean(
+    insight &&
+    Number.isFinite(insight.updatedAt) &&
+    insight.updatedAt > 0 &&
+    now >= insight.updatedAt &&
+    now - insight.updatedAt < IMAGE_INSIGHT_CACHE_TTL_MS
+  )
+
 /**
  * 单张微信图片的 AI 理解结果(持久化到 image-insights.json)
  *
@@ -57,6 +72,9 @@ export interface ImageAnalysisRequest {
   sender: string
   sentAt: number
   sessionId: string
+  /** 日报局部选择的图片理解模型；未传时仍使用自动视觉路由。 */
+  providerId?: string
+  modelId?: string
   /** 强制重新分析(忽略缓存) */
   force?: boolean
 }
@@ -118,8 +136,7 @@ export interface ImageCandidateQuery {
 export const isHotImageCandidate = (input: {
   responseCount: number
   interactionCount: number
-}): boolean =>
-  input.responseCount >= 2 || (input.responseCount >= 1 && input.interactionCount >= 1)
+}): boolean => input.responseCount >= 2 || (input.responseCount >= 1 && input.interactionCount >= 1)
 
 export const calculateImageHeatScore = (input: {
   responseCount: number

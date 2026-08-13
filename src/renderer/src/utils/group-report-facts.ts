@@ -16,6 +16,7 @@ import type {
   ImageCandidateQuery
 } from '../../../shared/image-insight'
 import { calculateImageHeatScore, isHotImageCandidate } from '../../../shared/image-insight'
+import type { ReportModelChoice } from '../../../shared/ai-provider'
 
 interface ReportImageReadResult {
   success: boolean
@@ -93,6 +94,7 @@ export interface ReportPreparationProgress {
 
 export interface BuildGroupReportFactsOptions {
   onProgress?: (progress: ReportPreparationProgress) => void
+  visionModel?: ReportModelChoice
 }
 
 function friendlyImageNotice(warnings: string[]): string {
@@ -422,6 +424,8 @@ const buildMediaSection = async (
             sender: candidate.sender,
             sentAt: candidate.sentAt,
             sessionId: candidate.sessionId,
+            providerId: options.visionModel?.providerId,
+            modelId: options.visionModel?.model,
             force: false
           })
           if (!analyzeResp.success || !analyzeResp.insight) {

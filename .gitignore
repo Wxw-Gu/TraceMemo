@@ -12,6 +12,8 @@ test-results/
 resources/connectors/wechat/
 .omc
 .codex/
+services/share-card-worker/.wrangler/
+services/share-card-worker/wrangler.local.jsonc
 docs/design/
 docs/ui-redesign-plan.md
 docs/ui-redesign-spec.md

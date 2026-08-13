@@ -23,6 +23,7 @@ import {
 } from '../utils/voice-message-reference'
 import type { VoiceModelStatus } from '../../../shared/voice-recognition'
 import { resolveMemberName } from '../../../shared/member-names'
+import type { ReportModelChoice } from '../../../shared/ai-provider'
 
 export type { VoiceTranscriptionProgress } from '../utils/voice-message-reference'
 
@@ -86,6 +87,7 @@ interface UseGroupReportGenerationArgs {
   summaryDateRange: SummaryDateRange
   summaryMessageTypes: SummaryMessageType[]
   modelConfig: AiModelConfig
+  visionModelConfig?: ReportModelChoice
 }
 
 interface PreparedReportContext {
@@ -260,7 +262,8 @@ export function useGroupReportGeneration({
   sourceContact,
   summaryDateRange,
   summaryMessageTypes,
-  modelConfig
+  modelConfig,
+  visionModelConfig
 }: UseGroupReportGenerationArgs): {
   phase: ReportGenerationPhase
   error: string
@@ -464,7 +467,7 @@ export function useGroupReportGeneration({
       const pushLog = (log: ReportGenerationLog): void => {
         context.logs.push(log)
         setGenerationMetadata({
-          modelName: selectedModel.model,
+          modelName: selectedModel.modelName || selectedModel.model,
           generationLogs: [...context.logs]
         })
       }
@@ -482,7 +485,7 @@ export function useGroupReportGeneration({
       setPhase('requestingModel')
       setPreparationProgress({ stage: 'summarizingInput', label: '整理总结中' })
       setGenerationMetadata({
-        modelName: selectedModel.model,
+        modelName: selectedModel.modelName || selectedModel.model,
         generationLogs: [...context.logs]
       })
       writeReportLog('info', '调用模型生成日报内容', {
@@ -619,7 +622,7 @@ export function useGroupReportGeneration({
             Number.isFinite(exportFinishTime) && exportFinishTime > context.startedAt
               ? exportFinishTime - context.startedAt
               : Date.now() - context.startedAt,
-          modelName: selectedModel.model,
+          modelName: selectedModel.modelName || selectedModel.model,
           tokenUsage,
           generationLogs: [...context.logs]
         })
@@ -681,7 +684,10 @@ export function useGroupReportGeneration({
     const logs: ReportGenerationLog[] = []
     const pushLog = (log: ReportGenerationLog): void => {
       logs.push(log)
-      setGenerationMetadata({ modelName: modelConfig.model, generationLogs: [...logs] })
+      setGenerationMetadata({
+        modelName: modelConfig.modelName || modelConfig.model,
+        generationLogs: [...logs]
+      })
     }
     const trackStep = async <T>(label: string, task: () => Promise<T>): Promise<T> => {
       const startedAt = new Date()
@@ -702,7 +708,10 @@ export function useGroupReportGeneration({
     setVoiceTranscriptionProgress(null)
     setPreparationProgress(null)
     setImageInsightSummary(EMPTY_IMAGE_INSIGHT_SUMMARY)
-    setGenerationMetadata({ modelName: modelConfig.model, generationLogs: [] })
+    setGenerationMetadata({
+      modelName: modelConfig.modelName || modelConfig.model,
+      generationLogs: []
+    })
     writeReportLog('info', '开始生成群聊日报', {
       groupName: sourceContact.m_nsNickName || sourceContact.m_nsUsrName,
       dateRange: summaryDateRange,
@@ -736,7 +745,8 @@ export function useGroupReportGeneration({
           memberNamePreference
         )
         return buildGroupReportInput(namedReportMessages, sourceContact, true, 'full', {
-          onProgress: setPreparationProgress
+          onProgress: setPreparationProgress,
+          visionModel: visionModelConfig
         })
       })
 
@@ -782,7 +792,8 @@ export function useGroupReportGeneration({
     summaryDateRange,
     summaryMessageTypes,
     templateId,
-    transcribeSelectedVoiceMessages
+    transcribeSelectedVoiceMessages,
+    visionModelConfig
   ])
 
   const retry = useCallback(

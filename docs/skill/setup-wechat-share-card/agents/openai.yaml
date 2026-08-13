@@ -1,0 +1,4 @@
+interface:
+  display_name: "部署微信分享卡片"
+  short_description: "让 Agent 自动完成微信分享卡片服务的配置与部署"
+  default_prompt: "Use $setup-wechat-share-card to configure and deploy my self-hosted WeChat share-card service with minimal questions."

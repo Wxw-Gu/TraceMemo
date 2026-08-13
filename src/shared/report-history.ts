@@ -27,6 +27,10 @@ export interface GeneratedReportRecord {
     height: number
   }
   duration?: number
+  /** 文字总结模型；modelName 保留为旧记录兼容字段。 */
+  textModelName?: string
+  /** 图片理解模型。 */
+  imageModelName?: string
   modelName?: string
   tokenUsage?: {
     input?: number
@@ -62,6 +66,8 @@ export interface SaveGeneratedReportRequest {
   htmlPath?: string
   pngPath?: string
   duration?: number
+  textModelName?: string
+  imageModelName?: string
   modelName?: string
   tokenUsage?: {
     input?: number

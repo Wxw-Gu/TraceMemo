@@ -74,6 +74,17 @@ export interface AIRuntimeModelConfig {
   timeoutMs?: number
 }
 
+/** 日报工作区内可选择的模型，不会修改全局默认 Provider。 */
+export interface ReportModelChoice extends AIRuntimeModelConfig {
+  providerId: string
+  configured: true
+}
+
+export interface AIVisionRuntimeConfig extends AIRuntimeModelConfig {
+  /** 图片理解模型独立于文字总结模型，由已验证的 vision/ocr capability 自动选择。 */
+  source: 'default-model' | 'vision-capability' | 'unavailable'
+}
+
 export interface AiSearchProviderStatus {
   configured: boolean
   requiresConsent: boolean

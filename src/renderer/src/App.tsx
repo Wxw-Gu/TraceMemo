@@ -6,7 +6,11 @@ import { ApiWorkspace } from './features/api-center/ApiWorkspace'
 import { SettingsWorkspace } from './features/settings/SettingsWorkspace'
 import { AgentHubWorkspace } from './features/agent-hub/AgentHubWorkspace'
 import type { SettingsCategoryId } from './features/settings/model/types'
-import type { AIRuntimeModelConfig } from '../../shared/ai-provider'
+import type {
+  AIProviderSummary,
+  AIRuntimeModelConfig,
+  ReportModelChoice
+} from '../../shared/ai-provider'
 import { AppPage } from './components/layout/navigation'
 import { AiReportWorkspace } from './components/reports/AiReportWorkspace'
 import { ReportHistorySidebar } from './components/reports/ReportHistorySidebar'
@@ -73,6 +77,51 @@ const INITIAL_MESSAGE_COUNT = 20
 const MESSAGE_PAGE_SIZE = 100
 const MESSAGE_PREFETCH_COUNT = INITIAL_MESSAGE_COUNT + MESSAGE_PAGE_SIZE
 const EXPORT_PREVIEW_LIMIT = 20
+const REPORT_TEXT_MODEL_STORAGE_KEY = 'group_report_text_model'
+const REPORT_VISION_MODEL_STORAGE_KEY = 'group_report_vision_model'
+
+const reportModelKey = (model: { providerId?: string; model: string }): string =>
+  model.providerId && model.model ? `${model.providerId}::${model.model}` : ''
+
+const reportProviderConfigured = (provider: AIProviderSummary): boolean =>
+  Boolean(provider.hasApiKey || provider.type === 'ollama' || provider.auth.type === 'none')
+
+const reportModelChoices = (
+  providers: AIProviderSummary[],
+  capability: 'chat' | 'vision'
+): ReportModelChoice[] =>
+  providers.flatMap((provider) => {
+    if (!reportProviderConfigured(provider)) return []
+    return provider.models
+      .filter((model) =>
+        capability === 'chat'
+          ? model.capabilities.chat
+          : model.capabilities.vision || model.capabilities.ocr
+      )
+      .map((model) => ({
+        providerId: provider.id,
+        providerName: provider.name,
+        model: model.id,
+        modelName: model.name || model.id,
+        configured: true as const,
+        status: provider.status,
+        timeoutMs: provider.advanced.timeoutMs
+      }))
+  })
+
+const selectReportModel = (
+  choices: ReportModelChoice[],
+  storageKey: string,
+  fallback: { providerId?: string; model: string }
+): ReportModelChoice | undefined => {
+  const savedKey = localStorage.getItem(storageKey) || ''
+  const fallbackKey = reportModelKey(fallback)
+  return (
+    choices.find((choice) => reportModelKey(choice) === savedKey) ||
+    choices.find((choice) => reportModelKey(choice) === fallbackKey) ||
+    choices[0]
+  )
+}
 const areMessagesEquivalent = (left: Message[], right: Message[]): boolean => {
   if (left === right) return true
   if (left.length !== right.length) return false
@@ -209,6 +258,16 @@ function App(): React.ReactElement {
     configured: false,
     status: 'untested'
   })
+  const [reportTextModelConfig, setReportTextModelConfig] = useState<AiModelConfig>({
+    providerName: '尚未配置',
+    model: '',
+    modelName: '尚未选择模型',
+    configured: false,
+    status: 'untested'
+  })
+  const [aiVisionModelConfig, setAiVisionModelConfig] = useState<ReportModelChoice>()
+  const [reportTextModelOptions, setReportTextModelOptions] = useState<ReportModelChoice[]>([])
+  const [reportVisionModelOptions, setReportVisionModelOptions] = useState<ReportModelChoice[]>([])
   const [selfInfo, setSelfInfo] = useState<SelfInfo | null>(null)
   const [isNativeMonitorActive, setIsNativeMonitorActive] = useState(false)
   const [exportTasks, setExportTasks] = useState<ExportTaskRecord[]>(() => {
@@ -336,7 +395,25 @@ function App(): React.ReactElement {
             localStorage.removeItem('ai_model')
           }
         }
-        setAiModelConfig(await window.api.getAIRuntimeConfig())
+        const [runtime, visionRuntime, providerList] = await Promise.all([
+          window.api.getAIRuntimeConfig(),
+          window.api.getAIVisionRuntimeConfig(),
+          window.api.listAIProviders()
+        ])
+        const providers = providerList.success ? providerList.providers : []
+        const textChoices = reportModelChoices(providers, 'chat')
+        const visionChoices = reportModelChoices(providers, 'vision')
+        const selectedText = selectReportModel(textChoices, REPORT_TEXT_MODEL_STORAGE_KEY, runtime)
+        const selectedVision = selectReportModel(
+          visionChoices,
+          REPORT_VISION_MODEL_STORAGE_KEY,
+          visionRuntime
+        )
+        setReportTextModelOptions(textChoices)
+        setReportVisionModelOptions(visionChoices)
+        setAiModelConfig(runtime)
+        setReportTextModelConfig(selectedText || runtime)
+        setAiVisionModelConfig(selectedVision)
       } catch (error) {
         console.warn('[AI Provider] 配置加载失败:', error)
       }
@@ -349,7 +426,8 @@ function App(): React.ReactElement {
     sourceContact: reportSourceContact,
     summaryDateRange,
     summaryMessageTypes,
-    modelConfig: aiModelConfig
+    modelConfig: reportTextModelConfig,
+    visionModelConfig: aiVisionModelConfig
   })
   const lastCapturedReportKeyRef = React.useRef('')
 
@@ -1496,7 +1574,10 @@ function App(): React.ReactElement {
         htmlPath: reportGeneration.reportPaths?.htmlPath,
         pngPath: reportGeneration.reportPaths?.pngPath,
         duration: reportGeneration.generationMetadata.durationMs,
-        modelName: reportGeneration.generationMetadata.modelName || aiModelConfig.model,
+        textModelName:
+          reportGeneration.generationMetadata.modelName || reportTextModelConfig.modelName,
+        imageModelName: aiVisionModelConfig?.modelName || aiVisionModelConfig?.model,
+        modelName: reportGeneration.generationMetadata.modelName || reportTextModelConfig.modelName,
         tokenUsage: reportGeneration.generationMetadata.tokenUsage,
         generationLogs: reportGeneration.generationMetadata.generationLogs,
         reportSnapshot,
@@ -1521,7 +1602,10 @@ function App(): React.ReactElement {
 
     void saveReport()
   }, [
-    aiModelConfig.model,
+    aiVisionModelConfig?.model,
+    aiVisionModelConfig?.modelName,
+    reportTextModelConfig.model,
+    reportTextModelConfig.modelName,
     reportGeneration.generatedImage,
     reportGeneration.generationMetadata,
     reportGeneration.phase,
@@ -1689,7 +1773,10 @@ function App(): React.ReactElement {
           sourceContact={reportSourceContact}
           summaryDateRange={summaryDateRange}
           summaryMessageTypes={summaryMessageTypes}
-          modelConfig={aiModelConfig}
+          modelConfig={reportTextModelConfig}
+          visionModelConfig={aiVisionModelConfig}
+          textModelOptions={reportTextModelOptions}
+          visionModelOptions={reportVisionModelOptions}
           rangeMessageCount={reportGeneration.rangeMessages.length}
           reportMessageCount={reportGeneration.reportMessages.length}
           messageTypeCounts={reportGeneration.messageTypeCounts}
@@ -1702,6 +1789,14 @@ function App(): React.ReactElement {
           onSummaryDateRangeChange={setSummaryDateRange}
           onSummaryMessageTypesChange={setSummaryMessageTypes}
           onOpenModelSettings={openModelSettings}
+          onTextModelChange={(model) => {
+            localStorage.setItem(REPORT_TEXT_MODEL_STORAGE_KEY, reportModelKey(model))
+            setReportTextModelConfig(model)
+          }}
+          onVisionModelChange={(model) => {
+            localStorage.setItem(REPORT_VISION_MODEL_STORAGE_KEY, reportModelKey(model))
+            setAiVisionModelConfig(model)
+          }}
           onGenerate={() => {
             reportGeneration.resetGenerationStatus()
             void reportGeneration.generate()
@@ -1726,7 +1821,7 @@ function App(): React.ReactElement {
           preparationProgress={reportGeneration.preparationProgress}
           imageInsightSummary={reportGeneration.imageInsightSummary}
           canRetryModelStep={reportGeneration.canRetryModelStep}
-          currentModel={aiModelConfig}
+          currentModel={reportTextModelConfig}
           onRetry={(model) => void reportGeneration.retry(model)}
           onContinueAfterImageFailures={() => void reportGeneration.continueAfterImageFailures()}
           onCancelAfterImageFailures={reportGeneration.cancelAfterImageFailures}
@@ -1765,7 +1860,36 @@ function App(): React.ReactElement {
             onContactsChange={setContacts}
             onFilteredContactsChange={setFilteredContacts}
             onReturnToLogin={handleReturnToLogin}
-            onAIRuntimeChange={(config: AIRuntimeModelConfig) => setAiModelConfig(config)}
+            onAIRuntimeChange={(config: AIRuntimeModelConfig) => {
+              setAiModelConfig(config)
+              void Promise.all([
+                window.api.getAIVisionRuntimeConfig(),
+                window.api.listAIProviders()
+              ])
+                .then(([visionRuntime, providerList]) => {
+                  const providers = providerList.success ? providerList.providers : []
+                  const textChoices = reportModelChoices(providers, 'chat')
+                  const visionChoices = reportModelChoices(providers, 'vision')
+                  setReportTextModelOptions(textChoices)
+                  setReportVisionModelOptions(visionChoices)
+                  setReportTextModelConfig(
+                    (current) =>
+                      selectReportModel(
+                        textChoices,
+                        REPORT_TEXT_MODEL_STORAGE_KEY,
+                        current.configured ? current : config
+                      ) || config
+                  )
+                  setAiVisionModelConfig((current) =>
+                    selectReportModel(
+                      visionChoices,
+                      REPORT_VISION_MODEL_STORAGE_KEY,
+                      current || visionRuntime
+                    )
+                  )
+                })
+                .catch(() => undefined)
+            }}
             onNotice={setReportNotice}
             onOpenSettings={openSettings}
             onAppearanceChange={handleAppearanceChange}
