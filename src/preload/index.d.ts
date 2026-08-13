@@ -40,6 +40,7 @@ import type {
   AIProviderConfig,
   AIProviderListResult,
   AIRuntimeModelConfig,
+  AIVisionRuntimeConfig,
   AIVisionTestRequest,
   AIVisionTestResult,
   LegacyAIConfig
@@ -238,6 +239,7 @@ declare global {
       }>
       listAIProviders: () => Promise<AIProviderListResult>
       getAIRuntimeConfig: () => Promise<AIRuntimeModelConfig>
+      getAIVisionRuntimeConfig: () => Promise<AIVisionRuntimeConfig>
       getAiSearchProviderStatus: () => Promise<AiSearchProviderStatus>
       authorizeAiSearchExternalProvider: (
         request: AiSearchExternalAuthorizationRequest

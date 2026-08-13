@@ -1117,6 +1117,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('ai:listProviders', () => aiProviderService.list())
   ipcMain.handle('ai:getRuntimeConfig', () => aiProviderService.getRuntimeConfig())
+  ipcMain.handle('ai:getVisionRuntimeConfig', () => aiProviderService.getVisionRuntimeConfig())
   ipcMain.handle('ai:saveProvider', (_, provider: AIProviderConfig) =>
     aiProviderService.save(provider)
   )

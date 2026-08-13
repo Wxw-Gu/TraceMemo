@@ -124,6 +124,7 @@ const api = {
     ipcRenderer.invoke('ai:chat', messages, options),
   listAIProviders: () => ipcRenderer.invoke('ai:listProviders'),
   getAIRuntimeConfig: () => ipcRenderer.invoke('ai:getRuntimeConfig'),
+  getAIVisionRuntimeConfig: () => ipcRenderer.invoke('ai:getVisionRuntimeConfig'),
   getAiSearchProviderStatus: (): Promise<AiSearchProviderStatus> =>
     ipcRenderer.invoke('ai-search:getProviderStatus'),
   authorizeAiSearchExternalProvider: (
