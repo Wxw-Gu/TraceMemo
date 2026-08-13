@@ -995,6 +995,19 @@ const renderExportScript = (name: string): string => `
     message.contentData && forwardedSearchText(message.contentData.items),
     message.exportMediaName
   ].filter(Boolean).join(' ').toLowerCase()
+  const exportedImageOrVideoFileStem = (message) => {
+    const mediaType = message.exportMediaType || (message.contentData && message.contentData.type)
+    if (mediaType !== 'image' && mediaType !== 'video') return ''
+    const mediaUrl = String(message.exportMediaUrl || '').split(/[?#]/, 1)[0]
+    const fileName = mediaUrl.slice(mediaUrl.lastIndexOf('/') + 1)
+    if (!fileName) return ''
+    let decodedFileName = fileName
+    try {
+      decodedFileName = decodeURIComponent(fileName)
+    } catch {}
+    const extensionIndex = decodedFileName.lastIndexOf('.')
+    return (extensionIndex > 0 ? decodedFileName.slice(0, extensionIndex) : decodedFileName).toLowerCase()
+  }
 
   const shareLabel = (typeVal) => {
     if (String(typeVal) === '5') return '公众号链接'
@@ -1516,7 +1529,9 @@ const renderExportScript = (name: string): string => `
     return allMessages.filter((message) =>
       (activeConversation === 'all' || message.exportConversationId === activeConversation) &&
       (activeKind === 'all' || kindOf(message) === activeKind) &&
-      (!term || searchText(message).includes(term))
+      (!term ||
+        searchText(message).includes(term) ||
+        exportedImageOrVideoFileStem(message) === term)
     )
   }
   const applyFilters = (restorePosition = false) => {
@@ -1779,7 +1794,7 @@ export function renderExportPage(name: string): string {
         </div>
       </div>
       <div class="controls">
-        <input id="query" type="search" placeholder="搜索发送者或消息内容…" aria-label="搜索消息">
+        <input id="query" type="search" placeholder="搜索发送者、消息内容或媒体文件名（不含后缀）…" aria-label="搜索消息">
       </div>
       <div class="filters" id="filters">
         <button class="filter-button active" type="button" data-kind="all">全部</button>

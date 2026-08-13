@@ -27,6 +27,13 @@ export type ResolveSourceResult =
   | { success: true; source: EncodedVoiceSource }
   | { success: false; error: string }
 
+export interface VoiceReference {
+  sessionId: string
+  localId: number
+  createTime: number
+  svrId?: string | number
+}
+
 export class VoiceService {
   private wcdb4Client: Wcdb4Client
   private voiceCache = new Map<string, string>()
@@ -68,6 +75,83 @@ export class VoiceService {
     this.voiceCache.set(cacheKey, base64Data)
 
     return { success: true, data: base64Data }
+  }
+
+  async resolveVoices(
+    references: VoiceReference[]
+  ): Promise<Array<{ success: boolean; data?: string; error?: string }>> {
+    const results: Array<{ success: boolean; data?: string; error?: string } | undefined> =
+      new Array(references.length)
+    const missing: Array<{ index: number; reference: VoiceReference }> = []
+    references.forEach((reference, index) => {
+      const cached = this.voiceCache.get(
+        this.buildCacheKey(reference.sessionId, reference.localId, reference.createTime)
+      )
+      if (cached) results[index] = { success: true, data: cached }
+      else missing.push({ index, reference })
+    })
+    if (!missing.length)
+      return results as Array<{ success: boolean; data?: string; error?: string }>
+
+    const sources = await this.wcdb4Client.getVoiceDataBatch(
+      missing.map(({ reference }) => ({
+        sessionId: reference.sessionId,
+        createTime: reference.createTime,
+        localId: reference.localId,
+        svrId: reference.svrId,
+        candidates: this.buildCandidates(reference.sessionId)
+      }))
+    )
+    const failed: Array<{ index: number; reference: VoiceReference }> = []
+    for (const [{ index, reference }, source] of missing.map(
+      (item, sourceIndex) => [item, sources[sourceIndex]] as const
+    )) {
+      if (!source?.success || !source.hex) {
+        failed.push({ index, reference })
+        continue
+      }
+      const silkData = this.decodeVoiceBlob(source.hex)
+      if (!silkData?.length) {
+        results[index] = { success: false, error: '语音数据为空' }
+        continue
+      }
+      try {
+        const decoded = await this.decoderRegistry.decode({
+          data: silkData,
+          codec: 'silk',
+          sourceHash: createHash('sha256').update(silkData).digest('hex')
+        })
+        const wavData = this.createWavBuffer(decoded.pcm, 24000)
+        const data = wavData.toString('base64')
+        const cacheKey = this.buildCacheKey(
+          reference.sessionId,
+          reference.localId,
+          reference.createTime
+        )
+        this.voiceCache.set(cacheKey, data)
+        this.pcmCache.set(cacheKey, { ...decoded, codec: 'silk' })
+        results[index] = { success: true, data }
+      } catch (error) {
+        results[index] = {
+          success: false,
+          error: error instanceof Error ? error.message : 'Silk 解码失败'
+        }
+      }
+    }
+    const retried = await Promise.all(
+      failed.map(({ reference }) =>
+        this.resolveVoice(
+          reference.sessionId,
+          reference.localId,
+          reference.createTime,
+          reference.svrId
+        )
+      )
+    )
+    failed.forEach(({ index }, retryIndex) => {
+      results[index] = retried[retryIndex]
+    })
+    return results as Array<{ success: boolean; data?: string; error?: string }>
   }
 
   async resolvePcm(

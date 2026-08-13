@@ -10,6 +10,7 @@ export interface PcmProcessorOptions {
 }
 
 export class PcmAudioProcessor implements AudioProcessor {
+  readonly version = VOICE_PROCESSOR_VERSION
   private readonly targetSampleRate: number
   private readonly silenceThreshold: number
   private readonly silencePaddingMs: number

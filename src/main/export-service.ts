@@ -275,6 +275,8 @@ const mergeArchiveMessage = (previous: Message, current: Message): Message => {
   if (!current.exportMediaUrl && !current.voiceDataUrl && previous.exportMediaError) {
     merged.exportMediaError = previous.exportMediaError
   }
+  if (merged.voiceDataUrl) delete merged.exportMediaError
+  if (merged.voiceTranscript) delete merged.voiceTranscriptError
   return merged
 }
 
@@ -754,7 +756,8 @@ const preserveLegacyCombinedArchive = async (outputDir: string): Promise<void> =
 async function runSingleExport(
   request: ExportRequest,
   win: BrowserWindow,
-  voiceRecognition?: Pick<VoiceRecognitionUseCase, 'recognize'>,
+  voiceRecognition?: Pick<VoiceRecognitionUseCase, 'recognize'> &
+    Partial<Pick<VoiceRecognitionUseCase, 'publishTranscript'>>,
   options: SingleExportOptions = {}
 ): Promise<ExportResult> {
   const manageJob = options.manageJob !== false
@@ -1083,89 +1086,173 @@ async function runSingleExport(
           total: voiceMessages.length,
           percent: 20
         })
-        for (const [voiceIndex, message] of voiceMessages.entries()) {
-          if (!jobs.has(request.jobId)) throw new Error('已取消')
-          const previous = reusablePreviousMessages.get(message)
-          let canTranscribe = true
-          if (previous?.voiceDataUrl && (await resourceExists(previous.voiceDataUrl))) {
-            message.voiceDataUrl = previous.voiceDataUrl
-            message.voiceDuration = previous.voiceDuration
-            if (request.includeVoiceTranscripts && previous.voiceTranscript) {
-              message.voiceTranscript = previous.voiceTranscript
+        const voiceIndexUpdates = new Map<
+          string,
+          {
+            reference: {
+              sessionId: string
+              localId: number
+              createTime: number
+              svrId?: string | number
             }
-          } else if (!message.sessionId || message.localId == null || !message.createTime) {
-            keepMediaError(request, message, '语音标识不完整，无法定位本地语音')
-            canTranscribe = false
-          } else {
-            try {
-              const voice = await voiceService.resolveVoice(
-                message.sessionId,
-                message.localId,
-                message.createTime,
-                message.serverId
-              )
-              if (!voice.success || !voice.data) {
-                const detail = voice.error || '未知原因'
-                const reason = /未找到|不存在|获取语音数据失败/.test(detail)
-                  ? `语音文件缺失：${detail}`
-                  : /Silk|解码|数据为空/.test(detail)
-                    ? `语音解析失败：${detail}`
-                    : `语音格式不支持或读取失败：${detail}`
-                keepMediaError(request, message, reason)
-                canTranscribe = false
-              } else {
-                const audioBuffer = Buffer.from(voice.data, 'base64')
-                const voiceName = `voice_${bufferHashPart(audioBuffer)}.wav`
-                const voiceUrl = `voices/${voiceName}`
-                if (!(await resourceExists(voiceUrl))) {
-                  await fs.writeFile(join(outputDir, 'voices', voiceName), audioBuffer)
-                  markResourceExists(voiceUrl)
+            transcript: string
+            cached: boolean
+          }
+        >()
+        const batchSize = 16
+        for (let batchStart = 0; batchStart < voiceMessages.length; batchStart += batchSize) {
+          const batch = voiceMessages.slice(batchStart, batchStart + batchSize)
+          const mediaItems: Array<{
+            message: Message
+            reference: {
+              sessionId: string
+              localId: number
+              createTime: number
+              svrId?: string | number
+            }
+          }> = []
+          for (const message of batch) {
+            if (!jobs.has(request.jobId)) throw new Error('已取消')
+            const previous = reusablePreviousMessages.get(message)
+            const hasVoiceIdentity = Boolean(
+              message.sessionId && message.localId != null && message.createTime
+            )
+            const reference = hasVoiceIdentity
+              ? {
+                  sessionId: message.sessionId!,
+                  localId: message.localId!,
+                  createTime: message.createTime!,
+                  svrId: message.serverId
                 }
-                message.voiceDataUrl = voiceUrl
-                message.voiceDuration = Math.max(1, Math.round(audioBuffer.length / (24000 * 2)))
+              : null
+            if (previous?.voiceDataUrl && (await resourceExists(previous.voiceDataUrl))) {
+              message.voiceDataUrl = previous.voiceDataUrl
+              message.voiceDuration = previous.voiceDuration
+              if (request.includeVoiceTranscripts && previous.voiceTranscript) {
+                message.voiceTranscript = previous.voiceTranscript
               }
+            }
+            if (request.includeVoiceTranscripts && !message.voiceTranscript) {
+              if (!reference) {
+                message.voiceTranscriptError = '语音标识不完整，无法转文字'
+              } else if (!voiceRecognition) {
+                message.voiceTranscriptError = '语音转文字服务不可用'
+              } else {
+                try {
+                  const recognition = await voiceRecognition.recognize(
+                    reference,
+                    voiceRecognition.publishTranscript
+                      ? { publishTranscriptUpdate: false }
+                      : undefined
+                  )
+                  if (recognition.success) {
+                    message.voiceTranscript = recognition.transcript?.trim() || '未识别出文字'
+                    if (voiceRecognition.publishTranscript && recognition.transcript?.trim()) {
+                      voiceIndexUpdates.set(reference.sessionId, {
+                        reference,
+                        transcript: recognition.transcript.trim(),
+                        cached: Boolean(recognition.cached)
+                      })
+                    }
+                  } else {
+                    message.voiceTranscriptError = recognition.error || '语音识别失败'
+                  }
+                } catch (error) {
+                  message.voiceTranscriptError =
+                    error instanceof Error ? error.message : '语音识别失败'
+                }
+              }
+            }
+            if (
+              request.includeVoiceTranscripts &&
+              reference &&
+              message.voiceTranscript &&
+              voiceRecognition?.publishTranscript &&
+              !voiceIndexUpdates.has(reference.sessionId)
+            ) {
+              voiceIndexUpdates.set(reference.sessionId, {
+                reference,
+                transcript: message.voiceTranscript,
+                cached: true
+              })
+            }
+            if (!message.voiceDataUrl) {
+              if (!reference) {
+                keepMediaError(request, message, '语音标识不完整，无法定位本地语音')
+              } else {
+                mediaItems.push({ message, reference })
+              }
+            }
+          }
+
+          const voices =
+            typeof voiceService.resolveVoices === 'function'
+              ? await voiceService.resolveVoices(mediaItems.map((item) => item.reference))
+              : await Promise.all(
+                  mediaItems.map(({ reference }) =>
+                    voiceService.resolveVoice(
+                      reference.sessionId,
+                      reference.localId,
+                      reference.createTime,
+                      reference.svrId
+                    )
+                  )
+                )
+          for (const [{ message }, voice] of mediaItems.map(
+            (item, index) => [item, voices[index]] as const
+          )) {
+            if (!voice?.success || !voice.data) {
+              const detail = voice?.error || '未知原因'
+              const reason = /未找到|不存在|获取语音数据失败/.test(detail)
+                ? `语音文件缺失：${detail}`
+                : /Silk|解码|数据为空/.test(detail)
+                  ? `语音解析失败：${detail}`
+                  : `语音格式不支持或读取失败：${detail}`
+              keepMediaError(request, message, reason)
+              continue
+            }
+            try {
+              const audioBuffer = Buffer.from(voice.data, 'base64')
+              const voiceName = `voice_${bufferHashPart(audioBuffer)}.wav`
+              const voiceUrl = `voices/${voiceName}`
+              if (!(await resourceExists(voiceUrl))) {
+                await fs.writeFile(join(outputDir, 'voices', voiceName), audioBuffer)
+                markResourceExists(voiceUrl)
+              }
+              message.voiceDataUrl = voiceUrl
+              message.voiceDuration = Math.max(1, Math.round(audioBuffer.length / (24000 * 2)))
             } catch (error) {
               keepMediaError(
                 request,
                 message,
                 `语音文件写入失败：${error instanceof Error ? error.message : String(error)}`
               )
-              canTranscribe = false
             }
           }
-          if (request.includeVoiceTranscripts && canTranscribe && !message.voiceTranscript) {
-            if (!voiceRecognition) {
-              message.voiceTranscriptError = '语音转文字服务不可用'
-            } else {
-              try {
-                const recognition = await voiceRecognition.recognize({
-                  sessionId: message.sessionId!,
-                  localId: message.localId!,
-                  createTime: message.createTime!,
-                  svrId: message.serverId
-                })
-                if (recognition.success) {
-                  message.voiceTranscript = recognition.transcript?.trim() || '未识别出文字'
-                } else {
-                  message.voiceTranscriptError = recognition.error || '语音识别失败'
-                }
-              } catch (error) {
-                message.voiceTranscriptError =
-                  error instanceof Error ? error.message : '语音识别失败'
-              }
-            }
-          }
+          const processedVoices = Math.min(batchStart + batch.length, voiceMessages.length)
           send({
             jobId: request.jobId,
             phase: voicePhase,
-            processed: voiceIndex + 1,
+            processed: processedVoices,
             total: voiceMessages.length,
             percent:
               20 +
               Math.round(
-                ((voiceIndex + 1) / Math.max(voiceMessages.length, 1)) * (voiceProgressEnd - 20)
+                (processedVoices / Math.max(voiceMessages.length, 1)) * (voiceProgressEnd - 20)
               )
           })
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+        for (const update of voiceIndexUpdates.values()) {
+          try {
+            await voiceRecognition?.publishTranscript?.(
+              update.reference,
+              update.transcript,
+              update.cached
+            )
+          } catch (error) {
+            console.warn('[Export] voice transcript index refresh failed:', error)
+          }
         }
       } else if (request.includeMedia) {
         for (const message of messages) {
@@ -1500,7 +1587,8 @@ async function runSingleExport(
 async function runAllExport(
   request: ExportRequest,
   win: BrowserWindow,
-  voiceRecognition?: Pick<VoiceRecognitionUseCase, 'recognize'>
+  voiceRecognition?: Pick<VoiceRecognitionUseCase, 'recognize'> &
+    Partial<Pick<VoiceRecognitionUseCase, 'publishTranscript'>>
 ): Promise<ExportResult> {
   jobs.add(request.jobId)
   const send = (progress: ExportJobProgress): void => {
@@ -1674,7 +1762,8 @@ async function runAllExport(
 export async function runExport(
   request: ExportRequest,
   win: BrowserWindow,
-  voiceRecognition?: Pick<VoiceRecognitionUseCase, 'recognize'>
+  voiceRecognition?: Pick<VoiceRecognitionUseCase, 'recognize'> &
+    Partial<Pick<VoiceRecognitionUseCase, 'publishTranscript'>>
 ): Promise<ExportResult> {
   return request.scope === 'all'
     ? runAllExport(request, win, voiceRecognition)

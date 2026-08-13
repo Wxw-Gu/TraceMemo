@@ -18,8 +18,10 @@ import {
   type UserDataSelection
 } from './app-data-paths'
 import type { LegacySecretBundle } from './legacy-safe-storage-helper'
+import { SqliteTranscriptRepository } from './voice-pipeline/transcript-repository'
 
 const MIGRATION_STATE_FILE = 'tracememo-migration-v1.json'
+const VOICE_TRANSCRIPT_CACHE_ITEM = 'cache/voice-transcripts.sqlite'
 const TOKEN_MIGRATION_BLOCK_MESSAGE =
   '检测到旧版 API Token 尚未完成迁移。请重试数据迁移，或在 API Center 主动重新生成 Token。'
 
@@ -289,6 +291,24 @@ async function copyDirectoryWithoutOverwrite(
   return 'migrated'
 }
 
+export async function migrateLegacyVoiceTranscripts(
+  sourceRoot: string,
+  targetRoot: string
+): Promise<MigrationItemStatus> {
+  const relativePath = path.join('cache', 'voice-transcripts.sqlite')
+  const sourcePath = path.join(sourceRoot, relativePath)
+  const targetPath = path.join(targetRoot, relativePath)
+  if (!(await fs.pathExists(sourcePath))) return 'missing'
+  if (path.resolve(sourcePath) === path.resolve(targetPath)) return 'skipped'
+
+  const repository = new SqliteTranscriptRepository(targetPath)
+  try {
+    return repository.mergeFrom(sourcePath) > 0 ? 'migrated' : 'skipped'
+  } finally {
+    repository.close()
+  }
+}
+
 async function writeEncryptedWithoutOverwrite(
   targetRoot: string,
   relativePath: string,
@@ -472,6 +492,9 @@ export async function executeMigration(
         copyDirectoryWithoutOverwrite(sourceRoot, targetRoot, relativePath, stagingRoot)
       )
     }
+    await runItem(VOICE_TRANSCRIPT_CACHE_ITEM, () =>
+      migrateLegacyVoiceTranscripts(sourceRoot, targetRoot)
+    )
 
     const agentRoots = dependencies.agentRoots()
     await runItem('agent-credentials', () => copyMissingTree(agentRoots.legacy, agentRoots.current))
@@ -528,7 +551,9 @@ export async function executeMigration(
     await fs.remove(stagingRoot).catch(() => undefined)
   }
 
-  const failed = Object.values(items).some((status) => status === 'failed')
+  const failed = Object.entries(items).some(
+    ([name, status]) => name !== VOICE_TRANSCRIPT_CACHE_ITEM && status === 'failed'
+  )
   state.status = failed || secretFailures.length > 0 ? 'partial' : 'completed'
   state.updatedAt = timestamp()
   state.secretFailures = Array.from(new Set(secretFailures))
@@ -592,6 +617,38 @@ function closeMigrationProgress(window: BrowserWindow | null): void {
 
 export async function runFirstLaunchMigration(roots: UserDataRoots): Promise<MigrationFlowResult> {
   const assessment = assessMigration(roots)
+  const voiceMigrationStatus = assessment.state?.items[VOICE_TRANSCRIPT_CACHE_ITEM]
+  const needsVoiceBackfill = !voiceMigrationStatus
+  if (
+    assessment.reason === 'migration-completed' &&
+    assessment.sourceRoot &&
+    assessment.state &&
+    needsVoiceBackfill
+  ) {
+    const state: MigrationState = {
+      ...assessment.state,
+      items: { ...assessment.state.items },
+      updatedAt: new Date().toISOString()
+    }
+    try {
+      state.items[VOICE_TRANSCRIPT_CACHE_ITEM] = await migrateLegacyVoiceTranscripts(
+        assessment.sourceRoot,
+        roots.current
+      )
+    } catch {
+      state.items[VOICE_TRANSCRIPT_CACHE_ITEM] = 'failed'
+    }
+    await writeMigrationState(roots.current, state)
+    return {
+      assessment: { ...assessment, state },
+      action: state.items[VOICE_TRANSCRIPT_CACHE_ITEM] === 'migrated' ? 'migrated' : 'none',
+      execution: {
+        state,
+        tokenGenerationBlocked: false
+      },
+      tokenGenerationBlocked: false
+    }
+  }
   if (!assessment.shouldPrompt || !assessment.sourceRoot) {
     return { assessment, action: 'none', tokenGenerationBlocked: false }
   }
@@ -649,9 +706,7 @@ export async function runFirstLaunchMigration(roots: UserDataRoots): Promise<Mig
       type: execution.state.status === 'completed' ? ('info' as const) : ('warning' as const),
       title: 'TraceMemo 数据迁移',
       message:
-        execution.state.status === 'completed'
-          ? 'WechatExplorer 数据迁移完成'
-          : '部分数据未能迁移',
+        execution.state.status === 'completed' ? 'WechatExplorer 数据迁移完成' : '部分数据未能迁移',
       detail:
         execution.state.status === 'completed'
           ? '核心用户资产已复制到 TraceMemo。旧目录仍完整保留。'

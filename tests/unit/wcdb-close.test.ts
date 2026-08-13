@@ -37,4 +37,59 @@ describe('Wcdb4Client shutdown', () => {
       expect(shutdown).toHaveBeenCalledOnce()
     }
   })
+
+  it('restores async batch voice results to request order', async () => {
+    const client = Object.create(Wcdb4Client.prototype) as Wcdb4Client
+    setPrivate(client, 'wcdbGetVoiceDataBatch', vi.fn())
+    setPrivate(
+      client,
+      'callJsonAsync',
+      vi.fn().mockResolvedValue([
+        { index: 1, success: false, error: 'missing' },
+        { index: 0, Success: true, hex: 'aabb' }
+      ])
+    )
+
+    await expect(
+      client.getVoiceDataBatch([
+        { sessionId: 'a', createTime: 1, localId: 10, candidates: ['a'] },
+        { sessionId: 'b', createTime: 2, localId: 20, candidates: ['b'] }
+      ])
+    ).resolves.toEqual([
+      { success: true, hex: 'aabb', error: '' },
+      { success: false, hex: undefined, error: 'missing' }
+    ])
+  })
+
+  it('uses the async Koffi path for a single voice lookup and releases the result', async () => {
+    const client = Object.create(Wcdb4Client.prototype) as Wcdb4Client
+    const nativePointer = { value: 'aabb' }
+    const freeString = vi.fn()
+    const nativeFunction = {
+      async: vi.fn((...args: unknown[]) => {
+        const outHex = args.at(-2) as [unknown]
+        const callback = args.at(-1) as (error: unknown, code: number) => void
+        outHex[0] = nativePointer
+        queueMicrotask(() => callback(null, 0))
+      })
+    }
+    setPrivate(client, 'wcdbGetVoiceData', nativeFunction)
+    setPrivate(client, 'wcdbFreeString', freeString)
+    setPrivate(client, 'handle', 1)
+    setPrivate(client, 'closing', false)
+    setPrivate(client, 'nativeCallsInFlight', new Set())
+    setPrivate(
+      client,
+      'decodeHexPtr',
+      vi.fn(() => 'aabb')
+    )
+
+    await expect(client.getVoiceData('session', 100, ['session'], 10, 20)).resolves.toEqual({
+      success: true,
+      hex: 'aabb',
+      error: ''
+    })
+    expect(nativeFunction.async).toHaveBeenCalledOnce()
+    expect(freeString).toHaveBeenCalledWith(nativePointer)
+  })
 })
