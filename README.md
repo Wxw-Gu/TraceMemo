@@ -69,17 +69,18 @@ TraceMemo（迹忆）原名 WechatExplorer，是一次从“微信聊天记录�
 
 ## 从你的任务开始
 
-| 我现在想做什么                            | 在应用里打开                                            | 需要准备什么                         |
-| ----------------------------------------- | ------------------------------------------------------- | ------------------------------------ |
-| 找一句记得原文或关键词的聊天              | [档案](./docs/user-guide/chat-archive.md)               | 连接微信数据，不需要 AI              |
-| 找一件记得大意、但不知道在哪聊过的事      | [问问微信](./docs/user-guide/ai-search.md)              | 配置 AI 服务，并选择会话和时间范围   |
-| 让长期、跨群聊查找更稳定                  | [问问微信 → 本地知识库](./docs/user-guide/knowledge.md) | 主动建立本地索引；不会自动创建       |
-| 快速了解一个群今天、昨天或近 7 天聊了什么 | [日报](./docs/user-guide/report.md)                     | 选择群聊并配置 AI 服务               |
-| 把微信语音变成可搜索的文字                | [设置 → 语音转文字](./docs/user-guide/voice.md)         | 准备本地语音模型                     |
-| 把聊天保存成 HTML、Markdown、CSV 或 JSON  | [导出](./docs/user-guide/export.md)                     | 选择聊天、时间和格式，不需要 AI      |
-| 尽量保留之后捕获到的撤回消息              | [设置 → 防撤回](./docs/user-guide/recall-protection.md) | 默认关闭；开启前先了解写入和性能边界 |
-| 直接在微信里向 TraceMemo 提问             | [微信机器人](./docs/agent/agent-hub.md)                 | 扫码连接机器人；总结类任务需要 AI    |
-| 让 Codex 等外部 Agent 查询微信历史        | [外部 Agent](./docs/agent/overview.md)                  | 安装 Reader Skill 并配置本机 Token   |
+| 我现在想做什么                            | 在应用里打开                                                        | 需要准备什么                         |
+| ----------------------------------------- | ------------------------------------------------------------------- | ------------------------------------ |
+| 找一句记得原文或关键词的聊天              | [档案](./docs/user-guide/chat-archive.md)                           | 连接微信数据，不需要 AI              |
+| 找一件记得大意、但不知道在哪聊过的事      | [问问微信](./docs/user-guide/ai-search.md)                          | 配置 AI 服务，并选择会话和时间范围   |
+| 让长期、跨群聊查找更稳定                  | [问问微信 → 本地知识库](./docs/user-guide/knowledge.md)             | 主动建立本地索引；不会自动创建       |
+| 快速了解一个群今天、昨天或近 7 天聊了什么 | [日报](./docs/user-guide/report.md)                                 | 选择群聊并配置 AI 服务               |
+| 把群聊日报生成微信分享卡片（实验性）      | [微信分享卡片](./docs/deployment/experimental-wechat-share-card.md) | 自备 Cloudflare、域名和微信测试号    |
+| 把微信语音变成可搜索的文字                | [设置 → 语音转文字](./docs/user-guide/voice.md)                     | 准备本地语音模型                     |
+| 把聊天保存成 HTML、Markdown、CSV 或 JSON  | [导出](./docs/user-guide/export.md)                                 | 选择聊天、时间和格式，不需要 AI      |
+| 尽量保留之后捕获到的撤回消息              | [设置 → 防撤回](./docs/user-guide/recall-protection.md)             | 默认关闭；开启前先了解写入和性能边界 |
+| 直接在微信里向 TraceMemo 提问             | [微信机器人](./docs/agent/agent-hub.md)                             | 扫码连接机器人；总结类任务需要 AI    |
+| 让 Codex 等外部 Agent 查询微信历史        | [外部 Agent](./docs/agent/overview.md)                              | 安装 Reader Skill 并配置本机 Token   |
 
 ## 最核心的三个能力
 
@@ -136,6 +137,16 @@ TraceMemo 会先在本机查找候选消息，再把整理后的少量来源交�
 详细说明：[生成群聊日报](./docs/user-guide/report.md)
 
 </details>
+
+### 实验性：生成微信分享卡片
+
+TraceMemo 可以把群聊日报长图上传到你自己部署的 Cloudflare Worker 和 R2，并生成可在微信中分享的临时网页、二维码及卡片信息。该功能需要自备 Cloudflare 账号、域名和微信测试号，目前不属于开箱即用的稳定功能。
+
+<p align="center">
+  <img src="./public/微信卡片分享.png" alt="微信卡片分享效果示例" />
+</p>
+
+详细说明：[实验性微信分享卡片](./docs/deployment/experimental-wechat-share-card.md)。不熟悉命令行的用户，可以把 [自动部署 Skill](./docs/skill/setup-wechat-share-card/SKILL.md) 直接交给 Codex 或 Claude Code。
 
 ### 转写微信语音
 
@@ -231,6 +242,8 @@ Windows 安装后无法启动时，请先安装 [Microsoft Visual C++ x64 运行
 - [AI 查找聊天信息](./docs/user-guide/ai-search.md)
 - [本地知识库](./docs/user-guide/knowledge.md)
 - [群聊日报](./docs/user-guide/report.md)
+- [实验性微信分享卡片](./docs/deployment/experimental-wechat-share-card.md)
+- [微信分享卡片自动部署 Skill](./docs/skill/setup-wechat-share-card/SKILL.md)
 - [语音转文字](./docs/user-guide/voice.md)
 - [导出聊天](./docs/user-guide/export.md)
 - [防撤回](./docs/user-guide/recall-protection.md)
@@ -273,7 +286,6 @@ pnpm test:e2e:build
 
 ## 致谢
 
-<details>
   <summary>展开致谢与参考项目</summary>
 
 TraceMemo 在开发过程中参考了多个优秀的开源项目，感谢这些项目作者的工作与分享。
@@ -299,5 +311,3 @@ TraceMemo 在开发过程中参考了多个优秀的开源项目，感谢这些�
 - 本地优先 AI 工作流
 
 感谢所有开源作者。
-
-</details>
