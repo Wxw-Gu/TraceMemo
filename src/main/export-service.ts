@@ -928,7 +928,7 @@ async function runSingleExport(
       request.format === 'html'
         ? options.outputFolderName || safeFilePart(request.outputName)
         : `${safeFilePart(request.outputName)}_${exportStamp()}`
-    const root = options.outputRoot || (await resolveDefaultExportRoot(outputFolder))
+    const root = options.outputRoot || request.outputDirectory || (await resolveDefaultExportRoot(outputFolder))
     await fs.mkdir(root, { recursive: true })
     const outputDir = join(root, outputFolder)
     const outputPath =
@@ -1607,7 +1607,7 @@ async function runAllExport(
     }
 
     const outputFolder = safeFilePart(request.outputName)
-    const exportRoot = await resolveDefaultExportRoot(outputFolder)
+    const exportRoot = request.outputDirectory || (await resolveDefaultExportRoot(outputFolder))
     outputDir = join(exportRoot, outputFolder)
     const folderNames = conversationFolderNames(targets)
     let lastProgressAt = 0

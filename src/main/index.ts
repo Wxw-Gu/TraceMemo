@@ -1164,6 +1164,11 @@ app.whenReady().then(async () => {
     if (!window) return { success: false, error: '窗口不可用' }
     return runExport(request, window, voiceRecognition || undefined)
   })
+  ipcMain.handle('export:selectDirectory', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showOpenDialog(window!, { properties: ['openDirectory', 'createDirectory'] })
+    return result.canceled ? { canceled: true } : { canceled: false, path: result.filePaths[0] }
+  })
   ipcMain.handle('export:cancel', (_, jobId: string) => {
     cancelExport(jobId)
     return { success: true }

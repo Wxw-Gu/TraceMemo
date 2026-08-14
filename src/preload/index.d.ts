@@ -316,6 +316,7 @@ declare global {
         httpStatus?: number
       }>
       startExport: (request: ExportRequest) => Promise<ExportResult>
+      selectExportDirectory: () => Promise<{ canceled: boolean; path?: string }>
       cancelExport: (jobId: string) => Promise<{ success: boolean }>
       revealExport: (path: string) => Promise<{ success: boolean; error?: string }>
       onExportProgress: (callback: (progress: ExportJobProgress) => void) => () => void

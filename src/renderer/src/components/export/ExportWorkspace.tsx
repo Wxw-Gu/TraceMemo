@@ -75,6 +75,7 @@ export function ExportWorkspace({
   const [format, setFormat] = useState<ExportFormat>(() => runningAllTask?.format || 'csv')
   const [zip, setZip] = useState(() => runningAllTask?.zip === true)
   const [fileName, setFileName] = useState('')
+  const [outputDirectory, setOutputDirectory] = useState('')
   const [status, setStatus] = useState<ExportStatus>('idle')
   const [jobId, setJobId] = useState('')
   const [progress, setProgress] = useState<ExportJobProgress | null>(null)
@@ -334,6 +335,7 @@ export function ExportWorkspace({
       targets,
       format: exportFormat,
       outputName,
+      outputDirectory: outputDirectory || undefined,
       startTime: exportAll
         ? undefined
         : startOfRange
@@ -438,6 +440,10 @@ export function ExportWorkspace({
         ? `文稿/TraceMemo/导出/${outputName}.zip`
         : `文稿/TraceMemo/导出/${outputName}/`
       : `文稿/TraceMemo/导出/${outputName}.${format === 'markdown' ? 'md' : format}`
+
+  const selectedTargetPath = outputDirectory
+    ? `${outputDirectory}/${outputName}${format === 'html' ? (zip ? '.zip' : '/') : `.${format === 'markdown' ? 'md' : format}`}`
+    : targetPath
 
   return (
     <div className="export-workspace">
@@ -757,8 +763,12 @@ export function ExportWorkspace({
             </label>
             <div className="export-target-path">
               <span>保存位置</span>
-              <strong>{targetPath}</strong>
-              <button type="button">选择位置</button>
+              <strong>{selectedTargetPath}</strong>
+              <button type="button" onClick={() => {
+                void window.api.selectExportDirectory().then((result) => {
+                  if (!result.canceled && result.path) setOutputDirectory(result.path)
+                })
+              }}>选择位置</button>
             </div>
             {format === 'html' && (
               <p className="export-helper-text">
@@ -776,7 +786,7 @@ export function ExportWorkspace({
                 ? '导出完成'
                 : '准备就绪'}
           </span>
-          <span className="export-target-summary">路径：{targetPath}</span>
+          <span className="export-target-summary">路径：{selectedTargetPath}</span>
           <button type="button" className="export-reset-button" onClick={resetDefaults}>
             恢复默认
           </button>

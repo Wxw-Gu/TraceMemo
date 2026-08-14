@@ -44,6 +44,7 @@ const api = {
   startExport: (request) => electron.ipcRenderer.invoke("export:start", request),
   cancelExport: (jobId) => electron.ipcRenderer.invoke("export:cancel", jobId),
   revealExport: (path) => electron.ipcRenderer.invoke("export:reveal", path),
+  selectExportDirectory: () => electron.ipcRenderer.invoke("export:selectDirectory"),
   onExportProgress: (callback) => {
     const listener = (_event, progress) => callback(progress);
     electron.ipcRenderer.on("export:progress", listener);

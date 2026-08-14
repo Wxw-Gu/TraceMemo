@@ -32,6 +32,7 @@ export interface ExportRequest {
   targets: ExportTarget[]
   format: ExportFormat
   outputName: string
+  outputDirectory?: string
   startTime?: number
   endTime?: number
   kinds: ExportMessageKind[]

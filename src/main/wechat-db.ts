@@ -216,17 +216,11 @@ export class WechatDb {
     if (!username) return []
     if (startTime && endTime && startTime > endTime) return []
 
-    // A bounded native cursor can omit rows stored across a message shard boundary.
-    // Scan without bounds first, then apply the requested range in application code.
-    const rows = await this.wcdb4Client.getMessagesAsync(username)
-    const messages = rows
-      .map((message) => ({ ...message.raw, ...message }))
-      .filter((message) => {
-        const createTime = Number(message.msgCreateTime || 0)
-        if (startTime && createTime < startTime) return false
-        if (endTime && createTime > endTime) return false
-        return true
-      })
+    // The async client merges cursor and shard-table results while applying the
+    // time range in SQLite. Avoid loading the entire conversation when exporting
+    // a narrow range; this is especially important for chats with long history.
+    const rows = await this.wcdb4Client.getMessagesAsync(username, startTime, endTime)
+    const messages = rows.map((message) => ({ ...message.raw, ...message }))
     console.log(
       `[WechatDb] export scan username=${username} raw=${rows.length} filtered=${messages.length} start=${startTime || 0} end=${endTime || 0}`
     )
