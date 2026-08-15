@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { AIRuntimeModelConfig } from '../../../../../shared/ai-provider'
 import { AIProviderCard } from '../ai-model/AIProviderCard'
 import { AIProviderEditor } from '../ai-model/AIProviderEditor'
@@ -12,10 +13,25 @@ export function AIModelPage({
   onNotice: (message: string) => void
 }): React.ReactElement {
   const controller = useAIModelSettingsController({ onRuntimeChange, onNotice })
+  const shouldRevealNewEditor = useRef(false)
   const runtime = controller.state.runtime
   const defaultProvider = controller.state.providers.find(
     (provider) => provider.id === runtime?.providerId
   )
+
+  useEffect(() => {
+    if (!controller.state.editor || !shouldRevealNewEditor.current) return
+    shouldRevealNewEditor.current = false
+    const editor = document.getElementById('ai-provider-editor')
+    editor?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    editor?.querySelector<HTMLInputElement>('#ai-provider-name')?.focus({ preventScroll: true })
+  }, [controller.state.editor])
+
+  const openNewProvider = (): void => {
+    shouldRevealNewEditor.current = true
+    controller.openNew()
+  }
+
   return (
     <div className="settings-page ai-model-page">
       <header className="settings-page-header">
@@ -23,7 +39,7 @@ export function AIModelPage({
           <h1>AI 模型</h1>
           <p>管理模型供应商、连接信息和默认模型</p>
         </div>
-        <button className="database-key-primary" onClick={controller.openNew}>
+        <button className="database-key-primary" onClick={openNewProvider}>
           添加供应商
         </button>
       </header>

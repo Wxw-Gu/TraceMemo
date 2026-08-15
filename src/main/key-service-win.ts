@@ -683,7 +683,7 @@ export class KeyService {
     if (loginRequired) {
       return {
         success: false,
-        error: '微信已启动但尚未完成登录，请先在微信客户端完成登录后再重试自动获取密钥。',
+        error: '微信可能已经启动并登录，请先在微信客户端保持未登录状态，具体点击上方“查看5分钟上手教程” ',
         logs
       }
     }

@@ -1,6 +1,6 @@
 {
   "name": "tracememo",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "packageManager": "pnpm@7.33.7",
   "description": "TraceMemo（迹忆）是一款本地优先、可追溯的 AI 微信知识与分析工作台。 原名 WechatExplorer，支持聊天记录搜索、知识库、AI 总结和 Agent 助手。",
   "keywords": [

@@ -1777,6 +1777,16 @@
   white-space: nowrap;
   font-weight: 400;
 }
+.ai-model-row .ai-model-identity-field {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  justify-self: stretch;
+  color: #66706b;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
 .ai-provider-advanced,
 .ai-provider-preview {
   border: 1px solid #e3e8e5;

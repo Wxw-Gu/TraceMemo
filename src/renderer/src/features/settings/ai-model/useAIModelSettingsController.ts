@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer } from 'react'
+import { useCallback, useEffect, useReducer, useRef } from 'react'
 import type {
   AIProviderConfig,
   AIProviderSummary,
@@ -16,6 +16,11 @@ export function useAIModelSettingsController({
   onNotice: (message: string) => void
 }): AIModelSettingsController {
   const [state, dispatch] = useReducer(aiModelSettingsReducer, initialAIModelSettingsState)
+  const onRuntimeChangeRef = useRef(onRuntimeChange)
+
+  useEffect(() => {
+    onRuntimeChangeRef.current = onRuntimeChange
+  }, [onRuntimeChange])
 
   const refresh = useCallback(async (): Promise<void> => {
     const [list, runtime] = await Promise.all([
@@ -24,8 +29,8 @@ export function useAIModelSettingsController({
     ])
     if (!list.success) return dispatch({ type: 'ERROR', error: list.error || '供应商配置读取失败' })
     dispatch({ type: 'LOADED', providers: list.providers, runtime })
-    onRuntimeChange(runtime)
-  }, [onRuntimeChange])
+    onRuntimeChangeRef.current(runtime)
+  }, [])
 
   useEffect(() => {
     void refresh()
