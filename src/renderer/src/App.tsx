@@ -37,6 +37,7 @@ import {
 import { enrichQuotedMessages } from './utils/quoted-messages'
 import type { SelectableReportTemplateId } from '../../shared/report-templates'
 import { switchGeneratedReportTemplate } from './utils/report-template-switch'
+import { runtimePlatform } from './utils/runtime-environment'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -1470,6 +1471,11 @@ function App(): React.ReactElement {
     setActivePage('settings')
   }
 
+  const openTextToSpeechSettings = (): void => {
+    setSettingsCategory('text-to-speech')
+    setActivePage('settings')
+  }
+
   const dismissFirstUseWelcome = (): void => {
     try {
       localStorage.setItem(FIRST_USE_WELCOME_SEEN_KEY, '1')
@@ -1619,6 +1625,9 @@ function App(): React.ReactElement {
   ])
 
   const selectedReport = generatedReports.find((report) => report.id === selectedReportId) || null
+  const selectedReportContact = selectedReport
+    ? contacts.find((contact) => contact.md5 === selectedReport.contactId) || null
+    : null
 
   const openReportResult = (): void => {
     if (isSavingGeneratedReport) {
@@ -1727,6 +1736,7 @@ function App(): React.ReactElement {
         onReloadAvatars={handleReloadCurrentAvatars}
         onLoadOlderMessages={handleLoadOlderMessages}
         onCreateGroupReport={handleOpenReportWorkspace}
+        onOpenTextToSpeechSettings={openTextToSpeechSettings}
         isAiLoading={reportGeneration.isGenerating}
         jumpToTime={archiveJumpTime}
       />
@@ -1755,6 +1765,7 @@ function App(): React.ReactElement {
           onCopyImage={handleCopyReportImage}
           onReveal={handleRevealReport}
           onSwitchTemplate={handleSwitchReportTemplate}
+          sendTarget={selectedReportContact}
         />
         <ReportInfoPanel report={selectedReport} onReveal={handleRevealReport} />
       </div>
@@ -2001,7 +2012,7 @@ function App(): React.ReactElement {
   if (!isAuthenticated) {
     return (
       <DatabaseConnectionPage
-        platform={window.electron.process.platform}
+        platform={runtimePlatform}
         mode={databaseConnectionMode}
         dbKey={dbKey}
         dbRoot={dbRootInput}

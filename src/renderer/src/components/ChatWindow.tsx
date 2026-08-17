@@ -5,6 +5,7 @@ import { ChatStatusBar } from './chat/ChatStatusBar'
 import { DataTrustBar } from './chat/DataTrustBar'
 import { EmptyConversationState } from './chat/EmptyConversationState'
 import { MessageList } from './chat/MessageList'
+import { PersonalWechatSendDialog } from './chat/PersonalWechatSendDialog'
 
 interface ChatWindowProps {
   contact: Contact | null
@@ -18,6 +19,7 @@ interface ChatWindowProps {
   onReloadAvatars?: () => Promise<void>
   onLoadOlderMessages?: () => Promise<void>
   onCreateGroupReport?: () => void
+  onOpenTextToSpeechSettings?: () => void
   isAiLoading?: boolean
   jumpToTime?: number | null
 }
@@ -34,6 +36,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   onReloadAvatars,
   onLoadOlderMessages,
   onCreateGroupReport,
+  onOpenTextToSpeechSettings,
   isAiLoading = false,
   jumpToTime
 }) => {
@@ -53,6 +56,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const [showAvatar, setShowAvatar] = useState(true)
   const [isAtLatest, setIsAtLatest] = useState(true)
   const [isReloadingAvatars, setIsReloadingAvatars] = useState(false)
+  const [sendDialogOpen, setSendDialogOpen] = useState(false)
   const previousScrollTopRef = useRef(0)
 
   const scrollToBottom = useCallback((): void => {
@@ -199,6 +203,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         onContentFilterChange={onContentFilterChange || (() => undefined)}
         onRefresh={onRefresh}
         onRefreshData={onRefreshData}
+        onTestSend={() => setSendDialogOpen(true)}
         onOpenAiSettings={onCreateGroupReport || (() => undefined)}
       />
       <DataTrustBar messageCount={messages.length} />
@@ -226,6 +231,15 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         onReloadAvatars={() => void handleReloadAvatars()}
         onJumpToLatest={scrollToBottom}
       />
+
+      {sendDialogOpen && (
+        <PersonalWechatSendDialog
+          contact={contact}
+          isGroupChat={isGroupChat}
+          onClose={() => setSendDialogOpen(false)}
+          onOpenTextToSpeechSettings={onOpenTextToSpeechSettings}
+        />
+      )}
 
       {previewImage && (
         <div className="image-viewer-overlay" onClick={closeImagePreview}>

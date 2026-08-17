@@ -1,4 +1,5 @@
 import type { DatabaseKeyState } from './types'
+import { runtimePlatform } from '../../../utils/runtime-environment'
 
 const PHASES = ['查找微信进程', '识别微信版本', '扫描候选密钥', '验证数据库', '获取完成']
 
@@ -14,7 +15,7 @@ export function DatabaseKeyAutoDetect({
   onRefresh: () => void
 }): React.ReactElement {
   const environment = state.environment
-  const platform = environment?.platform || window.electron.process.platform
+  const platform = environment?.platform || runtimePlatform
   if (platform !== 'win32') {
     return (
       <section className="settings-card database-key-auto database-key-auto-manual">

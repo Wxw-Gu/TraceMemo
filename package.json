@@ -34,6 +34,7 @@
     "cp:env": "node scripts/ensure-env.cjs",
     "prepare:env": "node scripts/ensure-env.cjs",
     "prepare:ffmpeg:win": "node scripts/prepare-electron-runtime.cjs --platform win32 --arch x64",
+    "prepare:wechat-personal": "node scripts/prepare-wechat-chatter-runtime.cjs",
     "start": "electron-vite preview",
     "dev": "node scripts/ensure-env.cjs && node scripts/build-wechat-connector.cjs && electron-vite dev",
     "test:wechat-connector": "go -C services/wechat-connector test ./... && go -C services/wechat-connector vet ./...",

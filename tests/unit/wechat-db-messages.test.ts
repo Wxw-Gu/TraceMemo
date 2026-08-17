@@ -36,7 +36,7 @@ describe('WechatDb normalized messages', () => {
     })
   })
 
-  it('scans without time bounds, then filters, deduplicates and sorts in application code', async () => {
+  it('passes time bounds, then filters, deduplicates and sorts in application code', async () => {
     const row = (id: string, createTime: number): WechatMessage => ({
       mesLocalID: id,
       serverId: `server-${id}`,
@@ -49,13 +49,20 @@ describe('WechatDb normalized messages', () => {
     const start = Math.floor(new Date(2025, 0, 1).getTime() / 1000)
     const end = Math.floor(new Date(2025, 0, 4).getTime() / 1000)
     const shardBoundaryMessage = row('jan-2-boundary', start + 32 * 60 * 60)
-    const getMessagesAsync = vi.fn(async () => [
+    const rows = [
       row('before-range', start - 1),
       row('newest', start + 48 * 60 * 60),
       shardBoundaryMessage,
       { ...shardBoundaryMessage },
       row('after-range', end + 1)
-    ])
+    ]
+    const getMessagesAsync = vi.fn(
+      async (_username: string, startTime?: number, endTime?: number) =>
+        rows.filter((message) => {
+          const createTime = Number(message.msgCreateTime)
+          return (!startTime || createTime >= startTime) && (!endTime || createTime <= endTime)
+        })
+    )
     const db = Object.assign(Object.create(WechatDb.prototype), {
       wcdb4Client: { getMessagesAsync },
       chatMd5ToUsername: new Map([['fixture-md5', 'fixture-user']]),
@@ -65,7 +72,7 @@ describe('WechatDb normalized messages', () => {
     const messages = await db.getUserMessagesForExport('fixture-md5', start, end)
 
     expect(getMessagesAsync).toHaveBeenCalledOnce()
-    expect(getMessagesAsync).toHaveBeenCalledWith('fixture-user')
+    expect(getMessagesAsync).toHaveBeenCalledWith('fixture-user', start, end)
     expect(messages.map((message) => message.mesLocalID)).toEqual(['jan-2-boundary', 'newest'])
   })
 })

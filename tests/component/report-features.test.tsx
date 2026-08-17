@@ -41,6 +41,44 @@ describe('daily report controls', () => {
       value: {
         getAppLogPath: vi.fn(async () => ''),
         revealAppLog: vi.fn(async () => undefined),
+        getPersonalWechatSenderStatus: vi.fn(async () => ({
+          state: 'online',
+          platform: 'darwin',
+          arch: 'arm64',
+          sipDisabled: true,
+          wechatRunning: true,
+          runtimeReady: true,
+          endpoint: '127.0.0.1:58080',
+          endpointReady: true,
+          attachReady: true,
+          baseAddressReady: true,
+          textHookInstalled: true,
+          textHookReady: true,
+          imageHookInstalled: true,
+          imageHookReady: true,
+          messageListenerReady: true,
+          canSend: true,
+          canSendText: true,
+          canSendImage: true,
+          canSendVoice: true,
+          message: '个人微信已绑定'
+        })),
+        getTextToSpeechSettings: vi.fn(async () => ({
+          success: true,
+          settings: {
+            provider: 'fish-audio',
+            hasApiKey: false,
+            hasStoredApiKey: false,
+            hasEnvironmentApiKey: false,
+            keySource: 'missing',
+            encryptionAvailable: true,
+            selectedVoiceId: '',
+            outputFormat: 'mp3',
+            model: 's2.1-pro-free',
+            phase: 'ready'
+          },
+          voices: []
+        })),
         listAIProviders: vi.fn(async () => ({ success: true, providers: [] })),
         getGroupSnapshot: vi.fn(async () => ({
           members: [
@@ -396,7 +434,7 @@ describe('daily report controls', () => {
     globalThis.ResizeObserver = originalResizeObserver
   })
 
-  it('keeps secondary report actions inside More and labels both AI model roles', () => {
+  it('keeps the file action inside More and labels both AI model roles', () => {
     render(
       <>
         <ReportToolbar
@@ -431,13 +469,84 @@ describe('daily report controls', () => {
       </>
     )
 
-    expect(screen.queryByRole('button', { name: '生成微信卡片' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '更多' }))
     expect(screen.getByRole('button', { name: '生成微信卡片' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '更多' }))
+    expect(screen.getByRole('button', { name: '打开文件夹' })).toBeVisible()
     expect(screen.getByText('文字模型')).toBeVisible()
     expect(screen.getByText('DeepSeek Chat')).toBeVisible()
     expect(screen.getByText('图片模型')).toBeVisible()
     expect(screen.getByText('gpt-5.6-sol')).toBeVisible()
+  })
+
+  it('opens the current group send dialog with the report PNG preselected', async () => {
+    const report: GeneratedReportRecord = {
+      id: 'report-send',
+      contactId: groupContact.md5,
+      contactName: groupContact.m_nsNickName,
+      dateRange: '今天',
+      messageCount: 10,
+      generatedAt: '2026-08-17T10:00:00.000Z',
+      reportDate: '2026-08-17',
+      htmlStatus: 'ready',
+      pngStatus: 'ready',
+      generatedImage: 'data:image/png;base64,fixture',
+      pngPath: '/Users/fixture/测试群日报.png'
+    }
+
+    render(
+      <ReportViewer
+        report={report}
+        hasReports
+        onBackToConfigure={vi.fn()}
+        onRegenerate={vi.fn()}
+        onCopyImage={vi.fn(async () => ({ success: true }))}
+        onReveal={vi.fn(async () => ({ success: true }))}
+        onSwitchTemplate={vi.fn(async () => ({ success: true }))}
+        sendTarget={groupContact}
+        personalWechatSendSupported
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '发送到当前群聊' }))
+
+    expect(await screen.findByRole('dialog', { name: '个人微信测试发送' })).toBeVisible()
+    expect(screen.getByRole('radio', { name: '图片' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText('测试群日报.png')).toBeVisible()
+    expect(screen.getByText('/Users/fixture/测试群日报.png')).toBeVisible()
+  })
+
+  it('disables current group sending outside macOS with a readable hover hint', () => {
+    const report: GeneratedReportRecord = {
+      id: 'report-send-disabled',
+      contactId: groupContact.md5,
+      contactName: groupContact.m_nsNickName,
+      dateRange: '今天',
+      messageCount: 10,
+      generatedAt: '2026-08-17T10:00:00.000Z',
+      reportDate: '2026-08-17',
+      htmlStatus: 'ready',
+      pngStatus: 'ready',
+      generatedImage: 'data:image/png;base64,fixture',
+      pngPath: '/Users/fixture/测试群日报.png'
+    }
+
+    render(
+      <ReportViewer
+        report={report}
+        hasReports
+        onBackToConfigure={vi.fn()}
+        onRegenerate={vi.fn()}
+        onCopyImage={vi.fn(async () => ({ success: true }))}
+        onReveal={vi.fn(async () => ({ success: true }))}
+        onSwitchTemplate={vi.fn(async () => ({ success: true }))}
+        sendTarget={groupContact}
+        personalWechatSendSupported={false}
+      />
+    )
+
+    const button = screen.getByRole('button', { name: '发送到当前群聊' })
+    expect(button).toBeDisabled()
+    expect(button.parentElement).toHaveAttribute('title', '仅支持 macOS')
   })
 
   it('switches templates from the top toolbar using the saved report snapshot', async () => {

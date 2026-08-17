@@ -25,6 +25,7 @@ extraResources:
     to: resources
     filter:
       - '**/*'
+      - '!connectors/wechat-personal/**'
   - from: docs/skill/tracememo-reader
     to: skill/tracememo-reader
     filter:

@@ -298,6 +298,46 @@
   opacity: 0.72;
 }
 
+.report-toolbar-button-hint {
+  position: relative;
+  display: inline-flex;
+}
+
+.report-toolbar-button-hint > button:disabled {
+  pointer-events: none;
+}
+
+.report-toolbar-button-hint::after {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 6px 9px;
+  border: 1px solid var(--wxex-border);
+  border-radius: 6px;
+  background: var(--wxex-text-primary);
+  color: var(--wxex-bg-elevated);
+  content: attr(title);
+  font: 12px/17px var(--wxex-font);
+  opacity: 0;
+  pointer-events: none;
+  text-align: left;
+  transform: translateY(-3px);
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+  white-space: normal;
+}
+
+.report-toolbar-button-hint:hover::after,
+.report-toolbar-button-hint:focus-visible::after,
+.report-toolbar-button-hint:focus-within::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .report-more-menu {
   position: relative;
 }

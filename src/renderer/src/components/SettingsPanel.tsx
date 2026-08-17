@@ -1,6 +1,7 @@
 // Legacy fallback: SETTINGS-01 moved the default entry to features/settings.
 // Keep this panel intact until its database-key, image-key, AI and API sections are migrated.
 import React, { useEffect, useState } from 'react'
+import { isWindows } from '../utils/runtime-environment'
 
 interface SelfInfo {
   wxid: string
@@ -66,7 +67,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   onSaveAiModelConfig,
   onDbRootChanged
 }) => {
-  const isWindows = window.electron.process.platform === 'win32'
   const dbRootPlaceholder = isWindows
     ? 'C:\\Users\\你\\Documents\\WeChat Files'
     : '~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files'

@@ -9,6 +9,8 @@ interface ReportToolbarProps {
   canReveal: boolean
   canShare: boolean
   canSwitchTemplate: boolean
+  canSendToGroup?: boolean
+  sendToGroupHint?: string
   currentTemplateId?: SelectableReportTemplateId
   isSwitchingTemplate: boolean
   onSwitchTemplate: (templateId: SelectableReportTemplateId) => void
@@ -16,6 +18,7 @@ interface ReportToolbarProps {
   onCopyImage: () => void
   onReveal: () => void
   onShare: () => void
+  onSendToGroup?: () => void
 }
 
 export function ReportToolbar({
@@ -23,13 +26,16 @@ export function ReportToolbar({
   canReveal,
   canShare,
   canSwitchTemplate,
+  canSendToGroup = false,
+  sendToGroupHint = '当前报告暂时无法发送',
   currentTemplateId,
   isSwitchingTemplate,
   onSwitchTemplate,
   onRegenerate,
   onCopyImage,
   onReveal,
-  onShare
+  onShare,
+  onSendToGroup
 }: ReportToolbarProps): React.ReactElement {
   const [moreOpen, setMoreOpen] = useState(false)
   const [templateOpen, setTemplateOpen] = useState(false)
@@ -89,6 +95,16 @@ export function ReportToolbar({
       <button type="button" disabled={!canCopyImage} onClick={onCopyImage}>
         复制图片
       </button>
+      <span
+        className="report-toolbar-button-hint"
+        title={sendToGroupHint}
+        aria-label={sendToGroupHint}
+        tabIndex={canSendToGroup ? -1 : 0}
+      >
+        <button type="button" disabled={!canSendToGroup} onClick={() => onSendToGroup?.()}>
+          发送到当前群聊
+        </button>
+      </span>
       <button type="button" className="primary" disabled={!canReveal} onClick={onReveal}>
         打开报告
       </button>

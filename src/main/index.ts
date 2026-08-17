@@ -16,9 +16,8 @@ import {
   dialog,
   protocol
 } from 'electron'
-import { dirname, join } from 'path'
+import { basename, dirname, extname, join } from 'path'
 import { existsSync, promises as fsPromises } from 'fs'
-import { extname } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { WechatDb } from './wechat-db'
@@ -112,6 +111,15 @@ import {
 } from './services/bootstrap-cache'
 import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
+import { personalWechatSendService } from './services/personal-wechat-send-service'
+import { PersonalWechatRuntimeManager } from './services/personal-wechat-runtime-manager'
+import type { PersonalWechatSendRequest } from '../shared/personal-wechat'
+import { TextToSpeechSettingsService } from './services/text-to-speech-settings-service'
+import type {
+  ListTextToSpeechVoicesRequest,
+  SaveTextToSpeechSettingsRequest,
+  SynthesizeTextToSpeechRequest
+} from '../shared/text-to-speech'
 import { appLogger } from './app-logger'
 import type { AppLogEntry } from '../shared/app-log'
 import { appUpdateService } from './services/app-update-service'
@@ -158,6 +166,8 @@ let videoAssetService: VideoAssetService | null = null
 const databaseKeyStore = new DatabaseKeyStore()
 const imageKeyConfigService = new ImageKeyConfigService()
 const aiProviderService = new AIProviderService()
+const textToSpeechSettingsService = new TextToSpeechSettingsService()
+const personalWechatRuntimeManager = new PersonalWechatRuntimeManager()
 const keyServiceMac = new KeyServiceMac()
 const keyServiceWin = new KeyServiceWin()
 const wechatShareConfigStore = new WechatShareConfigStore()
@@ -589,6 +599,11 @@ app.whenReady().then(async () => {
   voiceRecognition.modelManager.setProgressListener((status) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send('voice:modelProgress', status)
+    }
+  })
+  personalWechatRuntimeManager.setProgressListener((status) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('wechat-personal:runtimeProgress', status)
     }
   })
   protocol.handle('wxe-media', async (request) => {
@@ -1134,6 +1149,28 @@ app.whenReady().then(async () => {
   ipcMain.handle('ai:migrateLegacy', (_, config: LegacyAIConfig) =>
     aiProviderService.migrateLegacy(config)
   )
+
+  ipcMain.handle('tts:getSettings', () => textToSpeechSettingsService.get())
+  ipcMain.handle('tts:saveSettings', (_, request: SaveTextToSpeechSettingsRequest) =>
+    textToSpeechSettingsService.save(request)
+  )
+  ipcMain.handle('tts:listVoices', (_, request?: ListTextToSpeechVoicesRequest) =>
+    textToSpeechSettingsService.listVoices(request)
+  )
+  ipcMain.handle('tts:synthesize', (_, request: SynthesizeTextToSpeechRequest) =>
+    textToSpeechSettingsService.synthesize(request)
+  )
+  ipcMain.handle('tts:removeGeneratedAudio', (_, filePath: string) =>
+    textToSpeechSettingsService.removeGeneratedAudio(String(filePath || ''))
+  )
+  ipcMain.handle('tts:openApiKeys', async () => {
+    try {
+      await shell.openExternal('https://fish.audio/app/api-keys/')
+      return { success: true }
+    } catch {
+      return { success: false, error: '无法打开 Fish Audio API Key 页面' }
+    }
+  })
 
   ipcMain.handle('copy-image', async (_, imageSource: unknown) => {
     try {
@@ -1702,6 +1739,59 @@ app.whenReady().then(async () => {
   ipcMain.handle('agent-hub:cancelLogin', () => agentHubService.cancelLogin())
   ipcMain.handle('agent-hub:reconnect', () => agentHubService.reconnect())
   ipcMain.handle('agent-hub:disconnect', () => agentHubService.disconnect())
+  ipcMain.handle('wechat-personal:getStatus', () => personalWechatSendService.getStatus())
+  ipcMain.handle('wechat-personal:getRuntimeStatus', () =>
+    personalWechatRuntimeManager.getStatus()
+  )
+  ipcMain.handle('wechat-personal:downloadRuntime', () => personalWechatRuntimeManager.download())
+  ipcMain.handle('wechat-personal:cancelRuntimeDownload', () => ({
+    success: personalWechatRuntimeManager.cancelDownload()
+  }))
+  ipcMain.handle('wechat-personal:removeRuntime', async () => {
+    await personalWechatSendService.terminate()
+    return personalWechatRuntimeManager.remove()
+  })
+  ipcMain.handle('wechat-personal:openRuntimeDirectory', async () => {
+    const status = await personalWechatRuntimeManager.getStatus()
+    const directory = status.directory || personalWechatRuntimeManager.directory
+    await fsPromises.mkdir(directory, { recursive: true })
+    const error = await shell.openPath(directory)
+    return error ? { success: false, error } : { success: true }
+  })
+  ipcMain.handle('wechat-personal:rebind', () => personalWechatSendService.rebind())
+  ipcMain.handle('wechat-personal:send', (_, request: PersonalWechatSendRequest) =>
+    personalWechatSendService.send(request)
+  )
+  ipcMain.handle('wechat-personal:selectImage', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showOpenDialog(window!, {
+      title: '选择要通过个人微信测试发送的图片',
+      properties: ['openFile'],
+      filters: [
+        { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled || !result.filePaths[0]) return { canceled: true }
+    return {
+      canceled: false,
+      path: result.filePaths[0],
+      name: basename(result.filePaths[0])
+    }
+  })
+  ipcMain.handle('wechat-personal:selectVoice', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showOpenDialog(window!, {
+      title: '选择要通过个人微信测试发送的语音',
+      properties: ['openFile'],
+      filters: [
+        { name: '语音', extensions: ['silk', 'mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled || !result.filePaths[0]) return { canceled: true }
+    return { canceled: false, path: result.filePaths[0], name: basename(result.filePaths[0]) }
+  })
   ipcMain.handle('agent-hub:selectTestImage', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const result = await dialog.showOpenDialog(window!, {
@@ -1761,6 +1851,7 @@ app.on('before-quit', (event) => {
 
   void (async () => {
     agentHubService.stop()
+    personalWechatSendService.stop()
     flushBootstrapCacheWritesSync()
     const [, nativeCallsDrained] = await Promise.all([
       apiServer.stop().catch(() => undefined),

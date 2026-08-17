@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Contact } from '../../../../shared/types'
 import { ConversationContentSearch } from './ConversationContentSearch'
-import { AiIcon, MoreIcon, RefreshIcon, SearchIcon } from './icons'
+import { AiIcon, MoreIcon, RefreshIcon, SearchIcon, SendIcon } from './icons'
+import { supportsPersonalWechatSend } from '../../utils/runtime-environment'
 
 interface ChatHeaderProps {
   contact: Contact
@@ -13,6 +14,7 @@ interface ChatHeaderProps {
   onContentFilterChange: (value: string) => void
   onRefresh?: () => void
   onRefreshData?: () => void
+  onTestSend: () => void
   onOpenAiSettings: () => void
 }
 
@@ -26,6 +28,7 @@ export function ChatHeader({
   onContentFilterChange,
   onRefresh,
   onRefreshData,
+  onTestSend,
   onOpenAiSettings
 }: ChatHeaderProps): React.ReactElement {
   const [searchOpen, setSearchOpen] = useState(Boolean(contentFilter))
@@ -111,6 +114,22 @@ export function ChatHeader({
             </div>
           )}
         </div>
+        <span
+          className="chat-tool-button-wrapper"
+          title={supportsPersonalWechatSend ? '发送消息' : '仅支持 macOS'}
+          aria-label={supportsPersonalWechatSend ? '发送消息' : '仅支持 macOS'}
+          tabIndex={supportsPersonalWechatSend ? -1 : 0}
+        >
+          <button
+            type="button"
+            className="chat-tool-button"
+            onClick={onTestSend}
+            disabled={!supportsPersonalWechatSend}
+          >
+            <SendIcon />
+            <span>发送消息</span>
+          </button>
+        </span>
         <button
           type="button"
           className="chat-ai-button"

@@ -2,6 +2,7 @@ import { app } from 'electron'
 import fs from 'fs-extra'
 import path from 'path'
 import os from 'os'
+import type { TextToSpeechModel } from '../../shared/text-to-speech'
 
 /**
  * 把 V3 时代的 "...\\Documents\\WeChat Files" 路径重定向到
@@ -36,6 +37,8 @@ export interface AppSettings {
   appearanceTheme: 'system' | 'light' | 'dark'
   compactMode: boolean
   showStartupProgress: boolean
+  ttsSelectedVoiceId: string
+  ttsModel: TextToSpeechModel
 }
 
 function getDefaultDbRoot(): string {
@@ -135,7 +138,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoLoginPreferenceSet: false,
   appearanceTheme: 'system',
   compactMode: false,
-  showStartupProgress: true
+  showStartupProgress: true,
+  ttsSelectedVoiceId: '',
+  ttsModel: 's2.1-pro-free'
 }
 
 const SETTINGS_FILE = path.join(
