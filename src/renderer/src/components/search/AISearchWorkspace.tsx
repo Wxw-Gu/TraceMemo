@@ -2,58 +2,45 @@ import React, { useMemo, useRef, useState } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { aiSearchIntentLabel, aiSearchRangeStart } from '../../../../shared/ai-search'
 import type {
-  AiSearchAggregation,
   AiSearchAgentRun,
-  AiSearchPipelineTimings,
   AiSearchProgressEvent,
-  AiSearchProgressStage,
   AiSearchTimeRange
 } from '../../../../shared/ai-search'
-import type { Contact } from '../../../../shared/types'
 
 import type {
-  AISearchCacheRecord,
   AISearchWorkspaceProps,
   EvidenceItem,
+  SearchProgressByStage,
   SearchRange,
   SearchScope,
-  SearchStage
+  SearchStage,
+  SearchTrace
 } from './searchTypes'
-import type { KnowledgeRuntimeStatus, KnowledgeVoiceCoverage } from '../../../../shared/knowledge'
+import type { KnowledgeRuntimeStatus } from '../../../../shared/knowledge'
 import {
   RANGE_LABELS,
-  SEARCH_ACTIVE_RESULT_KEY,
-  SEARCH_CACHE_KEY,
-  SEARCH_HISTORY_KEY,
   buildSearchCacheKey,
-  compactCacheItem,
-  currentTimestamp,
   formatMessageTime,
   messageIdentity,
   messageText,
-  parseSearchCacheKey,
-  readSearchCache,
-  readSearchCacheByQuery,
-  senderName,
-  writeSearchCache
+  senderName
 } from './searchUtils'
 import { markdownToPlainText, renderMarkdown } from './searchMarkdown'
-
-type SearchTrace = {
-  knowledgeMessages: number
-  retrievedEvidence: number
-  finalEvidence: number
-  timings: AiSearchPipelineTimings
-  contextEvidence: number
-  inputTokens?: number
-  inputTokensEstimated: boolean
-  aggregation: AiSearchAggregation
-  invalidCitationIds: string[]
-  agent: AiSearchAgentRun
-  voiceCoverage?: KnowledgeVoiceCoverage
-}
-
-type SearchProgressByStage = Partial<Record<AiSearchProgressStage, AiSearchProgressEvent>>
+import {
+  contactLabel,
+  formatBytes,
+  formatDuration,
+  formatMeasuredDuration,
+  formatSearchTraceOverview,
+  knowledgeStateLabel
+} from './searchFormatters'
+import {
+  mapEvidenceSenderNames,
+  mapPipelineEvidence,
+  mapSearchResultToTrace
+} from './searchMappers'
+import { createSearchResultResetState } from './searchState'
+import { useSearchHistory } from './hooks/useSearchHistory'
 
 type ExternalProviderConsent = {
   providerName: string
@@ -61,44 +48,6 @@ type ExternalProviderConsent = {
 }
 
 const EVIDENCE_PAGE_SIZE = 8
-
-const formatBytes = (bytes: number): string => {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`
-}
-
-const formatDuration = (milliseconds: number): string =>
-  milliseconds >= 1000 ? `${(milliseconds / 1000).toFixed(1)}s` : `${milliseconds}ms`
-
-const formatMeasuredDuration = (milliseconds: number | undefined): string =>
-  milliseconds === undefined ? '未测量' : formatDuration(milliseconds)
-
-const knowledgeStateLabel = (status: KnowledgeRuntimeStatus | null): string => {
-  if (!status) return '读取中'
-  return {
-    unavailable: '未建立',
-    building: '建立中',
-    syncing: '增量同步',
-    ready: '已同步',
-    error: '异常'
-  }[status.state]
-}
-
-const contactLabel = (contact: Contact | null | undefined): string =>
-  contact?.m_nsNickName ||
-  contact?.remark ||
-  contact?.wechatNickname ||
-  contact?.m_nsUsrName ||
-  '未选择会话'
-
-const fallbackEvidenceContact = (conversationId: string): Contact => ({
-  md5: conversationId,
-  m_nsUsrName: conversationId,
-  m_nsNickName: '未加载的会话',
-  type: conversationId.endsWith('@chatroom') ? 'group' : 'user'
-})
 
 export function AISearchWorkspace({
   contacts,
@@ -125,16 +74,6 @@ export function AISearchWorkspace({
   const [selectedEvidence, setSelectedEvidence] = useState(0)
   const [analysisError, setAnalysisError] = useState('')
   const [messageCount, setMessageCount] = useState(0)
-  const [history, setHistory] = useState<string[]>(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]')
-      return Array.isArray(stored)
-        ? stored.filter((item): item is string => typeof item === 'string')
-        : []
-    } catch {
-      return []
-    }
-  })
   const [senderNames, setSenderNames] = useState<Record<string, string>>({})
   const [cachedAt, setCachedAt] = useState(0)
   const [knowledgeStatus, setKnowledgeStatus] = useState<KnowledgeRuntimeStatus | null>(null)
@@ -148,7 +87,6 @@ export function AISearchWorkspace({
   const [debugPanelOpen, setDebugPanelOpen] = useState(false)
   const [debugEntries, setDebugEntries] = useState<string[]>([])
   const [appLogPath, setAppLogPath] = useState('')
-  const bypassCacheRef = useRef(false)
   const searchRequestIdRef = useRef('')
   const knowledgeSyncingRef = useRef(false)
   const composerRef = useRef<HTMLTextAreaElement>(null)
@@ -161,6 +99,63 @@ export function AISearchWorkspace({
     () => evidenceCollection.slice(0, visibleEvidenceCount),
     [evidenceCollection, visibleEvidenceCount]
   )
+
+  const {
+    history,
+    rememberQuery,
+    restoreHistoryQuery,
+    removeHistoryQuery,
+    applyCachedResult,
+    readCachedResult,
+    persistSearchResult,
+    clearActiveResult,
+    skipNextCache,
+    consumeCacheBypass,
+    clearCacheBypass
+  } = useSearchHistory({
+    query,
+    scope,
+    range,
+    conversationContactMd5:
+      allContacts.find((contact) => contact.md5 === (scopeContactMd5 || selectedContact?.md5))
+        ?.md5 ||
+      selectedContact?.md5 ||
+      '',
+    evidencePageSize: EVIDENCE_PAGE_SIZE,
+    setQuery,
+    setScope,
+    setScopeContactMd5,
+    setRange,
+    setTimeRangeOverride,
+    setResultQuery,
+    setAnswer,
+    setEvidence,
+    setEvidenceCollection,
+    setVisibleEvidenceCount,
+    setSenderNames,
+    setMessageCount,
+    setCachedAt,
+    setAnalysisError,
+    setStage,
+    setSelectedEvidence,
+    setHistoryOpen,
+    onNotice
+  })
+
+  const resetSearchResult = (): void => {
+    const reset = createSearchResultResetState()
+    setAnalysisError(reset.analysisError)
+    setAnswer(reset.answer)
+    setEvidence(reset.evidence)
+    setEvidenceCollection(reset.evidenceCollection)
+    setVisibleEvidenceCount(reset.visibleEvidenceCount)
+    setSelectedEvidence(reset.selectedEvidence)
+    setCachedAt(reset.cachedAt)
+    setSearchTrace(reset.searchTrace)
+    setSearchProgress(reset.searchProgress)
+    setAgentTrace(reset.agentTrace)
+    setSearchDetailsOpen(reset.searchDetailsOpen)
+  }
 
   const focusEvidence = (index: number): void => {
     if (!Number.isInteger(index) || index < 0 || index >= evidenceCollection.length) return
@@ -209,35 +204,6 @@ export function AISearchWorkspace({
       block: 'nearest'
     })
   }, [evidenceFlash])
-
-  React.useEffect(() => {
-    try {
-      const cacheKey = sessionStorage.getItem(SEARCH_ACTIVE_RESULT_KEY)
-      if (!cacheKey) return
-      const cached = readSearchCache(cacheKey)
-      const location = parseSearchCacheKey(cacheKey)
-      if (!cached || !location) {
-        sessionStorage.removeItem(SEARCH_ACTIVE_RESULT_KEY)
-        return
-      }
-      setQuery(location.query)
-      setScope(location.scope)
-      setScopeContactMd5(location.contactMd5)
-      setRange(location.range)
-      setTimeRangeOverride({
-        startTime: aiSearchRangeStart(location.range),
-        endTime: undefined,
-        label: RANGE_LABELS[location.range],
-        reason: '恢复上次查看的搜索结果',
-        source: 'user_selected'
-      })
-      setAnalysisError('')
-      applyCachedResult(cached, location.query)
-      setStage('result')
-    } catch {
-      sessionStorage.removeItem(SEARCH_ACTIVE_RESULT_KEY)
-    }
-  }, [])
 
   React.useEffect(() => {
     void Promise.all([window.api.getSettings(), window.api.getAppLogPath()]).then(
@@ -333,113 +299,6 @@ export function AISearchWorkspace({
     }
   }
 
-  const rememberQuery = (value: string): void => {
-    setHistory((current) => {
-      const next = [value, ...current.filter((item) => item !== value)].slice(0, 10)
-      try {
-        localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(next))
-      } catch {
-        // History persistence is optional and must not interrupt analysis.
-      }
-      return next
-    })
-  }
-
-  const removeHistoryQuery = (historyQuery: string): void => {
-    setHistory((current) => {
-      const next = current.filter((item) => item !== historyQuery)
-      try {
-        localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(next))
-      } catch {
-        // History persistence is optional and must not interrupt analysis.
-      }
-      return next
-    })
-    try {
-      const records = JSON.parse(
-        localStorage.getItem(SEARCH_CACHE_KEY) || '[]'
-      ) as AISearchCacheRecord[]
-      const queryKey = historyQuery.trim().toLowerCase()
-      localStorage.setItem(
-        SEARCH_CACHE_KEY,
-        JSON.stringify(
-          records.filter((item) => {
-            try {
-              const keyParts = JSON.parse(item.key) as unknown
-              return !(
-                Array.isArray(keyParts) &&
-                typeof keyParts[3] === 'string' &&
-                keyParts[3] === queryKey
-              )
-            } catch {
-              return true
-            }
-          })
-        )
-      )
-    } catch {
-      // Cache cleanup is optional and must not interrupt the current workspace.
-    }
-  }
-
-  const applyCachedResult = (cached: AISearchCacheRecord, queryValue = query.trim()): void => {
-    const cachedCollection = cached.evidenceCollection || cached.evidence
-    setResultQuery(queryValue)
-    setAnswer(cached.answer)
-    setEvidence(cached.evidence)
-    setEvidenceCollection(cachedCollection)
-    setVisibleEvidenceCount(Math.min(EVIDENCE_PAGE_SIZE, cachedCollection.length))
-    setSenderNames(cached.senderNames)
-    setMessageCount(cached.messageCount)
-    setCachedAt(cached.createdAt)
-    rememberQuery(queryValue)
-    try {
-      sessionStorage.setItem(SEARCH_ACTIVE_RESULT_KEY, cached.key)
-    } catch {
-      // Result restoration is optional and must not block search.
-    }
-  }
-
-  const restoreHistoryQuery = (historyQuery: string): void => {
-    setQuery(historyQuery)
-    setSelectedEvidence(0)
-    setHistoryOpen(false)
-    const cacheKey = buildSearchCacheKey(
-      scope,
-      scope === 'conversation' ? activeContact?.md5 || '' : '',
-      range,
-      historyQuery
-    )
-    const cached = readSearchCache(cacheKey) || readSearchCacheByQuery(historyQuery)?.record || null
-    if (!cached) {
-      setAnswer('')
-      setEvidence([])
-      setEvidenceCollection([])
-      setVisibleEvidenceCount(0)
-      setCachedAt(0)
-      setStage('idle')
-      onNotice('已填入历史问题，点击开始分析可重新查询最新消息')
-      return
-    }
-    const cachedLocation = parseSearchCacheKey(cached.key)
-    if (cachedLocation) {
-      setScope(cachedLocation.scope)
-      setRange(cachedLocation.range)
-      setScopeContactMd5(cachedLocation.contactMd5)
-      setTimeRangeOverride({
-        startTime: aiSearchRangeStart(cachedLocation.range),
-        endTime: undefined,
-        label: RANGE_LABELS[cachedLocation.range],
-        reason: '恢复历史搜索的时间范围',
-        source: 'user_selected'
-      })
-    }
-    setAnalysisError('')
-    applyCachedResult(cached, historyQuery)
-    setStage('result')
-    onNotice('已恢复这条历史问题的最近结果')
-  }
-
   const ensureAiSearchDataConsent = async (requestId: string): Promise<boolean> => {
     const status = await window.api.getAiSearchProviderStatus()
     if (!status.configured || !status.requiresConsent) return true
@@ -510,8 +369,7 @@ export function AISearchWorkspace({
     )
     let requestId = ''
     try {
-      const cached = bypassCacheRef.current ? null : readSearchCache(cacheKey)
-      bypassCacheRef.current = false
+      const cached = consumeCacheBypass() ? null : readCachedResult(cacheKey)
       if (cached) {
         addDebugEntry('检索命中缓存', {
           scope,
@@ -538,17 +396,7 @@ export function AISearchWorkspace({
         return
       }
       setStage('loading')
-      setAnalysisError('')
-      setAnswer('')
-      setEvidence([])
-      setEvidenceCollection([])
-      setVisibleEvidenceCount(0)
-      setSelectedEvidence(0)
-      setCachedAt(0)
-      setSearchTrace(null)
-      setSearchProgress({})
-      setAgentTrace([])
-      setSearchDetailsOpen(false)
+      resetSearchResult()
       searchRequestIdRef.current = requestId
       const searchResult = await window.api.runAiSearch({
         requestId,
@@ -571,61 +419,18 @@ export function AISearchWorkspace({
         setStage('idle')
         return
       }
-      const contactsById = new Map(allContacts.map((contact) => [contact.md5, contact]))
-      const toEvidenceItem = (item: (typeof searchResult.evidence)[number]): EvidenceItem => {
-        // Contacts may still be paging in while the derived database already
-        // has a valid conversation id. Evidence must never be discarded just
-        // because the renderer directory is temporarily incomplete.
-        const contact = contactsById.get(item.conversationId) || {
-          ...fallbackEvidenceContact(item.conversationId),
-          m_nsNickName: item.conversationName,
-          type: item.conversationType
-        }
-        return {
-          evidenceId: item.id,
-          sourceKind: item.sourceKind,
-          contact,
-          message: {
-            id: item.messageId,
-            from: item.senderId || 'user',
-            type: item.sourceKind === 'voice' ? '语音转写' : '检索消息',
-            datetime: new Date(item.timestamp).toLocaleString('zh-CN', { hour12: false }),
-            content: item.text,
-            isSender: item.sender === '我',
-            name: item.sender,
-            senderId: item.senderId,
-            createTime: Math.floor(item.timestamp / 1000)
-          }
-        }
-      }
-      const evidenceItems: EvidenceItem[] = searchResult.evidence.map(toEvidenceItem)
-      const collectionItems: EvidenceItem[] = (
-        searchResult.evidenceCollection || searchResult.evidence
-      ).map(toEvidenceItem)
-      setSearchTrace({
-        knowledgeMessages: searchResult.knowledge.indexedMessageCount,
-        retrievedEvidence: searchResult.candidateEvidenceCount,
-        finalEvidence: evidenceItems.length,
-        timings: searchResult.timings,
-        contextEvidence: searchResult.contextEvidenceCount,
-        inputTokens: searchResult.ai?.inputTokens,
-        inputTokensEstimated: searchResult.ai?.inputTokensEstimated || false,
-        aggregation: searchResult.aggregation,
-        invalidCitationIds: searchResult.citationValidation?.invalidCitationIds || [],
-        agent: searchResult.agent,
-        voiceCoverage: searchResult.knowledge.voiceCoverage
-      })
+      const evidenceItems = mapPipelineEvidence(searchResult.evidence, allContacts)
+      const collectionItems = mapPipelineEvidence(
+        searchResult.evidenceCollection || searchResult.evidence,
+        allContacts
+      )
+      setSearchTrace(mapSearchResultToTrace(searchResult, evidenceItems.length))
       setAgentTrace(searchResult.agent.trace)
       setEvidence(evidenceItems)
       setEvidenceCollection(collectionItems)
       setVisibleEvidenceCount(Math.min(EVIDENCE_PAGE_SIZE, collectionItems.length))
-      setSenderNames(
-        Object.fromEntries(
-          evidenceItems
-            .filter(({ message }) => Boolean(message.senderId && message.name))
-            .map(({ message }) => [message.senderId as string, message.name as string])
-        )
-      )
+      const nextSenderNames = mapEvidenceSenderNames(evidenceItems)
+      setSenderNames(nextSenderNames)
       setMessageCount(searchResult.knowledge.totalMessages)
       if (searchResult.status === 'no_evidence') {
         setAnalysisError(`${RANGE_LABELS[effectiveRange]}内没有找到与问题相关的聊天消息。`)
@@ -651,26 +456,14 @@ export function AISearchWorkspace({
       setResultQuery(normalizedQuery)
       setAnswer(searchResult.answer)
       rememberQuery(normalizedQuery)
-      const cacheRecord: AISearchCacheRecord = {
-        version: 3,
+      persistSearchResult({
         key: cacheKey,
-        createdAt: currentTimestamp(),
         answer: searchResult.answer,
-        evidence: evidenceItems.map(compactCacheItem),
-        evidenceCollection: collectionItems.map(compactCacheItem),
-        senderNames: Object.fromEntries(
-          evidenceItems
-            .filter(({ message }) => Boolean(message.senderId && message.name))
-            .map(({ message }) => [message.senderId as string, message.name as string])
-        ),
+        evidence: evidenceItems,
+        evidenceCollection: collectionItems,
+        senderNames: nextSenderNames,
         messageCount: searchResult.knowledge.totalMessages
-      }
-      writeSearchCache(cacheRecord)
-      try {
-        sessionStorage.setItem(SEARCH_ACTIVE_RESULT_KEY, cacheRecord.key)
-      } catch {
-        // Result restoration is optional and must not block search.
-      }
+      })
       setStage('result')
     } catch (error) {
       if (requestId && searchRequestIdRef.current !== requestId) return
@@ -690,26 +483,12 @@ export function AISearchWorkspace({
   }
 
   const startNewQuestion = (): void => {
-    bypassCacheRef.current = false
+    clearCacheBypass()
     setQuery('')
     setResultQuery('')
     setStage('idle')
-    setAnswer('')
-    setEvidence([])
-    setEvidenceCollection([])
-    setVisibleEvidenceCount(0)
-    setSelectedEvidence(0)
-    setAnalysisError('')
-    setCachedAt(0)
-    setSearchTrace(null)
-    setSearchProgress({})
-    setAgentTrace([])
-    setSearchDetailsOpen(false)
-    try {
-      sessionStorage.removeItem(SEARCH_ACTIVE_RESULT_KEY)
-    } catch {
-      // Session restoration is optional and must not block a fresh question.
-    }
+    resetSearchResult()
+    clearActiveResult()
     composerRef.current?.focus()
   }
 
@@ -1012,14 +791,18 @@ export function AISearchWorkspace({
             {searchTrace?.retrievedEvidence || 0} 条相关消息 → {evidence.length} 条 Evidence →
             已生成回答{cachedAt ? ' · 已使用缓存' : ''}
           </p>
-          {searchTrace && (
-            <div className="ai-search-trace" aria-label="本次检索追踪">
-              <span>总耗时 {formatDuration(searchTrace.timings.totalMs)}</span>
-              <span>本地检索 {formatDuration(searchTrace.timings.knowledgeSearchMs)}</span>
-              <span>AI {formatDuration(searchTrace.timings.aiGenerationMs)}</span>
-              <span>上下文 {searchTrace.contextEvidence} 条</span>
-            </div>
-          )}
+          {searchTrace &&
+            (() => {
+              const overview = formatSearchTraceOverview(searchTrace)
+              return (
+                <div className="ai-search-trace" aria-label="本次检索追踪">
+                  <span>总耗时 {overview.totalDuration}</span>
+                  <span>本地检索 {overview.knowledgeDuration}</span>
+                  <span>AI {overview.aiDuration}</span>
+                  <span>上下文 {overview.contextEvidence}</span>
+                </div>
+              )
+            })()}
           {renderSearchDetails()}
         </div>
         <div className="ai-search-result-actions">
@@ -1032,7 +815,7 @@ export function AISearchWorkspace({
           <button
             type="button"
             onClick={() => {
-              bypassCacheRef.current = true
+              skipNextCache()
               void runAnalysis()
             }}
             title="跳过缓存并重新读取聊天记录"
@@ -1087,7 +870,7 @@ export function AISearchWorkspace({
                 }
               : undefined
           )
-          bypassCacheRef.current = true
+          skipNextCache()
           void runAnalysis(undefined, {
             range: expandToAll ? 'all' : '30d',
             timeRangeOverride: expandToAll

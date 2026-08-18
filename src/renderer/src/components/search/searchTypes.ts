@@ -1,11 +1,34 @@
 import type { AIRuntimeModelConfig } from '../../../../shared/ai-provider'
-import type { KnowledgeMessageKind } from '../../../../shared/knowledge'
+import type {
+  AiSearchAggregation,
+  AiSearchAgentRun,
+  AiSearchPipelineTimings,
+  AiSearchProgressEvent,
+  AiSearchProgressStage
+} from '../../../../shared/ai-search'
+import type { KnowledgeMessageKind, KnowledgeVoiceCoverage } from '../../../../shared/knowledge'
 import type { Contact, Message } from '../../../../shared/types'
 
 export type SearchStage = 'idle' | 'loading' | 'result' | 'partial' | 'insufficient'
 export type SearchScope = 'global' | 'groups' | 'contacts' | 'conversation'
 export type SearchRange = 'today' | '7d' | '30d' | 'all'
 export type SearchIntent = 'general' | 'topic' | 'participants' | 'mixed'
+
+export interface SearchTrace {
+  knowledgeMessages: number
+  retrievedEvidence: number
+  finalEvidence: number
+  timings: AiSearchPipelineTimings
+  contextEvidence: number
+  inputTokens?: number
+  inputTokensEstimated: boolean
+  aggregation: AiSearchAggregation
+  invalidCitationIds: string[]
+  agent: AiSearchAgentRun
+  voiceCoverage?: KnowledgeVoiceCoverage
+}
+
+export type SearchProgressByStage = Partial<Record<AiSearchProgressStage, AiSearchProgressEvent>>
 
 export interface EvidenceItem {
   /** Program-owned Final Evidence ID. Cached legacy records may omit it. */
