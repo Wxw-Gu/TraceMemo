@@ -16,7 +16,6 @@ import type {
   SearchStage,
   SearchTrace
 } from './searchTypes'
-import type { KnowledgeRuntimeStatus } from '../../../../shared/knowledge'
 import {
   RANGE_LABELS,
   buildSearchCacheKey,
@@ -41,11 +40,8 @@ import {
 } from './searchMappers'
 import { createSearchResultResetState } from './searchState'
 import { useSearchHistory } from './hooks/useSearchHistory'
-
-type ExternalProviderConsent = {
-  providerName: string
-  recipient: string
-}
+import { useKnowledgeStatus } from './hooks/useKnowledgeStatus'
+import { useExternalProviderConsent } from './hooks/useExternalProviderConsent'
 
 const EVIDENCE_PAGE_SIZE = 8
 
@@ -76,8 +72,6 @@ export function AISearchWorkspace({
   const [messageCount, setMessageCount] = useState(0)
   const [senderNames, setSenderNames] = useState<Record<string, string>>({})
   const [cachedAt, setCachedAt] = useState(0)
-  const [knowledgeStatus, setKnowledgeStatus] = useState<KnowledgeRuntimeStatus | null>(null)
-  const [syncStarting, setSyncStarting] = useState(false)
   const [searchTrace, setSearchTrace] = useState<SearchTrace | null>(null)
   const [searchProgress, setSearchProgress] = useState<SearchProgressByStage>({})
   const [agentTrace, setAgentTrace] = useState<AiSearchAgentRun['trace']>([])
@@ -88,12 +82,8 @@ export function AISearchWorkspace({
   const [debugEntries, setDebugEntries] = useState<string[]>([])
   const [appLogPath, setAppLogPath] = useState('')
   const searchRequestIdRef = useRef('')
-  const knowledgeSyncingRef = useRef(false)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const evidenceCardRefs = useRef(new Map<number, HTMLElement>())
-  const externalConsentResolverRef = useRef<((approved: boolean) => void) | null>(null)
-  const [externalProviderConsent, setExternalProviderConsent] =
-    useState<ExternalProviderConsent | null>(null)
   const [evidenceFlash, setEvidenceFlash] = useState({ index: -1, nonce: 0 })
   const visibleEvidence = useMemo(
     () => evidenceCollection.slice(0, visibleEvidenceCount),
@@ -141,6 +131,19 @@ export function AISearchWorkspace({
     setHistoryOpen,
     onNotice
   })
+  const {
+    knowledgeStatus,
+    syncStarting,
+    knowledgeSyncing,
+    knowledgeSyncingRef,
+    startKnowledgeSync
+  } = useKnowledgeStatus({ dbReady, onNotice })
+  const {
+    externalProviderConsent,
+    requestExternalProviderConsent,
+    settleExternalProviderConsent,
+    clearExternalProviderConsent
+  } = useExternalProviderConsent()
 
   const resetSearchResult = (): void => {
     const reset = createSearchResultResetState()
@@ -164,39 +167,6 @@ export function AISearchWorkspace({
     setEvidenceFlash((current) => ({ index, nonce: current.nonce + 1 }))
   }
 
-  const settleExternalProviderConsent = (approved: boolean): void => {
-    const resolve = externalConsentResolverRef.current
-    externalConsentResolverRef.current = null
-    setExternalProviderConsent(null)
-    resolve?.(approved)
-  }
-
-  const requestExternalProviderConsent = (
-    providerName: string,
-    recipient: string
-  ): Promise<boolean> =>
-    new Promise((resolve) => {
-      externalConsentResolverRef.current = resolve
-      setExternalProviderConsent({ providerName, recipient })
-    })
-
-  React.useEffect(
-    () => () => {
-      externalConsentResolverRef.current?.(false)
-      externalConsentResolverRef.current = null
-    },
-    []
-  )
-
-  React.useEffect(() => {
-    if (!externalProviderConsent) return
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') settleExternalProviderConsent(false)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [externalProviderConsent])
-
   React.useEffect(() => {
     if (evidenceFlash.index < 0) return
     evidenceCardRefs.current.get(evidenceFlash.index)?.scrollIntoView({
@@ -212,23 +182,6 @@ export function AISearchWorkspace({
         setAppLogPath(logPath)
       }
     )
-  }, [])
-
-  React.useEffect(() => {
-    let active = true
-    void window.api
-      .getKnowledgeStatus()
-      .then((status) => {
-        if (active) setKnowledgeStatus(status)
-      })
-      .catch(() => undefined)
-    const unsubscribe = window.api.onKnowledgeStatus((status) => {
-      if (active) setKnowledgeStatus(status)
-    })
-    return () => {
-      active = false
-      unsubscribe()
-    }
   }, [])
 
   React.useEffect(
@@ -274,31 +227,6 @@ export function AISearchWorkspace({
   const modelLabel = aiModelConfig.configured
     ? `${aiModelConfig.providerName} · ${aiModelConfig.modelName}`
     : '尚未配置 AI 模型'
-  const knowledgeSyncing =
-    syncStarting || knowledgeStatus?.state === 'building' || knowledgeStatus?.state === 'syncing'
-  knowledgeSyncingRef.current = knowledgeSyncing
-
-  const startKnowledgeSync = async (): Promise<void> => {
-    if (!dbReady) {
-      onNotice('请先连接微信数据后再建立本地知识库')
-      return
-    }
-    setSyncStarting(true)
-    try {
-      const status = await window.api.startKnowledgeIndex()
-      setKnowledgeStatus(status)
-      onNotice(
-        status.state === 'syncing'
-          ? '已开始同步最新聊天记录'
-          : '已开始建立本地知识库，可继续使用软件'
-      )
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : '启动知识库同步失败')
-    } finally {
-      setSyncStarting(false)
-    }
-  }
-
   const ensureAiSearchDataConsent = async (requestId: string): Promise<boolean> => {
     const status = await window.api.getAiSearchProviderStatus()
     if (!status.configured || !status.requiresConsent) return true
@@ -318,6 +246,7 @@ export function AISearchWorkspace({
   }
 
   const cancelAnalysis = async (): Promise<void> => {
+    clearExternalProviderConsent()
     const requestId = searchRequestIdRef.current
     if (!requestId) return
     searchRequestIdRef.current = ''
