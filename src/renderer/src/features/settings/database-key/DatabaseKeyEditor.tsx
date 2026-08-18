@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Button, IconButton, Input } from '../../../components/ui'
 
 function EyeIcon({ visible }: { visible: boolean }): React.ReactElement {
   return visible ? (
@@ -35,7 +36,7 @@ export function DatabaseKeyEditor({
     <section id="database-key-editor" className="settings-card database-key-editor">
       <label htmlFor="wechat-db-key">WeChat DB Key</label>
       <div className="database-key-input-row">
-        <input
+        <Input
           id="wechat-db-key"
           type={visible ? 'text' : 'password'}
           value={value}
@@ -45,48 +46,59 @@ export function DatabaseKeyEditor({
           autoComplete="off"
           spellCheck={false}
         />
-        <button
+        <IconButton
+          variant="ghost"
+          label={visible ? '隐藏密钥' : '显示密钥'}
+          tooltip={visible ? '隐藏密钥' : '显示密钥'}
           type="button"
           onClick={() => setVisible((current) => !current)}
-          title={visible ? '隐藏密钥' : '显示密钥'}
           disabled={disabled}
         >
           <EyeIcon visible={visible} />
-        </button>
-        <button type="button" onClick={onPaste} title="从剪贴板粘贴" disabled={disabled}>
+        </IconButton>
+        <IconButton
+          type="button"
+          variant="ghost"
+          label="从剪贴板粘贴"
+          onClick={onPaste}
+          disabled={disabled}
+        >
           <svg viewBox="0 0 24 24" aria-hidden>
             <path d="M9 5h6M9 3h6v4H9zM7 5H5v16h14V5h-2" />
           </svg>
-        </button>
-        <button
+        </IconButton>
+        <IconButton
+          variant="ghost"
+          label="清空当前输入"
           type="button"
           onClick={() => onChange('')}
-          title="清空当前输入"
           disabled={disabled || !value}
         >
           <svg viewBox="0 0 24 24" aria-hidden>
             <path d="m6 6 12 12M18 6 6 18" />
           </svg>
-        </button>
+        </IconButton>
       </div>
       <p>保存前会验证密钥格式、数据库可读性和当前账号身份。</p>
       <div className="database-key-actions">
-        <button
+        <Button
+          variant="secondary"
           type="button"
           className="database-key-secondary"
           onClick={onValidate}
           disabled={disabled || !value}
         >
           验证密钥
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="default"
           type="button"
           className="database-key-primary"
           onClick={onSave}
           disabled={disabled || !canSave}
         >
           保存密钥
-        </button>
+        </Button>
       </div>
     </section>
   )

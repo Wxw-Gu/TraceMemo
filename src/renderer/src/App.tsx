@@ -38,6 +38,7 @@ import { enrichQuotedMessages } from './utils/quoted-messages'
 import type { SelectableReportTemplateId } from '../../shared/report-templates'
 import { switchGeneratedReportTemplate } from './utils/report-template-switch'
 import { runtimePlatform } from './utils/runtime-environment'
+import { useToast } from './components/ui'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -214,6 +215,7 @@ const buildSyntheticGroupMessages = (
 void buildSyntheticGroupMessages
 
 function App(): React.ReactElement {
+  const { toast } = useToast()
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
   const [isDatabaseConnecting, setIsDatabaseConnecting] = useState(false)
@@ -328,9 +330,9 @@ function App(): React.ReactElement {
   messagesRef.current = messages
   React.useEffect(() => {
     if (!reportNotice) return
-    const timer = window.setTimeout(() => setReportNotice(''), 3200)
-    return () => window.clearTimeout(timer)
-  }, [reportNotice])
+    toast({ description: reportNotice, duration: 3200 })
+    setReportNotice('')
+  }, [reportNotice, toast])
   React.useEffect(() => {
     const openVoiceRecognitionSettings = (): void => {
       setSettingsCategory('voice-recognition')
@@ -2111,7 +2113,6 @@ function App(): React.ReactElement {
       appearanceTheme={appearanceSettings.theme}
       compactMode={appearanceSettings.compactMode}
     >
-      {reportNotice && <div className="app-toast">{reportNotice}</div>}
       {showFirstUseWelcome && (
         <FirstUseWelcome
           onDismiss={dismissFirstUseWelcome}

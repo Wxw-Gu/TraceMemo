@@ -1,4 +1,15 @@
 import { useState } from 'react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Button
+} from '../../../components/ui'
 
 export function DangerZone({
   disabled,
@@ -17,31 +28,30 @@ export function DangerZone({
             <strong>清除图片密钥</strong>
             <small>聊天记录和微信原始图片不会被删除。</small>
           </span>
-          <button disabled={disabled} onClick={() => setConfirming(true)}>
+          <Button variant="destructive" disabled={disabled} onClick={() => setConfirming(true)}>
             清除图片密钥
-          </button>
+          </Button>
         </div>
       </section>
-      {confirming ? (
-        <div className="database-key-confirm-backdrop" role="presentation">
-          <div className="database-key-confirm" role="dialog" aria-modal="true">
-            <h2>确认清除图片解密配置？</h2>
-            <p>清除后聊天记录仍然存在，但图片需要重新配置后才能解析。</p>
-            <div>
-              <button onClick={() => setConfirming(false)}>取消</button>
-              <button
-                className="danger"
-                onClick={() => {
-                  setConfirming(false)
-                  onClear()
-                }}
-              >
-                清除图片密钥
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认清除图片解密配置？</AlertDialogTitle>
+            <AlertDialogDescription>
+              清除后聊天记录仍然存在，但图片需要重新配置后才能解析。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={onClear}
+            >
+              清除图片密钥
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }

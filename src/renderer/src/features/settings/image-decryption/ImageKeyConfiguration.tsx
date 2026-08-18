@@ -1,4 +1,5 @@
 import type { ImageDecryptionState } from './types'
+import { Input } from '../../../components/ui'
 
 export function ImageKeyConfiguration({
   state,
@@ -14,7 +15,7 @@ export function ImageKeyConfiguration({
       <div className="image-key-grid">
         <label>
           <span>XOR Key</span>
-          <input
+          <Input
             value={state.xorKey}
             disabled={disabled}
             onChange={(event) => onEdit('xorKey', event.target.value)}
@@ -22,7 +23,7 @@ export function ImageKeyConfiguration({
         </label>
         <label>
           <span>AES Key</span>
-          <input
+          <Input
             type="password"
             value={state.aesKey}
             disabled={disabled}
