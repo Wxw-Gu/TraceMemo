@@ -869,7 +869,13 @@ app.whenReady().then(async () => {
       if (!selectedRoot) return { success: false, error: '请先选择微信账号' }
       const validation = await chat.testConnection(result.key, selectedRoot)
       if (!validation.success) {
-        return { ...result, success: false, key: undefined, error: '获取到的密钥不属于所选账号' }
+        return {
+          ...result,
+          success: false,
+          key: undefined,
+          error:
+            '获取到的密钥不属于所选账号, 也可能是选择错误的目录了, 请打开微信设置 左下角确认目录是否和软件内填写一致'
+        }
       }
       if (options?.save === false) return result
 
@@ -1203,7 +1209,9 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('export:selectDirectory', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
-    const result = await dialog.showOpenDialog(window!, { properties: ['openDirectory', 'createDirectory'] })
+    const result = await dialog.showOpenDialog(window!, {
+      properties: ['openDirectory', 'createDirectory']
+    })
     return result.canceled ? { canceled: true } : { canceled: false, path: result.filePaths[0] }
   })
   ipcMain.handle('export:cancel', (_, jobId: string) => {
@@ -1740,9 +1748,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('agent-hub:reconnect', () => agentHubService.reconnect())
   ipcMain.handle('agent-hub:disconnect', () => agentHubService.disconnect())
   ipcMain.handle('wechat-personal:getStatus', () => personalWechatSendService.getStatus())
-  ipcMain.handle('wechat-personal:getRuntimeStatus', () =>
-    personalWechatRuntimeManager.getStatus()
-  )
+  ipcMain.handle('wechat-personal:getRuntimeStatus', () => personalWechatRuntimeManager.getStatus())
   ipcMain.handle('wechat-personal:downloadRuntime', () => personalWechatRuntimeManager.download())
   ipcMain.handle('wechat-personal:cancelRuntimeDownload', () => ({
     success: personalWechatRuntimeManager.cancelDownload()
