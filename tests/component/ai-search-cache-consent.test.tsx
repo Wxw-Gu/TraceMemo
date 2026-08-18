@@ -242,6 +242,17 @@ describe('AISearchWorkspace cache privacy boundary', () => {
         timestamp: 1_785_900_000_000 + index,
         text: `证据 ${index + 1}`
       })),
+      evidenceCollection: Array.from({ length: 16 }, (_, index) => ({
+        id: `E${index + 1}`,
+        conversationId: 'fixture-contact',
+        conversationName: '测试会话',
+        conversationType: 'user',
+        messageId: `collection-message-${index + 1}`,
+        sender: `发送者 ${index + 1}`,
+        senderId: `collection-sender-${index + 1}`,
+        timestamp: 1_785_900_000_000 + index,
+        text: `扩展证据 ${index + 1}`
+      })),
       aggregation: {
         messageCount: 8,
         peopleCount: 1,
@@ -279,6 +290,11 @@ describe('AISearchWorkspace cache privacy boundary', () => {
     const card = screen.getByText('E7 · 发送者 7').closest('article')
     await waitFor(() => expect(card).toHaveClass('focus-flash'))
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' })
+
+    const loadMore = screen.getByRole('button', { name: '加载更多证据' })
+    await userEvent.click(loadMore)
+    expect(screen.getByText('E9 · 发送者 9')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '加载更多证据' })).not.toBeInTheDocument()
   })
 
   it('keeps the submitted result title stable while drafting a new question and clears it from 新问题', async () => {

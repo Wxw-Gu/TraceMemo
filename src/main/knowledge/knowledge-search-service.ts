@@ -55,6 +55,16 @@ function looksLikeOpaqueSenderId(value: string | undefined): boolean {
   )
 }
 
+function conversationAliases(contact: { md5: string; m_nsUsrName: string }): string[] {
+  return Array.from(
+    new Set(
+      [contact.md5, contact.m_nsUsrName, `Chat_${contact.md5}`]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+    )
+  )
+}
+
 function groupMemberDisplayName(member: chat.GroupSnapshot['members'][number]): string {
   return (
     [member.groupNickname, member.wechatNickname, member.nickname, member.remark]
@@ -442,7 +452,9 @@ export class KnowledgeSearchService {
     const contacts = await this.listContacts()
     const allowedConversations = new Set(request.conversationIds || [])
     const sourceContacts = allowedConversations.size
-      ? contacts.filter((contact) => allowedConversations.has(contact.md5))
+      ? contacts.filter((contact) =>
+          conversationAliases(contact).some((alias) => allowedConversations.has(alias))
+        )
       : contacts
     const senderIds = new Set(request.senderIds || [])
     const terms = request.terms.filter((term) => term.trim().length >= 2)

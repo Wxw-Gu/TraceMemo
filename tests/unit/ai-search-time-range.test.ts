@@ -74,7 +74,7 @@ describe('AI search natural-language time ranges', () => {
 
   it('classifies global topics and bare conversation names without turning names into FTS terms', () => {
     expect(buildLocalAiSearchPlan('最近谁聊过 MCP？')).toMatchObject({
-      intent: 'global_topic_search',
+      intent: 'global_sender_topic_search',
       topicQuery: 'MCP',
       keywords: ['MCP']
     })
@@ -92,6 +92,26 @@ describe('AI search natural-language time ranges', () => {
       intent: 'conversation_name_search',
       contactQuery: '技术交流群',
       topicQuery: undefined
+    })
+  })
+
+  it('classifies group conversation questions separately from sender questions', () => {
+    for (const question of [
+      '哪个群聊过 WechatExplorer',
+      '哪些群聊过 WechatExplorer',
+      '哪些群讨论过 WechatExplorer',
+      '哪个群说过 WechatExplorer'
+    ]) {
+      expect(buildLocalAiSearchPlan(question)).toMatchObject({
+        intent: 'global_group_topic_search',
+        topicQuery: 'WechatExplorer',
+        keywords: ['WechatExplorer']
+      })
+    }
+    expect(buildLocalAiSearchPlan('谁聊过 WechatExplorer')).toMatchObject({
+      intent: 'global_sender_topic_search',
+      topicQuery: 'WechatExplorer',
+      keywords: ['WechatExplorer']
     })
   })
 

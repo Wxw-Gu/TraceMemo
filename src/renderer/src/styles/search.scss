@@ -1640,6 +1640,25 @@
   font-weight: 700;
 }
 
+.ai-search-evidence-load-more {
+  display: block;
+  width: 100%;
+  margin: 4px 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-sm);
+  background: var(--wxex-bg-elevated);
+  color: var(--wxex-ai);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ai-search-evidence-load-more:hover {
+  border-color: var(--wxex-brand);
+  background: #f4fbf8;
+}
+
 .ai-search-evidence-empty {
   display: flex;
   min-height: 260px;

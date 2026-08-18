@@ -60,6 +60,8 @@ type ExternalProviderConsent = {
   recipient: string
 }
 
+const EVIDENCE_PAGE_SIZE = 8
+
 const formatBytes = (bytes: number): string => {
   if (!bytes) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -118,6 +120,8 @@ export function AISearchWorkspace({
   const [stage, setStage] = useState<SearchStage>('idle')
   const [answer, setAnswer] = useState('')
   const [evidence, setEvidence] = useState<EvidenceItem[]>([])
+  const [evidenceCollection, setEvidenceCollection] = useState<EvidenceItem[]>([])
+  const [visibleEvidenceCount, setVisibleEvidenceCount] = useState(0)
   const [selectedEvidence, setSelectedEvidence] = useState(0)
   const [analysisError, setAnalysisError] = useState('')
   const [messageCount, setMessageCount] = useState(0)
@@ -153,9 +157,14 @@ export function AISearchWorkspace({
   const [externalProviderConsent, setExternalProviderConsent] =
     useState<ExternalProviderConsent | null>(null)
   const [evidenceFlash, setEvidenceFlash] = useState({ index: -1, nonce: 0 })
+  const visibleEvidence = useMemo(
+    () => evidenceCollection.slice(0, visibleEvidenceCount),
+    [evidenceCollection, visibleEvidenceCount]
+  )
 
   const focusEvidence = (index: number): void => {
-    if (!Number.isInteger(index) || index < 0 || index >= evidence.length) return
+    if (!Number.isInteger(index) || index < 0 || index >= evidenceCollection.length) return
+    setVisibleEvidenceCount((current) => Math.max(current, index + 1))
     setSelectedEvidence(index)
     setEvidenceFlash((current) => ({ index, nonce: current.nonce + 1 }))
   }
@@ -374,9 +383,12 @@ export function AISearchWorkspace({
   }
 
   const applyCachedResult = (cached: AISearchCacheRecord, queryValue = query.trim()): void => {
+    const cachedCollection = cached.evidenceCollection || cached.evidence
     setResultQuery(queryValue)
     setAnswer(cached.answer)
     setEvidence(cached.evidence)
+    setEvidenceCollection(cachedCollection)
+    setVisibleEvidenceCount(Math.min(EVIDENCE_PAGE_SIZE, cachedCollection.length))
     setSenderNames(cached.senderNames)
     setMessageCount(cached.messageCount)
     setCachedAt(cached.createdAt)
@@ -402,6 +414,8 @@ export function AISearchWorkspace({
     if (!cached) {
       setAnswer('')
       setEvidence([])
+      setEvidenceCollection([])
+      setVisibleEvidenceCount(0)
       setCachedAt(0)
       setStage('idle')
       onNotice('已填入历史问题，点击开始分析可重新查询最新消息')
@@ -527,6 +541,8 @@ export function AISearchWorkspace({
       setAnalysisError('')
       setAnswer('')
       setEvidence([])
+      setEvidenceCollection([])
+      setVisibleEvidenceCount(0)
       setSelectedEvidence(0)
       setCachedAt(0)
       setSearchTrace(null)
@@ -556,7 +572,7 @@ export function AISearchWorkspace({
         return
       }
       const contactsById = new Map(allContacts.map((contact) => [contact.md5, contact]))
-      const evidenceItems: EvidenceItem[] = searchResult.evidence.map((item): EvidenceItem => {
+      const toEvidenceItem = (item: (typeof searchResult.evidence)[number]): EvidenceItem => {
         // Contacts may still be paging in while the derived database already
         // has a valid conversation id. Evidence must never be discarded just
         // because the renderer directory is temporarily incomplete.
@@ -581,7 +597,11 @@ export function AISearchWorkspace({
             createTime: Math.floor(item.timestamp / 1000)
           }
         }
-      })
+      }
+      const evidenceItems: EvidenceItem[] = searchResult.evidence.map(toEvidenceItem)
+      const collectionItems: EvidenceItem[] = (
+        searchResult.evidenceCollection || searchResult.evidence
+      ).map(toEvidenceItem)
       setSearchTrace({
         knowledgeMessages: searchResult.knowledge.indexedMessageCount,
         retrievedEvidence: searchResult.candidateEvidenceCount,
@@ -597,6 +617,8 @@ export function AISearchWorkspace({
       })
       setAgentTrace(searchResult.agent.trace)
       setEvidence(evidenceItems)
+      setEvidenceCollection(collectionItems)
+      setVisibleEvidenceCount(Math.min(EVIDENCE_PAGE_SIZE, collectionItems.length))
       setSenderNames(
         Object.fromEntries(
           evidenceItems
@@ -635,6 +657,7 @@ export function AISearchWorkspace({
         createdAt: currentTimestamp(),
         answer: searchResult.answer,
         evidence: evidenceItems.map(compactCacheItem),
+        evidenceCollection: collectionItems.map(compactCacheItem),
         senderNames: Object.fromEntries(
           evidenceItems
             .filter(({ message }) => Boolean(message.senderId && message.name))
@@ -673,6 +696,8 @@ export function AISearchWorkspace({
     setStage('idle')
     setAnswer('')
     setEvidence([])
+    setEvidenceCollection([])
+    setVisibleEvidenceCount(0)
     setSelectedEvidence(0)
     setAnalysisError('')
     setCachedAt(0)
@@ -1439,12 +1464,14 @@ export function AISearchWorkspace({
               <span>可追溯数据</span>
               <strong>证据与来源</strong>
             </div>
-            {evidence.length > 0 && (
-              <span className="ai-search-count-badge">{evidence.length} 条样本</span>
+            {evidenceCollection.length > 0 && (
+              <span className="ai-search-count-badge">
+                {visibleEvidence.length}/{evidenceCollection.length} 条样本
+              </span>
             )}
           </div>
-          {evidence.length ? (
-            evidence.map((item, index) => (
+          {visibleEvidence.length ? (
+            visibleEvidence.map((item, index) => (
               <article
                 key={`${messageIdentity(item.message)}-${index}-${evidenceFlash.index === index ? evidenceFlash.nonce : 0}`}
                 ref={(node) => {
@@ -1487,6 +1514,19 @@ export function AISearchWorkspace({
               <strong>等待检索结果</strong>
               <span>分析完成后，这里会显示支持结论的原始消息。</span>
             </div>
+          )}
+          {visibleEvidence.length > 0 && visibleEvidence.length < evidenceCollection.length && (
+            <button
+              type="button"
+              className="ai-search-evidence-load-more"
+              onClick={() =>
+                setVisibleEvidenceCount((current) =>
+                  Math.min(current + EVIDENCE_PAGE_SIZE, evidenceCollection.length)
+                )
+              }
+            >
+              加载更多证据
+            </button>
           )}
         </aside>
       </div>

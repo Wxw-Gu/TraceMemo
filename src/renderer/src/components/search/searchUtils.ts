@@ -8,9 +8,9 @@ export const RANGE_LABELS: Record<SearchRange, string> = {
   all: '全部历史'
 }
 
-// Search intent semantics are program-owned; never replay results produced
-// before the current identity-resolution contract.
-export const SEARCH_CACHE_KEY = 'wxe_ai_search_cache_v11'
+// Search intent/coverage semantics are program-owned; never replay results
+// created before the current Evidence Collection contract.
+export const SEARCH_CACHE_KEY = 'wxe_ai_search_cache_v12'
 export const SEARCH_ACTIVE_RESULT_KEY = 'wxe_ai_search_active_result_v1'
 export const SEARCH_HISTORY_KEY = 'wxe_ai_search_history_v1'
 export const SEARCH_CACHE_LIMIT = 20

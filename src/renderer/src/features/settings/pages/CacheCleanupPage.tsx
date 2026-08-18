@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { CacheSummary } from '../../../../../shared/cache'
 
-const SEARCH_CACHE_KEYS = ['wxe_ai_search_cache_v8', 'wxe_ai_search_history_v1', 'wxe_export_tasks']
+const SEARCH_CACHE_KEYS = [
+  'wxe_ai_search_cache_v8',
+  'wxe_ai_search_cache_v9',
+  'wxe_ai_search_cache_v10',
+  'wxe_ai_search_cache_v11',
+  'wxe_ai_search_cache_v12',
+  'wxe_ai_search_history_v1',
+  'wxe_export_tasks'
+]
 
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`

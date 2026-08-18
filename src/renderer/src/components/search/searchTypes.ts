@@ -21,6 +21,8 @@ export interface AISearchCacheRecord {
   createdAt: number
   answer: string
   evidence: EvidenceItem[]
+  /** Same-request browse collection; old cache records may not contain it. */
+  evidenceCollection?: EvidenceItem[]
   senderNames: Record<string, string>
   messageCount: number
 }
