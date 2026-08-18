@@ -1,15 +1,10 @@
 import React, { useMemo, useRef, useState } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { aiSearchIntentLabel, aiSearchRangeStart } from '../../../../shared/ai-search'
-import type {
-  AiSearchAgentRun,
-  AiSearchProgressEvent,
-  AiSearchTimeRange
-} from '../../../../shared/ai-search'
+import type { AiSearchProgressEvent, AiSearchTimeRange } from '../../../../shared/ai-search'
 
 import type {
   AISearchWorkspaceProps,
-  SearchProgressByStage,
   SearchRange,
   SearchScope,
   SearchStage,
@@ -42,6 +37,7 @@ import { useSearchHistory } from './hooks/useSearchHistory'
 import { useKnowledgeStatus } from './hooks/useKnowledgeStatus'
 import { useExternalProviderConsent } from './hooks/useExternalProviderConsent'
 import { EVIDENCE_PAGE_SIZE, useEvidenceCollection } from './hooks/useEvidenceCollection'
+import { useAiSearchRun } from './hooks/useAiSearchRun'
 
 export function AISearchWorkspace({
   contacts,
@@ -67,15 +63,12 @@ export function AISearchWorkspace({
   const [senderNames, setSenderNames] = useState<Record<string, string>>({})
   const [cachedAt, setCachedAt] = useState(0)
   const [searchTrace, setSearchTrace] = useState<SearchTrace | null>(null)
-  const [searchProgress, setSearchProgress] = useState<SearchProgressByStage>({})
-  const [agentTrace, setAgentTrace] = useState<AiSearchAgentRun['trace']>([])
   const [searchDetailsOpen, setSearchDetailsOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [debugEnabled, setDebugEnabled] = useState(false)
   const [debugPanelOpen, setDebugPanelOpen] = useState(false)
   const [debugEntries, setDebugEntries] = useState<string[]>([])
   const [appLogPath, setAppLogPath] = useState('')
-  const searchRequestIdRef = useRef('')
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const {
     evidence,
@@ -150,6 +143,15 @@ export function AISearchWorkspace({
     settleExternalProviderConsent,
     clearExternalProviderConsent
   } = useExternalProviderConsent()
+  const {
+    requestId: searchRunRequestId,
+    progress: searchProgress,
+    agentTrace,
+    createRequestId,
+    startSearch,
+    cancelSearch,
+    resetSearchRun
+  } = useAiSearchRun()
 
   const resetSearchResult = (): void => {
     const reset = createSearchResultResetState()
@@ -158,8 +160,7 @@ export function AISearchWorkspace({
     clearEvidenceCollection()
     setCachedAt(reset.cachedAt)
     setSearchTrace(reset.searchTrace)
-    setSearchProgress(reset.searchProgress)
-    setAgentTrace(reset.agentTrace)
+    resetSearchRun()
     setSearchDetailsOpen(reset.searchDetailsOpen)
   }
 
@@ -171,22 +172,6 @@ export function AISearchWorkspace({
       }
     )
   }, [])
-
-  React.useEffect(
-    () =>
-      window.api.onAiSearchProgress((progress) => {
-        if (progress.requestId !== searchRequestIdRef.current) return
-        setSearchProgress((current) => ({ ...current, [progress.stage]: progress }))
-        if (progress.agentTrace) {
-          setAgentTrace((current) =>
-            current.some((item) => item.sequence === progress.agentTrace?.sequence)
-              ? current
-              : [...current, progress.agentTrace as AiSearchAgentRun['trace'][number]]
-          )
-        }
-      }),
-    []
-  )
 
   const addDebugEntry = (message: string, details: Record<string, unknown> = {}): void => {
     const entry = `${new Date().toLocaleTimeString('zh-CN')} ${message} ${JSON.stringify(details)}`
@@ -235,18 +220,15 @@ export function AISearchWorkspace({
 
   const cancelAnalysis = async (): Promise<void> => {
     clearExternalProviderConsent()
-    const requestId = searchRequestIdRef.current
+    const requestId = searchRunRequestId
     if (!requestId) return
-    searchRequestIdRef.current = ''
     setStage('idle')
     setAnalysisError('')
-    setSearchProgress({})
-    setAgentTrace([])
     setSearchDetailsOpen(false)
     onNotice('已取消本次分析')
     composerRef.current?.focus()
     try {
-      await window.api.cancelAiSearch(requestId)
+      await cancelSearch()
     } catch (error) {
       addDebugEntry('取消检索请求失败', {
         requestId,
@@ -284,7 +266,6 @@ export function AISearchWorkspace({
       effectiveRange,
       normalizedQuery
     )
-    let requestId = ''
     try {
       const cached = consumeCacheBypass() ? null : readCachedResult(cacheKey)
       if (cached) {
@@ -298,7 +279,7 @@ export function AISearchWorkspace({
         onNotice('已使用最近的检索缓存，可点击刷新数据读取最新消息')
         return
       }
-      requestId = globalThis.crypto?.randomUUID?.() || `search-${Date.now()}`
+      const requestId = createRequestId()
       try {
         if (!(await ensureAiSearchDataConsent(requestId))) {
           onNotice('已取消本次 AI Search，未执行检索，也未向远程 AI 服务发送聊天内容')
@@ -314,8 +295,7 @@ export function AISearchWorkspace({
       }
       setStage('loading')
       resetSearchResult()
-      searchRequestIdRef.current = requestId
-      const searchResult = await window.api.runAiSearch({
+      const outcome = await startSearch({
         requestId,
         text: normalizedQuery,
         scope,
@@ -323,7 +303,19 @@ export function AISearchWorkspace({
         conversationId: scope === 'conversation' ? activeContact?.md5 : undefined,
         timeRangeOverride: effectiveTimeRangeOverride
       })
-      if (searchRequestIdRef.current !== requestId) return
+      if (outcome.kind === 'stale') return
+      if (outcome.kind === 'cancelled') {
+        onNotice('已取消本次分析')
+        setStage('idle')
+        return
+      }
+      if (outcome.kind === 'failed') {
+        addDebugEntry('检索失败', { error: outcome.error })
+        setAnalysisError(outcome.error)
+        setStage('insufficient')
+        return
+      }
+      const searchResult = outcome.result
       addDebugEntry('主进程搜索任务完成', {
         status: searchResult.status,
         candidateEvidenceCount: searchResult.candidateEvidenceCount,
@@ -331,18 +323,12 @@ export function AISearchWorkspace({
         elapsedMs: searchResult.elapsedMs,
         errorStage: searchResult.errorStage
       })
-      if (searchResult.status === 'cancelled') {
-        onNotice('已取消本次分析')
-        setStage('idle')
-        return
-      }
       const evidenceItems = mapPipelineEvidence(searchResult.evidence, allContacts)
       const collectionItems = mapPipelineEvidence(
         searchResult.evidenceCollection || searchResult.evidence,
         allContacts
       )
       setSearchTrace(mapSearchResultToTrace(searchResult, evidenceItems.length))
-      setAgentTrace(searchResult.agent.trace)
       setEvidenceResult(evidenceItems, collectionItems)
       const nextSenderNames = mapEvidenceSenderNames(evidenceItems)
       setSenderNames(nextSenderNames)
@@ -381,13 +367,10 @@ export function AISearchWorkspace({
       })
       setStage('result')
     } catch (error) {
-      if (requestId && searchRequestIdRef.current !== requestId) return
       const errorMessage = error instanceof Error ? error.message : '读取聊天记录失败'
       addDebugEntry('检索失败', { error: errorMessage })
       setAnalysisError(errorMessage)
       setStage('insufficient')
-    } finally {
-      if (requestId && searchRequestIdRef.current === requestId) searchRequestIdRef.current = ''
     }
   }
 
