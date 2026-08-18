@@ -9,7 +9,6 @@ import type {
 
 import type {
   AISearchWorkspaceProps,
-  EvidenceItem,
   SearchProgressByStage,
   SearchRange,
   SearchScope,
@@ -42,8 +41,7 @@ import { createSearchResultResetState } from './searchState'
 import { useSearchHistory } from './hooks/useSearchHistory'
 import { useKnowledgeStatus } from './hooks/useKnowledgeStatus'
 import { useExternalProviderConsent } from './hooks/useExternalProviderConsent'
-
-const EVIDENCE_PAGE_SIZE = 8
+import { EVIDENCE_PAGE_SIZE, useEvidenceCollection } from './hooks/useEvidenceCollection'
 
 export function AISearchWorkspace({
   contacts,
@@ -64,10 +62,6 @@ export function AISearchWorkspace({
   const [resultQuery, setResultQuery] = useState('')
   const [stage, setStage] = useState<SearchStage>('idle')
   const [answer, setAnswer] = useState('')
-  const [evidence, setEvidence] = useState<EvidenceItem[]>([])
-  const [evidenceCollection, setEvidenceCollection] = useState<EvidenceItem[]>([])
-  const [visibleEvidenceCount, setVisibleEvidenceCount] = useState(0)
-  const [selectedEvidence, setSelectedEvidence] = useState(0)
   const [analysisError, setAnalysisError] = useState('')
   const [messageCount, setMessageCount] = useState(0)
   const [senderNames, setSenderNames] = useState<Record<string, string>>({})
@@ -83,12 +77,24 @@ export function AISearchWorkspace({
   const [appLogPath, setAppLogPath] = useState('')
   const searchRequestIdRef = useRef('')
   const composerRef = useRef<HTMLTextAreaElement>(null)
-  const evidenceCardRefs = useRef(new Map<number, HTMLElement>())
-  const [evidenceFlash, setEvidenceFlash] = useState({ index: -1, nonce: 0 })
-  const visibleEvidence = useMemo(
-    () => evidenceCollection.slice(0, visibleEvidenceCount),
-    [evidenceCollection, visibleEvidenceCount]
-  )
+  const {
+    evidence,
+    setEvidence,
+    evidenceCollection,
+    setEvidenceCollection,
+    setVisibleEvidenceCount,
+    selectedEvidence,
+    setSelectedEvidence,
+    visibleEvidence,
+    hasMoreEvidence,
+    evidenceFlash,
+    setEvidenceResult,
+    clearEvidenceCollection,
+    loadMoreEvidence,
+    focusEvidence,
+    jumpToEvidence,
+    setEvidenceCardRef
+  } = useEvidenceCollection({ onOpenEvidence })
 
   const {
     history,
@@ -149,31 +155,13 @@ export function AISearchWorkspace({
     const reset = createSearchResultResetState()
     setAnalysisError(reset.analysisError)
     setAnswer(reset.answer)
-    setEvidence(reset.evidence)
-    setEvidenceCollection(reset.evidenceCollection)
-    setVisibleEvidenceCount(reset.visibleEvidenceCount)
-    setSelectedEvidence(reset.selectedEvidence)
+    clearEvidenceCollection()
     setCachedAt(reset.cachedAt)
     setSearchTrace(reset.searchTrace)
     setSearchProgress(reset.searchProgress)
     setAgentTrace(reset.agentTrace)
     setSearchDetailsOpen(reset.searchDetailsOpen)
   }
-
-  const focusEvidence = (index: number): void => {
-    if (!Number.isInteger(index) || index < 0 || index >= evidenceCollection.length) return
-    setVisibleEvidenceCount((current) => Math.max(current, index + 1))
-    setSelectedEvidence(index)
-    setEvidenceFlash((current) => ({ index, nonce: current.nonce + 1 }))
-  }
-
-  React.useEffect(() => {
-    if (evidenceFlash.index < 0) return
-    evidenceCardRefs.current.get(evidenceFlash.index)?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'nearest'
-    })
-  }, [evidenceFlash])
 
   React.useEffect(() => {
     void Promise.all([window.api.getSettings(), window.api.getAppLogPath()]).then(
@@ -355,9 +343,7 @@ export function AISearchWorkspace({
       )
       setSearchTrace(mapSearchResultToTrace(searchResult, evidenceItems.length))
       setAgentTrace(searchResult.agent.trace)
-      setEvidence(evidenceItems)
-      setEvidenceCollection(collectionItems)
-      setVisibleEvidenceCount(Math.min(EVIDENCE_PAGE_SIZE, collectionItems.length))
+      setEvidenceResult(evidenceItems, collectionItems)
       const nextSenderNames = mapEvidenceSenderNames(evidenceItems)
       setSenderNames(nextSenderNames)
       setMessageCount(searchResult.knowledge.totalMessages)
@@ -1187,8 +1173,7 @@ export function AISearchWorkspace({
               <article
                 key={`${messageIdentity(item.message)}-${index}-${evidenceFlash.index === index ? evidenceFlash.nonce : 0}`}
                 ref={(node) => {
-                  if (node) evidenceCardRefs.current.set(index, node)
-                  else evidenceCardRefs.current.delete(index)
+                  setEvidenceCardRef(index, node)
                 }}
                 className={`ai-search-evidence-card ${selectedEvidence === index ? 'active' : ''} ${evidenceFlash.index === index ? 'focus-flash' : ''}`}
                 style={{ animationDelay: `${Math.min(index, 7) * 45}ms` }}
@@ -1213,7 +1198,7 @@ export function AISearchWorkspace({
                   className="ai-search-evidence-link"
                   onClick={(event) => {
                     event.stopPropagation()
-                    onOpenEvidence(item.contact, item.message.createTime)
+                    jumpToEvidence(index)
                   }}
                 >
                   跳转到原聊天 ↗
@@ -1227,15 +1212,11 @@ export function AISearchWorkspace({
               <span>分析完成后，这里会显示支持结论的原始消息。</span>
             </div>
           )}
-          {visibleEvidence.length > 0 && visibleEvidence.length < evidenceCollection.length && (
+          {hasMoreEvidence && (
             <button
               type="button"
               className="ai-search-evidence-load-more"
-              onClick={() =>
-                setVisibleEvidenceCount((current) =>
-                  Math.min(current + EVIDENCE_PAGE_SIZE, evidenceCollection.length)
-                )
-              }
+              onClick={loadMoreEvidence}
             >
               加载更多证据
             </button>
