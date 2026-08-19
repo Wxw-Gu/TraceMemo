@@ -12,9 +12,11 @@ app.setPath('logs', path.join(userData, 'logs'))
 app.commandLine.appendSwitch('disable-gpu')
 
 const VALID_KEY = 'a'.repeat(64)
-const imageData =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII='
+const imageData = `data:image/png;base64,${fs.readFileSync(path.join(root, 'resources/icon.png')).toString('base64')}`
 const voiceData = 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA='
+const configuredNow = Number(process.env.WXE_E2E_NOW_MS)
+const fixtureNowMs =
+  Number.isFinite(configuredNow) && configuredNow > 0 ? configuredNow : Date.now()
 
 const formatFixtureDateTime = (timestampSeconds) => {
   const date = new Date(timestampSeconds * 1000)
@@ -24,7 +26,7 @@ const formatFixtureDateTime = (timestampSeconds) => {
 
 const allFixtureMessages = Object.values(fixture.messages).flat()
 const latestFixtureTime = Math.max(...allFixtureMessages.map((message) => message.createTime || 0))
-const fixtureTimeOffset = Math.floor(Date.now() / 1000) - 3600 - latestFixtureTime
+const fixtureTimeOffset = Math.floor(fixtureNowMs / 1000) - 3600 - latestFixtureTime
 for (const message of allFixtureMessages) {
   message.createTime = (message.createTime || latestFixtureTime) + fixtureTimeOffset
   message.datetime = formatFixtureDateTime(message.createTime)
@@ -206,7 +208,7 @@ let settings = {
   debugEnabled: false,
   autoLogin: connected,
   autoLoginPreferenceSet: true,
-  appearanceTheme: 'light',
+  appearanceTheme: process.env.WXE_E2E_APPEARANCE_THEME === 'dark' ? 'dark' : 'light',
   compactMode: false,
   showStartupProgress: false,
   imageXorKey: '0x40',
@@ -241,6 +243,65 @@ handle('settings:set', (patch) => {
   settings = { ...settings, ...patch }
   return { settings, settingsPath: path.join(userData, 'settings.json') }
 })
+handle('tts:getSettings', () => ({
+  success: true,
+  settings: {
+    provider: 'fish-audio',
+    hasApiKey: false,
+    hasStoredApiKey: false,
+    hasEnvironmentApiKey: false,
+    keySource: 'missing',
+    encryptionAvailable: true,
+    selectedVoiceId: '',
+    outputFormat: 'mp3',
+    model: 's2.1-pro-free',
+    phase: 'ready'
+  },
+  voices: []
+}))
+handle('wechat-personal:getRuntimeStatus', () => ({
+  version: 'v0.0.18',
+  state: 'ready',
+  downloadedBytes: 100,
+  totalBytes: 100,
+  progress: 1,
+  platform: 'darwin',
+  architecture: 'arm64',
+  supported: true,
+  removable: true
+}))
+handle('wechat-personal:getStatus', () => ({
+  state: 'online',
+  platform: 'darwin',
+  arch: 'arm64',
+  sipDisabled: true,
+  wechatRunning: true,
+  wechatPid: 4668,
+  boundWechatPid: 4668,
+  oneBotPid: 5401,
+  endpoint: '127.0.0.1:58080',
+  endpointReady: true,
+  wechatVersion: '4.1.11.53',
+  runtimeReady: true,
+  attachReady: true,
+  baseAddress: '0x114ef8000',
+  baseAddressReady: true,
+  textHookInstalled: true,
+  textHookReady: true,
+  imageHookInstalled: true,
+  imageHookReady: true,
+  messageListenerReady: true,
+  canSend: true,
+  canSendText: true,
+  canSendImage: true,
+  canSendVoice: true,
+  message: '个人微信已绑定'
+}))
+handle('wechat-share:getConfig', () => ({
+  success: true,
+  configured: true,
+  serviceUrl: 'https://share.example.test'
+}))
 handle('key:getSavedDbKey', () => ({
   success: true,
   key: savedKey || undefined,
@@ -579,6 +640,19 @@ handle('api:rotateToken', () => ({
   maskedToken: '••••••••••••••••'
 }))
 handle('api:copyCurl', () => ({ success: true }))
+handle('api:skillStatus', () => ({
+  available: true,
+  version: 'v1.2',
+  filePath: '/fixture/tracememo-reader/SKILL.md',
+  directoryPath: '/fixture/tracememo-reader',
+  source: 'development',
+  githubUrl: 'https://example.test/tracememo-reader'
+}))
+handle('api:readSkill', () => ({
+  success: true,
+  content:
+    '# TraceMemo Reader\n\n## 能力\n- 读取本地聊天记录\n- 导出群聊日报\n\n仅在用户授权后访问。'
+}))
 handle('api:start', () => ({ running: true, host: settings.apiHost, port: settings.apiPort }))
 handle('api:stop', () => ({ running: false, host: settings.apiHost, port: settings.apiPort }))
 handle('api:toggle', (enabled) => ({

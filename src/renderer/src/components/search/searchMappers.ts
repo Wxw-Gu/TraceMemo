@@ -70,6 +70,33 @@ export const mapSearchResultToTrace = (
   voiceCoverage: result.knowledge.voiceCoverage
 })
 
+export interface PipelineRendererResult {
+  evidence: EvidenceItem[]
+  evidenceCollection: EvidenceItem[]
+  searchTrace: SearchTrace
+  senderNames: Record<string, string>
+  messageCount: number
+}
+
+export const mapPipelineResultToRendererResult = (
+  result: AiSearchPipelineResult,
+  contacts: Contact[]
+): PipelineRendererResult => {
+  const evidence = mapPipelineEvidence(result.evidence, contacts)
+  const evidenceCollection = mapPipelineEvidence(
+    result.evidenceCollection || result.evidence,
+    contacts
+  )
+
+  return {
+    evidence,
+    evidenceCollection,
+    searchTrace: mapSearchResultToTrace(result, evidence.length),
+    senderNames: mapEvidenceSenderNames(evidence),
+    messageCount: result.knowledge.totalMessages
+  }
+}
+
 export const mapCacheRecordToResult = (
   cached: AISearchCacheRecord,
   queryValue: string,

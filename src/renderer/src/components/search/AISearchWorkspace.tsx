@@ -1,5 +1,4 @@
 import React, { useMemo, useRef, useState } from 'react'
-import * as Popover from '@radix-ui/react-popover'
 import { aiSearchIntentLabel, aiSearchRangeStart } from '../../../../shared/ai-search'
 import type { AiSearchProgressEvent, AiSearchTimeRange } from '../../../../shared/ai-search'
 
@@ -10,14 +9,7 @@ import type {
   SearchStage,
   SearchTrace
 } from './searchTypes'
-import {
-  RANGE_LABELS,
-  buildSearchCacheKey,
-  formatMessageTime,
-  messageIdentity,
-  messageText,
-  senderName
-} from './searchUtils'
+import { RANGE_LABELS, createSearchRequestContext } from './searchUtils'
 import { markdownToPlainText, renderMarkdown } from './searchMarkdown'
 import {
   contactLabel,
@@ -27,17 +19,17 @@ import {
   formatSearchTraceOverview,
   knowledgeStateLabel
 } from './searchFormatters'
-import {
-  mapEvidenceSenderNames,
-  mapPipelineEvidence,
-  mapSearchResultToTrace
-} from './searchMappers'
-import { createSearchResultResetState } from './searchState'
+import { mapPipelineResultToRendererResult } from './searchMappers'
+import { createSearchResultResetState, resolveSearchResultViewTransition } from './searchState'
 import { useSearchHistory } from './hooks/useSearchHistory'
 import { useKnowledgeStatus } from './hooks/useKnowledgeStatus'
 import { useExternalProviderConsent } from './hooks/useExternalProviderConsent'
 import { EVIDENCE_PAGE_SIZE, useEvidenceCollection } from './hooks/useEvidenceCollection'
 import { useAiSearchRun } from './hooks/useAiSearchRun'
+import { ensureAiSearchDataConsent } from './services/aiSearchProviderConsent'
+import { ExternalProviderConsentDialog } from './ExternalProviderConsentDialog'
+import { AISearchComposer } from './AISearchComposer'
+import { AISearchEvidencePanel } from './AISearchEvidencePanel'
 
 export function AISearchWorkspace({
   contacts,
@@ -200,24 +192,6 @@ export function AISearchWorkspace({
   const modelLabel = aiModelConfig.configured
     ? `${aiModelConfig.providerName} · ${aiModelConfig.modelName}`
     : '尚未配置 AI 模型'
-  const ensureAiSearchDataConsent = async (requestId: string): Promise<boolean> => {
-    const status = await window.api.getAiSearchProviderStatus()
-    if (!status.configured || !status.requiresConsent) return true
-    if (!status.providerId || !status.recipient) throw new Error('当前 AI 服务信息不完整')
-    const confirmed = await requestExternalProviderConsent(
-      status.providerName || '当前 AI 服务',
-      status.recipient
-    )
-    if (!confirmed) return false
-    const authorized = await window.api.authorizeAiSearchExternalProvider({
-      requestId,
-      providerId: status.providerId,
-      recipient: status.recipient
-    })
-    if (!authorized.success) throw new Error(authorized.error || '无法确认本次数据发送授权')
-    return true
-  }
-
   const cancelAnalysis = async (): Promise<void> => {
     clearExternalProviderConsent()
     const requestId = searchRunRequestId
@@ -247,7 +221,20 @@ export function AISearchWorkspace({
       onNotice('知识库正在同步，请等待同步完成后再开始分析')
       return
     }
-    const normalizedQuery = query.trim()
+    const {
+      normalizedQuery,
+      effectiveRange,
+      effectiveTimeRangeOverride,
+      conversationId,
+      cacheKey
+    } = createSearchRequestContext({
+      query,
+      scope,
+      range,
+      timeRangeOverride,
+      activeContactMd5: activeContact?.md5,
+      retry
+    })
     if (!normalizedQuery) {
       setAnalysisError('先输入一个想了解的问题')
       setStage('insufficient')
@@ -258,14 +245,6 @@ export function AISearchWorkspace({
       setStage('insufficient')
       return
     }
-    const effectiveRange = retry?.range || range
-    const effectiveTimeRangeOverride = retry?.timeRangeOverride || timeRangeOverride
-    const cacheKey = buildSearchCacheKey(
-      scope,
-      scope === 'conversation' ? activeContact?.md5 || '' : '',
-      effectiveRange,
-      normalizedQuery
-    )
     try {
       const cached = consumeCacheBypass() ? null : readCachedResult(cacheKey)
       if (cached) {
@@ -281,7 +260,13 @@ export function AISearchWorkspace({
       }
       const requestId = createRequestId()
       try {
-        if (!(await ensureAiSearchDataConsent(requestId))) {
+        if (
+          !(await ensureAiSearchDataConsent({
+            requestId,
+            api: window.api,
+            requestExternalProviderConsent
+          }))
+        ) {
           onNotice('已取消本次 AI Search，未执行检索，也未向远程 AI 服务发送聊天内容')
           return
         }
@@ -300,7 +285,7 @@ export function AISearchWorkspace({
         text: normalizedQuery,
         scope,
         range: effectiveRange,
-        conversationId: scope === 'conversation' ? activeContact?.md5 : undefined,
+        conversationId,
         timeRangeOverride: effectiveTimeRangeOverride
       })
       if (outcome.kind === 'stale') return
@@ -323,47 +308,28 @@ export function AISearchWorkspace({
         elapsedMs: searchResult.elapsedMs,
         errorStage: searchResult.errorStage
       })
-      const evidenceItems = mapPipelineEvidence(searchResult.evidence, allContacts)
-      const collectionItems = mapPipelineEvidence(
-        searchResult.evidenceCollection || searchResult.evidence,
-        allContacts
-      )
-      setSearchTrace(mapSearchResultToTrace(searchResult, evidenceItems.length))
-      setEvidenceResult(evidenceItems, collectionItems)
-      const nextSenderNames = mapEvidenceSenderNames(evidenceItems)
-      setSenderNames(nextSenderNames)
-      setMessageCount(searchResult.knowledge.totalMessages)
-      if (searchResult.status === 'no_evidence') {
-        setAnalysisError(`${RANGE_LABELS[effectiveRange]}内没有找到与问题相关的聊天消息。`)
-        setStage('insufficient')
+      const mappedResult = mapPipelineResultToRendererResult(searchResult, allContacts)
+      setSearchTrace(mappedResult.searchTrace)
+      setEvidenceResult(mappedResult.evidence, mappedResult.evidenceCollection)
+      setSenderNames(mappedResult.senderNames)
+      setMessageCount(mappedResult.messageCount)
+      const viewTransition = resolveSearchResultViewTransition(searchResult, effectiveRange)
+      if (viewTransition.stage !== 'result') {
+        setAnalysisError(viewTransition.analysisError)
+        setStage(viewTransition.stage)
         return
       }
-      if (searchResult.status === 'retrieval_incomplete') {
-        setAnalysisError(searchResult.error || '当前检索未完整覆盖聊天记录，未生成总结。')
-        setStage('partial')
-        return
-      }
-      if (searchResult.status === 'failed') {
-        setAnalysisError(searchResult.error || '本地搜索暂时无法完成')
-        setStage('insufficient')
-        return
-      }
-      if (searchResult.status === 'ai_failed') {
-        setAnalysisError(searchResult.error || '证据已找到，但 AI 暂时无法生成回答')
-        setStage('partial')
-        return
-      }
-      if (!searchResult.answer) throw new Error('搜索任务未返回回答')
+      if (!viewTransition.answer) throw new Error('搜索任务未返回回答')
       setResultQuery(normalizedQuery)
-      setAnswer(searchResult.answer)
+      setAnswer(viewTransition.answer)
       rememberQuery(normalizedQuery)
       persistSearchResult({
         key: cacheKey,
-        answer: searchResult.answer,
-        evidence: evidenceItems,
-        evidenceCollection: collectionItems,
-        senderNames: nextSenderNames,
-        messageCount: searchResult.knowledge.totalMessages
+        answer: viewTransition.answer,
+        evidence: mappedResult.evidence,
+        evidenceCollection: mappedResult.evidenceCollection,
+        senderNames: mappedResult.senderNames,
+        messageCount: mappedResult.messageCount
       })
       setStage('result')
     } catch (error) {
@@ -1038,212 +1004,41 @@ export function AISearchWorkspace({
             {stage === 'partial' && renderPartial()}
             {stage === 'insufficient' && renderInsufficient()}
           </div>
-          <form className="ai-search-composer" onSubmit={(event) => void runAnalysis(event)}>
-            <div className="ai-search-composer-meta">
-              <span>正在询问</span>
-              <strong>{sourceLabel}</strong>
-              <em>{RANGE_LABELS[range]}</em>
-              <Popover.Root open={historyOpen} onOpenChange={setHistoryOpen}>
-                <Popover.Trigger asChild>
-                  <button type="button" className="ai-search-history-trigger">
-                    历史提问{history.length ? ` · ${history.length}` : ''}
-                  </button>
-                </Popover.Trigger>
-                <Popover.Portal>
-                  <Popover.Content
-                    className="ai-search-history-popover"
-                    aria-label="历史提问"
-                    side="top"
-                    align="end"
-                    sideOffset={8}
-                    collisionPadding={16}
-                  >
-                    <div className="ai-search-history-popover-heading">
-                      <strong>历史提问</strong>
-                      <Popover.Close asChild>
-                        <button type="button" aria-label="关闭历史提问">
-                          ×
-                        </button>
-                      </Popover.Close>
-                    </div>
-                    {history.length ? (
-                      history.map((item) => (
-                        <div className="ai-search-history-popover-item" key={item}>
-                          <button
-                            type="button"
-                            onClick={() => restoreHistoryQuery(item)}
-                            title={item}
-                          >
-                            {item}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => removeHistoryQuery(item)}
-                            aria-label={`删除历史问题：${item}`}
-                            title="删除这条历史问题"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))
-                    ) : (
-                      <span className="ai-search-history-empty">还没有历史提问</span>
-                    )}
-                  </Popover.Content>
-                </Popover.Portal>
-              </Popover.Root>
-            </div>
-            <div className="ai-search-composer-row">
-              <textarea
-                ref={composerRef}
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
-                    return
-                  }
-                  event.preventDefault()
-                  void runAnalysis()
-                }}
-                placeholder="例如：技术交流群最近讨论了哪些 Windows 性能问题？"
-                rows={2}
-              />
-              {stage === 'loading' ? (
-                <button
-                  type="button"
-                  className="cancel"
-                  onClick={(event) => {
-                    event.preventDefault()
-                    event.stopPropagation()
-                    void cancelAnalysis()
-                  }}
-                >
-                  取消分析
-                  <span>×</span>
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  className="primary"
-                  disabled={knowledgeSyncing}
-                  title={knowledgeSyncing ? '知识库同步完成后才能开始分析' : undefined}
-                >
-                  {knowledgeSyncing ? '同步中，暂不可分析' : '开始分析'}
-                  <span>→</span>
-                </button>
-              )}
-            </div>
-            <div className="ai-search-composer-foot">
-              <span>Enter 发送 · Shift + Enter 换行</span>
-              <span>AI 仅使用当前搜索所需的受控证据</span>
-            </div>
-          </form>
+          <AISearchComposer
+            query={query}
+            sourceLabel={sourceLabel}
+            rangeLabel={RANGE_LABELS[range]}
+            history={history}
+            historyOpen={historyOpen}
+            loading={stage === 'loading'}
+            knowledgeSyncing={knowledgeSyncing}
+            inputRef={composerRef}
+            onQueryChange={setQuery}
+            onHistoryOpenChange={setHistoryOpen}
+            onRestoreHistory={restoreHistoryQuery}
+            onRemoveHistory={removeHistoryQuery}
+            onSubmit={() => void runAnalysis()}
+            onCancel={() => void cancelAnalysis()}
+          />
         </main>
-        <aside className="ai-search-evidence-panel">
-          <div className="ai-search-panel-heading">
-            <div>
-              <span>可追溯数据</span>
-              <strong>证据与来源</strong>
-            </div>
-            {evidenceCollection.length > 0 && (
-              <span className="ai-search-count-badge">
-                {visibleEvidence.length}/{evidenceCollection.length} 条样本
-              </span>
-            )}
-          </div>
-          {visibleEvidence.length ? (
-            visibleEvidence.map((item, index) => (
-              <article
-                key={`${messageIdentity(item.message)}-${index}-${evidenceFlash.index === index ? evidenceFlash.nonce : 0}`}
-                ref={(node) => {
-                  setEvidenceCardRef(index, node)
-                }}
-                className={`ai-search-evidence-card ${selectedEvidence === index ? 'active' : ''} ${evidenceFlash.index === index ? 'focus-flash' : ''}`}
-                style={{ animationDelay: `${Math.min(index, 7) * 45}ms` }}
-                onClick={() => {
-                  focusEvidence(index)
-                }}
-              >
-                <span className="ai-search-evidence-card-top">
-                  <strong>
-                    {item.evidenceId || `E${index + 1}`} ·{' '}
-                    {senderName(item.message, item.contact, senderNames)}
-                  </strong>
-                  <time>{formatMessageTime(item.message)}</time>
-                </span>
-                <span className="ai-search-evidence-conversation">{item.contact.m_nsNickName}</span>
-                {item.sourceKind === 'voice' && (
-                  <span className="ai-search-evidence-source-kind">语音转写</span>
-                )}
-                <span className="ai-search-evidence-text">{messageText(item.message)}</span>
-                <button
-                  type="button"
-                  className="ai-search-evidence-link"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    jumpToEvidence(index)
-                  }}
-                >
-                  跳转到原聊天 ↗
-                </button>
-              </article>
-            ))
-          ) : (
-            <div className="ai-search-evidence-empty">
-              <div>⌕</div>
-              <strong>等待检索结果</strong>
-              <span>分析完成后，这里会显示支持结论的原始消息。</span>
-            </div>
-          )}
-          {hasMoreEvidence && (
-            <button
-              type="button"
-              className="ai-search-evidence-load-more"
-              onClick={loadMoreEvidence}
-            >
-              加载更多证据
-            </button>
-          )}
-        </aside>
+        <AISearchEvidencePanel
+          evidence={visibleEvidence}
+          collectionCount={evidenceCollection.length}
+          selectedEvidence={selectedEvidence}
+          evidenceFlash={evidenceFlash}
+          senderNames={senderNames}
+          hasMoreEvidence={hasMoreEvidence}
+          onFocusEvidence={focusEvidence}
+          onJumpToEvidence={jumpToEvidence}
+          onLoadMoreEvidence={loadMoreEvidence}
+          setEvidenceCardRef={setEvidenceCardRef}
+        />
       </div>
-      {externalProviderConsent && (
-        <div
-          className="ai-search-consent-backdrop"
-          role="presentation"
-          onMouseDown={() => settleExternalProviderConsent(false)}
-        >
-          <section
-            className="ai-search-consent-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="ai-search-consent-title"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <span className="ai-search-kicker">AI SEARCH</span>
-            <h2 id="ai-search-consent-title">确认发送本次搜索资料</h2>
-            <p>
-              将向 <strong>{externalProviderConsent.providerName}</strong>（
-              {externalProviderConsent.recipient}
-              ）发送当前问题、受控检索所需的受限上下文，以及最多 8 条最终 Evidence。
-            </p>
-            <p className="ai-search-consent-note">
-              不会发送完整微信数据库、全量聊天记录、密钥、绝对路径或内部会话/消息引用 ID。
-            </p>
-            <div className="ai-search-consent-actions">
-              <button type="button" onClick={() => settleExternalProviderConsent(false)}>
-                取消
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={() => settleExternalProviderConsent(true)}
-              >
-                继续并发送
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+      <ExternalProviderConsentDialog
+        consent={externalProviderConsent}
+        onCancel={() => settleExternalProviderConsent(false)}
+        onConfirm={() => settleExternalProviderConsent(true)}
+      />
     </div>
   )
 }

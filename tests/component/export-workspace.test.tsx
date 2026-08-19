@@ -31,6 +31,7 @@ describe('ExportWorkspace multi-chat selection', () => {
         onExportProgress: vi.fn(() => vi.fn()),
         getVoiceModelStatus: vi.fn().mockRejectedValue(new Error('fixture model unavailable')),
         getGroupSnapshot: vi.fn(async () => ({ members: [] })),
+        selectExportDirectory: vi.fn(async () => ({ canceled: false, path: '/fixture/export' })),
         cancelExport: vi.fn(async () => ({ success: true })),
         revealExport: vi.fn(async () => ({ success: true }))
       }
@@ -196,6 +197,25 @@ describe('ExportWorkspace multi-chat selection', () => {
     expect(document.querySelector('.export-all-chat-avatar.group')).toHaveTextContent('群')
     expect(document.querySelector('.export-all-chat-avatar.user')).not.toBeInTheDocument()
     expect(loadPreviewMessages).not.toHaveBeenCalled()
+  })
+
+  it('keeps custom dates and output directory selection in the workspace request', async () => {
+    const onStartExport = vi.fn(async () => ({ success: false }))
+    renderWorkspace(onStartExport)
+
+    await userEvent.click(screen.getByRole('button', { name: '自定义时间' }))
+    await userEvent.type(screen.getByLabelText('开始时间'), '2026-08-01T09:30')
+    await userEvent.type(screen.getByLabelText('结束时间'), '2026-08-02T18:45')
+    await userEvent.click(screen.getByRole('button', { name: '选择位置' }))
+
+    expect(await screen.findByText('/fixture/export/聊天 A_聊天档案.csv')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: '开始导出' }))
+    await waitFor(() => expect(onStartExport).toHaveBeenCalledOnce())
+    expect(onStartExport.mock.calls[0][0]).toMatchObject({
+      outputDirectory: '/fixture/export',
+      startTime: Math.floor(new Date('2026-08-01T09:30').getTime() / 1000),
+      endTime: Math.floor(new Date('2026-08-02T18:45').getTime() / 1000)
+    })
   })
 })
 

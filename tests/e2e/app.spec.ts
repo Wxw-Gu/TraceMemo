@@ -4,6 +4,13 @@ import { tmpdir } from 'os'
 import { resolve } from 'path'
 import { launchTestApp } from './support/electron'
 
+async function dismissFirstUseWelcome(page: import('@playwright/test').Page): Promise<void> {
+  const welcome = page.getByRole('dialog', { name: '开始探索你的微信' })
+  await expect(welcome).toBeVisible()
+  await welcome.getByRole('button', { name: '关闭' }).click()
+  await expect(welcome).toHaveCount(0)
+}
+
 test('APP-01 first launch renders a usable connection screen without uncaught errors', async () => {
   const fixture = await launchTestApp({ mode: 'disconnected' })
   const pageErrors: Error[] = []
@@ -29,6 +36,7 @@ test('KEY-01 KEY-02 invalid key remains recoverable and valid key enters the app
     await expect(keyInput).toBeVisible()
     await keyInput.fill('a'.repeat(64))
     await fixture.page.getByRole('button', { name: '连接数据库' }).click()
+    await dismissFirstUseWelcome(fixture.page)
     await expect(fixture.page.getByRole('navigation', { name: '一级导航' })).toBeVisible()
   } finally {
     await fixture.close()
@@ -67,8 +75,13 @@ test('P2-01 P2-02 guided connection exposes safe diagnostics and completes all s
     await fixture.page.getByRole('button', { name: '检查完成，继续' }).click()
     await fixture.page.getByRole('button', { name: '我已准备好' }).click()
     await fixture.page.getByRole('button', { name: '开始准备连接组件' }).click()
-    await expect(fixture.page.getByRole('button', { name: '微信已登录，验证连接' })).toBeEnabled()
-    await fixture.page.getByRole('button', { name: '微信已登录，验证连接' }).click()
+    const verifyConnection = fixture.page.getByRole('button', {
+      name: '验证连接',
+      exact: true
+    })
+    await expect(verifyConnection).toBeEnabled()
+    await verifyConnection.click()
+    await dismissFirstUseWelcome(fixture.page)
     await expect(fixture.page.getByRole('navigation', { name: '一级导航' })).toBeVisible()
   } finally {
     await fixture.close()
@@ -114,9 +127,130 @@ test('NAV-01 NAV-02 every top-level page is unique and switchable', async () => 
   }
 })
 
-test('API-01 masks, reveals, and confirms rotation of the local API token', async () => {
+test('CHAT-01 archive More menu is keyboard-safe and keeps the page usable', async () => {
   const fixture = await launchTestApp()
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
+    await fixture.setWindowContentSize({ width: 1000, height: 650 })
+    await fixture.page.getByText('产品测试群', { exact: true }).click()
+    const moreButton = fixture.page.getByRole('button', { name: '更多' })
+    await moreButton.click()
+    await expect(fixture.page.getByRole('menuitem', { name: '刷新数据' })).toBeVisible()
+    await fixture.page.keyboard.press('Escape')
+    await expect(fixture.page.getByRole('menuitem', { name: '刷新数据' })).toHaveCount(0)
+    await expect(moreButton).toBeFocused()
+
+    await moreButton.click()
+    await fixture.page.getByRole('menuitem', { name: '刷新数据' }).click()
+    await expect(fixture.page.getByRole('heading', { name: '产品测试群' })).toBeVisible()
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    expect(pageErrors).toEqual([])
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('CHAT-02 personal WeChat send dialog is keyboard-safe and fits the viewport', async () => {
+  test.skip(process.platform !== 'darwin', 'Personal WeChat sending is currently macOS-only')
+  const fixture = await launchTestApp()
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.setWindowContentSize({ width: 1000, height: 650 })
+    await fixture.page.getByText('产品测试群', { exact: true }).click()
+    const trigger = fixture.page.getByRole('button', { name: '发送消息' })
+    await trigger.click()
+    const dialog = fixture.page.getByRole('dialog', { name: '个人微信测试发送' })
+    await expect(dialog).toBeVisible()
+    await expect(
+      dialog.locator('.personal-wechat-send-status strong').filter({ hasText: '个人微信已绑定' })
+    ).toBeVisible()
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true
+    )
+    const bounds = await dialog.boundingBox()
+    expect(bounds).not.toBeNull()
+    expect(bounds!.y).toBeGreaterThanOrEqual(0)
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(650)
+    expect(pageErrors).toEqual([])
+
+    await fixture.page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect(trigger).toBeFocused()
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('GUIDE-01 first-use welcome is keyboard-safe and fits the viewport', async () => {
+  const fixture = await launchTestApp()
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.setWindowContentSize({ width: 1000, height: 650 })
+    const guideButton = fixture.page.getByRole('button', { name: '新手引导' })
+    await guideButton.click()
+    const dialog = fixture.page.getByRole('dialog', { name: '开始探索你的微信' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByRole('button', { name: /试试 AI 群聊日报/ })).toBeVisible()
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    expect(pageErrors).toEqual([])
+
+    await fixture.page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect(guideButton).toBeFocused()
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('SETTINGS-01 supported WeChat versions dialog is keyboard-safe and fits the viewport', async () => {
+  test.skip(process.platform !== 'darwin', 'The personal WeChat runtime is currently macOS-only')
+  const fixture = await launchTestApp()
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.setWindowContentSize({ width: 1000, height: 650 })
+    await fixture.page
+      .getByRole('navigation', { name: '一级导航' })
+      .getByRole('button', { name: '设置' })
+      .click()
+    await fixture.page.getByRole('button', { name: '文字转语音' }).click()
+
+    const trigger = fixture.page.getByRole('button', { name: '查看支持版本' })
+    await expect(trigger).toBeVisible()
+    await trigger.click()
+    const dialog = fixture.page.getByRole('dialog', { name: '支持的微信版本' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByText('4.1.6.12')).toBeVisible()
+    await expect(dialog.getByText('4.1.11.53')).toBeVisible()
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    expect(pageErrors).toEqual([])
+
+    await fixture.page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect(trigger).toBeFocused()
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('API-01 manages the local API token and previews the Reader Skill safely', async () => {
+  const fixture = await launchTestApp()
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.setWindowContentSize({ width: 1000, height: 650 })
     await fixture.page.getByRole('button', { name: 'API' }).click()
     await expect(fixture.page.getByText('API Token', { exact: true })).toBeVisible()
     await expect(fixture.page.getByText('••••••••••••••••')).toBeVisible()
@@ -128,6 +262,30 @@ test('API-01 masks, reveals, and confirms rotation of the local API token', asyn
     fixture.page.once('dialog', (dialog) => dialog.accept())
     await fixture.page.getByRole('button', { name: '重新生成 Token' }).click()
     await expect(fixture.page.getByText('Token 已生成')).toBeVisible()
+
+    const previewTrigger = fixture.page
+      .locator('#api-reader-skill')
+      .getByRole('button', { name: '预览 Skill' })
+    await expect(previewTrigger).toBeEnabled()
+    await previewTrigger.click()
+    const previewDialog = fixture.page.getByRole('dialog', {
+      name: 'TraceMemo Reader Skill 预览'
+    })
+    await expect(previewDialog).toBeVisible()
+    await expect(previewDialog.getByRole('heading', { name: '能力' })).toBeVisible()
+    await previewDialog.getByRole('button', { name: '原始文本' }).click()
+    await expect(previewDialog.getByText(/# TraceMemo Reader/)).toBeVisible()
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    expect(
+      await previewDialog.evaluate((element) => element.scrollWidth <= element.clientWidth)
+    ).toBe(true)
+    expect(pageErrors).toEqual([])
+
+    await fixture.page.keyboard.press('Escape')
+    await expect(previewDialog).toHaveCount(0)
+    await expect(previewTrigger).toBeFocused()
   } finally {
     await fixture.close()
   }
@@ -135,7 +293,10 @@ test('API-01 masks, reveals, and confirms rotation of the local API token', asyn
 
 test('EXPORT-01 multi-chat selection stays local to export and forces HTML', async () => {
   const fixture = await launchTestApp()
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
+    await fixture.setWindowContentSize({ width: 1000, height: 650 })
     const navigation = fixture.page.getByRole('navigation', { name: '一级导航' })
     await fixture.page.getByRole('button', { name: '联系人 (1)' }).click()
     await fixture.page.getByText('文件传输助手', { exact: true }).click()
@@ -157,9 +318,33 @@ test('EXPORT-01 multi-chat selection stays local to export and forces HTML', asy
     await expect(
       fixture.page.locator('.export-preview-bubble').filter({ hasText: '这是一条脱敏测试消息' })
     ).toHaveCount(1)
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    expect(pageErrors).toEqual([])
 
     await navigation.getByRole('button', { name: '档案' }).click()
     await expect(fixture.page.getByText('转发多条内容', { exact: true })).toBeVisible()
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('LAYOUT-01 core workspaces fit a narrow desktop viewport without page errors', async () => {
+  const fixture = await launchTestApp()
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.setWindowContentSize({ width: 820, height: 600 })
+    const navigation = fixture.page.getByRole('navigation', { name: '一级导航' })
+    for (const pageName of ['档案', '问问微信', '日报', '导出', '设置']) {
+      await navigation.getByRole('button', { name: pageName }).click()
+      await expect(fixture.page.locator('main.app-shell-main')).not.toBeEmpty()
+      expect(
+        await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+      ).toBe(true)
+    }
+    expect(pageErrors).toEqual([])
   } finally {
     await fixture.close()
   }
@@ -173,9 +358,19 @@ test('ARCH-01 ARCH-02 folded chats and supported message types are represented e
     await expect(fixture.page.getByText('这是一条脱敏测试消息', { exact: true })).toBeVisible()
     await expect(fixture.page.getByText('暂不支持此消息', { exact: true })).toBeVisible()
     await expect(fixture.page.getByAltText('图片')).toBeVisible()
-    await fixture.page.locator('.image-bubble.image-loaded').click()
-    await expect(fixture.page.getByText('图片查看', { exact: true })).toBeVisible()
-    await fixture.page.locator('.image-viewer-overlay').click({ position: { x: 5, y: 5 } })
+    const imageTrigger = fixture.page.getByRole('button', { name: '查看图片' })
+    await imageTrigger.click()
+    const imageDialog = fixture.page.getByRole('dialog', { name: '图片查看' })
+    await expect(imageDialog).toBeVisible()
+    await imageDialog.getByRole('button', { name: '放大' }).click()
+    await expect(imageDialog.getByText('110%')).toBeVisible()
+    await imageDialog.getByRole('button', { name: '右旋转' }).click()
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    await fixture.page.keyboard.press('Escape')
+    await expect(imageDialog).toHaveCount(0)
+    await expect(imageTrigger).toBeFocused()
 
     await fixture.page.getByRole('button', { name: '折叠群聊 (1)' }).click()
     await expect(fixture.page.getByText('折叠群聊样本', { exact: true })).toBeVisible()
@@ -291,11 +486,21 @@ test('REPORT-01 REPORT-02 generates a fixed report with non-empty local assets',
     await expect(fixture.page.getByText('固定响应模型')).toBeVisible()
     await expect(fixture.page.getByText('图片模型')).toBeVisible()
     await expect(fixture.page.getByText('固定图片识别模型')).toBeVisible()
-    await expect(fixture.page.getByRole('button', { name: '生成微信卡片' })).toHaveCount(0)
-    await fixture.page.getByRole('button', { name: '更多' }).click()
-    await expect(fixture.page.getByRole('button', { name: '生成微信卡片' })).toBeVisible()
+    await expect(fixture.page.getByRole('menuitem', { name: '生成微信卡片' })).toHaveCount(0)
+    const moreButton = fixture.page.getByRole('button', { name: '更多' })
+    await moreButton.click()
+    await fixture.page.getByRole('menuitem', { name: '生成微信卡片' }).click()
+    const shareDialog = fixture.page.getByRole('dialog', { name: '生成微信分享卡片' })
+    await expect(shareDialog).toBeVisible()
+    await expect(shareDialog.locator('input').first()).toHaveValue(/产品测试群日报/)
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    await fixture.page.keyboard.press('Escape')
+    await expect(shareDialog).toHaveCount(0)
+    await expect(moreButton).toBeFocused()
 
-    await fixture.page.setViewportSize({ width: 1024, height: 760 })
+    await fixture.setWindowContentSize({ width: 1024, height: 760 })
     const reportTitle = fixture.page.getByRole('heading', { name: '产品测试群 群聊日报' })
     await expect(reportTitle).toBeVisible()
     expect((await reportTitle.boundingBox())?.width || 0).toBeGreaterThan(170)

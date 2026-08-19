@@ -230,9 +230,7 @@
   .search-workspace,
   .ai-search-scope-panel,
   .ai-search-main,
-  .ai-search-evidence-panel,
   .export-config-panel,
-  .export-preview-panel,
   .api-main,
   .api-runtime-panel {
     background: var(--wxex-bg-main);
@@ -240,9 +238,7 @@
   }
 
   .ai-search-scope-panel,
-  .ai-search-evidence-panel,
   .export-config-panel,
-  .export-preview-panel,
   .api-runtime-panel {
     border-color: var(--wxex-border);
   }

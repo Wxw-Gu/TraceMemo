@@ -69,7 +69,9 @@ describe('export progress panel', () => {
 
     const progressbar = screen.getByRole('progressbar', { name: '导出进度' })
     expect(progressbar).toHaveAttribute('aria-valuenow', '31')
-    expect(progressbar.querySelector('span')).toHaveStyle({ width: '31%' })
+    expect(progressbar.querySelector('[data-slot="progress-indicator"]')).toHaveStyle({
+      transform: 'translateX(-69%)'
+    })
   })
 
   it('shows the current conversation and overall position for all export', () => {

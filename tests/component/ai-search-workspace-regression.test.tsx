@@ -4,8 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AISearchWorkspace } from '../../src/renderer/src/components/search/AISearchWorkspace'
 import {
   SEARCH_CACHE_KEY,
-  SEARCH_HISTORY_KEY,
-  buildSearchCacheKey
+  SEARCH_HISTORY_KEY
 } from '../../src/renderer/src/components/search/searchUtils'
 import {
   aiSearchContact,
@@ -45,12 +44,11 @@ const readyKnowledgeStatus = {
   shmBytes: 32
 }
 
-let knowledgeListener: ((status: typeof readyKnowledgeStatus) => void) | undefined
 let progressListener: ((progress: Record<string, unknown>) => void) | undefined
 let knowledgeUnsubscribe: ReturnType<typeof vi.fn>
 let progressUnsubscribe: ReturnType<typeof vi.fn>
 
-const makeProps = (overrides: Record<string, unknown> = {}) => ({
+const makeProps = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   contacts: [aiSearchContact, aiSearchGroup],
   selectedContact: aiSearchContact,
   dbReady: true,
@@ -68,17 +66,17 @@ const makeProps = (overrides: Record<string, unknown> = {}) => ({
   ...overrides
 })
 
-const renderWorkspace = (overrides: Record<string, unknown> = {}) =>
+const renderWorkspace = (overrides: Record<string, unknown> = {}): ReturnType<typeof render> =>
   render(<AISearchWorkspace {...(makeProps(overrides) as never)} />)
 
-const submitQuery = async (query = '测试搜索问题') => {
+const submitQuery = async (query = '测试搜索问题'): Promise<ReturnType<typeof userEvent.setup>> => {
   const user = userEvent.setup()
   await user.type(screen.getByRole('textbox'), query)
   await user.click(screen.getByRole('button', { name: /开始分析/ }))
   return user
 }
 
-const emitProgress = async (progress: Record<string, unknown>) => {
+const emitProgress = async (progress: Record<string, unknown>): Promise<void> => {
   await act(async () => {
     progressListener?.(progress)
   })
@@ -88,7 +86,6 @@ beforeEach(() => {
   localStorage.clear()
   sessionStorage.clear()
   vi.clearAllMocks()
-  knowledgeListener = undefined
   progressListener = undefined
   knowledgeUnsubscribe = vi.fn()
   progressUnsubscribe = vi.fn()
@@ -97,10 +94,7 @@ beforeEach(() => {
   api.getSettings.mockResolvedValue({ settings: { debugEnabled: false } })
   api.getAppLogPath.mockResolvedValue('')
   api.getKnowledgeStatus.mockResolvedValue(readyKnowledgeStatus)
-  api.onKnowledgeStatus.mockImplementation((listener: typeof knowledgeListener) => {
-    knowledgeListener = listener
-    return knowledgeUnsubscribe
-  })
+  api.onKnowledgeStatus.mockImplementation(() => knowledgeUnsubscribe)
   api.onAiSearchProgress.mockImplementation((listener: typeof progressListener) => {
     progressListener = listener
     return progressUnsubscribe
@@ -193,6 +187,55 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
     expect(screen.queryByText('测试搜索答案')).not.toBeInTheDocument()
   })
 
+  it.each([
+    ['no_evidence', '近 30 天内没有找到与问题相关的聊天消息。'],
+    ['retrieval_incomplete', '证据已就绪'],
+    ['failed', '本地检索失败'],
+    ['ai_failed', '证据已找到，但 AI 暂时无法生成回答']
+  ] as const)('does not persist History or Cache for %s', async (status, expectedText) => {
+    api.runAiSearch.mockResolvedValue(
+      makeSearchResult({
+        status,
+        error: status === 'no_evidence' ? '应被忽略' : expectedText,
+        evidence: [makePipelineEvidence(1)]
+      })
+    )
+    renderWorkspace()
+    await submitQuery(`${status} 问题`)
+
+    expect(await screen.findByText(expectedText)).toBeInTheDocument()
+    expect(localStorage.getItem(SEARCH_HISTORY_KEY)).toBeNull()
+    expect(localStorage.getItem(SEARCH_CACHE_KEY)).toBeNull()
+    expect(sessionStorage.length).toBe(0)
+  })
+
+  it('applies common Evidence state before rejecting a completed result without an answer', async () => {
+    api.runAiSearch.mockResolvedValue({
+      ...makeSearchResult({ evidence: [makePipelineEvidence(1)] }),
+      answer: undefined
+    })
+    renderWorkspace()
+    await submitQuery('缺少回答')
+
+    expect(await screen.findByText('搜索任务未返回回答')).toBeInTheDocument()
+    expect(screen.getByText('E1 · 发送者 1')).toBeInTheDocument()
+    expect(localStorage.getItem(SEARCH_HISTORY_KEY)).toBeNull()
+    expect(localStorage.getItem(SEARCH_CACHE_KEY)).toBeNull()
+  })
+
+  it('keeps an explicitly empty Evidence Collection separate from Final Evidence', async () => {
+    api.runAiSearch.mockResolvedValue(
+      makeSearchResult({ evidence: [makePipelineEvidence(1)], evidenceCollection: [] })
+    )
+    renderWorkspace()
+    await submitQuery('空浏览集合')
+
+    expect(await screen.findByText('测试搜索答案')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'E1' })).toBeInTheDocument()
+    expect(screen.queryByText('E1 · 发送者 1')).not.toBeInTheDocument()
+    expect(screen.getByText('等待检索结果')).toBeInTheDocument()
+  })
+
   it('handles an IPC rejection from the Search Worker as an insufficient result', async () => {
     api.runAiSearch.mockRejectedValue(new Error('Worker IPC 连接断开'))
     renderWorkspace()
@@ -218,7 +261,9 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
   })
 
   it('loads more Evidence from the current collection without calling runAiSearch again', async () => {
-    const evidenceCollection = Array.from({ length: 9 }, (_, index) => makePipelineEvidence(index + 1))
+    const evidenceCollection = Array.from({ length: 9 }, (_, index) =>
+      makePipelineEvidence(index + 1)
+    )
     api.runAiSearch.mockResolvedValue(
       makeSearchResult({ evidence: evidenceCollection.slice(0, 8), evidenceCollection })
     )
@@ -263,7 +308,12 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
 
     await waitFor(() => expect(api.runAiSearch).toHaveBeenCalledTimes(2))
     expect(screen.queryByText('E1 · 发送者 1')).not.toBeInTheDocument()
-    resolveSecond?.(makeSearchResult({ requestId: api.runAiSearch.mock.calls[1][0].requestId, evidence: [secondEvidence] }))
+    resolveSecond?.(
+      makeSearchResult({
+        requestId: api.runAiSearch.mock.calls[1][0].requestId,
+        evidence: [secondEvidence]
+      })
+    )
     expect(await screen.findByText('E2 · 发送者 2')).toBeInTheDocument()
   })
 
@@ -352,6 +402,32 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
     expect(screen.queryByRole('dialog', { name: '确认发送本次搜索资料' })).not.toBeInTheDocument()
   })
 
+  it('settles duplicate consent submissions without starting duplicate provider flows', async () => {
+    api.getAiSearchProviderStatus.mockResolvedValue({
+      configured: true,
+      requiresConsent: true,
+      providerId: 'remote-provider',
+      providerName: 'Remote Provider',
+      recipient: 'remote@example.test'
+    })
+    api.runAiSearch.mockResolvedValue(makeSearchResult())
+    renderWorkspace()
+    const user = userEvent.setup()
+    await user.type(screen.getByRole('textbox'), '重复授权问题')
+    const form = screen.getByRole('textbox').closest('form') as HTMLFormElement
+
+    fireEvent.submit(form)
+    await screen.findByRole('dialog', { name: '确认发送本次搜索资料' })
+    fireEvent.submit(form)
+    await waitFor(() => expect(api.getAiSearchProviderStatus).toHaveBeenCalledTimes(2))
+    await screen.findByRole('dialog', { name: '确认发送本次搜索资料' })
+
+    await user.click(screen.getByRole('button', { name: '继续并发送' }))
+    await screen.findByText('测试搜索答案')
+    expect(api.authorizeAiSearchExternalProvider).toHaveBeenCalledOnce()
+    expect(api.runAiSearch).toHaveBeenCalledOnce()
+  })
+
   it('does not start Search when the user rejects consent', async () => {
     api.getAiSearchProviderStatus.mockResolvedValue({
       configured: true,
@@ -429,9 +505,7 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
     const query = '没有证据的缓存'
     localStorage.setItem(
       SEARCH_CACHE_KEY,
-      JSON.stringify([
-        makeCacheRecord({ query, answer: '只有摘要的缓存', evidence: [] })
-      ])
+      JSON.stringify([makeCacheRecord({ query, answer: '只有摘要的缓存', evidence: [] })])
     )
     renderWorkspace()
     await submitQuery(query)
@@ -443,8 +517,12 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
 
   it('does not reuse the previous successful result for a new query', async () => {
     api.runAiSearch
-      .mockResolvedValueOnce(makeSearchResult({ answer: '第一轮答案', evidence: [makePipelineEvidence(1)] }))
-      .mockResolvedValueOnce(makeSearchResult({ answer: '第二轮答案', evidence: [makePipelineEvidence(2)] }))
+      .mockResolvedValueOnce(
+        makeSearchResult({ answer: '第一轮答案', evidence: [makePipelineEvidence(1)] })
+      )
+      .mockResolvedValueOnce(
+        makeSearchResult({ answer: '第二轮答案', evidence: [makePipelineEvidence(2)] })
+      )
     renderWorkspace()
     const user = await submitQuery('第一轮问题')
     await screen.findByText('第一轮答案')

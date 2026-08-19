@@ -132,4 +132,26 @@ describe('useExternalProviderConsent', () => {
     expect(resolved).toHaveBeenCalledOnce()
     expect(resolved).toHaveBeenCalledWith(true)
   })
+
+  it.each([true, false])(
+    'settles the previous pending request when a new request replaces it, then resolves %s',
+    async (secondDecision) => {
+      const { result } = renderHook(() => useExternalProviderConsent())
+      let first!: Promise<boolean>
+      let second!: Promise<boolean>
+      act(() => {
+        first = result.current.requestExternalProviderConsent('First', 'first-recipient')
+        second = result.current.requestExternalProviderConsent('Second', 'second-recipient')
+      })
+
+      await expect(first).resolves.toBe(false)
+      expect(result.current.externalProviderConsent).toEqual({
+        providerName: 'Second',
+        recipient: 'second-recipient'
+      })
+
+      act(() => result.current.settleExternalProviderConsent(secondDecision))
+      await expect(second).resolves.toBe(secondDecision)
+    }
+  )
 })

@@ -1,5 +1,14 @@
 import type { Contact, Message } from '../../../../shared/types'
-import type { AISearchCacheRecord, EvidenceItem, GroupMemberName, SearchIntent, SearchQueryPlan, SearchRange, SearchScope } from './searchTypes'
+import type { AiSearchTimeRange } from '../../../../shared/ai-search'
+import type {
+  AISearchCacheRecord,
+  EvidenceItem,
+  GroupMemberName,
+  SearchIntent,
+  SearchQueryPlan,
+  SearchRange,
+  SearchScope
+} from './searchTypes'
 
 export const RANGE_LABELS: Record<SearchRange, string> = {
   today: '今天',
@@ -77,7 +86,8 @@ const SEARCH_STOP_WORDS = new Set([
 export const messageText = (message: Message): string =>
   String(message.content || '').trim() || `[${message.type || '消息'}]`
 
-export const normalizeSearchText = (value: string): string => value.toLowerCase().replace(/\s+/g, '')
+export const normalizeSearchText = (value: string): string =>
+  value.toLowerCase().replace(/\s+/g, '')
 
 export const includesSearchAlias = (query: string, alias: string): boolean => {
   const normalizedAlias = normalizeSearchText(alias.trim())
@@ -215,7 +225,7 @@ export const formatMessageDate = (dateKey: string): string => {
   return `${month}/${day}`
 }
 
-export const selectEvenly = <T,>(items: T[], count: number): T[] => {
+export const selectEvenly = <T>(items: T[], count: number): T[] => {
   if (count >= items.length) return items
   if (count <= 0) return []
   if (count === 1) return [items[items.length - 1]]
@@ -262,7 +272,11 @@ const looksLikeUserId = (value: string): boolean =>
 export const formatMemberName = (member: GroupMemberName): string =>
   member.groupNickname || member.wechatNickname || member.nickname || member.remark || member.wxid
 
-export const senderName = (message: Message, contact: Contact, names: Record<string, string>): string => {
+export const senderName = (
+  message: Message,
+  contact: Contact,
+  names: Record<string, string>
+): string => {
   const identifiers = [message.senderId, message.from, message.name].filter(
     (value): value is string => Boolean(value?.trim())
   )
@@ -303,6 +317,48 @@ export const buildSearchCacheKey = (
   range: SearchRange,
   query: string
 ): string => JSON.stringify([scope, contactMd5, range, query.trim().toLowerCase()])
+
+export type CreateSearchRequestContextInput = {
+  query: string
+  scope: SearchScope
+  range: SearchRange
+  timeRangeOverride?: AiSearchTimeRange
+  activeContactMd5?: string
+  retry?: {
+    range: SearchRange
+    timeRangeOverride?: AiSearchTimeRange
+  }
+}
+
+export type SearchRequestContext = {
+  normalizedQuery: string
+  effectiveRange: SearchRange
+  effectiveTimeRangeOverride?: AiSearchTimeRange
+  conversationId?: string
+  cacheKey: string
+}
+
+export const createSearchRequestContext = ({
+  query,
+  scope,
+  range,
+  timeRangeOverride,
+  activeContactMd5,
+  retry
+}: CreateSearchRequestContextInput): SearchRequestContext => {
+  const normalizedQuery = query.trim()
+  const effectiveRange = retry?.range || range
+  const effectiveTimeRangeOverride = retry?.timeRangeOverride || timeRangeOverride
+  const conversationId = scope === 'conversation' ? activeContactMd5 : undefined
+
+  return {
+    normalizedQuery,
+    effectiveRange,
+    effectiveTimeRangeOverride,
+    conversationId,
+    cacheKey: buildSearchCacheKey(scope, conversationId || '', effectiveRange, normalizedQuery)
+  }
+}
 
 export const parseSearchCacheKey = (
   key: string

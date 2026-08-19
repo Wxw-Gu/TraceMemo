@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PersonalWechatSendDialog } from '../../src/renderer/src/components/chat/PersonalWechatSendDialog'
 
@@ -45,6 +47,27 @@ const readyStatus = {
   canSendImage: true,
   canSendVoice: true,
   message: '个人微信已绑定'
+}
+
+function Harness({ onClose = vi.fn() }: { onClose?: () => void }): React.ReactElement {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        打开测试发送
+      </button>
+      {open && (
+        <PersonalWechatSendDialog
+          contact={contact}
+          isGroupChat
+          onClose={() => {
+            onClose()
+            setOpen(false)
+          }}
+        />
+      )}
+    </>
+  )
 }
 
 describe('PersonalWechatSendDialog', () => {
@@ -207,5 +230,44 @@ describe('PersonalWechatSendDialog', () => {
     render(<PersonalWechatSendDialog contact={contact} isGroupChat onClose={vi.fn()} />)
     expect(await screen.findByText('已绑定，等待消息初始化')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '测试发送图片到群聊' })).toBeDisabled()
+  })
+
+  it('closes with Escape or the overlay and restores focus to the opener', async () => {
+    const user = userEvent.setup()
+    const onClose = vi.fn()
+    render(<Harness onClose={onClose} />)
+    const opener = screen.getByRole('button', { name: '打开测试发送' })
+
+    await user.click(opener)
+    await screen.findByText('技术交流群')
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: '个人微信测试发送' })).not.toBeInTheDocument()
+    await waitFor(() => expect(opener).toHaveFocus())
+
+    await user.click(opener)
+    const dialog = await screen.findByRole('dialog', { name: '个人微信测试发送' })
+    await user.click(dialog.previousElementSibling as HTMLElement)
+    expect(screen.queryByRole('dialog', { name: '个人微信测试发送' })).not.toBeInTheDocument()
+    await waitFor(() => expect(opener).toHaveFocus())
+    expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the dialog open while a message is being sent', async () => {
+    const user = userEvent.setup()
+    sendMessage.mockImplementation(() => new Promise(() => undefined))
+    render(<Harness />)
+
+    await user.click(screen.getByRole('button', { name: '打开测试发送' }))
+    await screen.findByText('技术交流群')
+    await user.click(screen.getByRole('button', { name: '选择图片' }))
+    await user.click(screen.getByRole('button', { name: '测试发送图片到群聊' }))
+    expect(screen.getByRole('button', { name: '正在发送…' })).toBeDisabled()
+
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('dialog', { name: '个人微信测试发送' })).toBeVisible()
+    await user.click(
+      screen.getByRole('dialog', { name: '个人微信测试发送' }).previousElementSibling as HTMLElement
+    )
+    expect(screen.getByRole('dialog', { name: '个人微信测试发送' })).toBeVisible()
   })
 })

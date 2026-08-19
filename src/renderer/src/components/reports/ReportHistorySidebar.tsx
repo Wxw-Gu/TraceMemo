@@ -1,5 +1,15 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { AccountSummary } from '../account/AccountSummary'
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Button
+} from '../ui'
 import type { GeneratedReportRecord } from './types'
 
 interface SelfInfo {
@@ -90,6 +100,15 @@ export function ReportHistorySidebar({
   const [keyword, setKeyword] = useState('')
   const [pendingDelete, setPendingDelete] = useState<GeneratedReportRecord | null>(null)
   const [deleteError, setDeleteError] = useState('')
+  const [deletePending, setDeletePending] = useState(false)
+  const deleteTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const restoreDeleteFocusRef = useRef(false)
+
+  useEffect(() => {
+    if (pendingDelete || !restoreDeleteFocusRef.current) return
+    restoreDeleteFocusRef.current = false
+    deleteTriggerRef.current?.focus()
+  }, [pendingDelete])
 
   const reportGroups = useMemo(() => {
     const lower = keyword.trim().toLowerCase()
@@ -108,12 +127,18 @@ export function ReportHistorySidebar({
   const confirmDelete = async (): Promise<void> => {
     if (!pendingDelete) return
     setDeleteError('')
-    const result = await onDeleteReport(pendingDelete.id)
-    if (!result.success) {
-      setDeleteError(result.error || '删除日报失败')
-      return
+    setDeletePending(true)
+    try {
+      const result = await onDeleteReport(pendingDelete.id)
+      if (!result.success) {
+        setDeleteError(result.error || '删除日报失败')
+        return
+      }
+      restoreDeleteFocusRef.current = false
+      setPendingDelete(null)
+    } finally {
+      setDeletePending(false)
     }
-    setPendingDelete(null)
   }
 
   return (
@@ -179,14 +204,19 @@ export function ReportHistorySidebar({
                     type="button"
                     className="report-history-delete"
                     title="删除日报"
+                    aria-label="删除日报"
                     onClick={(event) => {
                       event.stopPropagation()
+                      deleteTriggerRef.current = event.currentTarget
+                      restoreDeleteFocusRef.current = true
                       setPendingDelete(report)
                     }}
                     onKeyDown={(event) => {
                       if (event.key !== 'Enter' && event.key !== ' ') return
                       event.preventDefault()
                       event.stopPropagation()
+                      deleteTriggerRef.current = event.currentTarget
+                      restoreDeleteFocusRef.current = true
                       setPendingDelete(report)
                     }}
                   >
@@ -211,23 +241,39 @@ export function ReportHistorySidebar({
           onClick={onOpenSettings}
         />
       </div>
-      {pendingDelete && (
-        <div className="report-delete-confirm" role="dialog" aria-modal="true">
-          <div className="report-delete-confirm-card">
-            <h2>删除日报？</h2>
-            <p>只删除本地生成报告，不会影响微信聊天记录。</p>
-            {deleteError && <p className="report-delete-error">{deleteError}</p>}
-            <div>
-              <button type="button" onClick={() => setPendingDelete(null)}>
+      <AlertDialog
+        open={Boolean(pendingDelete)}
+        onOpenChange={(open) => {
+          if (!open && !deletePending) {
+            setPendingDelete(null)
+            setDeleteError('')
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除日报？</AlertDialogTitle>
+            <AlertDialogDescription>
+              只删除本地生成报告，不会影响微信聊天记录。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel asChild>
+              <Button variant="outline" disabled={deletePending}>
                 取消
-              </button>
-              <button type="button" className="danger" onClick={() => void confirmDelete()}>
-                删除
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+              </Button>
+            </AlertDialogCancel>
+            <Button
+              variant="destructive"
+              disabled={deletePending}
+              onClick={() => void confirmDelete()}
+            >
+              {deletePending ? '删除中…' : '删除'}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </aside>
   )
 }

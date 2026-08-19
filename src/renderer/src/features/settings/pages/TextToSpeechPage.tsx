@@ -5,6 +5,14 @@ import type {
   TextToSpeechVoice
 } from '../../../../../shared/text-to-speech'
 import type { PersonalWechatRuntimeStatus } from '../../../../../shared/personal-wechat-runtime'
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from '../../../components/ui'
 import { isMac, isWindows } from '../../../utils/runtime-environment'
 
 const VOICE_PAGE_SIZE = 24
@@ -198,6 +206,7 @@ export function TextToSpeechPage({
   const [showWechatVersions, setShowWechatVersions] = useState(false)
   const [error, setError] = useState('')
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const wechatVersionsTriggerRef = useRef<HTMLButtonElement | null>(null)
   const personalWechatRuntimeSupported = isMac && Boolean(runtimeStatus?.supported)
 
   const loadVoices = useCallback(
@@ -488,444 +497,446 @@ export function TextToSpeechPage({
           : '当前系统安全存储不可用，请从应用环境中提供 API Key'
 
   return (
-    <div className="settings-page text-to-speech-page">
-      <header className="settings-page-header">
-        <div>
-          <h1>文字转语音</h1>
-          <p>选择喜欢的音色，把文字生成为可发送的微信语音</p>
-        </div>
-        <span className={`settings-status-badge ${settings?.hasApiKey ? '' : 'unavailable'}`}>
-          {loading ? '读取中' : settings?.hasApiKey ? '已配置' : '未配置'}
-        </span>
-      </header>
+    <Dialog open={showWechatVersions} onOpenChange={setShowWechatVersions}>
+      <div className="settings-page text-to-speech-page">
+        <header className="settings-page-header">
+          <div>
+            <h1>文字转语音</h1>
+            <p>选择喜欢的音色，把文字生成为可发送的微信语音</p>
+          </div>
+          <span className={`settings-status-badge ${settings?.hasApiKey ? '' : 'unavailable'}`}>
+            {loading ? '读取中' : settings?.hasApiKey ? '已配置' : '未配置'}
+          </span>
+        </header>
 
-      <div className="settings-page-scroll">
-        <div className="settings-page-content text-to-speech-content">
-          <section className="tts-usage-guide">
-            <div className="tts-usage-guide-heading">
-              <div>
-                <span className="tts-experimental-badge">实验性功能</span>
-                <h2>使用说明</h2>
+        <div className="settings-page-scroll">
+          <div className="settings-page-content text-to-speech-content">
+            <section className="tts-usage-guide">
+              <div className="tts-usage-guide-heading">
+                <div>
+                  <span className="tts-experimental-badge">实验性功能</span>
+                  <h2>使用说明</h2>
+                </div>
+                <p>语音生成与微信发送是两个独立步骤。建议先生成并试听，确认无误后再发送。</p>
               </div>
-              <p>语音生成与微信发送是两个独立步骤。建议先生成并试听，确认无误后再发送。</p>
-            </div>
 
-            <ol className="tts-usage-steps">
-              <li>
-                <span>1</span>
-                <div>
-                  <strong>配置并选择音色</strong>
-                  <p>保存 API Key，在下方音色库中选择一个音色。</p>
-                </div>
-              </li>
-              <li>
-                <span>2</span>
-                <div>
-                  <strong>在档案中生成语音</strong>
-                  <p>打开联系人或群聊的测试发送，选择“语音 → 输入文字生成”。</p>
-                </div>
-              </li>
-              <li>
-                <span>3</span>
-                <div>
-                  <strong>试听后手动发送</strong>
-                  <p>点击“生成语音”，播放检查内容，再点击发送到当前会话。</p>
-                </div>
-              </li>
-            </ol>
+              <ol className="tts-usage-steps">
+                <li>
+                  <span>1</span>
+                  <div>
+                    <strong>配置并选择音色</strong>
+                    <p>保存 API Key，在下方音色库中选择一个音色。</p>
+                  </div>
+                </li>
+                <li>
+                  <span>2</span>
+                  <div>
+                    <strong>在档案中生成语音</strong>
+                    <p>打开联系人或群聊的测试发送，选择“语音 → 输入文字生成”。</p>
+                  </div>
+                </li>
+                <li>
+                  <span>3</span>
+                  <div>
+                    <strong>试听后手动发送</strong>
+                    <p>点击“生成语音”，播放检查内容，再点击发送到当前会话。</p>
+                  </div>
+                </li>
+              </ol>
 
-            <div className="tts-hook-warning">
-              <div className="tts-hook-warning-icon" aria-hidden>
-                !
+              <div className="tts-hook-warning">
+                <div className="tts-hook-warning-icon" aria-hidden>
+                  !
+                </div>
+                <div>
+                  <strong>微信发送能力注意事项</strong>
+                  <ul>
+                    <li>
+                      仅支持与当前 OneBot 运行时配置匹配的 macOS
+                      微信版本；微信自动更新后需要重新确认兼容性。
+                    </li>
+                    <li>
+                      发送功能需要关闭 SIP 并连接微信进程。关闭 SIP
+                      会降低系统安全性，请确认风险后再使用。
+                    </li>
+                    <li>微信重新登录或 PID 改变后，需要在测试发送弹窗中点击“尝试重新绑定”。</li>
+                  </ul>
+                  {personalWechatRuntimeSupported ? (
+                    <Button
+                      className="mt-2"
+                      variant="outline"
+                      size="sm"
+                      onClick={(event) => {
+                        wechatVersionsTriggerRef.current = event.currentTarget
+                        setShowWechatVersions(true)
+                      }}
+                    >
+                      查看支持版本
+                    </Button>
+                  ) : null}
+                </div>
               </div>
-              <div>
-                <strong>微信发送能力注意事项</strong>
-                <ul>
-                  <li>
-                    仅支持与当前 OneBot 运行时配置匹配的 macOS
-                    微信版本；微信自动更新后需要重新确认兼容性。
-                  </li>
-                  <li>
-                    发送功能需要关闭 SIP 并连接微信进程。关闭 SIP
-                    会降低系统安全性，请确认风险后再使用。
-                  </li>
-                  <li>微信重新登录或 PID 改变后，需要在测试发送弹窗中点击“尝试重新绑定”。</li>
-                </ul>
+            </section>
+
+            <h2 className="settings-section-heading">微信发送组件</h2>
+            <section className="settings-card tts-runtime-card">
+              <div className="tts-runtime-summary">
+                <span className="settings-card-kicker">
+                  OneBot {runtimeStatus?.version || 'v0.0.18'}
+                </span>
+                <strong>
+                  {!isMac
+                    ? '暂不支持'
+                    : runtimeStatus?.state === 'downloading'
+                      ? `正在下载 ${Math.round(runtimeStatus.progress * 100)}%`
+                      : runtimeStatus
+                        ? RUNTIME_STATUS_LABELS[runtimeStatus.state]
+                        : '正在检测'}
+                </strong>
+                <small>
+                  {isWindows
+                    ? 'Windows 暂不支持个人微信发送；仍可生成和试听语音'
+                    : !isMac
+                      ? '当前平台暂不支持个人微信发送'
+                      : !runtimeStatus
+                        ? '正在检测当前平台与组件状态'
+                        : personalWechatRuntimeSupported
+                          ? `仅用于连接 macOS 微信 · ${formatBytes(runtimeStatus.totalBytes)}`
+                          : '当前 Mac 环境不满足个人微信发送组件要求'}
+                </small>
+                {runtimeStatus?.error ? (
+                  <p className="tts-runtime-error">{runtimeStatus.error}</p>
+                ) : null}
+              </div>
+
+              <div className="tts-runtime-actions">
+                {personalWechatRuntimeSupported && runtimeStatus?.state === 'downloading' ? (
+                  <button type="button" onClick={() => void cancelRuntimeDownload()}>
+                    取消下载
+                  </button>
+                ) : personalWechatRuntimeSupported && runtimeStatus?.state === 'ready' ? (
+                  <>
+                    {runtimeStatus.directory ? (
+                      <button type="button" onClick={() => void openRuntimeDirectory()}>
+                        打开目录
+                      </button>
+                    ) : null}
+                    {runtimeStatus.removable ? (
+                      <button
+                        type="button"
+                        className="settings-danger-button"
+                        disabled={runtimeBusy}
+                        onClick={() => void removeRuntime()}
+                      >
+                        卸载组件
+                      </button>
+                    ) : null}
+                  </>
+                ) : personalWechatRuntimeSupported ? (
+                  <button
+                    type="button"
+                    className="settings-primary-button"
+                    disabled={runtimeBusy}
+                    onClick={() => void downloadRuntime()}
+                  >
+                    {runtimeStatus?.state === 'invalid' || runtimeStatus?.state === 'error'
+                      ? '重新下载'
+                      : '下载组件'}
+                  </button>
+                ) : null}
+                <button type="button" disabled={runtimeBusy} onClick={() => void refreshRuntime()}>
+                  重新检测
+                </button>
                 {personalWechatRuntimeSupported ? (
                   <button
                     type="button"
-                    className="tts-supported-versions-button"
-                    onClick={() => setShowWechatVersions(true)}
+                    onClick={(event) => {
+                      wechatVersionsTriggerRef.current = event.currentTarget
+                      setShowWechatVersions(true)
+                    }}
                   >
-                    查看支持版本
+                    支持版本
                   </button>
                 ) : null}
               </div>
-            </div>
-          </section>
 
-          <h2 className="settings-section-heading">微信发送组件</h2>
-          <section className="settings-card tts-runtime-card">
-            <div className="tts-runtime-summary">
-              <span className="settings-card-kicker">
-                OneBot {runtimeStatus?.version || 'v0.0.18'}
-              </span>
-              <strong>
-                {!isMac
-                  ? '暂不支持'
-                  : runtimeStatus?.state === 'downloading'
-                    ? `正在下载 ${Math.round(runtimeStatus.progress * 100)}%`
-                    : runtimeStatus
-                      ? RUNTIME_STATUS_LABELS[runtimeStatus.state]
-                      : '正在检测'}
-              </strong>
-              <small>
-                {isWindows
-                  ? 'Windows 暂不支持个人微信发送；仍可生成和试听语音'
-                  : !isMac
-                    ? '当前平台暂不支持个人微信发送'
-                    : !runtimeStatus
-                      ? '正在检测当前平台与组件状态'
-                      : personalWechatRuntimeSupported
-                        ? `仅用于连接 macOS 微信 · ${formatBytes(runtimeStatus.totalBytes)}`
-                        : '当前 Mac 环境不满足个人微信发送组件要求'}
-              </small>
-              {runtimeStatus?.error ? (
-                <p className="tts-runtime-error">{runtimeStatus.error}</p>
-              ) : null}
-            </div>
-
-            <div className="tts-runtime-actions">
               {personalWechatRuntimeSupported && runtimeStatus?.state === 'downloading' ? (
-                <button type="button" onClick={() => void cancelRuntimeDownload()}>
-                  取消下载
-                </button>
-              ) : personalWechatRuntimeSupported && runtimeStatus?.state === 'ready' ? (
-                <>
-                  {runtimeStatus.directory ? (
-                    <button type="button" onClick={() => void openRuntimeDirectory()}>
-                      打开目录
-                    </button>
-                  ) : null}
-                  {runtimeStatus.removable ? (
-                    <button
-                      type="button"
-                      className="settings-danger-button"
-                      disabled={runtimeBusy}
-                      onClick={() => void removeRuntime()}
-                    >
-                      卸载组件
-                    </button>
-                  ) : null}
-                </>
-              ) : personalWechatRuntimeSupported ? (
-                <button
-                  type="button"
-                  className="settings-primary-button"
-                  disabled={runtimeBusy}
-                  onClick={() => void downloadRuntime()}
-                >
-                  {runtimeStatus?.state === 'invalid' || runtimeStatus?.state === 'error'
-                    ? '重新下载'
-                    : '下载组件'}
-                </button>
-              ) : null}
-              <button type="button" disabled={runtimeBusy} onClick={() => void refreshRuntime()}>
-                重新检测
-              </button>
-              {personalWechatRuntimeSupported ? (
-                <button type="button" onClick={() => setShowWechatVersions(true)}>
-                  支持版本
-                </button>
-              ) : null}
-            </div>
-
-            {personalWechatRuntimeSupported && runtimeStatus?.state === 'downloading' ? (
-              <div className="tts-runtime-progress">
-                <div>
-                  <span>{Math.round(runtimeStatus.progress * 100)}%</span>
-                  <small>
-                    {formatBytes(runtimeStatus.downloadedBytes)} /{' '}
-                    {formatBytes(runtimeStatus.totalBytes)}
-                  </small>
+                <div className="tts-runtime-progress">
+                  <div>
+                    <span>{Math.round(runtimeStatus.progress * 100)}%</span>
+                    <small>
+                      {formatBytes(runtimeStatus.downloadedBytes)} /{' '}
+                      {formatBytes(runtimeStatus.totalBytes)}
+                    </small>
+                  </div>
+                  <progress
+                    value={runtimeStatus.progress}
+                    max={1}
+                    aria-label="微信发送组件下载进度"
+                  />
                 </div>
-                <progress
-                  value={runtimeStatus.progress}
-                  max={1}
-                  aria-label="微信发送组件下载进度"
-                />
-              </div>
-            ) : null}
-          </section>
-
-          <h2 className="settings-section-heading">API 设置</h2>
-          <section className="settings-card tts-api-card">
-            <div className="tts-api-heading">
-              <div>
-                <span className="settings-card-kicker">语音服务</span>
-                <strong>API Key</strong>
-                <p>保存后即可加载音色并生成语音。</p>
-              </div>
-              <button type="button" onClick={() => void openApiKeys()}>
-                前往 api.fish.audio 获取 Key
-              </button>
-            </div>
-            <label className="tts-api-input">
-              <span>API Key</span>
-              <div>
-                <input
-                  type={showApiKey ? 'text' : 'password'}
-                  value={apiKey}
-                  disabled={savingKey || !settings?.encryptionAvailable}
-                  placeholder={
-                    settings?.hasStoredApiKey
-                      ? '已安全保存；输入新 Key 可替换'
-                      : settings?.hasEnvironmentApiKey
-                        ? '当前使用环境变量；也可保存一个应用专用 Key'
-                        : '粘贴 API Key'
-                  }
-                  autoComplete="off"
-                  onChange={(event) => setApiKey(event.target.value)}
-                />
-                <button type="button" onClick={() => setShowApiKey((current) => !current)}>
-                  {showApiKey ? '隐藏' : '显示'}
-                </button>
-                <button
-                  type="button"
-                  className="tts-save-key-button"
-                  disabled={!apiKey.trim() || savingKey || !settings?.encryptionAvailable}
-                  onClick={() => void saveApiKey()}
-                >
-                  {savingKey ? '保存中…' : '保存 Key'}
-                </button>
-              </div>
-            </label>
-            <div className="tts-api-footer">
-              <span>{keyStatusText}</span>
-              {settings?.hasStoredApiKey ? (
-                <button
-                  type="button"
-                  className="settings-danger-button"
-                  onClick={() => void clearApiKey()}
-                >
-                  清除应用内 Key
-                </button>
               ) : null}
-            </div>
-            <label className="tts-model-select">
-              <span>合成模型</span>
-              <select
-                value={settings?.model || 's2.1-pro-free'}
-                disabled={!settings}
-                onChange={(event) => void changeModel(event.target.value as TextToSpeechModel)}
-              >
-                <option value="s2.1-pro-free">s2.1-pro-free</option>
-                <option value="s2.1-pro">s2.1-pro</option>
-              </select>
-            </label>
-          </section>
+            </section>
 
-          <div className="tts-voice-heading">
-            <div>
-              <h2 className="settings-section-heading">选择音色</h2>
-              <p>
-                当前已加载 {voices.length} 个音色{total ? `，共找到 ${total} 个` : ''}。
-              </p>
-            </div>
-            <form
-              className="tts-voice-search"
-              onSubmit={(event) => {
-                event.preventDefault()
-                void searchVoices()
-              }}
-            >
-              <span aria-hidden>⌕</span>
-              <input
-                type="search"
-                value={query}
-                placeholder="按音色名称搜索"
-                disabled={!settings?.hasApiKey || loadingVoices}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-              <button type="submit" disabled={!settings?.hasApiKey || loadingVoices}>
-                搜索
-              </button>
-            </form>
-          </div>
-
-          <div className="tts-voice-filters" aria-label="音色筛选">
-            <button
-              type="button"
-              className={!selectedTags.length ? 'active' : ''}
-              disabled={!settings?.hasApiKey || loadingVoices}
-              onClick={() => void clearVoiceFilters()}
-            >
-              全部
-            </button>
-            {VOICE_FILTERS.map((filter) => (
-              <button
-                key={filter.value}
-                type="button"
-                className={selectedTags.includes(filter.value) ? 'active' : ''}
-                disabled={!settings?.hasApiKey || loadingVoices}
-                onClick={() => void toggleVoiceFilter(filter.value)}
-              >
-                {filter.label}
-              </button>
-            ))}
-          </div>
-
-          {selectedVoice ? (
-            <section className="tts-current-voice">
-              <VoiceAvatar voice={selectedVoice} />
-              <div>
-                <span className="settings-card-kicker">当前音色</span>
-                <strong>{selectedVoice.name}</strong>
-                <p>
-                  {selectedVoice.authorName ? `${selectedVoice.authorName} · ` : ''}
-                  {selectedVoice.description}
-                </p>
+            <h2 className="settings-section-heading">API 设置</h2>
+            <section className="settings-card tts-api-card">
+              <div className="tts-api-heading">
+                <div>
+                  <span className="settings-card-kicker">语音服务</span>
+                  <strong>API Key</strong>
+                  <p>保存后即可加载音色并生成语音。</p>
+                </div>
+                <button type="button" onClick={() => void openApiKeys()}>
+                  前往 api.fish.audio 获取 Key
+                </button>
               </div>
-              <div className="tts-current-tags">
-                {voiceMetaTags(selectedVoice)
-                  .slice(0, 5)
-                  .map((tag) => (
-                    <span key={tag}>{voiceTagLabel(tag)}</span>
-                  ))}
-                {voiceMetaTags(selectedVoice).length > 5 ? (
-                  <span>+{voiceMetaTags(selectedVoice).length - 5}</span>
+              <label className="tts-api-input">
+                <span>API Key</span>
+                <div>
+                  <input
+                    type={showApiKey ? 'text' : 'password'}
+                    value={apiKey}
+                    disabled={savingKey || !settings?.encryptionAvailable}
+                    placeholder={
+                      settings?.hasStoredApiKey
+                        ? '已安全保存；输入新 Key 可替换'
+                        : settings?.hasEnvironmentApiKey
+                          ? '当前使用环境变量；也可保存一个应用专用 Key'
+                          : '粘贴 API Key'
+                    }
+                    autoComplete="off"
+                    onChange={(event) => setApiKey(event.target.value)}
+                  />
+                  <button type="button" onClick={() => setShowApiKey((current) => !current)}>
+                    {showApiKey ? '隐藏' : '显示'}
+                  </button>
+                  <button
+                    type="button"
+                    className="tts-save-key-button"
+                    disabled={!apiKey.trim() || savingKey || !settings?.encryptionAvailable}
+                    onClick={() => void saveApiKey()}
+                  >
+                    {savingKey ? '保存中…' : '保存 Key'}
+                  </button>
+                </div>
+              </label>
+              <div className="tts-api-footer">
+                <span>{keyStatusText}</span>
+                {settings?.hasStoredApiKey ? (
+                  <button
+                    type="button"
+                    className="settings-danger-button"
+                    onClick={() => void clearApiKey()}
+                  >
+                    清除应用内 Key
+                  </button>
                 ) : null}
               </div>
-            </section>
-          ) : null}
-
-          {!settings?.hasApiKey && !loading ? (
-            <div className="settings-card tts-voice-empty">
-              <strong>先配置 API Key</strong>
-              <span>保存后即可加载并选择音色。</span>
-            </div>
-          ) : (
-            <div className="tts-voice-grid" role="radiogroup" aria-label="可用音色">
-              {visibleVoices.map((voice) => {
-                const selected = voice.id === selectedVoiceId
-                return (
-                  <article
-                    key={voice.id}
-                    className={`tts-voice-card ${selected ? 'selected' : ''}`}
-                  >
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={selected}
-                      className="tts-voice-select"
-                      disabled={Boolean(savingVoiceId)}
-                      onClick={() => void selectVoice(voice)}
-                    >
-                      <VoiceAvatar voice={voice} />
-                      <span className="tts-voice-copy">
-                        <span className="tts-voice-title-row">
-                          <strong>{voice.name}</strong>
-                          {voice.authorName ? <em>{voice.authorName}</em> : null}
-                        </span>
-                        <small>{voice.description || '公开音色'}</small>
-                        <span className="tts-voice-tags">
-                          {voiceMetaTags(voice)
-                            .slice(0, 4)
-                            .map((tag) => (
-                              <span key={tag}>{voiceTagLabel(tag)}</span>
-                            ))}
-                          {voiceMetaTags(voice).length > 4 ? (
-                            <span>+{voiceMetaTags(voice).length - 4}</span>
-                          ) : null}
-                        </span>
-                        <span className="tts-voice-stats">
-                          <span title="使用量">▥ {compactCount(voice.taskCount)}</span>
-                          <span title="喜欢">♡ {compactCount(voice.likeCount)}</span>
-                          {voice.markCount ? (
-                            <span title="收藏">☆ {compactCount(voice.markCount)}</span>
-                          ) : null}
-                        </span>
-                      </span>
-                      <span className="tts-voice-check">
-                        {savingVoiceId === voice.id ? '…' : selected ? '✓' : ''}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="tts-voice-preview"
-                      disabled={!voice.previewUrl}
-                      onClick={() => playPreview(voice)}
-                    >
-                      {playingVoiceId === voice.id ? '停止' : '试听'}
-                    </button>
-                  </article>
-                )
-              })}
-            </div>
-          )}
-
-          {loadingVoices ? <div className="tts-voice-loading">正在加载音色…</div> : null}
-          {!loadingVoices && settings?.hasApiKey && !voices.length ? (
-            <div className="settings-card tts-voice-empty">
-              {appliedQuery ? `没有找到“${appliedQuery}”相关音色` : '没有获取到可用音色'}
-            </div>
-          ) : null}
-          {hasMore ? (
-            <button
-              type="button"
-              className="tts-load-more"
-              disabled={loadingVoices}
-              onClick={() => void loadVoices(pageNumber + 1, appliedQuery, true, selectedTags)}
-            >
-              加载更多音色
-            </button>
-          ) : null}
-          {error ? <p className="tts-settings-error">{error}</p> : null}
-        </div>
-      </div>
-
-      {showWechatVersions ? (
-        <div
-          className="tts-version-modal-backdrop"
-          role="presentation"
-          onMouseDown={() => setShowWechatVersions(false)}
-        >
-          <section
-            className="tts-version-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="tts-version-modal-title"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <header>
-              <div>
-                <h2 id="tts-version-modal-title">支持的微信版本</h2>
-              </div>
-              <div className="tts-version-modal-actions">
-                <a href={WECHAT_VERSION_DOWNLOAD_URL} target="_blank" rel="noreferrer">
-                  下载微信历史版本 ↗
-                </a>
-                <button
-                  type="button"
-                  className="tts-version-modal-close"
-                  onClick={() => setShowWechatVersions(false)}
-                  aria-label="关闭"
+              <label className="tts-model-select">
+                <span>合成模型</span>
+                <select
+                  value={settings?.model || 's2.1-pro-free'}
+                  disabled={!settings}
+                  onChange={(event) => void changeModel(event.target.value as TextToSpeechModel)}
                 >
-                  ×
-                </button>
+                  <option value="s2.1-pro-free">s2.1-pro-free</option>
+                  <option value="s2.1-pro">s2.1-pro</option>
+                </select>
+              </label>
+            </section>
+
+            <div className="tts-voice-heading">
+              <div>
+                <h2 className="settings-section-heading">选择音色</h2>
+                <p>
+                  当前已加载 {voices.length} 个音色{total ? `，共找到 ${total} 个` : ''}。
+                </p>
               </div>
-            </header>
+              <form
+                className="tts-voice-search"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void searchVoices()
+                }}
+              >
+                <span aria-hidden>⌕</span>
+                <input
+                  type="search"
+                  value={query}
+                  placeholder="按音色名称搜索"
+                  disabled={!settings?.hasApiKey || loadingVoices}
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+                <button type="submit" disabled={!settings?.hasApiKey || loadingVoices}>
+                  搜索
+                </button>
+              </form>
+            </div>
 
-            <p className="tts-version-modal-intro">请安装下列完整版本之一。</p>
-
-            <div className="tts-version-grid">
-              {BUNDLED_WECHAT_VERSIONS.map((version) => (
-                <span key={version}>{version}</span>
+            <div className="tts-voice-filters" aria-label="音色筛选">
+              <button
+                type="button"
+                className={!selectedTags.length ? 'active' : ''}
+                disabled={!settings?.hasApiKey || loadingVoices}
+                onClick={() => void clearVoiceFilters()}
+              >
+                全部
+              </button>
+              {VOICE_FILTERS.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  className={selectedTags.includes(filter.value) ? 'active' : ''}
+                  disabled={!settings?.hasApiKey || loadingVoices}
+                  onClick={() => void toggleVoiceFilter(filter.value)}
+                >
+                  {filter.label}
+                </button>
               ))}
             </div>
-          </section>
+
+            {selectedVoice ? (
+              <section className="tts-current-voice">
+                <VoiceAvatar voice={selectedVoice} />
+                <div>
+                  <span className="settings-card-kicker">当前音色</span>
+                  <strong>{selectedVoice.name}</strong>
+                  <p>
+                    {selectedVoice.authorName ? `${selectedVoice.authorName} · ` : ''}
+                    {selectedVoice.description}
+                  </p>
+                </div>
+                <div className="tts-current-tags">
+                  {voiceMetaTags(selectedVoice)
+                    .slice(0, 5)
+                    .map((tag) => (
+                      <span key={tag}>{voiceTagLabel(tag)}</span>
+                    ))}
+                  {voiceMetaTags(selectedVoice).length > 5 ? (
+                    <span>+{voiceMetaTags(selectedVoice).length - 5}</span>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
+
+            {!settings?.hasApiKey && !loading ? (
+              <div className="settings-card tts-voice-empty">
+                <strong>先配置 API Key</strong>
+                <span>保存后即可加载并选择音色。</span>
+              </div>
+            ) : (
+              <div className="tts-voice-grid" role="radiogroup" aria-label="可用音色">
+                {visibleVoices.map((voice) => {
+                  const selected = voice.id === selectedVoiceId
+                  return (
+                    <article
+                      key={voice.id}
+                      className={`tts-voice-card ${selected ? 'selected' : ''}`}
+                    >
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        className="tts-voice-select"
+                        disabled={Boolean(savingVoiceId)}
+                        onClick={() => void selectVoice(voice)}
+                      >
+                        <VoiceAvatar voice={voice} />
+                        <span className="tts-voice-copy">
+                          <span className="tts-voice-title-row">
+                            <strong>{voice.name}</strong>
+                            {voice.authorName ? <em>{voice.authorName}</em> : null}
+                          </span>
+                          <small>{voice.description || '公开音色'}</small>
+                          <span className="tts-voice-tags">
+                            {voiceMetaTags(voice)
+                              .slice(0, 4)
+                              .map((tag) => (
+                                <span key={tag}>{voiceTagLabel(tag)}</span>
+                              ))}
+                            {voiceMetaTags(voice).length > 4 ? (
+                              <span>+{voiceMetaTags(voice).length - 4}</span>
+                            ) : null}
+                          </span>
+                          <span className="tts-voice-stats">
+                            <span title="使用量">▥ {compactCount(voice.taskCount)}</span>
+                            <span title="喜欢">♡ {compactCount(voice.likeCount)}</span>
+                            {voice.markCount ? (
+                              <span title="收藏">☆ {compactCount(voice.markCount)}</span>
+                            ) : null}
+                          </span>
+                        </span>
+                        <span className="tts-voice-check">
+                          {savingVoiceId === voice.id ? '…' : selected ? '✓' : ''}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="tts-voice-preview"
+                        disabled={!voice.previewUrl}
+                        onClick={() => playPreview(voice)}
+                      >
+                        {playingVoiceId === voice.id ? '停止' : '试听'}
+                      </button>
+                    </article>
+                  )
+                })}
+              </div>
+            )}
+
+            {loadingVoices ? <div className="tts-voice-loading">正在加载音色…</div> : null}
+            {!loadingVoices && settings?.hasApiKey && !voices.length ? (
+              <div className="settings-card tts-voice-empty">
+                {appliedQuery ? `没有找到“${appliedQuery}”相关音色` : '没有获取到可用音色'}
+              </div>
+            ) : null}
+            {hasMore ? (
+              <button
+                type="button"
+                className="tts-load-more"
+                disabled={loadingVoices}
+                onClick={() => void loadVoices(pageNumber + 1, appliedQuery, true, selectedTags)}
+              >
+                加载更多音色
+              </button>
+            ) : null}
+            {error ? <p className="tts-settings-error">{error}</p> : null}
+          </div>
         </div>
-      ) : null}
-    </div>
+      </div>
+      <DialogContent
+        className="max-h-[calc(100vh-3rem)] max-w-[620px] overflow-y-auto"
+        onCloseAutoFocus={(event) => {
+          const trigger = wechatVersionsTriggerRef.current
+          if (!trigger) return
+          event.preventDefault()
+          trigger.focus()
+          wechatVersionsTriggerRef.current = null
+        }}
+      >
+        <DialogHeader className="pr-8">
+          <DialogTitle className="text-lg">支持的微信版本</DialogTitle>
+          <DialogDescription>请安装下列完整版本之一。</DialogDescription>
+        </DialogHeader>
+        <a
+          className="w-fit rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:border-primary"
+          href={WECHAT_VERSION_DOWNLOAD_URL}
+          target="_blank"
+          rel="noreferrer"
+        >
+          下载微信历史版本 ↗
+        </a>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {BUNDLED_WECHAT_VERSIONS.map((version) => (
+            <span
+              className="rounded-md border border-border bg-background px-2 py-2 text-center text-xs text-muted-foreground"
+              key={version}
+            >
+              {version}
+            </span>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }

@@ -27,6 +27,9 @@ export function useExternalProviderConsent(): {
     recipient: string
   ): Promise<boolean> =>
     new Promise((resolve) => {
+      const previousResolve = externalConsentResolverRef.current
+      externalConsentResolverRef.current = null
+      previousResolve?.(false)
       externalConsentResolverRef.current = resolve
       setExternalProviderConsent({ providerName, recipient })
     })

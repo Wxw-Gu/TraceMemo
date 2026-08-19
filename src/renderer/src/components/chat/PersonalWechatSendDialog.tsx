@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Contact } from '../../../../shared/types'
 import type { PersonalWechatSenderStatus } from '../../../../shared/personal-wechat'
 import type { TextToSpeechSettings, TextToSpeechVoice } from '../../../../shared/text-to-speech'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui'
 
 type SendMode = 'image' | 'voice'
 type VoiceSource = 'generated' | 'file'
@@ -82,6 +83,8 @@ export function PersonalWechatSendDialog({
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null)
   const generatedVoiceRef = useRef<GeneratedVoice | null>(null)
   const generatedAudioRef = useRef<HTMLAudioElement | null>(null)
+  const restoreFocusRef = useRef<HTMLElement | null>(null)
+  const closingRef = useRef(false)
   const displayName = contact.m_nsNickName || contact.m_nsUsrName || '未命名会话'
   const targetId = contact.m_nsUsrName
   const selectedTypeReady = mode === 'voice' ? status?.canSendVoice : status?.canSendImage
@@ -122,9 +125,13 @@ export function PersonalWechatSendDialog({
   }, [])
 
   const handleClose = useCallback((): void => {
-    if (isBusy) return
+    if (isBusy || closingRef.current) return
+    closingRef.current = true
+    const restoreFocus = restoreFocusRef.current
+    restoreFocusRef.current = null
     clearGeneratedVoice()
     onClose()
+    queueMicrotask(() => restoreFocus?.focus())
   }, [clearGeneratedVoice, isBusy, onClose])
 
   const handleOpenTextToSpeechSettings = (showSupportedVersions = false): void => {
@@ -211,14 +218,6 @@ export function PersonalWechatSendDialog({
     const audio = generatedAudioRef.current
     return () => audio?.pause()
   }, [generatedVoice])
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape' && !isBusy) handleClose()
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleClose, isBusy])
 
   const handleRebind = async (): Promise<void> => {
     if (isBusy) return
@@ -392,23 +391,27 @@ export function PersonalWechatSendDialog({
   ]
 
   return (
-    <div className="personal-wechat-send-backdrop" role="presentation" onMouseDown={handleClose}>
-      <section
-        className="personal-wechat-send-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="personal-wechat-send-title"
-        onMouseDown={(event) => event.stopPropagation()}
+    <Dialog open onOpenChange={(open) => !open && handleClose()}>
+      <DialogContent
+        className="personal-wechat-send-dialog max-h-[calc(100vh-3rem)] max-w-[620px] gap-4 overflow-y-auto p-[22px]"
+        onOpenAutoFocus={() => {
+          restoreFocusRef.current =
+            document.activeElement instanceof HTMLElement ? document.activeElement : null
+        }}
+        onEscapeKeyDown={(event) => isBusy && event.preventDefault()}
+        onPointerDownOutside={(event) => isBusy && event.preventDefault()}
       >
-        <header>
+        <DialogHeader className="flex-row items-center justify-between space-y-0 pr-10">
           <div>
-            <span className="personal-wechat-send-kicker">实验性功能</span>
-            <h2 id="personal-wechat-send-title">个人微信测试发送</h2>
+            <span className="text-[11px] font-bold tracking-normal text-primary">实验性功能</span>
+            <DialogTitle className="mt-0.5 text-[19px] leading-[26px] tracking-normal">
+              个人微信测试发送
+            </DialogTitle>
           </div>
-          <button type="button" className="personal-wechat-send-close" onClick={handleClose}>
-            ×
-          </button>
-        </header>
+          <DialogDescription className="sr-only">
+            向当前微信联系人或群聊测试发送图片和语音。
+          </DialogDescription>
+        </DialogHeader>
 
         <div className="personal-wechat-send-device-note" role="note">
           <span aria-hidden>i</span>
@@ -676,7 +679,7 @@ export function PersonalWechatSendDialog({
             </button>
           )}
         </footer>
-      </section>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }

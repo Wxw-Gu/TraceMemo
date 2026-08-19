@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useState } from 'react'
 import { Contact } from '../../../../shared/types'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui'
 import { ConversationContentSearch } from './ConversationContentSearch'
 import { AiIcon, MoreIcon, RefreshIcon, SearchIcon, SendIcon } from './icons'
 import { supportsPersonalWechatSend } from '../../utils/runtime-environment'
@@ -32,20 +33,9 @@ export function ChatHeader({
   onOpenAiSettings
 }: ChatHeaderProps): React.ReactElement {
   const [searchOpen, setSearchOpen] = useState(Boolean(contentFilter))
-  const [moreOpen, setMoreOpen] = useState(false)
-  const moreRef = useRef<HTMLDivElement>(null)
   const displayName = contact.m_nsNickName || contact.m_nsUsrName || '未命名会话'
   const typeLabel = isGroupChat ? '群聊' : '联系人'
   const visibleCount = contentFilter ? filteredCount : loadedCount
-
-  useEffect(() => {
-    if (!moreOpen) return
-    const handlePointerDown = (event: PointerEvent): void => {
-      if (!moreRef.current?.contains(event.target as Node)) setMoreOpen(false)
-    }
-    window.addEventListener('pointerdown', handlePointerDown)
-    return () => window.removeEventListener('pointerdown', handlePointerDown)
-  }, [moreOpen])
 
   const handleCloseSearch = (): void => {
     onContentFilterChange('')
@@ -91,29 +81,16 @@ export function ChatHeader({
         <button type="button" className="chat-icon-button" onClick={onRefresh} title="刷新聊天记录">
           <RefreshIcon />
         </button>
-        <div className="chat-menu" ref={moreRef}>
-          <button
-            type="button"
-            className="chat-icon-button"
-            onClick={() => setMoreOpen((current) => !current)}
-            title="更多"
-          >
-            <MoreIcon />
-          </button>
-          {moreOpen && (
-            <div className="chat-dropdown-menu right">
-              <button
-                type="button"
-                onClick={() => {
-                  onRefreshData?.()
-                  setMoreOpen(false)
-                }}
-              >
-                刷新数据
-              </button>
-            </div>
-          )}
-        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" className="chat-icon-button" title="更多">
+              <MoreIcon />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => onRefreshData?.()}>刷新数据</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <span
           className="chat-tool-button-wrapper"
           title={supportsPersonalWechatSend ? '发送消息' : '仅支持 macOS'}

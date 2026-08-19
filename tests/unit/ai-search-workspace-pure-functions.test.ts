@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { AiSearchFinalEvidence, AiSearchPipelineResult } from '../../src/shared/ai-search'
+import type {
+  AiSearchFinalEvidence,
+  AiSearchPipelineResult,
+  AiSearchTimeRange
+} from '../../src/shared/ai-search'
 import type { KnowledgeRuntimeStatus } from '../../src/shared/knowledge'
 import type { Contact } from '../../src/shared/types'
 import {
@@ -17,9 +21,14 @@ import {
   mapEvidenceSenderNames,
   mapPipelineEvidence,
   mapPipelineEvidenceItem,
+  mapPipelineResultToRendererResult,
   mapSearchResultToTrace
 } from '../../src/renderer/src/components/search/searchMappers'
-import { createSearchResultResetState } from '../../src/renderer/src/components/search/searchState'
+import {
+  createSearchResultResetState,
+  resolveSearchResultViewTransition
+} from '../../src/renderer/src/components/search/searchState'
+import { createSearchRequestContext } from '../../src/renderer/src/components/search/searchUtils'
 import type {
   AISearchCacheRecord,
   EvidenceItem,
@@ -87,6 +96,113 @@ const makeTrace = (overrides: Partial<SearchTrace> = {}): SearchTrace => ({
   invalidCitationIds: [],
   agent: { mode: 'agent', toolCalls: 0, trace: [] },
   ...overrides
+})
+
+describe('AI Search request context', () => {
+  it('trims only the submitted query while keeping cache query normalization unchanged', () => {
+    const context = createSearchRequestContext({
+      query: '  Mixed  Case 问题  ',
+      scope: 'global',
+      range: '30d'
+    })
+
+    expect(context.normalizedQuery).toBe('Mixed  Case 问题')
+    expect(context.cacheKey).toBe(JSON.stringify(['global', '', '30d', 'mixed  case 问题']))
+  })
+
+  it.each(['global', 'groups', 'contacts'] as const)(
+    'does not attach a conversation to %s scope',
+    (scope) => {
+      const context = createSearchRequestContext({
+        query: '范围问题',
+        scope,
+        range: '7d',
+        activeContactMd5: 'ignored-contact'
+      })
+
+      expect(context.conversationId).toBeUndefined()
+      expect(context.cacheKey).toBe(JSON.stringify([scope, '', '7d', '范围问题']))
+    }
+  )
+
+  it('uses the active contact for conversation request and cache identity', () => {
+    const context = createSearchRequestContext({
+      query: '会话问题',
+      scope: 'conversation',
+      range: 'today',
+      activeContactMd5: aiSearchContact.md5
+    })
+
+    expect(context.conversationId).toBe(aiSearchContact.md5)
+    expect(context.cacheKey).toBe(
+      JSON.stringify(['conversation', aiSearchContact.md5, 'today', '会话问题'])
+    )
+  })
+
+  it('keeps a missing conversation undefined while using the empty cache slot', () => {
+    const context = createSearchRequestContext({
+      query: '未选择会话',
+      scope: 'conversation',
+      range: 'all'
+    })
+
+    expect(context.conversationId).toBeUndefined()
+    expect(context.cacheKey).toBe(JSON.stringify(['conversation', '', 'all', '未选择会话']))
+  })
+
+  it('uses retry range and retry time override when both are provided', () => {
+    const currentOverride: AiSearchTimeRange = {
+      label: '近 30 天',
+      reason: '当前选择',
+      source: 'user_selected'
+    }
+    const retryOverride: AiSearchTimeRange = {
+      label: '全部历史',
+      reason: '用户主动扩大到全部历史',
+      source: 'user_retry'
+    }
+    const context = createSearchRequestContext({
+      query: '重试问题',
+      scope: 'global',
+      range: '30d',
+      timeRangeOverride: currentOverride,
+      retry: { range: 'all', timeRangeOverride: retryOverride }
+    })
+
+    expect(context.effectiveRange).toBe('all')
+    expect(context.effectiveTimeRangeOverride).toBe(retryOverride)
+    expect(context.cacheKey).toBe(JSON.stringify(['global', '', 'all', '重试问题']))
+  })
+
+  it('falls back to the current time override when retry does not provide one', () => {
+    const currentOverride: AiSearchTimeRange = {
+      startTime: 123,
+      label: '近 30 天',
+      reason: '用户在界面选择的时间范围',
+      source: 'user_selected'
+    }
+    const context = createSearchRequestContext({
+      query: '保留当前时间范围',
+      scope: 'global',
+      range: '7d',
+      timeRangeOverride: currentOverride,
+      retry: { range: '30d', timeRangeOverride: undefined }
+    })
+
+    expect(context.effectiveRange).toBe('30d')
+    expect(context.effectiveTimeRangeOverride).toBe(currentOverride)
+  })
+
+  it('keeps the current range and undefined override when no retry exists', () => {
+    const context = createSearchRequestContext({
+      query: '普通问题',
+      scope: 'global',
+      range: '7d'
+    })
+
+    expect(context.effectiveRange).toBe('7d')
+    expect(context.effectiveTimeRangeOverride).toBeUndefined()
+  })
 })
 
 describe('AI Search workspace pure formatters', () => {
@@ -211,6 +327,47 @@ describe('AI Search pipeline evidence mapping', () => {
 })
 
 describe('AI Search trace and cache mapping', () => {
+  it('maps a pipeline result into the common Renderer state without mixing collection senders', () => {
+    const finalEvidence = makeFinalEvidence(1, { senderId: 'final-sender', sender: '总结发送者' })
+    const collectionEvidence = makeFinalEvidence(2, {
+      senderId: 'collection-sender',
+      sender: '浏览发送者'
+    })
+    const result = makeSearchResult({
+      evidence: [finalEvidence],
+      evidenceCollection: [finalEvidence, collectionEvidence]
+    })
+
+    const mapped = mapPipelineResultToRendererResult(result, [aiSearchContact])
+
+    expect(mapped.evidence.map((item) => item.evidenceId)).toEqual(['E1'])
+    expect(mapped.evidenceCollection.map((item) => item.evidenceId)).toEqual(['E1', 'E2'])
+    expect(mapped.senderNames).toEqual({ 'final-sender': '总结发送者' })
+    expect(mapped.messageCount).toBe(result.knowledge.totalMessages)
+    expect(mapped.searchTrace).toEqual(mapSearchResultToTrace(result, 1))
+  })
+
+  it('falls back to Final Evidence only when the runtime collection is missing', () => {
+    const evidence = [makeFinalEvidence(1)]
+    const result = makeSearchResult({ evidence })
+    ;(
+      result as AiSearchPipelineResult & { evidenceCollection?: AiSearchFinalEvidence[] }
+    ).evidenceCollection = undefined
+
+    const mapped = mapPipelineResultToRendererResult(result, [aiSearchContact])
+
+    expect(mapped.evidenceCollection).toEqual(mapped.evidence)
+  })
+
+  it('preserves an explicitly empty Evidence Collection without falling back', () => {
+    const result = makeSearchResult({ evidence: [makeFinalEvidence(1)], evidenceCollection: [] })
+
+    const mapped = mapPipelineResultToRendererResult(result, [aiSearchContact])
+
+    expect(mapped.evidence).toHaveLength(1)
+    expect(mapped.evidenceCollection).toEqual([])
+  })
+
   it('maps pipeline trace fields and preserves the original default values', () => {
     const result: AiSearchPipelineResult = makeSearchResult()
 
@@ -388,6 +545,64 @@ describe('AI Search trace and cache mapping', () => {
       ],
       senderNames: { 'sender-1': '发送者 1' },
       messageCount: 20
+    })
+  })
+})
+
+describe('AI Search result view transition', () => {
+  it('maps no Evidence to the range-specific insufficient message and ignores pipeline error', () => {
+    const result = makeSearchResult({ status: 'no_evidence', error: '不应使用的错误' })
+
+    expect(resolveSearchResultViewTransition(result, '7d')).toEqual({
+      stage: 'insufficient',
+      analysisError: '近 7 天内没有找到与问题相关的聊天消息。'
+    })
+  })
+
+  it.each([
+    ['retrieval_incomplete', 'partial', '当前检索未完整覆盖聊天记录，未生成总结。'],
+    ['failed', 'insufficient', '本地搜索暂时无法完成'],
+    ['ai_failed', 'partial', '证据已找到，但 AI 暂时无法生成回答']
+  ] as const)('maps %s to its existing fallback presentation', (status, stage, analysisError) => {
+    expect(resolveSearchResultViewTransition(makeSearchResult({ status }), '30d')).toEqual({
+      stage,
+      analysisError
+    })
+  })
+
+  it.each([
+    ['retrieval_incomplete', 'partial'],
+    ['failed', 'insufficient'],
+    ['ai_failed', 'partial']
+  ] as const)('preserves the pipeline error for %s', (status, stage) => {
+    expect(
+      resolveSearchResultViewTransition(
+        makeSearchResult({ status, error: '主进程返回的错误' }),
+        '30d'
+      )
+    ).toEqual({
+      stage,
+      analysisError: '主进程返回的错误'
+    })
+  })
+
+  it('keeps a completed answer for the Workspace success path', () => {
+    expect(
+      resolveSearchResultViewTransition(makeSearchResult({ answer: '完整回答' }), '30d')
+    ).toEqual({
+      stage: 'result',
+      analysisError: '',
+      answer: '完整回答'
+    })
+  })
+
+  it('leaves a missing completed answer for the existing Workspace guard', () => {
+    const result = { ...makeSearchResult(), answer: undefined }
+
+    expect(resolveSearchResultViewTransition(result, '30d')).toEqual({
+      stage: 'result',
+      analysisError: '',
+      answer: undefined
     })
   })
 })

@@ -10,6 +10,7 @@ export interface TestApplication {
   app: ElectronApplication
   page: Page
   userData: string
+  setWindowContentSize: (size: { width: number; height: number }) => Promise<void>
   close: () => Promise<void>
 }
 
@@ -20,6 +21,8 @@ export async function launchTestApp(
     largeContacts?: number
     corruptCache?: boolean
     aiFailure?: string
+    now?: number
+    appearanceTheme?: 'light' | 'dark'
   } = {}
 ): Promise<TestApplication> {
   const ownsDirectory = !options.userData
@@ -39,15 +42,29 @@ export async function launchTestApp(
       WXE_E2E_MODE: options.mode || 'connected',
       WXE_E2E_LARGE_CONTACTS: String(options.largeContacts || 0),
       WXE_E2E_CORRUPT_CACHE: options.corruptCache ? '1' : '0',
-      WXE_E2E_AI_FAILURE: options.aiFailure || ''
+      WXE_E2E_AI_FAILURE: options.aiFailure || '',
+      WXE_E2E_NOW_MS: options.now ? String(options.now) : '',
+      WXE_E2E_APPEARANCE_THEME: options.appearanceTheme || 'light'
     }
   })
   const page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
+  const setWindowContentSize = async (size: { width: number; height: number }): Promise<void> => {
+    await app.evaluate(({ BrowserWindow }, nextSize) => {
+      const [window] = BrowserWindow.getAllWindows()
+      if (!window) throw new Error('E2E BrowserWindow is unavailable')
+      window.setContentSize(nextSize.width, nextSize.height)
+    }, size)
+    await page.waitForFunction(
+      (nextSize) => window.innerWidth === nextSize.width && window.innerHeight === nextSize.height,
+      size
+    )
+  }
   return {
     app,
     page,
     userData,
+    setWindowContentSize,
     close: async () => {
       if (!page.isClosed() && closeDelayMs > 0) await page.waitForTimeout(closeDelayMs)
       await app.close().catch(() => undefined)

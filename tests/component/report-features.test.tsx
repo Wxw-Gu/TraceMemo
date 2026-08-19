@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ReportGroupMemberSelector } from '../../src/renderer/src/components/reports/ReportGroupMemberSelector'
 import { ReportTaskStatusPanel } from '../../src/renderer/src/components/reports/ReportTaskStatusPanel'
@@ -6,6 +7,7 @@ import { ReportTemplateSelector } from '../../src/renderer/src/components/report
 import { ReportViewer } from '../../src/renderer/src/components/reports/ReportViewer'
 import { ReportInfoPanel } from '../../src/renderer/src/components/reports/ReportInfoPanel'
 import { ReportToolbar } from '../../src/renderer/src/components/reports/ReportToolbar'
+import { ReportHistorySidebar } from '../../src/renderer/src/components/reports/ReportHistorySidebar'
 import { ModelSummary } from '../../src/renderer/src/components/reports/ModelSummary'
 import type { Contact } from '../../src/shared/types'
 import type { GeneratedReportRecord } from '../../src/shared/report-history'
@@ -434,7 +436,8 @@ describe('daily report controls', () => {
     globalThis.ResizeObserver = originalResizeObserver
   })
 
-  it('keeps the file action inside More and labels both AI model roles', () => {
+  it('keeps the file action inside More and labels both AI model roles', async () => {
+    const user = userEvent.setup()
     render(
       <>
         <ReportToolbar
@@ -469,13 +472,53 @@ describe('daily report controls', () => {
       </>
     )
 
-    expect(screen.getByRole('button', { name: '生成微信卡片' })).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: '更多' }))
-    expect(screen.getByRole('button', { name: '打开文件夹' })).toBeVisible()
+    expect(screen.queryByRole('menuitem', { name: '生成微信卡片' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '更多' }))
+    expect(screen.getByRole('menuitem', { name: '生成微信卡片' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: '打开文件夹' })).toBeVisible()
     expect(screen.getByText('文字模型')).toBeVisible()
     expect(screen.getByText('DeepSeek Chat')).toBeVisible()
     expect(screen.getByText('图片模型')).toBeVisible()
     expect(screen.getByText('gpt-5.6-sol')).toBeVisible()
+
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('menuitem', { name: '生成微信卡片' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '更多' })).toHaveFocus()
+  })
+
+  it('keeps unavailable toolbar actions disabled inside More', async () => {
+    const user = userEvent.setup()
+    const onReveal = vi.fn()
+    const onShare = vi.fn()
+
+    render(
+      <ReportToolbar
+        canCopyImage={false}
+        canReveal={false}
+        canShare={false}
+        canSwitchTemplate={false}
+        isSwitchingTemplate={false}
+        onSwitchTemplate={vi.fn()}
+        onRegenerate={vi.fn()}
+        onCopyImage={vi.fn()}
+        onReveal={onReveal}
+        onShare={onShare}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: '切换模板' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '复制图片' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '打开报告' })).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: '更多' }))
+    const shareItem = screen.getByRole('menuitem', { name: '生成微信卡片' })
+    const revealItem = screen.getByRole('menuitem', { name: '打开文件夹' })
+    expect(shareItem).toHaveAttribute('data-disabled')
+    expect(revealItem).toHaveAttribute('data-disabled')
+    await user.click(shareItem)
+    await user.click(revealItem)
+    expect(onShare).not.toHaveBeenCalled()
+    expect(onReveal).not.toHaveBeenCalled()
   })
 
   it('opens the current group send dialog with the report PNG preselected', async () => {
@@ -550,6 +593,7 @@ describe('daily report controls', () => {
   })
 
   it('switches templates from the top toolbar using the saved report snapshot', async () => {
+    const user = userEvent.setup()
     const onSwitchTemplate = vi.fn(async () => ({ success: true }))
     const report: GeneratedReportRecord = {
       id: 'report-switch',
@@ -579,10 +623,10 @@ describe('daily report controls', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '切换模板' }))
+    await user.click(screen.getByRole('button', { name: '切换模板' }))
     expect(screen.getByText('仅重新排版，不调用 AI')).toBeVisible()
     expect(screen.getByRole('menuitem', { name: /默认模板经典日报/ })).toBeVisible()
-    fireEvent.click(screen.getByRole('menuitem', { name: /Mobile 03AI Command Center/ }))
+    await user.click(screen.getByRole('menuitem', { name: /Mobile 03AI Command Center/ }))
     await waitFor(() => expect(onSwitchTemplate).toHaveBeenCalledWith(report, 'mobile-dashboard'))
 
     rerender(
@@ -638,6 +682,96 @@ describe('daily report controls', () => {
     expect(screen.getByText('微信昵称一')).toBeVisible()
     expect(screen.getByText('通讯录备注一')).toBeVisible()
     expect(screen.getByText('wxid-one')).toBeVisible()
+  })
+
+  it('cancels report deletion and restores focus to the delete trigger', async () => {
+    const user = userEvent.setup()
+    const report: GeneratedReportRecord = {
+      id: 'report-delete-cancel',
+      contactId: 'group-md5',
+      contactName: '测试群',
+      dateRange: '今天',
+      messageCount: 10,
+      generatedAt: '2026-08-17T10:00:00.000Z',
+      reportDate: '2026-08-17',
+      htmlStatus: 'ready',
+      pngStatus: 'ready'
+    }
+
+    render(
+      <ReportHistorySidebar
+        reports={[report]}
+        selectedReportId={report.id}
+        selfInfo={null}
+        dbReady
+        onSelectReport={vi.fn()}
+        onCreateReport={vi.fn()}
+        onDeleteReport={vi.fn(async () => ({ success: true }))}
+        onOpenSettings={vi.fn()}
+      />
+    )
+
+    const deleteTrigger = screen.getByRole('button', { name: '删除日报' })
+    await user.click(deleteTrigger)
+    expect(screen.getByRole('alertdialog', { name: '删除日报？' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('alertdialog', { name: '删除日报？' })).not.toBeInTheDocument()
+    expect(deleteTrigger).toHaveFocus()
+  })
+
+  it('prevents duplicate report deletion, keeps failures open, and closes after success', async () => {
+    const user = userEvent.setup()
+    const report: GeneratedReportRecord = {
+      id: 'report-delete-result',
+      contactId: 'group-md5',
+      contactName: '测试群',
+      dateRange: '今天',
+      messageCount: 10,
+      generatedAt: '2026-08-17T10:00:00.000Z',
+      reportDate: '2026-08-17',
+      htmlStatus: 'ready',
+      pngStatus: 'ready'
+    }
+    let settleDelete: ((result: { success: boolean; error?: string }) => void) | undefined
+    const onDeleteReport = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ success: boolean; error?: string }>((resolve) => {
+            settleDelete = resolve
+          })
+      )
+      .mockResolvedValueOnce({ success: true })
+
+    render(
+      <ReportHistorySidebar
+        reports={[report]}
+        selectedReportId={report.id}
+        selfInfo={null}
+        dbReady
+        onSelectReport={vi.fn()}
+        onCreateReport={vi.fn()}
+        onDeleteReport={onDeleteReport}
+        onOpenSettings={vi.fn()}
+      />
+    )
+
+    await user.click(screen.getByRole('button', { name: '删除日报' }))
+    await user.click(screen.getByRole('button', { name: '删除', exact: true }))
+    const pendingButton = screen.getByRole('button', { name: '删除中…' })
+    expect(pendingButton).toBeDisabled()
+    await user.click(pendingButton)
+    expect(onDeleteReport).toHaveBeenCalledTimes(1)
+
+    settleDelete?.({ success: false, error: '文件正在使用' })
+    expect(await screen.findByText('文件正在使用')).toBeVisible()
+    expect(screen.getByRole('alertdialog', { name: '删除日报？' })).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: '删除', exact: true }))
+    await waitFor(() => expect(onDeleteReport).toHaveBeenCalledTimes(2))
+    await waitFor(() =>
+      expect(screen.queryByRole('alertdialog', { name: '删除日报？' })).not.toBeInTheDocument()
+    )
   })
 
   it('offers the classic default plus three mobile and two desktop report templates', () => {

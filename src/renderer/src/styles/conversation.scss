@@ -258,10 +258,6 @@
   overflow: visible;
 }
 
-.export-config-scroll > .export-section:not(.export-format-top):has(.export-format-grid) {
-  display: none;
-}
-
 .conversation-section-virtual-content {
   position: relative;
   width: 100%;

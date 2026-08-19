@@ -193,44 +193,12 @@
   background: #5a60c6;
 }
 
-.personal-wechat-send-backdrop {
-  position: fixed;
-  z-index: 90;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgba(18, 29, 25, 0.42);
-  backdrop-filter: blur(3px);
-  -webkit-app-region: no-drag;
-}
-
 .personal-wechat-send-dialog {
-  box-sizing: border-box;
-  width: min(100%, 620px);
-  max-height: calc(100vh - 48px);
-  overflow-y: auto;
-  display: grid;
-  gap: 16px;
-  border: 1px solid var(--wxex-border);
-  border-radius: 16px;
-  background: var(--wxex-bg-elevated);
-  box-shadow: 0 24px 70px rgba(18, 31, 26, 0.24);
-  padding: 22px;
-
-  > header,
   > footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-  }
-
-  h2 {
-    margin: 2px 0 0;
-    color: var(--wxex-text-primary);
-    font-size: 19px;
-    line-height: 26px;
   }
 
   > footer {
@@ -261,30 +229,6 @@
       cursor: not-allowed;
       opacity: 0.5;
     }
-  }
-}
-
-.personal-wechat-send-kicker {
-  color: var(--wxex-brand);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.personal-wechat-send-close {
-  width: 32px;
-  height: 32px;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--wxex-text-muted);
-  cursor: pointer;
-  font-size: 24px;
-  line-height: 28px;
-
-  &:hover {
-    background: var(--wxex-brand-soft);
-    color: var(--wxex-brand);
   }
 }
 
@@ -870,49 +814,6 @@
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
-
-.chat-menu {
-  position: relative;
-}
-
-.chat-dropdown-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 40;
-  min-width: 150px;
-  overflow: hidden;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-md);
-  background: var(--wxex-bg-elevated);
-  box-shadow: var(--wxex-shadow-popover);
-  padding: 4px;
-
-  &.right {
-    right: 0;
-    left: auto;
-  }
-
-  button {
-    box-sizing: border-box;
-    width: 100%;
-    display: block;
-    border: 0;
-    border-radius: var(--wxex-radius-sm);
-    background: transparent;
-    color: var(--wxex-text-primary);
-    cursor: pointer;
-    font: 13px/18px var(--wxex-font);
-    padding: 7px 9px;
-    text-align: left;
-    white-space: nowrap;
-
-    &:hover {
-      background: var(--wxex-brand-soft);
-      color: var(--wxex-brand);
-    }
-  }
 }
 
 .chat-content-search {
@@ -2654,105 +2555,6 @@
   flex-wrap: wrap;
 }
 
-.image-viewer-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(16, 24, 28, 0.28);
-  backdrop-filter: blur(1px);
-  overscroll-behavior: contain;
-}
-
-.image-viewer-window {
-  width: min(1280px, 96vw);
-  height: min(900px, 92vh);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid rgba(0, 0, 0, 0.14);
-  border-radius: 8px;
-  background: #eaf0f1;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
-}
-
-.image-viewer-titlebar {
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 12px 0 16px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-  background: rgba(255, 255, 255, 0.78);
-  color: #333;
-  font-size: 14px;
-
-  button {
-    width: 28px;
-    height: 28px;
-    border: 0;
-    border-radius: 50%;
-    background: transparent;
-    color: #555;
-    cursor: pointer;
-    font-size: 18px;
-    line-height: 1;
-
-    &:hover {
-      background: rgba(0, 0, 0, 0.08);
-    }
-  }
-}
-
-.image-viewer-tools {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.image-viewer-title {
-  margin-right: 8px;
-  font-weight: 500;
-}
-
-.image-viewer-zoom {
-  min-width: 44px;
-  color: #666;
-  text-align: center;
-}
-
-.image-viewer-divider {
-  width: 1px;
-  height: 18px;
-  background: rgba(0, 0, 0, 0.12);
-}
-
-.image-viewer-stage {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 28px;
-  overflow: hidden;
-  overscroll-behavior: contain;
-  cursor: grab;
-  user-select: none;
-
-  img {
-    max-width: none;
-    max-height: none;
-    width: auto;
-    height: auto;
-    object-fit: contain;
-    box-shadow: 0 3px 16px rgba(0, 0, 0, 0.12);
-    transform-origin: center center;
-    transition: transform 0.08s ease-out;
-    user-select: none;
-    pointer-events: none;
-  }
-}
 .database-account-list {
   display: grid;
   gap: 10px;

@@ -1,4 +1,5 @@
-import React from 'react'
+import React, { useRef } from 'react'
+import { Button, Dialog, DialogContent, DialogDescription, DialogTitle } from './ui'
 
 interface FirstUseWelcomeProps {
   onDismiss: () => void
@@ -16,63 +17,81 @@ export function FirstUseWelcome({
   onOpenReport,
   onOpenAISettings
 }: FirstUseWelcomeProps): React.ReactElement {
+  const restoreFocusRef = useRef<HTMLElement | null>(null)
+
+  const dismiss = (): void => {
+    const restoreFocus = restoreFocusRef.current
+    restoreFocusRef.current = null
+    onDismiss()
+    queueMicrotask(() => restoreFocus?.focus())
+  }
+
   return (
-    <div className="first-use-welcome-overlay" role="presentation">
-      <section
-        className="first-use-welcome"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="first-use-welcome-title"
+    <Dialog open onOpenChange={(open) => !open && dismiss()}>
+      <DialogContent
+        className="max-h-[calc(100vh-2rem)] max-w-[520px] overflow-y-auto p-6 sm:p-8"
+        onOpenAutoFocus={() => {
+          restoreFocusRef.current =
+            document.activeElement instanceof HTMLElement ? document.activeElement : null
+        }}
       >
-        <button
-          type="button"
-          className="first-use-welcome-close"
-          onClick={onDismiss}
-          aria-label="关闭欢迎提示"
+        <div
+          className="mb-4 grid h-10 w-10 place-items-center rounded-md bg-primary text-xl text-primary-foreground shadow-surface"
+          aria-hidden="true"
         >
-          ×
-        </button>
-        <div className="first-use-welcome-mark" aria-hidden="true">
           ✦
         </div>
-        <p className="first-use-welcome-eyebrow">微信已连接</p>
-        <h2 id="first-use-welcome-title">开始探索你的微信</h2>
-        <p className="first-use-welcome-lead">
+        <p className="text-xs font-semibold uppercase text-primary">微信已连接</p>
+        <DialogTitle className="mt-1 text-2xl">开始探索你的微信</DialogTitle>
+        <DialogDescription className="mt-2 text-sm leading-relaxed">
           最关键的一步已经完成。现在，让 AI 帮你看看最近的聊天都发生了什么。
-        </p>
+        </DialogDescription>
 
-        <button type="button" className="first-use-welcome-feature" onClick={onOpenReport}>
-          <span className="first-use-welcome-feature-icon" aria-hidden="true">
+        <Button
+          className="mt-5 h-auto w-full justify-start whitespace-normal p-4 text-left"
+          onClick={onOpenReport}
+        >
+          <span
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-surface text-lg text-primary"
+            aria-hidden="true"
+          >
             ✦
           </span>
-          <span className="first-use-welcome-feature-copy">
-            <strong>试试 AI 群聊日报</strong>
-            <small>选择一个群聊，看看最近聊了什么</small>
+          <span className="min-w-0 flex-1">
+            <strong className="block text-sm">试试 AI 群聊日报</strong>
+            <small className="mt-0.5 block text-xs text-primary-foreground/75">
+              选择一个群聊，看看最近聊了什么
+            </small>
           </span>
-          <span className="first-use-welcome-feature-arrow" aria-hidden="true">
+          <span className="shrink-0 text-xs" aria-hidden="true">
             立即体验 →
           </span>
-        </button>
+        </Button>
 
-        <div className="first-use-welcome-secondary-actions">
-          <button type="button" onClick={onDismiss}>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button variant="ghost" size="sm" onClick={dismiss}>
             查看聊天记录
-          </button>
-          <button type="button" onClick={onOpenSearch}>
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onOpenSearch}>
             问问你的微信
-          </button>
+          </Button>
         </div>
 
-        <div className="first-use-welcome-footer">
+        <div className="mt-5 flex flex-col items-start gap-2 border-t border-border pt-4 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <span>还没有配置 AI？</span>
-          <button type="button" onClick={onOpenAISettings}>
+          <Button className="h-auto p-0 text-xs" variant="link" onClick={onOpenAISettings}>
             配置 AI 模型
-          </button>
-          <a href={GUIDE_URL} target="_blank" rel="noreferrer">
+          </Button>
+          <a
+            className="text-primary hover:underline"
+            href={GUIDE_URL}
+            target="_blank"
+            rel="noreferrer"
+          >
             查看完整使用教程
           </a>
         </div>
-      </section>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }
