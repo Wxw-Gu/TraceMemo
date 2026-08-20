@@ -649,6 +649,62 @@ test('EXPORT-01 multi-chat selection stays local to export and forces HTML', asy
   }
 })
 
+test('EXPORT-02 large contact list stays bounded and searchable', async () => {
+  const fixture = await launchTestApp({ largeContacts: 1500 })
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.setWindowContentSize({ width: 1400, height: 772 })
+    await fixture.page.getByRole('button', { name: '导出' }).click()
+    await expect(fixture.page.getByText('共 1,503 个')).toBeVisible()
+
+    const contactList = fixture.page.locator('.export-contact-list')
+    expect(await contactList.getByRole('button').count()).toBeLessThan(50)
+
+    const compositeButtons = [
+      fixture.page.getByRole('button', { name: /^全部导出/ }),
+      fixture.page.getByRole('button', { name: /HTML/ }),
+      fixture.page.locator('.export-workspace > aside:first-child > button:last-child')
+    ]
+    for (const button of compositeButtons) {
+      await expect(button).toBeVisible()
+      expect(
+        await button.evaluate(
+          (element) => element.scrollHeight <= element.clientHeight && element.clientHeight > 32
+        )
+      ).toBe(true)
+    }
+
+    const previewGeometryIsStable = await fixture.page
+      .locator('.export-workspace > aside:last-child')
+      .evaluate((previewPanel) => {
+        const scrollRegion = previewPanel.children.item(1)
+        const statistics = previewPanel.children.item(2)
+        if (!(scrollRegion instanceof HTMLElement) || !(statistics instanceof HTMLElement)) {
+          return false
+        }
+        const panelRect = previewPanel.getBoundingClientRect()
+        const scrollRect = scrollRegion.getBoundingClientRect()
+        const statisticsRect = statistics.getBoundingClientRect()
+        return (
+          scrollRect.bottom <= statisticsRect.top &&
+          statisticsRect.bottom <= panelRect.bottom &&
+          statistics.scrollHeight <= statistics.clientHeight
+        )
+      })
+    expect(previewGeometryIsStable).toBe(true)
+
+    await fixture.page.getByRole('textbox', { name: '搜索聊天' }).fill('性能样本 1499')
+    const target = contactList.getByRole('button', { name: /性能样本 1499/ })
+    await expect(target).toBeVisible()
+    await target.click()
+    await expect(target).toHaveAttribute('aria-pressed', 'true')
+    expect(pageErrors).toEqual([])
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('LAYOUT-01 core workspaces fit a narrow desktop viewport without page errors', async () => {
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []

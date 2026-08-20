@@ -4,7 +4,7 @@ import { resolve } from 'path'
 import { launchTestApp } from './support/electron'
 
 const baselineDirectory = resolve(`tests/e2e/__screenshots__/${process.platform}/visual.spec.ts`)
-const visualViewport = { width: 1000, height: 650 }
+const visualViewport = { width: 1400, height: 772 }
 const visualNow = Date.parse('2026-08-19T14:46:40+08:00')
 
 async function clearScreenshotFocus(page: import('@playwright/test').Page): Promise<void> {
@@ -200,6 +200,30 @@ test('API-00 Reader Skill page visual @visual', async () => {
   }
 })
 
+test('API-00 Reader Skill page dark visual @visual', async () => {
+  const fixture = await launchTestApp({ now: visualNow, appearanceTheme: 'dark' })
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.setWindowContentSize(visualViewport)
+    await fixture.page.getByRole('button', { name: 'API' }).click()
+    await expect(fixture.page.getByRole('heading', { name: 'TraceMemo Reader' })).toBeVisible()
+    await expect(fixture.page.getByText('API Token', { exact: true })).toBeVisible()
+    await expect(fixture.page.locator('html')).toHaveAttribute('data-theme', 'dark')
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    expect(pageErrors).toEqual([])
+    await clearScreenshotFocus(fixture.page)
+    await expect(fixture.page).toHaveScreenshot('api-center-page-dark.png', {
+      animations: 'disabled',
+      caret: 'hide'
+    })
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('API-01 Reader Skill preview visual @visual', async () => {
   const fixture = await launchTestApp({ now: visualNow })
   const pageErrors: Error[] = []
@@ -259,77 +283,99 @@ test('API-02 Agent target segmented control visual @visual', async () => {
   }
 })
 
-test('REPORT-00 report configuration controls visual @visual', async () => {
-  const fixture = await launchTestApp({ now: visualNow })
-  const pageErrors: Error[] = []
-  fixture.page.on('pageerror', (error) => pageErrors.push(error))
-  try {
-    await fixture.setWindowContentSize(visualViewport)
-    await fixture.page.getByRole('button', { name: '日报' }).click()
-    await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
-    await fixture.page.locator('.report-source-item').filter({ hasText: '产品测试群' }).click()
-    await expect(fixture.page.getByRole('heading', { name: '生成群聊日报' })).toBeVisible()
-    await expect(fixture.page.getByRole('radiogroup', { name: '总结范围' })).toBeVisible()
-    expect(
-      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-    ).toBe(true)
-    expect(pageErrors).toEqual([])
-    await clearScreenshotFocus(fixture.page)
-    await expect(fixture.page).toHaveScreenshot('report-config-page.png', {
-      animations: 'disabled',
-      caret: 'hide'
-    })
+for (const appearanceTheme of ['light', 'dark'] as const) {
+  test(`REPORT-00 report configuration controls ${appearanceTheme} visual @visual`, async () => {
+    const fixture = await launchTestApp({ now: visualNow, appearanceTheme })
+    const pageErrors: Error[] = []
+    fixture.page.on('pageerror', (error) => pageErrors.push(error))
+    try {
+      await fixture.setWindowContentSize(visualViewport)
+      await fixture.page.getByRole('button', { name: '日报' }).click()
+      await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
+      await fixture.page.locator('.report-source-item').filter({ hasText: '产品测试群' }).click()
+      await expect(fixture.page.getByRole('heading', { name: '生成群聊日报' })).toBeVisible()
+      await expect(fixture.page.getByRole('radiogroup', { name: '总结范围' })).toBeVisible()
+      expect(
+        await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+      ).toBe(true)
+      expect(pageErrors).toEqual([])
+      await clearScreenshotFocus(fixture.page)
+      await expect(fixture.page).toHaveScreenshot(
+        `${appearanceTheme === 'light' ? 'report-config-page' : 'report-config-page-dark'}.png`,
+        {
+          animations: 'disabled',
+          caret: 'hide'
+        }
+      )
 
-    const modelHeading = fixture.page.getByRole('heading', { name: '模型配置' })
-    await modelHeading.scrollIntoViewIfNeeded()
-    await expect(modelHeading).toBeVisible()
-    await clearScreenshotFocus(fixture.page)
-    await expect(fixture.page).toHaveScreenshot('report-model-controls.png', {
-      animations: 'disabled',
-      caret: 'hide'
-    })
+      const modelHeading = fixture.page.getByRole('heading', { name: '模型配置' })
+      await modelHeading.scrollIntoViewIfNeeded()
+      await expect(modelHeading).toBeVisible()
+      await clearScreenshotFocus(fixture.page)
+      await expect(fixture.page).toHaveScreenshot(
+        `${appearanceTheme === 'light' ? 'report-model-controls' : 'report-model-controls-dark'}.png`,
+        {
+          animations: 'disabled',
+          caret: 'hide'
+        }
+      )
 
-    const templateSection = fixture.page.getByRole('heading', { name: '日报模板' }).locator('..')
-    await templateSection.getByRole('button', { name: '查看版式' }).first().click()
-    const templateDialog = fixture.page.getByRole('dialog', { name: '经典日报' })
-    await expect(templateDialog).toBeVisible()
-    await clearScreenshotFocus(fixture.page)
-    await expect(fixture.page).toHaveScreenshot('report-template-dialog.png', {
-      animations: 'disabled',
-      caret: 'hide'
-    })
-  } finally {
-    await fixture.close()
-  }
-})
+      if (appearanceTheme === 'light') {
+        const templateSection = fixture.page
+          .getByRole('heading', { name: '日报模板' })
+          .locator('..')
+        await templateSection.getByRole('button', { name: '查看版式' }).first().click()
+        const templateDialog = fixture.page.getByRole('dialog', { name: '经典日报' })
+        await expect(templateDialog).toBeVisible()
+        await clearScreenshotFocus(fixture.page)
+        await expect(fixture.page).toHaveScreenshot('report-template-dialog.png', {
+          animations: 'disabled',
+          caret: 'hide'
+        })
+      }
+    } finally {
+      await fixture.close()
+    }
+  })
+}
 
-test('REPORT-01 report retry controls visual @visual', async () => {
-  const fixture = await launchTestApp({ now: visualNow, aiFailure: '401' })
-  const pageErrors: Error[] = []
-  fixture.page.on('pageerror', (error) => pageErrors.push(error))
-  try {
-    await fixture.setWindowContentSize(visualViewport)
-    await fixture.page.getByRole('button', { name: '日报' }).click()
-    await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
-    await fixture.page.locator('.report-source-item').filter({ hasText: '产品测试群' }).click()
-    await fixture.page.getByRole('radio', { name: '近 7 天' }).click()
-    await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
-    await expect(fixture.page.getByText(/本地假服务错误 401/).first()).toBeVisible()
-    await expect(fixture.page.getByRole('combobox', { name: '切换模型' })).toBeVisible()
-    await expect(fixture.page.getByRole('button', { name: '使用所选模型重新生成' })).toBeEnabled()
-    expect(
-      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-    ).toBe(true)
-    expect(pageErrors).toEqual([])
-    await clearScreenshotFocus(fixture.page)
-    await expect(fixture.page).toHaveScreenshot('report-retry-controls.png', {
-      animations: 'disabled',
-      caret: 'hide'
+for (const appearanceTheme of ['light', 'dark'] as const) {
+  test(`REPORT-01 report retry controls ${appearanceTheme} visual @visual`, async () => {
+    const fixture = await launchTestApp({
+      now: visualNow,
+      aiFailure: '401',
+      appearanceTheme,
+      stableUserData: '/tmp/tracememo-e2e-report-user-data'
     })
-  } finally {
-    await fixture.close()
-  }
-})
+    const pageErrors: Error[] = []
+    fixture.page.on('pageerror', (error) => pageErrors.push(error))
+    try {
+      await fixture.setWindowContentSize(visualViewport)
+      await fixture.page.getByRole('button', { name: '日报' }).click()
+      await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
+      await fixture.page.locator('.report-source-item').filter({ hasText: '产品测试群' }).click()
+      await fixture.page.getByRole('radio', { name: '近 7 天' }).click()
+      await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
+      await expect(fixture.page.getByText(/本地假服务错误 401/).first()).toBeVisible()
+      await expect(fixture.page.getByRole('combobox', { name: '切换模型' })).toBeVisible()
+      await expect(fixture.page.getByRole('button', { name: '使用所选模型重新生成' })).toBeEnabled()
+      expect(
+        await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+      ).toBe(true)
+      expect(pageErrors).toEqual([])
+      await clearScreenshotFocus(fixture.page)
+      await expect(fixture.page).toHaveScreenshot(
+        `${appearanceTheme === 'light' ? 'report-retry-controls' : 'report-retry-controls-dark'}.png`,
+        {
+          animations: 'disabled',
+          caret: 'hide'
+        }
+      )
+    } finally {
+      await fixture.close()
+    }
+  })
+}
 
 for (const appearanceTheme of ['light', 'dark'] as const) {
   test(`CHAT-02 personal WeChat send dialog ${appearanceTheme} visual @visual`, async () => {
@@ -568,6 +614,10 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
       await expect(fixture.page.getByRole('heading', { name: '新增供应商' })).toBeVisible()
       await fixture.page.getByLabel('供应商 ID').fill('fixture-new-provider')
       await expect(fixture.page.getByRole('combobox', { name: '快速模板' })).toBeVisible()
+      // Pin the screenshot after fill() auto-scroll to avoid half-pixel capture drift.
+      await fixture.page
+        .locator('.settings-page-scroll')
+        .evaluate((element) => (element.scrollTop = 396))
       expect(
         await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
       ).toBe(true)

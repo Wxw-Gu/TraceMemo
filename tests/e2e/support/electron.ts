@@ -23,10 +23,16 @@ export async function launchTestApp(
     aiFailure?: string
     now?: number
     appearanceTheme?: 'light' | 'dark'
+    stableUserData?: string
   } = {}
 ): Promise<TestApplication> {
-  const ownsDirectory = !options.userData
-  const userData = options.userData || mkdtempSync(resolve(tmpdir(), 'wxe-e2e-'))
+  const ownsDirectory = !options.userData || Boolean(options.stableUserData)
+  const userData =
+    options.userData ||
+    (options.stableUserData
+      ? resolve(options.stableUserData)
+      : mkdtempSync(resolve(tmpdir(), 'wxe-e2e-')))
+  if (options.stableUserData) rmSync(userData, { recursive: true, force: true })
   const localTestEnv = loadEnv('test', process.cwd(), 'WXE_E2E_')
   const configuredCloseDelay = Number(
     process.env.WXE_E2E_CLOSE_DELAY_MS ?? localTestEnv.WXE_E2E_CLOSE_DELAY_MS
@@ -50,14 +56,20 @@ export async function launchTestApp(
   const page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
   const setWindowContentSize = async (size: { width: number; height: number }): Promise<void> => {
-    await app.evaluate(({ BrowserWindow }, nextSize) => {
+    await app.evaluate(({ BrowserWindow, screen }, nextSize) => {
       const [window] = BrowserWindow.getAllWindows()
       if (!window) throw new Error('E2E BrowserWindow is unavailable')
+      const { workArea } = screen.getPrimaryDisplay()
+      window.setPosition(workArea.x + 40, workArea.y + 40)
       window.setContentSize(nextSize.width, nextSize.height)
     }, size)
     await page.waitForFunction(
       (nextSize) => window.innerWidth === nextSize.width && window.innerHeight === nextSize.height,
       size
+    )
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     )
   }
   return {

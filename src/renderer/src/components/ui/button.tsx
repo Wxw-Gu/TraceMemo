@@ -3,23 +3,27 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '../../lib/cn'
 
 const buttonVariants = cva(
-  'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md border-0 bg-transparent text-sm font-medium transition-colors duration-fast ease-tm-standard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
+  'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border-0 bg-transparent text-sm font-medium transition-[color,background-color,border-color,transform] duration-fast ease-tm-standard active:translate-y-px disabled:pointer-events-none disabled:translate-y-0 disabled:!text-disabled-foreground disabled:opacity-100',
   {
     variants: {
       variant: {
-        default: 'bg-primary text-primary-foreground shadow-surface hover:bg-primary/90',
-        secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/75',
-        ghost: 'text-foreground hover:bg-accent hover:text-accent-foreground',
-        outline: 'border border-border bg-surface text-foreground shadow-surface hover:bg-accent',
+        default:
+          'bg-primary text-primary-foreground hover:bg-primary-hover disabled:bg-disabled-surface disabled:text-disabled-foreground',
+        secondary:
+          'bg-secondary text-secondary-foreground hover:bg-secondary/75 active:bg-secondary/60 disabled:bg-disabled-surface disabled:text-disabled-foreground',
+        ghost:
+          'text-foreground hover:bg-accent hover:text-accent-foreground active:bg-accent/75 disabled:text-disabled-foreground',
+        outline:
+          'border border-border bg-surface text-foreground hover:border-primary/25 hover:bg-accent active:bg-accent/75 disabled:border-disabled-border disabled:bg-disabled-surface disabled:text-disabled-foreground',
         destructive:
-          'bg-destructive text-destructive-foreground shadow-surface hover:bg-destructive/90',
-        link: 'text-primary underline-offset-4 hover:underline'
+          'bg-destructive text-destructive-foreground hover:bg-destructive/90 active:bg-destructive/80 disabled:bg-disabled-surface disabled:text-disabled-foreground',
+        link: '!h-auto !p-0 text-primary underline-offset-4 hover:text-primary-hover hover:underline disabled:text-disabled-foreground'
       },
       size: {
-        sm: 'h-8 rounded-md px-3 text-xs',
-        default: 'h-9 px-4 py-2',
-        lg: 'h-10 rounded-lg px-6',
-        icon: 'h-9 w-9'
+        sm: 'h-control-compact rounded-md px-2.5 text-xs',
+        default: 'h-control-standard px-3.5',
+        lg: 'h-control-form rounded-lg px-5',
+        icon: 'h-control-standard w-8 p-0'
       }
     },
     defaultVariants: {

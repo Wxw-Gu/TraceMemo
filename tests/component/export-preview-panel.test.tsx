@@ -16,6 +16,32 @@ const baseProps = {
 }
 
 describe('export progress panel', () => {
+  it('uses the semantic accent surface for outgoing preview messages', () => {
+    render(
+      <ExportPreviewPanel
+        {...baseProps}
+        status="idle"
+        previewItems={[
+          {
+            id: 'outgoing-preview',
+            from: 'self',
+            type: '文字',
+            datetime: '',
+            content: '已发送的消息',
+            isSender: true
+          }
+        ]}
+        progress={null}
+        includeVoiceTranscripts={false}
+        zip={false}
+      />
+    )
+
+    expect(screen.getByText('已发送的消息').closest('.export-preview-bubble')).toHaveClass(
+      'bg-accent'
+    )
+  })
+
   it('shows an indeterminate bar while the first message scan is still at zero', () => {
     render(
       <ExportPreviewPanel

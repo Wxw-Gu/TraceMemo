@@ -141,7 +141,7 @@ export function ExportPreviewPanel({
                       systemMessage
                         ? 'max-w-[92%] bg-muted px-2.5 py-1 text-center text-[11px] text-muted-foreground shadow-none'
                         : message.isSender
-                          ? 'bg-[#95ec69]'
+                          ? 'bg-accent'
                           : 'bg-surface'
                     }`}
                   >

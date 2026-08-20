@@ -1,13 +1,20 @@
 @mixin dark-theme {
-  --wxex-bg-app: #171b1a;
-  --wxex-bg-main: #1e2422;
-  --wxex-bg-sidebar: #202925;
-  --wxex-bg-elevated: #27302d;
-  --wxex-text-primary: #edf4f0;
-  --wxex-text-secondary: #b2c0b9;
-  --wxex-text-muted: #81918a;
-  --wxex-border: #394640;
-  --wxex-brand-soft: #26483c;
+  --wxex-bg-app: hsl(var(--tm-background));
+  --wxex-bg-main: hsl(var(--tm-canvas));
+  --wxex-bg-sidebar: hsl(var(--tm-surface-muted));
+  --wxex-bg-elevated: hsl(var(--tm-surface-elevated));
+  --wxex-text-primary: hsl(var(--tm-foreground));
+  --wxex-text-secondary: hsl(var(--tm-muted-foreground));
+  --wxex-text-muted: hsl(var(--tm-subtle-foreground));
+  --wxex-border: hsl(var(--tm-border));
+  --wxex-brand: hsl(var(--tm-primary));
+  --wxex-brand-hover: hsl(var(--tm-primary-hover));
+  --wxex-brand-soft: hsl(var(--tm-accent));
+  --wxex-ai: hsl(var(--tm-ai));
+  --wxex-ai-soft: hsl(var(--tm-ai-soft));
+  --wxex-success: hsl(var(--tm-success));
+  --wxex-warning: hsl(var(--tm-warning));
+  --wxex-danger: hsl(var(--tm-destructive));
 
   .conversation-section-header:hover,
   .conversation-item:hover,
@@ -52,7 +59,6 @@
     color: var(--wxex-text-secondary);
   }
 
-  .wechat-system-message-meta,
   .message-sender-name,
   .message-hover-time,
   .message-accessible-sender {

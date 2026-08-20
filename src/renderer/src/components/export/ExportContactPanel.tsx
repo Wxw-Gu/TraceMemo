@@ -1,6 +1,8 @@
-import React from 'react'
+import React, { useRef } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import type { ExportContactType } from '../../../../shared/export'
 import { Button, Checkbox, Input, Tabs, TabsList, TabsTrigger } from '../ui'
+import { SearchIcon } from '../chat/icons'
 import type { Contact, SelfInfo } from './exportTypes'
 import { displayName } from './exportUtils'
 
@@ -27,6 +29,71 @@ interface ExportContactPanelProps {
   onOpenSettings: () => void
 }
 
+interface ExportContactRowProps {
+  contact: Contact
+  active: boolean
+  pressed: boolean
+  selected: boolean
+  showSelection: boolean
+  disabled: boolean
+  style?: React.CSSProperties
+  onSelect: (contact: Contact) => void
+}
+
+function ExportContactRow({
+  contact,
+  active,
+  pressed,
+  selected,
+  showSelection,
+  disabled,
+  style,
+  onSelect
+}: ExportContactRowProps): React.ReactElement {
+  const name = displayName(contact)
+
+  return (
+    <button
+      type="button"
+      className={`${style ? 'absolute left-0 top-0 ' : ''}flex w-full items-center gap-2.5 border-0 border-l-[3px] px-4 py-[11px] text-left text-foreground transition-colors hover:bg-surface/60 disabled:cursor-not-allowed disabled:opacity-50 ${
+        active ? 'border-l-primary bg-primary/10' : 'border-l-transparent bg-transparent'
+      }`}
+      style={style}
+      onClick={() => onSelect(contact)}
+      disabled={disabled}
+      aria-pressed={pressed}
+    >
+      <span className="grid h-[38px] w-[38px] shrink-0 place-items-center overflow-hidden rounded-lg bg-primary/10 font-bold text-primary">
+        {contact.avatar ? (
+          <img className="h-full w-full object-cover" src={contact.avatar} alt="" />
+        ) : (
+          name.slice(0, 1)
+        )}
+      </span>
+      <span className="grid min-w-0 flex-1 gap-0.5">
+        <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px]">
+          {name}
+        </strong>
+        <small className="text-[11px] text-muted-foreground">
+          {contact.type === 'group' ? '群聊' : '联系人'}
+        </small>
+      </span>
+      {showSelection && (
+        <span
+          className={`grid h-[18px] w-[18px] shrink-0 place-items-center rounded border text-xs text-primary-foreground ${
+            selected ? 'border-primary bg-primary' : 'border-border-strong'
+          }`}
+          aria-hidden
+        >
+          {selected && (
+            <span className="h-2 w-1 -translate-y-px rotate-45 border-b-2 border-r-2 border-current" />
+          )}
+        </span>
+      )}
+    </button>
+  )
+}
+
 export function ExportContactPanel({
   contacts,
   filteredContacts,
@@ -49,6 +116,17 @@ export function ExportContactPanel({
   onToggleAllContactType,
   onOpenSettings
 }: ExportContactPanelProps): React.ReactElement {
+  const virtualizeContacts = filteredContacts.length >= 100
+  const contactListRef = useRef<HTMLDivElement>(null)
+  // TanStack Virtual owns mutable measurements, so React Compiler must skip this hook.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const contactVirtualizer = useVirtualizer({
+    count: virtualizeContacts ? filteredContacts.length : 0,
+    getScrollElement: () => contactListRef.current,
+    estimateSize: () => 60,
+    getItemKey: (index) => filteredContacts[index]?.md5 || index,
+    overscan: 10
+  })
   const groupCount = contacts.filter((contact) => contact.type === 'group').length
   const userCount = contacts.length - groupCount
   const selectedAllCount =
@@ -69,7 +147,7 @@ export function ExportContactPanel({
             className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
             aria-hidden
           >
-            ⌕
+            <SearchIcon className="h-3.5 w-3.5 fill-none stroke-current stroke-2" />
           </span>
           <Input
             className="h-[38px] pl-9 text-[13px]"
@@ -104,7 +182,7 @@ export function ExportContactPanel({
         </Tabs>
         <Button
           variant="outline"
-          className={`mt-2.5 h-auto w-full justify-between gap-3 px-2.5 py-2 text-left ${
+          className={`mt-2.5 !h-auto w-full justify-between gap-3 px-2.5 py-2 text-left ${
             exportAll ? 'border-primary bg-primary/10 text-primary hover:bg-primary/15' : ''
           }`}
           aria-pressed={exportAll}
@@ -170,61 +248,71 @@ export function ExportContactPanel({
         </div>
       ) : null}
 
-      <div className="export-contact-list min-h-0 flex-1 overflow-auto py-2">
-        {filteredContacts.map((contact) => {
-          const name = displayName(contact)
-          const selected = selectedContactIds.includes(contact.md5)
-          const selectedByAll = exportAll && allContactTypes.includes(contact.type)
-          const visuallySelected = exportAll ? selectedByAll : selected
-          const atLimit =
-            !exportAll && selectionMode && !selected && selectedContactIds.length >= selectionLimit
-          return (
-            <button
-              key={contact.md5}
-              type="button"
-              className={`flex w-full items-center gap-2.5 border-0 border-l-[3px] px-4 py-[11px] text-left text-foreground transition-colors hover:bg-surface/60 disabled:cursor-not-allowed disabled:opacity-50 ${
-                !exportAll && activeContact?.md5 === contact.md5
-                  ? 'border-l-primary bg-primary/10'
-                  : 'border-l-transparent bg-transparent'
-              }`}
-              onClick={() => onSelectContact(contact)}
-              disabled={atLimit}
-              aria-pressed={visuallySelected}
-            >
-              <span className="grid h-[38px] w-[38px] shrink-0 place-items-center overflow-hidden rounded-lg bg-primary/10 font-bold text-primary">
-                {contact.avatar ? (
-                  <img className="h-full w-full object-cover" src={contact.avatar} alt="" />
-                ) : (
-                  name.slice(0, 1)
-                )}
-              </span>
-              <span className="grid min-w-0 flex-1 gap-0.5">
-                <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px]">
-                  {name}
-                </strong>
-                <small className="text-[11px] text-muted-foreground">
-                  {contact.type === 'group' ? '群聊' : '联系人'}
-                </small>
-              </span>
-              {!exportAll && selectionMode && (
-                <span
-                  className={`grid h-[18px] w-[18px] shrink-0 place-items-center rounded border text-xs text-primary-foreground ${
-                    selected ? 'border-primary bg-primary' : 'border-border-strong'
-                  }`}
-                  aria-hidden
-                >
-                  {selected ? '✓' : ''}
-                </span>
-              )}
-            </button>
-          )
-        })}
+      <div ref={contactListRef} className="export-contact-list min-h-0 flex-1 overflow-auto py-2">
+        {virtualizeContacts ? (
+          <div
+            className="relative w-full"
+            style={{ height: `${contactVirtualizer.getTotalSize()}px` }}
+          >
+            {contactVirtualizer.getVirtualItems().map((virtualItem) => {
+              const contact = filteredContacts[virtualItem.index]
+              if (!contact) return null
+              const selected = selectedContactIds.includes(contact.md5)
+              const selectedByAll = exportAll && allContactTypes.includes(contact.type)
+              const visuallySelected = exportAll ? selectedByAll : selected
+              const atLimit =
+                !exportAll &&
+                selectionMode &&
+                !selected &&
+                selectedContactIds.length >= selectionLimit
+              return (
+                <ExportContactRow
+                  key={virtualItem.key}
+                  contact={contact}
+                  active={!exportAll && activeContact?.md5 === contact.md5}
+                  pressed={visuallySelected}
+                  selected={selected}
+                  showSelection={!exportAll && selectionMode}
+                  disabled={atLimit}
+                  style={{
+                    height: `${virtualItem.size}px`,
+                    transform: `translateY(${virtualItem.start}px)`
+                  }}
+                  onSelect={onSelectContact}
+                />
+              )
+            })}
+          </div>
+        ) : (
+          filteredContacts.map((contact) => {
+            const selected = selectedContactIds.includes(contact.md5)
+            const selectedByAll = exportAll && allContactTypes.includes(contact.type)
+            const visuallySelected = exportAll ? selectedByAll : selected
+            const atLimit =
+              !exportAll &&
+              selectionMode &&
+              !selected &&
+              selectedContactIds.length >= selectionLimit
+            return (
+              <ExportContactRow
+                key={contact.md5}
+                contact={contact}
+                active={!exportAll && activeContact?.md5 === contact.md5}
+                pressed={visuallySelected}
+                selected={selected}
+                showSelection={!exportAll && selectionMode}
+                disabled={atLimit}
+                onSelect={onSelectContact}
+              />
+            )
+          })
+        )}
       </div>
 
       <Button
         type="button"
         variant="ghost"
-        className="h-auto justify-start gap-2 border-t border-border px-4 py-3.5 text-left"
+        className="!h-auto justify-start gap-2 border-t border-border px-4 py-3.5 text-left"
         onClick={onOpenSettings}
       >
         <span className="grid h-[34px] w-[34px] shrink-0 place-items-center overflow-hidden rounded-full bg-primary/10 font-bold text-primary">

@@ -1,45 +1,3 @@
-.settings-primary-button,
-.settings-danger-button {
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-sm);
-  background: var(--wxex-bg-elevated);
-  color: var(--wxex-text-primary);
-  cursor: pointer;
-  font: 12px/18px var(--wxex-font);
-  padding: 8px 12px;
-
-  &:hover:not(:disabled) {
-    border-color: var(--wxex-brand);
-    color: var(--wxex-brand);
-  }
-
-  &:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-  }
-}
-
-.settings-primary-button {
-  border-color: var(--wxex-brand);
-  background: var(--wxex-brand);
-  color: #fff;
-  font-weight: 600;
-
-  &:hover:not(:disabled) {
-    background: var(--wxex-brand-hover);
-    color: #fff;
-  }
-}
-
-.settings-danger-button {
-  color: var(--wxex-danger);
-
-  &:hover:not(:disabled) {
-    border-color: var(--wxex-danger);
-    color: var(--wxex-danger);
-  }
-}
-
 .settings-card-kicker {
   display: block;
   margin-bottom: 6px;
@@ -306,7 +264,7 @@
   cursor: pointer;
 
   &:hover {
-    background: var(--wxex-surface-muted, #f7f9f8);
+    background: var(--wxex-bg-sidebar);
   }
 
   &.selected {
@@ -322,7 +280,7 @@
   overflow: hidden;
   border: 1px solid var(--wxex-border);
   border-radius: 50%;
-  background: var(--wxex-surface-muted, #f7f9f8);
+  background: var(--wxex-bg-sidebar);
   color: var(--wxex-text-secondary);
   font-size: 12px;
 }
@@ -383,7 +341,7 @@
   align-content: start;
   gap: 16px;
   padding: 14px;
-  background: var(--wxex-surface-muted, #f7f9f8);
+  background: var(--wxex-bg-sidebar);
 }
 
 .voice-batch-field {

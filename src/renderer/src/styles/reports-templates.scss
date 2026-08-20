@@ -555,7 +555,7 @@
   padding: 12px 14px;
   border: 1.5px solid var(--wxex-border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--wxex-bg-elevated);
   transition:
     border-color 0.2s,
     background 0.2s;
@@ -563,7 +563,7 @@
 
 .report-template-item.active {
   border-color: var(--wxex-primary, #07c160);
-  background: #f0fbf3;
+  background: var(--wxex-brand-soft);
 }
 
 .report-template-item.disabled {

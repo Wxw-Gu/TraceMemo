@@ -177,7 +177,7 @@ export function ExportConfigurationPanel({
                   aria-pressed={active}
                   className={`${
                     active ? 'active border-2 border-primary bg-primary/10 hover:bg-primary/15' : ''
-                  } h-[78px] min-w-0 flex-col gap-1.5 whitespace-normal px-2 text-foreground`}
+                  } !h-[78px] min-w-0 flex-col gap-1.5 whitespace-normal px-2 text-foreground`}
                   disabled={!exportAll && exportContactCount > 1 && value !== 'html'}
                   onClick={() => onFormatChange(value)}
                 >
