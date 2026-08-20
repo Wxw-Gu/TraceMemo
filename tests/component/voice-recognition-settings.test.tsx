@@ -146,6 +146,14 @@ describe('voice recognition settings', () => {
       conversationIds: ['group-b'],
       range: 'recent_30_days'
     })
+    await userEvent.click(screen.getByRole('combobox', { name: '语音转写时间范围' }))
+    await userEvent.click(screen.getByRole('option', { name: '所选会话全部历史' }))
+    await waitFor(() =>
+      expect(window.api.getVoiceBatchConversationSummaries).toHaveBeenCalledWith({
+        conversationIds: ['group-b'],
+        range: 'selected_history'
+      })
+    )
     await userEvent.click(screen.getByRole('checkbox', { name: /群聊 B/ }))
     await userEvent.click(screen.getByRole('tab', { name: /联系人 1/ }))
     await userEvent.click(await screen.findByRole('checkbox', { name: /联系人 A/ }))
@@ -157,7 +165,7 @@ describe('voice recognition settings', () => {
     await waitFor(() =>
       expect(window.api.startVoiceBatch).toHaveBeenCalledWith({
         conversationIds: ['group-b', 'contact-a'],
-        range: 'recent_30_days'
+        range: 'selected_history'
       })
     )
   })

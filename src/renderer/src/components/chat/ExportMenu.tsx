@@ -1,5 +1,11 @@
 import React from 'react'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui'
+import {
+  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '../ui'
 import { ArrowDownIcon, ExportIcon } from './icons'
 
 export type ExportRange = number | 'all'
@@ -22,16 +28,16 @@ export function ExportMenu({ disabled, onExport }: ExportMenuProps): React.React
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="chat-tool-button"
+        <Button
+          variant="outline"
+          size="sm"
           disabled={disabled}
           title={disabled ? '没有可导出的消息' : '导出聊天记录'}
         >
           <ExportIcon />
           <span>导出</span>
           <ArrowDownIcon />
-        </button>
+        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
         {EXPORT_OPTIONS.map((option, index) => (

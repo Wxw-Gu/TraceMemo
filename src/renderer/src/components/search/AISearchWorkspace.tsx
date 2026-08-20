@@ -30,6 +30,7 @@ import { ensureAiSearchDataConsent } from './services/aiSearchProviderConsent'
 import { ExternalProviderConsentDialog } from './ExternalProviderConsentDialog'
 import { AISearchComposer } from './AISearchComposer'
 import { AISearchEvidencePanel } from './AISearchEvidencePanel'
+import { Button } from '../ui'
 
 export function AISearchWorkspace({
   contacts,
@@ -670,14 +671,28 @@ export function AISearchWorkspace({
           {renderSearchDetails()}
         </div>
         <div className="ai-search-result-actions">
-          <button type="button" onClick={startNewQuestion} title="清空当前结果并提出新问题">
+          <Button
+            variant="outline"
+            size="sm"
+            className="px-2"
+            onClick={startNewQuestion}
+            title="清空当前结果并提出新问题"
+          >
             新问题
-          </button>
-          <button type="button" onClick={() => void copyAnswer()} title="复制 AI 摘要">
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="px-2"
+            onClick={() => void copyAnswer()}
+            title="复制 AI 摘要"
+          >
             复制摘要
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="px-2"
             onClick={() => {
               skipNextCache()
               void runAnalysis()
@@ -685,7 +700,7 @@ export function AISearchWorkspace({
             title="跳过缓存并重新读取聊天记录"
           >
             刷新数据
-          </button>
+          </Button>
         </div>
       </div>
       <section className="ai-search-summary-block">
@@ -719,9 +734,9 @@ export function AISearchWorkspace({
       <span className="ai-search-kicker">检索反馈</span>
       <h2>{analysisError || '当前范围没有足够证据'}</h2>
       <p>可以扩大时间范围、切换群聊，或换一个更具体的问题。</p>
-      <button
-        type="button"
-        className="primary"
+      <Button
+        size="sm"
+        className="mt-5"
         onClick={() => {
           const expandToAll = range === '30d' || range === 'all'
           setRange(expandToAll ? 'all' : '30d')
@@ -748,7 +763,7 @@ export function AISearchWorkspace({
         }}
       >
         {range === '30d' || range === 'all' ? '搜索全部历史' : '扩大到近 30 天'}
-      </button>
+      </Button>
     </div>
   )
 
@@ -779,25 +794,27 @@ export function AISearchWorkspace({
             <span className={aiModelConfig.configured ? 'ready' : 'warning'} />
             <span>{modelLabel}</span>
             {!aiModelConfig.configured && (
-              <button type="button" onClick={onOpenAISettings}>
+              <Button variant="link" size="sm" onClick={onOpenAISettings}>
                 配置模型
-              </button>
+              </Button>
             )}
           </div>
           {debugEnabled && (
-            <button
-              type="button"
-              className={`ai-search-debug-button ${debugPanelOpen ? 'active' : ''}`}
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setDebugPanelOpen((open) => !open)}
               title="查看本次检索诊断信息"
+              aria-expanded={debugPanelOpen}
+              aria-controls="ai-search-debug-panel"
             >
               诊断日志
-            </button>
+            </Button>
           )}
         </div>
       </header>
       {debugEnabled && debugPanelOpen && (
-        <section className="ai-search-debug-panel">
+        <section id="ai-search-debug-panel" className="ai-search-debug-panel">
           <div className="ai-search-debug-header">
             <div>
               <strong>检索诊断</strong>
@@ -806,12 +823,12 @@ export function AISearchWorkspace({
               </span>
             </div>
             <div className="ai-search-debug-actions">
-              <button type="button" onClick={() => setDebugEntries([])}>
+              <Button variant="outline" size="sm" onClick={() => setDebugEntries([])}>
                 清空
-              </button>
-              <button type="button" onClick={() => void window.api.revealAppLog()}>
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => void window.api.revealAppLog()}>
                 打开日志文件夹
-              </button>
+              </Button>
             </div>
           </div>
           {appLogPath && <small className="ai-search-debug-path">{appLogPath}</small>}
@@ -965,9 +982,9 @@ export function AISearchWorkspace({
                 {knowledgeStatus.lastError || '同步异常，旧搜索仍可使用。'}
               </p>
             )}
-            <button
-              type="button"
-              className="ai-search-knowledge-action"
+            <Button
+              size="sm"
+              className="w-full"
               disabled={
                 syncStarting ||
                 knowledgeStatus?.state === 'building' ||
@@ -982,7 +999,7 @@ export function AISearchWorkspace({
                 : knowledgeStatus?.state === 'ready'
                   ? '同步最新记录'
                   : '建立本地知识库'}
-            </button>
+            </Button>
             <details className="ai-search-knowledge-more">
               <summary>同步详情</summary>
               <p>

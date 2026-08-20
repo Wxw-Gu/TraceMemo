@@ -78,23 +78,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  button {
-    padding: 5px 8px;
-    color: var(--wxex-brand);
-    white-space: nowrap;
-  }
-}
-
-.ai-search-model-status button,
-.ai-search-result-actions button,
-.ai-search-insufficient button {
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-sm);
-  background: var(--wxex-bg-elevated);
-  color: var(--wxex-text-primary);
-  cursor: pointer;
-  font: inherit;
 }
 
 .ai-search-grid {
@@ -338,24 +321,6 @@
   color: var(--wxex-text-secondary);
   font-size: 10px;
   font-weight: 600;
-}
-
-.ai-search-knowledge-action {
-  min-height: 30px;
-  padding: 6px 9px;
-  border: 1px solid var(--wxex-brand);
-  border-radius: var(--wxex-radius-sm);
-  background: var(--wxex-brand);
-  color: #fff;
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.ai-search-knowledge-action:disabled {
-  cursor: wait;
-  opacity: 0.65;
 }
 
 .ai-search-knowledge-more {
@@ -651,20 +616,6 @@
   font-size: 28px;
 }
 
-.ai-search-insufficient {
-  button {
-    margin-top: 20px;
-    padding: 8px 12px;
-    font-size: 11px;
-
-    &.primary {
-      border-color: var(--wxex-brand);
-      background: var(--wxex-brand);
-      color: #fff;
-    }
-  }
-}
-
 .ai-search-prompts {
   display: flex;
   flex-wrap: wrap;
@@ -906,17 +857,6 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
-
-  button {
-    padding: 7px 9px;
-    font-size: 11px;
-
-    &.primary {
-      border-color: var(--wxex-brand);
-      background: var(--wxex-brand);
-      color: #fff;
-    }
-  }
 }
 
 .ai-search-summary-block {
@@ -1273,24 +1213,6 @@
   gap: 12px;
 }
 
-.ai-search-debug-button {
-  padding: 7px 10px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-sm);
-  background: var(--wxex-bg-elevated);
-  color: var(--wxex-text-secondary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.ai-search-debug-button.active,
-.ai-search-debug-button:hover {
-  border-color: var(--wxex-brand);
-  color: var(--wxex-brand);
-}
-
 .ai-search-debug-panel {
   flex: 0 0 auto;
   padding: 10px 22px 12px;
@@ -1324,17 +1246,6 @@
 .ai-search-debug-actions {
   display: flex;
   gap: 6px;
-}
-
-.ai-search-debug-actions button {
-  padding: 5px 8px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-sm);
-  background: var(--wxex-bg-elevated);
-  color: var(--wxex-brand);
-  cursor: pointer;
-  font: inherit;
-  font-size: 10px;
 }
 
 .ai-search-debug-path {

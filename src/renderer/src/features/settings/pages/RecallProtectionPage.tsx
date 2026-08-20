@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
+import { Switch } from '../../../components/ui'
 
-export function RecallProtectionPage({ onNotice }: { onNotice: (message: string) => void }): React.ReactElement {
+export function RecallProtectionPage({
+  onNotice
+}: {
+  onNotice: (message: string) => void
+}): React.ReactElement {
   const [enabled, setEnabled] = useState(false)
 
   useEffect(() => {
@@ -37,10 +42,10 @@ export function RecallProtectionPage({ onNotice }: { onNotice: (message: string)
                   <b>开启防撤回</b>
                   <small>尽量保留已撤回的聊天内容，方便后续查看。</small>
                 </span>
-                <input
-                  type="checkbox"
+                <Switch
                   checked={enabled}
-                  onChange={(event) => void changeEnabled(event.target.checked)}
+                  onCheckedChange={(checked) => void changeEnabled(checked)}
+                  aria-label="开启防撤回"
                 />
               </label>
               <aside className="settings-recall-notice">

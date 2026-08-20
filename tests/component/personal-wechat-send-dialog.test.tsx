@@ -187,6 +187,21 @@ describe('PersonalWechatSendDialog', () => {
     expect(screen.queryByRole('radio', { name: '文字' })).not.toBeInTheDocument()
   })
 
+  it('supports segmented keyboard navigation for the message type', async () => {
+    const user = userEvent.setup()
+    render(<PersonalWechatSendDialog contact={contact} isGroupChat onClose={vi.fn()} />)
+
+    await screen.findByText('技术交流群')
+    const imageMode = screen.getByRole('radio', { name: '图片' })
+    const voiceMode = screen.getByRole('radio', { name: '语音' })
+    imageMode.focus()
+    await user.keyboard('{ArrowRight}')
+    expect(voiceMode).toHaveFocus()
+    await user.keyboard(' ')
+    expect(voiceMode).toBeChecked()
+    expect(screen.getByRole('textbox', { name: '要生成的文字' })).toBeVisible()
+  })
+
   it('switches to image mode and sends only the selected image', async () => {
     render(<PersonalWechatSendDialog contact={contact} isGroupChat onClose={vi.fn()} />)
     await screen.findByText('技术交流群')
@@ -262,6 +277,8 @@ describe('PersonalWechatSendDialog', () => {
     await user.click(screen.getByRole('button', { name: '选择图片' }))
     await user.click(screen.getByRole('button', { name: '测试发送图片到群聊' }))
     expect(screen.getByRole('button', { name: '正在发送…' })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: '图片' })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: '语音' })).toBeDisabled()
 
     await user.keyboard('{Escape}')
     expect(screen.getByRole('dialog', { name: '个人微信测试发送' })).toBeVisible()

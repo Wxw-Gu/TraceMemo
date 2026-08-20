@@ -118,6 +118,10 @@
   padding-bottom: 16px;
   border-bottom: 1px solid var(--wxex-border);
 }
+.api-workspace-heading > div:first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
 .api-title-line {
   display: flex;
   flex-wrap: wrap;
@@ -154,34 +158,13 @@
 }
 .api-header-actions,
 .api-tester-actions,
-.api-runtime-actions,
-.api-skill-file-actions {
+.api-runtime-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
-.api-header-actions button,
-.api-tester-actions button,
-.api-runtime-actions button,
-.api-endpoint-row button,
-.api-response-summary + pre + p + button,
-.api-skill-file-actions button {
-  min-height: 32px;
-  padding: 0 11px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-sm);
-  background: var(--wxex-bg-elevated);
-  color: var(--wxex-text-primary);
-  cursor: pointer;
-  font: 600 12px/18px var(--wxex-font);
-}
-.api-header-actions button:hover,
-.api-tester-actions button:hover,
-.api-runtime-actions button:hover,
-.api-endpoint-row button:hover,
-.api-skill-file-actions button:hover {
-  border-color: var(--wxex-brand);
-  color: var(--wxex-brand);
+.api-header-actions {
+  flex: 0 0 auto;
 }
 .api-primary-button {
   border-color: var(--wxex-brand) !important;
@@ -322,43 +305,6 @@
   gap: 8px;
   margin-top: 10px;
 }
-.skill-flow-actions button,
-.api-skill-details button {
-  min-height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-sm);
-  background: #fff;
-  color: var(--wxex-text-primary);
-  cursor: pointer;
-  font: 600 12px/18px var(--wxex-font);
-}
-.skill-flow-actions button:disabled,
-.api-skill-details button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-.skill-target-selector {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-}
-.skill-target-selector button {
-  min-height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-sm);
-  background: #fff;
-  color: var(--wxex-text-secondary);
-  cursor: pointer;
-  font: 600 12px/18px var(--wxex-font);
-}
-.skill-target-selector button.active {
-  border-color: var(--wxex-brand);
-  background: var(--wxex-brand-soft);
-  color: var(--wxex-brand);
-}
 .api-skill-details {
   margin-top: 16px;
   border: 1px solid var(--wxex-border);
@@ -387,37 +333,6 @@
 .api-skill-details dd {
   margin: 0;
   color: var(--wxex-text-primary);
-}
-.api-skill-more {
-  position: relative;
-}
-.api-skill-more summary {
-  display: grid;
-  min-height: 32px;
-  place-items: center;
-  padding: 0 11px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-sm);
-  background: var(--wxex-bg-elevated);
-  color: var(--wxex-text-primary);
-  cursor: pointer;
-  font: 600 12px/18px var(--wxex-font);
-  list-style: none;
-}
-.api-skill-more[open] > button {
-  position: absolute;
-  z-index: 2;
-  top: 36px;
-  right: 0;
-  width: 170px;
-  padding: 9px 10px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-sm);
-  background: #fff;
-  color: var(--wxex-text-primary);
-  box-shadow: var(--wxex-shadow-popover);
-  font: 12px/18px var(--wxex-font);
-  text-align: left;
 }
 .api-section-heading {
   display: flex;
@@ -472,11 +387,6 @@
   display: flex;
   gap: 4px;
 }
-.api-endpoint-row button {
-  min-height: 26px;
-  padding: 0 7px;
-  font-size: 11px;
-}
 .api-method {
   display: inline-block;
   color: var(--wxex-brand);
@@ -524,29 +434,8 @@
   color: var(--wxex-danger);
   font-size: 11px;
 }
-.api-param-grid input,
-.api-json-input textarea {
-  box-sizing: border-box;
-  width: 100%;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-sm);
-  outline: none;
-  background: #fff;
-  color: var(--wxex-text-primary);
-  font: 12px/18px var(--wxex-font);
-}
-.api-param-grid input {
-  height: 34px;
-  padding: 0 9px;
-}
 .api-json-input {
   margin-top: 10px;
-}
-.api-json-input textarea {
-  min-height: 180px;
-  padding: 10px;
-  resize: vertical;
-  font-family: ui-monospace, monospace;
 }
 .api-tester-actions {
   justify-content: flex-end;
@@ -619,10 +508,6 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
 }
-.api-runtime-actions button {
-  min-height: 30px;
-  padding: 0 6px;
-}
 .api-security-warning {
   margin: 12px 16px;
   padding: 9px 10px;
@@ -645,7 +530,7 @@
     monospace;
   user-select: text;
 }
-.api-token-section .api-runtime-actions button:last-child {
+.api-token-section .api-runtime-actions > :last-child {
   grid-column: 1 / -1;
 }
 .api-response-summary {

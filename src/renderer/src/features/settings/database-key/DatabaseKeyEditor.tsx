@@ -81,22 +81,10 @@ export function DatabaseKeyEditor({
       </div>
       <p>保存前会验证密钥格式、数据库可读性和当前账号身份。</p>
       <div className="database-key-actions">
-        <Button
-          variant="secondary"
-          type="button"
-          className="database-key-secondary"
-          onClick={onValidate}
-          disabled={disabled || !value}
-        >
+        <Button variant="outline" type="button" onClick={onValidate} disabled={disabled || !value}>
           验证密钥
         </Button>
-        <Button
-          variant="default"
-          type="button"
-          className="database-key-primary"
-          onClick={onSave}
-          disabled={disabled || !canSave}
-        >
+        <Button variant="default" type="button" onClick={onSave} disabled={disabled || !canSave}>
           保存密钥
         </Button>
       </div>

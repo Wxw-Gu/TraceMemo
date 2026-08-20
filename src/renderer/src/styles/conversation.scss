@@ -49,31 +49,9 @@
 }
 
 .conversation-refresh-button {
-  display: grid;
   width: 26px;
   height: 26px;
-  place-items: center;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--wxex-text-muted);
-  cursor: pointer;
   -webkit-app-region: no-drag;
-
-  &:hover:not(:disabled) {
-    background: rgba(36, 122, 99, 0.1);
-    color: var(--wxex-brand);
-  }
-
-  &:focus-visible {
-    outline: 2px solid rgba(36, 122, 99, 0.35);
-    outline-offset: 1px;
-  }
-
-  &:disabled {
-    cursor: wait;
-    opacity: 0.72;
-  }
 
   svg {
     width: 16px;
@@ -94,34 +72,13 @@
 
 .conversation-search {
   box-sizing: border-box;
-  display: flex;
-  height: 34px;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-md);
-  background: var(--wxex-bg-elevated);
-  padding: 0 10px;
+  position: relative;
+  display: block;
   color: var(--wxex-text-muted);
   -webkit-app-region: no-drag;
 
   &:focus-within {
-    border-color: rgba(36, 122, 99, 0.58);
     color: var(--wxex-brand);
-  }
-
-  input {
-    width: 100%;
-    min-width: 0;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    color: var(--wxex-text-primary);
-    font: 13px/18px var(--wxex-font);
-
-    &::placeholder {
-      color: var(--wxex-text-muted);
-    }
   }
 }
 
@@ -130,7 +87,12 @@
   height: 17px;
   display: grid;
   place-items: center;
-  flex: 0 0 auto;
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 11px;
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .conversation-search-icon svg {

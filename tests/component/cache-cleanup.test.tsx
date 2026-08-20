@@ -27,6 +27,7 @@ describe('CacheCleanupPage', () => {
       updatedAt: Date.now()
     })
     api.openKnowledgeDirectory.mockResolvedValue({ success: true })
+    api.clearCache.mockResolvedValue({ items: [], totalBytes: 0, updatedAt: Date.now() })
   })
 
   it('opens the real knowledge directory without clearing it', async () => {
@@ -38,5 +39,15 @@ describe('CacheCleanupPage', () => {
     await waitFor(() => expect(api.openKnowledgeDirectory).toHaveBeenCalledOnce())
     expect(api.clearCache).not.toHaveBeenCalled()
     expect(onNotice).toHaveBeenCalledWith('已打开知识库文件夹')
+  })
+
+  it('keeps the clear-all scope and notice unchanged', async () => {
+    const onNotice = vi.fn()
+    render(<CacheCleanupPage onNotice={onNotice} />)
+
+    await userEvent.click(await screen.findByRole('button', { name: '清理全部' }))
+
+    await waitFor(() => expect(api.clearCache).toHaveBeenCalledWith('all'))
+    expect(onNotice).toHaveBeenCalledWith('已清理全部可恢复缓存和检索记录')
   })
 })

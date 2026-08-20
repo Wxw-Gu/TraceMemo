@@ -156,6 +156,50 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
     void user
   })
 
+  it('keeps result actions and model settings callbacks unchanged after UI migration', async () => {
+    const onOpenAISettings = vi.fn()
+    const user = userEvent.setup()
+    const view = renderWorkspace({ onOpenAISettings })
+    await submitQuery()
+    await screen.findByText('测试搜索答案')
+
+    await user.click(screen.getByRole('button', { name: '复制摘要' }))
+    expect(api.copyText).toHaveBeenCalledWith('测试搜索答案')
+
+    view.rerender(
+      <AISearchWorkspace
+        {...(makeProps({
+          onOpenAISettings,
+          aiModelConfig: {
+            configured: false,
+            providerName: '',
+            model: '',
+            modelName: '',
+            status: 'unconfigured' as const
+          }
+        }) as never)}
+      />
+    )
+    await user.click(screen.getByRole('button', { name: '配置模型' }))
+    expect(onOpenAISettings).toHaveBeenCalledOnce()
+  })
+
+  it('exposes the diagnostics action as an expanded control and keeps log access unchanged', async () => {
+    api.getSettings.mockResolvedValue({ settings: { debugEnabled: true } })
+    api.getAppLogPath.mockResolvedValue('/fixture/app.log')
+    renderWorkspace()
+    const user = userEvent.setup()
+    const diagnostics = await screen.findByRole('button', { name: '诊断日志' })
+
+    expect(diagnostics).toHaveAttribute('aria-expanded', 'false')
+    await user.click(diagnostics)
+    expect(diagnostics).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('/fixture/app.log')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '打开日志文件夹' }))
+    expect(api.revealAppLog).toHaveBeenCalledOnce()
+  })
+
   it('renders a failed retrieval without producing a Summary', async () => {
     api.runAiSearch.mockResolvedValue(
       makeSearchResult({

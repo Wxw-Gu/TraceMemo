@@ -16,6 +16,8 @@ const listVoices = vi.fn()
 const openApiKeys = vi.fn()
 const getRuntimeStatus = vi.fn()
 const onRuntimeProgress = vi.fn(() => vi.fn())
+const openRuntimeDirectory = vi.fn()
+const removeRuntime = vi.fn()
 
 const response = {
   success: true,
@@ -82,9 +84,22 @@ describe('TextToSpeechPage', () => {
       platform: 'darwin',
       architecture: 'arm64',
       supported: true,
-      removable: true
+      removable: true,
+      directory: '/tmp/personal-wechat-runtime'
     })
     onRuntimeProgress.mockReset().mockReturnValue(vi.fn())
+    openRuntimeDirectory.mockReset().mockResolvedValue({ success: true })
+    removeRuntime.mockReset().mockResolvedValue({
+      version: 'v0.0.18',
+      state: 'missing',
+      downloadedBytes: 0,
+      totalBytes: 100,
+      progress: 0,
+      platform: 'darwin',
+      architecture: 'arm64',
+      supported: true,
+      removable: false
+    })
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
@@ -93,7 +108,9 @@ describe('TextToSpeechPage', () => {
         listTextToSpeechVoices: listVoices,
         openFishAudioApiKeys: openApiKeys,
         getPersonalWechatRuntimeStatus: getRuntimeStatus,
-        onPersonalWechatRuntimeProgress: onRuntimeProgress
+        onPersonalWechatRuntimeProgress: onRuntimeProgress,
+        openPersonalWechatRuntimeDirectory: openRuntimeDirectory,
+        removePersonalWechatRuntime: removeRuntime
       }
     })
   })
@@ -134,6 +151,33 @@ describe('TextToSpeechPage', () => {
     await screen.findByText('微信发送组件')
     fireEvent.click(screen.getByRole('button', { name: '前往 api.fish.audio 获取 Key' }))
     await waitFor(() => expect(openApiKeys).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps model selection and API key actions on their existing settings callbacks', async () => {
+    const user = userEvent.setup()
+    render(<TextToSpeechPage onNotice={vi.fn()} />)
+
+    const apiKeyInput = await screen.findByPlaceholderText('已安全保存；输入新 Key 可替换')
+    expect(apiKeyInput).toHaveAttribute('type', 'password')
+    await user.click(screen.getByRole('button', { name: '显示' }))
+    expect(apiKeyInput).toHaveAttribute('type', 'text')
+
+    await user.click(screen.getByRole('combobox', { name: '合成模型' }))
+    await user.click(screen.getByRole('option', { name: 's2.1-pro', exact: true }))
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ model: 's2.1-pro' }))
+
+    await user.click(screen.getByRole('button', { name: '清除应用内 Key' }))
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ clearApiKey: true }))
+  })
+
+  it('keeps runtime directory and refresh actions wired to the existing API', async () => {
+    const user = userEvent.setup()
+    render(<TextToSpeechPage onNotice={vi.fn()} />)
+
+    await user.click(await screen.findByRole('button', { name: '打开目录' }))
+    expect(openRuntimeDirectory).toHaveBeenCalledOnce()
+    await user.click(screen.getByRole('button', { name: '重新检测' }))
+    expect(getRuntimeStatus).toHaveBeenCalledTimes(2)
   })
 
   it('opens supported versions from both triggers and restores focus after closing', async () => {

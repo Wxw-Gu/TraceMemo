@@ -1,4 +1,5 @@
 import React from 'react'
+import { Button } from '../ui'
 
 interface ReportEmptyStateProps {
   icon?: 'spark'
@@ -27,9 +28,7 @@ export function ReportEmptyState({
       )}
       <h2>{title}</h2>
       <p>{message}</p>
-      <button type="button" onClick={onAction}>
-        {actionLabel}
-      </button>
+      <Button onClick={onAction}>{actionLabel}</Button>
     </div>
   )
 }

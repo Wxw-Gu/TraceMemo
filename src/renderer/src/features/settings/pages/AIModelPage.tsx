@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { AIRuntimeModelConfig } from '../../../../../shared/ai-provider'
+import { Button } from '../../../components/ui'
 import { AIProviderCard } from '../ai-model/AIProviderCard'
 import { AIProviderEditor } from '../ai-model/AIProviderEditor'
 import { AIImageUnderstandingTest } from '../ai-model/AIImageUnderstandingTest'
@@ -39,9 +40,7 @@ export function AIModelPage({
           <h1>AI 模型</h1>
           <p>管理模型供应商、连接信息和默认模型</p>
         </div>
-        <button className="database-key-primary" onClick={openNewProvider}>
-          添加供应商
-        </button>
+        <Button onClick={openNewProvider}>添加供应商</Button>
       </header>
       <div className="settings-page-scroll">
         <div className="settings-page-content ai-model-content">

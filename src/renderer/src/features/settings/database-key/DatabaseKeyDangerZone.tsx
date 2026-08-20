@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,6 +24,8 @@ export function DatabaseKeyDangerZone({
 }): React.ReactElement {
   const [confirming, setConfirming] = useState(false)
   const [confirmingReturn, setConfirmingReturn] = useState(false)
+  const clearTriggerRef = useRef<HTMLButtonElement>(null)
+  const returnTriggerRef = useRef<HTMLButtonElement>(null)
   return (
     <>
       <section className="database-key-connection-actions">
@@ -33,7 +35,12 @@ export function DatabaseKeyDangerZone({
             <strong>返回登录界面</strong>
             <small>断开当前数据库连接，回到密钥输入界面。不会删除已保存密钥或微信数据。</small>
           </span>
-          <Button type="button" variant="outline" onClick={() => setConfirmingReturn(true)}>
+          <Button
+            ref={returnTriggerRef}
+            type="button"
+            variant="outline"
+            onClick={() => setConfirmingReturn(true)}
+          >
             返回登录
           </Button>
         </div>
@@ -46,6 +53,7 @@ export function DatabaseKeyDangerZone({
             <small>从系统安全存储中删除密钥，不会删除微信数据库文件。</small>
           </span>
           <Button
+            ref={clearTriggerRef}
             type="button"
             variant="destructive"
             onClick={() => setConfirming(true)}
@@ -65,7 +73,12 @@ export function DatabaseKeyDangerZone({
         </div>
       </section>
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
-        <AlertDialogContent>
+        <AlertDialogContent
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            window.queueMicrotask(() => clearTriggerRef.current?.focus())
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>确认清除数据库密钥？</AlertDialogTitle>
             <AlertDialogDescription>
@@ -85,7 +98,12 @@ export function DatabaseKeyDangerZone({
         </AlertDialogContent>
       </AlertDialog>
       <AlertDialog open={confirmingReturn} onOpenChange={setConfirmingReturn}>
-        <AlertDialogContent>
+        <AlertDialogContent
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            window.queueMicrotask(() => returnTriggerRef.current?.focus())
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>返回登录界面？</AlertDialogTitle>
             <AlertDialogDescription>

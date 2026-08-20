@@ -7,6 +7,7 @@
   }
   .api-header-actions {
     max-width: 260px;
+    flex-shrink: 0;
     justify-content: flex-end;
   }
   .api-endpoint-head,
@@ -17,6 +18,17 @@
   }
   .api-flow {
     overflow-x: auto;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 900px) {
+  .api-workspace-heading {
+    flex-direction: column;
+  }
+  .api-header-actions {
+    max-width: none;
+    flex-wrap: wrap;
     justify-content: flex-start;
   }
 }
@@ -152,8 +164,7 @@
   font: 13px/18px var(--wxex-font);
 }
 
-.report-history-empty button,
-.report-center-empty button {
+.report-history-empty button {
   justify-self: start;
   min-height: 32px;
   padding: 0 12px;
@@ -213,9 +224,7 @@
   gap: 8px;
 }
 
-.report-viewer-toolbar button,
-.report-zoom-bar button,
-.report-settings-section button {
+.report-viewer-toolbar button {
   min-height: 32px;
   padding: 0 12px;
   border: 1px solid var(--wxex-border);
@@ -369,10 +378,6 @@
 .report-center-empty p {
   margin: 0;
   font: 13px/20px var(--wxex-font);
-}
-
-.report-center-empty button {
-  justify-self: center;
 }
 
 .report-settings-panel {
@@ -583,10 +588,6 @@
   text-transform: uppercase;
 }
 
-.report-template-item input[type='radio'] {
-  accent-color: var(--wxex-primary, #07c160);
-}
-
 .report-template-body {
   flex: 1;
   min-width: 0;
@@ -789,49 +790,6 @@
   line-height: 1.5;
 }
 
-.report-template-preview-btn {
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  border-radius: 8px;
-  border: 1px solid var(--wxex-border);
-  background: #fff;
-  color: var(--wxex-text-primary, #1f2933);
-  cursor: pointer;
-  transition:
-    background 0.2s,
-    color 0.2s,
-    border-color 0.2s;
-}
-
-.report-template-preview-btn:hover {
-  background: var(--wxex-primary, #07c160);
-  color: #fff;
-  border-color: var(--wxex-primary, #07c160);
-}
-
-/* 预览遮罩 */
-.report-template-preview-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 999;
-  padding: 20px;
-}
-
-.report-template-preview-card {
-  background: #f3f5f7;
-  border-radius: 18px;
-  padding: 18px;
-  width: min(520px, 100%);
-  max-height: 90vh;
-  overflow-y: auto;
-  box-shadow: 0 16px 60px rgba(15, 23, 42, 0.25);
-}
-
 .report-template-preview-card > .report-template-diagram {
   width: 100%;
   height: 260px;
@@ -900,19 +858,6 @@
   font-style: normal;
 }
 
-.report-template-preview-card h4 {
-  margin: 0 0 6px;
-  font-size: 17px;
-  font-weight: 800;
-}
-
-.report-template-preview-card p.muted {
-  margin: 0 0 14px;
-  font-size: 12px;
-  color: var(--wxex-text-secondary, #485465);
-  line-height: 1.5;
-}
-
 .report-template-preview-frame {
   display: grid;
   gap: 8px;
@@ -974,22 +919,6 @@
   margin-top: 14px;
 }
 
-.report-template-preview-actions button {
-  padding: 9px 14px;
-  border-radius: 10px;
-  border: none;
-  background: var(--wxex-primary, #07c160);
-  color: #fff;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.report-template-preview-actions button.secondary {
-  border: 1px solid var(--wxex-border);
-  background: #fff;
-  color: var(--wxex-text-primary);
-}
-
 .settings-auto-login-card {
   padding: 18px 20px;
 }
@@ -1045,12 +974,6 @@
 .settings-recall-option small {
   color: var(--wxex-text-secondary);
   font: 12px/18px var(--wxex-font);
-}
-.settings-recall-option input {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
-  accent-color: var(--wxex-brand);
 }
 .settings-recall-notice {
   display: grid;

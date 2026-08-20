@@ -445,6 +445,33 @@ handle('voice:downloadModel', () => ({ success: true, status: voiceModelStatus('
 handle('voice:cancelModelDownload', () => ({ success: true }))
 handle('voice:removeModel', () => voiceModelStatus())
 handle('voice:openModelDirectory', () => ({ success: true }))
+handle('voice:getBatchProgress', () => ({
+  accountIdentity: 'fixture-account',
+  state: 'idle',
+  total: 0,
+  processed: 0,
+  cached: 0,
+  succeeded: 0,
+  failed: 0,
+  elapsedMs: 0,
+  estimatedRemainingMs: null
+}))
+handle('voice:getBatchConversationSummaries', (request) =>
+  request.conversationIds.map((conversationId, index) => ({
+    conversationId,
+    voiceMessageCount: index + 3
+  }))
+)
+handle('voice:getBatchPreflight', (request) => ({
+  accountIdentity: 'fixture-account',
+  conversationCount: request.conversationIds.length,
+  voiceMessageCount: request.conversationIds.length * 3,
+  cachedCount: 0,
+  pendingCount: request.conversationIds.length * 3,
+  failedCount: 0,
+  estimatedDurationMs: null,
+  modelReady: false
+}))
 handle('voice:recognize', () => ({ success: true, transcript: '固定脱敏转写文本', language: 'zh' }))
 handle('voice:cancelRecognition', () => ({ success: true }))
 handle('db:getSticker', (url) =>
@@ -612,8 +639,35 @@ handle('app-log:write', (entry) => {
 })
 handle('app-log:getPath', () => path.join(userData, 'logs', 'e2e.log'))
 handle('app-log:reveal', () => undefined)
-handle('cache:getSummary', () => ({ bootstrapBytes: 0, electronBytes: 0, totalBytes: 0 }))
-handle('cache:clear', () => ({ bootstrapBytes: 0, electronBytes: 0, totalBytes: 0 }))
+const cacheSummary = () => ({
+  items: [
+    {
+      id: 'bootstrap',
+      label: '启动缓存',
+      description: '联系人和会话的本地启动快照',
+      sizeBytes: 4096,
+      fileCount: 2
+    },
+    {
+      id: 'electron',
+      label: '界面缓存',
+      description: 'Electron 页面资源和网络缓存',
+      sizeBytes: 2 * 1024 * 1024,
+      fileCount: 12
+    },
+    {
+      id: 'knowledge',
+      label: '本地知识库索引',
+      description: '问问微信使用的本地检索索引',
+      sizeBytes: 12 * 1024 * 1024,
+      fileCount: 8
+    }
+  ],
+  totalBytes: 14 * 1024 * 1024 + 4096,
+  updatedAt: fixtureNowMs
+})
+handle('cache:getSummary', cacheSummary)
+handle('cache:clear', cacheSummary)
 handle('api:getStatus', () => ({ running: false, host: settings.apiHost, port: settings.apiPort }))
 handle('api:tokenStatus', () => ({
   success: true,
@@ -660,6 +714,19 @@ handle('api:toggle', (enabled) => ({
   host: settings.apiHost,
   port: settings.apiPort
 }))
+const agentHubStatus = () => ({
+  hub: 'offline',
+  connector: 'disconnected',
+  updatedAt: fixtureNowMs,
+  dataApi: 'online',
+  databaseReady: true
+})
+handle('agent-hub:getStatus', agentHubStatus)
+handle('agent-hub:getLogs', () => [])
+handle('agent-hub:clearLogs', () => ({ success: true }))
+handle('agent-hub:startLogin', () => ({ status: agentHubStatus() }))
+handle('agent-hub:cancelLogin', () => ({ status: agentHubStatus() }))
+handle('agent-hub:disconnect', () => ({ status: agentHubStatus() }))
 handle('image:getConfig', () => ({
   success: true,
   configured: true,
@@ -734,8 +801,6 @@ handle('accounts:discover', (inputPath) =>
         ]
       }
 )
-handle('agent-hub:getStatus', () => ({ state: 'disconnected', connected: false }))
-handle('agent-hub:getLogs', () => [])
 handle('app-update:getState', () => ({ status: 'idle', currentVersion: '2.2.0' }))
 
 for (const channel of [

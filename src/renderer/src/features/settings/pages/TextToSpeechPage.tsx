@@ -11,7 +11,13 @@ import {
   DialogContent,
   DialogDescription,
   DialogHeader,
-  DialogTitle
+  DialogTitle,
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
 } from '../../../components/ui'
 import { isMac, isWindows } from '../../../utils/runtime-environment'
 
@@ -611,52 +617,57 @@ export function TextToSpeechPage({
 
               <div className="tts-runtime-actions">
                 {personalWechatRuntimeSupported && runtimeStatus?.state === 'downloading' ? (
-                  <button type="button" onClick={() => void cancelRuntimeDownload()}>
+                  <Button variant="outline" size="sm" onClick={() => void cancelRuntimeDownload()}>
                     取消下载
-                  </button>
+                  </Button>
                 ) : personalWechatRuntimeSupported && runtimeStatus?.state === 'ready' ? (
                   <>
                     {runtimeStatus.directory ? (
-                      <button type="button" onClick={() => void openRuntimeDirectory()}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void openRuntimeDirectory()}
+                      >
                         打开目录
-                      </button>
+                      </Button>
                     ) : null}
                     {runtimeStatus.removable ? (
-                      <button
-                        type="button"
-                        className="settings-danger-button"
+                      <Button
+                        variant="destructive"
+                        size="sm"
                         disabled={runtimeBusy}
                         onClick={() => void removeRuntime()}
                       >
                         卸载组件
-                      </button>
+                      </Button>
                     ) : null}
                   </>
                 ) : personalWechatRuntimeSupported ? (
-                  <button
-                    type="button"
-                    className="settings-primary-button"
-                    disabled={runtimeBusy}
-                    onClick={() => void downloadRuntime()}
-                  >
+                  <Button size="sm" disabled={runtimeBusy} onClick={() => void downloadRuntime()}>
                     {runtimeStatus?.state === 'invalid' || runtimeStatus?.state === 'error'
                       ? '重新下载'
                       : '下载组件'}
-                  </button>
+                  </Button>
                 ) : null}
-                <button type="button" disabled={runtimeBusy} onClick={() => void refreshRuntime()}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={runtimeBusy}
+                  onClick={() => void refreshRuntime()}
+                >
                   重新检测
-                </button>
+                </Button>
                 {personalWechatRuntimeSupported ? (
-                  <button
-                    type="button"
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={(event) => {
                       wechatVersionsTriggerRef.current = event.currentTarget
                       setShowWechatVersions(true)
                     }}
                   >
                     支持版本
-                  </button>
+                  </Button>
                 ) : null}
               </div>
 
@@ -686,14 +697,14 @@ export function TextToSpeechPage({
                   <strong>API Key</strong>
                   <p>保存后即可加载音色并生成语音。</p>
                 </div>
-                <button type="button" onClick={() => void openApiKeys()}>
+                <Button variant="outline" size="sm" onClick={() => void openApiKeys()}>
                   前往 api.fish.audio 获取 Key
-                </button>
+                </Button>
               </div>
               <label className="tts-api-input">
                 <span>API Key</span>
                 <div>
-                  <input
+                  <Input
                     type={showApiKey ? 'text' : 'password'}
                     value={apiKey}
                     disabled={savingKey || !settings?.encryptionAvailable}
@@ -707,42 +718,47 @@ export function TextToSpeechPage({
                     autoComplete="off"
                     onChange={(event) => setApiKey(event.target.value)}
                   />
-                  <button type="button" onClick={() => setShowApiKey((current) => !current)}>
+                  <Button variant="outline" onClick={() => setShowApiKey((current) => !current)}>
                     {showApiKey ? '隐藏' : '显示'}
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
                     className="tts-save-key-button"
                     disabled={!apiKey.trim() || savingKey || !settings?.encryptionAvailable}
                     onClick={() => void saveApiKey()}
                   >
                     {savingKey ? '保存中…' : '保存 Key'}
-                  </button>
+                  </Button>
                 </div>
               </label>
               <div className="tts-api-footer">
                 <span>{keyStatusText}</span>
                 {settings?.hasStoredApiKey ? (
-                  <button
-                    type="button"
-                    className="settings-danger-button"
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    disabled={savingKey}
                     onClick={() => void clearApiKey()}
                   >
                     清除应用内 Key
-                  </button>
+                  </Button>
                 ) : null}
               </div>
-              <label className="tts-model-select">
+              <div className="tts-model-select">
                 <span>合成模型</span>
-                <select
+                <Select
                   value={settings?.model || 's2.1-pro-free'}
                   disabled={!settings}
-                  onChange={(event) => void changeModel(event.target.value as TextToSpeechModel)}
+                  onValueChange={(value) => void changeModel(value as TextToSpeechModel)}
                 >
-                  <option value="s2.1-pro-free">s2.1-pro-free</option>
-                  <option value="s2.1-pro">s2.1-pro</option>
-                </select>
-              </label>
+                  <SelectTrigger aria-label="合成模型">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="s2.1-pro-free">s2.1-pro-free</SelectItem>
+                    <SelectItem value="s2.1-pro">s2.1-pro</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </section>
 
             <div className="tts-voice-heading">
@@ -760,16 +776,22 @@ export function TextToSpeechPage({
                 }}
               >
                 <span aria-hidden>⌕</span>
-                <input
+                <Input
                   type="search"
                   value={query}
+                  aria-label="按音色名称搜索"
                   placeholder="按音色名称搜索"
                   disabled={!settings?.hasApiKey || loadingVoices}
                   onChange={(event) => setQuery(event.target.value)}
                 />
-                <button type="submit" disabled={!settings?.hasApiKey || loadingVoices}>
+                <Button
+                  type="submit"
+                  variant="outline"
+                  size="sm"
+                  disabled={!settings?.hasApiKey || loadingVoices}
+                >
                   搜索
-                </button>
+                </Button>
               </form>
             </div>
 
@@ -870,14 +892,14 @@ export function TextToSpeechPage({
                           {savingVoiceId === voice.id ? '…' : selected ? '✓' : ''}
                         </span>
                       </button>
-                      <button
-                        type="button"
-                        className="tts-voice-preview"
+                      <Button
+                        variant="outline"
+                        size="sm"
                         disabled={!voice.previewUrl}
                         onClick={() => playPreview(voice)}
                       >
                         {playingVoiceId === voice.id ? '停止' : '试听'}
-                      </button>
+                      </Button>
                     </article>
                   )
                 })}
@@ -891,14 +913,14 @@ export function TextToSpeechPage({
               </div>
             ) : null}
             {hasMore ? (
-              <button
-                type="button"
+              <Button
+                variant="outline"
                 className="tts-load-more"
                 disabled={loadingVoices}
                 onClick={() => void loadVoices(pageNumber + 1, appliedQuery, true, selectedTags)}
               >
                 加载更多音色
-              </button>
+              </Button>
             ) : null}
             {error ? <p className="tts-settings-error">{error}</p> : null}
           </div>

@@ -2,7 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Contact } from '../../../../shared/types'
 import type { PersonalWechatSenderStatus } from '../../../../shared/personal-wechat'
 import type { TextToSpeechSettings, TextToSpeechVoice } from '../../../../shared/text-to-speech'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui'
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  SegmentedControl,
+  SegmentedControlItem,
+  Textarea
+} from '../ui'
 
 type SendMode = 'image' | 'voice'
 type VoiceSource = 'generated' | 'file'
@@ -440,22 +450,36 @@ export function PersonalWechatSendDialog({
           <div className="personal-wechat-send-status-actions">
             {(status?.state === 'unsupported_version' || status?.state === 'runtime_missing') &&
             onOpenTextToSpeechSettings ? (
-              <button
-                type="button"
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto p-0"
                 onClick={() =>
                   handleOpenTextToSpeechSettings(status.state === 'unsupported_version')
                 }
                 disabled={isBusy}
               >
                 {status.state === 'runtime_missing' ? '前往下载组件' : '查看支持版本'}
-              </button>
+              </Button>
             ) : null}
-            <button type="button" onClick={() => void refreshStatus()} disabled={isBusy}>
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0"
+              onClick={() => void refreshStatus()}
+              disabled={isBusy}
+            >
               重新检测
-            </button>
-            <button type="button" onClick={() => void handleRebind()} disabled={isBusy}>
+            </Button>
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0"
+              onClick={() => void handleRebind()}
+              disabled={isBusy}
+            >
               {isRebinding ? '绑定中…' : '尝试重新绑定'}
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -468,35 +492,32 @@ export function PersonalWechatSendDialog({
           ))}
         </dl>
 
-        <div className="personal-wechat-send-mode" role="radiogroup" aria-label="测试消息类型">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={mode === 'image'}
-            className={mode === 'image' ? 'active' : ''}
-            onClick={() => changeMode('image')}
-            disabled={isBusy}
-          >
+        <SegmentedControl
+          className="personal-wechat-send-mode grid w-full grid-cols-2"
+          aria-label="测试消息类型"
+          value={mode}
+          onValueChange={(value) => changeMode(value as SendMode)}
+          disabled={isBusy}
+        >
+          <SegmentedControlItem value="image" className="w-full">
             图片
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={mode === 'voice'}
-            className={mode === 'voice' ? 'active' : ''}
-            onClick={() => changeMode('voice')}
-            disabled={isBusy}
-          >
+          </SegmentedControlItem>
+          <SegmentedControlItem value="voice" className="w-full">
             语音
-          </button>
-        </div>
+          </SegmentedControlItem>
+        </SegmentedControl>
 
         {mode === 'image' ? (
           <div className="personal-wechat-send-image-picker">
             <span>图片</span>
-            <button type="button" onClick={() => void handleSelectImage()} disabled={isBusy}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleSelectImage()}
+              disabled={isBusy}
+            >
               {image ? '重新选择图片' : '选择图片'}
-            </button>
+            </Button>
             {image ? (
               <div>
                 <strong>{image.name}</strong>
@@ -508,28 +529,20 @@ export function PersonalWechatSendDialog({
           </div>
         ) : (
           <div className="personal-wechat-voice-composer">
-            <div className="personal-wechat-voice-source" role="radiogroup" aria-label="语音来源">
-              <button
-                type="button"
-                role="radio"
-                aria-checked={voiceSource === 'generated'}
-                className={voiceSource === 'generated' ? 'active' : ''}
-                onClick={() => changeVoiceSource('generated')}
-                disabled={isBusy}
-              >
+            <SegmentedControl
+              className="personal-wechat-voice-source grid w-full grid-cols-2"
+              aria-label="语音来源"
+              value={voiceSource}
+              onValueChange={(value) => changeVoiceSource(value as VoiceSource)}
+              disabled={isBusy}
+            >
+              <SegmentedControlItem value="generated" className="w-full">
                 输入文字生成
-              </button>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={voiceSource === 'file'}
-                className={voiceSource === 'file' ? 'active' : ''}
-                onClick={() => changeVoiceSource('file')}
-                disabled={isBusy}
-              >
+              </SegmentedControlItem>
+              <SegmentedControlItem value="file" className="w-full">
                 选择本地文件
-              </button>
-            </div>
+              </SegmentedControlItem>
+            </SegmentedControl>
 
             {voiceSource === 'generated' ? (
               <div className="personal-wechat-generated-voice">
@@ -539,14 +552,18 @@ export function PersonalWechatSendDialog({
                     <strong>{selectedTtsVoice?.name || '尚未选择音色'}</strong>
                   </div>
                   {onOpenTextToSpeechSettings ? (
-                    <button type="button" onClick={() => handleOpenTextToSpeechSettings()}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleOpenTextToSpeechSettings()}
+                    >
                       前往文字转语音设置
-                    </button>
+                    </Button>
                   ) : null}
                 </div>
                 <label className="personal-wechat-send-editor">
                   <span>要生成的文字</span>
-                  <textarea
+                  <Textarea
                     aria-label="要生成的文字"
                     value={voiceText}
                     maxLength={1000}
@@ -605,21 +622,21 @@ export function PersonalWechatSendDialog({
                       </div>
                     </div>
                     <div className="personal-wechat-generated-result-actions">
-                      <button
-                        type="button"
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={() => void handleToggleGeneratedPreview()}
                         disabled={isSending}
                       >
                         {isPreviewPlaying ? '暂停' : '播放'}
-                      </button>
-                      <button
-                        type="button"
-                        className="primary"
+                      </Button>
+                      <Button
+                        size="sm"
                         onClick={() => void handleSendGeneratedVoice()}
                         disabled={!canSendGenerated}
                       >
                         {isSending ? '正在发送…' : `发送到${isGroupChat ? '群聊' : '联系人'}`}
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ) : null}
@@ -627,9 +644,14 @@ export function PersonalWechatSendDialog({
             ) : (
               <div className="personal-wechat-send-image-picker">
                 <span>本地语音文件</span>
-                <button type="button" onClick={() => void handleSelectVoice()} disabled={isBusy}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleSelectVoice()}
+                  disabled={isBusy}
+                >
                   {voice ? '重新选择语音' : '选择语音'}
-                </button>
+                </Button>
                 {voice ? (
                   <div>
                     <strong>{voice.name}</strong>
@@ -659,24 +681,19 @@ export function PersonalWechatSendDialog({
         )}
 
         <footer>
-          <button type="button" className="secondary" onClick={handleClose} disabled={isBusy}>
+          <Button variant="outline" onClick={handleClose} disabled={isBusy}>
             取消
-          </button>
+          </Button>
           {mode === 'voice' && voiceSource === 'generated' ? (
-            <button
-              type="button"
-              className="primary"
-              disabled={!canGenerate}
-              onClick={() => void handleGenerateVoice()}
-            >
+            <Button disabled={!canGenerate} onClick={() => void handleGenerateVoice()}>
               {isGenerating ? '正在生成语音…' : generatedVoice ? '重新生成语音' : '生成语音'}
-            </button>
+            </Button>
           ) : (
-            <button type="button" className="primary" disabled={!canSubmit} onClick={handleSend}>
+            <Button disabled={!canSubmit} onClick={handleSend}>
               {isSending
                 ? '正在发送…'
                 : `测试发送${mode === 'voice' ? '语音' : '图片'}到${isGroupChat ? '群聊' : '联系人'}`}
-            </button>
+            </Button>
           )}
         </footer>
       </DialogContent>

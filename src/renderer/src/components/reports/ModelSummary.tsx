@@ -1,6 +1,7 @@
 import React from 'react'
 import type { ReportModelChoice } from '../../../../shared/ai-provider'
 import { AiModelConfig } from '../../hooks/useGroupReportGeneration'
+import { Button, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui'
 
 interface ModelSummaryProps {
   config: AiModelConfig
@@ -46,44 +47,48 @@ export function ModelSummary({
           <div className="report-model-selects">
             <label>
               <span>文字总结模型</span>
-              <select
-                aria-label="文字总结模型"
+              <Select
                 value={modelKey(config)}
                 disabled={disabled || !textModels.length}
-                onChange={(event) => changeModel(event.target.value, textModels, onTextModelChange)}
+                onValueChange={(key) => changeModel(key, textModels, onTextModelChange)}
               >
-                {!textModels.length && <option value="">没有已配置的文字模型</option>}
-                {textModels.map((model) => (
-                  <option key={modelKey(model)} value={modelKey(model)}>
-                    {optionLabel(model)}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger aria-label="文字总结模型">
+                  <SelectValue placeholder="没有已配置的文字模型" />
+                </SelectTrigger>
+                <SelectContent>
+                  {textModels.map((model) => (
+                    <SelectItem key={modelKey(model)} value={modelKey(model)}>
+                      {optionLabel(model)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </label>
             <label>
               <span>图片理解模型</span>
-              <select
-                aria-label="图片理解模型"
-                value={modelKey(visionConfig)}
+              <Select
+                value={modelKey(visionConfig) || undefined}
                 disabled={disabled || !visionModels.length}
-                onChange={(event) =>
-                  changeModel(event.target.value, visionModels, onVisionModelChange)
-                }
+                onValueChange={(key) => changeModel(key, visionModels, onVisionModelChange)}
               >
-                {!visionModels.length && <option value="">没有已验证的图片理解模型</option>}
-                {visionModels.map((model) => (
-                  <option key={modelKey(model)} value={modelKey(model)}>
-                    {optionLabel(model)}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger aria-label="图片理解模型">
+                  <SelectValue placeholder="没有已验证的图片理解模型" />
+                </SelectTrigger>
+                <SelectContent>
+                  {visionModels.map((model) => (
+                    <SelectItem key={modelKey(model)} value={modelKey(model)}>
+                      {optionLabel(model)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </label>
           </div>
           <small>图片识别缓存 10 分钟；识图完成后仍由文字总结模型生成日报。</small>
         </div>
-        <button type="button" onClick={onOpenSettings} disabled={disabled}>
+        <Button variant="outline" size="sm" onClick={onOpenSettings} disabled={disabled}>
           更改模型
-        </button>
+        </Button>
       </div>
     </section>
   )

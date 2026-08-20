@@ -1,5 +1,6 @@
 import type { DatabaseKeyState } from './types'
 import { runtimePlatform } from '../../../utils/runtime-environment'
+import { Button } from '../../../components/ui'
 
 const PHASES = ['查找微信进程', '识别微信版本', '扫描候选密钥', '验证数据库', '获取完成']
 
@@ -33,14 +34,9 @@ export function DatabaseKeyAutoDetect({
           <strong>Windows 自动获取</strong>
           <p>TraceMemo 可在微信桌面端正在运行时，通过本机内存扫描尝试获取数据库密钥。</p>
         </div>
-        <button
-          type="button"
-          className="database-key-secondary"
-          onClick={onDetect}
-          disabled={disabled}
-        >
+        <Button variant="outline" onClick={onDetect} disabled={disabled}>
           {state.status === 'auto-detecting' ? '正在获取…' : '自动获取密钥'}
-        </button>
+        </Button>
       </div>
       <ul className="database-key-prerequisites">
         <li className={environment?.wechatRunning ? 'ok' : ''}>
@@ -67,9 +63,14 @@ export function DatabaseKeyAutoDetect({
           <strong>暂未找到有效密钥</strong>
           <span>{state.error}</span>
           <p>请保持微信正在运行，登录目标账号并打开几个聊天窗口后重试。</p>
-          <button type="button" onClick={onRefresh}>
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto justify-self-start p-0"
+            onClick={onRefresh}
+          >
             刷新前置状态
-          </button>
+          </Button>
         </div>
       )}
     </section>

@@ -8,7 +8,8 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  Button
+  Button,
+  Input
 } from '../ui'
 import type { GeneratedReportRecord } from './types'
 
@@ -155,15 +156,16 @@ export function ReportHistorySidebar({
           <circle cx="10.5" cy="10.5" r="5.5" />
           <path d="m15 15 4 4" />
         </svg>
-        <input
+        <Input
+          className="pl-9"
           value={keyword}
           onChange={(event) => setKeyword(event.target.value)}
           placeholder="搜索群聊或日报"
         />
       </label>
-      <button type="button" className="report-history-create" onClick={onCreateReport}>
+      <Button className="report-history-create" onClick={onCreateReport}>
         + 新建日报
-      </button>
+      </Button>
       <div className="report-history-list" aria-label="历史报告">
         <div className="report-history-list-title">历史报告</div>
         {reportGroups.length ? (

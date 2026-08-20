@@ -173,28 +173,6 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
-
-  > button {
-    min-height: 34px;
-    border: 1px solid var(--wxex-border);
-    border-radius: var(--wxex-radius-sm);
-    background: var(--wxex-bg-elevated);
-    color: var(--wxex-text-primary);
-    cursor: pointer;
-    padding: 7px 12px;
-    font: 12px/18px var(--wxex-font);
-
-    &:disabled {
-      cursor: not-allowed;
-      opacity: 0.55;
-    }
-  }
-
-  > .settings-primary-button {
-    border-color: var(--wxex-brand);
-    background: var(--wxex-brand);
-    color: #fff;
-  }
 }
 
 .tts-runtime-progress {
@@ -241,25 +219,6 @@
   }
 }
 
-.tts-api-heading > button,
-.tts-api-footer button,
-.tts-api-input button,
-.tts-voice-search button,
-.tts-load-more {
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-sm);
-  background: var(--wxex-bg-elevated);
-  color: var(--wxex-brand);
-  cursor: pointer;
-  padding: 8px 12px;
-  font: 12px/18px var(--wxex-font);
-
-  &:disabled {
-    cursor: default;
-    opacity: 0.5;
-  }
-}
-
 .tts-api-input {
   display: grid;
   gap: 8px;
@@ -273,33 +232,7 @@
   > div {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
-  }
-
-  input {
-    min-width: 0;
-    border: 1px solid var(--wxex-border);
-    border-right: 0;
-    border-radius: var(--wxex-radius-sm) 0 0 var(--wxex-radius-sm);
-    outline: 0;
-    background: var(--wxex-bg-main);
-    color: var(--wxex-text-primary);
-    padding: 10px 12px;
-    font: 13px/20px var(--wxex-font);
-
-    &:focus {
-      border-color: var(--wxex-brand);
-      box-shadow: 0 0 0 3px rgba(36, 122, 99, 0.1);
-    }
-  }
-
-  button {
-    border-radius: 0;
-  }
-
-  .tts-save-key-button {
-    border-radius: 0 var(--wxex-radius-sm) var(--wxex-radius-sm) 0;
-    background: var(--wxex-brand);
-    color: #fff;
+    gap: 8px;
   }
 }
 
@@ -325,16 +258,6 @@
     color: var(--wxex-text-primary);
     font-size: 12px;
     font-weight: 600;
-  }
-
-  select {
-    border: 1px solid var(--wxex-border);
-    border-radius: var(--wxex-radius-sm);
-    outline: 0;
-    background: var(--wxex-bg-main);
-    color: var(--wxex-text-primary);
-    padding: 9px 11px;
-    font: 12px/18px var(--wxex-font);
   }
 }
 
@@ -363,26 +286,8 @@
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 7px;
-  border: 1px solid var(--wxex-border);
-  border-radius: 999px;
-  background: var(--wxex-bg-elevated);
-  padding: 3px 4px 3px 12px;
+  padding-left: 12px;
   color: var(--wxex-text-muted);
-
-  input {
-    min-width: 0;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    color: var(--wxex-text-primary);
-    padding: 7px 0;
-    font: 12px/18px var(--wxex-font);
-  }
-
-  button {
-    border-radius: 999px;
-    padding: 5px 12px;
-  }
 }
 
 .tts-voice-filters {
@@ -634,23 +539,6 @@
   }
 }
 
-.tts-voice-preview {
-  min-width: 42px;
-  border: 1px solid var(--wxex-border);
-  border-radius: 999px;
-  background: var(--wxex-bg-elevated);
-  color: var(--wxex-brand);
-  cursor: pointer;
-  padding: 5px 9px;
-  font: 10px/16px var(--wxex-font);
-
-  &:disabled {
-    cursor: default;
-    color: var(--wxex-text-muted);
-    opacity: 0.5;
-  }
-}
-
 .tts-voice-empty {
   display: grid;
   gap: 5px;
@@ -682,8 +570,6 @@
 .tts-load-more {
   display: block;
   margin: 18px auto 0;
-  border-radius: 999px;
-  padding-inline: 24px;
 }
 
 @media (max-width: 920px) {
@@ -716,7 +602,6 @@
   .tts-api-input .tts-save-key-button {
     grid-column: 1 / -1;
     margin-top: 7px;
-    border-radius: var(--wxex-radius-sm);
   }
 
   .tts-voice-search {

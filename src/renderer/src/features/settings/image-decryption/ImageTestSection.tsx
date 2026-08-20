@@ -1,5 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Contact } from '../../../../../shared/types'
+import {
+  Button,
+  Input,
+  SegmentedControl,
+  SegmentedControlItem,
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue
+} from '../../../components/ui'
 import type { ImageBatchTestItemStatus, ImageBatchTestState, ImageDecryptionState } from './types'
 
 type StepState = 'pending' | 'ok' | 'fail' | 'skipped'
@@ -201,17 +214,18 @@ export function ImageTestSection({
             </span>
             仅当前会话的单次测试日志
           </span>
-          <button
-            className="database-key-secondary image-test-copy"
-            disabled={!result?.diagnosticLog}
-            onClick={onCopyLog}
-          >
+          <Button variant="outline" size="sm" disabled={!result?.diagnosticLog} onClick={onCopyLog}>
             复制日志
-          </button>
+          </Button>
         </div>
       </div>
 
-      <div className="image-test-filter-bar" aria-label="会话类型筛选">
+      <SegmentedControl
+        className="mt-[18px]"
+        aria-label="会话类型筛选"
+        value={contactFilter}
+        onValueChange={(value) => setContactFilter(value as ContactFilter)}
+      >
         {(
           [
             ['all', '全部'],
@@ -219,23 +233,15 @@ export function ImageTestSection({
             ['user', '联系人']
           ] as const
         ).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            className={contactFilter === value ? 'active' : ''}
-            aria-pressed={contactFilter === value}
-            disabled={disabled}
-            onClick={() => setContactFilter(value)}
-          >
+          <SegmentedControlItem key={value} value={value} disabled={disabled}>
             {label} {contactCounts[value]}
-          </button>
+          </SegmentedControlItem>
         ))}
-      </div>
+      </SegmentedControl>
 
       <label htmlFor="image-test-search">搜索会话</label>
-      <input
+      <Input
         id="image-test-search"
-        className="image-test-search"
         type="search"
         value={searchValue}
         disabled={disabled}
@@ -244,61 +250,59 @@ export function ImageTestSection({
       />
 
       <label htmlFor="image-test-chat">选择会话</label>
-      <select
-        id="image-test-chat"
-        value={state.selectedUserMd5}
-        disabled={disabled}
-        onChange={(event) => onSelect(event.target.value)}
-      >
-        <option value="">请选择包含图片的会话</option>
-        {filteredGroups.length > 0 && (
-          <optgroup label={`群聊（${filteredGroups.length}）`}>
-            {filteredGroups.map((contact) => (
-              <option key={contact.md5} value={contact.md5}>
-                {contactName(contact)}
-              </option>
-            ))}
-          </optgroup>
-        )}
-        {filteredUsers.length > 0 && (
-          <optgroup label={`联系人（${filteredUsers.length}）`}>
-            {filteredUsers.map((contact) => (
-              <option key={contact.md5} value={contact.md5}>
-                {contactName(contact)}
-              </option>
-            ))}
-          </optgroup>
-        )}
-      </select>
+      <Select value={state.selectedUserMd5} disabled={disabled} onValueChange={onSelect}>
+        <SelectTrigger id="image-test-chat">
+          <SelectValue placeholder="请选择包含图片的会话" />
+        </SelectTrigger>
+        <SelectContent>
+          {filteredGroups.length > 0 && (
+            <SelectGroup>
+              <SelectLabel>{`群聊（${filteredGroups.length}）`}</SelectLabel>
+              {filteredGroups.map((contact) => (
+                <SelectItem key={contact.md5} value={contact.md5}>
+                  {contactName(contact)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          )}
+          {filteredUsers.length > 0 && (
+            <SelectGroup>
+              <SelectLabel>{`联系人（${filteredUsers.length}）`}</SelectLabel>
+              {filteredUsers.map((contact) => (
+                <SelectItem key={contact.md5} value={contact.md5}>
+                  {contactName(contact)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          )}
+        </SelectContent>
+      </Select>
       {filteredContacts.length === 0 && <p className="image-test-empty">没有匹配的会话</p>}
 
       <div className="image-test-actions">
-        <button
-          className="database-key-primary"
-          disabled={disabled || !state.selectedUserMd5}
-          onClick={onTest}
-        >
+        <Button disabled={disabled || !state.selectedUserMd5} onClick={onTest}>
           {state.phase === 'testing' ? '正在测试…' : '测试图片解析'}
-        </button>
-        <button className="database-key-secondary" disabled={!canSave} onClick={onSave}>
+        </Button>
+        <Button variant="outline" disabled={!canSave} onClick={onSave}>
           确认保存
-        </button>
+        </Button>
         {batchTest.running ? (
-          <button
-            className="database-key-secondary image-batch-stop"
+          <Button
+            variant="outline"
+            className="image-batch-stop"
             disabled={batchTest.stopRequested}
             onClick={onStopBatchTest}
           >
             {batchTest.stopRequested ? '正在停止…' : '停止测试'}
-          </button>
+          </Button>
         ) : (
-          <button
-            className="database-key-secondary"
+          <Button
+            variant="outline"
             disabled={disabled || filteredContacts.length === 0}
             onClick={handleBatchTest}
           >
             {batchButtonLabel}
-          </button>
+          </Button>
         )}
       </div>
       <p className="image-batch-warning">

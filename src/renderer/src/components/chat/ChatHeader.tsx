@@ -1,6 +1,16 @@
 import React, { useState } from 'react'
 import { Contact } from '../../../../shared/types'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui'
+import {
+  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  IconButton,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from '../ui'
 import { ConversationContentSearch } from './ConversationContentSearch'
 import { AiIcon, MoreIcon, RefreshIcon, SearchIcon, SendIcon } from './icons'
 import { supportsPersonalWechatSend } from '../../utils/runtime-environment'
@@ -43,7 +53,7 @@ export function ChatHeader({
   }
 
   return (
-    <div className="chat-archive-header">
+    <div className={`chat-archive-header${searchOpen ? ' is-searching' : ''}`}>
       <div className="chat-title-block">
         <div className="chat-title-avatar">
           {contact.avatar ? (
@@ -69,54 +79,72 @@ export function ChatHeader({
             onClose={handleCloseSearch}
           />
         ) : (
-          <button
-            type="button"
-            className="chat-icon-button"
+          <IconButton
+            label="搜索当前聊天"
+            variant="ghost"
+            className="h-8 w-8"
             onClick={() => setSearchOpen(true)}
-            title="搜索当前聊天"
           >
             <SearchIcon />
-          </button>
+          </IconButton>
         )}
-        <button type="button" className="chat-icon-button" onClick={onRefresh} title="刷新聊天记录">
+        <IconButton label="刷新聊天记录" variant="ghost" className="h-8 w-8" onClick={onRefresh}>
           <RefreshIcon />
-        </button>
+        </IconButton>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button type="button" className="chat-icon-button" title="更多">
+            <IconButton label="更多" tooltip="" variant="ghost" className="h-8 w-8">
               <MoreIcon />
-            </button>
+            </IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={() => onRefreshData?.()}>刷新数据</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <span
-          className="chat-tool-button-wrapper"
-          title={supportsPersonalWechatSend ? '发送消息' : '仅支持 macOS'}
-          aria-label={supportsPersonalWechatSend ? '发送消息' : '仅支持 macOS'}
-          tabIndex={supportsPersonalWechatSend ? -1 : 0}
-        >
-          <button
-            type="button"
-            className="chat-tool-button"
+        {supportsPersonalWechatSend ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="chat-header-text-action"
+            aria-label="发送消息"
             onClick={onTestSend}
-            disabled={!supportsPersonalWechatSend}
           >
             <SendIcon />
             <span>发送消息</span>
-          </button>
-        </span>
-        <button
-          type="button"
-          className="chat-ai-button"
+          </Button>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span tabIndex={0} aria-label="仅支持 macOS">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="chat-header-text-action"
+                  aria-label="发送消息"
+                  onClick={onTestSend}
+                  disabled
+                >
+                  <SendIcon />
+                  <span>发送消息</span>
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>仅支持 macOS</TooltipContent>
+          </Tooltip>
+        )}
+        <Button
+          variant="default"
+          size="sm"
+          className="chat-header-text-action"
+          aria-label={isAiLoading ? '生成中' : '生成 AI 日报'}
           onClick={onOpenAiSettings}
           disabled={isAiLoading}
+          aria-busy={isAiLoading}
           title={isGroupChat ? '生成 AI 日报' : 'AI 日报当前仅支持群聊'}
         >
           <AiIcon />
           <span>{isAiLoading ? '生成中' : '生成 AI 日报'}</span>
-        </button>
+        </Button>
       </div>
     </div>
   )

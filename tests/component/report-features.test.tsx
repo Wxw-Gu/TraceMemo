@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ReportGroupMemberSelector } from '../../src/renderer/src/components/reports/ReportGroupMemberSelector'
@@ -9,6 +9,10 @@ import { ReportInfoPanel } from '../../src/renderer/src/components/reports/Repor
 import { ReportToolbar } from '../../src/renderer/src/components/reports/ReportToolbar'
 import { ReportHistorySidebar } from '../../src/renderer/src/components/reports/ReportHistorySidebar'
 import { ModelSummary } from '../../src/renderer/src/components/reports/ModelSummary'
+import { MessageTypeSelector } from '../../src/renderer/src/components/reports/MessageTypeSelector'
+import { ReportDensitySelector } from '../../src/renderer/src/components/reports/ReportDensitySelector'
+import { ReportRangeSelector } from '../../src/renderer/src/components/reports/ReportRangeSelector'
+import { SUMMARY_TYPE_OPTIONS } from '../../src/renderer/src/utils/group-report'
 import type { Contact } from '../../src/shared/types'
 import type { GeneratedReportRecord } from '../../src/shared/report-history'
 
@@ -103,6 +107,44 @@ describe('daily report controls', () => {
           ]
         }))
       }
+    })
+  })
+
+  it('uses unified option and checkbox controls while preserving report selection rules', async () => {
+    const user = userEvent.setup()
+    const onRangeChange = vi.fn()
+    const onTypesChange = vi.fn()
+    render(
+      <>
+        <ReportRangeSelector
+          value="today"
+          messageCount={4}
+          rangeState={{ status: 'success', error: '' }}
+          disabled={false}
+          onChange={onRangeChange}
+        />
+        <MessageTypeSelector
+          value={['text']}
+          counts={Object.fromEntries(SUMMARY_TYPE_OPTIONS.map((option) => [option.value, 1]))}
+          disabled={false}
+          onChange={onTypesChange}
+        />
+        <ReportDensitySelector />
+      </>
+    )
+
+    expect(screen.getByRole('radio', { name: '今天' })).toBeChecked()
+    await user.click(screen.getByRole('radio', { name: '近 7 天' }))
+    expect(onRangeChange).toHaveBeenCalledWith('7days')
+    expect(screen.getAllByRole('checkbox')).toHaveLength(SUMMARY_TYPE_OPTIONS.length)
+    const textCheckbox = screen.getAllByRole('checkbox')[0]
+    expect(textCheckbox).toBeChecked()
+    expect(textCheckbox).toBeDisabled()
+    await user.click(screen.getAllByRole('checkbox')[1])
+    expect(onTypesChange).toHaveBeenCalledWith(['text', 'image'])
+    expect(screen.getByRole('radio', { name: /标准/ })).toBeChecked()
+    screen.getAllByRole('radio', { name: /简洁|标准|深度/ }).forEach((item) => {
+      expect(item).toBeDisabled()
     })
   })
 
@@ -203,6 +245,7 @@ describe('daily report controls', () => {
   })
 
   it('allows switching models and retrying only the model step', async () => {
+    const user = userEvent.setup()
     const onRetry = vi.fn()
     window.api.listAIProviders = vi.fn(async () => ({
       success: true,
@@ -246,7 +289,10 @@ describe('daily report controls', () => {
     )
 
     const retryButton = await screen.findByRole('button', { name: '使用所选模型重新生成' })
+    const retryModel = screen.getByRole('combobox', { name: '切换模型' })
+    await user.click(retryModel)
     expect(screen.getByRole('option', { name: '备用服务 · 备用模型' })).toBeVisible()
+    await user.click(screen.getByRole('option', { name: '备用服务 · 备用模型' }))
     fireEvent.click(retryButton)
     expect(onRetry).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: 'provider-2', model: 'model-2' })
@@ -254,7 +300,8 @@ describe('daily report controls', () => {
     expect(screen.getByText(/从第三步继续/)).toBeVisible()
   })
 
-  it('selects separate text-summary and image-understanding models with the 10-minute cache rule', () => {
+  it('selects separate text-summary and image-understanding models with the 10-minute cache rule', async () => {
+    const user = userEvent.setup()
     const onTextModelChange = vi.fn()
     const onVisionModelChange = vi.fn()
     const textModels = [
@@ -283,6 +330,14 @@ describe('daily report controls', () => {
         modelName: 'GPT-5.6 Sol',
         configured: true as const,
         status: 'connected' as const
+      },
+      {
+        providerId: 'vision-provider',
+        providerName: 'Vision',
+        model: 'vision-model',
+        modelName: 'Vision Model',
+        configured: true as const,
+        status: 'connected' as const
       }
     ]
     render(
@@ -299,13 +354,14 @@ describe('daily report controls', () => {
 
     const textSelect = screen.getByRole('combobox', { name: '文字总结模型' })
     const visionSelect = screen.getByRole('combobox', { name: '图片理解模型' })
-    expect(textSelect).toHaveValue('deepseek::deepseek-chat')
-    expect(visionSelect).toHaveValue('sol-provider::gpt-5.6-sol')
-    expect(screen.getAllByRole('option', { name: 'OpenAI · GPT-5.6 Sol' })).toHaveLength(2)
-    fireEvent.change(textSelect, { target: { value: 'openai::gpt-5.6-sol' } })
-    fireEvent.change(visionSelect, { target: { value: 'sol-provider::gpt-5.6-sol' } })
+    expect(textSelect).toHaveTextContent('DeepSeek · DeepSeek Chat')
+    expect(visionSelect).toHaveTextContent('OpenAI · GPT-5.6 Sol')
+    await user.click(textSelect)
+    await user.click(screen.getByRole('option', { name: 'OpenAI · GPT-5.6 Sol' }))
+    await user.click(visionSelect)
+    await user.click(screen.getByRole('option', { name: 'Vision · Vision Model' }))
     expect(onTextModelChange).toHaveBeenCalledWith(textModels[1])
-    expect(onVisionModelChange).toHaveBeenCalledWith(visionModels[0])
+    expect(onVisionModelChange).toHaveBeenCalledWith(visionModels[1])
     expect(screen.getByText(/图片识别缓存 10 分钟/)).toBeVisible()
   })
 
@@ -676,12 +732,17 @@ describe('daily report controls', () => {
   })
 
   it('loads and displays group nickname, WeChat nickname, and remark separately', async () => {
+    const user = userEvent.setup()
     render(<ReportGroupMemberSelector sourceContact={groupContact} />)
 
     await waitFor(() => expect(screen.getAllByText('群内昵称一')).toHaveLength(2))
     expect(screen.getByText('微信昵称一')).toBeVisible()
     expect(screen.getByText('通讯录备注一')).toBeVisible()
     expect(screen.getByText('wxid-one')).toBeVisible()
+    await user.click(screen.getByRole('combobox', { name: '选择群成员' }))
+    await user.click(screen.getByRole('option', { name: '群内昵称二' }))
+    expect(screen.getByText('微信昵称二')).toBeVisible()
+    expect(screen.getByText('wxid-two')).toBeVisible()
   })
 
   it('cancels report deletion and restores focus to the delete trigger', async () => {
@@ -774,7 +835,8 @@ describe('daily report controls', () => {
     )
   })
 
-  it('offers the classic default plus three mobile and two desktop report templates', () => {
+  it('offers the classic default plus three mobile and two desktop report templates', async () => {
+    const user = userEvent.setup()
     const onChange = vi.fn()
     render(<ReportTemplateSelector value="v1" onChange={onChange} />)
 
@@ -792,8 +854,13 @@ describe('daily report controls', () => {
 
     const previewButtons = screen.getAllByRole('button', { name: '查看版式' })
     expect(previewButtons).toHaveLength(6)
-    fireEvent.click(previewButtons[2])
-    fireEvent.click(screen.getByRole('button', { name: '选择此模板' }))
+    await user.click(previewButtons[2])
+    let dialog = screen.getByRole('dialog', { name: 'AI Magazine' })
+    await user.click(within(dialog).getAllByRole('button', { name: '关闭' })[1])
+    expect(document.activeElement).toBe(previewButtons[2])
+    await user.click(previewButtons[2])
+    dialog = screen.getByRole('dialog', { name: 'AI Magazine' })
+    await user.click(within(dialog).getByRole('button', { name: '选择此模板' }))
 
     expect(onChange).toHaveBeenCalledWith('mobile-magazine')
   })
