@@ -65,7 +65,7 @@ export function ReaderSkillOverview({
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button size="sm" variant="outline">
+                <Button size="sm" variant="ghost">
                   更多
                 </Button>
               </DropdownMenuTrigger>

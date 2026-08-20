@@ -14,6 +14,11 @@ import {
   SelectValue,
   Switch
 } from '../../src/renderer/src/components/ui'
+import { IconButton } from '../../src/renderer/src/components/ui/icon-button'
+import {
+  SegmentedControl,
+  SegmentedControlItem
+} from '../../src/renderer/src/components/ui/segmented-control'
 
 describe('TraceMemo UI control states', () => {
   it('uses the compact, standard, and form control height contract', () => {
@@ -30,6 +35,43 @@ describe('TraceMemo UI control states', () => {
     expect(screen.getByRole('button', { name: '标准' })).toHaveClass('h-control-standard')
     expect(screen.getByRole('button', { name: '表单' })).toHaveClass('h-control-form')
     expect(screen.getByRole('textbox', { name: '表单输入' })).toHaveClass('h-control-form')
+  })
+
+  it('keeps secondary and icon actions visually quiet by default', () => {
+    render(
+      <>
+        <Button variant="outline">次要操作</Button>
+        <IconButton label="刷新" tooltip="">
+          ↻
+        </IconButton>
+      </>
+    )
+
+    expect(screen.getByRole('button', { name: '次要操作' })).toHaveClass(
+      'border-border-subtle',
+      'bg-transparent'
+    )
+    expect(screen.getByRole('button', { name: '刷新' })).toHaveClass(
+      'text-foreground',
+      'hover:bg-accent'
+    )
+    expect(screen.getByRole('button', { name: '刷新' })).not.toHaveClass('bg-primary')
+  })
+
+  it('uses a surface-free selected contract for segmented choices', () => {
+    render(
+      <SegmentedControl aria-label="模式" defaultValue="one">
+        <SegmentedControlItem value="one">一</SegmentedControlItem>
+        <SegmentedControlItem value="two">二</SegmentedControlItem>
+      </SegmentedControl>
+    )
+
+    const selected = screen.getByRole('radio', { name: '一' })
+    expect(selected).toHaveClass(
+      'data-[state=checked]:bg-accent',
+      'data-[state=checked]:font-semibold'
+    )
+    expect(selected).not.toHaveClass('data-[state=checked]:shadow-surface')
   })
 
   it('keeps disabled controls readable without the old opacity and surface shadow', () => {

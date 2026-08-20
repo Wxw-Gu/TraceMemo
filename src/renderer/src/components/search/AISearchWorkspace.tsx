@@ -681,7 +681,7 @@ export function AISearchWorkspace({
             新问题
           </Button>
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
             className="px-2"
             onClick={() => void copyAnswer()}
@@ -690,7 +690,7 @@ export function AISearchWorkspace({
             复制摘要
           </Button>
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
             className="px-2"
             onClick={() => {

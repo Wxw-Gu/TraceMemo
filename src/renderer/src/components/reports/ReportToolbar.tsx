@@ -109,7 +109,7 @@ export function ReportToolbar({
       </Button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm">
+          <Button variant="ghost" size="sm">
             更多
           </Button>
         </DropdownMenuTrigger>

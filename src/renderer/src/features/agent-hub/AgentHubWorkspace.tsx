@@ -254,14 +254,14 @@ export function AgentHubWorkspace(): React.ReactElement {
               </SelectContent>
             </Select>
             <Button
-              variant="outline"
+              variant="ghost"
               size="sm"
               onClick={() => void copyLogs()}
               disabled={visibleLogs.length === 0}
             >
               复制日志
             </Button>
-            <Button variant="outline" size="sm" onClick={() => void clearLogs()}>
+            <Button variant="ghost" size="sm" onClick={() => void clearLogs()}>
               清空
             </Button>
           </div>

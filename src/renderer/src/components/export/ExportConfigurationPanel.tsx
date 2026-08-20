@@ -1,7 +1,15 @@
 import React from 'react'
 import type { ExportContactType, ExportNameMode } from '../../../../shared/export'
 import type { VoiceModelStatus } from '../../../../shared/voice-recognition'
-import { Button, Checkbox, Input, RadioGroup, RadioGroupItem } from '../ui'
+import {
+  Button,
+  Checkbox,
+  Input,
+  RadioGroup,
+  RadioGroupItem,
+  SegmentedControl,
+  SegmentedControlItem
+} from '../ui'
 import type { Contact, ExportFormat, ExportRange, ExportStatus } from './exportTypes'
 import { displayName, formatLabels, formatOrder, messageKinds } from './exportUtils'
 
@@ -167,19 +175,19 @@ export function ExportConfigurationPanel({
 
         <section className={sectionClassName}>
           <h3 className={sectionTitleClassName}>导出格式</h3>
-          <div className="grid grid-cols-2 gap-2 min-[900px]:grid-cols-4">
+          <SegmentedControl
+            className="grid w-full grid-cols-2 gap-1.5 p-1.5 min-[900px]:grid-cols-4"
+            value={format}
+            onValueChange={(value) => onFormatChange(value as ExportFormat)}
+            aria-label="导出格式"
+          >
             {formatOrder.map((value) => {
-              const active = format === value
               return (
-                <Button
+                <SegmentedControlItem
                   key={value}
-                  variant="outline"
-                  aria-pressed={active}
-                  className={`${
-                    active ? 'active border-2 border-primary bg-primary/10 hover:bg-primary/15' : ''
-                  } !h-[78px] min-w-0 flex-col gap-1.5 whitespace-normal px-2 text-foreground`}
+                  value={value}
+                  className="!h-[78px] min-w-0 flex-col gap-1.5 whitespace-normal rounded-md px-2 text-foreground data-[state=checked]:text-primary"
                   disabled={!exportAll && exportContactCount > 1 && value !== 'html'}
-                  onClick={() => onFormatChange(value)}
                 >
                   <strong className="text-[13px]">{formatLabels[value].label}</strong>
                   {formatLabels[value].hint && (
@@ -187,10 +195,10 @@ export function ExportConfigurationPanel({
                       {formatLabels[value].hint}
                     </small>
                   )}
-                </Button>
+                </SegmentedControlItem>
               )
             })}
-          </div>
+          </SegmentedControl>
           <p className={helperClassName}>
             {exportAll
               ? '全部导出固定使用全部时间；每个群聊或联系人都会在自己的目录中生成所选格式的独立档案。'
@@ -229,7 +237,12 @@ export function ExportConfigurationPanel({
               {status === 'completed' ? '已完成导出' : '消息数量将在开始导出后统计'}
             </span>
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <SegmentedControl
+            className="grid w-full grid-cols-2 gap-1.5 p-1.5 min-[900px]:grid-cols-3"
+            value={range}
+            onValueChange={(value) => onRangeChange(value as ExportRange)}
+            aria-label="时间范围"
+          >
             {(exportAll
               ? [['all', '全部时间']]
               : [
@@ -240,17 +253,11 @@ export function ExportConfigurationPanel({
                   ['custom', '自定义时间']
                 ]
             ).map(([value, label]) => (
-              <Button
-                key={value}
-                variant={range === value ? 'default' : 'outline'}
-                aria-pressed={range === value}
-                className={range === value ? 'active' : ''}
-                onClick={() => onRangeChange(value as ExportRange)}
-              >
+              <SegmentedControlItem key={value} value={value} className="w-full">
                 {label}
-              </Button>
+              </SegmentedControlItem>
             ))}
-          </div>
+          </SegmentedControl>
           {!exportAll && range === 'custom' && (
             <div className="mt-2.5 grid grid-cols-2 gap-2.5 rounded-lg bg-muted p-3">
               <label className="grid gap-1.5 text-[11px] text-muted-foreground">
@@ -295,23 +302,22 @@ export function ExportConfigurationPanel({
 
         <section className={sectionClassName}>
           <h3 className={sectionTitleClassName}>消息显示名称</h3>
-          <RadioGroup
-            className="flex gap-2 rounded-lg bg-muted p-2.5"
+          <SegmentedControl
+            className="grid w-full grid-cols-3 gap-1.5 p-1.5"
             value={nameMode}
             onValueChange={(value) => onNameModeChange(value as ExportNameMode)}
             aria-label="消息显示名称"
           >
             {nameOptions.map((option) => (
-              <label
+              <SegmentedControlItem
                 key={option.value}
-                className="flex min-h-8 flex-1 cursor-pointer items-center gap-2 rounded-md border border-border bg-surface px-2 text-xs text-foreground"
-                htmlFor={`export-name-${option.value}`}
+                value={option.value}
+                className="w-full justify-start gap-2 px-2 text-foreground data-[state=checked]:text-primary"
               >
-                <RadioGroupItem id={`export-name-${option.value}`} value={option.value} />
                 <span>{option.label}</span>
-              </label>
+              </SegmentedControlItem>
             ))}
-          </RadioGroup>
+          </SegmentedControl>
         </section>
 
         <section className={sectionClassName}>

@@ -21,7 +21,7 @@ const SegmentedControlItem = React.forwardRef<
   <RadioGroupPrimitive.Item
     ref={ref}
     className={cn(
-      'inline-flex h-8 min-w-0 items-center justify-center rounded-sm border-0 bg-transparent px-3 text-xs font-medium text-muted-foreground transition-colors duration-fast ease-tm-standard hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-surface data-[state=checked]:text-primary data-[state=checked]:shadow-surface',
+      'inline-flex h-8 min-w-0 items-center justify-center rounded-sm border-0 bg-transparent px-3 text-xs font-medium text-muted-foreground transition-[color,background-color,font-weight] duration-fast ease-tm-standard hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:text-disabled-foreground disabled:opacity-100 data-[state=checked]:bg-accent data-[state=checked]:font-semibold data-[state=checked]:text-accent-foreground',
       className
     )}
     {...props}

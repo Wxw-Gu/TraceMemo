@@ -631,8 +631,11 @@ test('EXPORT-01 multi-chat selection stays local to export and forces HTML', asy
     await contactList.getByRole('button', { name: /产品测试群/ }).click()
 
     await expect(fixture.page.getByText('已选 2 / 5 个')).toBeVisible()
-    await expect(fixture.page.getByRole('button', { name: 'CSV' })).toBeDisabled()
-    await expect(fixture.page.getByRole('button', { name: /HTML/ })).toHaveClass(/active/)
+    await expect(fixture.page.getByRole('radio', { name: 'CSV' })).toBeDisabled()
+    const htmlFormat = fixture.page
+      .getByRole('radiogroup', { name: '导出格式' })
+      .getByRole('radio', { name: /HTML/ })
+    await expect(htmlFormat).toBeChecked()
     await expect(fixture.page.getByText('文件传输助手、产品测试群 · 共 2 个聊天')).toBeVisible()
     await expect(
       fixture.page.locator('.export-preview-bubble').filter({ hasText: '这是一条脱敏测试消息' })
@@ -663,7 +666,9 @@ test('EXPORT-02 large contact list stays bounded and searchable', async () => {
 
     const compositeButtons = [
       fixture.page.getByRole('button', { name: /^全部导出/ }),
-      fixture.page.getByRole('button', { name: /HTML/ }),
+      fixture.page
+        .getByRole('radiogroup', { name: '导出格式' })
+        .getByRole('radio', { name: /HTML/ }),
       fixture.page.locator('.export-workspace > aside:first-child > button:last-child')
     ]
     for (const button of compositeButtons) {

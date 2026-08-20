@@ -12,10 +12,11 @@ export function IconButton({
   label,
   tooltip = label,
   children,
+  variant = 'ghost',
   ...props
 }: IconButtonProps): React.ReactElement {
   const button = (
-    <Button aria-label={label} size="icon" {...props}>
+    <Button aria-label={label} size="icon" variant={variant} {...props}>
       {children}
     </Button>
   )
