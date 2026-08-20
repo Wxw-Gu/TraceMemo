@@ -229,6 +229,7 @@ declare global {
       ) => Promise<{
         success: boolean
         data?: string
+        finishReason?: string
         usage?: {
           input?: number
           output?: number
