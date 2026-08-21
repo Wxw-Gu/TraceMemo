@@ -511,7 +511,19 @@ export function useGroupReportGeneration({
             reportTimeoutSeconds * 1000 + REPORT_MODEL_TIMEOUT_BUFFER_MS
           )
         )
-        if (!result.success || !result.data) throw new Error(result.error || 'AI 请求失败')
+        if (
+          result.finishReason &&
+          result.finishReason !== 'stop' &&
+          result.finishReason !== 'end_turn'
+        ) {
+          let errMsg = `当前模型\`异常结束生成\`，原因：${result.finishReason}`
+          if (result.finishReason === 'length' || result.finishReason === 'max_tokens') {
+            errMsg += '，请尝试在`设置-AI 模型-新增/编辑供应商-模型配置/高级设置`中调高`Max Tokens`'
+          }
+          throw new Error(errMsg)
+        }
+        if (!result.success || !result.data)
+          throw new Error(result.error || 'AI 请求失败，未返回有效内容')
         writeReportLog('info', '模型响应完成', {
           outputLength: result.data.length,
           usage: result.usage
@@ -552,8 +564,23 @@ export function useGroupReportGeneration({
               reportTimeoutSeconds * 1000 + REPORT_MODEL_TIMEOUT_BUFFER_MS
             )
           )
+          if (
+            repairResult.finishReason &&
+            repairResult.finishReason !== 'stop' &&
+            repairResult.finishReason !== 'end_turn'
+          ) {
+            let errMsg = `当前模型\`异常结束生成\`，原因：${repairResult.finishReason}`
+            if (
+              repairResult.finishReason === 'length' ||
+              repairResult.finishReason === 'max_tokens'
+            ) {
+              errMsg +=
+                '，请尝试在`设置-AI 模型-新增/编辑供应商-模型配置/高级设置`中调高`Max Tokens`'
+            }
+            throw new Error(errMsg)
+          }
           if (!repairResult.success || !repairResult.data) {
-            throw new Error(repairResult.error || 'AI 修复日报 JSON 失败', {
+            throw new Error(repairResult.error || 'AI 修复日报 JSON 失败，未返回有效内容', {
               cause: parseError
             })
           }
