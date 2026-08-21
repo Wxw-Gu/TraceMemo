@@ -265,27 +265,6 @@ export class PersonalWechatRuntimeManager {
       addModifiedWorkNotice(script)
       await chmod(executable, 0o755)
 
-      const pythonPackages = join(stagedDirectory, 'python')
-      await mkdir(pythonPackages, { recursive: true })
-      try {
-        await execFileAsync('/usr/bin/env', [
-          'python3',
-          '-m',
-          'pip',
-          'install',
-          '--disable-pip-version-check',
-          '--no-compile',
-          '--target',
-          pythonPackages,
-          'pilk==0.2.4'
-        ])
-      } catch (error) {
-        console.warn(
-          '[PersonalWechatRuntime] pilk 安装失败，将使用 OneBot 内置的 Go SILK 编码器：',
-          error
-        )
-      }
-
       for (const required of [
         executable,
         script,

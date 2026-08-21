@@ -9,7 +9,7 @@
  * onebot/script.js. See docs/third-party/wechat-chatter/NOTICE.md.
  */
 
-/* eslint-disable @typescript-eslint/no-require-imports */
+/* eslint-disable @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-require-imports */
 const { execFileSync } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -82,31 +82,6 @@ const script = path.join(outputDir, 'onebot', 'script.js')
 const config = path.join(outputDir, 'wechat_version', '4_1_11_53_mac.json')
 for (const required of [executable, script, config]) {
   if (!fs.existsSync(required)) throw new Error(`运行时文件缺失：${required}`)
-}
-
-const pythonPackages = path.join(outputDir, 'python')
-const pilkPackage = path.join(pythonPackages, 'pilk')
-if (!fs.existsSync(pilkPackage)) {
-  console.log('[wechat-personal] 安装项目内语音编码器 pilk')
-  fs.mkdirSync(pythonPackages, { recursive: true })
-  try {
-    execFileSync(
-      'python3',
-      [
-        '-m',
-        'pip',
-        'install',
-        '--disable-pip-version-check',
-        '--no-compile',
-        '--target',
-        pythonPackages,
-        'pilk==0.2.4'
-      ],
-      { stdio: 'inherit' }
-    )
-  } catch {
-    console.warn('[wechat-personal] pilk 安装失败，将使用 OneBot 内置的 Go SILK 编码器')
-  }
 }
 
 function patchPerSendPayload(scriptPath) {

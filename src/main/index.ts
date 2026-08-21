@@ -1857,13 +1857,15 @@ app.on('before-quit', (event) => {
 
   void (async () => {
     agentHubService.stop()
-    personalWechatSendService.stop()
     flushBootstrapCacheWritesSync()
     const [, nativeCallsDrained] = await Promise.all([
       apiServer.stop().catch(() => undefined),
       chat.closeChatDbForQuit().catch(() => false),
       voiceRecognition?.dispose().catch(() => undefined),
-      knowledgeSearchService?.dispose().catch(() => undefined)
+      knowledgeSearchService?.dispose().catch(() => undefined),
+      personalWechatSendService.terminate().catch((error) => {
+        console.warn('[Shutdown] personal WeChat sender cleanup failed:', error)
+      })
     ])
     if (!nativeCallsDrained) {
       console.warn('[Shutdown] WCDB async calls did not fully drain before quit')

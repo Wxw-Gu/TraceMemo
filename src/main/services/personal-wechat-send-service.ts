@@ -372,19 +372,28 @@ async function readOneBotProcessInfo(): Promise<OneBotProcessInfo | undefined> {
 
 async function terminateOneBot(info: OneBotProcessInfo): Promise<void> {
   if (!/(^|\/)onebot(?:\s|$)/.test(info.command)) return
+  await terminateProcess(info.pid)
+}
+
+async function terminateProcess(pid: number): Promise<void> {
   try {
-    process.kill(info.pid, 'SIGTERM')
+    process.kill(pid, 'SIGTERM')
   } catch {
     return
   }
   const startedAt = Date.now()
   while (Date.now() - startedAt < STOP_TIMEOUT_MS) {
     try {
-      process.kill(info.pid, 0)
+      process.kill(pid, 0)
       await new Promise((resolve) => setTimeout(resolve, 100))
     } catch {
       return
     }
+  }
+  try {
+    process.kill(pid, 'SIGKILL')
+  } catch {
+    // The process exited between the last liveness check and the forced stop.
   }
 }
 
@@ -605,18 +614,11 @@ export class PersonalWechatSendService {
     return status
   }
 
-  stop(): void {
-    const child = this.child
-    this.child = null
-    this.startPromise = null
-    // A second Attach to the same WeChat process is unstable. Leave OneBot alive;
-    // it monitors the WeChat PID and exits when that process ends.
-    if (child && child.exitCode === null) child.unref()
-  }
-
   async terminate(): Promise<void> {
+    const trackedPid = this.child?.pid
     const oneBot = await readOneBotProcessInfo()
     if (oneBot) await terminateOneBot(oneBot)
+    if (trackedPid && trackedPid !== oneBot?.pid) await terminateProcess(trackedPid)
     this.child = null
     this.startPromise = null
     this.lastError = ''

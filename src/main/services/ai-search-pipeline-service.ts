@@ -1057,7 +1057,8 @@ export class AiSearchPipelineService {
     return result.evidence.map((item): AiSearchPipelineEvidence => {
       const rawConversationId = String(item.conversationId || '').trim()
       const contact =
-        contactsById.get(rawConversationId) || contactsById.get(rawConversationId.toLocaleLowerCase())
+        contactsById.get(rawConversationId) ||
+        contactsById.get(rawConversationId.toLocaleLowerCase())
       return {
         ...item,
         conversationId: contact?.md5 || rawConversationId,
