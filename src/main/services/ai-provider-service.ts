@@ -26,16 +26,18 @@ type AIMessagePart = { type: 'text'; text: string } | { type: 'image'; dataUrl: 
 type AIMessage = { role: string; content: string | AIMessagePart[] }
 type AIRequestResult = {
   data: string
+  finishReason?: string
   usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
 }
 interface OpenAIResponsePayload {
   error?: { message?: string }
-  choices?: Array<{ message?: { content?: string } }>
+  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
 }
 interface AnthropicResponsePayload {
   error?: { message?: string }
   content?: Array<{ type?: string; text?: string }>
+  stop_reason?: string
   usage?: { input_tokens?: number; output_tokens?: number }
 }
 
@@ -612,6 +614,12 @@ async function requestOpenAICompatible(
   const endpoint = provider.baseUrl.endsWith('/chat/completions')
     ? provider.baseUrl
     : `${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`
+  let modelMaxTokens = 0
+  for (const m of provider.models) {
+    if (m.id === model && m.maxTokens) {
+      modelMaxTokens = m.maxTokens
+    }
+  }
   const response = await fetchWithTimeout(
     endpoint,
     {
@@ -621,7 +629,11 @@ async function requestOpenAICompatible(
         model,
         messages: toOpenAIMessages(messages),
         temperature: provider.advanced.temperature,
-        max_tokens: testing ? 8 : provider.advanced.maxTokens
+        max_tokens: testing
+          ? 8
+          : modelMaxTokens > 0
+            ? modelMaxTokens
+            : provider.advanced.maxTokens || 4096
       })
     },
     provider.advanced.timeoutMs,
@@ -631,6 +643,7 @@ async function requestOpenAICompatible(
   if (!response.ok) throw new Error(payload.error?.message || `AI 请求失败 (${response.status})`)
   return {
     data: String(payload.choices?.[0]?.message?.content || ''),
+    finishReason: String(payload.choices?.[0]?.finish_reason || 'unknown'),
     usage: payload.usage
       ? {
           input: payload.usage.prompt_tokens,
@@ -667,6 +680,12 @@ async function requestAnthropic(
   const endpoint = provider.baseUrl.endsWith('/messages')
     ? provider.baseUrl
     : `${provider.baseUrl.replace(/\/+$/, '')}/messages`
+  let modelMaxTokens = 0
+  for (const m of provider.models) {
+    if (m.id === model && m.maxTokens) {
+      modelMaxTokens = m.maxTokens
+    }
+  }
   const response = await fetchWithTimeout(
     endpoint,
     {
@@ -677,7 +696,11 @@ async function requestAnthropic(
         system: system || undefined,
         messages: anthropicMessages,
         temperature: provider.advanced.temperature,
-        max_tokens: testing ? 8 : provider.advanced.maxTokens || 4096
+        max_tokens: testing
+          ? 8
+          : modelMaxTokens > 0
+            ? modelMaxTokens
+            : provider.advanced.maxTokens || 4096
       })
     },
     provider.advanced.timeoutMs,
@@ -693,6 +716,7 @@ async function requestAnthropic(
           .map((item) => item.text || '')
           .join('\n')
       : '',
+    finishReason: String(payload.stop_reason || 'unknown'),
     usage: payload.usage
       ? {
           input: payload.usage.input_tokens,
