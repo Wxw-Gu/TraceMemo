@@ -58,6 +58,16 @@ describe('production runtime packaging', () => {
     expect(config).toContain('node_modules/silk-wasm/**')
   })
 
+  it('uses a Windows x64-only resource set', () => {
+    const config = readFileSync(resolve(__dirname, '../../electron-builder.win.yml'), 'utf8')
+    expect(config).toContain('connectors/wechat/win32-x64/**')
+    expect(config).toContain('key/win32/x64/**')
+    expect(config).toContain('wcdb/win32/x64/**')
+    expect(config).toContain('electronLanguages:')
+    expect(config).not.toContain('win32-arm64')
+    expect(config).not.toContain('macos/')
+  })
+
   it('rejects an app archive with missing runtime dependencies', async () => {
     const resources = join(root, 'asar-resources')
     const source = join(root, 'asar-source')
