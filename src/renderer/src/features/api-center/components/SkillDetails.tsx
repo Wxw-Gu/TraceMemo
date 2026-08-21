@@ -47,7 +47,7 @@ export function SkillDetails({
         <Button size="sm" variant="outline" onClick={onPreview} disabled={!skill?.available}>
           预览 SKILL.md
         </Button>
-        <Button size="sm" variant="outline" onClick={onGithub}>
+        <Button size="sm" variant="ghost" onClick={onGithub}>
           查看 GitHub 最新版本
         </Button>
       </div>

@@ -55,6 +55,7 @@ export async function launchTestApp(
   })
   const page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
+  if (options.now) await page.clock.setFixedTime(options.now)
   const setWindowContentSize = async (size: { width: number; height: number }): Promise<void> => {
     await app.evaluate(({ BrowserWindow, screen }, nextSize) => {
       const [window] = BrowserWindow.getAllWindows()

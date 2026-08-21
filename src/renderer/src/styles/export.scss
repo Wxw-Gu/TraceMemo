@@ -9,6 +9,14 @@
   background: var(--wxex-bg-main);
 }
 
+.export-config-panel {
+  position: relative;
+  z-index: 1;
+  box-shadow:
+    -10px 0 18px -16px color-mix(in srgb, var(--wxex-text-primary) 32%, transparent),
+    10px 0 18px -16px color-mix(in srgb, var(--wxex-text-primary) 32%, transparent);
+}
+
 @media (max-width: 1100px) {
   .export-workspace {
     grid-template-columns: 248px minmax(460px, 1fr);

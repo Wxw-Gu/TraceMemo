@@ -40,7 +40,7 @@ export function ModelSummary({
   }
 
   return (
-    <section className="report-config-section">
+    <section className="report-config-section report-model-config-section">
       <div className="report-model-summary">
         <div className="report-model-summary-content">
           <h3>模型配置</h3>

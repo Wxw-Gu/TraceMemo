@@ -224,29 +224,6 @@
   gap: 8px;
 }
 
-.report-viewer-toolbar button {
-  min-height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-md);
-  background: var(--wxex-bg-elevated);
-  color: var(--wxex-text-primary);
-  cursor: pointer;
-  font: 600 13px/18px var(--wxex-font);
-}
-
-.report-viewer-toolbar button.primary {
-  border-color: var(--wxex-ai);
-  background: var(--wxex-ai);
-  color: #fff;
-}
-
-.report-viewer-toolbar button:disabled {
-  color: var(--wxex-text-muted);
-  cursor: not-allowed;
-  opacity: 0.72;
-}
-
 .report-toolbar-button-hint {
   position: relative;
   display: inline-flex;

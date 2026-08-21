@@ -74,6 +74,23 @@ describe('AI model settings', () => {
     expect(screen.getByLabelText('模型 ID')).toHaveAttribute('placeholder', '例如：deepseek-chat')
   })
 
+  it('reveals and focuses the provider editor when editing an existing provider', async () => {
+    vi.mocked(window.api.listAIProviders).mockResolvedValue({
+      success: true,
+      providers: [provider]
+    })
+    render(<AIModelPage onRuntimeChange={vi.fn()} onNotice={vi.fn()} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+    await userEvent.click(screen.getByRole('button', { name: '编辑' }))
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    expect(screen.getByLabelText('供应商名称')).toHaveFocus()
+    expect(screen.getByLabelText('供应商名称')).toHaveValue(provider.name)
+  })
+
   it('does not reload providers when the parent callback identity changes', async () => {
     const firstRuntimeChange = vi.fn()
     const secondRuntimeChange = vi.fn()

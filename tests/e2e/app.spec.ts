@@ -307,6 +307,7 @@ test('SETTINGS-02 basic settings controls fit a narrow viewport and keep their s
       .click()
 
     await expect(fixture.page.getByRole('heading', { name: '账号与数据库' })).toBeVisible()
+    await expect(fixture.page.getByRole('button', { name: '存储与导出' })).toHaveCount(0)
     const autoLoginSwitch = fixture.page.getByRole('switch', { name: '启动时自动连接数据库' })
     await expect(autoLoginSwitch).toBeVisible()
     await autoLoginSwitch.click()
@@ -438,6 +439,12 @@ test('SETTINGS-05 AI model editor keeps provider and capability semantics', asyn
     await expect(fixture.page.getByRole('heading', { name: 'AI 模型' })).toBeVisible()
     await expect(fixture.page.getByRole('button', { name: '当前默认' })).toBeDisabled()
 
+    await fixture.page.getByRole('button', { name: '编辑' }).click()
+    await expect(fixture.page.getByRole('heading', { name: '编辑供应商' })).toBeVisible()
+    await expect(fixture.page.getByLabel('供应商名称')).toBeFocused()
+    await expect(fixture.page.locator('#ai-provider-editor')).toBeInViewport()
+    await fixture.page.getByRole('button', { name: '关闭' }).click()
+
     await fixture.page.getByRole('button', { name: '添加供应商' }).click()
     await expect(fixture.page.getByRole('heading', { name: '新增供应商' })).toBeVisible()
     await expect(fixture.page.getByLabel('供应商名称')).toBeFocused()
@@ -493,6 +500,7 @@ test('SETTINGS-07 voice recognition controls keep selection semantics at a narro
 
     const categoryTabs = fixture.page.getByRole('tablist', { name: '会话类别' })
     await categoryTabs.scrollIntoViewIfNeeded()
+    await expect(fixture.page.locator('.voice-conversation-avatar img')).toHaveCount(1)
     await expect(categoryTabs.getByRole('tab', { name: /群聊/ })).toHaveAttribute(
       'data-state',
       'active'
@@ -826,6 +834,15 @@ test('ASK-01 uses the local fixed AI service and keeps evidence in the UI', asyn
     await expect(fixture.page.getByText(/固定假回答：测试数据中的核心流程正常/)).toBeVisible({
       timeout: 15_000
     })
+
+    await fixture.page.getByRole('button', { name: /历史提问/ }).click()
+    await fixture.page.getByRole('button', { name: '测试群讨论了什么？', exact: true }).click()
+    const toastClose = fixture.page.getByRole('button', { name: '关闭通知' })
+    await expect(toastClose).toBeVisible()
+    expect(await toastClose.boundingBox()).toMatchObject({ width: 28, height: 28 })
+    await toastClose.click()
+    await expect(toastClose).toHaveCount(0)
+
     expect(
       await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true)

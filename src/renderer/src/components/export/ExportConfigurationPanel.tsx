@@ -69,7 +69,7 @@ interface ExportConfigurationPanelProps {
 const sectionClassName = 'mb-6'
 const sectionTitleClassName = 'mb-3 text-xs font-bold tracking-normal text-foreground'
 const helperClassName = 'mb-0 mt-2 text-[11px] leading-[17px] text-muted-foreground'
-const choicePanelClassName = 'rounded-lg bg-muted p-3'
+const choicePanelClassName = 'rounded-md bg-muted/70 p-3'
 
 export function ExportConfigurationPanel({
   taskCenter,
@@ -322,7 +322,7 @@ export function ExportConfigurationPanel({
 
         <section className={sectionClassName}>
           <h3 className={sectionTitleClassName}>资源处理</h3>
-          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3.5 py-3 text-xs text-foreground">
+          <label className="flex cursor-pointer items-center justify-between gap-3 border-b border-border-subtle py-2.5 text-xs text-foreground">
             <span>包含图片、视频、语音、表情及文件附件</span>
             <Checkbox
               checked={includeMedia}
@@ -387,7 +387,7 @@ export function ExportConfigurationPanel({
             ))}
           </div>
           <p className={helperClassName}>媒体资源会延长导出时间，缺失资源不会中断任务。</p>
-          <label className="mt-2 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3.5 py-3 text-xs text-foreground">
+          <label className="mt-2 flex cursor-pointer items-center justify-between gap-3 border-b border-border-subtle py-2.5 text-xs text-foreground">
             <span>在聊天气泡旁显示头像</span>
             <Checkbox
               checked={includeAvatars}
@@ -424,7 +424,7 @@ export function ExportConfigurationPanel({
         </section>
       </div>
 
-      <footer className="flex h-[58px] shrink-0 items-center gap-2 border-t border-border bg-surface px-5.5 text-xs text-muted-foreground">
+      <footer className="flex px-4 h-[58px] shrink-0 items-center gap-2 border-t border-border bg-surface px-5.5 text-xs text-muted-foreground">
         <span
           className={`h-2 w-2 shrink-0 rounded-full ${status === 'completed' ? 'bg-primary' : 'bg-success'}`}
           aria-hidden

@@ -359,12 +359,10 @@ export function AISearchWorkspace({
 
   const renderIdle = (): React.ReactElement => (
     <div className="ai-search-empty">
-      <div className="ai-search-empty-mark" aria-hidden>
-        <span>✦</span>
-      </div>
-      <span className="ai-search-kicker">LOCAL AI WORKSPACE</span>
+      <span className="ai-search-kicker">本地搜索</span>
       <h2>把聊天记录变成可追问的答案</h2>
       <p>聊天数据在本机检索并保留证据；使用外部 AI 服务前会说明并请求确认发送范围。</p>
+      <span className="ai-search-prompt-label">可以这样问</span>
       <div className="ai-search-prompts">
         {[
           '交友群"张三"最近聊了什么?',
@@ -372,9 +370,16 @@ export function AISearchWorkspace({
           '我和"老李"最近聊了什么话题?',
           '全局搜一下 我和谁聊过 去健身?'
         ].map((prompt) => (
-          <button key={prompt} type="button" onClick={() => setQuery(prompt)}>
+          <Button
+            key={prompt}
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-auto w-full justify-start rounded-none px-0 py-2.5 text-left font-normal"
+            onClick={() => setQuery(prompt)}
+          >
             {prompt}
-          </button>
+          </Button>
         ))}
       </div>
     </div>
@@ -781,7 +786,7 @@ export function AISearchWorkspace({
     <div className="ai-search-workspace">
       <header className="ai-search-header">
         <div>
-          <span className="ai-search-kicker">TraceMemo · LOCAL INTELLIGENCE</span>
+          <span className="ai-search-kicker">TraceMemo 本地搜索</span>
           <h1>问问你的微信</h1>
           <p>在本地聊天记录中提炼主题、结论和可追溯证据</p>
         </div>

@@ -86,7 +86,7 @@ export function ReportToolbar({
       <Button variant="outline" size="sm" onClick={onRegenerate}>
         重新生成
       </Button>
-      <Button variant="outline" size="sm" disabled={!canCopyImage} onClick={onCopyImage}>
+      <Button variant="ghost" size="sm" disabled={!canCopyImage} onClick={onCopyImage}>
         复制图片
       </Button>
       <span

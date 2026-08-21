@@ -93,7 +93,13 @@ describe('voice recognition settings', () => {
       ...window.api,
       getContacts: vi.fn().mockResolvedValue([
         { md5: 'contact-a', m_nsNickName: '联系人 A', m_nsUsrName: 'contact-a', type: 'user' },
-        { md5: 'group-b', m_nsNickName: '群聊 B', m_nsUsrName: 'group-b@chatroom', type: 'group' }
+        {
+          md5: 'group-b',
+          m_nsNickName: '群聊 B',
+          m_nsUsrName: 'group-b@chatroom',
+          type: 'group',
+          avatar: 'data:image/png;base64,voice-fixture-avatar'
+        }
       ]),
       getSelf: vi.fn().mockResolvedValue({
         ready: true,
@@ -142,6 +148,9 @@ describe('voice recognition settings', () => {
 
     expect(await screen.findByText('群聊 B')).toBeInTheDocument()
     expect(await screen.findByText('7 条语音')).toBeInTheDocument()
+    expect(
+      document.querySelector('img[src="data:image/png;base64,voice-fixture-avatar"]')
+    ).toBeInTheDocument()
     expect(window.api.getVoiceBatchConversationSummaries).toHaveBeenCalledWith({
       conversationIds: ['group-b'],
       range: 'recent_30_days'

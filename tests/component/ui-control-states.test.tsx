@@ -12,7 +12,8 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Switch
+  Switch,
+  Textarea
 } from '../../src/renderer/src/components/ui'
 import { IconButton } from '../../src/renderer/src/components/ui/icon-button'
 import {
@@ -79,6 +80,7 @@ describe('TraceMemo UI control states', () => {
       <>
         <Button disabled>不可用操作</Button>
         <Input aria-label="不可用输入" value="仍可读取" disabled readOnly />
+        <Textarea aria-label="不可用多行输入" value="仍可读取" disabled readOnly />
         <Checkbox aria-label="不可用多选" disabled />
         <RadioGroup aria-label="不可用单选组">
           <RadioGroupItem value="disabled" aria-label="不可用单选" disabled />
@@ -90,6 +92,7 @@ describe('TraceMemo UI control states', () => {
     for (const control of [
       screen.getByRole('button', { name: '不可用操作' }),
       screen.getByRole('textbox', { name: '不可用输入' }),
+      screen.getByRole('textbox', { name: '不可用多行输入' }),
       screen.getByRole('checkbox', { name: '不可用多选' }),
       screen.getByRole('radio', { name: '不可用单选' }),
       screen.getByRole('switch', { name: '不可用开关' })
@@ -102,6 +105,15 @@ describe('TraceMemo UI control states', () => {
       'disabled:bg-disabled-surface',
       'disabled:text-disabled-foreground',
       'disabled:!text-disabled-foreground'
+    )
+    expect(screen.getByRole('textbox', { name: '不可用多行输入' })).toHaveClass(
+      'border-border-subtle',
+      'disabled:border-disabled-border',
+      'disabled:bg-disabled-surface',
+      'disabled:text-disabled-foreground'
+    )
+    expect(screen.getByRole('textbox', { name: '不可用多行输入' })).not.toHaveClass(
+      'shadow-surface'
     )
     expect(screen.getByRole('checkbox', { name: '不可用多选' })).toHaveClass(
       'border-muted-foreground/60'
@@ -148,6 +160,8 @@ describe('TraceMemo UI control states', () => {
     expect(screen.getByRole('radio', { name: '舒适密度' })).toBeChecked()
 
     const toggle = screen.getByRole('switch', { name: '显示头像' })
+    expect(toggle).toHaveClass('h-5', 'w-9', 'border-0', 'p-0.5')
+    expect(toggle.firstElementChild).toHaveClass('h-4', 'w-4')
     await user.click(toggle)
     expect(toggle).toBeChecked()
   })

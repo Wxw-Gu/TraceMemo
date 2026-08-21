@@ -172,7 +172,7 @@
   gap: 10px;
   margin-top: 16px;
   padding: 10px 12px;
-  border: 1px solid var(--wxex-border);
+  border: 1px solid hsl(var(--tm-border-subtle));
   border-radius: var(--wxex-radius-md);
   background: var(--wxex-bg-sidebar);
   color: var(--wxex-text-secondary);
@@ -187,7 +187,7 @@
 .api-introduction {
   margin-top: 24px;
   padding: 18px 20px;
-  border: 1px solid var(--wxex-border);
+  border: 1px solid hsl(var(--tm-border-subtle));
   border-radius: var(--wxex-radius-lg);
   background: var(--wxex-bg-elevated);
 }
@@ -202,7 +202,7 @@
   justify-content: space-between;
   gap: 10px;
   padding: 12px;
-  border: 1px dashed var(--wxex-border);
+  border: 1px dashed hsl(var(--tm-border-subtle));
   border-radius: var(--wxex-radius-md);
   color: var(--wxex-text-secondary);
   font: 12px/18px var(--wxex-font);
@@ -210,7 +210,7 @@
 .api-flow span,
 .api-flow strong {
   padding: 7px 10px;
-  border: 1px solid var(--wxex-border);
+  border: 1px solid hsl(var(--tm-border-subtle));
   border-radius: 5px;
   background: var(--wxex-bg-elevated);
   white-space: nowrap;
@@ -230,7 +230,7 @@
 .skill-install-flow {
   margin-top: 26px;
   padding: 18px 20px;
-  border: 1px solid var(--wxex-border);
+  border: 1px solid hsl(var(--tm-border-subtle));
   border-radius: var(--wxex-radius-lg);
   background: var(--wxex-bg-elevated);
 }
@@ -262,7 +262,7 @@
   width: 24px;
   height: 24px;
   place-items: center;
-  border: 1px solid var(--wxex-border);
+  border: 1px solid hsl(var(--tm-border-subtle));
   border-radius: 50%;
   background: var(--wxex-bg-elevated);
   font: 700 12px/1 var(--wxex-font);
@@ -291,7 +291,7 @@
 }
 .api-skill-details {
   margin-top: 16px;
-  border: 1px solid var(--wxex-border);
+  border: 1px solid hsl(var(--tm-border-subtle));
   border-radius: var(--wxex-radius-md);
   background: var(--wxex-bg-elevated);
 }
@@ -331,7 +331,7 @@
 .api-endpoint-table {
   margin-top: 12px;
   overflow: hidden;
-  border: 1px solid var(--wxex-border);
+  border: 1px solid hsl(var(--tm-border-subtle));
   border-radius: var(--wxex-radius-md);
   background: var(--wxex-bg-elevated);
 }
@@ -350,7 +350,7 @@
 }
 .api-endpoint-row {
   min-height: 54px;
-  border-top: 1px solid var(--wxex-border);
+  border-top: 1px solid hsl(var(--tm-border-subtle));
   color: var(--wxex-text-secondary);
   font: 12px/18px var(--wxex-font);
 }
@@ -387,7 +387,7 @@
   gap: 10px;
   margin: 12px 0;
   padding: 10px 12px;
-  border: 1px solid var(--wxex-border);
+  border: 1px solid hsl(var(--tm-border-subtle));
   border-radius: var(--wxex-radius-md);
   background: var(--wxex-bg-sidebar);
   overflow: hidden;
@@ -505,7 +505,7 @@
   overflow-wrap: anywhere;
   margin: 10px 0;
   padding: 9px 10px;
-  border: 1px solid var(--wxex-border);
+  border: 1px solid hsl(var(--tm-border-subtle));
   border-radius: var(--wxex-radius-sm);
   background: var(--wxex-bg-subtle);
   color: var(--wxex-text-primary);

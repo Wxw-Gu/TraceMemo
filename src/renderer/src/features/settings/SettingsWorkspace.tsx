@@ -100,6 +100,13 @@ export function SettingsWorkspace({
         return <AdvancedPage onNotice={onNotice} />
       case 'cache-cleanup':
         return <CacheCleanupPage onNotice={onNotice} />
+      case 'storage-export':
+        return (
+          <SettingsEmptyState
+            label={SETTINGS_CATEGORY_LABELS[selectedCategory]}
+            description="导出格式与范围请前往「导出」工作区设置。"
+          />
+        )
       case 'appearance':
         return <AppearancePage onNotice={onNotice} onAppearanceChange={onAppearanceChange} />
       case 'about':

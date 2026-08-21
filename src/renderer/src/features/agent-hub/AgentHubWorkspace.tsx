@@ -194,37 +194,19 @@ export function AgentHubWorkspace(): React.ReactElement {
         </section>
 
         <aside className="agent-hub-card agent-hub-capability-card">
-          <span className="agent-hub-card-kicker">已启用能力</span>
-          <h2>微信数据助手</h2>
+          <span className="agent-hub-card-kicker">本机能力</span>
+          <h2>能力与状态</h2>
           <p>机器人通过本机 Agent Hub 调用 TraceMemo，不向公网暴露数据库。</p>
-          <div className="agent-hub-example">
-            <span>支持自然语言，可以这样问</span>
-            <strong>“最近 5 条消息是谁？”</strong>
-            <strong>“帮我看看最近跟xx聊了些什么”</strong>
-            <strong>“生成产品交流群今天的群聊总结图片”</strong>
-          </div>
           <ul>
-            <li>
-              <i />
-              本机 HTTP 通信
-            </li>
-            <li>
-              <i />
-              入站请求鉴权
-            </li>
-            <li>
-              <i />
-              消息重复保护
-            </li>
-            <li>
-              <i />
-              使用已配置 AI 理解自然语言
-            </li>
-            <li>
+            <li>本机 HTTP 通信</li>
+            <li>入站请求鉴权</li>
+            <li>消息重复保护</li>
+            <li>使用已配置 AI 理解自然语言</li>
+            <li className="agent-hub-capability-status">
               <i className={status.dataApi === 'online' ? '' : 'offline'} />
               本地数据 API：{status.dataApi === 'online' ? '已连接' : '未连接'}
             </li>
-            <li>
+            <li className="agent-hub-capability-status">
               <i className={status.databaseReady ? '' : 'offline'} />
               微信数据库：{status.databaseReady ? '可查询' : '未就绪'}
             </li>

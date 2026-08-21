@@ -79,5 +79,10 @@ describe('TraceMemo UI infrastructure', () => {
     await user.click(screen.getByRole('button', { name: '显示通知' }))
     expect(screen.getByText('已保存')).toBeVisible()
     expect(screen.getByText('设置已更新')).toBeVisible()
+
+    const close = screen.getByRole('button', { name: '关闭通知' })
+    expect(close).toHaveClass('h-7', 'w-7', 'border-0', 'bg-transparent')
+    await user.click(close)
+    expect(screen.queryByText('已保存')).not.toBeInTheDocument()
   })
 })

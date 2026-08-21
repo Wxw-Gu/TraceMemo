@@ -87,13 +87,13 @@ export function ApiRuntimePanel({
                 启动服务
               </Button>
             )}
-            <Button size="sm" variant="outline" onClick={() => onControl('restart')}>
+            <Button size="sm" variant="ghost" onClick={() => onControl('restart')}>
               重启服务
             </Button>
-            <Button size="sm" variant="outline" onClick={copyAddress}>
+            <Button size="sm" variant="ghost" onClick={copyAddress}>
               复制地址
             </Button>
-            <Button size="sm" variant="outline" onClick={onOpenSettings}>
+            <Button size="sm" variant="ghost" onClick={onOpenSettings}>
               API 设置
             </Button>
           </div>
@@ -117,7 +117,7 @@ export function ApiRuntimePanel({
           <div className="api-runtime-actions">
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
               disabled={!tokenStatus?.hasToken}
               onClick={() => void (revealedToken ? onHideToken() : onRevealToken())}
             >
@@ -125,7 +125,7 @@ export function ApiRuntimePanel({
             </Button>
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
               disabled={!tokenStatus?.hasToken}
               onClick={() => void onCopyToken()}
             >
@@ -162,7 +162,7 @@ export function ApiRuntimePanel({
               </p>
               <Button
                 size="sm"
-                variant="outline"
+                variant="ghost"
                 onClick={() => void onCopy(formatJson(response.text), 'JSON 响应已复制')}
               >
                 复制 JSON

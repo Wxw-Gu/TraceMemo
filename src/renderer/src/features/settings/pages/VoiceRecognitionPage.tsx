@@ -511,7 +511,11 @@ export function VoiceRecognitionPage({
                           onCheckedChange={() => toggleConversation(contact.md5)}
                         />
                         <span className="voice-conversation-avatar" aria-hidden>
-                          {contactName(contact).slice(0, 1)}
+                          {contact.avatar ? (
+                            <img src={contact.avatar} alt="" referrerPolicy="no-referrer" />
+                          ) : (
+                            contactName(contact).slice(0, 1)
+                          )}
                         </span>
                         <span className="voice-conversation-copy">
                           <strong>{contactName(contact)}</strong>

@@ -14,23 +14,28 @@ export function AIModelPage({
   onNotice: (message: string) => void
 }): React.ReactElement {
   const controller = useAIModelSettingsController({ onRuntimeChange, onNotice })
-  const shouldRevealNewEditor = useRef(false)
+  const shouldRevealEditor = useRef(false)
   const runtime = controller.state.runtime
   const defaultProvider = controller.state.providers.find(
     (provider) => provider.id === runtime?.providerId
   )
 
   useEffect(() => {
-    if (!controller.state.editor || !shouldRevealNewEditor.current) return
-    shouldRevealNewEditor.current = false
+    if (!controller.state.editor || !shouldRevealEditor.current) return
+    shouldRevealEditor.current = false
     const editor = document.getElementById('ai-provider-editor')
     editor?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     editor?.querySelector<HTMLInputElement>('#ai-provider-name')?.focus({ preventScroll: true })
   }, [controller.state.editor])
 
   const openNewProvider = (): void => {
-    shouldRevealNewEditor.current = true
+    shouldRevealEditor.current = true
     controller.openNew()
+  }
+
+  const openProviderEditor = (provider: (typeof controller.state.providers)[number]): void => {
+    shouldRevealEditor.current = true
+    controller.openEdit(provider)
   }
 
   return (
@@ -85,7 +90,7 @@ export function AIModelPage({
                 key={provider.id}
                 provider={provider}
                 testing={controller.state.testingId === provider.id}
-                onEdit={() => controller.openEdit(provider)}
+                onEdit={() => openProviderEditor(provider)}
                 onTest={() => void controller.test(provider.id)}
                 onDefault={() => void controller.setDefault(provider.id)}
                 onDelete={() => void controller.remove(provider.id)}
