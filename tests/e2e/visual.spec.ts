@@ -497,6 +497,72 @@ test('SETTINGS-02 basic settings controls visual @visual', async () => {
   }
 })
 
+test('UPDATE-01 startup prompt and downloaded state visual @visual', async () => {
+  const fixture = await launchTestApp({ now: visualNow, updateSimulation: true })
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.setWindowContentSize(visualViewport)
+    const dialog = fixture.page.getByRole('alertdialog', { name: '发现新版本 v2.0.0' })
+    await expect(dialog).toBeVisible()
+    await clearScreenshotFocus(fixture.page)
+    await expect(fixture.page).toHaveScreenshot('update-available-dialog.png', {
+      animations: 'disabled',
+      caret: 'hide'
+    })
+
+    await dialog.getByRole('button', { name: '立即下载' }).click()
+    await expect(fixture.page.getByText('v2.0.0 已准备完成')).toBeVisible({ timeout: 5_000 })
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    expect(pageErrors).toEqual([])
+    await clearScreenshotFocus(fixture.page)
+    await expect(fixture.page).toHaveScreenshot('settings-update-downloaded.png', {
+      animations: 'disabled',
+      caret: 'hide'
+    })
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('UPDATE-02 unsigned macOS release prompt visual @visual', async () => {
+  const fixture = await launchTestApp({ now: visualNow, unsignedMacUpdate: true })
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.setWindowContentSize(visualViewport)
+    const dialog = fixture.page.getByRole('alertdialog', { name: '发现新版本 v2.2.3' })
+    await expect(dialog).toBeVisible()
+    await clearScreenshotFocus(fixture.page)
+    await expect(fixture.page).toHaveScreenshot('update-release-page-dialog.png', {
+      animations: 'disabled',
+      caret: 'hide'
+    })
+
+    await dialog.getByRole('button', { name: '取消' }).click()
+    await fixture.page
+      .getByRole('navigation', { name: '一级导航' })
+      .getByRole('button', { name: '设置' })
+      .click()
+    await fixture.page.getByRole('button', { name: '关于' }).click()
+    await expect(fixture.page.getByRole('button', { name: '前往下载' })).toBeVisible()
+    await expect(fixture.page.getByRole('progressbar')).toHaveCount(0)
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    expect(pageErrors).toEqual([])
+    await clearScreenshotFocus(fixture.page)
+    await expect(fixture.page).toHaveScreenshot('settings-update-release-page.png', {
+      animations: 'disabled',
+      caret: 'hide'
+    })
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('SETTINGS-03 database key controls visual @visual', async () => {
   const fixture = await launchTestApp({ now: visualNow })
   const pageErrors: Error[] = []

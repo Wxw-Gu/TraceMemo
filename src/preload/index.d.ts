@@ -66,7 +66,12 @@ import type {
   PersonalWechatRuntimeStatus
 } from '../shared/personal-wechat-runtime'
 import type { AppLogEntry } from '../shared/app-log'
-import type { AppUpdateCheckResult, AppUpdateState } from '../shared/app-update'
+import type {
+  AppUpdateCheckResult,
+  AppUpdateInstallResult,
+  AppUpdateOpenDownloadPageResult,
+  AppUpdateState
+} from '../shared/app-update'
 import type { CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress, ExportResult } from '../shared/export'
 import type {
@@ -173,7 +178,8 @@ declare global {
       getAppUpdateState: () => Promise<AppUpdateState>
       checkAppUpdate: () => Promise<AppUpdateCheckResult>
       downloadAppUpdate: () => Promise<AppUpdateCheckResult>
-      installAppUpdate: () => Promise<{ success: boolean; error?: string }>
+      installAppUpdate: () => Promise<AppUpdateInstallResult>
+      openAppUpdateDownloadPage: () => Promise<AppUpdateOpenDownloadPageResult>
       onAppUpdateState: (callback: (state: AppUpdateState) => void) => () => void
       getCacheSummary: () => Promise<CacheSummary>
       clearCache: (scope: 'bootstrap' | 'electron' | 'knowledge' | 'all') => Promise<CacheSummary>

@@ -39,6 +39,7 @@ import type { SelectableReportTemplateId } from '../../shared/report-templates'
 import { switchGeneratedReportTemplate } from './utils/report-template-switch'
 import { runtimePlatform } from './utils/runtime-environment'
 import { useToast } from './components/ui'
+import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -72,7 +73,7 @@ interface SelfInfo {
   accountRoot: string
 }
 
-const MAC_KEY_FAQ_URL = 'https://github.com/Wxw-Gu/WechatExplorer/blob/main/docs/mac-disable-sip.md'
+const MAC_KEY_FAQ_URL = 'https://github.com/Wxw-Gu/TraceMemo/blob/main/docs/mac-disable-sip.md'
 const FIRST_USE_WELCOME_SEEN_KEY = 'wxe_first_use_welcome_seen'
 const MESSAGE_MONITOR_DEBOUNCE_MS = 8000
 const INITIAL_MESSAGE_COUNT = 20
@@ -1468,6 +1469,11 @@ function App(): React.ReactElement {
     setActivePage('settings')
   }
 
+  const openUpdateSettings = (): void => {
+    setSettingsCategory('about')
+    setActivePage('settings')
+  }
+
   const openModelSettings = (): void => {
     setSettingsCategory('ai-model')
     setActivePage('settings')
@@ -2113,6 +2119,7 @@ function App(): React.ReactElement {
       appearanceTheme={appearanceSettings.theme}
       compactMode={appearanceSettings.compactMode}
     >
+      <AppUpdatePrompt onDownloadStart={openUpdateSettings} onNotice={setReportNotice} />
       {showFirstUseWelcome && (
         <FirstUseWelcome
           onDismiss={dismissFirstUseWelcome}

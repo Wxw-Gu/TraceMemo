@@ -20,6 +20,10 @@ asarUnpack:
   - node_modules/sherpa-onnx-node/**
   - node_modules/sherpa-onnx-*/**
 extraResources:
+  # Keep the updater provider in every packaged Windows app. electron-builder also
+  # regenerates this file during publish, using the same release configuration.
+  - from: build/app-update.yml
+    to: app-update.yml
   # Keep only resources required by the Windows x64 runtime.
   - from: resources
     to: resources
@@ -58,5 +62,5 @@ electronLanguages:
 publish:
   provider: github
   owner: Wxw-Gu
-  repo: WechatExplorer
+  repo: TraceMemo
   releaseType: release

@@ -685,6 +685,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('app-update:check', () => appUpdateService.check())
   ipcMain.handle('app-update:download', () => appUpdateService.download())
   ipcMain.handle('app-update:install', () => appUpdateService.install())
+  ipcMain.handle('app-update:openDownloadPage', () => appUpdateService.openDownloadPage())
+  appUpdateService.scheduleStartupCheck()
   ipcMain.handle('cache:getSummary', () => getCacheSummary())
   ipcMain.handle('cache:openKnowledgeDirectory', () => openKnowledgeDirectory())
   ipcMain.handle('cache:clear', async (_, scope: CacheClearScope) => {

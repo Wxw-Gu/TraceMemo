@@ -20,9 +20,16 @@ describe('basic settings pages', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     Object.defineProperty(window, 'api', { configurable: true, value: api })
-    api.getAppUpdateState.mockResolvedValue({ status: 'idle', currentVersion: '2.2.2' })
+    api.getAppUpdateState.mockResolvedValue({
+      status: 'idle',
+      currentVersion: '2.2.2',
+      delivery: 'automatic'
+    })
     api.onAppUpdateState.mockReturnValue(vi.fn())
-    api.checkAppUpdate.mockResolvedValue(undefined)
+    api.checkAppUpdate.mockResolvedValue({
+      success: true,
+      state: { status: 'up-to-date', currentVersion: '2.2.2' }
+    })
     api.revealAppLog.mockResolvedValue(undefined)
     api.getSettings.mockResolvedValue({ settings: { debugEnabled: false } })
     api.setSettings.mockResolvedValue({ settings: { debugEnabled: true } })

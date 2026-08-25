@@ -64,7 +64,7 @@ describe('FirstUseWelcome', () => {
     expect(onOpenAISettings).toHaveBeenCalledOnce()
     expect(screen.getByRole('link', { name: '查看完整使用教程' })).toHaveAttribute(
       'href',
-      'https://github.com/Wxw-Gu/WechatExplorer/blob/main/docs/user-guide/getting-started.md'
+      'https://github.com/Wxw-Gu/TraceMemo/blob/main/docs/user-guide/getting-started.md'
     )
   })
 })

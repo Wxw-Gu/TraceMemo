@@ -15,6 +15,8 @@ const VALID_KEY = 'a'.repeat(64)
 const imageData = `data:image/png;base64,${fs.readFileSync(path.join(root, 'resources/icon.png')).toString('base64')}`
 const voiceData = 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA='
 const configuredNow = Number(process.env.WXE_E2E_NOW_MS)
+const updateSimulation = process.env.WXE_E2E_UPDATE_SIMULATION === '1'
+const unsignedMacUpdate = process.env.WXE_E2E_UNSIGNED_MAC_UPDATE === '1'
 const fixtureNowMs =
   Number.isFinite(configuredNow) && configuredNow > 0 ? configuredNow : Date.now()
 
@@ -801,7 +803,83 @@ handle('accounts:discover', (inputPath) =>
         ]
       }
 )
-handle('app-update:getState', () => ({ status: 'idle', currentVersion: '2.2.0' }))
+let appUpdateState = updateSimulation
+  ? {
+      status: 'available',
+      currentVersion: '1.9.0',
+      delivery: 'automatic',
+      version: '2.0.0',
+      source: 'startup',
+      isSimulation: true
+    }
+  : unsignedMacUpdate
+    ? {
+        status: 'available',
+        currentVersion: '2.2.2',
+        delivery: 'release-page',
+        version: '2.2.3',
+        source: 'startup'
+      }
+    : { status: 'idle', currentVersion: '2.2.0', delivery: 'automatic' }
+let openedUpdateDownloadUrl = ''
+handle('app-update:getState', () => appUpdateState)
+handle('app-update:openDownloadPage', () => {
+  openedUpdateDownloadUrl = 'https://github.com/Wxw-Gu/TraceMemo/releases/latest'
+  return { success: true }
+})
+handle('app-update:getOpenedDownloadUrl', () => openedUpdateDownloadUrl)
+handle('app-update:download', async () => {
+  if (!updateSimulation) return { success: true, state: appUpdateState }
+  const total = 60 * 1024 * 1024
+  const steps = [0, 5, 12, 21, 33, 46, 58, 69, 78, 86, 93, 97, 100]
+  let previousTransferred = 0
+  appUpdateState = {
+    ...appUpdateState,
+    status: 'downloading',
+    percent: 0,
+    transferred: 0,
+    total,
+    bytesPerSecond: 0
+  }
+  for (const percent of steps.slice(1)) {
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const transferred = Math.round((total * percent) / 100)
+    const bytesPerSecond = Math.round((transferred - previousTransferred) / 0.15)
+    previousTransferred = transferred
+    appUpdateState = {
+      ...appUpdateState,
+      status: 'downloading',
+      percent,
+      transferred,
+      total,
+      bytesPerSecond
+    }
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('app-update:state', appUpdateState)
+    }
+  }
+  appUpdateState = {
+    ...appUpdateState,
+    status: 'downloaded',
+    percent: 100,
+    transferred: total,
+    total,
+    bytesPerSecond: undefined
+  }
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('app-update:state', appUpdateState)
+  }
+  return { success: true, state: appUpdateState }
+})
+handle('app-update:install', async () =>
+  updateSimulation
+    ? {
+        success: true,
+        simulated: true,
+        message: '开发模拟模式：更新安装动作已模拟，未实际退出应用。'
+      }
+    : { success: true }
+)
 
 for (const channel of [
   'export:start',
@@ -817,8 +895,6 @@ for (const channel of [
   'image:selectDecoder',
   'image:openDecoderDownload',
   'app-update:check',
-  'app-update:download',
-  'app-update:install',
   'agent-hub:clearLogs',
   'agent-hub:startLogin',
   'agent-hub:cancelLogin',

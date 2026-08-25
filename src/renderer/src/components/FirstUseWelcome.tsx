@@ -8,8 +8,7 @@ interface FirstUseWelcomeProps {
   onOpenAISettings: () => void
 }
 
-const GUIDE_URL =
-  'https://github.com/Wxw-Gu/WechatExplorer/blob/main/docs/user-guide/getting-started.md'
+const GUIDE_URL = 'https://github.com/Wxw-Gu/TraceMemo/blob/main/docs/user-guide/getting-started.md'
 
 export function FirstUseWelcome({
   onDismiss,

@@ -21,6 +21,8 @@ export async function launchTestApp(
     largeContacts?: number
     corruptCache?: boolean
     aiFailure?: string
+    updateSimulation?: boolean
+    unsignedMacUpdate?: boolean
     now?: number
     appearanceTheme?: 'light' | 'dark'
     stableUserData?: string
@@ -49,6 +51,8 @@ export async function launchTestApp(
       WXE_E2E_LARGE_CONTACTS: String(options.largeContacts || 0),
       WXE_E2E_CORRUPT_CACHE: options.corruptCache ? '1' : '0',
       WXE_E2E_AI_FAILURE: options.aiFailure || '',
+      WXE_E2E_UPDATE_SIMULATION: options.updateSimulation ? '1' : '0',
+      WXE_E2E_UNSIGNED_MAC_UPDATE: options.unsignedMacUpdate ? '1' : '0',
       WXE_E2E_NOW_MS: options.now ? String(options.now) : '',
       WXE_E2E_APPEARANCE_THEME: options.appearanceTheme || 'light'
     }

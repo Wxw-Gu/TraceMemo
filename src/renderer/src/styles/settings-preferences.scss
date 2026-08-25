@@ -629,21 +629,6 @@
   }
 }
 
-.update-progress {
-  height: 6px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--wxex-border);
-
-  i {
-    display: block;
-    height: 100%;
-    border-radius: inherit;
-    background: var(--wxex-brand);
-    transition: width 0.2s ease;
-  }
-}
-
 .about-links-card {
   display: grid;
   gap: 12px;

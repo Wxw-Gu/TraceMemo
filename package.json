@@ -39,6 +39,7 @@
     "start": "electron-vite preview",
     "predev": "node -e \"require('electron')\"",
     "dev": "node scripts/ensure-env.cjs && node scripts/build-wechat-connector.cjs && electron-vite dev",
+    "dev:update": "cross-env TRACEMEMO_UPDATE_SIMULATION=true pnpm dev",
     "test:wechat-connector": "go -C services/wechat-connector test ./... && go -C services/wechat-connector vet ./...",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:component": "vitest run --config vitest.component.config.ts",

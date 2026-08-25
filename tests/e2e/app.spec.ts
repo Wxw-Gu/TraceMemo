@@ -340,6 +340,62 @@ test('SETTINGS-02 basic settings controls fit a narrow viewport and keep their s
   }
 })
 
+test('UPDATE-01 simulated startup update navigates to live progress and never exits on install', async () => {
+  const fixture = await launchTestApp({ updateSimulation: true })
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    const dialog = fixture.page.getByRole('alertdialog', { name: '发现新版本 v2.0.0' })
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: '立即下载' }).click()
+
+    await expect(fixture.page.getByRole('heading', { name: '关于' })).toBeVisible()
+    await expect(fixture.page.getByRole('button', { name: '关于' })).toHaveClass(/active/)
+    await expect(fixture.page.getByText('正在下载 v2.0.0')).toBeVisible()
+    await expect
+      .poll(async () => {
+        const value = await fixture.page
+          .getByRole('progressbar', { name: /更新下载进度/ })
+          .getAttribute('aria-valuenow')
+        return Number(value)
+      })
+      .toBeGreaterThan(0)
+    await expect(fixture.page.getByText(/MB \/ 60\.0 MB/)).toBeVisible()
+    await expect(fixture.page.getByText(/MB\/s/)).toBeVisible()
+
+    await expect(fixture.page.getByText('v2.0.0 已准备完成')).toBeVisible({ timeout: 5_000 })
+    await fixture.page.getByRole('button', { name: '立即重启更新' }).click()
+    await expect(
+      fixture.page.getByText('开发模拟模式：更新安装动作已模拟，未实际退出应用。')
+    ).toBeVisible()
+    await expect(fixture.page.getByRole('heading', { name: '关于' })).toBeVisible()
+    expect(pageErrors).toEqual([])
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('UPDATE-02 unsigned macOS update opens the latest release without downloading', async () => {
+  const fixture = await launchTestApp({ unsignedMacUpdate: true })
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    const dialog = fixture.page.getByRole('alertdialog', { name: '发现新版本 v2.2.3' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByText('有新版本可用，前往 GitHub 下载最新版本。')).toBeVisible()
+    await dialog.getByRole('button', { name: '前往下载' }).click()
+
+    const openedUrl = await fixture.page.evaluate(() =>
+      window.electron.ipcRenderer.invoke('app-update:getOpenedDownloadUrl')
+    )
+    expect(openedUrl).toBe('https://github.com/Wxw-Gu/TraceMemo/releases/latest')
+    await expect(fixture.page.getByRole('progressbar')).toHaveCount(0)
+    expect(pageErrors).toEqual([])
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('SETTINGS-03 database key actions keep destructive confirmation keyboard-safe', async () => {
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []

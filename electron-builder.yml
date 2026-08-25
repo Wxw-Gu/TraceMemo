@@ -20,6 +20,10 @@ asarUnpack:
   - node_modules/sherpa-onnx-node/**
   - node_modules/sherpa-onnx-*/**
 extraResources:
+  # Keep the updater provider in every packaged macOS app. electron-builder also
+  # regenerates this file during publish, using the same release configuration.
+  - from: build/app-update.yml
+    to: app-update.yml
   # Includes the optional WeChat connector binary for the target platform.
   - from: resources
     to: resources
@@ -39,6 +43,9 @@ nsis:
   createDesktopShortcut: always
 mac:
   icon: icon.icns
+  target:
+    - dmg
+    - zip
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     CFBundleDisplayName: TraceMemo
@@ -63,5 +70,5 @@ npmRebuild: false
 publish:
   provider: github
   owner: Wxw-Gu
-  repo: WechatExplorer
+  repo: TraceMemo
   releaseType: release

@@ -85,6 +85,7 @@ const api = {
   checkAppUpdate: () => ipcRenderer.invoke('app-update:check'),
   downloadAppUpdate: () => ipcRenderer.invoke('app-update:download'),
   installAppUpdate: () => ipcRenderer.invoke('app-update:install'),
+  openAppUpdateDownloadPage: () => ipcRenderer.invoke('app-update:openDownloadPage'),
   onAppUpdateState: (callback: (state: AppUpdateState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: AppUpdateState): void =>
       callback(state)
