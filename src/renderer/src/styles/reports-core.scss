@@ -1124,30 +1124,50 @@
 .agent-hub-capability-card > p {
   margin-top: 8px;
 }
+.agent-hub-example {
+  margin: 18px 0 14px;
+  padding: 14px;
+  border-radius: var(--wxex-radius-md);
+  background: var(--wxex-brand-soft);
+}
+.agent-hub-example span {
+  display: block;
+  color: var(--wxex-text-muted);
+  font: 600 11px/16px var(--wxex-font);
+}
+.agent-hub-example strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--wxex-brand);
+  font: 700 14px/21px var(--wxex-font);
+}
+.agent-hub-example strong + strong {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(36, 122, 99, 0.15);
+}
 .agent-hub-capability-card ul {
-  margin: 18px 0 0;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 .agent-hub-capability-card li {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   padding: 7px 0;
+  border-bottom: 1px solid var(--wxex-border);
   color: var(--wxex-text-secondary);
   font: 13px/19px var(--wxex-font);
 }
-.agent-hub-capability-card li + li {
-  margin-top: 2px;
+.agent-hub-capability-card li:last-child {
+  border-bottom: 0;
 }
 .agent-hub-capability-card li i {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--wxex-brand);
-}
-.agent-hub-capability-card li:not(.agent-hub-capability-status) {
-  padding-left: 15px;
 }
 .agent-hub-capability-card li i.offline {
   background: var(--wxex-danger);

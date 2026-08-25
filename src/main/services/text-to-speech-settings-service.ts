@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, net } from 'electron'
 import fs from 'fs-extra'
 import path from 'path'
 import { randomUUID } from 'crypto'
@@ -119,7 +119,7 @@ export class TextToSpeechSettingsService {
         if (tag.trim()) url.searchParams.append('tag', tag.trim())
       }
 
-      const response = await fetch(url, {
+      const response = await fishAudioFetch(url.toString(), {
         headers: { Authorization: `Bearer ${resolved.key}` },
         signal: AbortSignal.timeout(30_000)
       })
@@ -179,7 +179,7 @@ export class TextToSpeechSettingsService {
     }
 
     try {
-      const response = await fetch(`${FISH_AUDIO_BASE_URL}/v1/tts`, {
+      const response = await fishAudioFetch(`${FISH_AUDIO_BASE_URL}/v1/tts`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${resolved.key}`,
@@ -255,10 +255,13 @@ export class TextToSpeechSettingsService {
 
   private async getVoice(id: string, key: string): Promise<TextToSpeechVoice | null> {
     try {
-      const response = await fetch(`${FISH_AUDIO_BASE_URL}/model/${encodeURIComponent(id)}`, {
-        headers: { Authorization: `Bearer ${key}` },
-        signal: AbortSignal.timeout(15_000)
-      })
+      const response = await fishAudioFetch(
+        `${FISH_AUDIO_BASE_URL}/model/${encodeURIComponent(id)}`,
+        {
+          headers: { Authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(15_000)
+        }
+      )
       if (!response.ok) return null
       const model = (await response.json()) as FishAudioModelEntity
       return model.type === 'tts' && model.state === 'trained' ? toVoice(model) : null
@@ -349,6 +352,25 @@ async function fishAudioError(response: Response): Promise<Error> {
   if (response.status === 422) return new Error(detail || '语音生成参数不正确')
   if (response.status === 503) return new Error('语音服务暂时不可用，请稍后重试')
   return new Error(detail || `语音服务请求失败（HTTP ${response.status}）`)
+}
+
+async function fishAudioFetch(input: string, init: RequestInit): Promise<Response> {
+  try {
+    return await net.fetch(input, init)
+  } catch (electronError) {
+    try {
+      return await fetch(input, init)
+    } catch (nodeError) {
+      throw new Error(
+        `Fish Audio 网络请求失败（Electron: ${networkErrorMessage(electronError)}；Node: ${networkErrorMessage(nodeError)}）`
+      )
+    }
+  }
+}
+
+function networkErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim()
+  return String(error || '未知错误')
 }
 
 function safeFishAudioError(error: unknown): string {

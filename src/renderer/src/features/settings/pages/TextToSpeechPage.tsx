@@ -52,6 +52,7 @@ const RUNTIME_STATUS_LABELS: Record<PersonalWechatRuntimeStatus['state'], string
 }
 
 const VOICE_FILTERS = [
+  { value: 'Chinese', label: '中文' },
   { value: 'male', label: '男性' },
   { value: 'female', label: '女性' },
   { value: 'neutral', label: '中性' },

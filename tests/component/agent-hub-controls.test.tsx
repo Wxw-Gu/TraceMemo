@@ -59,6 +59,23 @@ describe('Agent Hub controls', () => {
     expect(screen.getByRole('button', { name: '复制日志' })).toBeDisabled()
   })
 
+  it('keeps the enabled capability examples visible', async () => {
+    render(<AgentHubWorkspace />)
+    await screen.findByText('系统就绪')
+
+    expect(screen.getByText('已启用能力')).toBeInTheDocument()
+    expect(screen.getByText('微信数据助手')).toBeInTheDocument()
+    expect(screen.getByText('支持自然语言，可以这样问')).toBeInTheDocument()
+    expect(screen.getByText('“最近 5 条消息是谁？”')).toBeInTheDocument()
+    expect(screen.getByText('“帮我看看最近跟xx聊了些什么”')).toBeInTheDocument()
+    expect(screen.getByText('“生成产品交流群今天的群聊总结图片”')).toBeInTheDocument()
+    expect(
+      document.querySelectorAll(
+        '.agent-hub-capability-card li:not(.agent-hub-capability-status) > i'
+      )
+    ).toHaveLength(4)
+  })
+
   it('keeps reconnect and destructive disconnect actions separate', async () => {
     const user = userEvent.setup()
     render(<AgentHubWorkspace />)

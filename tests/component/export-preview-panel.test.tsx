@@ -16,7 +16,7 @@ const baseProps = {
 }
 
 describe('export progress panel', () => {
-  it('uses the semantic accent surface for outgoing preview messages', () => {
+  it('keeps the preview canvas distinct from the bubble surface', () => {
     render(
       <ExportPreviewPanel
         {...baseProps}
@@ -40,6 +40,7 @@ describe('export progress panel', () => {
     expect(screen.getByText('已发送的消息').closest('.export-preview-bubble')).toHaveClass(
       'bg-accent'
     )
+    expect(screen.getByRole('complementary')).toHaveClass('export-preview-panel')
   })
 
   it('shows an indeterminate bar while the first message scan is still at zero', () => {

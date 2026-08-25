@@ -8,6 +8,17 @@ const mocks = vi.hoisted(() => ({
   updateSettings: vi.fn()
 }))
 
+const electronNetFetch = vi.hoisted(() => vi.fn())
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: vi.fn(() => '/tmp/tracememo-test')
+  },
+  net: {
+    fetch: electronNetFetch
+  }
+}))
+
 vi.mock('../../src/main/ai-provider-key-store', () => ({
   AIProviderKeyStore: class {
     get = mocks.keyGet
@@ -65,5 +76,42 @@ describe('TextToSpeechSettingsService', () => {
     expect(mocks.updateSettings).toHaveBeenCalledWith({
       ttsSelectedVoiceId: 'fish-model-id'
     })
+  })
+
+  it('uses Electron net.fetch for Fish Audio requests', async () => {
+    mocks.keyGet.mockReturnValue({ success: true, available: true, key: 'stored' })
+    electronNetFetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ total: 0, items: [], has_more: false })
+    })
+
+    const result = await new TextToSpeechSettingsService().listVoices({ pageSize: 1 })
+
+    expect(result.success).toBe(true)
+    expect(electronNetFetch).toHaveBeenCalledWith(
+      expect.stringContaining('https://api.fish.audio/model'),
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer stored' }
+      })
+    )
+  })
+
+  it('falls back to Node fetch when Electron transport is unavailable', async () => {
+    mocks.keyGet.mockReturnValue({ success: true, available: true, key: 'stored' })
+    electronNetFetch.mockRejectedValue(new TypeError('Electron transport unavailable'))
+    const nodeFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ total: 0, items: [], has_more: false })
+    })
+    vi.stubGlobal('fetch', nodeFetch)
+
+    const result = await new TextToSpeechSettingsService().listVoices({ pageSize: 1 })
+
+    expect(result.success).toBe(true)
+    expect(nodeFetch).toHaveBeenCalledWith(
+      expect.stringContaining('https://api.fish.audio/model'),
+      expect.objectContaining({ headers: { Authorization: 'Bearer stored' } })
+    )
+    vi.unstubAllGlobals()
   })
 })

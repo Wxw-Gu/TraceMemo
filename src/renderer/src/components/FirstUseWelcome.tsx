@@ -48,7 +48,7 @@ export function FirstUseWelcome({
         </DialogDescription>
 
         <Button
-          className="mt-5 h-auto w-full justify-start whitespace-normal p-4 text-left"
+          className="mt-5 !h-auto w-full justify-start whitespace-normal p-4 text-left"
           onClick={onOpenReport}
         >
           <span
