@@ -110,4 +110,35 @@ describe('WCDB group member names', () => {
       expectedMember({ nickname: '真实群昵称', wechatNickname: '', remark: '' })
     ])
   })
+
+  it('uses the group nickname for message sender display before contact display names', () => {
+    const client = Object.assign(Object.create(Wcdb4Client.prototype), {
+      accountRoot: '/fixture/account',
+      displayNameCache: new Map([['wxid-member', '通讯录昵称']]),
+      getGroupNicknames: vi.fn(() => new Map([['wxid-member', '真实群昵称']])),
+      avatarCache: new Map<string, string>(),
+      myWxid: '',
+      wxid: ''
+    }) as Wcdb4Client
+
+    const finalizeMessages = (client as unknown as {
+      finalizeMessages: (
+        username: string,
+        rows: Record<string, unknown>[]
+      ) => Array<{ senderNickname?: string }>
+    }).finalizeMessages
+
+    expect(
+      finalizeMessages.call(client, 'fixture@chatroom', [
+        {
+          sender_username: 'wxid-member',
+          create_time: 1731327263,
+          local_id: 1,
+          local_type: 1,
+          msg_content: 'fixture'
+        }
+      ])
+    ).toMatchObject([{ senderNickname: '真实群昵称' }])
+    expect(client.getGroupNicknames).toHaveBeenCalledWith('fixture@chatroom')
+  })
 })

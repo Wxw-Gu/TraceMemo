@@ -39,8 +39,11 @@ extraResources:
       - '**/*'
 win:
   icon: icon.ico
-  # WCDB's Windows runtime checks the host executable name.
-  executableName: electron
+  executableName: TraceMemo
+  target:
+    - target: nsis
+      arch:
+        - x64
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

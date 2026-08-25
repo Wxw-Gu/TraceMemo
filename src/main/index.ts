@@ -121,6 +121,14 @@ import type {
   SynthesizeTextToSpeechRequest
 } from '../shared/text-to-speech'
 import { appLogger } from './app-logger'
+import { wcdbDebugLog } from './wcdb-debug'
+
+let getMessagesRequestSequence = 0
+
+function nextGetMessagesRequestId(): string {
+  getMessagesRequestSequence += 1
+  return `GETMSG-${String(getMessagesRequestSequence).padStart(3, '0')}`
+}
 import type { AppLogEntry } from '../shared/app-log'
 import { appUpdateService } from './services/app-update-service'
 import { clearCache, getCacheSummary, openKnowledgeDirectory } from './services/cache-service'
@@ -1071,18 +1079,37 @@ app.whenReady().then(async () => {
       endTime?: number,
       options?: { limit?: number }
     ) => {
-      const messages = await chat.listMessagesAsync(userMd5, startTime, endTime, options)
-      if (chat.isReady()) {
-        saveCachedMessages(chat.getCurrentAccountRoot(), userMd5, startTime, endTime, messages)
+      const requestId = nextGetMessagesRequestId()
+      const startedAt = Date.now()
+      wcdbDebugLog(
+        `[${requestId}] IPC db:getMessages start userMd5=${userMd5} start=${startTime || 0} end=${endTime || 0} limit=${options?.limit || 0}`
+      )
+      try {
+        const messages = await chat.listMessagesAsync(
+          userMd5,
+          startTime,
+          endTime,
+          options,
+          requestId
+        )
+        if (chat.isReady()) {
+          saveCachedMessages(chat.getCurrentAccountRoot(), userMd5, startTime, endTime, messages)
+        }
+        wcdbDebugLog(
+          `[${requestId}] IPC db:getMessages end rows=${messages.length} cost=${Date.now() - startedAt}ms`
+        )
+        return messages
+      } catch (error) {
+        wcdbDebugLog(`[${requestId}] IPC db:getMessages error cost=${Date.now() - startedAt}ms`)
+        throw error
       }
-      return messages
     }
   )
 
   ipcMain.handle('db:getGroupSnapshot', async (_, userMd5: string) => {
     const snapshot = await chat.getGroupSnapshotAsync(userMd5)
     if (snapshot && chat.isReady()) {
-      saveCachedGroupSnapshot(chat.getCurrentAccountRoot(), userMd5, snapshot)
+      return saveCachedGroupSnapshot(chat.getCurrentAccountRoot(), userMd5, snapshot)
     }
     return snapshot
   })

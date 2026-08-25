@@ -30,12 +30,6 @@ extraResources:
     to: skill/tracememo-reader
     filter:
       - '**/*'
-win:
-  icon: icon.ico
-  # WCDB's Windows runtime checks the host executable name. The dev runtime is
-  # electron.exe, so keep the packaged executable compatible while using
-  # TraceMemo as the product/shortcut name.
-  executableName: electron
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
@@ -47,9 +41,6 @@ mac:
   icon: icon.icns
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
-    # The bundled WCDB bridge still uses Electron as its internal executable
-    # compatibility name; the public product and bundle identity are TraceMemo.
-    CFBundleName: Electron
     CFBundleDisplayName: TraceMemo
     NSCameraUsageDescription: Application requests access to the device's camera.
     NSMicrophoneUsageDescription: Application requests access to the device's microphone.

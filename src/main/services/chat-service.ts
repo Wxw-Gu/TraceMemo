@@ -15,6 +15,7 @@ import {
 } from '../../shared/windows-runtime'
 import { mergeRecallArchiveMessages, recordRecallArchiveMessages } from './recall-archive-service'
 import type { ExportImageQuality } from '../../shared/image-quality'
+import { wcdbDebugLog } from '../wcdb-debug'
 
 export function getCurrentKey(): string {
   if (!dbRef) return ''
@@ -226,7 +227,8 @@ function listSourceMessages(
   startTime?: number,
   endTime?: number,
   options?: { limit?: number },
-  rawMessagesOverride?: WechatMessage[]
+  rawMessagesOverride?: WechatMessage[],
+  requestId = 'NO-REQUEST'
 ): FormattedMessage[] {
   if (!dbRef) return []
 
@@ -234,13 +236,13 @@ function listSourceMessages(
   const wcdb4Client = dbRef.getWcdb4Client()
   const username = wcdb4Client.getUsernameByMd5(userMd5)
   const isGroupChat = Boolean(username?.endsWith('@chatroom'))
-  console.log(
-    `[ChatService] listMessages begin md5=${userMd5} username=${username || ''} start=${startTime || 0} end=${endTime || 0} limit=${options?.limit || 0}`
+  wcdbDebugLog(
+    `[${requestId}] ChatService listSourceMessages start md5=${userMd5} username=${username || ''} start=${startTime || 0} end=${endTime || 0} limit=${options?.limit || 0}`
   )
   const rawMessages =
     rawMessagesOverride ?? dbRef.getUserMessages(userMd5, startTime, endTime, options)
-  console.log(
-    `[ChatService] listMessages native done md5=${userMd5} raw=${rawMessages.length} cost=${Date.now() - startedAt}ms`
+  wcdbDebugLog(
+    `[${requestId}] ChatService raw snapshot ready raw=${rawMessages.length} cost=${Date.now() - startedAt}ms`
   )
 
   const formatted = rawMessages.map((msg: WechatMessage) => {
@@ -447,14 +449,43 @@ export async function listMessagesAsync(
   userMd5: string,
   startTime?: number,
   endTime?: number,
-  options?: { limit?: number }
+  options?: { limit?: number },
+  requestId = 'NO-REQUEST'
 ): Promise<FormattedMessage[]> {
   if (!dbRef) return []
-  const rawMessages = await dbRef.getUserMessagesAsync(userMd5, startTime, endTime, options)
-  const sourceMessages = listSourceMessages(userMd5, startTime, endTime, options, rawMessages)
+  const startedAt = Date.now()
+  wcdbDebugLog(`[${requestId}] ChatService listMessagesAsync start md5=${userMd5}`)
+  const rawMessages = await dbRef.getUserMessagesAsync(
+    userMd5,
+    startTime,
+    endTime,
+    options,
+    requestId
+  )
+  wcdbDebugLog(
+    `[${requestId}] ChatService getUserMessagesAsync end raw=${rawMessages.length} cost=${Date.now() - startedAt}ms`
+  )
+  const sourceMessages = listSourceMessages(
+    userMd5,
+    startTime,
+    endTime,
+    options,
+    rawMessages,
+    requestId
+  )
   const username = dbRef.getWcdb4Client().getUsernameByMd5(userMd5) || ''
   recordRecallArchiveMessages(userMd5, username, sourceMessages)
-  return mergeRecallArchiveMessages(userMd5, sourceMessages, startTime, endTime, options?.limit)
+  const result = mergeRecallArchiveMessages(
+    userMd5,
+    sourceMessages,
+    startTime,
+    endTime,
+    options?.limit
+  )
+  wcdbDebugLog(
+    `[${requestId}] ChatService listMessagesAsync end formatted=${result.length} cost=${Date.now() - startedAt}ms`
+  )
+  return result
 }
 
 export async function listMessagesForExport(
