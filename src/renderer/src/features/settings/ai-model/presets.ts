@@ -92,6 +92,13 @@ export function createProviderFromPreset(presetId = 'deepseek'): AIProviderConfi
       }
     ],
     defaultModel: preset.model,
-    advanced: { timeoutMs: 120000, temperature: 0.7, maxTokens: 4096, extraHeaders: {} }
+    advanced: {
+      timeoutMs: 120000,
+      temperature: 0.7,
+      maxTokens: 4096,
+      stream: false,
+      apiProtocol: 'chat-completions',
+      extraHeaders: {}
+    }
   }
 }

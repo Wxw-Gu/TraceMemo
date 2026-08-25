@@ -288,6 +288,44 @@ export function AIProviderEditor({
               }
             />
           </label>
+          {provider.type !== 'anthropic-messages' && (
+            <>
+              <label className="wide">
+                OpenAI API 接口
+                <select
+                  value={provider.advanced.apiProtocol || 'chat-completions'}
+                  onChange={(event) =>
+                    patch({
+                      advanced: {
+                        ...provider.advanced,
+                        apiProtocol: event.target
+                          .value as AIProviderConfig['advanced']['apiProtocol']
+                      }
+                    })
+                  }
+                >
+                  <option value="chat-completions">Chat Completions（兼容模式）</option>
+                  <option value="responses">Responses API</option>
+                </select>
+                <small>Codex 或仅支持 /responses 的中转服务请选择 Responses API。</small>
+              </label>
+              <label className="wide ai-provider-stream-toggle">
+                <span className="ai-provider-stream-toggle-control">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(provider.advanced.stream)}
+                    onChange={(event) =>
+                      patch({
+                        advanced: { ...provider.advanced, stream: event.target.checked }
+                      })
+                    }
+                  />
+                  启用流式响应（stream: true）
+                </span>
+                <small>问问微信会边生成边显示，其他功能仍会等待完整结果。</small>
+              </label>
+            </>
+          )}
           <label className="wide">
             额外 Headers（JSON）
             <textarea

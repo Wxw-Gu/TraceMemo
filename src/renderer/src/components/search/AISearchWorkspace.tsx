@@ -261,6 +261,8 @@ export function AISearchWorkspace({
       window.api.onAiSearchProgress((progress) => {
         if (progress.requestId !== searchRequestIdRef.current) return
         setSearchProgress((current) => ({ ...current, [progress.stage]: progress }))
+        const answerDelta = progress.answerDelta
+        if (answerDelta) setAnswer((current) => current + answerDelta)
         if (progress.agentTrace) {
           setAgentTrace((current) =>
             current.some((item) => item.sequence === progress.agentTrace?.sequence)
@@ -846,6 +848,19 @@ export function AISearchWorkspace({
             </div>
           </section>
         </div>
+        {answer && (
+          <section
+            className="ai-search-summary-block ai-search-streaming-answer"
+            aria-label="正在生成的回答"
+            aria-live="polite"
+          >
+            <div className="ai-search-section-heading">
+              <span />
+              回答生成中
+            </div>
+            <div className="ai-search-answer">{renderMarkdown(answer)}</div>
+          </section>
+        )}
       </div>
     )
   }

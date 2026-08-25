@@ -1076,6 +1076,27 @@
   white-space: pre-wrap;
 }
 
+.ai-search-streaming-answer {
+  width: 100%;
+}
+
+.ai-search-streaming-answer .ai-search-answer::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 3px;
+  background: var(--wxex-ai);
+  vertical-align: -0.12em;
+  animation: ai-search-stream-cursor 0.8s steps(2, start) infinite;
+}
+
+@keyframes ai-search-stream-cursor {
+  50% {
+    opacity: 0;
+  }
+}
+
 .ai-search-answer-evidence,
 .ai-search-trace {
   display: flex;
@@ -1577,6 +1598,7 @@
   .ai-search-result,
   .ai-search-summary-block,
   .ai-search-answer > *,
+  .ai-search-streaming-answer .ai-search-answer::after,
   .ai-search-evidence-card,
   .ai-search-history-popover,
   .ai-search-pipeline-step.active .ai-search-pipeline-mark,

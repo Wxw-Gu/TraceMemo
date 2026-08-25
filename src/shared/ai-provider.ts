@@ -7,6 +7,8 @@ export type AIProviderType =
 
 export type AIAuthType = 'bearer' | 'x-api-key' | 'custom-header' | 'none'
 
+export type AIOpenAIProtocol = 'chat-completions' | 'responses'
+
 export interface AIProviderAuth {
   type: AIAuthType
   headerName?: string
@@ -34,6 +36,8 @@ export interface AIProviderAdvancedSettings {
   timeoutMs: number
   temperature?: number
   maxTokens?: number
+  stream?: boolean
+  apiProtocol?: AIOpenAIProtocol
   extraHeaders: Record<string, string>
 }
 

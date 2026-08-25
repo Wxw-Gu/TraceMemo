@@ -24,6 +24,7 @@ interface AIProviderMetadataFile {
 
 type AIMessagePart = { type: 'text'; text: string } | { type: 'image'; dataUrl: string }
 type AIMessage = { role: string; content: string | AIMessagePart[] }
+type AIChatDeltaHandler = (delta: string) => void
 type AIRequestResult = {
   data: string
   usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
@@ -32,6 +33,28 @@ interface OpenAIResponsePayload {
   error?: { message?: string }
   choices?: Array<{ message?: { content?: string } }>
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+}
+interface OpenAIStreamPayload {
+  error?: { message?: string }
+  choices?: Array<{ delta?: { content?: string } }>
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+}
+interface OpenAIResponsesPayload {
+  error?: { message?: string }
+  incomplete_details?: { reason?: string }
+  output_text?: string
+  output?: Array<{
+    type?: string
+    content?: Array<{ type?: string; text?: string }>
+  }>
+  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number }
+}
+interface OpenAIResponsesStreamPayload {
+  type?: string
+  delta?: string
+  message?: string
+  error?: { message?: string }
+  response?: OpenAIResponsesPayload
 }
 interface AnthropicResponsePayload {
   error?: { message?: string }
@@ -232,7 +255,8 @@ export class AIProviderService {
   async chat(
     messages: Array<{ role: string; content: string }>,
     options?: AIChatRequestOptions,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onDelta?: AIChatDeltaHandler
   ): Promise<{
     success: boolean
     data?: string
@@ -240,7 +264,7 @@ export class AIProviderService {
     error?: string
   }> {
     try {
-      return { success: true, ...(await this.request(messages, options, false, signal)) }
+      return { success: true, ...(await this.request(messages, options, false, signal, onDelta)) }
     } catch (error) {
       if (signal?.aborted) throw error
       return { success: false, error: safeAIError(error) }
@@ -321,12 +345,13 @@ export class AIProviderService {
     messages: AIMessage[],
     options?: AIChatRequestOptions,
     testing = false,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onDelta?: AIChatDeltaHandler
   ): Promise<{
     data: string
     usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
   }> {
-    if (options?.apiKey) return this.requestLegacy(messages, options, signal)
+    if (options?.apiKey) return this.requestLegacy(messages, options, signal, onDelta)
     const resolved = this.resolveProvider(options)
     const provider = options?.timeoutMs
       ? {
@@ -334,7 +359,15 @@ export class AIProviderService {
           advanced: { ...resolved.provider.advanced, timeoutMs: options.timeoutMs }
         }
       : resolved.provider
-    return requestProvider(provider, resolved.key, resolved.model, messages, testing, signal)
+    return requestProvider(
+      provider,
+      resolved.key,
+      resolved.model,
+      messages,
+      testing,
+      signal,
+      onDelta
+    )
   }
 
   private resolveProvider(options?: { providerId?: string; modelId?: string }): {
@@ -357,7 +390,8 @@ export class AIProviderService {
   private async requestLegacy(
     messages: AIMessage[],
     options: AIChatRequestOptions,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onDelta?: AIChatDeltaHandler
   ): Promise<AIRequestResult> {
     const provider = deepSeekProvider(options.baseURL, options.model)
     return requestOpenAICompatible(
@@ -366,7 +400,8 @@ export class AIProviderService {
       options.model || provider.defaultModel,
       messages,
       false,
-      signal
+      signal,
+      onDelta
     )
   }
 
@@ -540,6 +575,11 @@ function validateProvider(provider: AIProviderConfig): string | undefined {
     return '默认模型不在模型列表中'
   if (provider.auth.type === 'custom-header' && !provider.auth.headerName?.trim())
     return '请填写自定义认证字段'
+  if (
+    provider.advanced.apiProtocol &&
+    !['chat-completions', 'responses'].includes(provider.advanced.apiProtocol)
+  )
+    return 'OpenAI API 接口配置不正确'
   return undefined
 }
 
@@ -555,17 +595,26 @@ function buildHeaders(provider: AIProviderSummary, apiKey: string): Record<strin
   return headers
 }
 
+function hasHeader(headers: Record<string, string>, name: string): boolean {
+  const normalizedName = name.toLowerCase()
+  return Object.keys(headers).some((header) => header.toLowerCase() === normalizedName)
+}
+
 function requestProvider(
   provider: AIProviderSummary,
   apiKey: string,
   model: string,
   messages: AIMessage[],
   testing = false,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onDelta?: AIChatDeltaHandler
 ): Promise<AIRequestResult> {
-  return provider.type === 'anthropic-messages'
-    ? requestAnthropic(provider, apiKey, model, messages, testing, signal)
-    : requestOpenAICompatible(provider, apiKey, model, messages, testing, signal)
+  if (provider.type === 'anthropic-messages') {
+    return requestAnthropic(provider, apiKey, model, messages, testing, signal)
+  }
+  return provider.advanced.apiProtocol === 'responses'
+    ? requestOpenAIResponses(provider, apiKey, model, messages, testing, signal, onDelta)
+    : requestOpenAICompatible(provider, apiKey, model, messages, testing, signal, onDelta)
 }
 
 function toOpenAIMessages(messages: AIMessage[]): Array<{ role: string; content: unknown }> {
@@ -580,6 +629,46 @@ function toOpenAIMessages(messages: AIMessage[]): Array<{ role: string; content:
               : { type: 'image_url', image_url: { url: part.dataUrl } }
           )
   }))
+}
+
+function toOpenAIResponsesRequest(messages: AIMessage[]): {
+  instructions?: string
+  input: Array<{ role: string; content: unknown[] }>
+} {
+  const instructions = messages
+    .filter((message) => message.role === 'system')
+    .map((message) =>
+      typeof message.content === 'string'
+        ? message.content
+        : message.content
+            .filter((part) => part.type === 'text')
+            .map((part) => (part.type === 'text' ? part.text : ''))
+            .join('\n')
+    )
+    .filter(Boolean)
+    .join('\n\n')
+  const input = messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => ({
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      content:
+        typeof message.content === 'string'
+          ? [
+              {
+                type: message.role === 'assistant' ? 'output_text' : 'input_text',
+                text: message.content
+              }
+            ]
+          : message.content.map((part) =>
+              part.type === 'text'
+                ? {
+                    type: message.role === 'assistant' ? 'output_text' : 'input_text',
+                    text: part.text
+                  }
+                : { type: 'input_image', image_url: part.dataUrl }
+            )
+    }))
+  return { instructions: instructions || undefined, input }
 }
 
 function toAnthropicMessages(messages: AIMessage[]): Array<{ role: string; content: unknown }> {
@@ -607,12 +696,13 @@ async function requestOpenAICompatible(
   model: string,
   messages: AIMessage[],
   testing = false,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onDelta?: AIChatDeltaHandler
 ): Promise<AIRequestResult> {
   const endpoint = provider.baseUrl.endsWith('/chat/completions')
     ? provider.baseUrl
     : `${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`
-  const response = await fetchWithTimeout(
+  return fetchWithTimeout(
     endpoint,
     {
       method: 'POST',
@@ -621,25 +711,83 @@ async function requestOpenAICompatible(
         model,
         messages: toOpenAIMessages(messages),
         temperature: provider.advanced.temperature,
-        max_tokens: testing ? 8 : provider.advanced.maxTokens
+        max_tokens: testing ? 8 : provider.advanced.maxTokens,
+        ...(provider.advanced.stream ? { stream: true } : {})
       })
     },
     provider.advanced.timeoutMs,
-    signal
+    signal,
+    async (response) => {
+      if (!response.ok) {
+        const payload = await parseJsonResponse<OpenAIResponsePayload>(response)
+        throw new Error(payload.error?.message || `AI 请求失败 (${response.status})`)
+      }
+      if (
+        provider.advanced.stream &&
+        !response.headers.get('content-type')?.toLowerCase().includes('application/json')
+      ) {
+        return parseOpenAIStream(response, onDelta)
+      }
+      const payload = await parseJsonResponse<OpenAIResponsePayload>(response)
+      return {
+        data: String(payload.choices?.[0]?.message?.content || ''),
+        usage: toOpenAIUsage(payload.usage)
+      }
+    }
   )
-  const payload = await parseJsonResponse<OpenAIResponsePayload>(response)
-  if (!response.ok) throw new Error(payload.error?.message || `AI 请求失败 (${response.status})`)
-  return {
-    data: String(payload.choices?.[0]?.message?.content || ''),
-    usage: payload.usage
-      ? {
-          input: payload.usage.prompt_tokens,
-          output: payload.usage.completion_tokens,
-          total: payload.usage.total_tokens,
-          estimated: false
-        }
-      : undefined
+}
+
+async function requestOpenAIResponses(
+  provider: AIProviderSummary,
+  apiKey: string,
+  model: string,
+  messages: AIMessage[],
+  testing = false,
+  signal?: AbortSignal,
+  onDelta?: AIChatDeltaHandler
+): Promise<AIRequestResult> {
+  const normalizedBaseUrl = provider.baseUrl.replace(/\/+$/, '')
+  const endpoint = normalizedBaseUrl.endsWith('/responses')
+    ? normalizedBaseUrl
+    : normalizedBaseUrl.endsWith('/chat/completions')
+      ? `${normalizedBaseUrl.slice(0, -'/chat/completions'.length)}/responses`
+      : `${normalizedBaseUrl}/responses`
+  const request = toOpenAIResponsesRequest(messages)
+  const headers = buildHeaders(provider, apiKey)
+  if (provider.advanced.stream && !hasHeader(headers, 'accept')) {
+    headers.accept = 'text/event-stream'
   }
+  return fetchWithTimeout(
+    endpoint,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        instructions: request.instructions,
+        input: request.input,
+        temperature: provider.advanced.temperature,
+        max_output_tokens: testing ? 128 : provider.advanced.maxTokens,
+        store: false,
+        ...(provider.advanced.stream ? { stream: true } : {})
+      })
+    },
+    provider.advanced.timeoutMs,
+    signal,
+    async (response) => {
+      if (!response.ok) {
+        const payload = await parseJsonResponse<OpenAIResponsesPayload>(response)
+        throw new Error(payload.error?.message || `AI 请求失败 (${response.status})`)
+      }
+      if (provider.advanced.stream) return parseOpenAIResponsesStream(response, onDelta)
+      const payload = await parseJsonResponse<OpenAIResponsesPayload>(response)
+      if (payload.error?.message) throw new Error(payload.error.message)
+      return {
+        data: extractOpenAIResponsesText(payload),
+        usage: toOpenAIResponsesUsage(payload.usage)
+      }
+    }
+  )
 }
 
 async function requestAnthropic(
@@ -667,7 +815,7 @@ async function requestAnthropic(
   const endpoint = provider.baseUrl.endsWith('/messages')
     ? provider.baseUrl
     : `${provider.baseUrl.replace(/\/+$/, '')}/messages`
-  const response = await fetchWithTimeout(
+  return fetchWithTimeout(
     endpoint,
     {
       method: 'POST',
@@ -681,35 +829,39 @@ async function requestAnthropic(
       })
     },
     provider.advanced.timeoutMs,
-    signal
+    signal,
+    async (response) => {
+      const payload = await parseJsonResponse<AnthropicResponsePayload>(response)
+      if (!response.ok)
+        throw new Error(payload.error?.message || `Anthropic 请求失败 (${response.status})`)
+      return {
+        data: Array.isArray(payload.content)
+          ? payload.content
+              .filter((item) => item.type === 'text')
+              .map((item) => item.text || '')
+              .join('\n')
+          : '',
+        usage: payload.usage
+          ? {
+              input: payload.usage.input_tokens,
+              output: payload.usage.output_tokens,
+              total:
+                Number(payload.usage.input_tokens || 0) + Number(payload.usage.output_tokens || 0),
+              estimated: false
+            }
+          : undefined
+      }
+    }
   )
-  const payload = await parseJsonResponse<AnthropicResponsePayload>(response)
-  if (!response.ok)
-    throw new Error(payload.error?.message || `Anthropic 请求失败 (${response.status})`)
-  return {
-    data: Array.isArray(payload.content)
-      ? payload.content
-          .filter((item) => item.type === 'text')
-          .map((item) => item.text || '')
-          .join('\n')
-      : '',
-    usage: payload.usage
-      ? {
-          input: payload.usage.input_tokens,
-          output: payload.usage.output_tokens,
-          total: Number(payload.usage.input_tokens || 0) + Number(payload.usage.output_tokens || 0),
-          estimated: false
-        }
-      : undefined
-  }
 }
 
-async function fetchWithTimeout(
+async function fetchWithTimeout<T>(
   url: string,
   init: RequestInit,
   timeoutMs: number,
-  signal?: AbortSignal
-): Promise<Response> {
+  signal: AbortSignal | undefined,
+  consume: (response: Response) => Promise<T>
+): Promise<T> {
   const controller = new AbortController()
   let timedOut = false
   const abortFromCaller = (): void =>
@@ -724,7 +876,8 @@ async function fetchWithTimeout(
     Math.max(1_000, timeoutMs || 120_000)
   )
   try {
-    return await fetch(url, { ...init, signal: controller.signal })
+    const response = await fetch(url, { ...init, signal: controller.signal })
+    return await consume(response)
   } catch (error) {
     if (signal?.aborted) throw new DOMException('AI request cancelled', 'AbortError')
     if (timedOut) throw new DOMException('AI request timed out', 'TimeoutError')
@@ -733,6 +886,192 @@ async function fetchWithTimeout(
     clearTimeout(timer)
     signal?.removeEventListener('abort', abortFromCaller)
   }
+}
+
+async function parseOpenAIStream(
+  response: Response,
+  onDelta?: AIChatDeltaHandler
+): Promise<AIRequestResult> {
+  let data = ''
+  let usage: AIRequestResult['usage']
+  const stream = await readSSE(response, (eventData) => {
+    let payload: OpenAIStreamPayload
+    try {
+      payload = JSON.parse(eventData) as OpenAIStreamPayload
+    } catch {
+      throw new Error('模型服务返回了无法解析的流式数据')
+    }
+    if (payload.error?.message) throw new Error(payload.error.message)
+    if (payload.usage) usage = toOpenAIUsage(payload.usage)
+    const delta = payload.choices?.[0]?.delta?.content
+    if (typeof delta === 'string' && delta) {
+      data += delta
+      onDelta?.(delta)
+    }
+  })
+
+  if (!stream.sawData) {
+    let payload: OpenAIResponsePayload
+    try {
+      payload = JSON.parse(stream.rawBody) as OpenAIResponsePayload
+    } catch {
+      throw new Error('模型服务返回了无法解析的流式数据')
+    }
+    if (payload.error?.message) throw new Error(payload.error.message)
+    const content = String(payload.choices?.[0]?.message?.content || '')
+    if (content) onDelta?.(content)
+    return { data: content, usage: toOpenAIUsage(payload.usage) }
+  }
+  return { data, usage }
+}
+
+async function parseOpenAIResponsesStream(
+  response: Response,
+  onDelta?: AIChatDeltaHandler
+): Promise<AIRequestResult> {
+  let data = ''
+  let completedResponse: OpenAIResponsesPayload | undefined
+  let usage: AIRequestResult['usage']
+  const stream = await readSSE(response, (eventData) => {
+    let payload: OpenAIResponsesStreamPayload
+    try {
+      payload = JSON.parse(eventData) as OpenAIResponsesStreamPayload
+    } catch {
+      throw new Error('模型服务返回了无法解析的 Responses 流式数据')
+    }
+    const errorMessage = payload.error?.message || payload.response?.error?.message
+    if (errorMessage) throw new Error(errorMessage)
+    if (payload.response?.usage) usage = toOpenAIResponsesUsage(payload.response.usage)
+    if (payload.type === 'response.output_text.delta' && typeof payload.delta === 'string') {
+      data += payload.delta
+      onDelta?.(payload.delta)
+    }
+    if (payload.type === 'response.completed') completedResponse = payload.response
+    if (payload.type === 'response.failed' || payload.type === 'response.incomplete') {
+      const reason = payload.response?.incomplete_details?.reason
+      throw new Error(reason ? `模型响应未完成：${reason}` : payload.message || '模型响应未完成')
+    }
+  })
+
+  if (!stream.sawData) {
+    let payload: OpenAIResponsesPayload
+    try {
+      payload = JSON.parse(stream.rawBody) as OpenAIResponsesPayload
+    } catch {
+      throw new Error('模型服务返回了无法解析的 Responses 流式数据')
+    }
+    if (payload.error?.message) throw new Error(payload.error.message)
+    const content = extractOpenAIResponsesText(payload)
+    if (content) onDelta?.(content)
+    return { data: content, usage: toOpenAIResponsesUsage(payload.usage) }
+  }
+
+  if (!data && completedResponse) {
+    data = extractOpenAIResponsesText(completedResponse)
+    if (data) onDelta?.(data)
+  }
+  return { data, usage }
+}
+
+async function readSSE(
+  response: Response,
+  onEvent: (eventData: string) => void
+): Promise<{ sawData: boolean; rawBody: string }> {
+  if (!response.body) throw new Error('模型服务未返回可读取的流式响应')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let rawBody = ''
+  let sawData = false
+  let finished = false
+
+  const consumeEvent = (event: string): boolean => {
+    const eventData = event
+      .split(/\r\n|\r|\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => {
+        const value = line.slice(5)
+        return value.startsWith(' ') ? value.slice(1) : value
+      })
+      .join('\n')
+    if (!eventData) return false
+    sawData = true
+    rawBody = ''
+    if (eventData.trim() === '[DONE]') return true
+    onEvent(eventData)
+    return false
+  }
+
+  const consumeBuffer = (): void => {
+    while (!finished) {
+      const boundary = /(?:\r\n|\r|\n){2}/.exec(buffer)
+      if (!boundary) return
+      const event = buffer.slice(0, boundary.index)
+      buffer = buffer.slice(boundary.index + boundary[0].length)
+      finished = consumeEvent(event)
+    }
+  }
+
+  try {
+    while (!finished) {
+      const chunk = await reader.read()
+      if (chunk.done) {
+        const tail = decoder.decode()
+        buffer += tail
+        if (!sawData) rawBody += tail
+        consumeBuffer()
+        break
+      }
+      const text = decoder.decode(chunk.value, { stream: true })
+      buffer += text
+      if (!sawData) rawBody += text
+      consumeBuffer()
+    }
+    if (!finished && buffer.trim()) finished = consumeEvent(buffer)
+    if (finished) await reader.cancel().catch(() => undefined)
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined)
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
+
+  return { sawData, rawBody }
+}
+
+function extractOpenAIResponsesText(payload: OpenAIResponsesPayload): string {
+  if (typeof payload.output_text === 'string') return payload.output_text
+  return (payload.output || [])
+    .flatMap((item) => item.content || [])
+    .filter((item) => item.type === 'output_text')
+    .map((item) => item.text || '')
+    .join('')
+}
+
+function toOpenAIResponsesUsage(
+  usage: OpenAIResponsesPayload['usage']
+): AIRequestResult['usage'] | undefined {
+  return usage
+    ? {
+        input: usage.input_tokens,
+        output: usage.output_tokens,
+        total: usage.total_tokens,
+        estimated: false
+      }
+    : undefined
+}
+
+function toOpenAIUsage(
+  usage: OpenAIResponsePayload['usage']
+): AIRequestResult['usage'] | undefined {
+  return usage
+    ? {
+        input: usage.prompt_tokens,
+        output: usage.completion_tokens,
+        total: usage.total_tokens,
+        estimated: false
+      }
+    : undefined
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
