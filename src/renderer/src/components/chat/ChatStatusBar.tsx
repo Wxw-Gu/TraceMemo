@@ -1,4 +1,5 @@
 import React from 'react'
+import { Button, Switch } from '../ui'
 import { RefreshIcon } from './icons'
 
 interface ChatStatusBarProps {
@@ -27,11 +28,7 @@ export function ChatStatusBar({
       <div>已显示当前范围 {count} 条消息</div>
       <div className="chat-status-actions">
         <label className="chat-avatar-toggle">
-          <input
-            type="checkbox"
-            checked={showAvatar}
-            onChange={(event) => onShowAvatarChange(event.target.checked)}
-          />
+          <Switch checked={showAvatar} onCheckedChange={onShowAvatarChange} aria-label="显示头像" />
           <span>显示头像</span>
         </label>
         <span
@@ -40,20 +37,22 @@ export function ChatStatusBar({
         >
           头像或名称缺失时，请先在微信中进入该聊天
         </span>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           className="chat-avatar-reload"
           onClick={onReloadAvatars}
           disabled={isReloadingAvatars}
           title="尝试重新加载当前聊天的头像和名称"
+          aria-busy={isReloadingAvatars}
         >
           <RefreshIcon className={isReloadingAvatars ? 'is-spinning' : ''} />
           <span>{isReloadingAvatars ? '加载中' : '重新加载头像'}</span>
-        </button>
+        </Button>
         <span className="chat-status-separator" aria-hidden />
-        <button type="button" onClick={onJumpToLatest} disabled={jumpDisabled}>
+        <Button variant="ghost" size="sm" onClick={onJumpToLatest} disabled={jumpDisabled}>
           {jumpDisabled ? '已是最新消息' : '跳转到最新消息'}
-        </button>
+        </Button>
       </div>
     </div>
   )

@@ -16,6 +16,33 @@ const baseProps = {
 }
 
 describe('export progress panel', () => {
+  it('keeps the preview canvas distinct from the bubble surface', () => {
+    render(
+      <ExportPreviewPanel
+        {...baseProps}
+        status="idle"
+        previewItems={[
+          {
+            id: 'outgoing-preview',
+            from: 'self',
+            type: '文字',
+            datetime: '',
+            content: '已发送的消息',
+            isSender: true
+          }
+        ]}
+        progress={null}
+        includeVoiceTranscripts={false}
+        zip={false}
+      />
+    )
+
+    expect(screen.getByText('已发送的消息').closest('.export-preview-bubble')).toHaveClass(
+      'bg-accent'
+    )
+    expect(screen.getByRole('complementary')).toHaveClass('export-preview-panel')
+  })
+
   it('shows an indeterminate bar while the first message scan is still at zero', () => {
     render(
       <ExportPreviewPanel
@@ -69,7 +96,9 @@ describe('export progress panel', () => {
 
     const progressbar = screen.getByRole('progressbar', { name: '导出进度' })
     expect(progressbar).toHaveAttribute('aria-valuenow', '31')
-    expect(progressbar.querySelector('span')).toHaveStyle({ width: '31%' })
+    expect(progressbar.querySelector('[data-slot="progress-indicator"]')).toHaveStyle({
+      transform: 'translateX(-69%)'
+    })
   })
 
   it('shows the current conversation and overall position for all export', () => {

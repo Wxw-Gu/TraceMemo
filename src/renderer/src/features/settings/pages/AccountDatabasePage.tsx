@@ -6,6 +6,7 @@ import { useAccountDatabaseController } from '../account-database/useAccountData
 import type { ConnectionOverviewStatus } from '../account-database/types'
 import type { SettingsSelfInfo } from '../model/types'
 import type { WechatAccountCandidate } from '../../../../../shared/database-key'
+import { Button, Switch } from '../../../components/ui'
 
 const STATUS_LABELS: Record<ConnectionOverviewStatus, string> = {
   checking: '正在检测',
@@ -126,13 +127,9 @@ export function AccountDatabasePage({
                   </span>
                 </button>
               ))}
-              <button
-                type="button"
-                className="api-secondary-button"
-                onClick={() => setSwitching(false)}
-              >
+              <Button variant="outline" onClick={() => setSwitching(false)}>
                 取消
-              </button>
+              </Button>
             </section>
           )}
           <h2 className="settings-section-heading">连接健康检查</h2>
@@ -151,10 +148,10 @@ export function AccountDatabasePage({
                 <b>启动时自动连接数据库</b>
                 <small>使用安全存储中已保存的数据库密钥；可随时关闭。</small>
               </span>
-              <input
-                type="checkbox"
+              <Switch
                 checked={autoLogin}
-                onChange={(event) => void changeAutoLogin(event.target.checked)}
+                onCheckedChange={(checked) => void changeAutoLogin(checked)}
+                aria-label="启动时自动连接数据库"
               />
             </label>
           </section>

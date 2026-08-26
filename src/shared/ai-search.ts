@@ -14,6 +14,8 @@ export type AiSearchRange = 'today' | '7d' | '30d' | 'all'
 export type AiSearchIntent =
   | 'conversation_recall'
   | 'conversation_topic_search'
+  | 'global_sender_topic_search'
+  | 'global_group_topic_search'
   | 'global_topic_search'
   | 'conversation_name_search'
   | 'general'
@@ -258,7 +260,10 @@ export interface AiSearchPipelineResult {
   >
   candidateEvidenceCount: number
   retrieval: AiSearchRetrievalContract
+  /** 首屏最多 8 条，供 Summary AI 和引用使用。 */
   evidence: AiSearchFinalEvidence[]
+  /** 本次请求经过安全过滤、去重后的浏览集合；不会发送给 Summary AI。 */
+  evidenceCollection: AiSearchFinalEvidence[]
   contextEvidenceCount: number
   aggregation: AiSearchAggregation
   agent: AiSearchAgentRun
@@ -453,6 +458,8 @@ export const inferAiSearchTimeRange = (
 export const aiSearchIntentLabel = (intent: AiSearchIntent): string => {
   if (intent === 'conversation_recall') return '回顾最近聊天'
   if (intent === 'conversation_topic_search') return '在指定聊天中查找话题'
+  if (intent === 'global_sender_topic_search') return '按人物查找'
+  if (intent === 'global_group_topic_search') return '按群聊查找'
   if (intent === 'global_topic_search') return '按话题查找'
   if (intent === 'conversation_name_search') return '查找聊天'
   return '综合查找'
@@ -532,6 +539,9 @@ export const buildLocalAiSearchPlan = (
   const conversationTopic = normalized.match(
     /(?:我和|我跟|我与)\s*(.+?)\s*(?:最近|这几天|本周|这个月|本月|今年|上个月)?\s*(?:聊过|提过|说过|讨论过)\s*(.+?)(?:吗|么|沒有|没有)?[？?。！!]*$/
   )
+  const globalGroupTopic = normalized.match(
+    /(?:最近|这几天|本周|这个月|本月|今年)?\s*(?:哪个群聊过|哪些群聊过|哪些群讨论过|哪个群说过)\s*(.+?)[？?。！!]*$/
+  )
   const globalTopic = normalized.match(
     /(?:最近|这几天|本周|这个月|本月|今年)?\s*(?:谁|哪些人|大家)\s*(?:聊过|提过|说过|讨论过)\s*(.+?)[？?。！!]*$/
   )
@@ -541,6 +551,7 @@ export const buildLocalAiSearchPlan = (
     !conversationTopic &&
     !namedConversationRecall &&
     !bareNamedConversationRecall &&
+    !globalGroupTopic &&
     !globalTopic &&
     /^[^，,。！？!?]{2,32}(?:群|群聊|交流群)$/.test(normalized)
       ? normalized
@@ -554,7 +565,7 @@ export const buildLocalAiSearchPlan = (
   )
     ?.replace(/^(?:和|跟|与)\s*/, '')
     .trim()
-  const topicQuery = (conversationTopic?.[2] || globalTopic?.[1])
+  const topicQuery = (conversationTopic?.[2] || globalGroupTopic?.[1] || globalTopic?.[1])
     ?.replace(/^(?:关于|一下|吗|么)\s*/, '')
     .trim()
   const intent: AiSearchIntent = conversationTopic
@@ -563,13 +574,15 @@ export const buildLocalAiSearchPlan = (
       ? 'conversation_recall'
       : namedConversationRecall || bareNamedConversationRecall
         ? 'conversation_name_search'
-        : globalTopic
-          ? 'global_topic_search'
-          : conversationName
-            ? 'conversation_name_search'
-            : keywords.length
-              ? 'global_topic_search'
-              : 'general'
+        : globalGroupTopic
+          ? 'global_group_topic_search'
+          : globalTopic
+            ? 'global_sender_topic_search'
+            : conversationName
+              ? 'conversation_name_search'
+              : keywords.length
+                ? 'global_topic_search'
+                : 'general'
   const effectiveKeywords = topicQuery ? [topicQuery] : keywords
   return {
     intent,
@@ -592,6 +605,8 @@ export const parseAiSearchPlan = (
       'general',
       'conversation_recall',
       'conversation_topic_search',
+      'global_sender_topic_search',
+      'global_group_topic_search',
       'global_topic_search',
       'conversation_name_search'
     ].includes(String(parsed.intent))
@@ -633,7 +648,9 @@ export const mergeAiSearchPlans = (
   const lockedIntent =
     local.intent === 'conversation_recall' ||
     local.intent === 'conversation_topic_search' ||
-    local.intent === 'conversation_name_search'
+    local.intent === 'conversation_name_search' ||
+    local.intent === 'global_sender_topic_search' ||
+    local.intent === 'global_group_topic_search'
   return {
     intent: lockedIntent ? local.intent : ai.intent || local.intent,
     keywords,

@@ -25,6 +25,18 @@ import type {
   ImageInsight
 } from '../shared/image-insight'
 import type { AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
+import type {
+  PersonalWechatImageSelectionResult,
+  PersonalWechatVoiceSelectionResult,
+  PersonalWechatSendRequest,
+  PersonalWechatSendResult,
+  PersonalWechatSenderStatus
+} from '../shared/personal-wechat'
+import type {
+  PersonalWechatRuntimeDownloadResult,
+  PersonalWechatRuntimeProgressEvent,
+  PersonalWechatRuntimeStatus
+} from '../shared/personal-wechat-runtime'
 import type { AppLogEntry } from '../shared/app-log'
 import type { AppUpdateState } from '../shared/app-update'
 import type { CacheSummary } from '../shared/cache'
@@ -58,6 +70,11 @@ import type {
   PublishWechatShareCardRequest,
   WechatShareServiceConfig
 } from '../shared/wechat-share-card'
+import type {
+  ListTextToSpeechVoicesRequest,
+  SaveTextToSpeechSettingsRequest,
+  SynthesizeTextToSpeechRequest
+} from '../shared/text-to-speech'
 
 // 渲染器的自定义 API
 const api = {
@@ -68,6 +85,7 @@ const api = {
   checkAppUpdate: () => ipcRenderer.invoke('app-update:check'),
   downloadAppUpdate: () => ipcRenderer.invoke('app-update:download'),
   installAppUpdate: () => ipcRenderer.invoke('app-update:install'),
+  openAppUpdateDownloadPage: () => ipcRenderer.invoke('app-update:openDownloadPage'),
   onAppUpdateState: (callback: (state: AppUpdateState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: AppUpdateState): void =>
       callback(state)
@@ -138,6 +156,16 @@ const api = {
   testAIProvider: (providerId: string) => ipcRenderer.invoke('ai:testProvider', providerId),
   testAIVision: (request: AIVisionTestRequest) => ipcRenderer.invoke('ai:testVision', request),
   migrateLegacyAIConfig: (config: LegacyAIConfig) => ipcRenderer.invoke('ai:migrateLegacy', config),
+  getTextToSpeechSettings: () => ipcRenderer.invoke('tts:getSettings'),
+  saveTextToSpeechSettings: (request: SaveTextToSpeechSettingsRequest) =>
+    ipcRenderer.invoke('tts:saveSettings', request),
+  listTextToSpeechVoices: (request?: ListTextToSpeechVoicesRequest) =>
+    ipcRenderer.invoke('tts:listVoices', request),
+  synthesizeTextToSpeech: (request: SynthesizeTextToSpeechRequest) =>
+    ipcRenderer.invoke('tts:synthesize', request),
+  removeGeneratedTextToSpeechAudio: (filePath: string) =>
+    ipcRenderer.invoke('tts:removeGeneratedAudio', filePath),
+  openFishAudioApiKeys: () => ipcRenderer.invoke('tts:openApiKeys'),
   copyImage: (base64String) => ipcRenderer.invoke('copy-image', base64String),
   getVoiceData: (sessionId: string, localId: number, createTime: number, svrId?: string | number) =>
     ipcRenderer.invoke('db:getVoiceData', sessionId, localId, createTime, svrId),
@@ -322,6 +350,37 @@ const api = {
     limit?: number
   ): Promise<{ success: boolean; insights: ImageInsight[] }> =>
     ipcRenderer.invoke('image:listInsights', sessionId, limit),
+  getPersonalWechatSenderStatus: (): Promise<PersonalWechatSenderStatus> =>
+    ipcRenderer.invoke('wechat-personal:getStatus'),
+  getPersonalWechatRuntimeStatus: (): Promise<PersonalWechatRuntimeStatus> =>
+    ipcRenderer.invoke('wechat-personal:getRuntimeStatus'),
+  downloadPersonalWechatRuntime: (): Promise<PersonalWechatRuntimeDownloadResult> =>
+    ipcRenderer.invoke('wechat-personal:downloadRuntime'),
+  cancelPersonalWechatRuntimeDownload: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('wechat-personal:cancelRuntimeDownload'),
+  removePersonalWechatRuntime: (): Promise<PersonalWechatRuntimeStatus> =>
+    ipcRenderer.invoke('wechat-personal:removeRuntime'),
+  openPersonalWechatRuntimeDirectory: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('wechat-personal:openRuntimeDirectory'),
+  onPersonalWechatRuntimeProgress: (
+    callback: (status: PersonalWechatRuntimeProgressEvent) => void
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      status: PersonalWechatRuntimeProgressEvent
+    ): void => callback(status)
+    ipcRenderer.on('wechat-personal:runtimeProgress', listener)
+    return () => ipcRenderer.removeListener('wechat-personal:runtimeProgress', listener)
+  },
+  rebindPersonalWechatSender: (): Promise<PersonalWechatSenderStatus> =>
+    ipcRenderer.invoke('wechat-personal:rebind'),
+  selectPersonalWechatImage: (): Promise<PersonalWechatImageSelectionResult> =>
+    ipcRenderer.invoke('wechat-personal:selectImage'),
+  selectPersonalWechatVoice: (): Promise<PersonalWechatVoiceSelectionResult> =>
+    ipcRenderer.invoke('wechat-personal:selectVoice'),
+  sendPersonalWechatMessage: (
+    request: PersonalWechatSendRequest
+  ): Promise<PersonalWechatSendResult> => ipcRenderer.invoke('wechat-personal:send', request),
   getAgentHubStatus: () => ipcRenderer.invoke('agent-hub:getStatus'),
   getAgentHubLogs: () => ipcRenderer.invoke('agent-hub:getLogs'),
   clearAgentHubLogs: () => ipcRenderer.invoke('agent-hub:clearLogs'),

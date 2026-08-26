@@ -10,6 +10,7 @@ import type {
   ReportImageInsightSummary,
   ReportPreparationProgress
 } from '../../utils/group-report-facts'
+import { Button, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui'
 
 interface ReportTaskStatusPanelProps {
   phase: ReportGenerationPhase
@@ -223,12 +224,10 @@ export function ReportTaskStatusPanel({
             张图片仍会参与总结。失败图片只按消息类型和聊天上下文处理，不会猜测具体内容。
           </p>
           <div>
-            <button type="button" onClick={onContinueAfterImageFailures}>
-              继续文字总结
-            </button>
-            <button type="button" onClick={onCancelAfterImageFailures}>
+            <Button onClick={onContinueAfterImageFailures}>继续文字总结</Button>
+            <Button variant="outline" onClick={onCancelAfterImageFailures}>
               停止生成
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -258,35 +257,35 @@ export function ReportTaskStatusPanel({
           {canRetryModelStep ? (
             <div className="report-model-retry">
               <label htmlFor="report-retry-model">切换模型</label>
-              <select
-                id="report-retry-model"
-                value={selectedModelKey}
-                onChange={(event) => setSelectedModelKey(event.target.value)}
+              <Select
+                key={choices.length ? 'ready' : 'loading'}
+                value={selectedModelKey || undefined}
+                disabled={!choices.length}
+                onValueChange={setSelectedModelKey}
               >
-                {choices.map((choice) => (
-                  <option key={choice.key} value={choice.key}>
-                    {choice.label}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger id="report-retry-model" aria-label="切换模型">
+                  <SelectValue placeholder="正在读取模型列表" />
+                </SelectTrigger>
+                <SelectContent>
+                  {choices.map((choice) => (
+                    <SelectItem key={choice.key} value={choice.key}>
+                      {choice.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <small>重新生成将直接复用已整理的聊天记录和图片识别结果，从第三步继续。</small>
               {modelLoadError ? <small className="error">{modelLoadError}</small> : null}
-              <button
-                type="button"
-                disabled={!selectedModel}
-                onClick={() => onRetry(selectedModel)}
-              >
+              <Button disabled={!selectedModel} onClick={() => onRetry(selectedModel)}>
                 使用所选模型重新生成
-              </button>
+              </Button>
             </div>
           ) : (
-            <button type="button" onClick={() => onRetry()}>
-              从头重试
-            </button>
+            <Button onClick={() => onRetry()}>从头重试</Button>
           )}
-          <button type="button" onClick={() => void window.api.revealAppLog()}>
+          <Button variant="ghost" size="sm" onClick={() => void window.api.revealAppLog()}>
             打开诊断日志
-          </button>
+          </Button>
           {logPath && <small className="report-task-log-path">{logPath}</small>}
         </div>
       )}

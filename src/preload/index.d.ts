@@ -53,8 +53,25 @@ import type {
   ImageInsight
 } from '../shared/image-insight'
 import type { AgentHubActionResult, AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
+import type {
+  PersonalWechatImageSelectionResult,
+  PersonalWechatVoiceSelectionResult,
+  PersonalWechatSendRequest,
+  PersonalWechatSendResult,
+  PersonalWechatSenderStatus
+} from '../shared/personal-wechat'
+import type {
+  PersonalWechatRuntimeDownloadResult,
+  PersonalWechatRuntimeProgressEvent,
+  PersonalWechatRuntimeStatus
+} from '../shared/personal-wechat-runtime'
 import type { AppLogEntry } from '../shared/app-log'
-import type { AppUpdateCheckResult, AppUpdateState } from '../shared/app-update'
+import type {
+  AppUpdateCheckResult,
+  AppUpdateInstallResult,
+  AppUpdateOpenDownloadPageResult,
+  AppUpdateState
+} from '../shared/app-update'
 import type { CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress, ExportResult } from '../shared/export'
 import type {
@@ -86,6 +103,14 @@ import type {
   WechatShareServiceConfig,
   WechatShareServiceConfigResult
 } from '../shared/wechat-share-card'
+import type {
+  ListTextToSpeechVoicesRequest,
+  ListTextToSpeechVoicesResult,
+  SaveTextToSpeechSettingsRequest,
+  SynthesizeTextToSpeechRequest,
+  SynthesizeTextToSpeechResult,
+  TextToSpeechSettingsResult
+} from '../shared/text-to-speech'
 
 export type ParsedContent =
   | { type: 'text'; content: string }
@@ -153,7 +178,8 @@ declare global {
       getAppUpdateState: () => Promise<AppUpdateState>
       checkAppUpdate: () => Promise<AppUpdateCheckResult>
       downloadAppUpdate: () => Promise<AppUpdateCheckResult>
-      installAppUpdate: () => Promise<{ success: boolean; error?: string }>
+      installAppUpdate: () => Promise<AppUpdateInstallResult>
+      openAppUpdateDownloadPage: () => Promise<AppUpdateOpenDownloadPageResult>
       onAppUpdateState: (callback: (state: AppUpdateState) => void) => () => void
       getCacheSummary: () => Promise<CacheSummary>
       clearCache: (scope: 'bootstrap' | 'electron' | 'knowledge' | 'all') => Promise<CacheSummary>
@@ -229,6 +255,7 @@ declare global {
       ) => Promise<{
         success: boolean
         data?: string
+        finishReason?: string
         usage?: {
           input?: number
           output?: number
@@ -250,6 +277,20 @@ declare global {
       testAIProvider: (providerId: string) => Promise<AIConnectionTestResult>
       testAIVision: (request: AIVisionTestRequest) => Promise<AIVisionTestResult>
       migrateLegacyAIConfig: (config: LegacyAIConfig) => Promise<AIProviderListResult>
+      getTextToSpeechSettings: () => Promise<TextToSpeechSettingsResult>
+      saveTextToSpeechSettings: (
+        request: SaveTextToSpeechSettingsRequest
+      ) => Promise<TextToSpeechSettingsResult>
+      listTextToSpeechVoices: (
+        request?: ListTextToSpeechVoicesRequest
+      ) => Promise<ListTextToSpeechVoicesResult>
+      synthesizeTextToSpeech: (
+        request: SynthesizeTextToSpeechRequest
+      ) => Promise<SynthesizeTextToSpeechResult>
+      removeGeneratedTextToSpeechAudio: (
+        filePath: string
+      ) => Promise<{ success: boolean; error?: string }>
+      openFishAudioApiKeys: () => Promise<{ success: boolean; error?: string }>
       copyImage: (base64String: string) => Promise<{ success: boolean; error?: string }>
       getVoiceData: (
         sessionId: string,
@@ -383,6 +424,8 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          ttsSelectedVoiceId: string
+          ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           imageXorKey: string
           imageAesKey: string
         }
@@ -420,6 +463,8 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          ttsSelectedVoiceId: string
+          ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           imageXorKey: string
           imageAesKey: string
         }
@@ -440,6 +485,8 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          ttsSelectedVoiceId: string
+          ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           imageXorKey: string
           imageAesKey: string
         }>
@@ -533,6 +580,21 @@ declare global {
         sessionId: string,
         limit?: number
       ) => Promise<{ success: boolean; insights: ImageInsight[] }>
+      getPersonalWechatSenderStatus: () => Promise<PersonalWechatSenderStatus>
+      getPersonalWechatRuntimeStatus: () => Promise<PersonalWechatRuntimeStatus>
+      downloadPersonalWechatRuntime: () => Promise<PersonalWechatRuntimeDownloadResult>
+      cancelPersonalWechatRuntimeDownload: () => Promise<{ success: boolean }>
+      removePersonalWechatRuntime: () => Promise<PersonalWechatRuntimeStatus>
+      openPersonalWechatRuntimeDirectory: () => Promise<{ success: boolean; error?: string }>
+      onPersonalWechatRuntimeProgress: (
+        callback: (status: PersonalWechatRuntimeProgressEvent) => void
+      ) => () => void
+      rebindPersonalWechatSender: () => Promise<PersonalWechatSenderStatus>
+      selectPersonalWechatImage: () => Promise<PersonalWechatImageSelectionResult>
+      selectPersonalWechatVoice: () => Promise<PersonalWechatVoiceSelectionResult>
+      sendPersonalWechatMessage: (
+        request: PersonalWechatSendRequest
+      ) => Promise<PersonalWechatSendResult>
       getAgentHubStatus: () => Promise<AgentHubStatus>
       getAgentHubLogs: () => Promise<AgentHubLogEntry[]>
       clearAgentHubLogs: () => Promise<void>

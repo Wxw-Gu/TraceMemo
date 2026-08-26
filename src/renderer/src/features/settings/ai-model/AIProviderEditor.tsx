@@ -3,6 +3,19 @@ import type {
   AIProviderConfig,
   AIProviderType
 } from '../../../../../shared/ai-provider'
+import {
+  Button,
+  Checkbox,
+  Input,
+  RadioGroup,
+  RadioGroupItem,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Textarea
+} from '../../../components/ui'
 import { PROVIDER_PRESETS, PROVIDER_TYPE_LABELS } from './presets'
 
 export function AIProviderEditor({
@@ -49,24 +62,31 @@ export function AIProviderEditor({
           <h2>{editing ? '编辑供应商' : '新增供应商'}</h2>
           <p>API Key 保存后不会再次显示。</p>
         </div>
-        <button onClick={onCancel}>关闭</button>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          关闭
+        </Button>
       </header>
       {!editing ? (
         <label>
           快速模板
-          <select value={presetId} onChange={(event) => onPreset(event.target.value)}>
-            {PROVIDER_PRESETS.map((preset) => (
-              <option key={preset.id} value={preset.id}>
-                {preset.label}
-              </option>
-            ))}
-          </select>
+          <Select value={presetId} onValueChange={onPreset}>
+            <SelectTrigger aria-label="快速模板">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PROVIDER_PRESETS.map((preset) => (
+                <SelectItem key={preset.id} value={preset.id}>
+                  {preset.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </label>
       ) : null}
       <div className="ai-provider-form-grid">
         <label>
           供应商名称
-          <input
+          <Input
             id="ai-provider-name"
             value={provider.name}
             onChange={(event) => patch({ name: event.target.value })}
@@ -74,7 +94,7 @@ export function AIProviderEditor({
         </label>
         <label>
           供应商 ID
-          <input
+          <Input
             value={provider.id}
             disabled={editing}
             onChange={(event) => patch({ id: event.target.value })}
@@ -82,39 +102,49 @@ export function AIProviderEditor({
         </label>
         <label>
           供应商类型
-          <select
+          <Select
             value={provider.type}
-            onChange={(event) => patch({ type: event.target.value as AIProviderType })}
+            onValueChange={(value) => patch({ type: value as AIProviderType })}
           >
-            {Object.entries(PROVIDER_TYPE_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger aria-label="供应商类型">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(PROVIDER_TYPE_LABELS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </label>
         <label>
           认证方式
-          <select
+          <Select
             value={provider.auth.type}
-            onChange={(event) =>
+            onValueChange={(value) =>
               patch({
                 auth: {
                   ...provider.auth,
-                  type: event.target.value as AIProviderConfig['auth']['type']
+                  type: value as AIProviderConfig['auth']['type']
                 }
               })
             }
           >
-            <option value="bearer">Authorization Bearer</option>
-            <option value="x-api-key">X-API-Key</option>
-            <option value="custom-header">自定义 Header</option>
-            <option value="none">无需认证</option>
-          </select>
+            <SelectTrigger aria-label="认证方式">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="bearer">Authorization Bearer</SelectItem>
+              <SelectItem value="x-api-key">X-API-Key</SelectItem>
+              <SelectItem value="custom-header">自定义 Header</SelectItem>
+              <SelectItem value="none">无需认证</SelectItem>
+            </SelectContent>
+          </Select>
         </label>
         <label className="wide">
           Base URL
-          <input
+          <Input
             value={provider.baseUrl}
             onChange={(event) => patch({ baseUrl: event.target.value })}
             placeholder="https://api.example.com/v1"
@@ -122,7 +152,7 @@ export function AIProviderEditor({
         </label>
         <label>
           API Key
-          <input
+          <Input
             type="password"
             value={provider.apiKey || ''}
             onChange={(event) => patch({ apiKey: event.target.value })}
@@ -132,7 +162,7 @@ export function AIProviderEditor({
         </label>
         <label>
           认证字段
-          <input
+          <Input
             value={provider.auth.headerName || ''}
             disabled={provider.auth.type !== 'custom-header'}
             onChange={(event) =>
@@ -145,16 +175,25 @@ export function AIProviderEditor({
 
       <div className="ai-model-table-heading">
         <h3>模型配置</h3>
-        <button onClick={() => patch({ models: [...provider.models, emptyModel()] })}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => patch({ models: [...provider.models, emptyModel()] })}
+        >
           新增模型
-        </button>
+        </Button>
       </div>
-      <div className="ai-model-table">
+      <RadioGroup
+        className="ai-model-table"
+        aria-label="默认模型"
+        value={provider.defaultModel}
+        onValueChange={(value) => patch({ defaultModel: value })}
+      >
         {provider.models.map((model, index) => (
           <div className="ai-model-row" key={`${index}-${model.id}`}>
             <label className="ai-model-identity-field">
               <span>模型名称</span>
-              <input
+              <Input
                 value={model.name}
                 onChange={(event) => patchModel(index, { name: event.target.value })}
                 placeholder="例如：DeepSeek Chat"
@@ -162,30 +201,32 @@ export function AIProviderEditor({
             </label>
             <label className="ai-model-identity-field">
               <span>模型 ID</span>
-              <input
+              <Input
                 value={model.id}
                 onChange={(event) => patchModel(index, { id: event.target.value })}
                 placeholder="例如：deepseek-chat"
               />
             </label>
-            <label>
-              <input
-                type="checkbox"
+            <label htmlFor={`ai-model-chat-${index}`}>
+              <Checkbox
+                id={`ai-model-chat-${index}`}
+                aria-label={`聊天 ${model.name || index + 1}`}
                 checked={model.capabilities.chat}
-                onChange={(event) =>
+                onCheckedChange={(checked) =>
                   patchModel(index, {
-                    capabilities: { ...model.capabilities, chat: event.target.checked }
+                    capabilities: { ...model.capabilities, chat: checked === true }
                   })
                 }
               />
               聊天
             </label>
-            <label>
-              <input
-                type="checkbox"
+            <label htmlFor={`ai-model-vision-${index}`}>
+              <Checkbox
+                id={`ai-model-vision-${index}`}
+                aria-label={`图片理解 ${model.name || index + 1}`}
                 checked={model.capabilities.vision}
-                onChange={(event) => {
-                  const vision = event.target.checked
+                onCheckedChange={(checked) => {
+                  const vision = checked === true
                   // OCR 是 vision 的派生能力:勾 vision 时自动带 OCR
                   patchModel(index, {
                     capabilities: {
@@ -198,31 +239,34 @@ export function AIProviderEditor({
               />
               图片理解
             </label>
-            <label title="图片文字识别,跟随图片理解能力">
-              <input
-                type="checkbox"
+            <label htmlFor={`ai-model-ocr-${index}`} title="图片文字识别,跟随图片理解能力">
+              <Checkbox
+                id={`ai-model-ocr-${index}`}
+                aria-label={`图片文字识别 ${model.name || index + 1}`}
                 checked={model.capabilities.ocr}
-                onChange={(event) =>
+                onCheckedChange={(checked) =>
                   patchModel(index, {
-                    capabilities: { ...model.capabilities, ocr: event.target.checked }
+                    capabilities: { ...model.capabilities, ocr: checked === true }
                   })
                 }
               />
               图片文字识别
             </label>
-            <label>
-              <input
-                type="checkbox"
+            <label htmlFor={`ai-model-long-context-${index}`}>
+              <Checkbox
+                id={`ai-model-long-context-${index}`}
+                aria-label={`长上下文 ${model.name || index + 1}`}
                 checked={model.capabilities.longContext}
-                onChange={(event) =>
+                onCheckedChange={(checked) =>
                   patchModel(index, {
-                    capabilities: { ...model.capabilities, longContext: event.target.checked }
+                    capabilities: { ...model.capabilities, longContext: checked === true }
                   })
                 }
               />
               长上下文
             </label>
-            <input
+            <Input
+              aria-label={`最大 Token ${index + 1}`}
               type="number"
               value={model.maxTokens || ''}
               onChange={(event) =>
@@ -230,34 +274,34 @@ export function AIProviderEditor({
               }
               placeholder="最大 Token"
             />
-            <label className="ai-model-default">
-              <input
-                type="radio"
-                name="default-model"
-                checked={provider.defaultModel === model.id}
-                onChange={() => patch({ defaultModel: model.id })}
+            <label className="ai-model-default" htmlFor={`ai-default-model-${index}`}>
+              <RadioGroupItem
+                id={`ai-default-model-${index}`}
+                value={model.id}
+                aria-label={`默认 ${model.name || index + 1}`}
               />
               默认
             </label>
-            <button
-              className="danger"
+            <Button
+              variant="destructive"
+              size="sm"
               disabled={provider.models.length === 1}
               onClick={() =>
                 patch({ models: provider.models.filter((_, itemIndex) => itemIndex !== index) })
               }
             >
               移除
-            </button>
+            </Button>
           </div>
         ))}
-      </div>
+      </RadioGroup>
 
       <details className="ai-provider-advanced">
         <summary>高级设置</summary>
         <div>
           <label>
             请求超时（ms）
-            <input
+            <Input
               type="number"
               value={provider.advanced.timeoutMs}
               onChange={(event) =>
@@ -267,7 +311,7 @@ export function AIProviderEditor({
           </label>
           <label>
             Temperature
-            <input
+            <Input
               type="number"
               step="0.1"
               value={provider.advanced.temperature ?? ''}
@@ -280,7 +324,7 @@ export function AIProviderEditor({
           </label>
           <label>
             Max Tokens
-            <input
+            <Input
               type="number"
               value={provider.advanced.maxTokens ?? ''}
               onChange={(event) =>
@@ -292,31 +336,36 @@ export function AIProviderEditor({
             <>
               <label className="wide">
                 OpenAI API 接口
-                <select
+                <Select
                   value={provider.advanced.apiProtocol || 'chat-completions'}
-                  onChange={(event) =>
+                  onValueChange={(value) =>
                     patch({
                       advanced: {
                         ...provider.advanced,
-                        apiProtocol: event.target
-                          .value as AIProviderConfig['advanced']['apiProtocol']
+                        apiProtocol: value as AIProviderConfig['advanced']['apiProtocol']
                       }
                     })
                   }
                 >
-                  <option value="chat-completions">Chat Completions（兼容模式）</option>
-                  <option value="responses">Responses API</option>
-                </select>
+                  <SelectTrigger aria-label="OpenAI API 接口">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="chat-completions">Chat Completions（兼容模式）</SelectItem>
+                    <SelectItem value="responses">Responses API</SelectItem>
+                  </SelectContent>
+                </Select>
                 <small>Codex 或仅支持 /responses 的中转服务请选择 Responses API。</small>
               </label>
-              <label className="wide ai-provider-stream-toggle">
+              <label className="wide ai-provider-stream-toggle" htmlFor="ai-provider-stream">
                 <span className="ai-provider-stream-toggle-control">
-                  <input
-                    type="checkbox"
+                  <Checkbox
+                    id="ai-provider-stream"
+                    aria-label="启用流式响应"
                     checked={Boolean(provider.advanced.stream)}
-                    onChange={(event) =>
+                    onCheckedChange={(checked) =>
                       patch({
-                        advanced: { ...provider.advanced, stream: event.target.checked }
+                        advanced: { ...provider.advanced, stream: checked === true }
                       })
                     }
                   />
@@ -328,7 +377,7 @@ export function AIProviderEditor({
           )}
           <label className="wide">
             额外 Headers（JSON）
-            <textarea
+            <Textarea
               key={JSON.stringify(provider.advanced.extraHeaders)}
               defaultValue={JSON.stringify(provider.advanced.extraHeaders, null, 2)}
               onBlur={(event) => {
@@ -352,10 +401,12 @@ export function AIProviderEditor({
         <pre>{preview}</pre>
       </details>
       <footer>
-        <button onClick={onCancel}>取消</button>
-        <button className="database-key-primary" disabled={saving} onClick={onSave}>
+        <Button variant="outline" onClick={onCancel}>
+          取消
+        </Button>
+        <Button disabled={saving} onClick={onSave}>
           {saving ? '保存中…' : '保存供应商'}
-        </button>
+        </Button>
       </footer>
     </section>
   )

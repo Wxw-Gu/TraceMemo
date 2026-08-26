@@ -1,5 +1,6 @@
 import React from 'react'
 import type { GeneratedReportRecord } from './types'
+import { Button } from '../ui'
 
 interface ReportExportStatusProps {
   report: GeneratedReportRecord | null
@@ -48,9 +49,9 @@ export function ReportExportStatus({
         )}
       </div>
       {(report.pngPath || report.htmlPath) && (
-        <button type="button" onClick={() => void handleReveal()}>
+        <Button variant="outline" size="sm" onClick={() => void handleReveal()}>
           打开文件夹
-        </button>
+        </Button>
       )}
       {status && <p>{status}</p>}
     </section>

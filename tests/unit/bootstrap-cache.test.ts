@@ -19,6 +19,7 @@ import {
   mergeCachedSelfInfo,
   saveBootstrapContacts,
   saveBootstrapSelf,
+  saveCachedGroupSnapshot,
   saveCachedMessages
 } from '../../src/main/services/bootstrap-cache'
 
@@ -140,5 +141,71 @@ describe('bootstrap cache', () => {
       avatar: 'data:image/png;base64,fixture'
     })
     flushBootstrapCacheWritesSync()
+  })
+
+  it('preserves known group nicknames when a refresh only returns contact nicknames', () => {
+    const groupRoot = '/fixture/group-account'
+    const first = {
+      roomId: 'fixture@chatroom',
+      memberCount: 1,
+      members: [
+        {
+          wxid: 'wxid-member',
+          nickname: '群内昵称',
+          groupNickname: '群内昵称',
+          wechatNickname: '通讯录昵称',
+          remark: '',
+          avatar: ''
+        }
+      ]
+    }
+    const refreshed = {
+      ...first,
+      members: [{ ...first.members[0], nickname: '通讯录昵称', groupNickname: '通讯录昵称' }]
+    }
+
+    saveCachedGroupSnapshot(groupRoot, 'fixture-md5', first)
+    flushBootstrapCacheWritesSync()
+    clearBootstrapCache()
+    const merged = saveCachedGroupSnapshot(groupRoot, 'fixture-md5', refreshed)
+
+    expect(merged.members[0]).toMatchObject({
+      nickname: '群内昵称',
+      groupNickname: '群内昵称',
+      wechatNickname: '通讯录昵称'
+    })
+  })
+
+  it('accepts a refreshed group nickname when it is not a contact fallback', () => {
+    const groupRoot = '/fixture/group-nickname-update'
+    const first = {
+      roomId: 'fixture@chatroom',
+      memberCount: 1,
+      members: [
+        {
+          wxid: 'wxid-member',
+          nickname: '旧群昵称',
+          groupNickname: '旧群昵称',
+          wechatNickname: '',
+          remark: '',
+          avatar: ''
+        }
+      ]
+    }
+    const refreshed = {
+      ...first,
+      members: [{ ...first.members[0], nickname: '新群昵称', groupNickname: '新群昵称' }]
+    }
+
+    saveCachedGroupSnapshot(groupRoot, 'fixture-md5', first)
+    flushBootstrapCacheWritesSync()
+    clearBootstrapCache()
+    const merged = saveCachedGroupSnapshot(groupRoot, 'fixture-md5', refreshed)
+
+    expect(merged.members[0]).toMatchObject({
+      nickname: '新群昵称',
+      groupNickname: '新群昵称',
+      wechatNickname: ''
+    })
   })
 })

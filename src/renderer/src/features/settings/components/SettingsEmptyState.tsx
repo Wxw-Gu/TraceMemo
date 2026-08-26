@@ -1,8 +1,14 @@
-export function SettingsEmptyState({ label }: { label: string }): React.ReactElement {
+export function SettingsEmptyState({
+  label,
+  description = '当前分类暂无额外设置。'
+}: {
+  label: string
+  description?: string
+}): React.ReactElement {
   return (
     <div className="settings-empty-state">
       <h2>{label}</h2>
-      <p>该设置将在后续阶段接入。</p>
+      <p>{description}</p>
     </div>
   )
 }

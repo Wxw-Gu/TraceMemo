@@ -95,6 +95,21 @@ describe('preload IPC contract', () => {
     expect(invoke).toHaveBeenLastCalledWith('voice:removeModel')
     await api.openVoiceModelDirectory()
     expect(invoke).toHaveBeenLastCalledWith('voice:openModelDirectory')
+
+    await api.getPersonalWechatSenderStatus()
+    expect(invoke).toHaveBeenLastCalledWith('wechat-personal:getStatus')
+    await api.rebindPersonalWechatSender()
+    expect(invoke).toHaveBeenLastCalledWith('wechat-personal:rebind')
+    const sendRequest = {
+      to: 'fixture@chatroom',
+      type: 'text' as const,
+      text: '测试消息',
+      isGroup: true
+    }
+    await api.sendPersonalWechatMessage(sendRequest)
+    expect(invoke).toHaveBeenLastCalledWith('wechat-personal:send', sendRequest)
+    await api.selectPersonalWechatImage()
+    expect(invoke).toHaveBeenLastCalledWith('wechat-personal:selectImage')
   })
 
   it('preserves key API return values without exposing ipcRenderer', async () => {

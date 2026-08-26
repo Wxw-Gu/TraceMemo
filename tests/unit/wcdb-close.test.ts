@@ -6,6 +6,25 @@ function setPrivate(target: object, key: string, value: unknown): void {
 }
 
 describe('Wcdb4Client shutdown', () => {
+  it('clears folded contact status snapshots when sessions are invalidated', () => {
+    const client = Object.create(Wcdb4Client.prototype) as Wcdb4Client
+    const statusCache = new Map([['group@chatroom', { isFolded: true, isMuted: false }]])
+    setPrivate(client, 'sessionCacheGeneration', 3)
+    setPrivate(client, 'cachedSessions', [{ username: 'group@chatroom' }])
+    setPrivate(client, 'cachedChatTables', [{ name: 'Chat_group', db_number: 'group@chatroom' }])
+    setPrivate(client, 'sessionStatusCache', statusCache)
+    setPrivate(client, 'sessionStatusesUpdatedAt', Date.now())
+
+    client.invalidateSessionCache()
+
+    expect(statusCache.size).toBe(0)
+    expect(client).toMatchObject({
+      cachedSessions: null,
+      cachedChatTables: null,
+      sessionStatusesUpdatedAt: 0
+    })
+  })
+
   it('waits for tracked Koffi calls before shutting down the native runtime', async () => {
     const client = Object.create(Wcdb4Client.prototype) as Wcdb4Client
     const shutdown = vi.fn(() => 0)

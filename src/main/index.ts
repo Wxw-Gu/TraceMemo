@@ -16,9 +16,8 @@ import {
   dialog,
   protocol
 } from 'electron'
-import { dirname, join } from 'path'
+import { basename, dirname, extname, join } from 'path'
 import { existsSync, promises as fsPromises } from 'fs'
-import { extname } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { WechatDb } from './wechat-db'
@@ -112,7 +111,24 @@ import {
 } from './services/bootstrap-cache'
 import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
+import { personalWechatSendService } from './services/personal-wechat-send-service'
+import { PersonalWechatRuntimeManager } from './services/personal-wechat-runtime-manager'
+import type { PersonalWechatSendRequest } from '../shared/personal-wechat'
+import { TextToSpeechSettingsService } from './services/text-to-speech-settings-service'
+import type {
+  ListTextToSpeechVoicesRequest,
+  SaveTextToSpeechSettingsRequest,
+  SynthesizeTextToSpeechRequest
+} from '../shared/text-to-speech'
 import { appLogger } from './app-logger'
+import { wcdbDebugLog } from './wcdb-debug'
+
+let getMessagesRequestSequence = 0
+
+function nextGetMessagesRequestId(): string {
+  getMessagesRequestSequence += 1
+  return `GETMSG-${String(getMessagesRequestSequence).padStart(3, '0')}`
+}
 import type { AppLogEntry } from '../shared/app-log'
 import { appUpdateService } from './services/app-update-service'
 import { clearCache, getCacheSummary, openKnowledgeDirectory } from './services/cache-service'
@@ -158,6 +174,8 @@ let videoAssetService: VideoAssetService | null = null
 const databaseKeyStore = new DatabaseKeyStore()
 const imageKeyConfigService = new ImageKeyConfigService()
 const aiProviderService = new AIProviderService()
+const textToSpeechSettingsService = new TextToSpeechSettingsService()
+const personalWechatRuntimeManager = new PersonalWechatRuntimeManager()
 const keyServiceMac = new KeyServiceMac()
 const keyServiceWin = new KeyServiceWin()
 const wechatShareConfigStore = new WechatShareConfigStore()
@@ -591,6 +609,11 @@ app.whenReady().then(async () => {
       if (!window.isDestroyed()) window.webContents.send('voice:modelProgress', status)
     }
   })
+  personalWechatRuntimeManager.setProgressListener((status) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('wechat-personal:runtimeProgress', status)
+    }
+  })
   protocol.handle('wxe-media', async (request) => {
     const filePath = videoAssetService?.pathForUrl(request.url)
     if (!filePath) return new Response('Not found', { status: 404 })
@@ -662,6 +685,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('app-update:check', () => appUpdateService.check())
   ipcMain.handle('app-update:download', () => appUpdateService.download())
   ipcMain.handle('app-update:install', () => appUpdateService.install())
+  ipcMain.handle('app-update:openDownloadPage', () => appUpdateService.openDownloadPage())
+  appUpdateService.scheduleStartupCheck()
   ipcMain.handle('cache:getSummary', () => getCacheSummary())
   ipcMain.handle('cache:openKnowledgeDirectory', () => openKnowledgeDirectory())
   ipcMain.handle('cache:clear', async (_, scope: CacheClearScope) => {
@@ -854,7 +879,13 @@ app.whenReady().then(async () => {
       if (!selectedRoot) return { success: false, error: '请先选择微信账号' }
       const validation = await chat.testConnection(result.key, selectedRoot)
       if (!validation.success) {
-        return { ...result, success: false, key: undefined, error: '获取到的密钥不属于所选账号' }
+        return {
+          ...result,
+          success: false,
+          key: undefined,
+          error:
+            '获取到的密钥不属于所选账号, 也可能是选择错误的目录了, 请打开微信设置 左下角确认目录是否和软件内填写一致'
+        }
       }
       if (options?.save === false) return result
 
@@ -1050,18 +1081,37 @@ app.whenReady().then(async () => {
       endTime?: number,
       options?: { limit?: number }
     ) => {
-      const messages = await chat.listMessagesAsync(userMd5, startTime, endTime, options)
-      if (chat.isReady()) {
-        saveCachedMessages(chat.getCurrentAccountRoot(), userMd5, startTime, endTime, messages)
+      const requestId = nextGetMessagesRequestId()
+      const startedAt = Date.now()
+      wcdbDebugLog(
+        `[${requestId}] IPC db:getMessages start userMd5=${userMd5} start=${startTime || 0} end=${endTime || 0} limit=${options?.limit || 0}`
+      )
+      try {
+        const messages = await chat.listMessagesAsync(
+          userMd5,
+          startTime,
+          endTime,
+          options,
+          requestId
+        )
+        if (chat.isReady()) {
+          saveCachedMessages(chat.getCurrentAccountRoot(), userMd5, startTime, endTime, messages)
+        }
+        wcdbDebugLog(
+          `[${requestId}] IPC db:getMessages end rows=${messages.length} cost=${Date.now() - startedAt}ms`
+        )
+        return messages
+      } catch (error) {
+        wcdbDebugLog(`[${requestId}] IPC db:getMessages error cost=${Date.now() - startedAt}ms`)
+        throw error
       }
-      return messages
     }
   )
 
   ipcMain.handle('db:getGroupSnapshot', async (_, userMd5: string) => {
     const snapshot = await chat.getGroupSnapshotAsync(userMd5)
     if (snapshot && chat.isReady()) {
-      saveCachedGroupSnapshot(chat.getCurrentAccountRoot(), userMd5, snapshot)
+      return saveCachedGroupSnapshot(chat.getCurrentAccountRoot(), userMd5, snapshot)
     }
     return snapshot
   })
@@ -1135,6 +1185,28 @@ app.whenReady().then(async () => {
     aiProviderService.migrateLegacy(config)
   )
 
+  ipcMain.handle('tts:getSettings', () => textToSpeechSettingsService.get())
+  ipcMain.handle('tts:saveSettings', (_, request: SaveTextToSpeechSettingsRequest) =>
+    textToSpeechSettingsService.save(request)
+  )
+  ipcMain.handle('tts:listVoices', (_, request?: ListTextToSpeechVoicesRequest) =>
+    textToSpeechSettingsService.listVoices(request)
+  )
+  ipcMain.handle('tts:synthesize', (_, request: SynthesizeTextToSpeechRequest) =>
+    textToSpeechSettingsService.synthesize(request)
+  )
+  ipcMain.handle('tts:removeGeneratedAudio', (_, filePath: string) =>
+    textToSpeechSettingsService.removeGeneratedAudio(String(filePath || ''))
+  )
+  ipcMain.handle('tts:openApiKeys', async () => {
+    try {
+      await shell.openExternal('https://fish.audio/app/api-keys/')
+      return { success: true }
+    } catch {
+      return { success: false, error: '无法打开 Fish Audio API Key 页面' }
+    }
+  })
+
   ipcMain.handle('copy-image', async (_, imageSource: unknown) => {
     try {
       if (typeof imageSource !== 'string' || !imageSource) {
@@ -1166,7 +1238,9 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('export:selectDirectory', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
-    const result = await dialog.showOpenDialog(window!, { properties: ['openDirectory', 'createDirectory'] })
+    const result = await dialog.showOpenDialog(window!, {
+      properties: ['openDirectory', 'createDirectory']
+    })
     return result.canceled ? { canceled: true } : { canceled: false, path: result.filePaths[0] }
   })
   ipcMain.handle('export:cancel', (_, jobId: string) => {
@@ -1702,6 +1776,57 @@ app.whenReady().then(async () => {
   ipcMain.handle('agent-hub:cancelLogin', () => agentHubService.cancelLogin())
   ipcMain.handle('agent-hub:reconnect', () => agentHubService.reconnect())
   ipcMain.handle('agent-hub:disconnect', () => agentHubService.disconnect())
+  ipcMain.handle('wechat-personal:getStatus', () => personalWechatSendService.getStatus())
+  ipcMain.handle('wechat-personal:getRuntimeStatus', () => personalWechatRuntimeManager.getStatus())
+  ipcMain.handle('wechat-personal:downloadRuntime', () => personalWechatRuntimeManager.download())
+  ipcMain.handle('wechat-personal:cancelRuntimeDownload', () => ({
+    success: personalWechatRuntimeManager.cancelDownload()
+  }))
+  ipcMain.handle('wechat-personal:removeRuntime', async () => {
+    await personalWechatSendService.terminate()
+    return personalWechatRuntimeManager.remove()
+  })
+  ipcMain.handle('wechat-personal:openRuntimeDirectory', async () => {
+    const status = await personalWechatRuntimeManager.getStatus()
+    const directory = status.directory || personalWechatRuntimeManager.directory
+    await fsPromises.mkdir(directory, { recursive: true })
+    const error = await shell.openPath(directory)
+    return error ? { success: false, error } : { success: true }
+  })
+  ipcMain.handle('wechat-personal:rebind', () => personalWechatSendService.rebind())
+  ipcMain.handle('wechat-personal:send', (_, request: PersonalWechatSendRequest) =>
+    personalWechatSendService.send(request)
+  )
+  ipcMain.handle('wechat-personal:selectImage', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showOpenDialog(window!, {
+      title: '选择要通过个人微信发送的图片',
+      properties: ['openFile'],
+      filters: [
+        { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled || !result.filePaths[0]) return { canceled: true }
+    return {
+      canceled: false,
+      path: result.filePaths[0],
+      name: basename(result.filePaths[0])
+    }
+  })
+  ipcMain.handle('wechat-personal:selectVoice', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showOpenDialog(window!, {
+      title: '选择要通过个人微信发送的语音',
+      properties: ['openFile'],
+      filters: [
+        { name: '语音', extensions: ['silk', 'mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled || !result.filePaths[0]) return { canceled: true }
+    return { canceled: false, path: result.filePaths[0], name: basename(result.filePaths[0]) }
+  })
   ipcMain.handle('agent-hub:selectTestImage', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const result = await dialog.showOpenDialog(window!, {
@@ -1766,7 +1891,10 @@ app.on('before-quit', (event) => {
       apiServer.stop().catch(() => undefined),
       chat.closeChatDbForQuit().catch(() => false),
       voiceRecognition?.dispose().catch(() => undefined),
-      knowledgeSearchService?.dispose().catch(() => undefined)
+      knowledgeSearchService?.dispose().catch(() => undefined),
+      personalWechatSendService.terminate().catch((error) => {
+        console.warn('[Shutdown] personal WeChat sender cleanup failed:', error)
+      })
     ])
     if (!nativeCallsDrained) {
       console.warn('[Shutdown] WCDB async calls did not fully drain before quit')

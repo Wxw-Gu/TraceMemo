@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { AccountSummary } from '../../../components/account/AccountSummary'
+import { Button, Input } from '../../../components/ui'
 import { SETTINGS_NAVIGATION } from '../model/settingsNavigation'
 import type { SettingsCategoryId, SettingsSelfInfo } from '../model/types'
 
@@ -34,7 +35,8 @@ export function SettingsSidebar({
         <p>管理账号、数据连接和本地能力</p>
         <label className="settings-search">
           <span>⌕</span>
-          <input
+          <Input
+            className="settings-search-input"
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
             placeholder="搜索设置"
@@ -46,14 +48,16 @@ export function SettingsSidebar({
           <section key={group.label}>
             <h2>{group.label}</h2>
             {group.items.map((item) => (
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 type="button"
                 key={item.id}
                 className={selectedId === item.id ? 'active' : ''}
                 onClick={() => onSelect(item.id)}
               >
                 {item.label}
-              </button>
+              </Button>
             ))}
           </section>
         ))}

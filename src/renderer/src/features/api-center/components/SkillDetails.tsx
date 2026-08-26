@@ -1,4 +1,5 @@
 import { type ReactElement } from 'react'
+import { Button } from '../../../components/ui'
 import type { SkillStatus } from '../model/types'
 
 export function SkillDetails({
@@ -40,15 +41,15 @@ export function SkillDetails({
         </div>
       </dl>
       <div>
-        <button type="button" onClick={onOpenFolder} disabled={!skill?.available}>
+        <Button size="sm" variant="outline" onClick={onOpenFolder} disabled={!skill?.available}>
           打开本地文件夹
-        </button>
-        <button type="button" onClick={onPreview} disabled={!skill?.available}>
+        </Button>
+        <Button size="sm" variant="outline" onClick={onPreview} disabled={!skill?.available}>
           预览 SKILL.md
-        </button>
-        <button type="button" onClick={onGithub}>
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onGithub}>
           查看 GitHub 最新版本
-        </button>
+        </Button>
       </div>
     </details>
   )

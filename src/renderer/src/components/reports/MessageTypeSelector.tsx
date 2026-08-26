@@ -1,8 +1,6 @@
 import React from 'react'
-import {
-  SUMMARY_TYPE_OPTIONS,
-  SummaryMessageType
-} from '../../utils/group-report'
+import { SUMMARY_TYPE_OPTIONS, SummaryMessageType } from '../../utils/group-report'
+import { Checkbox } from '../ui'
 
 interface MessageTypeSelectorProps {
   value: SummaryMessageType[]
@@ -34,12 +32,18 @@ export function MessageTypeSelector({
       </div>
       <div className="report-type-grid">
         {SUMMARY_TYPE_OPTIONS.map((option) => (
-          <label key={option.value} className="report-check-row">
-            <input
-              type="checkbox"
+          <label
+            key={option.value}
+            className="report-check-row"
+            htmlFor={`report-message-type-${option.value}`}
+          >
+            <Checkbox
+              id={`report-message-type-${option.value}`}
+              aria-label={option.label}
+              className="mt-0.5"
               checked={value.includes(option.value)}
               disabled={disabled || (value.length === 1 && value.includes(option.value))}
-              onChange={() => toggle(option.value)}
+              onCheckedChange={() => toggle(option.value)}
             />
             <span>
               <b>{option.label}</b>

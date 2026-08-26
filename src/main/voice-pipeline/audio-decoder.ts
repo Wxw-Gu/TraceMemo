@@ -74,12 +74,12 @@ export class SilkAudioDecoder implements VoiceAudioDecoder {
       decode?: (data: Buffer, sampleRate: number) => Promise<{ data: Uint8Array }>
     }
     if (!silkWasm.decode) throw new Error('silk-wasm 运行时无效')
-    const result = await silkWasm.decode(source.data, 24000)
+    const result = await silkWasm.decode(source.data, 16000)
     const pcm = Buffer.from(result.data)
     if (!pcm.length) throw new Error('Silk 解码结果为空')
     return {
       pcm,
-      sampleRate: 24000,
+      sampleRate: 16000,
       channels: 1,
       sourceHash: source.sourceHash
     }

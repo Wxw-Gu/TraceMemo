@@ -40,6 +40,13 @@ describe('ImageBubble', () => {
     await userEvent.click(image)
     await waitFor(() => expect(onImageClick).toHaveBeenCalledWith(original))
     expect(requestImage.mock.calls[1][3]).toMatchObject({ force: true })
+
+    onImageClick.mockClear()
+    requestImage.mockResolvedValueOnce({ data: original, isThumbnail: false })
+    const trigger = screen.getByRole('button', { name: '查看图片' })
+    trigger.focus()
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(onImageClick).toHaveBeenCalledWith(original))
   })
 
   it('shows an explicit error and allows retry', async () => {

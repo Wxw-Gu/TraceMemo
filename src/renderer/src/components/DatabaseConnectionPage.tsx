@@ -1,9 +1,9 @@
 import React from 'react'
 import type { DatabaseKeyEnvironment, WechatAccountCandidate } from '../../../shared/database-key'
 import { WINDOWS_VC_RUNTIME_DOWNLOAD_URL } from '../../../shared/windows-runtime'
+import { Button, IconButton, Input, Tabs, TabsList, TabsTrigger } from './ui'
 
-const GUIDE_URL =
-  'https://github.com/Wxw-Gu/WechatExplorer/blob/main/docs/user-guide/getting-started.md'
+const GUIDE_URL = 'https://github.com/Wxw-Gu/TraceMemo/blob/main/docs/user-guide/getting-started.md'
 
 export type DatabaseConnectionMode = 'automatic' | 'manual'
 export type DatabaseConnectionStatusKind = 'normal' | 'success' | 'error'
@@ -207,366 +207,360 @@ export function DatabaseConnectionPage({
               查看 5 分钟上手教程 →
             </a>
           </div>
-          <div className="database-login-tabs" role="tablist" aria-label="连接方式">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mode === 'automatic'}
-              className={mode === 'automatic' ? 'active' : ''}
-              onClick={() => onModeChange('automatic')}
+          <Tabs
+            value={mode}
+            onValueChange={(value) => onModeChange(value as DatabaseConnectionMode)}
+          >
+            <TabsList
+              className="database-login-tabs grid h-auto w-full grid-cols-2"
+              aria-label="连接方式"
             >
-              开始连接
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mode === 'manual'}
-              className={`database-login-manual-tab ${mode === 'manual' ? 'active' : ''}`}
-              onClick={() => onModeChange('manual')}
-            >
-              高级用户：已有数据库密钥？手动连接
-            </button>
-          </div>
+              <TabsTrigger value="automatic">开始连接</TabsTrigger>
+              <TabsTrigger value="manual">高级用户：已有数据库密钥？手动连接</TabsTrigger>
+            </TabsList>
 
-          {mode === 'automatic' ? (
-            <div className="database-login-auto" role="tabpanel">
-              <div className="database-login-guide-progress" aria-label={`连接进度 ${guideStep}/6`}>
-                {Array.from({ length: 6 }, (_, index) => (
-                  <span key={index} className={index + 1 <= guideStep ? 'active' : ''} />
-                ))}
-              </div>
-              <div className={`database-login-state-card ${statusKind}`}>
-                <div className="database-login-state-heading">
-                  <span className="database-login-state-icon">
-                    <LineIcon name="info" />
-                  </span>
-                  <div>
-                    <strong>
-                      {statusKind === 'error'
-                        ? '当前步骤未完成'
-                        : [
-                            '检查本机环境',
-                            '让微信停在登录页面',
-                            '确认开始准备',
-                            `正在完成 ${isMac ? 'macOS' : 'Windows'} 授权`,
-                            '获取成功, 现在可以重新登录微信了',
-                            '验证数据库连接'
-                          ][guideStep - 1]}
-                    </strong>
-                    <p>
-                      {statusKind === 'error'
-                        ? status
-                        : status ||
-                          [
-                            '确认下方检测结果；没有找到目录时可以手动选择。',
-                            '请退出当前微信账号，让微信停留在登录页面，然后点击“我已准备好”。',
-                            '开始后请按页面提示完成系统授权。',
-                            '正在准备连接组件，请不要关闭微信或 TraceMemo。',
-                            '请回到微信完成登录，登录成功后再回来验证。',
-                            '正在验证密钥和本地数据库，请稍候。'
-                          ][guideStep - 1]}
-                    </p>
-                  </div>
+            {mode === 'automatic' ? (
+              <div className="database-login-auto" role="tabpanel">
+                <div
+                  className="database-login-guide-progress"
+                  aria-label={`连接进度 ${guideStep}/6`}
+                >
+                  {Array.from({ length: 6 }, (_, index) => (
+                    <span key={index} className={index + 1 <= guideStep ? 'active' : ''} />
+                  ))}
                 </div>
-                {guideStep === 1 && (
-                  <>
-                    <dl className="database-login-diagnostics">
-                      <div>
-                        <dt>操作系统</dt>
-                        <dd>{environment?.osVersion || (isMac ? 'macOS' : 'Windows')}</dd>
-                      </div>
-                      <div>
-                        <dt>微信版本</dt>
-                        <dd>{environment?.wechatVersion || '未检测到'}</dd>
-                      </div>
-                      <div>
-                        <dt>数据结构</dt>
-                        <dd>{environment?.dataStructureVersion || '未检测到'}</dd>
-                      </div>
-                      <div>
-                        <dt>
-                          存储路径
-                          <StoragePathHelp />
-                        </dt>
-                        <dd>
-                          <span className="database-login-path-input-wrap">
-                            <input
-                              type="text"
-                              value={dbRoot}
-                              onChange={(event) => onDbRootChange(event.target.value)}
-                              placeholder={defaultPath}
-                              title={dbRoot || defaultPath}
-                              aria-label="微信数据存储路径"
-                              spellCheck={false}
-                              onFocus={(event) => event.currentTarget.select()}
-                            />
-                            <span className="database-login-path-value" role="status">
-                              {dbRoot || defaultPath}
+                <div className={`database-login-state-card ${statusKind}`}>
+                  <div className="database-login-state-heading">
+                    <span className="database-login-state-icon">
+                      <LineIcon name="info" />
+                    </span>
+                    <div>
+                      <strong>
+                        {statusKind === 'error'
+                          ? '当前步骤未完成'
+                          : [
+                              '检查本机环境',
+                              '让微信停在登录页面',
+                              '确认开始准备',
+                              `正在完成 ${isMac ? 'macOS' : 'Windows'} 授权`,
+                              '获取成功, 现在可以重新登录微信了',
+                              '验证数据库连接'
+                            ][guideStep - 1]}
+                      </strong>
+                      <p>
+                        {statusKind === 'error'
+                          ? status
+                          : status ||
+                            [
+                              '确认下方检测结果；没有找到目录时可以手动选择。',
+                              '请退出当前微信账号，让微信停留在登录页面，然后点击“我已准备好”。',
+                              '开始后请按页面提示完成系统授权。',
+                              '正在准备连接组件，请不要关闭微信或 TraceMemo。',
+                              '请回到微信完成登录，登录成功后再回来验证。',
+                              '正在验证密钥和本地数据库，请稍候。'
+                            ][guideStep - 1]}
+                      </p>
+                    </div>
+                  </div>
+                  {guideStep === 1 && (
+                    <>
+                      <dl className="database-login-diagnostics">
+                        <div>
+                          <dt>操作系统</dt>
+                          <dd>{environment?.osVersion || (isMac ? 'macOS' : 'Windows')}</dd>
+                        </div>
+                        <div>
+                          <dt>微信版本</dt>
+                          <dd>{environment?.wechatVersion || '未检测到'}</dd>
+                        </div>
+                        <div>
+                          <dt>数据结构</dt>
+                          <dd>{environment?.dataStructureVersion || '未检测到'}</dd>
+                        </div>
+                        <div>
+                          <dt>
+                            存储路径
+                            <StoragePathHelp />
+                          </dt>
+                          <dd>
+                            <span className="database-login-path-input-wrap">
+                              <Input
+                                className="h-9 border-0 bg-transparent px-0 text-right shadow-none"
+                                type="text"
+                                value={dbRoot}
+                                onChange={(event) => onDbRootChange(event.target.value)}
+                                placeholder={defaultPath}
+                                title={dbRoot || defaultPath}
+                                aria-label="微信数据存储路径"
+                                spellCheck={false}
+                                onFocus={(event) => event.currentTarget.select()}
+                              />
+                              <span className="database-login-path-value" role="status">
+                                {dbRoot || defaultPath}
+                              </span>
                             </span>
-                          </span>
-                          <button
-                            type="button"
-                            className="database-login-path-select"
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="database-login-path-select"
+                              onClick={onSelectDbRoot}
+                              disabled={isFetching || isConnecting}
+                            >
+                              选择目录
+                            </Button>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>微信状态</dt>
+                          <dd>{environment?.wechatRunning ? '运行中' : '未检测到'}</dd>
+                        </div>
+                      </dl>
+                      {accounts.length > 0 && (
+                        <section className="database-account-list" aria-label="选择微信账号">
+                          <h3>选择微信账号</h3>
+                          {accounts.map((account) => (
+                            <button
+                              type="button"
+                              key={account.id}
+                              className={`database-account-card ${selectedAccountId === account.id ? 'selected' : ''}`}
+                              aria-pressed={selectedAccountId === account.id}
+                              onClick={() => onSelectAccount(account)}
+                            >
+                              <span className="database-account-avatar">
+                                {account.avatar ? (
+                                  <img src={account.avatar} alt="" />
+                                ) : (
+                                  (account.nickname || account.directoryName || '?').charAt(0)
+                                )}
+                              </span>
+                              <span className="database-account-identity">
+                                <strong>
+                                  {account.nickname ||
+                                    (account.wxid
+                                      ? `微信账号 ${account.wxid}`
+                                      : `账号目录 ${account.directoryName || '待识别'}`)}
+                                </strong>
+                                <small>
+                                  {account.nickname
+                                    ? account.wxid || '微信号未读取'
+                                    : account.wxid
+                                      ? '昵称和头像需连接此账号后读取'
+                                      : '连接后读取微信号、昵称和头像'}
+                                </small>
+                                <code title={account.accountRoot}>{account.accountRoot}</code>
+                              </span>
+                              <span className="database-account-status">
+                                {account.hasSavedDbKey ? '已有可用密钥' : '尚无可用密钥'}
+                                <small>
+                                  {account.loginStatus === 'current'
+                                    ? '当前已连接账号'
+                                    : account.loginStatus === 'other'
+                                      ? '非当前账号'
+                                      : '登录状态未确认'}
+                                </small>
+                              </span>
+                            </button>
+                          ))}
+                          <Button
+                            variant="outline"
+                            className="database-login-secondary"
                             onClick={onSelectDbRoot}
                             disabled={isFetching || isConnecting}
                           >
-                            选择目录
-                          </button>
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>微信状态</dt>
-                        <dd>{environment?.wechatRunning ? '运行中' : '未检测到'}</dd>
-                      </div>
-                    </dl>
-                    {accounts.length > 0 && (
-                      <section className="database-account-list" aria-label="选择微信账号">
-                        <h3>选择微信账号</h3>
-                        {accounts.map((account) => (
-                          <button
-                            type="button"
-                            key={account.id}
-                            className={`database-account-card ${selectedAccountId === account.id ? 'selected' : ''}`}
-                            aria-pressed={selectedAccountId === account.id}
-                            onClick={() => onSelectAccount(account)}
-                          >
-                            <span className="database-account-avatar">
-                              {account.avatar ? (
-                                <img src={account.avatar} alt="" />
-                              ) : (
-                                (account.nickname || account.directoryName || '?').charAt(0)
-                              )}
-                            </span>
-                            <span className="database-account-identity">
-                              <strong>
-                                {account.nickname ||
-                                  (account.wxid
-                                    ? `微信账号 ${account.wxid}`
-                                    : `账号目录 ${account.directoryName || '待识别'}`)}
-                              </strong>
-                              <small>
-                                {account.nickname
-                                  ? account.wxid || '微信号未读取'
-                                  : account.wxid
-                                    ? '昵称和头像需连接此账号后读取'
-                                    : '连接后读取微信号、昵称和头像'}
-                              </small>
-                              <code title={account.accountRoot}>{account.accountRoot}</code>
-                            </span>
-                            <span className="database-account-status">
-                              {account.hasSavedDbKey ? '已有可用密钥' : '尚无可用密钥'}
-                              <small>
-                                {account.loginStatus === 'current'
-                                  ? '当前已连接账号'
-                                  : account.loginStatus === 'other'
-                                    ? '非当前账号'
-                                    : '登录状态未确认'}
-                              </small>
-                            </span>
-                          </button>
-                        ))}
-                        <button
-                          type="button"
-                          className="database-login-secondary"
-                          onClick={onSelectDbRoot}
-                          disabled={isFetching || isConnecting}
-                        >
-                          选择其他账号
-                        </button>
-                      </section>
-                    )}
+                            选择其他账号
+                          </Button>
+                        </section>
+                      )}
+                    </>
+                  )}
+                </div>
+                {guideStep === 1 && (
+                  <>
+                    <Button
+                      className="database-login-primary"
+                      onClick={onGuideNext}
+                      disabled={!selectedAccountId}
+                    >
+                      检查完成，继续
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="database-login-secondary"
+                      onClick={onRefreshEnvironment}
+                    >
+                      重新检查环境
+                    </Button>
+                    <Button
+                      variant="link"
+                      className="database-login-text-action"
+                      onClick={onCopyDiagnostics}
+                    >
+                      复制脱敏诊断摘要
+                    </Button>
                   </>
                 )}
-              </div>
-              {guideStep === 1 && (
-                <>
-                  <button
-                    type="button"
+                {guideStep === 2 && (
+                  <Button className="database-login-primary" onClick={onGuideNext}>
+                    我已准备好
+                  </Button>
+                )}
+                {guideStep === 3 && (
+                  <Button className="database-login-primary" onClick={onAutoGetKey}>
+                    开始准备连接组件
+                  </Button>
+                )}
+                {guideStep === 4 && (
+                  <Button className="database-login-primary" disabled>
+                    正在准备连接组件…
+                  </Button>
+                )}
+                {guideStep === 5 && (
+                  <Button
                     className="database-login-primary"
-                    onClick={onGuideNext}
-                    disabled={!selectedAccountId}
+                    onClick={onValidateConnection}
+                    disabled={!dbKey || isConnecting}
                   >
-                    检查完成，继续
-                  </button>
-                  <button
-                    type="button"
-                    className="database-login-secondary"
-                    onClick={onRefreshEnvironment}
-                  >
-                    重新检查环境
-                  </button>
-                  <button
-                    type="button"
+                    {isConnecting ? '正在验证…' : '验证连接'}
+                  </Button>
+                )}
+                {guideStep === 6 && (
+                  <Button className="database-login-primary" disabled>
+                    正在验证数据库…
+                  </Button>
+                )}
+                {guideStep > 1 && !isFetching && !isConnecting && (
+                  <div className="database-login-guide-actions">
+                    <Button variant="link" size="sm" onClick={onGuideBack}>
+                      返回上一步
+                    </Button>
+                    <Button variant="link" size="sm" onClick={onGuideCancel}>
+                      取消并重新检查
+                    </Button>
+                  </div>
+                )}
+                {(isFetching || isConnecting) && (
+                  <Button
+                    variant="link"
                     className="database-login-text-action"
-                    onClick={onCopyDiagnostics}
+                    onClick={onGuideCancel}
                   >
-                    复制脱敏诊断摘要
-                  </button>
-                </>
-              )}
-              {guideStep === 2 && (
-                <button type="button" className="database-login-primary" onClick={onGuideNext}>
-                  我已准备好
-                </button>
-              )}
-              {guideStep === 3 && (
-                <button type="button" className="database-login-primary" onClick={onAutoGetKey}>
-                  开始准备连接组件
-                </button>
-              )}
-              {guideStep === 4 && (
-                <button type="button" className="database-login-primary" disabled>
-                  正在准备连接组件…
-                </button>
-              )}
-              {guideStep === 5 && (
-                <button
-                  type="button"
-                  className="database-login-primary"
-                  onClick={onValidateConnection}
-                  disabled={!dbKey || isConnecting}
-                >
-                  {isConnecting ? '正在验证…' : '验证连接'}
-                </button>
-              )}
-              {guideStep === 6 && (
-                <button type="button" className="database-login-primary" disabled>
-                  正在验证数据库…
-                </button>
-              )}
-              {guideStep > 1 && !isFetching && !isConnecting && (
-                <div className="database-login-guide-actions">
-                  <button type="button" onClick={onGuideBack}>
-                    返回上一步
-                  </button>
-                  <button type="button" onClick={onGuideCancel}>
-                    取消并重新检查
-                  </button>
+                    取消
+                  </Button>
+                )}
+                <p className="database-login-platform-note">
+                  {isMac ? (
+                    <>
+                      macOS 首次获取密钥需要关闭 SIP。{' '}
+                      <a href={macKeyFaqUrl} target="_blank" rel="noreferrer">
+                        查看说明
+                      </a>
+                    </>
+                  ) : (
+                    <>
+                      Windows 需要 Microsoft Visual C++ 2015-2022 x64 运行库。{' '}
+                      <a href={WINDOWS_VC_RUNTIME_DOWNLOAD_URL} target="_blank" rel="noreferrer">
+                        下载运行库
+                      </a>
+                    </>
+                  )}
+                </p>
+                {showMacKeyFaq && isMac && (
+                  <a href={macKeyFaqUrl} target="_blank" rel="noreferrer">
+                    获取失败？查看连接排查
+                  </a>
+                )}
+              </div>
+            ) : (
+              <div className="database-login-manual" role="tabpanel">
+                <p className="database-login-manual-note">
+                  仅适用于已经通过其他方式获得当前微信账号数据库密钥的高级用户。第一次使用请返回“开始连接”。
+                </p>
+                <div className="database-login-field">
+                  <label htmlFor="database-login-key">数据库密钥</label>
+                  <div className="database-login-key-input">
+                    <Input
+                      id="database-login-key"
+                      type={showDbKey ? 'text' : 'password'}
+                      value={dbKey}
+                      onChange={(event) => onDbKeyChange(event.target.value)}
+                      placeholder="输入或粘贴 64 位数据库密钥"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <IconButton
+                      variant="ghost"
+                      onClick={onToggleDbKey}
+                      label={showDbKey ? '隐藏密钥' : '显示密钥'}
+                    >
+                      <EyeIcon visible={showDbKey} />
+                    </IconButton>
+                  </div>
+                  <small>密钥通过系统安全存储加密保存在当前设备。</small>
                 </div>
-              )}
-              {(isFetching || isConnecting) && (
-                <button
-                  type="button"
-                  className="database-login-text-action"
-                  onClick={onGuideCancel}
-                >
-                  取消
-                </button>
-              )}
-              <p className="database-login-platform-note">
-                {isMac ? (
-                  <>
-                    macOS 首次获取密钥需要关闭 SIP。{' '}
-                    <a href={macKeyFaqUrl} target="_blank" rel="noreferrer">
-                      查看说明
-                    </a>
-                  </>
-                ) : (
-                  <>
-                    Windows 需要 Microsoft Visual C++ 2015-2022 x64 运行库。{' '}
+                {platform === 'win32' && (
+                  <div className="database-login-field">
+                    <label htmlFor="database-login-root">
+                      微信数据目录
+                      <StoragePathHelp />
+                    </label>
+                    <div className="database-login-root-control">
+                      <Input
+                        id="database-login-root"
+                        aria-label="微信数据目录"
+                        value={dbRoot}
+                        onChange={(event) => onDbRootChange(event.target.value)}
+                        placeholder={defaultPath}
+                        title={dbRoot || defaultPath}
+                        spellCheck={false}
+                        onFocus={(event) => event.currentTarget.select()}
+                      />
+                      <Button variant="outline" onClick={onSelectDbRoot} disabled={isConnecting}>
+                        选择目录
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                {status && <div className={`database-login-message ${statusKind}`}>{status}</div>}
+                {platform === 'win32' && (
+                  <p className="database-login-platform-note">
+                    无法加载数据库组件时，请安装 Microsoft Visual C++ 2015-2022 x64 运行库。{' '}
                     <a href={WINDOWS_VC_RUNTIME_DOWNLOAD_URL} target="_blank" rel="noreferrer">
                       下载运行库
                     </a>
-                  </>
+                  </p>
                 )}
-              </p>
-              {showMacKeyFaq && isMac && (
-                <a href={macKeyFaqUrl} target="_blank" rel="noreferrer">
-                  获取失败？查看连接排查
-                </a>
-              )}
-            </div>
-          ) : (
-            <div className="database-login-manual" role="tabpanel">
-              <p className="database-login-manual-note">
-                仅适用于已经通过其他方式获得当前微信账号数据库密钥的高级用户。第一次使用请返回“开始连接”。
-              </p>
-              <div className="database-login-field">
-                <label htmlFor="database-login-key">数据库密钥</label>
-                <div className="database-login-key-input">
-                  <input
-                    id="database-login-key"
-                    type={showDbKey ? 'text' : 'password'}
-                    value={dbKey}
-                    onChange={(event) => onDbKeyChange(event.target.value)}
-                    placeholder="输入或粘贴 64 位数据库密钥"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <button
-                    type="button"
-                    onClick={onToggleDbKey}
-                    title={showDbKey ? '隐藏密钥' : '显示密钥'}
-                  >
-                    <EyeIcon visible={showDbKey} />
-                  </button>
-                </div>
-                <small>密钥通过系统安全存储加密保存在当前设备。</small>
-              </div>
-              {platform === 'win32' && (
-                <div className="database-login-field">
-                  <label htmlFor="database-login-root">
-                    微信数据目录
-                    <StoragePathHelp />
-                  </label>
-                  <div className="database-login-root-control">
-                    <input
-                      id="database-login-root"
-                      aria-label="微信数据目录"
-                      value={dbRoot}
-                      onChange={(event) => onDbRootChange(event.target.value)}
-                      placeholder={defaultPath}
-                      title={dbRoot || defaultPath}
-                      spellCheck={false}
-                      onFocus={(event) => event.currentTarget.select()}
-                    />
-                    <button type="button" onClick={onSelectDbRoot} disabled={isConnecting}>
-                      选择目录
-                    </button>
-                  </div>
-                </div>
-              )}
-              {status && <div className={`database-login-message ${statusKind}`}>{status}</div>}
-              {platform === 'win32' && (
-                <p className="database-login-platform-note">
-                  无法加载数据库组件时，请安装 Microsoft Visual C++ 2015-2022 x64 运行库。{' '}
-                  <a href={WINDOWS_VC_RUNTIME_DOWNLOAD_URL} target="_blank" rel="noreferrer">
-                    下载运行库
-                  </a>
-                </p>
-              )}
-              <button
-                type="button"
-                className="database-login-primary"
-                onClick={onManualConnect}
-                disabled={!keyIsValid || isConnecting}
-              >
-                {isConnecting ? '正在连接…' : '连接数据库'}
-              </button>
-              {isConnecting && (
-                <button
-                  type="button"
-                  className="database-login-text-action"
-                  onClick={onGuideCancel}
+                <Button
+                  className="database-login-primary"
+                  onClick={onManualConnect}
+                  disabled={!keyIsValid || isConnecting}
                 >
-                  取消连接
-                </button>
-              )}
-              <button
-                type="button"
-                className="database-login-secondary"
-                onClick={onPasteKey}
-                disabled={isConnecting}
-              >
-                从剪贴板粘贴并安全保存
-              </button>
-            </div>
-          )}
+                  {isConnecting ? '正在连接…' : '连接数据库'}
+                </Button>
+                {isConnecting && (
+                  <Button
+                    variant="link"
+                    className="database-login-text-action"
+                    onClick={onGuideCancel}
+                  >
+                    取消连接
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  className="database-login-secondary"
+                  onClick={onPasteKey}
+                  disabled={isConnecting}
+                >
+                  从剪贴板粘贴并安全保存
+                </Button>
+              </div>
+            )}
+          </Tabs>
 
           <div className="database-login-footer-actions">
-            <button type="button" onClick={onClearKey}>
+            <Button variant="destructive" size="sm" onClick={onClearKey}>
               清除已保存密钥
-            </button>
+            </Button>
             <span>TraceMemo</span>
           </div>
         </div>

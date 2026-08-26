@@ -1,0 +1,5 @@
+provider: github
+owner: Wxw-Gu
+repo: TraceMemo
+releaseType: release
+updaterCacheDirName: tracememo-updater

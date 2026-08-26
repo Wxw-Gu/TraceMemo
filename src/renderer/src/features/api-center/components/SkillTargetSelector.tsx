@@ -1,4 +1,5 @@
 import { type ReactElement } from 'react'
+import { SegmentedControl, SegmentedControlItem } from '../../../components/ui'
 import { AGENT_INSTALL_TARGETS, type AgentInstallTarget } from '../model/skillDistribution'
 
 export function SkillTargetSelector({
@@ -9,17 +10,17 @@ export function SkillTargetSelector({
   onChange: (value: AgentInstallTarget) => void
 }): ReactElement {
   return (
-    <div className="skill-target-selector" role="group" aria-label="选择目标 Agent">
+    <SegmentedControl
+      className="mt-2"
+      value={value}
+      onValueChange={(nextValue) => onChange(nextValue as AgentInstallTarget)}
+      aria-label="选择目标 Agent"
+    >
       {AGENT_INSTALL_TARGETS.map((target) => (
-        <button
-          key={target.value}
-          type="button"
-          className={value === target.value ? 'active' : ''}
-          onClick={() => onChange(target.value)}
-        >
+        <SegmentedControlItem key={target.value} value={target.value}>
           {target.label}
-        </button>
+        </SegmentedControlItem>
       ))}
-    </div>
+    </SegmentedControl>
   )
 }

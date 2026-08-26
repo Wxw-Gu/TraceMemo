@@ -27,21 +27,23 @@ type AIMessage = { role: string; content: string | AIMessagePart[] }
 type AIChatDeltaHandler = (delta: string) => void
 type AIRequestResult = {
   data: string
+  finishReason?: string
   usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
 }
 interface OpenAIResponsePayload {
   error?: { message?: string }
-  choices?: Array<{ message?: { content?: string } }>
+  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
 }
 interface OpenAIStreamPayload {
   error?: { message?: string }
-  choices?: Array<{ delta?: { content?: string } }>
+  choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
 }
 interface OpenAIResponsesPayload {
   error?: { message?: string }
   incomplete_details?: { reason?: string }
+  status?: string
   output_text?: string
   output?: Array<{
     type?: string
@@ -59,6 +61,7 @@ interface OpenAIResponsesStreamPayload {
 interface AnthropicResponsePayload {
   error?: { message?: string }
   content?: Array<{ type?: string; text?: string }>
+  stop_reason?: string
   usage?: { input_tokens?: number; output_tokens?: number }
 }
 
@@ -690,6 +693,14 @@ function toAnthropicMessages(messages: AIMessage[]): Array<{ role: string; conte
     }))
 }
 
+function modelMaxTokens(provider: AIProviderSummary, model: string): number {
+  return (
+    provider.models.find((item) => item.id === model)?.maxTokens ||
+    provider.advanced.maxTokens ||
+    4096
+  )
+}
+
 async function requestOpenAICompatible(
   provider: AIProviderSummary,
   apiKey: string,
@@ -711,7 +722,7 @@ async function requestOpenAICompatible(
         model,
         messages: toOpenAIMessages(messages),
         temperature: provider.advanced.temperature,
-        max_tokens: testing ? 8 : provider.advanced.maxTokens,
+        max_tokens: testing ? 8 : modelMaxTokens(provider, model),
         ...(provider.advanced.stream ? { stream: true } : {})
       })
     },
@@ -731,6 +742,7 @@ async function requestOpenAICompatible(
       const payload = await parseJsonResponse<OpenAIResponsePayload>(response)
       return {
         data: String(payload.choices?.[0]?.message?.content || ''),
+        finishReason: String(payload.choices?.[0]?.finish_reason || 'unknown'),
         usage: toOpenAIUsage(payload.usage)
       }
     }
@@ -767,7 +779,7 @@ async function requestOpenAIResponses(
         instructions: request.instructions,
         input: request.input,
         temperature: provider.advanced.temperature,
-        max_output_tokens: testing ? 128 : provider.advanced.maxTokens,
+        max_output_tokens: testing ? 128 : modelMaxTokens(provider, model),
         store: false,
         ...(provider.advanced.stream ? { stream: true } : {})
       })
@@ -784,6 +796,7 @@ async function requestOpenAIResponses(
       if (payload.error?.message) throw new Error(payload.error.message)
       return {
         data: extractOpenAIResponsesText(payload),
+        finishReason: openAIResponsesFinishReason(payload) || 'unknown',
         usage: toOpenAIResponsesUsage(payload.usage)
       }
     }
@@ -825,7 +838,7 @@ async function requestAnthropic(
         system: system || undefined,
         messages: anthropicMessages,
         temperature: provider.advanced.temperature,
-        max_tokens: testing ? 8 : provider.advanced.maxTokens || 4096
+        max_tokens: testing ? 8 : modelMaxTokens(provider, model)
       })
     },
     provider.advanced.timeoutMs,
@@ -841,6 +854,7 @@ async function requestAnthropic(
               .map((item) => item.text || '')
               .join('\n')
           : '',
+        finishReason: String(payload.stop_reason || 'unknown'),
         usage: payload.usage
           ? {
               input: payload.usage.input_tokens,
@@ -893,6 +907,7 @@ async function parseOpenAIStream(
   onDelta?: AIChatDeltaHandler
 ): Promise<AIRequestResult> {
   let data = ''
+  let finishReason = 'unknown'
   let usage: AIRequestResult['usage']
   const stream = await readSSE(response, (eventData) => {
     let payload: OpenAIStreamPayload
@@ -903,7 +918,9 @@ async function parseOpenAIStream(
     }
     if (payload.error?.message) throw new Error(payload.error.message)
     if (payload.usage) usage = toOpenAIUsage(payload.usage)
-    const delta = payload.choices?.[0]?.delta?.content
+    const choice = payload.choices?.[0]
+    if (choice?.finish_reason) finishReason = choice.finish_reason
+    const delta = choice?.delta?.content
     if (typeof delta === 'string' && delta) {
       data += delta
       onDelta?.(delta)
@@ -920,9 +937,13 @@ async function parseOpenAIStream(
     if (payload.error?.message) throw new Error(payload.error.message)
     const content = String(payload.choices?.[0]?.message?.content || '')
     if (content) onDelta?.(content)
-    return { data: content, usage: toOpenAIUsage(payload.usage) }
+    return {
+      data: content,
+      finishReason: String(payload.choices?.[0]?.finish_reason || 'unknown'),
+      usage: toOpenAIUsage(payload.usage)
+    }
   }
-  return { data, usage }
+  return { data, finishReason, usage }
 }
 
 async function parseOpenAIResponsesStream(
@@ -963,14 +984,24 @@ async function parseOpenAIResponsesStream(
     if (payload.error?.message) throw new Error(payload.error.message)
     const content = extractOpenAIResponsesText(payload)
     if (content) onDelta?.(content)
-    return { data: content, usage: toOpenAIResponsesUsage(payload.usage) }
+    return {
+      data: content,
+      finishReason: openAIResponsesFinishReason(payload) || 'unknown',
+      usage: toOpenAIResponsesUsage(payload.usage)
+    }
   }
 
   if (!data && completedResponse) {
     data = extractOpenAIResponsesText(completedResponse)
     if (data) onDelta?.(data)
   }
-  return { data, usage }
+  return {
+    data,
+    finishReason: completedResponse
+      ? openAIResponsesFinishReason(completedResponse) || 'unknown'
+      : 'unknown',
+    usage
+  }
 }
 
 async function readSSE(
@@ -1046,6 +1077,15 @@ function extractOpenAIResponsesText(payload: OpenAIResponsesPayload): string {
     .filter((item) => item.type === 'output_text')
     .map((item) => item.text || '')
     .join('')
+}
+
+function openAIResponsesFinishReason(payload: OpenAIResponsesPayload): string | undefined {
+  const reason = payload.incomplete_details?.reason
+  if (reason === 'max_output_tokens') return 'max_tokens'
+  if (reason) return reason
+  if (payload.status === 'completed') return 'stop'
+  if (payload.status === 'failed') return 'error'
+  return undefined
 }
 
 function toOpenAIResponsesUsage(

@@ -11,8 +11,8 @@ describe('empty states', () => {
   })
 
   it('labels an unavailable settings section explicitly', () => {
-    render(<SettingsEmptyState label="测试设置" />)
-    expect(screen.getByRole('heading', { name: '测试设置' })).toBeVisible()
-    expect(screen.getByText('该设置将在后续阶段接入。')).toBeVisible()
+    render(<SettingsEmptyState label="存储与导出" description="请前往导出工作区设置。" />)
+    expect(screen.getByRole('heading', { name: '存储与导出' })).toBeVisible()
+    expect(screen.getByText('请前往导出工作区设置。')).toBeVisible()
   })
 })

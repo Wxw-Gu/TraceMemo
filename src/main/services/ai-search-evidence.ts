@@ -6,6 +6,8 @@ import type {
 
 export type EvidenceBuildResult = {
   evidence: AiSearchFinalEvidence[]
+  /** All safe, de-duplicated candidates from this request for browse-only pagination. */
+  collection: AiSearchFinalEvidence[]
   aggregation: AiSearchAggregation
   candidateCount: number
   deduplicatedCount: number
@@ -133,7 +135,9 @@ export function buildEvidenceAggregation(evidence: AiSearchFinalEvidence[]): AiS
 export function buildFinalEvidence(
   candidates: AiSearchPipelineEvidence[],
   limit: number,
-  options?: { strategy?: 'ranked' | 'conversation_coverage' }
+  options?: {
+    strategy?: 'ranked' | 'recall_chunk_coverage' | 'sender_coverage' | 'conversation_coverage'
+  }
 ): EvidenceBuildResult {
   const rankingStartedAt = Date.now()
   const ranked = [...candidates].sort(compareEvidence)
@@ -146,11 +150,20 @@ export function buildFinalEvidence(
     if (!unique.has(identity)) unique.set(identity, item)
   }
   const uniqueEvidence = Array.from(unique.values())
-  const selected =
-    options?.strategy === 'conversation_coverage'
-      ? selectConversationCoverage(uniqueEvidence, limit)
-      : uniqueEvidence.slice(0, Math.max(1, limit))
-  const evidence = selected.map((item, index) => ({ ...item, id: `E${index + 1}` as const }))
+  const max = Math.max(0, limit)
+  const selection =
+    options?.strategy === 'recall_chunk_coverage'
+      ? selectRecallChunkCoverage(uniqueEvidence, max)
+      : options?.strategy === 'sender_coverage'
+        ? selectCoverage(uniqueEvidence, (item) => senderCoverageIdentity(item))
+        : options?.strategy === 'conversation_coverage'
+          ? selectCoverage(uniqueEvidence, (item) => item.conversationId)
+          : { ordered: uniqueEvidence, summaryCount: Math.min(max, uniqueEvidence.length) }
+  const collection = selection.ordered.map((item, index) => ({
+    ...item,
+    id: `E${index + 1}` as const
+  }))
+  const evidence = collection.slice(0, Math.min(max, selection.summaryCount))
   const evidenceBuildMs = Date.now() - evidenceStartedAt
 
   const aggregationStartedAt = Date.now()
@@ -159,6 +172,7 @@ export function buildFinalEvidence(
 
   return {
     evidence,
+    collection,
     aggregation,
     candidateCount: candidates.length,
     deduplicatedCount: unique.size,
@@ -172,11 +186,12 @@ export function buildFinalEvidence(
  * A recent-conversation answer should cover separate local conversation chunks,
  * not merely pick eight adjacent newest messages from one exchange.
  */
-function selectConversationCoverage(
+function selectRecallChunkCoverage(
   evidence: AiSearchPipelineEvidence[],
   limit: number
-): AiSearchPipelineEvidence[] {
-  const max = Math.max(1, limit)
+): { ordered: AiSearchPipelineEvidence[]; summaryCount: number } {
+  const max = Math.max(0, limit)
+  if (max === 0) return { ordered: evidence, summaryCount: 0 }
   const byChunk = new Map<string, AiSearchPipelineEvidence[]>()
   for (const item of evidence) {
     const chunk = byChunk.get(item.chunkId) || []
@@ -186,14 +201,52 @@ function selectConversationCoverage(
   const representatives = Array.from(byChunk.values())
     .map((items) => [...items].sort(compareEvidence)[0])
     .sort((left, right) => left.timestamp - right.timestamp)
-  if (representatives.length <= max) return representatives
-  const selected: AiSearchPipelineEvidence[] = []
-  for (let index = 0; index < max; index += 1) {
-    const position = Math.round((index * (representatives.length - 1)) / (max - 1 || 1))
-    const item = representatives[position]
-    if (item && !selected.includes(item)) selected.push(item)
+  const selected =
+    representatives.length <= max
+      ? representatives
+      : Array.from({ length: max }, (_item, index) => {
+          const position = Math.round((index * (representatives.length - 1)) / (max - 1 || 1))
+          return representatives[position]
+        }).filter(
+          (item, index, items): item is AiSearchPipelineEvidence =>
+            Boolean(item) && items.indexOf(item) === index
+        )
+  const selectedIdentities = new Set(selected.map(evidenceIdentity))
+  return {
+    ordered: [
+      ...selected,
+      ...evidence.filter((item) => !selectedIdentities.has(evidenceIdentity(item)))
+    ],
+    summaryCount: selected.length
   }
-  return selected
+}
+
+const senderCoverageIdentity = (item: AiSearchPipelineEvidence): string =>
+  item.senderId ? `sender:${item.senderId}` : `name:${item.sender}`
+
+/**
+ * Coverage is a two-pass order: one best-ranked representative per key first,
+ * then every remaining candidate in its original relevance order.
+ */
+function selectCoverage(
+  evidence: AiSearchPipelineEvidence[],
+  identity: (item: AiSearchPipelineEvidence) => string
+): { ordered: AiSearchPipelineEvidence[]; summaryCount: number } {
+  const covered = new Set<string>()
+  const representatives: AiSearchPipelineEvidence[] = []
+  const remaining: AiSearchPipelineEvidence[] = []
+  for (const item of evidence) {
+    const key = identity(item)
+    if (covered.has(key)) remaining.push(item)
+    else {
+      covered.add(key)
+      representatives.push(item)
+    }
+  }
+  return {
+    ordered: [...representatives, ...remaining],
+    summaryCount: evidence.length
+  }
 }
 
 /** Do not expose citations that cannot resolve to program-owned Final Evidence. */

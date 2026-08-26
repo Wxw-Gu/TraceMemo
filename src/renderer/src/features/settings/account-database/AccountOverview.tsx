@@ -1,5 +1,6 @@
 import type { SettingsSelfInfo } from '../model/types'
 import type { ConnectionOverviewStatus } from './types'
+import { Button, IconButton } from '../../../components/ui'
 
 function CopyIcon(): React.ReactElement {
   return (
@@ -69,41 +70,29 @@ export function AccountOverview({
       </dl>
 
       <div className="settings-account-actions">
-        <button
-          type="button"
-          className="api-primary-button"
-          onClick={onCheck}
-          disabled={isChecking}
-        >
+        <Button onClick={onCheck} disabled={isChecking} aria-busy={isChecking}>
           {isChecking ? '正在检测...' : '重新检测'}
-        </button>
-        <button
-          type="button"
-          className="api-secondary-button"
-          onClick={onOpenDirectory}
-          disabled={!accountRoot}
-        >
+        </Button>
+        <Button variant="outline" onClick={onOpenDirectory} disabled={!accountRoot}>
           打开账号目录
-        </button>
-        <button type="button" className="api-secondary-button" onClick={onSwitchAccount}>
+        </Button>
+        <Button variant="outline" onClick={onSwitchAccount}>
           切换账号
-        </button>
+        </Button>
       </div>
 
       <div className="settings-account-root">
         <span>当前账号目录</span>
         <div>
           <code title={accountRoot || undefined}>{accountRoot || '暂无数据'}</code>
-          <button
-            type="button"
-            className="settings-icon-button"
-            title="复制账号目录"
-            aria-label="复制账号目录"
+          <IconButton
+            variant="outline"
+            label="复制账号目录"
             onClick={onCopyDirectory}
             disabled={!accountRoot}
           >
             <CopyIcon />
-          </button>
+          </IconButton>
         </div>
       </div>
     </section>

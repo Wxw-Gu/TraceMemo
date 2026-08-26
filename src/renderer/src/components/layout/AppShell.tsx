@@ -44,6 +44,13 @@ export function AppShell({
   compactMode = false,
   children
 }: AppShellProps): React.ReactElement {
+  React.useEffect(() => {
+    document.documentElement.dataset.theme = appearanceTheme
+    return () => {
+      delete document.documentElement.dataset.theme
+    }
+  }, [appearanceTheme])
+
   const activeItem = PRIMARY_NAV_ITEMS.find((item) => item.id === activePage)
 
   return (
