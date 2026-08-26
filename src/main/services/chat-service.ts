@@ -59,6 +59,11 @@ export interface FormattedMessage {
   name?: string
   senderId?: string
   contentData?: ReturnType<typeof parseMessageContent>
+  media?: {
+    type: 'image'
+    available: boolean
+    url: string
+  }
   voiceDataUrl?: string
   voiceDuration?: number
   voiceTranscript?: string
@@ -122,6 +127,16 @@ function normalizeMsgType(value: string | number | undefined): number {
 let dbRef: WechatDb | null = null
 let shutdownRequested = false
 
+export interface ImageMessageReference {
+  messageId: string
+  sessionId: string
+  imageMd5?: string
+  imageDatName?: string
+  createTime?: number
+}
+
+const imageMessageReferences = new Map<string, ImageMessageReference | null>()
+
 export function setChatDb(db: WechatDb | null): boolean {
   if (shutdownRequested) {
     db?.close()
@@ -129,7 +144,15 @@ export function setChatDb(db: WechatDb | null): boolean {
   }
   dbRef?.close()
   dbRef = db
+  imageMessageReferences.clear()
   return true
+}
+
+export function getImageMessageReference(messageId: string): ImageMessageReference | null {
+  if (!dbRef) return null
+  const normalizedId = String(messageId || '').trim()
+  if (!normalizedId) return null
+  return imageMessageReferences.get(normalizedId) || null
 }
 
 export async function closeChatDbForQuit(): Promise<boolean> {
@@ -405,10 +428,44 @@ function listSourceMessages(
 
     const recoveredFromRecallJournal = Boolean(msg['_wxe_recovered'] || msg.raw?.['_wxe_recovered'])
 
-    return {
-      id: recoveredFromRecallJournal
+    const messageId = String(
+      recoveredFromRecallJournal
         ? `recovered:${msg.mesLocalID || msg.serverId || createTime}`
-        : msg.mesLocalID || Math.random().toString(),
+        : msg.mesLocalID || Math.random().toString()
+    )
+    const imageContent = contentData?.type === 'image' ? contentData : undefined
+    const media = imageContent
+      ? {
+          type: 'image' as const,
+          available: Boolean(imageContent.md5 || imageContent.datName),
+          url: `/api/v1/media/${encodeURIComponent(messageId)}`
+        }
+      : undefined
+    if (imageContent && media) {
+      const reference: ImageMessageReference = {
+        messageId,
+        sessionId: username || '',
+        imageMd5: imageContent.md5,
+        imageDatName: imageContent.datName,
+        createTime
+      }
+      const previous = imageMessageReferences.get(messageId)
+      if (
+        previous &&
+        (previous.sessionId !== reference.sessionId ||
+          previous.imageMd5 !== reference.imageMd5 ||
+          previous.imageDatName !== reference.imageDatName)
+      ) {
+        // Local message ids can repeat between conversations. Never resolve an
+        // ambiguous id to the wrong account or image.
+        imageMessageReferences.set(messageId, null)
+      } else if (previous !== null) {
+        imageMessageReferences.set(messageId, reference)
+      }
+    }
+
+    return {
+      id: messageId,
       from: contentData?.type === 'system' ? 'system' : isMine ? 'assistant' : 'user',
       isSender: isMine,
       type: displayType,
@@ -422,7 +479,8 @@ function listSourceMessages(
       serverId: typeof msg.serverId === 'string' ? msg.serverId : undefined,
       createTime,
       recoveredFromRecallJournal,
-      contentData
+      contentData,
+      media
     }
   })
 
