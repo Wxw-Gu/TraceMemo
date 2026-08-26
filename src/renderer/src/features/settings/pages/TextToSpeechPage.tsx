@@ -19,28 +19,11 @@ import {
   SelectTrigger,
   SelectValue
 } from '../../../components/ui'
+import { PersonalWechatSupportedVersionsContent } from '../../../components/chat/PersonalWechatSupportedVersionsContent'
 import { isMac, isWindows } from '../../../utils/runtime-environment'
 
 const VOICE_PAGE_SIZE = 24
-const WECHAT_VERSION_DOWNLOAD_URL = 'https://github.com/zsbai/wechat-versions/releases'
 const SHOW_SUPPORTED_WECHAT_VERSIONS_KEY = 'wxe:show-supported-wechat-versions'
-const BUNDLED_WECHAT_VERSIONS = [
-  '4.1.6.12',
-  '4.1.6.46',
-  '4.1.6.47',
-  '4.1.7.31',
-  '4.1.7.55',
-  '4.1.7.57',
-  '4.1.8.28',
-  '4.1.8.29',
-  '4.1.8.104',
-  '4.1.8.107',
-  '4.1.9.52',
-  '4.1.9.55',
-  '4.1.9.58',
-  '4.1.10.53',
-  '4.1.11.53'
-] as const
 
 const RUNTIME_STATUS_LABELS: Record<PersonalWechatRuntimeStatus['state'], string> = {
   missing: '未下载',
@@ -539,7 +522,7 @@ export function TextToSpeechPage({
                   <span>2</span>
                   <div>
                     <strong>在档案中生成语音</strong>
-                    <p>打开联系人或群聊的测试发送，选择“语音 → 输入文字生成”。</p>
+                    <p>打开联系人或群聊的发送，选择“语音 → 输入文字生成”。</p>
                   </div>
                 </li>
                 <li>
@@ -566,7 +549,11 @@ export function TextToSpeechPage({
                       发送功能需要关闭 SIP 并连接微信进程。关闭 SIP
                       会降低系统安全性，请确认风险后再使用。
                     </li>
-                    <li>微信重新登录或 PID 改变后，需要在测试发送弹窗中点击“尝试重新绑定”。</li>
+                    <li>微信重新登录或 PID 改变后，需要在发送窗口中重新检测或绑定。</li>
+                    <li>
+                      绑定前建议关闭微信自动升级 在微信左下角打开“设置 →
+                      通用”，取消勾选“有更新时自动升级微信”。微信自动更新后，版本可能不再兼容发送组件。
+                    </li>
                   </ul>
                   {personalWechatRuntimeSupported ? (
                     <Button
@@ -941,24 +928,7 @@ export function TextToSpeechPage({
           <DialogTitle className="text-lg">支持的微信版本</DialogTitle>
           <DialogDescription>请安装下列完整版本之一。</DialogDescription>
         </DialogHeader>
-        <a
-          className="w-fit rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:border-primary"
-          href={WECHAT_VERSION_DOWNLOAD_URL}
-          target="_blank"
-          rel="noreferrer"
-        >
-          下载微信历史版本 ↗
-        </a>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {BUNDLED_WECHAT_VERSIONS.map((version) => (
-            <span
-              className="rounded-md border border-border bg-background px-2 py-2 text-center text-xs text-muted-foreground"
-              key={version}
-            >
-              {version}
-            </span>
-          ))}
-        </div>
+        <PersonalWechatSupportedVersionsContent />
       </DialogContent>
     </Dialog>
   )

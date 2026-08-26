@@ -96,6 +96,35 @@
   }
 }
 
+.tts-auto-update-guide {
+  display: grid;
+  gap: 6px;
+  border-radius: var(--wxex-radius-md);
+  background: color-mix(in srgb, var(--wxex-warning) 9%, var(--wxex-bg-elevated));
+  padding: 12px 13px;
+
+  strong {
+    color: var(--wxex-text-primary);
+    font-size: 12px;
+  }
+
+  p {
+    margin: 0;
+    color: var(--wxex-text-secondary);
+    font-size: 10px;
+    line-height: 16px;
+  }
+
+  img {
+    width: min(100%, 640px);
+    max-height: 280px;
+    border: 1px solid var(--wxex-border);
+    border-radius: var(--wxex-radius-md);
+    object-fit: contain;
+    object-position: left top;
+  }
+}
+
 .tts-hook-warning {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

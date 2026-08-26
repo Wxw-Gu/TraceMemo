@@ -190,11 +190,10 @@ test('CHAT-02 personal WeChat send dialog is keyboard-safe and fits the viewport
     await fixture.page.getByText('产品测试群', { exact: true }).click()
     const trigger = fixture.page.getByRole('button', { name: '发送消息' })
     await trigger.click()
-    const dialog = fixture.page.getByRole('dialog', { name: '个人微信测试发送' })
+    const dialog = fixture.page.getByRole('dialog', { name: '产品测试群' })
     await expect(dialog).toBeVisible()
-    await expect(
-      dialog.locator('.personal-wechat-send-status strong').filter({ hasText: '个人微信已绑定' })
-    ).toBeVisible()
+    const startSending = dialog.getByRole('button', { name: '开始发送' })
+    if (await startSending.isVisible()) await startSending.click()
     expect(
       await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true)
@@ -208,7 +207,7 @@ test('CHAT-02 personal WeChat send dialog is keyboard-safe and fits the viewport
     expect(pageErrors).toEqual([])
 
     const imageMode = dialog.getByRole('radio', { name: '图片' })
-    const voiceMode = dialog.getByRole('radio', { name: '语音' })
+    const voiceMode = dialog.getByRole('radio', { name: '语音', exact: true })
     await imageMode.focus()
     await fixture.page.keyboard.press('ArrowRight')
     await expect(voiceMode).toBeFocused()

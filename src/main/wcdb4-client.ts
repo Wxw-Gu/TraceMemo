@@ -979,6 +979,11 @@ export class Wcdb4Client {
     this.cachedSessions = null
     this.cachedChatTables = null
     this.sessionsInFlight = null
+    // Session rows can change their folded/muted flags independently of the
+    // contact list. Invalidate the status snapshot together with sessions so
+    // the next hydrated contact load reads the current WeChat state.
+    this.sessionStatusCache.clear()
+    this.sessionStatusesUpdatedAt = 0
     this.sessionDisplayNamesHydrated = false
   }
 

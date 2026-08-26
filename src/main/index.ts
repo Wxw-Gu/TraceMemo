@@ -1800,7 +1800,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('wechat-personal:selectImage', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const result = await dialog.showOpenDialog(window!, {
-      title: '选择要通过个人微信测试发送的图片',
+      title: '选择要通过个人微信发送的图片',
       properties: ['openFile'],
       filters: [
         { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },
@@ -1817,7 +1817,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('wechat-personal:selectVoice', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const result = await dialog.showOpenDialog(window!, {
-      title: '选择要通过个人微信测试发送的语音',
+      title: '选择要通过个人微信发送的语音',
       properties: ['openFile'],
       filters: [
         { name: '语音', extensions: ['silk', 'mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'] },

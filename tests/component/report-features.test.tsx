@@ -608,7 +608,7 @@ describe('daily report controls', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '发送到当前群聊' }))
 
-    expect(await screen.findByRole('dialog', { name: '个人微信测试发送' })).toBeVisible()
+    expect(await screen.findByRole('dialog', { name: '测试群' })).toBeVisible()
     expect(screen.getByRole('radio', { name: '图片' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByText('测试群日报.png')).toBeVisible()
     expect(screen.getByText('/Users/fixture/测试群日报.png')).toBeVisible()

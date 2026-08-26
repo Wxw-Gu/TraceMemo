@@ -500,7 +500,7 @@ export class PersonalWechatSendService {
       }
       if (text.length > 2_000) {
         const status = await this.getStatus()
-        return { success: false, status, error: '测试消息不能超过 2000 个字符' }
+        return { success: false, status, error: '消息不能超过 2000 个字符' }
       }
       request = { ...request, to, text }
     } else {
@@ -520,7 +520,7 @@ export class PersonalWechatSendService {
         return {
           success: false,
           status,
-          error: `测试${request.type === 'voice' ? '语音' : '图片'}必须小于 20 MB`
+          error: `${request.type === 'voice' ? '语音' : '图片'}必须小于 20 MB`
         }
       }
       fileBase64 = (
@@ -725,7 +725,7 @@ export class PersonalWechatSendService {
         status: {
           ...base,
           state: 'unsupported_platform',
-          message: '个人微信测试发送当前仅支持 Apple Silicon Mac'
+          message: '个人微信发送当前仅支持 Apple Silicon Mac'
         }
       }
     }

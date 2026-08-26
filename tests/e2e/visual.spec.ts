@@ -387,7 +387,7 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
       await fixture.setWindowContentSize(visualViewport)
       await fixture.page.getByText('产品测试群', { exact: true }).click()
       await fixture.page.getByRole('button', { name: '发送消息' }).click()
-      const dialog = fixture.page.getByRole('dialog', { name: '个人微信测试发送' })
+      const dialog = fixture.page.getByRole('dialog', { name: '产品测试群' })
       await expect(dialog).toBeVisible()
       await expect(fixture.page.locator('html')).toHaveAttribute('data-theme', appearanceTheme)
       expect(
@@ -406,9 +406,11 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
         caret: 'hide'
       })
 
+      const startSending = dialog.getByRole('button', { name: '开始发送' })
+      if (await startSending.isVisible()) await startSending.click()
       await dialog.getByRole('radio', { name: '语音' }).click()
-      await expect(dialog.getByRole('textbox', { name: '要生成的文字' })).toBeVisible()
-      await dialog.locator('footer').scrollIntoViewIfNeeded()
+      await expect(dialog.getByRole('textbox', { name: '语音文字' })).toBeVisible()
+      await dialog.locator('.personal-wechat-composer').scrollIntoViewIfNeeded()
       await clearScreenshotFocus(fixture.page)
       await expect(fixture.page).toHaveScreenshot(
         `personal-wechat-voice-controls-${appearanceTheme}.png`,

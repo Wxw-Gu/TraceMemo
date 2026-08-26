@@ -1,10 +1,13 @@
-import { useState } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PersonalWechatSendDialog } from '../../src/renderer/src/components/chat/PersonalWechatSendDialog'
 
 const getStatus = vi.fn()
+const getRuntimeStatus = vi.fn()
+const downloadRuntime = vi.fn()
+const onRuntimeProgress = vi.fn(() => vi.fn())
 const rebind = vi.fn()
 const selectImage = vi.fn()
 const selectVoice = vi.fn()
@@ -20,7 +23,6 @@ const contact = {
   md5: 'fixture-md5',
   type: 'group' as const
 }
-
 const readyStatus = {
   state: 'online' as const,
   platform: 'darwin',
@@ -48,42 +50,44 @@ const readyStatus = {
   canSendVoice: true,
   message: '个人微信已绑定'
 }
+const readyRuntime = {
+  version: 'v0.0.18',
+  state: 'ready' as const,
+  downloadedBytes: 1,
+  totalBytes: 1,
+  progress: 1,
+  platform: 'darwin' as NodeJS.Platform,
+  architecture: 'arm64',
+  supported: true,
+  removable: true
+}
 
-function Harness({ onClose = vi.fn() }: { onClose?: () => void }): React.ReactElement {
-  const [open, setOpen] = useState(false)
-  return (
-    <>
-      <button type="button" onClick={() => setOpen(true)}>
-        打开测试发送
-      </button>
-      {open && (
-        <PersonalWechatSendDialog
-          contact={contact}
-          isGroupChat
-          onClose={() => {
-            onClose()
-            setOpen(false)
-          }}
-        />
-      )}
-    </>
+function renderDialog(
+  props: Partial<React.ComponentProps<typeof PersonalWechatSendDialog>> = {}
+): React.ReactElement {
+  return render(
+    <PersonalWechatSendDialog contact={contact} isGroupChat onClose={vi.fn()} {...props} />
   )
+}
+
+async function startComposer(): Promise<void> {
+  const start = await screen.findByRole('button', { name: '开始发送' })
+  fireEvent.click(start)
 }
 
 describe('PersonalWechatSendDialog', () => {
   beforeEach(() => {
     getStatus.mockReset().mockResolvedValue(readyStatus)
+    getRuntimeStatus.mockReset().mockResolvedValue(readyRuntime)
+    downloadRuntime.mockReset().mockResolvedValue({ success: true, status: readyRuntime })
+    onRuntimeProgress.mockReset().mockReturnValue(vi.fn())
     rebind.mockReset().mockResolvedValue(readyStatus)
-    selectImage.mockReset().mockResolvedValue({
-      canceled: false,
-      path: '/Users/fixture/test.png',
-      name: 'test.png'
-    })
-    selectVoice.mockReset().mockResolvedValue({
-      canceled: false,
-      path: '/Users/fixture/test.silk',
-      name: 'test.silk'
-    })
+    selectImage
+      .mockReset()
+      .mockResolvedValue({ canceled: false, path: '/Users/fixture/test.png', name: 'test.png' })
+    selectVoice
+      .mockReset()
+      .mockResolvedValue({ canceled: false, path: '/Users/fixture/test.silk', name: 'test.silk' })
     sendMessage.mockReset().mockResolvedValue({ success: true, status: readyStatus })
     getTextToSpeechSettings.mockReset().mockResolvedValue({
       success: true,
@@ -125,6 +129,9 @@ describe('PersonalWechatSendDialog', () => {
       configurable: true,
       value: {
         getPersonalWechatSenderStatus: getStatus,
+        getPersonalWechatRuntimeStatus: getRuntimeStatus,
+        downloadPersonalWechatRuntime: downloadRuntime,
+        onPersonalWechatRuntimeProgress: onRuntimeProgress,
         rebindPersonalWechatSender: rebind,
         selectPersonalWechatImage: selectImage,
         selectPersonalWechatVoice: selectVoice,
@@ -137,14 +144,84 @@ describe('PersonalWechatSendDialog', () => {
     })
   })
 
-  it('switches to voice mode and sends only the selected audio file', async () => {
-    render(<PersonalWechatSendDialog contact={contact} isGroupChat onClose={vi.fn()} />)
-    await screen.findByText('技术交流群')
+  it('shows a user-facing four-step setup and keeps diagnostics collapsed', async () => {
+    getRuntimeStatus
+      .mockResolvedValueOnce({ ...readyRuntime, state: 'missing', progress: 0 })
+      .mockResolvedValue(readyRuntime)
+    getStatus.mockResolvedValue({
+      ...readyStatus,
+      state: 'stopped',
+      runtimeReady: false,
+      canSend: false,
+      canSendText: false,
+      canSendImage: false,
+      canSendVoice: false,
+      message: '尚未绑定当前微信'
+    })
+    renderDialog()
+    expect(await screen.findByText('准备语音模型')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '下载模型' })).toBeEnabled()
+    expect(screen.getByText('绑定个人微信')).toBeInTheDocument()
+    expect(screen.getByText('验证消息能力')).toBeInTheDocument()
+    expect(screen.getByText('能力检测')).toBeInTheDocument()
+    expect(screen.getByText('图片和语音消息')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看支持的微信版本' }))
+    const versionsDialog = screen.getByRole('dialog', { name: '支持的微信版本' })
+    expect(versionsDialog).toBeInTheDocument()
+    expect(versionsDialog).toHaveTextContent('4.1.11.53')
+    expect(
+      screen.getByText(
+        '绑定微信可能导致当前微信异常闪退，这是正常现象。若微信退出，请重新启动微信后，再回到这里重新检测/绑定。'
+      )
+    ).toBeInTheDocument()
+    expect(screen.queryByLabelText('消息列表')).not.toBeInTheDocument()
+    expect(screen.queryByText('TraceMemo 消息发送')).not.toBeInTheDocument()
+    expect(screen.queryByText('PID 4668')).not.toBeVisible()
+    fireEvent.click(screen.getByText('高级诊断'))
+    expect(screen.getByText('PID 4668')).toBeInTheDocument()
+  })
+
+  it('sends text through the existing message API and echoes it in the chat', async () => {
+    renderDialog()
+    await startComposer()
+    await userEvent
+      .setup()
+      .type(screen.getByRole('textbox', { name: '消息内容' }), '你好 TraceMemo')
+    fireEvent.click(screen.getByRole('button', { name: '发送消息' }))
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith({
+        type: 'text',
+        to: 'fixture-room@chatroom',
+        text: '你好 TraceMemo',
+        isGroup: true
+      })
+    )
+    expect(
+      screen.getByLabelText('消息列表').querySelector('.personal-wechat-message-bubble')
+    ).toHaveTextContent('你好 TraceMemo')
+  })
+
+  it('supports local image and voice selection', async () => {
+    renderDialog()
+    await startComposer()
+    fireEvent.click(screen.getByRole('radio', { name: '图片' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择图片' }))
+    expect(await screen.findByText('test.png')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '发送消息' }))
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith({
+        type: 'image',
+        to: 'fixture-room@chatroom',
+        filePath: '/Users/fixture/test.png',
+        isGroup: true
+      })
+    )
+
     fireEvent.click(screen.getByRole('radio', { name: '语音' }))
     fireEvent.click(screen.getByRole('radio', { name: '选择本地文件' }))
     fireEvent.click(screen.getByRole('button', { name: '选择语音' }))
     expect(await screen.findByText('test.silk')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '测试发送语音到群聊' }))
+    fireEvent.click(screen.getByRole('button', { name: '发送消息' }))
     await waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith({
         type: 'voice',
@@ -155,136 +232,101 @@ describe('PersonalWechatSendDialog', () => {
     )
   })
 
-  it('shows the selected TTS voice and keeps generation separate from sending', async () => {
-    const openSettings = vi.fn()
-    render(
-      <PersonalWechatSendDialog
-        contact={contact}
-        isGroupChat
-        onClose={vi.fn()}
-        onOpenTextToSpeechSettings={openSettings}
-      />
-    )
-    await screen.findByText('技术交流群')
-    fireEvent.click(screen.getByRole('radio', { name: '语音' }))
-    expect(await screen.findByText('暖阳女声')).toBeInTheDocument()
-    expect(screen.getByRole('textbox', { name: '要生成的文字' })).toHaveValue('1')
-    expect(screen.getByRole('button', { name: '生成语音' })).toBeEnabled()
-    fireEvent.click(screen.getByRole('button', { name: '前往文字转语音设置' }))
-    expect(openSettings).toHaveBeenCalledTimes(1)
-    expect(sendMessage).not.toHaveBeenCalled()
-  })
-
-  it('shows binding diagnostics and only offers image and voice modes', async () => {
-    render(<PersonalWechatSendDialog contact={contact} isGroupChat onClose={vi.fn()} />)
-
-    expect(await screen.findByText('PID 4668')).toBeInTheDocument()
-    expect(screen.getByText('PID 5401 · 绑定 4668')).toBeInTheDocument()
-    expect(screen.getByText('0x114ef8000')).toBeInTheDocument()
-    expect(screen.getByText('已捕获，可发送')).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: '图片' })).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByRole('radio', { name: '语音' })).toBeVisible()
-    expect(screen.queryByRole('radio', { name: '文字' })).not.toBeInTheDocument()
-  })
-
-  it('supports segmented keyboard navigation for the message type', async () => {
-    const user = userEvent.setup()
-    render(<PersonalWechatSendDialog contact={contact} isGroupChat onClose={vi.fn()} />)
-
-    await screen.findByText('技术交流群')
-    const imageMode = screen.getByRole('radio', { name: '图片' })
-    const voiceMode = screen.getByRole('radio', { name: '语音' })
-    imageMode.focus()
-    await user.keyboard('{ArrowRight}')
-    expect(voiceMode).toHaveFocus()
-    await user.keyboard(' ')
-    expect(voiceMode).toBeChecked()
-    expect(screen.getByRole('textbox', { name: '要生成的文字' })).toBeVisible()
-  })
-
-  it('switches to image mode and sends only the selected image', async () => {
-    render(<PersonalWechatSendDialog contact={contact} isGroupChat onClose={vi.fn()} />)
-    await screen.findByText('技术交流群')
-    fireEvent.click(screen.getByRole('radio', { name: '图片' }))
-    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    expect(
-      screen.getByText(
-        '如果想测试图片，请先在微信中给任意好友手动发送一张普通图片，再点击重新检测。',
-        { exact: false }
-      )
-    ).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '选择图片' }))
-    expect(await screen.findByText('test.png')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '测试发送图片到群聊' }))
-
-    await waitFor(() =>
-      expect(sendMessage).toHaveBeenCalledWith({
-        type: 'image',
-        to: 'fixture-room@chatroom',
-        filePath: '/Users/fixture/test.png',
-        isGroup: true
+  it('uses the existing runtime, binding and detection IPC actions', async () => {
+    getRuntimeStatus
+      .mockResolvedValueOnce({ ...readyRuntime, state: 'missing', progress: 0 })
+      .mockResolvedValue(readyRuntime)
+    getStatus
+      .mockResolvedValueOnce({
+        ...readyStatus,
+        state: 'stopped',
+        runtimeReady: false,
+        canSend: false,
+        canSendText: false,
+        canSendImage: false,
+        canSendVoice: false
       })
-    )
+      .mockResolvedValue({
+        ...readyStatus,
+        state: 'stopped',
+        runtimeReady: true,
+        canSend: false,
+        canSendText: false,
+        canSendImage: false,
+        canSendVoice: false
+      })
+    renderDialog()
+    await screen.findByRole('button', { name: '下载模型' })
+    fireEvent.click(screen.getByRole('button', { name: '下载模型' }))
+    await waitFor(() => expect(downloadRuntime).toHaveBeenCalledOnce())
+    fireEvent.click(screen.getByRole('button', { name: '绑定微信' }))
+    await waitFor(() => expect(rebind).toHaveBeenCalledOnce())
   })
 
-  it('offers a safe explicit rebind action', async () => {
-    render(<PersonalWechatSendDialog contact={contact} isGroupChat onClose={vi.fn()} />)
-    await screen.findByText('技术交流群')
-    fireEvent.click(screen.getByRole('button', { name: '尝试重新绑定' }))
-    await waitFor(() => expect(rebind).toHaveBeenCalledTimes(1))
+  it('shows a stable bound state after binding', async () => {
+    getRuntimeStatus.mockResolvedValue(readyRuntime)
+    getStatus
+      .mockResolvedValueOnce({
+        ...readyStatus,
+        state: 'stopped',
+        canSend: false,
+        canSendText: false,
+        canSendImage: false,
+        canSendVoice: false
+      })
+      .mockResolvedValue(readyStatus)
+    renderDialog()
+    await screen.findByRole('button', { name: '绑定微信' })
+    fireEvent.click(screen.getByRole('button', { name: '绑定微信' }))
+    expect(await screen.findByText('✓ 微信已绑定')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '绑定微信' })).not.toBeInTheDocument()
   })
 
-  it('blocks image sending until the media Hook and image directory are initialized', async () => {
+  it('treats image and voice readiness as one media capability', async () => {
     getStatus.mockResolvedValue({
       ...readyStatus,
-      state: 'hook_not_ready',
-      imageHookReady: false,
       canSendImage: false,
-      message: '请先手动发送图片'
+      canSendVoice: true
     })
-    render(<PersonalWechatSendDialog contact={contact} isGroupChat onClose={vi.fn()} />)
-    expect(await screen.findByText('已绑定，等待消息初始化')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '测试发送图片到群聊' })).toBeDisabled()
+    renderDialog()
+    expect(await screen.findByText('图片和语音消息')).toBeInTheDocument()
+    expect(screen.getByText('微信消息发送已配置完成')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '开始发送' })).toBeEnabled()
+    expect(screen.queryByText('图片消息')).not.toBeInTheDocument()
+    expect(screen.queryByText('语音消息')).not.toBeInTheDocument()
   })
 
-  it('closes with Escape or the overlay and restores focus to the opener', async () => {
-    const user = userEvent.setup()
-    const onClose = vi.fn()
-    render(<Harness onClose={onClose} />)
-    const opener = screen.getByRole('button', { name: '打开测试发送' })
-
-    await user.click(opener)
-    await screen.findByText('技术交流群')
-    await user.keyboard('{Escape}')
-    expect(screen.queryByRole('dialog', { name: '个人微信测试发送' })).not.toBeInTheDocument()
-    await waitFor(() => expect(opener).toHaveFocus())
-
-    await user.click(opener)
-    const dialog = await screen.findByRole('dialog', { name: '个人微信测试发送' })
-    await user.click(dialog.previousElementSibling as HTMLElement)
-    expect(screen.queryByRole('dialog', { name: '个人微信测试发送' })).not.toBeInTheDocument()
-    await waitFor(() => expect(opener).toHaveFocus())
-    expect(onClose).toHaveBeenCalledTimes(2)
+  it('keeps re-detection available and explains when no new messages are found', async () => {
+    getRuntimeStatus.mockResolvedValue(readyRuntime)
+    getStatus.mockResolvedValue({
+      ...readyStatus,
+      canSend: false,
+      canSendText: false,
+      canSendImage: false,
+      canSendVoice: false,
+      message: '等待消息初始化'
+    })
+    renderDialog()
+    const detect = await screen.findByRole('button', { name: '重新检测' })
+    expect(detect).toBeEnabled()
+    fireEvent.click(detect)
+    expect(
+      await screen.findByText(
+        '暂未检测到新的消息，请确认已在手机微信中发送文字和图片，然后再次检测。'
+      )
+    ).toBeInTheDocument()
+    expect(screen.getAllByText('未检测').length).toBe(2)
   })
 
-  it('keeps the dialog open while a message is being sent', async () => {
+  it('keeps the dialog and controls stable while sending', async () => {
     const user = userEvent.setup()
     sendMessage.mockImplementation(() => new Promise(() => undefined))
-    render(<Harness />)
-
-    await user.click(screen.getByRole('button', { name: '打开测试发送' }))
-    await screen.findByText('技术交流群')
-    await user.click(screen.getByRole('button', { name: '选择图片' }))
-    await user.click(screen.getByRole('button', { name: '测试发送图片到群聊' }))
+    renderDialog()
+    await startComposer()
+    await screen.findByRole('textbox', { name: '消息内容' })
+    await user.type(screen.getByRole('textbox', { name: '消息内容' }), '发送中')
+    await user.click(screen.getByRole('button', { name: '发送消息' }))
     expect(screen.getByRole('button', { name: '正在发送…' })).toBeDisabled()
     expect(screen.getByRole('radio', { name: '图片' })).toBeDisabled()
-    expect(screen.getByRole('radio', { name: '语音' })).toBeDisabled()
-
-    await user.keyboard('{Escape}')
-    expect(screen.getByRole('dialog', { name: '个人微信测试发送' })).toBeVisible()
-    await user.click(
-      screen.getByRole('dialog', { name: '个人微信测试发送' }).previousElementSibling as HTMLElement
-    )
-    expect(screen.getByRole('dialog', { name: '个人微信测试发送' })).toBeVisible()
   })
 })
