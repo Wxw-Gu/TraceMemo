@@ -24,7 +24,11 @@ export type AiSearchRunOutcome =
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : '读取聊天记录失败'
 
-export function useAiSearchRun(): {
+export function useAiSearchRun({
+  onAnswerDelta
+}: {
+  onAnswerDelta?: (delta: string) => void
+} = {}): {
   status: AiSearchRunStatus
   requestId: string
   result: AiSearchPipelineResult | null
@@ -44,6 +48,11 @@ export function useAiSearchRun(): {
   const [progress, setProgress] = useState<SearchProgressByStage>({})
   const [agentTrace, setAgentTrace] = useState<AiSearchAgentRun['trace']>([])
   const requestIdRef = useRef('')
+  const onAnswerDeltaRef = useRef(onAnswerDelta)
+
+  useEffect(() => {
+    onAnswerDeltaRef.current = onAnswerDelta
+  }, [onAnswerDelta])
 
   const createRequestId = (): string => globalThis.crypto?.randomUUID?.() || `search-${Date.now()}`
 
@@ -54,6 +63,7 @@ export function useAiSearchRun(): {
     const unsubscribe = window.api.onAiSearchProgress((event: AiSearchProgressEvent) => {
       if (!isCurrentRequest(event.requestId)) return
       setProgress((current) => ({ ...current, [event.stage]: event }))
+      if (event.answerDelta) onAnswerDeltaRef.current?.(event.answerDelta)
       if (event.agentTrace) {
         setAgentTrace((current) =>
           current.some((item) => item.sequence === event.agentTrace?.sequence)

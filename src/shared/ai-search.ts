@@ -73,6 +73,7 @@ export interface AiSearchProgressEvent {
   stage: AiSearchProgressStage
   status: AiSearchProgressStatus
   message: string
+  answerDelta?: string
   plan?: AiSearchPlan
   stats?: {
     knowledgeMessageCount?: number

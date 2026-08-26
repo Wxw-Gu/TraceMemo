@@ -144,7 +144,9 @@ export function AISearchWorkspace({
     startSearch,
     cancelSearch,
     resetSearchRun
-  } = useAiSearchRun()
+  } = useAiSearchRun({
+    onAnswerDelta: (delta) => setAnswer((current) => current + delta)
+  })
 
   const resetSearchResult = (): void => {
     const reset = createSearchResultResetState()
@@ -520,6 +522,19 @@ export function AISearchWorkspace({
             </div>
           </section>
         </div>
+        {answer && (
+          <section
+            className="ai-search-summary-block ai-search-streaming-answer"
+            aria-label="正在生成的回答"
+            aria-live="polite"
+          >
+            <div className="ai-search-section-heading">
+              <span />
+              回答生成中
+            </div>
+            <div className="ai-search-answer">{renderMarkdown(answer)}</div>
+          </section>
+        )}
       </div>
     )
   }

@@ -332,6 +332,49 @@ export function AIProviderEditor({
               }
             />
           </label>
+          {provider.type !== 'anthropic-messages' && (
+            <>
+              <label className="wide">
+                OpenAI API 接口
+                <Select
+                  value={provider.advanced.apiProtocol || 'chat-completions'}
+                  onValueChange={(value) =>
+                    patch({
+                      advanced: {
+                        ...provider.advanced,
+                        apiProtocol: value as AIProviderConfig['advanced']['apiProtocol']
+                      }
+                    })
+                  }
+                >
+                  <SelectTrigger aria-label="OpenAI API 接口">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="chat-completions">Chat Completions（兼容模式）</SelectItem>
+                    <SelectItem value="responses">Responses API</SelectItem>
+                  </SelectContent>
+                </Select>
+                <small>Codex 或仅支持 /responses 的中转服务请选择 Responses API。</small>
+              </label>
+              <label className="wide ai-provider-stream-toggle" htmlFor="ai-provider-stream">
+                <span className="ai-provider-stream-toggle-control">
+                  <Checkbox
+                    id="ai-provider-stream"
+                    aria-label="启用流式响应"
+                    checked={Boolean(provider.advanced.stream)}
+                    onCheckedChange={(checked) =>
+                      patch({
+                        advanced: { ...provider.advanced, stream: checked === true }
+                      })
+                    }
+                  />
+                  启用流式响应（stream: true）
+                </span>
+                <small>问问微信会边生成边显示，其他功能仍会等待完整结果。</small>
+              </label>
+            </>
+          )}
           <label className="wide">
             额外 Headers（JSON）
             <Textarea

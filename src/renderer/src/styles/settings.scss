@@ -1553,6 +1553,15 @@
   min-height: 90px;
   resize: vertical;
 }
+.ai-provider-stream-toggle-control {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.ai-provider-stream-toggle small {
+  color: #66706b;
+  font-weight: 400;
+}
 .ai-provider-preview pre {
   overflow: auto;
   max-height: 280px;

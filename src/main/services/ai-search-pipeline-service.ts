@@ -145,6 +145,34 @@ const isAbortError = (error: unknown): boolean =>
   (error instanceof DOMException && error.name === 'AbortError') ||
   (error instanceof Error && error.name === 'AbortError')
 
+const createDeltaBatcher = (
+  publish: (delta: string) => void,
+  intervalMs = 40
+): { push: (delta: string) => void; close: (flushPending: boolean) => void } => {
+  let pending = ''
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const flush = (): void => {
+    timer = undefined
+    if (!pending) return
+    const delta = pending
+    pending = ''
+    publish(delta)
+  }
+  return {
+    push: (delta: string): void => {
+      if (!delta) return
+      pending += delta
+      if (!timer) timer = setTimeout(flush, intervalMs)
+    },
+    close: (flushPending: boolean): void => {
+      if (timer) clearTimeout(timer)
+      timer = undefined
+      if (flushPending) flush()
+      else pending = ''
+    }
+  }
+}
+
 /**
  * Main-process search orchestrator. It owns the only transition from raw
  * candidates to Final Evidence; the AI and Renderer never receive a wider
@@ -791,6 +819,23 @@ export class AiSearchPipelineService {
         timings: snapshotTimings()
       })
       const aiGenerationStartedAt = Date.now()
+      const answerDeltaBatcher = createDeltaBatcher((answerDelta) =>
+        emit({
+          stage: 'ai_generating',
+          status: 'running',
+          message: '正在生成带来源的回答',
+          answerDelta,
+          plan,
+          modelName: aiConfig.modelName,
+          stats: {
+            matchedMessages: evidenceBuild.candidateCount,
+            evidenceCount: evidence.length,
+            contextEvidenceCount: evidence.length,
+            tokenEstimate
+          },
+          timings: snapshotTimings()
+        })
+      )
       const answer = await this.chatForSearchRequest(
         request.requestId,
         aiConfig.providerId,
@@ -803,8 +848,9 @@ export class AiSearchPipelineService {
           },
           { role: 'user', content: prompt }
         ],
-        signal
-      )
+        signal,
+        answerDeltaBatcher.push
+      ).finally(() => answerDeltaBatcher.close(!signal.aborted))
       signal.throwIfAborted()
       timings.aiGenerationMs = Date.now() - aiGenerationStartedAt
       if (!answer.success || !answer.data) {
@@ -1009,13 +1055,14 @@ export class AiSearchPipelineService {
     providerId: string | undefined,
     modelId: string,
     messages: Array<{ role: string; content: string }>,
-    signal: AbortSignal
+    signal: AbortSignal,
+    onDelta?: (delta: string) => void
   ): ReturnType<AIProviderService['chat']> {
     if (!this.canUseAiForRequest(requestId, providerId)) {
       return { success: false, error: '当前搜索请求未授权向该 AI 服务发送内容' }
     }
     signal.throwIfAborted()
-    return this.aiProvider.chat(messages, { providerId, modelId }, signal)
+    return this.aiProvider.chat(messages, { providerId, modelId }, signal, onDelta)
   }
 
   private clearPendingAuthorization(requestId: string): void {
