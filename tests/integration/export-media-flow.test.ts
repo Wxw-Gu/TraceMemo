@@ -44,6 +44,9 @@ const state = vi.hoisted(() => ({
   >,
   voiceLookups: [] as number[],
   voiceBatches: [] as number[][],
+  stickerLookups: [] as Array<{ cdnUrl?: string; md5?: string }>,
+  stickerData: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==',
+  stickerError: undefined as string | undefined,
   videoLookups: [] as {
     createTime?: number
     byteLength?: number
@@ -214,7 +217,16 @@ vi.mock('../../src/main/video-asset-service', () => ({
   }
 }))
 vi.mock('../../src/main/sticker-service', () => ({
-  StickerService: class {}
+  StickerService: class {
+    async resolveSticker(
+      cdnUrl?: string,
+      md5?: string
+    ): Promise<{ success: boolean; data?: string; error?: string }> {
+      state.stickerLookups.push({ cdnUrl, md5 })
+      if (state.stickerError) return { success: false, error: state.stickerError }
+      return { success: true, data: state.stickerData }
+    }
+  }
 }))
 
 const message = (overrides: Partial<Message>): Message => ({
@@ -273,6 +285,8 @@ describe('media export flow', () => {
     state.groupSnapshots = {}
     state.voiceLookups = []
     state.voiceBatches = []
+    state.stickerLookups = []
+    state.stickerError = undefined
     const fileMonth = join(state.accountRoot, 'msg', 'file', '2026-08')
     mkdirSync(fileMonth, { recursive: true })
     writeFileSync(join(fileMonth, '测试附件.txt'), '附件内容')
@@ -718,6 +732,70 @@ describe('media export flow', () => {
     expect(state.voiceLookups).toEqual([1, 2, 2, 1, 2])
     expect(existsSync(voicePath)).toBe(true)
     expect(existsSync(imagePath)).toBe(true)
+  })
+
+  it('replaces an invalid sticker file during an incremental export', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = { isDestroyed: () => true, webContents: { send: vi.fn() } }
+    const request = {
+      targets: [target('fixture-user', '表情修复会话')],
+      format: 'html' as const,
+      outputName: 'sticker-repair-fixture',
+      kinds: ['sticker'] as const,
+      includeMedia: true,
+      keepMissing: true
+    }
+    state.messages = [
+      message({
+        id: 'sticker-invalid-cache',
+        type: '表情包',
+        contentData: {
+          type: 'sticker',
+          md5: '4671f60b074db0a2cc8ace8281c8c0f0',
+          url: 'https://fixture.invalid/sticker.gif'
+        }
+      })
+    ]
+
+    const first = await runExport(
+      { ...request, jobId: 'sticker-repair-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success, first.error).toBe(true)
+    const firstSticker = readArchive(first.outputPath!).messages[0]
+    const stickerPath = join(dirname(first.outputPath!), firstSticker.exportMediaUrl!)
+    expect(readFileSync(stickerPath).subarray(0, 3).toString('ascii')).toBe('GIF')
+
+    writeFileSync(stickerPath, Buffer.from('encrypted-wechat-emoticon-cache'))
+    state.stickerLookups = []
+    const second = await runExport(
+      { ...request, jobId: 'sticker-repair-second', kinds: [...request.kinds] },
+      win as never
+    )
+
+    expect(second.success, second.error).toBe(true)
+    expect(state.stickerLookups).toEqual([
+      {
+        cdnUrl: 'https://fixture.invalid/sticker.gif',
+        md5: '4671f60b074db0a2cc8ace8281c8c0f0'
+      }
+    ])
+    const repairedSticker = readArchive(second.outputPath!).messages[0]
+    expect(repairedSticker.exportMediaUrl).toBe(firstSticker.exportMediaUrl)
+    expect(readFileSync(stickerPath).subarray(0, 3).toString('ascii')).toBe('GIF')
+
+    writeFileSync(stickerPath, Buffer.from('encrypted-wechat-emoticon-cache'))
+    state.stickerError = '表情链接已过期'
+    const third = await runExport(
+      { ...request, jobId: 'sticker-repair-third', kinds: [...request.kinds] },
+      win as never
+    )
+
+    expect(third.success, third.error).toBe(true)
+    const unavailableSticker = readArchive(third.outputPath!).messages[0]
+    expect(unavailableSticker.exportMediaUrl).toBeUndefined()
+    expect(unavailableSticker.exportMediaError).toBe('表情链接已过期')
+    expect(existsSync(stickerPath)).toBe(false)
   })
 
   it('rechecks a previous low-quality image and upgrades it when an original appears', async () => {
