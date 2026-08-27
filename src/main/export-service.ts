@@ -584,6 +584,19 @@ const detectAssetExtension = (buffer: Buffer): string | null => {
     return 'webp'
   return null
 }
+const htmlArchiveStickerResourceIsValid = async (
+  outputDir: string,
+  value?: string
+): Promise<boolean> => {
+  const filePath = htmlArchiveResourcePath(outputDir, value)
+  if (!filePath) return false
+  try {
+    return detectAssetExtension(await fs.readFile(filePath)) !== null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
 async function readAvatarAsset(
   source: string
 ): Promise<{ extension: string; buffer: Buffer } | null> {
@@ -928,7 +941,10 @@ async function runSingleExport(
       request.format === 'html'
         ? options.outputFolderName || safeFilePart(request.outputName)
         : `${safeFilePart(request.outputName)}_${exportStamp()}`
-    const root = options.outputRoot || request.outputDirectory || (await resolveDefaultExportRoot(outputFolder))
+    const root =
+      options.outputRoot ||
+      request.outputDirectory ||
+      (await resolveDefaultExportRoot(outputFolder))
     await fs.mkdir(root, { recursive: true })
     const outputDir = join(root, outputFolder)
     const outputPath =
@@ -1329,12 +1345,28 @@ async function runSingleExport(
         const reusableImageQuality =
           previous?.exportMediaQuality === 'original' ||
           (request.preferOriginal === false && previous?.exportMediaQuality === 'thumbnail')
+        let reusableMediaExists = false
+        if (reusableMediaType && previous?.exportMediaUrl) {
+          reusableMediaExists = await resourceExists(previous.exportMediaUrl)
+          if (
+            reusableMediaExists &&
+            reusableMediaType === 'sticker' &&
+            !(await htmlArchiveStickerResourceIsValid(outputDir, previous.exportMediaUrl))
+          ) {
+            reusableMediaExists = false
+            resourceExistence.set(previous.exportMediaUrl, Promise.resolve(false))
+            delete previous.exportMediaUrl
+            delete previous.exportMediaType
+            delete previous.exportMediaName
+            delete previous.exportMediaQuality
+          }
+        }
         if (
           reusableMediaType &&
           previous?.exportMediaUrl &&
           (!previous.exportMediaType || previous.exportMediaType === reusableMediaType) &&
           (reusableMediaType !== 'image' || reusableImageQuality) &&
-          (await resourceExists(previous.exportMediaUrl))
+          reusableMediaExists
         ) {
           message.exportMediaUrl = previous.exportMediaUrl
           message.exportMediaType = reusableMediaType
@@ -1446,13 +1478,10 @@ async function runSingleExport(
         } else if (message.contentData.type === 'sticker' && stickerService) {
           const stickerSource = message.contentData.url || message.contentData.thumbUrl
           const result = await stickerService.resolveSticker(stickerSource, message.contentData.md5)
-          const decoded = result.data
-            ? decodeDataUrl(result.data)
-            : stickerSource
-              ? await readAvatarAsset(stickerSource)
-              : null
-          if (decoded) {
-            const name = `sticker_${bufferHashPart(decoded.buffer)}.${decoded.extension}`
+          const decoded = result.data ? decodeDataUrl(result.data) : null
+          const stickerExtension = decoded ? detectAssetExtension(decoded.buffer) : null
+          if (decoded && stickerExtension) {
+            const name = `sticker_${bufferHashPart(decoded.buffer)}.${stickerExtension}`
             const mediaUrl = `media/${name}`
             if (!(await resourceExists(mediaUrl))) {
               await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
