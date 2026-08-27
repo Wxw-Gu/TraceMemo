@@ -2,6 +2,12 @@ import type { Contact, Message } from '../../shared/types'
 import { exportGroupReport } from '../group-report-service'
 import { getGroupSnapshot, listMessages, resolveMd5 } from './chat-service'
 import { AIProviderService } from './ai-provider-service'
+import type {
+  ScheduledReportMemberNameMode,
+  ScheduledReportMessageType
+} from '../../shared/scheduled-report'
+import type { SelectableReportTemplateId } from '../../shared/report-templates'
+import { resolveMemberName } from '../../shared/member-names'
 import {
   buildGroupReportInput,
   getSummaryDateRange,
@@ -17,6 +23,10 @@ const aiProvider = new AIProviderService()
 export interface AgentGroupReportRequest {
   group: string
   range?: SummaryDateRange | 'recent24h'
+  messageTypes?: ScheduledReportMessageType[]
+  templateId?: SelectableReportTemplateId
+  memberNameMode?: ScheduledReportMemberNameMode
+  timeoutSeconds?: number
 }
 
 export interface AgentGroupReportResult {
@@ -49,12 +59,33 @@ export async function generateAgentGroupReport(
   let messages = listMessages(contact.md5, startTime, endTime) as Message[]
   if (!messages.length) return { success: false, error: '所选时间范围没有可总结的消息' }
 
+  const messageTypeMap: Record<ScheduledReportMessageType, string[]> = {
+    text: ['普通文本'],
+    image: ['图片'],
+    sticker: ['表情包'],
+    video: ['视频'],
+    voice: ['语音'],
+    share: ['分享消息', '名片', '位置', '通话'],
+    system: ['系统消息']
+  }
+  const selectedTypes = new Set(
+    (request.messageTypes?.length
+      ? request.messageTypes
+      : (Object.keys(messageTypeMap) as ScheduledReportMessageType[])
+    ).flatMap((type) => messageTypeMap[type] || [])
+  )
+  messages = messages.filter((message) => selectedTypes.has(message.type))
+  if (!messages.length) return { success: false, error: '所选时间范围没有可总结的消息' }
+
   const snapshot = getGroupSnapshot(contact.md5)
   if (snapshot) {
     const members = new Map(
       snapshot.members.map((member) => [
         member.wxid,
-        { name: member.nickname, avatar: member.avatar }
+        {
+          name: resolveMemberName(member, request.memberNameMode || 'groupNickname'),
+          avatar: member.avatar
+        }
       ])
     )
     messages = messages.map((message) => {
@@ -67,10 +98,13 @@ export async function generateAgentGroupReport(
   }
 
   const input = await buildGroupReportInput(messages, contact as Contact, true, 'full')
-  const ai = await aiProvider.chat([
-    { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
-    { role: 'user', content: input.prompt }
-  ])
+  const ai = await aiProvider.chat(
+    [
+      { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
+      { role: 'user', content: input.prompt }
+    ],
+    { timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
+  )
   if (!ai.success || !ai.data) return { success: false, error: ai.error || 'AI 总结失败' }
   const parseReport = (raw: string): ReturnType<typeof parseGroupDailyReport> =>
     parseGroupDailyReport(
@@ -85,10 +119,13 @@ export async function generateAgentGroupReport(
   try {
     report = parseReport(ai.data)
   } catch (parseError) {
-    const repaired = await aiProvider.chat([
-      { role: 'system', content: GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT },
-      { role: 'user', content: ai.data }
-    ])
+    const repaired = await aiProvider.chat(
+      [
+        { role: 'system', content: GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT },
+        { role: 'user', content: ai.data }
+      ],
+      { timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
+    )
     if (!repaired.success || !repaired.data) {
       const cause = parseError instanceof Error ? parseError.message : String(parseError)
       return {
@@ -105,7 +142,11 @@ export async function generateAgentGroupReport(
       }
     }
   }
-  const exported = await exportGroupReport({ report, metadata: input.metadata })
+  const exported = await exportGroupReport({
+    report,
+    metadata: input.metadata,
+    templateId: request.templateId
+  })
   if (!exported.success || !exported.pngPath) {
     return { success: false, error: exported.error || '总结图片生成失败' }
   }

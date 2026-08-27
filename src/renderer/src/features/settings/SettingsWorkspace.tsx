@@ -13,6 +13,7 @@ import { AppearancePage } from './pages/AppearancePage'
 import { AboutPage } from './pages/AboutPage'
 import { VoiceRecognitionPage } from './pages/VoiceRecognitionPage'
 import { TextToSpeechPage } from './pages/TextToSpeechPage'
+import { PersonalWechatSendPage } from './pages/PersonalWechatSendPage'
 import type { Contact } from '../../../../shared/types'
 import type { AIRuntimeModelConfig } from '../../../../shared/ai-provider'
 
@@ -32,6 +33,7 @@ export function SettingsWorkspace({
   onAIRuntimeChange,
   onNotice,
   onOpenSettings,
+  onOpenTextToSpeechSettings,
   onAppearanceChange,
   onSwitchAccount
 }: {
@@ -50,6 +52,7 @@ export function SettingsWorkspace({
   onAIRuntimeChange: (config: AIRuntimeModelConfig) => void
   onNotice: (message: string) => void
   onOpenSettings: () => void
+  onOpenTextToSpeechSettings?: () => void
   onAppearanceChange: (settings: {
     theme: 'system' | 'light' | 'dark'
     compactMode: boolean
@@ -92,6 +95,13 @@ export function SettingsWorkspace({
         return <AIModelPage onRuntimeChange={onAIRuntimeChange} onNotice={onNotice} />
       case 'voice-recognition':
         return <VoiceRecognitionPage onNotice={onNotice} />
+      case 'wechat-send':
+        return (
+          <PersonalWechatSendPage
+            onNotice={onNotice}
+            onOpenTextToSpeechSettings={onOpenTextToSpeechSettings}
+          />
+        )
       case 'text-to-speech':
         return <TextToSpeechPage onNotice={onNotice} />
       case 'recall-protection':

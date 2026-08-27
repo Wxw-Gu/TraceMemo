@@ -3,6 +3,7 @@ export type SettingsCategoryId =
   | 'database-key'
   | 'image-key'
   | 'voice-recognition'
+  | 'wechat-send'
   | 'text-to-speech'
   | 'ai-model'
   | 'recall-protection'

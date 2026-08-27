@@ -1,4 +1,15 @@
-export type ScheduledReportRange = 'yesterday' | 'recent24h'
+import type { SelectableReportTemplateId } from './report-templates'
+
+export type ScheduledReportRange = 'today' | 'yesterday' | '7days' | 'recent24h'
+export type ScheduledReportMessageType =
+  | 'text'
+  | 'image'
+  | 'sticker'
+  | 'video'
+  | 'voice'
+  | 'share'
+  | 'system'
+export type ScheduledReportMemberNameMode = 'groupNickname' | 'wechatNickname' | 'remark'
 export type ScheduledReportExecutionStatus = 'running' | 'success' | 'failed'
 
 export interface ScheduledReportTask {
@@ -8,6 +19,10 @@ export interface ScheduledReportTask {
   group: string
   scheduleTime: string
   reportRange: ScheduledReportRange
+  messageTypes?: ScheduledReportMessageType[]
+  templateId?: SelectableReportTemplateId
+  memberNameMode?: ScheduledReportMemberNameMode
+  timeoutSeconds?: number
   /** Current implementation targets one specified WeChat group. */
   target: string
   enabled: boolean
@@ -35,6 +50,10 @@ export interface ScheduledReportCreateInput {
   group: string
   scheduleTime: string
   reportRange?: ScheduledReportRange
+  messageTypes?: ScheduledReportMessageType[]
+  templateId?: SelectableReportTemplateId
+  memberNameMode?: ScheduledReportMemberNameMode
+  timeoutSeconds?: number
   target?: string
   enabled?: boolean
 }
@@ -42,7 +61,16 @@ export interface ScheduledReportCreateInput {
 export type ScheduledReportUpdateInput = Partial<
   Pick<
     ScheduledReportCreateInput,
-    'name' | 'group' | 'scheduleTime' | 'reportRange' | 'target' | 'enabled'
+    | 'name'
+    | 'group'
+    | 'scheduleTime'
+    | 'reportRange'
+    | 'messageTypes'
+    | 'templateId'
+    | 'memberNameMode'
+    | 'timeoutSeconds'
+    | 'target'
+    | 'enabled'
   >
 >
 

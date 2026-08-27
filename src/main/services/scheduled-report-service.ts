@@ -9,6 +9,8 @@ import type {
 import type {
   ScheduledReportCreateInput,
   ScheduledReportExecution,
+  ScheduledReportMessageType,
+  ScheduledReportMemberNameMode,
   ScheduledReportRange,
   ScheduledReportResult,
   ScheduledReportTask,
@@ -41,7 +43,7 @@ const defaultDependencies = (): ScheduledReportDependencies => ({
   isDatabaseReady: () => isChatReady()
 })
 
-const rangeValues = new Set<ScheduledReportRange>(['yesterday', 'recent24h'])
+const rangeValues = new Set<ScheduledReportRange>(['today', 'yesterday', '7days', 'recent24h'])
 
 export function validateScheduleTime(value: string): boolean {
   return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(value || '').trim())
@@ -112,6 +114,10 @@ export class ScheduledReportService {
       group: values.group,
       scheduleTime: values.scheduleTime,
       reportRange: values.reportRange,
+      messageTypes: values.messageTypes,
+      templateId: values.templateId,
+      memberNameMode: values.memberNameMode,
+      timeoutSeconds: values.timeoutSeconds,
       target: values.target,
       enabled: values.enabled,
       createdAt: now.toISOString(),
@@ -286,7 +292,14 @@ export class ScheduledReportService {
       }
       let generated: Awaited<ReturnType<typeof this.deps.generateReport>>
       try {
-        generated = await this.deps.generateReport({ group: task.group, range: task.reportRange })
+        generated = await this.deps.generateReport({
+          group: task.group,
+          range: task.reportRange,
+          messageTypes: task.messageTypes,
+          templateId: task.templateId,
+          memberNameMode: task.memberNameMode,
+          timeoutSeconds: task.timeoutSeconds
+        })
       } catch (error) {
         return finish(
           'failed',
@@ -343,6 +356,10 @@ export class ScheduledReportService {
     group: string
     scheduleTime: string
     reportRange: ScheduledReportRange
+    messageTypes: ScheduledReportMessageType[]
+    templateId: ScheduledReportTask['templateId']
+    memberNameMode: ScheduledReportMemberNameMode
+    timeoutSeconds: number
     target: string
     enabled: boolean
   }> {
@@ -350,6 +367,15 @@ export class ScheduledReportService {
     const group = String(input.group || '').trim()
     const scheduleTime = String(input.scheduleTime || '').trim()
     const reportRange = input.reportRange || 'yesterday'
+    const messageTypes: ScheduledReportMessageType[] = input.messageTypes?.length
+      ? input.messageTypes
+      : ['text']
+    const templateId = input.templateId || 'v1'
+    const memberNameMode = input.memberNameMode || 'groupNickname'
+    const timeoutSeconds = Math.max(
+      30,
+      Math.min(1800, Math.round(Number(input.timeoutSeconds) || 300))
+    )
     const target = String(input.target || group).trim()
     if (!name) return { success: false, error: '日报名称不能为空' }
     if (!group) return { success: false, error: '微信群不能为空' }
@@ -358,7 +384,18 @@ export class ScheduledReportService {
     if (!rangeValues.has(reportRange)) return { success: false, error: '日报范围不受支持' }
     return {
       success: true,
-      data: { name, group, scheduleTime, reportRange, target, enabled: input.enabled !== false }
+      data: {
+        name,
+        group,
+        scheduleTime,
+        reportRange,
+        messageTypes,
+        templateId,
+        memberNameMode,
+        timeoutSeconds,
+        target,
+        enabled: input.enabled !== false
+      }
     }
   }
 

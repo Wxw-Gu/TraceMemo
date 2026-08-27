@@ -234,6 +234,18 @@ const handle = (channel, fn) => {
   ipcMain.handle(channel, async (event, ...args) => fn(...args))
 }
 
+const scheduledReportTasks = []
+const scheduledReportExecutions = []
+const scheduledReportNextRun = (scheduleTime) => {
+  const [hours, minutes] = String(scheduleTime || '09:00')
+    .split(':')
+    .map(Number)
+  const next = new Date(fixtureNowMs)
+  next.setHours(Number.isFinite(hours) ? hours : 9, Number.isFinite(minutes) ? minutes : 0, 0, 0)
+  if (next.getTime() <= fixtureNowMs) next.setDate(next.getDate() + 1)
+  return next.toISOString()
+}
+
 const startupCache = () => ({
   self: fixture.self,
   contacts,
@@ -299,6 +311,106 @@ handle('wechat-personal:getStatus', () => ({
   canSendVoice: true,
   message: '个人微信已绑定'
 }))
+handle('wechat-personal:getSendCapability', () => ({
+  supported: process.platform === 'darwin',
+  ready: process.platform === 'darwin',
+  status: process.platform === 'darwin' ? 'ready' : 'unsupported',
+  capabilities: {
+    text: process.platform === 'darwin',
+    image: process.platform === 'darwin',
+    voice: process.platform === 'darwin'
+  },
+  senderStatus: {
+    state: process.platform === 'darwin' ? 'online' : 'unsupported_platform',
+    platform: process.platform,
+    arch: process.arch,
+    sipDisabled: true,
+    wechatRunning: true,
+    boundWechatPid: 4668,
+    endpoint: '127.0.0.1:58080',
+    endpointReady: true,
+    runtimeReady: true,
+    attachReady: true,
+    baseAddressReady: true,
+    textHookInstalled: true,
+    textHookReady: true,
+    imageHookInstalled: true,
+    imageHookReady: true,
+    messageListenerReady: true,
+    canSend: process.platform === 'darwin',
+    canSendText: process.platform === 'darwin',
+    canSendImage: process.platform === 'darwin',
+    canSendVoice: process.platform === 'darwin',
+    message: '个人微信已绑定'
+  },
+  message:
+    process.platform === 'darwin' ? '个人微信已准备好发送日报' : '微信消息发送目前仅支持 macOS'
+}))
+handle('scheduled-report:list', () => [...scheduledReportTasks])
+handle('scheduled-report:listExecutions', (taskId) =>
+  taskId
+    ? scheduledReportExecutions.filter((execution) => execution.taskId === taskId)
+    : [...scheduledReportExecutions]
+)
+handle('scheduled-report:create', (request) => {
+  const now = new Date(fixtureNowMs).toISOString()
+  const task = {
+    id: `fixture-scheduled-report-${scheduledReportTasks.length + 1}`,
+    name: request.name,
+    group: request.group,
+    scheduleTime: request.scheduleTime,
+    reportRange: request.reportRange || 'yesterday',
+    messageTypes: request.messageTypes,
+    templateId: request.templateId,
+    memberNameMode: request.memberNameMode,
+    timeoutSeconds: request.timeoutSeconds,
+    target: request.target || request.group,
+    enabled: request.enabled !== false,
+    createdAt: now,
+    updatedAt: now,
+    nextRunAt: scheduledReportNextRun(request.scheduleTime)
+  }
+  scheduledReportTasks.push(task)
+  return { success: true, data: task }
+})
+handle('scheduled-report:update', (taskId, request) => {
+  const index = scheduledReportTasks.findIndex((task) => task.id === taskId)
+  if (index < 0) return { success: false, error: '任务不存在' }
+  const current = scheduledReportTasks[index]
+  const next = { ...current, ...request, updatedAt: new Date(fixtureNowMs).toISOString() }
+  if (request.scheduleTime) next.nextRunAt = scheduledReportNextRun(request.scheduleTime)
+  scheduledReportTasks[index] = next
+  return { success: true, data: next }
+})
+handle('scheduled-report:delete', (taskId) => {
+  const index = scheduledReportTasks.findIndex((task) => task.id === taskId)
+  if (index < 0) return { success: false, error: '任务不存在' }
+  scheduledReportTasks.splice(index, 1)
+  return { success: true, data: { deletedId: taskId } }
+})
+handle('scheduled-report:setEnabled', (taskId, enabled) => {
+  const task = scheduledReportTasks.find((item) => item.id === taskId)
+  if (!task) return { success: false, error: '任务不存在' }
+  task.enabled = Boolean(enabled)
+  task.updatedAt = new Date(fixtureNowMs).toISOString()
+  task.nextRunAt = task.enabled ? scheduledReportNextRun(task.scheduleTime) : task.nextRunAt
+  return { success: true, data: task }
+})
+handle('scheduled-report:runNow', (taskId) => {
+  const task = scheduledReportTasks.find((item) => item.id === taskId)
+  if (!task) return { success: false, error: '任务不存在' }
+  const execution = {
+    id: `fixture-execution-${scheduledReportExecutions.length + 1}`,
+    taskId,
+    startedAt: new Date(fixtureNowMs).toISOString(),
+    finishedAt: new Date(fixtureNowMs).toISOString(),
+    status: 'success',
+    message: '日报生成成功，微信发送成功'
+  }
+  scheduledReportExecutions.push(execution)
+  task.lastRunAt = execution.finishedAt
+  return { success: true, data: execution }
+})
 handle('wechat-share:getConfig', () => ({
   success: true,
   configured: true,

@@ -18,6 +18,7 @@ import { ReportInfoPanel } from './components/reports/ReportInfoPanel'
 import { ReportSourceSidebar } from './components/reports/ReportSourceSidebar'
 import { ReportTaskStatusPanel } from './components/reports/ReportTaskStatusPanel'
 import { ReportViewer } from './components/reports/ReportViewer'
+import { ScheduledReportsWorkspace } from './components/reports/ScheduledReportsWorkspace'
 import { contactDisplayName } from './components/reports/types'
 import type { GeneratedReportRecord, ReportWorkspaceView } from './components/reports/types'
 import { AiModelConfig, useGroupReportGeneration } from './hooks/useGroupReportGeneration'
@@ -248,6 +249,7 @@ function App(): React.ReactElement {
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>('account-database')
   const [reportSourceContact, setReportSourceContact] = useState<Contact | null>(null)
   const [reportWorkspaceView, setReportWorkspaceView] = useState<ReportWorkspaceView>('result')
+  const [reportSection, setReportSection] = useState<'today' | 'scheduled'>('today')
   const [generatedReports, setGeneratedReports] = useState<GeneratedReportRecord[]>([])
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null)
   const [latestGeneratedReportId, setLatestGeneratedReportId] = useState<string | null>(null)
@@ -1461,6 +1463,7 @@ function App(): React.ReactElement {
     if (page === 'report') {
       setReportWorkspaceView('result')
       setSelectedReportId(null)
+      setReportSection('today')
     }
   }
 
@@ -1481,6 +1484,11 @@ function App(): React.ReactElement {
 
   const openTextToSpeechSettings = (): void => {
     setSettingsCategory('text-to-speech')
+    setActivePage('settings')
+  }
+
+  const openWechatSendSettings = (): void => {
+    setSettingsCategory('wechat-send')
     setActivePage('settings')
   }
 
@@ -1751,102 +1759,146 @@ function App(): React.ReactElement {
     </div>
   )
 
-  const renderReportWorkspace = (): React.ReactElement =>
-    reportWorkspaceView === 'result' ? (
-      <div className="report-center-page">
-        <ReportHistorySidebar
-          reports={generatedReports}
-          selectedReportId={selectedReportId}
-          selfInfo={selfInfo}
-          dbReady={isDatabaseConnected}
-          dbConnecting={isDatabaseConnecting}
-          onSelectReport={openReport}
-          onCreateReport={openReportConfigure}
-          onDeleteReport={handleDeleteReport}
-          onOpenSettings={openSettings}
-        />
-        <ReportViewer
-          report={selectedReport}
-          hasReports={generatedReports.length > 0}
-          onBackToConfigure={openReportConfigure}
-          onRegenerate={handleRegenerateReport}
-          onCopyImage={handleCopyReportImage}
-          onReveal={handleRevealReport}
-          onSwitchTemplate={handleSwitchReportTemplate}
-          sendTarget={selectedReportContact}
-        />
-        <ReportInfoPanel report={selectedReport} onReveal={handleRevealReport} />
+  const renderReportWorkspace = (): React.ReactElement => (
+    <div className="report-workspace-shell">
+      <div className="report-workspace-tabs" role="tablist" aria-label="日报类型">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={reportSection === 'today'}
+          className={reportSection === 'today' ? 'active' : ''}
+          onClick={() => setReportSection('today')}
+        >
+          今日日报
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={reportSection === 'scheduled'}
+          aria-disabled={runtimePlatform !== 'darwin'}
+          className={`${reportSection === 'scheduled' ? 'active' : ''} ${runtimePlatform !== 'darwin' ? 'unsupported' : ''}`}
+          onClick={() => {
+            if (runtimePlatform !== 'darwin') {
+              toast({ description: '定时日报目前仅支持 macOS。', duration: 3200 })
+              return
+            }
+            setReportSection('scheduled')
+          }}
+        >
+          定时日报{runtimePlatform !== 'darwin' && <small>仅 macOS</small>}
+        </button>
       </div>
-    ) : (
-      <div className="report-page">
-        <ReportSourceSidebar
-          contacts={contacts}
-          selectedContact={reportSourceContact}
-          selfInfo={selfInfo}
-          dbReady={isDatabaseConnected}
-          dbConnecting={isDatabaseConnecting}
-          onSelectContact={handleSelectReportSource}
-          onOpenSettings={openSettings}
-        />
-        <AiReportWorkspace
-          sourceContact={reportSourceContact}
-          summaryDateRange={summaryDateRange}
-          summaryMessageTypes={summaryMessageTypes}
-          modelConfig={reportTextModelConfig}
-          visionModelConfig={aiVisionModelConfig}
-          textModelOptions={reportTextModelOptions}
-          visionModelOptions={reportVisionModelOptions}
-          rangeMessageCount={reportGeneration.rangeMessages.length}
-          reportMessageCount={reportGeneration.reportMessages.length}
-          messageTypeCounts={reportGeneration.messageTypeCounts}
-          rangeState={reportGeneration.rangeState}
-          phase={reportGeneration.phase}
-          error={reportGeneration.error}
-          generatedImage={reportGeneration.generatedImage}
-          reportPaths={reportGeneration.reportPaths}
-          isGenerating={reportGeneration.isGenerating}
-          onSummaryDateRangeChange={setSummaryDateRange}
-          onSummaryMessageTypesChange={setSummaryMessageTypes}
-          onOpenModelSettings={openModelSettings}
-          onTextModelChange={(model) => {
-            localStorage.setItem(REPORT_TEXT_MODEL_STORAGE_KEY, reportModelKey(model))
-            setReportTextModelConfig(model)
-          }}
-          onVisionModelChange={(model) => {
-            localStorage.setItem(REPORT_VISION_MODEL_STORAGE_KEY, reportModelKey(model))
-            setAiVisionModelConfig(model)
-          }}
-          onGenerate={() => {
-            reportGeneration.resetGenerationStatus()
-            void reportGeneration.generate()
-          }}
-          onCloseResult={reportGeneration.closeResult}
-          onCopyImage={reportGeneration.copyImage}
-          onRevealReport={reportGeneration.revealReport}
-          onViewResult={openReportResult}
-          hasReportResult={generatedReports.length > 0}
-          templateId={reportGeneration.templateId}
-          onTemplateIdChange={reportGeneration.setTemplateId}
-          memberNamePreference={reportGeneration.memberNamePreference}
-          onMemberNamePreferenceChange={reportGeneration.setMemberNamePreference}
-          reportTimeoutSeconds={reportGeneration.reportTimeoutSeconds}
-          onReportTimeoutSecondsChange={reportGeneration.setReportTimeoutSeconds}
-        />
-        <ReportTaskStatusPanel
-          phase={reportGeneration.phase}
-          error={reportGeneration.error}
-          voiceTranscriptionProgress={reportGeneration.voiceTranscriptionProgress}
-          voiceTranscriptionEnabled={summaryMessageTypes.includes('voice')}
-          preparationProgress={reportGeneration.preparationProgress}
-          imageInsightSummary={reportGeneration.imageInsightSummary}
-          canRetryModelStep={reportGeneration.canRetryModelStep}
-          currentModel={reportTextModelConfig}
-          onRetry={(model) => void reportGeneration.retry(model)}
-          onContinueAfterImageFailures={() => void reportGeneration.continueAfterImageFailures()}
-          onCancelAfterImageFailures={reportGeneration.cancelAfterImageFailures}
-        />
+      <div className="report-workspace-body">
+        {reportSection === 'scheduled' ? (
+          <ScheduledReportsWorkspace
+            contacts={contacts}
+            platformSupported={runtimePlatform === 'darwin'}
+            onOpenWechatSettings={openWechatSendSettings}
+            onOpenModelSettings={openModelSettings}
+            onNotice={(message, variant) =>
+              toast({ description: message, variant, duration: 3200 })
+            }
+          />
+        ) : reportWorkspaceView === 'result' ? (
+          <div className="report-center-page">
+            <ReportHistorySidebar
+              reports={generatedReports}
+              selectedReportId={selectedReportId}
+              selfInfo={selfInfo}
+              dbReady={isDatabaseConnected}
+              dbConnecting={isDatabaseConnecting}
+              onSelectReport={openReport}
+              onCreateReport={openReportConfigure}
+              onDeleteReport={handleDeleteReport}
+              onOpenSettings={openSettings}
+            />
+            <ReportViewer
+              report={selectedReport}
+              hasReports={generatedReports.length > 0}
+              onBackToConfigure={openReportConfigure}
+              onRegenerate={handleRegenerateReport}
+              onCopyImage={handleCopyReportImage}
+              onReveal={handleRevealReport}
+              onSwitchTemplate={handleSwitchReportTemplate}
+              sendTarget={selectedReportContact}
+            />
+            <ReportInfoPanel report={selectedReport} onReveal={handleRevealReport} />
+          </div>
+        ) : (
+          <div className="report-page">
+            <ReportSourceSidebar
+              contacts={contacts}
+              selectedContact={reportSourceContact}
+              selfInfo={selfInfo}
+              dbReady={isDatabaseConnected}
+              dbConnecting={isDatabaseConnecting}
+              onSelectContact={handleSelectReportSource}
+              onOpenSettings={openSettings}
+            />
+            <AiReportWorkspace
+              sourceContact={reportSourceContact}
+              summaryDateRange={summaryDateRange}
+              summaryMessageTypes={summaryMessageTypes}
+              modelConfig={reportTextModelConfig}
+              visionModelConfig={aiVisionModelConfig}
+              textModelOptions={reportTextModelOptions}
+              visionModelOptions={reportVisionModelOptions}
+              rangeMessageCount={reportGeneration.rangeMessages.length}
+              reportMessageCount={reportGeneration.reportMessages.length}
+              messageTypeCounts={reportGeneration.messageTypeCounts}
+              rangeState={reportGeneration.rangeState}
+              phase={reportGeneration.phase}
+              error={reportGeneration.error}
+              generatedImage={reportGeneration.generatedImage}
+              reportPaths={reportGeneration.reportPaths}
+              isGenerating={reportGeneration.isGenerating}
+              onSummaryDateRangeChange={setSummaryDateRange}
+              onSummaryMessageTypesChange={setSummaryMessageTypes}
+              onOpenModelSettings={openModelSettings}
+              onTextModelChange={(model) => {
+                localStorage.setItem(REPORT_TEXT_MODEL_STORAGE_KEY, reportModelKey(model))
+                setReportTextModelConfig(model)
+              }}
+              onVisionModelChange={(model) => {
+                localStorage.setItem(REPORT_VISION_MODEL_STORAGE_KEY, reportModelKey(model))
+                setAiVisionModelConfig(model)
+              }}
+              onGenerate={() => {
+                reportGeneration.resetGenerationStatus()
+                void reportGeneration.generate()
+              }}
+              onCloseResult={reportGeneration.closeResult}
+              onCopyImage={reportGeneration.copyImage}
+              onRevealReport={reportGeneration.revealReport}
+              onViewResult={openReportResult}
+              hasReportResult={generatedReports.length > 0}
+              templateId={reportGeneration.templateId}
+              onTemplateIdChange={reportGeneration.setTemplateId}
+              memberNamePreference={reportGeneration.memberNamePreference}
+              onMemberNamePreferenceChange={reportGeneration.setMemberNamePreference}
+              reportTimeoutSeconds={reportGeneration.reportTimeoutSeconds}
+              onReportTimeoutSecondsChange={reportGeneration.setReportTimeoutSeconds}
+            />
+            <ReportTaskStatusPanel
+              phase={reportGeneration.phase}
+              error={reportGeneration.error}
+              voiceTranscriptionProgress={reportGeneration.voiceTranscriptionProgress}
+              voiceTranscriptionEnabled={summaryMessageTypes.includes('voice')}
+              preparationProgress={reportGeneration.preparationProgress}
+              imageInsightSummary={reportGeneration.imageInsightSummary}
+              canRetryModelStep={reportGeneration.canRetryModelStep}
+              currentModel={reportTextModelConfig}
+              onRetry={(model) => void reportGeneration.retry(model)}
+              onContinueAfterImageFailures={() =>
+                void reportGeneration.continueAfterImageFailures()
+              }
+              onCancelAfterImageFailures={reportGeneration.cancelAfterImageFailures}
+            />
+          </div>
+        )}
       </div>
-    )
+    </div>
+  )
 
   const renderCurrentWorkspace = (): React.ReactElement => {
     switch (activePage) {
@@ -1911,6 +1963,7 @@ function App(): React.ReactElement {
             }}
             onNotice={setReportNotice}
             onOpenSettings={openSettings}
+            onOpenTextToSpeechSettings={openTextToSpeechSettings}
             onAppearanceChange={handleAppearanceChange}
             onSwitchAccount={handleSwitchAccount}
           />

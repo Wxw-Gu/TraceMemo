@@ -17,6 +17,7 @@ export const SETTINGS_NAVIGATION: SettingsNavigationGroup[] = [
   {
     label: '智能能力',
     items: [
+      { id: 'wechat-send', label: '微信发送' },
       { id: 'voice-recognition', label: '语音转文字' },
       { id: 'text-to-speech', label: '文字转语音' },
       { id: 'ai-model', label: 'AI 模型' }
