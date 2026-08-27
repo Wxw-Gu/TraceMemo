@@ -30,7 +30,8 @@ import type {
   PersonalWechatVoiceSelectionResult,
   PersonalWechatSendRequest,
   PersonalWechatSendResult,
-  PersonalWechatSenderStatus
+  PersonalWechatSenderStatus,
+  PersonalWechatVoiceDiagnostic
 } from '../shared/personal-wechat'
 import type {
   PersonalWechatRuntimeDownloadResult,
@@ -352,6 +353,10 @@ const api = {
     ipcRenderer.invoke('image:listInsights', sessionId, limit),
   getPersonalWechatSenderStatus: (): Promise<PersonalWechatSenderStatus> =>
     ipcRenderer.invoke('wechat-personal:getStatus'),
+  getPersonalWechatKeepOneBotProcess: (): Promise<boolean> =>
+    ipcRenderer.invoke('wechat-personal:getKeepProcess'),
+  setPersonalWechatKeepOneBotProcess: (keep: boolean): Promise<boolean> =>
+    ipcRenderer.invoke('wechat-personal:setKeepProcess', keep),
   getPersonalWechatRuntimeStatus: (): Promise<PersonalWechatRuntimeStatus> =>
     ipcRenderer.invoke('wechat-personal:getRuntimeStatus'),
   downloadPersonalWechatRuntime: (): Promise<PersonalWechatRuntimeDownloadResult> =>
@@ -381,6 +386,8 @@ const api = {
   sendPersonalWechatMessage: (
     request: PersonalWechatSendRequest
   ): Promise<PersonalWechatSendResult> => ipcRenderer.invoke('wechat-personal:send', request),
+  getPersonalWechatVoiceDiagnostic: (): Promise<PersonalWechatVoiceDiagnostic | null> =>
+    ipcRenderer.invoke('wechat-personal:getVoiceDiagnostic'),
   getAgentHubStatus: () => ipcRenderer.invoke('agent-hub:getStatus'),
   getAgentHubLogs: () => ipcRenderer.invoke('agent-hub:getLogs'),
   clearAgentHubLogs: () => ipcRenderer.invoke('agent-hub:clearLogs'),

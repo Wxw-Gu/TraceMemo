@@ -15,6 +15,7 @@ interface PersonalWechatSetupGuideProps {
   binding: boolean
   detecting: boolean
   detectionAttempted: boolean
+  sessionBound: boolean
   onDownloadRuntime: () => void
   onBind: () => void
   onDetect: () => void
@@ -61,6 +62,7 @@ export function PersonalWechatSetupGuide({
   binding,
   detecting,
   detectionAttempted,
+  sessionBound,
   onDownloadRuntime,
   onBind,
   onDetect,
@@ -70,12 +72,14 @@ export function PersonalWechatSetupGuide({
   const [showSupportedVersions, setShowSupportedVersions] = useState(false)
   const runtimeReady = runtimeStatus?.state === 'ready' || senderStatus?.runtimeReady === true
   const runtimeDownloading = runtimeBusy || runtimeStatus?.state === 'downloading'
-  const connected = senderStatus ? isWechatBound(senderStatus) : false
+  const connected = sessionBound && (senderStatus ? isWechatBound(senderStatus) : false)
   const canSendText = Boolean(senderStatus?.canSendText)
   const canSendImage = Boolean(senderStatus?.canSendImage)
   const canSendVoice = Boolean(senderStatus?.canSendVoice)
   const mediaReady = canSendImage || canSendVoice
-  const verificationComplete = canSendText && mediaReady
+  const detectedTextReady = detectionAttempted && canSendText
+  const detectedMediaReady = detectionAttempted && mediaReady
+  const verificationComplete = connected && detectedTextReady && detectedMediaReady
   const allReady = verificationComplete
   const progress = runtimeProgress || runtimeStatus
   const progressPercent = Math.max(0, Math.min(100, Math.round((progress?.progress || 0) * 100)))
@@ -160,7 +164,8 @@ export function PersonalWechatSetupGuide({
               <p className="personal-wechat-step-warning" role="note">
                 绑定微信可能导致当前微信异常闪退，这是正常现象。若微信退出，请重新启动微信后，再回到这里重新检测/绑定。
                 <br />
-                微信总是自动更新？请在微信左下角打开“设置 → 通用”，取消勾选“有更新时自动升级微信”，否则版本变化后可能无法绑定。
+                微信总是自动更新？请在微信左下角打开“设置 →
+                通用”，取消勾选“有更新时自动升级微信”，否则版本变化后可能无法绑定。
               </p>
             )}
             <Button
@@ -188,7 +193,7 @@ export function PersonalWechatSetupGuide({
             <p className="personal-wechat-step-hint">
               TraceMemo 需要通过你主动发送的消息初始化微信消息能力。完成后点击“重新检测”。
             </p>
-            {!verificationComplete && (
+            {connected && !verificationComplete && (
               <Button
                 size="sm"
                 variant="outline"
@@ -214,8 +219,8 @@ export function PersonalWechatSetupGuide({
             <strong>能力检测</strong>
             <div className="personal-wechat-capabilities" aria-label="微信消息能力">
               {[
-                ['文字消息', canSendText],
-                ['图片和语音消息', mediaReady]
+                ['文字消息', detectedTextReady],
+                ['图片和语音消息', detectedMediaReady]
               ].map(([label, ready]) => (
                 <span key={String(label)} className={ready ? 'is-ready' : ''}>
                   <b aria-hidden>{ready ? '✓' : '−'}</b>

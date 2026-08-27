@@ -1777,13 +1777,19 @@ app.whenReady().then(async () => {
   ipcMain.handle('agent-hub:reconnect', () => agentHubService.reconnect())
   ipcMain.handle('agent-hub:disconnect', () => agentHubService.disconnect())
   ipcMain.handle('wechat-personal:getStatus', () => personalWechatSendService.getStatus())
+  ipcMain.handle('wechat-personal:getKeepProcess', () =>
+    personalWechatSendService.getKeepOneBotProcess()
+  )
+  ipcMain.handle('wechat-personal:setKeepProcess', (_, keep: boolean) =>
+    personalWechatSendService.setKeepOneBotProcess(Boolean(keep))
+  )
   ipcMain.handle('wechat-personal:getRuntimeStatus', () => personalWechatRuntimeManager.getStatus())
   ipcMain.handle('wechat-personal:downloadRuntime', () => personalWechatRuntimeManager.download())
   ipcMain.handle('wechat-personal:cancelRuntimeDownload', () => ({
     success: personalWechatRuntimeManager.cancelDownload()
   }))
   ipcMain.handle('wechat-personal:removeRuntime', async () => {
-    await personalWechatSendService.terminate()
+    await personalWechatSendService.terminate(true)
     return personalWechatRuntimeManager.remove()
   })
   ipcMain.handle('wechat-personal:openRuntimeDirectory', async () => {
@@ -1796,6 +1802,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('wechat-personal:rebind', () => personalWechatSendService.rebind())
   ipcMain.handle('wechat-personal:send', (_, request: PersonalWechatSendRequest) =>
     personalWechatSendService.send(request)
+  )
+  ipcMain.handle('wechat-personal:getVoiceDiagnostic', () =>
+    personalWechatSendService.getLatestVoiceDiagnostic()
   )
   ipcMain.handle('wechat-personal:selectImage', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)

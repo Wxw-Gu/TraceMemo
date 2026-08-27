@@ -57,6 +57,31 @@ function patchPerSendPayload(scriptPath: string): void {
   writeFileSync(scriptPath, source)
 }
 
+function patchVoiceAudioBuffer(scriptPath: string, strict = true): void {
+  let source = readFileSync(scriptPath, 'utf8')
+  if (source.includes('voiceAudioDataAddr = Memory.alloc(audioLen + 1);')) return
+
+  const staticAllocation = 'voiceAudioDataAddr = Memory.alloc(5 * 1024 * 1024); // 预分配5MB'
+  if (!source.includes(staticAllocation)) {
+    if (strict) throw new Error('下载的语音组件与当前应用不兼容')
+    return
+  }
+  source = source.replace(
+    staticAllocation,
+    'voiceAudioDataAddr = Memory.alloc(1); // 上传前按语音长度重新分配'
+  )
+  const audioLengthMarker = '    const audioLen = audioBytes.length;\n'
+  if (!source.includes(audioLengthMarker)) {
+    if (strict) throw new Error('下载的语音组件与当前应用不兼容')
+    return
+  }
+  source = source.replace(
+    audioLengthMarker,
+    `${audioLengthMarker}    voiceAudioDataAddr = Memory.alloc(audioLen + 1);\n`
+  )
+  writeFileSync(scriptPath, source)
+}
+
 function patchImageHookReadiness(scriptPath: string): void {
   let source = readFileSync(scriptPath, 'utf8')
   if (
@@ -114,7 +139,8 @@ function addModifiedWorkNotice(scriptPath: string): void {
  * Upstream: https://github.com/yincongcyincong/wechat_chatter
  * Runtime version: v0.0.18
  * License: GNU General Public License version 3 (GPL-3.0)
- * Changes: WeChat module discovery, per-send payload isolation, and image Hook readiness logging.
+ * Changes: WeChat module discovery, per-send payload isolation, dynamic voice upload buffers,
+ * and image Hook readiness logging.
  * These modifications are not provided by the upstream author.
  */
 
@@ -159,6 +185,12 @@ export class PersonalWechatRuntimeManager {
 
     const runtime = findPersonalWechatRuntime()
     if (runtime) {
+      try {
+        // Apply compatibility fixes to runtimes installed before this version.
+        patchVoiceAudioBuffer(join(runtime.workingDirectory, 'script.js'), false)
+      } catch {
+        // Status discovery should remain available even if an old runtime is read-only.
+      }
       return this.buildStatus('ready', ARCHIVE_SIZE, undefined, runtime.root)
     }
 
@@ -261,6 +293,7 @@ export class PersonalWechatRuntimeManager {
       const script = join(stagedDirectory, 'onebot', 'script.js')
       patchWechatCoreModuleBase(script)
       patchPerSendPayload(script)
+      patchVoiceAudioBuffer(script)
       patchImageHookReadiness(script)
       addModifiedWorkNotice(script)
       await chmod(executable, 0o755)

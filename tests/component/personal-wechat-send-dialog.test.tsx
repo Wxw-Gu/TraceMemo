@@ -16,6 +16,8 @@ const getTextToSpeechSettings = vi.fn()
 const listTextToSpeechVoices = vi.fn()
 const synthesizeTextToSpeech = vi.fn()
 const removeGeneratedTextToSpeechAudio = vi.fn()
+const getPersonalWechatVoiceDiagnostic = vi.fn()
+const copyText = vi.fn()
 
 const contact = {
   m_nsUsrName: 'fixture-room@chatroom',
@@ -71,6 +73,11 @@ function renderDialog(
 }
 
 async function startComposer(): Promise<void> {
+  const bind = await screen.findByRole('button', { name: '绑定微信' })
+  fireEvent.click(bind)
+  await screen.findByText('✓ 微信已绑定')
+  const detect = await screen.findByRole('button', { name: '重新检测' })
+  fireEvent.click(detect)
   const start = await screen.findByRole('button', { name: '开始发送' })
   fireEvent.click(start)
 }
@@ -125,6 +132,8 @@ describe('PersonalWechatSendDialog', () => {
       audioDataUrl: 'data:audio/mpeg;base64,fixture'
     })
     removeGeneratedTextToSpeechAudio.mockReset().mockResolvedValue({ success: true })
+    getPersonalWechatVoiceDiagnostic.mockReset().mockResolvedValue(null)
+    copyText.mockReset().mockResolvedValue({ success: true })
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
@@ -139,7 +148,9 @@ describe('PersonalWechatSendDialog', () => {
         getTextToSpeechSettings,
         listTextToSpeechVoices,
         synthesizeTextToSpeech,
-        removeGeneratedTextToSpeechAudio
+        removeGeneratedTextToSpeechAudio,
+        getPersonalWechatVoiceDiagnostic,
+        copyText
       }
     })
   })
@@ -165,15 +176,13 @@ describe('PersonalWechatSendDialog', () => {
     expect(screen.getByText('验证消息能力')).toBeInTheDocument()
     expect(screen.getByText('能力检测')).toBeInTheDocument()
     expect(screen.getByText('图片和语音消息')).toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent(
+      '绑定微信可能导致当前微信异常闪退，这是正常现象。若微信退出，请重新启动微信后，再回到这里重新检测/绑定。'
+    )
     fireEvent.click(screen.getByRole('button', { name: '查看支持的微信版本' }))
     const versionsDialog = screen.getByRole('dialog', { name: '支持的微信版本' })
     expect(versionsDialog).toBeInTheDocument()
     expect(versionsDialog).toHaveTextContent('4.1.11.53')
-    expect(
-      screen.getByText(
-        '绑定微信可能导致当前微信异常闪退，这是正常现象。若微信退出，请重新启动微信后，再回到这里重新检测/绑定。'
-      )
-    ).toBeInTheDocument()
     expect(screen.queryByLabelText('消息列表')).not.toBeInTheDocument()
     expect(screen.queryByText('TraceMemo 消息发送')).not.toBeInTheDocument()
     expect(screen.queryByText('PID 4668')).not.toBeVisible()
@@ -228,6 +237,27 @@ describe('PersonalWechatSendDialog', () => {
         to: 'fixture-room@chatroom',
         filePath: '/Users/fixture/test.silk',
         isGroup: true
+      })
+    )
+  })
+
+  it('sends the same generated voice through the comparison path', async () => {
+    renderDialog()
+    await startComposer()
+    fireEvent.click(screen.getByRole('radio', { name: '语音' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '语音文字' }), {
+      target: { value: '入口2语音测试' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: '生成语音' }))
+    await waitFor(() => expect(screen.getByText('语音已生成')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '发送2' }))
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith({
+        type: 'voice',
+        to: 'fixture-room@chatroom',
+        filePath: '/tmp/generated.mp3',
+        isGroup: true,
+        voiceSendMode: 'legacy'
       })
     )
   })
@@ -290,6 +320,9 @@ describe('PersonalWechatSendDialog', () => {
     })
     renderDialog()
     expect(await screen.findByText('图片和语音消息')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '绑定微信' }))
+    await screen.findByText('✓ 微信已绑定')
+    fireEvent.click(await screen.findByRole('button', { name: '重新检测' }))
     expect(screen.getByText('微信消息发送已配置完成')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '开始发送' })).toBeEnabled()
     expect(screen.queryByText('图片消息')).not.toBeInTheDocument()
@@ -307,6 +340,8 @@ describe('PersonalWechatSendDialog', () => {
       message: '等待消息初始化'
     })
     renderDialog()
+    fireEvent.click(await screen.findByRole('button', { name: '绑定微信' }))
+    await screen.findByText('✓ 微信已绑定')
     const detect = await screen.findByRole('button', { name: '重新检测' })
     expect(detect).toBeEnabled()
     fireEvent.click(detect)
@@ -328,5 +363,42 @@ describe('PersonalWechatSendDialog', () => {
     await user.click(screen.getByRole('button', { name: '发送消息' }))
     expect(screen.getByRole('button', { name: '正在发送…' })).toBeDisabled()
     expect(screen.getByRole('radio', { name: '图片' })).toBeDisabled()
+  })
+
+  it('shows and copies the latest redacted voice diagnostic JSON', async () => {
+    getPersonalWechatVoiceDiagnostic.mockResolvedValue({
+      request_id: 'request-1',
+      voice_id: 'request-1',
+      phase: 'completed',
+      encoder_name: 'go-silk',
+      encoder_version: 'wechat_chatter-v0.0.18',
+      input_bytes: 35107,
+      normalized_input_bytes: 69804,
+      pcm_size: 69760,
+      sample_rate: 16000,
+      channels: 1,
+      input_duration_ms: 2180,
+      upload_result: '0',
+      upload_data_len: 4380,
+      silk_duration_ms: 2180,
+      send_result: '1'
+    })
+    renderDialog()
+    await startComposer()
+    fireEvent.click(screen.getByRole('button', { name: '语音发送诊断' }))
+    const diagnosticDialog = await screen.findByRole('dialog', { name: '语音发送诊断' })
+    expect(diagnosticDialog).toHaveTextContent('"encoder_name": "go-silk"')
+    expect(diagnosticDialog).not.toHaveTextContent('aesKey')
+    fireEvent.click(screen.getByRole('button', { name: '复制诊断 JSON' }))
+    await waitFor(() => expect(copyText).toHaveBeenCalledWith(expect.stringContaining('request-1')))
+    expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument()
+  })
+
+  it('shows an empty state when no voice diagnostic exists', async () => {
+    renderDialog()
+    await startComposer()
+    fireEvent.click(screen.getByRole('button', { name: '语音发送诊断' }))
+    expect(await screen.findByText('暂无诊断信息')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '复制诊断 JSON' })).toBeDisabled()
   })
 })

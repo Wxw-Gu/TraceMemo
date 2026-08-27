@@ -206,7 +206,7 @@ export function PersonalWechatChatComposer({
 
   const sendGenerated = async (): Promise<void> => {
     if (!generatedVoiceRef.current) return
-    const result = await send(
+    await send(
       {
         type: 'voice',
         to: targetId,
@@ -215,7 +215,20 @@ export function PersonalWechatChatComposer({
       },
       voiceText.trim() || '语音消息'
     )
-    if (result) clearGeneratedVoice()
+  }
+
+  const sendGeneratedAlternative = async (): Promise<void> => {
+    if (!generatedVoiceRef.current) return
+    await send(
+      {
+        type: 'voice',
+        to: targetId,
+        filePath: generatedVoiceRef.current.filePath,
+        isGroup: isGroupChat,
+        voiceSendMode: 'legacy'
+      },
+      voiceText.trim() || '语音消息'
+    )
   }
 
   const canSend = Boolean(
@@ -341,7 +354,7 @@ export function PersonalWechatChatComposer({
                       <span style={{ width: `${Math.min(100, previewProgress)}%` }} />
                     </div>
                   </div>
-                  <div>
+                  <div className="personal-wechat-generated-result-actions">
                     <Button
                       variant="outline"
                       size="sm"
@@ -361,6 +374,15 @@ export function PersonalWechatChatComposer({
                     </Button>
                     <Button size="sm" onClick={() => void sendGenerated()} disabled={!canSend}>
                       {busy ? '发送中…' : '发送'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void sendGeneratedAlternative()}
+                      disabled={!canSend}
+                      title="使用另一条语音发送路径"
+                    >
+                      {busy ? '发送中…' : '空白语音？重新处理'}
                     </Button>
                   </div>
                 </div>

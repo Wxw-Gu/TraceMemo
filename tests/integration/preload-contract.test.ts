@@ -108,6 +108,8 @@ describe('preload IPC contract', () => {
     }
     await api.sendPersonalWechatMessage(sendRequest)
     expect(invoke).toHaveBeenLastCalledWith('wechat-personal:send', sendRequest)
+    await api.getPersonalWechatVoiceDiagnostic()
+    expect(invoke).toHaveBeenLastCalledWith('wechat-personal:getVoiceDiagnostic')
     await api.selectPersonalWechatImage()
     expect(invoke).toHaveBeenLastCalledWith('wechat-personal:selectImage')
   })

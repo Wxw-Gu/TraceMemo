@@ -58,7 +58,8 @@ import type {
   PersonalWechatVoiceSelectionResult,
   PersonalWechatSendRequest,
   PersonalWechatSendResult,
-  PersonalWechatSenderStatus
+  PersonalWechatSenderStatus,
+  PersonalWechatVoiceDiagnostic
 } from '../shared/personal-wechat'
 import type {
   PersonalWechatRuntimeDownloadResult,
@@ -581,6 +582,8 @@ declare global {
         limit?: number
       ) => Promise<{ success: boolean; insights: ImageInsight[] }>
       getPersonalWechatSenderStatus: () => Promise<PersonalWechatSenderStatus>
+      getPersonalWechatKeepOneBotProcess: () => Promise<boolean>
+      setPersonalWechatKeepOneBotProcess: (keep: boolean) => Promise<boolean>
       getPersonalWechatRuntimeStatus: () => Promise<PersonalWechatRuntimeStatus>
       downloadPersonalWechatRuntime: () => Promise<PersonalWechatRuntimeDownloadResult>
       cancelPersonalWechatRuntimeDownload: () => Promise<{ success: boolean }>
@@ -595,6 +598,7 @@ declare global {
       sendPersonalWechatMessage: (
         request: PersonalWechatSendRequest
       ) => Promise<PersonalWechatSendResult>
+      getPersonalWechatVoiceDiagnostic: () => Promise<PersonalWechatVoiceDiagnostic | null>
       getAgentHubStatus: () => Promise<AgentHubStatus>
       getAgentHubLogs: () => Promise<AgentHubLogEntry[]>
       clearAgentHubLogs: () => Promise<void>

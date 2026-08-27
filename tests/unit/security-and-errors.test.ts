@@ -87,6 +87,14 @@ describe('personal WeChat runtime security invariants', () => {
     for (const source of [runtimeManagerSource, preparationScriptSource]) {
       expect(source).not.toContain('pilk==')
       expect(source).not.toMatch(/['"]pip['"]/)
+      expect(source).toContain('voiceAudioDataAddr = Memory.alloc(audioLen + 1);')
+      expect(source).toContain('上传前按语音长度重新分配')
     }
+
+    const senderSource = readFileSync(
+      resolve('src/main/services/personal-wechat-send-service.ts'),
+      'utf8'
+    )
+    expect(senderSource).toContain('buildRuntimePythonPath(preflight.runtime.root)')
   })
 })

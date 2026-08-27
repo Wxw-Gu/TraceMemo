@@ -62,6 +62,8 @@ export interface PersonalWechatSendImageRequest extends PersonalWechatSendBaseRe
 export interface PersonalWechatSendVoiceRequest extends PersonalWechatSendBaseRequest {
   type: 'voice'
   filePath: string
+  /** Internal comparison switch for the temporary voice regression test. */
+  voiceSendMode?: 'normalized' | 'legacy'
 }
 
 export type PersonalWechatSendRequest =
@@ -72,6 +74,28 @@ export type PersonalWechatSendRequest =
 export interface PersonalWechatSendResult {
   success: boolean
   status: PersonalWechatSenderStatus
+  error?: string
+}
+
+/** Safe, user-copyable metadata for the most recent voice send attempt. */
+export interface PersonalWechatVoiceDiagnostic {
+  request_id: string
+  voice_id: string
+  phase: 'prepared' | 'completed' | 'failed'
+  encoder_name: string
+  encoder_version: string
+  input_bytes?: number
+  normalized_input_bytes?: number
+  pcm_size?: number
+  sample_rate?: number
+  channels?: number
+  input_duration_ms?: number
+  upload_result?: string
+  upload_data_len?: number
+  silk_duration_ms?: number
+  send_result?: string
+  voice_send_mode?: 'normalized' | 'legacy'
+  failure_phase?: string
   error?: string
 }
 

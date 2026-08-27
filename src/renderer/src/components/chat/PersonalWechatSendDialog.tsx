@@ -2,19 +2,29 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Contact } from '../../../../shared/types'
 import type {
   PersonalWechatSendRequest,
-  PersonalWechatSenderStatus
+  PersonalWechatSenderStatus,
+  PersonalWechatVoiceDiagnostic
 } from '../../../../shared/personal-wechat'
 import type {
   PersonalWechatRuntimeProgressEvent,
   PersonalWechatRuntimeStatus
 } from '../../../../shared/personal-wechat-runtime'
-import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui'
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  Switch
+} from '../ui'
 import {
   PersonalWechatChatComposer,
   type ChatMessage,
   type PersonalWechatComposerMode
 } from './PersonalWechatChatComposer'
 import { PersonalWechatSetupGuide } from './PersonalWechatSetupGuide'
+import { PersonalWechatVoiceDiagnosticDialog } from './PersonalWechatVoiceDiagnosticDialog'
 
 type SelectedLocalFile = { path: string; name: string }
 
@@ -71,8 +81,15 @@ export function PersonalWechatSendDialog({
   const [runtimeBusy, setRuntimeBusy] = useState(false)
   const [sendBusy, setSendBusy] = useState(false)
   const [detectionAttempted, setDetectionAttempted] = useState(false)
+  // Status can be reconstructed from a previous OneBot process/log. These
+  // session gates ensure the user explicitly binds and detects after opening
+  // the flow instead of inheriting stale readiness.
+  const [sessionBound, setSessionBound] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sendError, setSendError] = useState<string | null>(null)
+  const [voiceDiagnostic, setVoiceDiagnostic] = useState<PersonalWechatVoiceDiagnostic | null>(null)
+  const [voiceDiagnosticOpen, setVoiceDiagnosticOpen] = useState(false)
+  const [keepOneBotProcess, setKeepOneBotProcess] = useState(false)
   const [composerStarted, setComposerStarted] = useState(Boolean(initialImage))
   const requestIdRef = useRef(0)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
@@ -81,7 +98,10 @@ export function PersonalWechatSendDialog({
   const targetId = contact.m_nsUsrName
   const isBusy = binding || runtimeBusy || sendBusy
   const setupReady = Boolean(
-    senderStatus?.canSendText && (senderStatus?.canSendImage || senderStatus?.canSendVoice)
+    sessionBound &&
+    detectionAttempted &&
+    senderStatus?.canSendText &&
+    (senderStatus?.canSendImage || senderStatus?.canSendVoice)
   )
 
   const refreshStatus = useCallback(async (): Promise<void> => {
@@ -97,6 +117,15 @@ export function PersonalWechatSendDialog({
       setRuntimeStatus(nextRuntime)
       setRuntimeProgress(nextRuntime?.state === 'downloading' ? nextRuntime : null)
       setSenderStatus(nextSender)
+      setSessionBound(
+        nextSender.state === 'online' ||
+          Boolean(
+            nextSender.wechatPid &&
+            nextSender.boundWechatPid === nextSender.wechatPid &&
+            nextSender.attachReady &&
+            nextSender.baseAddressReady
+          )
+      )
     } catch (error) {
       if (requestId === requestIdRef.current) setSenderStatus(fallbackStatus(error))
     } finally {
@@ -113,6 +142,34 @@ export function PersonalWechatSendDialog({
     })
     return unsubscribe
   }, [refreshStatus])
+
+  useEffect(() => {
+    let active = true
+    const readKeepProcess = window.api.getPersonalWechatKeepOneBotProcess
+    if (!readKeepProcess) return undefined
+    void readKeepProcess().then((keep) => {
+      if (active && typeof keep === 'boolean') setKeepOneBotProcess(keep)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const handleKeepOneBotProcessChange = async (keep: boolean): Promise<void> => {
+    const saveKeepProcess = window.api.setPersonalWechatKeepOneBotProcess
+    if (!saveKeepProcess) {
+      setSendError('请重启 TraceMemo 后再使用“保留 OneBot 进程”')
+      return
+    }
+    setKeepOneBotProcess(keep)
+    try {
+      const saved = await saveKeepProcess(keep)
+      if (typeof saved === 'boolean') setKeepOneBotProcess(saved)
+    } catch (error) {
+      setKeepOneBotProcess(!keep)
+      setSendError(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   const handleDownloadRuntime = async (): Promise<void> => {
     if (runtimeBusy) return
@@ -138,6 +195,15 @@ export function PersonalWechatSendDialog({
     try {
       const nextStatus = await window.api.rebindPersonalWechatSender()
       setSenderStatus(nextStatus)
+      setSessionBound(
+        nextStatus.state === 'online' ||
+          Boolean(
+            nextStatus.wechatPid &&
+            nextStatus.boundWechatPid === nextStatus.wechatPid &&
+            nextStatus.attachReady &&
+            nextStatus.baseAddressReady
+          )
+      )
       if (nextStatus.state !== 'online' && nextStatus.message) setSendError(nextStatus.message)
     } catch (error) {
       setSendError(error instanceof Error ? error.message : String(error))
@@ -185,103 +251,140 @@ export function PersonalWechatSendDialog({
     }
   }
 
+  const handleOpenVoiceDiagnostic = async (): Promise<void> => {
+    const diagnostic = await window.api.getPersonalWechatVoiceDiagnostic()
+    setVoiceDiagnostic(diagnostic)
+    setVoiceDiagnosticOpen(true)
+  }
+
   return (
-    <Dialog open onOpenChange={(open) => !open && handleClose()}>
-      <DialogContent
-        className="personal-wechat-send-dialog max-h-[calc(100vh-2rem)] max-w-[720px] gap-0 overflow-y-auto p-0"
-        onOpenAutoFocus={() => {
-          restoreFocusRef.current =
-            document.activeElement instanceof HTMLElement ? document.activeElement : null
-        }}
-        onEscapeKeyDown={(event) => isBusy && event.preventDefault()}
-        onPointerDownOutside={(event) => isBusy && event.preventDefault()}
-      >
-        <DialogHeader className="personal-wechat-chat-header">
-          <div className="personal-wechat-chat-avatar" aria-hidden>
-            {displayName.slice(0, 1)}
-          </div>
-          <div className="personal-wechat-chat-heading">
-            <DialogTitle>{displayName}</DialogTitle>
-            <DialogDescription>
-              {isGroupChat ? '群聊' : '联系人'} · {setupReady ? '微信已连接' : '配置微信消息发送'}
-            </DialogDescription>
-          </div>
-          <span
-            className={`personal-wechat-connection-dot ${setupReady ? 'is-online' : ''}`}
-            aria-label={setupReady ? '微信已连接' : '微信尚未配置'}
-          />
-        </DialogHeader>
+    <>
+      <Dialog open onOpenChange={(open) => !open && handleClose()}>
+        <DialogContent
+          className="personal-wechat-send-dialog max-h-[calc(100vh-2rem)] max-w-[720px] gap-0 overflow-y-auto p-0"
+          onOpenAutoFocus={() => {
+            restoreFocusRef.current =
+              document.activeElement instanceof HTMLElement ? document.activeElement : null
+          }}
+          onEscapeKeyDown={(event) => isBusy && event.preventDefault()}
+          onPointerDownOutside={(event) => isBusy && event.preventDefault()}
+        >
+          <DialogHeader className="personal-wechat-chat-header">
+            <div className="personal-wechat-chat-avatar" aria-hidden>
+              {displayName.slice(0, 1)}
+            </div>
+            <div className="personal-wechat-chat-heading">
+              <DialogTitle>{displayName}</DialogTitle>
+              <DialogDescription>
+                {isGroupChat ? '群聊' : '联系人'} · {setupReady ? '微信已连接' : '配置微信消息发送'}
+              </DialogDescription>
+            </div>
+            <span
+              className={`personal-wechat-connection-dot ${setupReady ? 'is-online' : ''}`}
+              aria-label={setupReady ? '微信已连接' : '微信尚未配置'}
+            />
+          </DialogHeader>
 
-        <div className="personal-wechat-chat-body">
+          <div className="personal-wechat-chat-body">
+            {setupReady && composerStarted && (
+              <div className="personal-wechat-message-list" aria-label="消息列表">
+                {messages.length === 0 ? (
+                  <div className="personal-wechat-empty-message">还没有发送消息。</div>
+                ) : (
+                  messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={`personal-wechat-message-bubble ${message.outgoing ? 'is-outgoing' : ''}`}
+                    >
+                      <span className="personal-wechat-message-kind">
+                        {message.type === 'text'
+                          ? '文字'
+                          : message.type === 'image'
+                            ? '图片'
+                            : '语音'}
+                      </span>
+                      <span>{message.text || message.fileName}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+
+            {(!setupReady || !composerStarted) && senderStatus && (
+              <PersonalWechatSetupGuide
+                runtimeStatus={runtimeStatus}
+                senderStatus={senderStatus}
+                runtimeProgress={runtimeProgress}
+                runtimeBusy={runtimeBusy}
+                binding={binding}
+                detecting={detecting}
+                sessionBound={sessionBound}
+                onDownloadRuntime={() => void handleDownloadRuntime()}
+                onBind={() => void handleBind()}
+                detectionAttempted={detectionAttempted}
+                onDetect={() => void handleDetect()}
+                onStartSending={() => setComposerStarted(true)}
+                onOpenTextToSpeechSettings={handleOpenSettings}
+              />
+            )}
+
+            {setupReady && composerStarted && (
+              <PersonalWechatChatComposer
+                status={senderStatus!}
+                targetId={targetId}
+                isGroupChat={isGroupChat}
+                initialMode={initialMode}
+                initialImage={initialImage}
+                onOpenTextToSpeechSettings={handleOpenSettings}
+                onCancel={handleClose}
+                onSend={handleSend}
+                onMessage={(message) => setMessages((current) => [...current, message])}
+                busy={sendBusy}
+              />
+            )}
+            {sendError && (
+              <div className="personal-wechat-global-error" role="alert">
+                {sendError}
+              </div>
+            )}
+          </div>
           {setupReady && composerStarted && (
-            <div className="personal-wechat-message-list" aria-label="消息列表">
-              {messages.length === 0 ? (
-                <div className="personal-wechat-empty-message">还没有发送消息。</div>
-              ) : (
-                messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`personal-wechat-message-bubble ${message.outgoing ? 'is-outgoing' : ''}`}
-                  >
-                    <span className="personal-wechat-message-kind">
-                      {message.type === 'text'
-                        ? '文字'
-                        : message.type === 'image'
-                          ? '图片'
-                          : '语音'}
-                    </span>
-                    <span>{message.text || message.fileName}</span>
-                  </div>
-                ))
-              )}
+            <div className="personal-wechat-chat-footer flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>保留 OneBot 进程</span>
+                <Switch
+                  checked={keepOneBotProcess}
+                  onCheckedChange={(checked) => void handleKeepOneBotProcessChange(checked)}
+                  aria-label="保留 OneBot 进程"
+                />
+              </div>
+              <Button variant="link" size="sm" onClick={() => void handleOpenVoiceDiagnostic()}>
+                语音发送诊断
+              </Button>
             </div>
           )}
-
-          {(!setupReady || !composerStarted) && senderStatus && (
-            <PersonalWechatSetupGuide
-              runtimeStatus={runtimeStatus}
-              senderStatus={senderStatus}
-              runtimeProgress={runtimeProgress}
-              runtimeBusy={runtimeBusy}
-              binding={binding}
-              detecting={detecting}
-              onDownloadRuntime={() => void handleDownloadRuntime()}
-              onBind={() => void handleBind()}
-              detectionAttempted={detectionAttempted}
-              onDetect={() => void handleDetect()}
-              onStartSending={() => setComposerStarted(true)}
-              onOpenTextToSpeechSettings={handleOpenSettings}
-            />
-          )}
-
-          {setupReady && composerStarted && (
-            <PersonalWechatChatComposer
-              status={senderStatus!}
-              targetId={targetId}
-              isGroupChat={isGroupChat}
-              initialMode={initialMode}
-              initialImage={initialImage}
-              onOpenTextToSpeechSettings={handleOpenSettings}
-              onCancel={handleClose}
-              onSend={handleSend}
-              onMessage={(message) => setMessages((current) => [...current, message])}
-              busy={sendBusy}
-            />
-          )}
-          {sendError && (
-            <div className="personal-wechat-global-error" role="alert">
-              {sendError}
+          {(!setupReady || !composerStarted) && (
+            <div className="personal-wechat-chat-footer flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>保留 OneBot 进程</span>
+                <Switch
+                  checked={keepOneBotProcess}
+                  onCheckedChange={(checked) => void handleKeepOneBotProcessChange(checked)}
+                  aria-label="保留 OneBot 进程"
+                />
+              </div>
+              <Button variant="outline" onClick={handleClose} disabled={isBusy}>
+                关闭
+              </Button>
             </div>
           )}
-        </div>
-        {(!setupReady || !composerStarted) && (
-          <div className="personal-wechat-chat-footer">
-            <Button variant="outline" onClick={handleClose} disabled={isBusy}>
-              关闭
-            </Button>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+      <PersonalWechatVoiceDiagnosticDialog
+        open={voiceDiagnosticOpen}
+        diagnostic={voiceDiagnostic}
+        onOpenChange={setVoiceDiagnosticOpen}
+      />
+    </>
   )
 }

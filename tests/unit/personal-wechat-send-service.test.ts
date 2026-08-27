@@ -11,6 +11,7 @@ vi.mock('electron', () => ({
 }))
 
 import {
+  buildPersonalWechatVoiceDiagnostic,
   buildPersonalWechatOneBotRequest,
   findWechatImagePath,
   findPersonalWechatRuntime,
@@ -32,6 +33,37 @@ afterEach(() => {
 })
 
 describe('personal WeChat OneBot request', () => {
+  it('keeps voice diagnostics to the safe metadata allowlist', () => {
+    const diagnostic = buildPersonalWechatVoiceDiagnostic('request-1', 'completed', {
+      input_bytes: 10,
+      upload_result: '0',
+      error: undefined,
+      aesKey: 'secret',
+      cdnKey: 'secret',
+      token: 'secret',
+      runtime_log: 'private'
+    })
+    expect(diagnostic).toMatchObject({ request_id: 'request-1', upload_result: '0' })
+    expect(diagnostic).not.toHaveProperty('aesKey')
+    expect(diagnostic).not.toHaveProperty('cdnKey')
+    expect(diagnostic).not.toHaveProperty('token')
+    expect(diagnostic).not.toHaveProperty('runtime_log')
+  })
+
+  it('redacts secrets embedded in diagnostic errors', () => {
+    const diagnostic = buildPersonalWechatVoiceDiagnostic('request-2', 'failed', {
+      error:
+        'upload failed aesKey=secret-value Bearer bearer-secret token:token-value {"cdnKey":"json-secret"}'
+    })
+    expect(diagnostic.error).toContain('aesKey=[redacted]')
+    expect(diagnostic.error).toContain('Bearer [redacted]')
+    expect(diagnostic.error).toContain('token:[redacted]')
+    expect(diagnostic.error).not.toContain('secret-value')
+    expect(diagnostic.error).not.toContain('bearer-secret')
+    expect(diagnostic.error).not.toContain('token-value')
+    expect(diagnostic.error).not.toContain('json-secret')
+  })
+
   it('builds a private text message request', () => {
     expect(
       buildPersonalWechatOneBotRequest({

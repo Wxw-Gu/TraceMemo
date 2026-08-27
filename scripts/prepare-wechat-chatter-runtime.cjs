@@ -123,6 +123,30 @@ function patchPerSendPayload(scriptPath) {
   console.log('[wechat-personal] 已应用逐条发送 payload 隔离补丁')
 }
 
+function patchVoiceAudioBuffer(scriptPath) {
+  let source = fs.readFileSync(scriptPath, 'utf8')
+  if (source.includes('voiceAudioDataAddr = Memory.alloc(audioLen + 1);')) return
+
+  const staticAllocation = 'voiceAudioDataAddr = Memory.alloc(5 * 1024 * 1024); // 预分配5MB'
+  if (!source.includes(staticAllocation)) {
+    throw new Error('无法定位 wechat_chatter 语音缓冲区')
+  }
+  source = source.replace(
+    staticAllocation,
+    'voiceAudioDataAddr = Memory.alloc(1); // 上传前按语音长度重新分配'
+  )
+  const audioLengthMarker = '    const audioLen = audioBytes.length;\n'
+  if (!source.includes(audioLengthMarker)) {
+    throw new Error('无法定位 wechat_chatter 语音上传逻辑')
+  }
+  source = source.replace(
+    audioLengthMarker,
+    `${audioLengthMarker}    voiceAudioDataAddr = Memory.alloc(audioLen + 1);\n`
+  )
+  fs.writeFileSync(scriptPath, source)
+  console.log('[wechat-personal] 已应用按语音长度分配上传缓冲区补丁')
+}
+
 function patchImageHookReadiness(scriptPath) {
   let source = fs.readFileSync(scriptPath, 'utf8')
   if (
@@ -182,7 +206,8 @@ function addModifiedWorkNotice(scriptPath) {
  * Upstream: https://github.com/yincongcyincong/wechat_chatter
  * Runtime version: v0.0.18
  * License: GNU General Public License version 3 (GPL-3.0)
- * Changes: WeChat module discovery, per-send payload isolation, and image Hook readiness logging.
+ * Changes: WeChat module discovery, per-send payload isolation, dynamic voice upload buffers,
+ * and image Hook readiness logging.
  * These modifications are not provided by the upstream author.
  */
 
@@ -194,6 +219,7 @@ function addModifiedWorkNotice(scriptPath) {
 
 patchWechatCoreModuleBase(script)
 patchPerSendPayload(script)
+patchVoiceAudioBuffer(script)
 patchImageHookReadiness(script)
 addModifiedWorkNotice(script)
 fs.chmodSync(executable, 0o755)
