@@ -11,6 +11,16 @@ export const LOCAL_API_ENDPOINTS = {
   },
   'group-snapshot': { method: 'GET', path: '/api/v1/group_snapshot', queryKeys: ['md5'] },
   resolve: { method: 'GET', path: '/api/v1/resolve', queryKeys: ['q'] },
+  'wechat-send-capability': {
+    method: 'GET',
+    path: '/api/v1/wechat-personal/send-capability',
+    queryKeys: []
+  },
+  'scheduled-reports': {
+    method: 'GET',
+    path: '/api/v1/scheduled-reports',
+    queryKeys: []
+  },
   report: { method: 'POST', path: '/api/v1/report', queryKeys: [] },
   'agent-status': { method: 'GET', path: '/api/v1/agent/status', queryKeys: [] },
   'agent-group-report': { method: 'POST', path: '/api/v1/agent/group-report', queryKeys: [] },

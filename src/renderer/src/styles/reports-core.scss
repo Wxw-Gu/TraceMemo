@@ -120,6 +120,7 @@
 
 .report-scheduled-empty {
   display: grid;
+  flex: 1 1 auto;
   min-height: 260px;
   place-items: center;
   align-content: center;
@@ -145,7 +146,24 @@
 }
 
 .report-scheduled-executions {
+  display: flex;
+  max-height: clamp(160px, 30vh, 320px);
+  min-height: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
   margin-top: 6px;
+  overflow: hidden;
+}
+
+.report-scheduled-executions > .grid {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.report-scheduled-page > .overflow-x-auto {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
 }
 
 @media (max-width: 760px) {
@@ -155,6 +173,18 @@
 
   .report-scheduled-header > button {
     width: 100%;
+  }
+}
+
+@media (max-height: 720px) {
+  .report-scheduled-page {
+    gap: 12px;
+    padding-top: 16px;
+    padding-bottom: 24px;
+  }
+
+  .report-scheduled-executions {
+    max-height: clamp(140px, 26vh, 220px);
   }
 }
 

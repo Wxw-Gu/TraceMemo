@@ -27,21 +27,70 @@ description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的�
 
 ## 端点速查
 
-| 方法 | 路径                  | 用途                                              |
-| ---- | --------------------- | ------------------------------------------------- |
-| GET  | `/health`             | 健康和数据库状态                                  |
-| GET  | `/current_time`       | 本机时间与时区                                    |
-| GET  | `/contact`            | 联系人/群聊列表；可传 `filter`、`type`            |
-| GET  | `/chatroom`           | 群聊列表；可传 `keyword`                          |
-| GET  | `/recent_chat`        | 最近会话；可传 `limit`                            |
-| GET  | `/chatlog`            | 会话消息；必填 `talker`，可传 `time` 或时间戳范围 |
-| GET  | `/media/{messageId}`  | 获取图片消息的真实图片二进制资源                  |
-| GET  | `/group_snapshot`     | 群成员快照；必填 `md5`                            |
-| GET  | `/resolve`            | 昵称、wxid、md5 解析；必填 `q`                    |
-| POST | `/report`             | 将已有日报结构渲染为 HTML/PNG                     |
-| GET  | `/agent/status`       | Agent Hub、连接器和数据库状态                     |
-| POST | `/agent/group-report` | 按群和 `today`/`yesterday`/`7days` 生成总结图片   |
-| POST | `/agent/send`         | 已连接机器人发送测试                              |
+| 方法   | 路径                                | 用途                                              |
+| ------ | ----------------------------------- | ------------------------------------------------- |
+| GET    | `/health`                           | 健康和数据库状态                                  |
+| GET    | `/current_time`                     | 本机时间与时区                                    |
+| GET    | `/contact`                          | 联系人/群聊列表；可传 `filter`、`type`            |
+| GET    | `/chatroom`                         | 群聊列表；可传 `keyword`                          |
+| GET    | `/recent_chat`                      | 最近会话；可传 `limit`                            |
+| GET    | `/chatlog`                          | 会话消息；必填 `talker`，可传 `time` 或时间戳范围 |
+| GET    | `/media/{messageId}`                | 获取图片消息的真实图片二进制资源                  |
+| GET    | `/group_snapshot`                   | 群成员快照；必填 `md5`                            |
+| GET    | `/resolve`                          | 昵称、wxid、md5 解析；必填 `q`                    |
+| GET    | `/wechat-personal/send-capability`  | 个人微信图片发送能力状态                          |
+| GET    | `/scheduled-reports`                | 查询全部定时日报任务                              |
+| GET    | `/scheduled-reports/:id`            | 查询单个定时日报任务                              |
+| POST   | `/scheduled-reports`                | 创建定时日报任务                                  |
+| PATCH  | `/scheduled-reports/:id`            | 修改定时日报任务                                  |
+| DELETE | `/scheduled-reports/:id`            | 删除定时日报任务（执行前必须获得用户确认）        |
+| POST   | `/scheduled-reports/:id/enable`     | 启用定时日报任务                                  |
+| POST   | `/scheduled-reports/:id/disable`    | 暂停定时日报任务                                  |
+| POST   | `/scheduled-reports/:id/run`        | 立即执行一次并返回 execution                      |
+| GET    | `/scheduled-reports/:id/executions` | 查询执行记录                                      |
+| POST   | `/report`                           | 将已有日报结构渲染为 HTML/PNG                     |
+| GET    | `/agent/status`                     | Agent Hub、连接器和数据库状态                     |
+| POST   | `/agent/group-report`               | 按群和 `today`/`yesterday`/`7days` 生成总结图片   |
+| POST   | `/agent/send`                       | 已连接机器人发送测试                              |
+
+## 定时日报管理
+
+定时日报由 TraceMemo 自己持久化和调度。Agent 只负责理解自然语言、解析群聊和时间，再调用上述 API；不要创建 cron、维护任务文件、计算下一次执行时间或自行发送微信。
+
+### 创建任务
+
+用户提出“每天早上 9 点给技术交流群发昨天的日报”时，按以下顺序执行：
+
+1. 调用 `/health`，确认 TraceMemo 和数据库可用。
+2. 调用 `/wechat-personal/send-capability`，只有 `capability.status === "ready"` 且 `capability.capabilities.image === true` 才允许继续。
+3. 用户使用“今天”“昨天”等相对日期时调用 `/current_time`；日报任务的 `schedule.time` 使用 TraceMemo 本机时区的 `HH:mm`，不要转成 UTC。
+4. 调用 `/chatroom` 或 `/contact?type=group` 查找群聊。名称匹配多个结果时，必须把候选项展示给用户并要求选择；不能猜测。
+5. 使用唯一群聊的 `talker` 创建：
+
+```json
+{
+  "name": "技术交流群 · 每日日报",
+  "group": { "talker": "xxx@chatroom", "name": "技术交流群" },
+  "schedule": { "type": "daily", "time": "09:00" },
+  "reportRange": "yesterday",
+  "target": { "type": "wechat_group", "talker": "xxx@chatroom" },
+  "enabled": true
+}
+```
+
+如果 API 返回 `409` 且 `error === "duplicate"`，告诉用户相同任务已经存在，不要再次创建。能力状态为 `unsupported`、`unconfigured`、`needs_binding`、`needs_verification` 或 `error` 时，直接说明需要先在 TraceMemo 设置中完成个人微信绑定和消息能力检测。
+
+### 查看、修改和执行
+
+- “我现在有哪些定时日报”调用 `GET /scheduled-reports`，使用返回的 `tasks` 展示任务名称、群聊、每天的时间、范围、目标和启停状态。
+- 修改前先查询列表并确认唯一任务，再调用 `PATCH /scheduled-reports/:id`。只提交需要修改的字段，例如 `{"schedule":{"type":"daily","time":"10:00"}}`。
+- 暂停调用 `/scheduled-reports/:id/disable`，恢复调用 `/scheduled-reports/:id/enable`。
+- “现在执行一次”调用 `/scheduled-reports/:id/run`，不要改用 `/agent/group-report` 后自行发送微信；该接口和定时执行共用同一条链路。
+- 查询执行结果调用 `/scheduled-reports/:id/executions`，根据 `status`、`startedAt`、`finishedAt`、`message` 和 `error` 向用户解释结果。
+
+### 删除确认
+
+删除是不可逆操作。收到删除请求后，先用任务列表找到唯一任务，向用户展示任务名称、时间、日报范围和发送目标并明确询问确认；只有用户明确确认后，才调用 `DELETE /scheduled-reports/:id`。
 
 ## 时间与上下文规则
 

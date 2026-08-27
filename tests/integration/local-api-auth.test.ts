@@ -264,6 +264,8 @@ describe('Local API authentication', () => {
     })
     expect(response.status).toBe(204)
     expect(response.headers.get('access-control-allow-origin')).toBe(origin)
+    expect(response.headers.get('access-control-allow-methods')).toContain('PATCH')
+    expect(response.headers.get('access-control-allow-methods')).toContain('DELETE')
     expect(response.headers.get('access-control-allow-headers')).toBe('Content-Type, Authorization')
   })
 

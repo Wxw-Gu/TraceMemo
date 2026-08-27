@@ -11,6 +11,17 @@ import {
 import { exportGroupReport } from './group-report-service'
 import { GroupReportExportRequest } from '../shared/group-report'
 import { generateAgentGroupReport } from './services/agent-group-report-service'
+import { scheduledReportService } from './services/scheduled-report-service'
+import { personalWechatCapabilityService } from './services/personal-wechat-capability-service'
+import {
+  ScheduledReportApiError,
+  ScheduledReportApiService,
+  type ScheduledReportApiDependencies
+} from './services/scheduled-report-api-service'
+import type {
+  ScheduledReportApiCreateRequest,
+  ScheduledReportApiUpdateRequest
+} from '../shared/scheduled-report-api'
 import { agentHubService } from './services/agent-hub-service'
 import { safeError, safeLog, safeWarn } from './safe-log'
 import { apiTokenStore } from './api-token-store'
@@ -35,6 +46,11 @@ interface RouteContext {
 export interface HttpServerOptions {
   tokenProvider?: () => string | null
   mediaProvider?: (messageId: string) => Promise<HttpImageResult>
+  scheduledReportService?: ScheduledReportApiDependencies['service']
+  scheduledReportCapabilityProvider?: ScheduledReportApiDependencies['getCapability']
+  scheduledReportContactsProvider?: ScheduledReportApiDependencies['listContacts']
+  scheduledReportDatabaseReadyProvider?: ScheduledReportApiDependencies['isDatabaseReady']
+  scheduledReportPlatform?: NodeJS.Platform
 }
 
 type RouteHandler = (ctx: RouteContext) => void | Promise<void>
@@ -67,7 +83,7 @@ function applyCorsHeaders(req: IncomingMessage, res: ServerResponse): boolean {
   if (!isAllowedCorsOrigin(origin)) return false
   res.setHeader('Access-Control-Allow-Origin', origin)
   res.setHeader('Vary', 'Origin')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
   return true
 }
@@ -367,6 +383,138 @@ const routes: Record<string, RouteHandler> = {
   }
 }
 
+const SCHEDULED_REPORTS_ROUTE = '/api/v1/scheduled-reports'
+const WECHAT_SEND_CAPABILITY_ROUTE = '/api/v1/wechat-personal/send-capability'
+
+function parseJsonBody(body: unknown): unknown {
+  if (typeof body !== 'string' || !body.trim()) {
+    throw new ScheduledReportApiError(400, 'invalid_request', '请求体不能为空')
+  }
+  try {
+    return JSON.parse(body)
+  } catch {
+    throw new ScheduledReportApiError(400, 'invalid_request', '请求体 JSON 解析失败')
+  }
+}
+
+function sendScheduledError(res: ServerResponse, error: unknown): void {
+  if (error instanceof ScheduledReportApiError) {
+    sendJson(res, error.status, {
+      error: error.code,
+      message: error.message,
+      ...(error.details !== undefined ? { details: error.details } : {})
+    })
+    return
+  }
+  safeError('[HttpServer] scheduled report request failed:', error)
+  sendJson(res, 500, {
+    error: 'internal_error',
+    message: '定时日报 API 执行失败'
+  })
+}
+
+function createScheduledReportApi(options: HttpServerOptions): ScheduledReportApiService {
+  return new ScheduledReportApiService({
+    service: options.scheduledReportService || scheduledReportService,
+    getCapability:
+      options.scheduledReportCapabilityProvider ||
+      (() => personalWechatCapabilityService.getPersonalWechatSendCapability()),
+    listContacts: options.scheduledReportContactsProvider || listContacts,
+    isDatabaseReady: options.scheduledReportDatabaseReadyProvider || isReady,
+    platform: options.scheduledReportPlatform
+  })
+}
+
+function createScheduledReportRoute(
+  pathname: string,
+  api: ScheduledReportApiService
+): RouteHandler | undefined {
+  if (pathname === WECHAT_SEND_CAPABILITY_ROUTE) {
+    return async ({ req, res }) => {
+      if (req.method !== 'GET') return sendError(res, 405, '需要 GET 请求')
+      try {
+        sendJson(res, 200, { capability: await api.getCapability() })
+      } catch (error) {
+        sendScheduledError(res, error)
+      }
+    }
+  }
+
+  if (pathname === SCHEDULED_REPORTS_ROUTE) {
+    return async ({ req, res, body }) => {
+      try {
+        if (req.method === 'GET') {
+          const tasks = await api.list()
+          sendJson(res, 200, { count: tasks.length, tasks })
+          return
+        }
+        if (req.method !== 'POST') {
+          sendError(res, 405, '需要 GET 或 POST 请求')
+          return
+        }
+        const task = await api.create(parseJsonBody(body) as ScheduledReportApiCreateRequest)
+        sendJson(res, 201, { created: true, task })
+      } catch (error) {
+        sendScheduledError(res, error)
+      }
+    }
+  }
+
+  const prefix = `${SCHEDULED_REPORTS_ROUTE}/`
+  if (!pathname.startsWith(prefix)) return undefined
+  const segments = pathname.slice(prefix.length).split('/').filter(Boolean)
+  if (!segments.length || segments.length > 2) return undefined
+  let taskId: string
+  try {
+    taskId = decodeURIComponent(segments[0])
+  } catch {
+    return undefined
+  }
+  const action = segments[1]
+
+  return async ({ req, res, body }) => {
+    try {
+      if (!action && req.method === 'GET') {
+        sendJson(res, 200, { task: await api.get(taskId) })
+        return
+      }
+      if (!action && req.method === 'PATCH') {
+        const task = await api.update(
+          taskId,
+          parseJsonBody(body) as ScheduledReportApiUpdateRequest
+        )
+        sendJson(res, 200, { updated: true, task })
+        return
+      }
+      if (!action && req.method === 'DELETE') {
+        sendJson(res, 200, { deleted: true, ...(await api.delete(taskId)) })
+        return
+      }
+      if (action === 'enable' && req.method === 'POST') {
+        sendJson(res, 200, { updated: true, task: await api.setEnabled(taskId, true) })
+        return
+      }
+      if (action === 'disable' && req.method === 'POST') {
+        sendJson(res, 200, { updated: true, task: await api.setEnabled(taskId, false) })
+        return
+      }
+      if (action === 'run' && req.method === 'POST') {
+        const execution = await api.run(taskId)
+        sendJson(res, 200, { success: execution.status === 'success', execution })
+        return
+      }
+      if (action === 'executions' && req.method === 'GET') {
+        const executions = await api.executions(taskId)
+        sendJson(res, 200, { count: executions.length, executions })
+        return
+      }
+      sendError(res, 405, '请求方法或定时日报操作不受支持')
+    } catch (error) {
+      sendScheduledError(res, error)
+    }
+  }
+}
+
 const MEDIA_ROUTE_PREFIX = '/api/v1/media/'
 
 function createMediaRoute(
@@ -424,6 +572,7 @@ export function startHttpServer(
 ): Promise<HttpServerHandle> {
   const tokenProvider = options.tokenProvider || (() => apiTokenStore.getTokenForAuthentication())
   const mediaProvider = options.mediaProvider || readImageMedia
+  const scheduledReportApi = createScheduledReportApi(options)
   return new Promise((resolve, reject) => {
     const server: Server = http.createServer(async (req, res) => {
       try {
@@ -437,6 +586,7 @@ export function startHttpServer(
         }
         const handler =
           routes[url.pathname] ||
+          createScheduledReportRoute(url.pathname, scheduledReportApi) ||
           (url.pathname.startsWith(MEDIA_ROUTE_PREFIX)
             ? createMediaRoute(mediaProvider)
             : undefined)
