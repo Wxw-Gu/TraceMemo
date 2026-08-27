@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 vi.mock('electron', () => ({
   app: {
     getAppPath: () => '/fixture/app',
+    getPath: () => '/tmp/tracememo-test-user-data',
     isPackaged: false
   }
 }))

@@ -112,8 +112,14 @@ import {
 import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
 import { personalWechatSendService } from './services/personal-wechat-send-service'
+import { getPersonalWechatSendCapability } from './services/personal-wechat-capability-service'
+import { scheduledReportService } from './services/scheduled-report-service'
 import { PersonalWechatRuntimeManager } from './services/personal-wechat-runtime-manager'
 import type { PersonalWechatSendRequest } from '../shared/personal-wechat'
+import type {
+  ScheduledReportCreateInput,
+  ScheduledReportUpdateInput
+} from '../shared/scheduled-report'
 import { TextToSpeechSettingsService } from './services/text-to-speech-settings-service'
 import type {
   ListTextToSpeechVoicesRequest,
@@ -1280,6 +1286,29 @@ app.whenReady().then(async () => {
     return deleteGeneratedReport(reportId)
   })
 
+  ipcMain.handle('wechat-personal:getSendCapability', () => getPersonalWechatSendCapability())
+  ipcMain.handle('scheduled-report:list', () => scheduledReportService.listTasks())
+  ipcMain.handle('scheduled-report:listExecutions', (_, taskId?: string) =>
+    scheduledReportService.listExecutions(taskId)
+  )
+  ipcMain.handle('scheduled-report:create', (_, request: ScheduledReportCreateInput) =>
+    scheduledReportService.createTask(request)
+  )
+  ipcMain.handle(
+    'scheduled-report:update',
+    (_, taskId: string, request: ScheduledReportUpdateInput) =>
+      scheduledReportService.updateTask(taskId, request)
+  )
+  ipcMain.handle('scheduled-report:delete', (_, taskId: string) =>
+    scheduledReportService.deleteTask(taskId)
+  )
+  ipcMain.handle('scheduled-report:setEnabled', (_, taskId: string, enabled: boolean) =>
+    scheduledReportService.setTaskEnabled(taskId, Boolean(enabled))
+  )
+  ipcMain.handle('scheduled-report:runNow', (_, taskId: string) =>
+    scheduledReportService.runScheduledReportNow(taskId)
+  )
+
   ipcMain.handle('report:reveal', async (_, filePath: string) => {
     try {
       shell.showItemInFolder(filePath)
@@ -1859,6 +1888,7 @@ app.whenReady().then(async () => {
   }
 
   await agentHubService.start(settings)
+  await scheduledReportService.start()
 
   setupTray()
   if (TRAY_MODE) app.dock?.hide()
@@ -1895,6 +1925,7 @@ app.on('before-quit', (event) => {
 
   void (async () => {
     agentHubService.stop()
+    scheduledReportService.stop()
     flushBootstrapCacheWritesSync()
     const [, nativeCallsDrained] = await Promise.all([
       apiServer.stop().catch(() => undefined),

@@ -16,7 +16,7 @@ const aiProvider = new AIProviderService()
 
 export interface AgentGroupReportRequest {
   group: string
-  range?: SummaryDateRange
+  range?: SummaryDateRange | 'recent24h'
 }
 
 export interface AgentGroupReportResult {
@@ -42,7 +42,10 @@ export async function generateAgentGroupReport(
   }
 
   const range = request.range === 'yesterday' || request.range === '7days' ? request.range : 'today'
-  const { startTime, endTime } = getSummaryDateRange(range)
+  const { startTime, endTime } =
+    request.range === 'recent24h'
+      ? { startTime: Math.floor(Date.now() / 1000) - 86400, endTime: Math.floor(Date.now() / 1000) }
+      : getSummaryDateRange(range)
   let messages = listMessages(contact.md5, startTime, endTime) as Message[]
   if (!messages.length) return { success: false, error: '所选时间范围没有可总结的消息' }
 

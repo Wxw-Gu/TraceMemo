@@ -44,6 +44,29 @@ export interface PersonalWechatSenderStatus {
   error?: string
 }
 
+/** Stable, feature-facing send capability derived from the low-level sender status. */
+export type PersonalWechatSendCapabilityState =
+  | 'unsupported'
+  | 'unconfigured'
+  | 'needs_binding'
+  | 'needs_verification'
+  | 'ready'
+  | 'error'
+
+export interface PersonalWechatSendCapability {
+  supported: boolean
+  ready: boolean
+  status: PersonalWechatSendCapabilityState
+  capabilities: {
+    text: boolean
+    image: boolean
+    voice: boolean
+  }
+  senderStatus: PersonalWechatSenderStatus
+  message: string
+  error?: string
+}
+
 interface PersonalWechatSendBaseRequest {
   to: string
   isGroup: boolean

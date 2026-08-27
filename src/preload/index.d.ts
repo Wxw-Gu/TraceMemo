@@ -61,6 +61,14 @@ import type {
   PersonalWechatSenderStatus,
   PersonalWechatVoiceDiagnostic
 } from '../shared/personal-wechat'
+import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
+import type {
+  ScheduledReportCreateInput,
+  ScheduledReportExecution,
+  ScheduledReportResult,
+  ScheduledReportTask,
+  ScheduledReportUpdateInput
+} from '../shared/scheduled-report'
 import type {
   PersonalWechatRuntimeDownloadResult,
   PersonalWechatRuntimeProgressEvent,
@@ -582,6 +590,7 @@ declare global {
         limit?: number
       ) => Promise<{ success: boolean; insights: ImageInsight[] }>
       getPersonalWechatSenderStatus: () => Promise<PersonalWechatSenderStatus>
+      getPersonalWechatSendCapability: () => Promise<PersonalWechatSendCapability>
       getPersonalWechatKeepOneBotProcess: () => Promise<boolean>
       setPersonalWechatKeepOneBotProcess: (keep: boolean) => Promise<boolean>
       getPersonalWechatRuntimeStatus: () => Promise<PersonalWechatRuntimeStatus>
@@ -598,6 +607,25 @@ declare global {
       sendPersonalWechatMessage: (
         request: PersonalWechatSendRequest
       ) => Promise<PersonalWechatSendResult>
+      listScheduledReports: () => Promise<ScheduledReportTask[]>
+      listScheduledReportExecutions: (taskId?: string) => Promise<ScheduledReportExecution[]>
+      createScheduledReport: (
+        request: ScheduledReportCreateInput
+      ) => Promise<ScheduledReportResult<ScheduledReportTask>>
+      updateScheduledReport: (
+        taskId: string,
+        request: ScheduledReportUpdateInput
+      ) => Promise<ScheduledReportResult<ScheduledReportTask>>
+      deleteScheduledReport: (
+        taskId: string
+      ) => Promise<ScheduledReportResult<{ deletedId: string }>>
+      setScheduledReportEnabled: (
+        taskId: string,
+        enabled: boolean
+      ) => Promise<ScheduledReportResult<ScheduledReportTask>>
+      runScheduledReportNow: (
+        taskId: string
+      ) => Promise<ScheduledReportResult<ScheduledReportExecution>>
       getPersonalWechatVoiceDiagnostic: () => Promise<PersonalWechatVoiceDiagnostic | null>
       getAgentHubStatus: () => Promise<AgentHubStatus>
       getAgentHubLogs: () => Promise<AgentHubLogEntry[]>

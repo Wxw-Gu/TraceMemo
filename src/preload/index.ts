@@ -33,6 +33,14 @@ import type {
   PersonalWechatSenderStatus,
   PersonalWechatVoiceDiagnostic
 } from '../shared/personal-wechat'
+import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
+import type {
+  ScheduledReportCreateInput,
+  ScheduledReportExecution,
+  ScheduledReportResult,
+  ScheduledReportTask,
+  ScheduledReportUpdateInput
+} from '../shared/scheduled-report'
 import type {
   PersonalWechatRuntimeDownloadResult,
   PersonalWechatRuntimeProgressEvent,
@@ -353,6 +361,8 @@ const api = {
     ipcRenderer.invoke('image:listInsights', sessionId, limit),
   getPersonalWechatSenderStatus: (): Promise<PersonalWechatSenderStatus> =>
     ipcRenderer.invoke('wechat-personal:getStatus'),
+  getPersonalWechatSendCapability: (): Promise<PersonalWechatSendCapability> =>
+    ipcRenderer.invoke('wechat-personal:getSendCapability'),
   getPersonalWechatKeepOneBotProcess: (): Promise<boolean> =>
     ipcRenderer.invoke('wechat-personal:getKeepProcess'),
   setPersonalWechatKeepOneBotProcess: (keep: boolean): Promise<boolean> =>
@@ -386,6 +396,30 @@ const api = {
   sendPersonalWechatMessage: (
     request: PersonalWechatSendRequest
   ): Promise<PersonalWechatSendResult> => ipcRenderer.invoke('wechat-personal:send', request),
+  listScheduledReports: (): Promise<ScheduledReportTask[]> =>
+    ipcRenderer.invoke('scheduled-report:list'),
+  listScheduledReportExecutions: (taskId?: string): Promise<ScheduledReportExecution[]> =>
+    ipcRenderer.invoke('scheduled-report:listExecutions', taskId),
+  createScheduledReport: (
+    request: ScheduledReportCreateInput
+  ): Promise<ScheduledReportResult<ScheduledReportTask>> =>
+    ipcRenderer.invoke('scheduled-report:create', request),
+  updateScheduledReport: (
+    taskId: string,
+    request: ScheduledReportUpdateInput
+  ): Promise<ScheduledReportResult<ScheduledReportTask>> =>
+    ipcRenderer.invoke('scheduled-report:update', taskId, request),
+  deleteScheduledReport: (taskId: string): Promise<ScheduledReportResult<{ deletedId: string }>> =>
+    ipcRenderer.invoke('scheduled-report:delete', taskId),
+  setScheduledReportEnabled: (
+    taskId: string,
+    enabled: boolean
+  ): Promise<ScheduledReportResult<ScheduledReportTask>> =>
+    ipcRenderer.invoke('scheduled-report:setEnabled', taskId, enabled),
+  runScheduledReportNow: (
+    taskId: string
+  ): Promise<ScheduledReportResult<ScheduledReportExecution>> =>
+    ipcRenderer.invoke('scheduled-report:runNow', taskId),
   getPersonalWechatVoiceDiagnostic: (): Promise<PersonalWechatVoiceDiagnostic | null> =>
     ipcRenderer.invoke('wechat-personal:getVoiceDiagnostic'),
   getAgentHubStatus: () => ipcRenderer.invoke('agent-hub:getStatus'),
