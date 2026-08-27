@@ -70,16 +70,18 @@ export class StickerService {
 
   private async readCached(cacheKey: string): Promise<string | null> {
     const extensions = ['.gif', '.png', '.webp', '.jpg', '.jpeg']
-    const cacheDirs = [
-      this.cacheDir,
-      this.legacyCacheDir
-    ]
+    const cacheDirs = [this.cacheDir, this.legacyCacheDir]
     for (const cacheDir of cacheDirs) {
       for (const ext of extensions) {
         const filePath = path.join(cacheDir, `${cacheKey}${ext}`)
         if (!fs.existsSync(filePath)) continue
         const buffer = await fs.readFile(filePath)
-        return this.toDataUrl(buffer, ext)
+        const detectedExtension = this.detectExtension(buffer)
+        if (!detectedExtension) {
+          console.warn(`[StickerService] ignored invalid local cache key=${cacheKey}`)
+          continue
+        }
+        return this.toDataUrl(buffer, detectedExtension)
       }
     }
     return null
@@ -108,7 +110,11 @@ export class StickerService {
       const filePath = path.join(cacheRoot, month, 'Emoticon', prefix, md5)
       if (!fs.existsSync(filePath)) continue
       const buffer = await fs.readFile(filePath)
-      const ext = this.detectExtension(buffer) || '.gif'
+      const ext = this.detectExtension(buffer)
+      if (!ext) {
+        console.warn(`[StickerService] ignored invalid WeChat cache md5=${md5} month=${month}`)
+        continue
+      }
       return this.toDataUrl(buffer, ext)
     }
 
@@ -169,7 +175,14 @@ export class StickerService {
               return
             }
 
-            const ext = this.detectExtension(buffer) || this.getExtFromUrl(url) || '.gif'
+            const ext = this.detectExtension(buffer)
+            if (!ext) {
+              console.warn(
+                `[StickerService] download returned invalid image md5=${cacheKey} host=${this.getUrlHost(url)}`
+              )
+              resolve({ success: false, error: '表情包响应不是支持的图片格式' })
+              return
+            }
             try {
               await fs.ensureDir(this.cacheDir)
               await fs.writeFile(path.join(this.cacheDir, `${cacheKey}${ext}`), buffer)
@@ -206,15 +219,6 @@ export class StickerService {
       return '.webp'
     }
     return null
-  }
-
-  private getExtFromUrl(url: string): string | null {
-    try {
-      const ext = path.extname(new URL(url).pathname).toLowerCase()
-      return ['.gif', '.png', '.webp', '.jpg', '.jpeg'].includes(ext) ? ext : null
-    } catch {
-      return null
-    }
   }
 
   private getUrlHost(url: string): string {
