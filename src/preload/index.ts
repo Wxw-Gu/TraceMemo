@@ -178,6 +178,8 @@ const api = {
   copyImage: (base64String) => ipcRenderer.invoke('copy-image', base64String),
   getVoiceData: (sessionId: string, localId: number, createTime: number, svrId?: string | number) =>
     ipcRenderer.invoke('db:getVoiceData', sessionId, localId, createTime, svrId),
+  showVoiceSourceContextMenu: (reference: VoiceMessageReference) =>
+    ipcRenderer.invoke('voice:showSourceContextMenu', reference),
   getVoiceModelStatus: (): Promise<VoiceModelStatus> => ipcRenderer.invoke('voice:getModelStatus'),
   downloadVoiceModel: (): Promise<VoiceModelDownloadResult> =>
     ipcRenderer.invoke('voice:downloadModel'),

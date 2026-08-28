@@ -307,6 +307,9 @@ declare global {
         createTime: number,
         svrId?: string | number
       ) => Promise<{ success: boolean; data?: string; error?: string }>
+      showVoiceSourceContextMenu: (
+        reference: VoiceMessageReference
+      ) => Promise<{ success: boolean; error?: string }>
       getVoiceModelStatus: () => Promise<VoiceModelStatus>
       downloadVoiceModel: () => Promise<VoiceModelDownloadResult>
       cancelVoiceModelDownload: () => Promise<{ success: boolean }>

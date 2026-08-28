@@ -1336,6 +1336,51 @@ app.whenReady().then(async () => {
     }
   )
 
+  ipcMain.handle(
+    'voice:showSourceContextMenu',
+    (
+      event,
+      reference: { sessionId: string; localId: number; createTime: number; svrId?: string | number }
+    ) => {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      if (!window || !voiceService) return { success: false, error: '语音服务未初始化' }
+
+      const revealSource = async (): Promise<void> => {
+        try {
+          const result = await voiceService!.resolveSource(
+            reference.sessionId,
+            reference.localId,
+            reference.createTime,
+            reference.svrId
+          )
+          if (!result.success) throw new Error(result.error)
+
+          const directory = join(app.getPath('userData'), 'voice-sources')
+          await fsPromises.mkdir(directory, { recursive: true })
+          const fileName = `voice_${reference.localId}_${reference.createTime}_${result.source.sourceHash.slice(0, 12)}.silk`
+          const filePath = join(directory, fileName)
+          await fsPromises.writeFile(filePath, result.source.data)
+          shell.showItemInFolder(filePath)
+        } catch (error) {
+          await dialog.showMessageBox(window, {
+            type: 'error',
+            title: '查找语音源文件失败',
+            message: '无法提取这条语音的源文件',
+            detail: error instanceof Error ? error.message : String(error)
+          })
+        }
+      }
+
+      Menu.buildFromTemplate([
+        {
+          label: '查找语音源文件',
+          click: () => void revealSource()
+        }
+      ]).popup({ window })
+      return { success: true }
+    }
+  )
+
   ipcMain.handle('voice:getModelStatus', async () => {
     if (!voiceRecognition) throw new Error('Voice recognition is not initialized')
     return voiceRecognition.getModelStatus()

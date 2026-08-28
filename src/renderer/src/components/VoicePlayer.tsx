@@ -193,6 +193,15 @@ export function VoicePlayer({
     window.dispatchEvent(new Event('wxe:open-voice-recognition-settings'))
   }, [])
 
+  const handleContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      event.preventDefault()
+      event.stopPropagation()
+      void window.api.showVoiceSourceContextMenu(voiceReference)
+    },
+    [voiceReference]
+  )
+
   const formatDuration = (seconds: number | undefined): string => {
     if (!seconds || !isFinite(seconds)) return '0:00'
     const mins = Math.floor(seconds / 60)
@@ -205,6 +214,7 @@ export function VoicePlayer({
       <div
         className={`voice-message ${loading ? 'voice-loading' : ''} ${error && !audioUrl ? 'voice-error' : ''}`}
         onClick={handlePlayPause}
+        onContextMenu={handleContextMenu}
       >
         <span className={`voice-icon ${isPlaying ? 'playing' : ''}`}>{isPlaying ? '⏸' : '▶'}</span>
         {loading ? (
