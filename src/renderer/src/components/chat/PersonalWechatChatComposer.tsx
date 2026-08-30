@@ -20,6 +20,7 @@ export type ChatMessage = {
 }
 
 interface PersonalWechatChatComposerProps {
+  className?: string
   status: PersonalWechatSenderStatus
   targetId: string
   isGroupChat: boolean
@@ -42,6 +43,7 @@ function formatAudioTime(value: number): string {
 }
 
 export function PersonalWechatChatComposer({
+  className,
   status,
   targetId,
   isGroupChat,
@@ -245,7 +247,10 @@ export function PersonalWechatChatComposer({
   const previewProgress = previewDuration > 0 ? (previewCurrentTime / previewDuration) * 100 : 0
 
   return (
-    <section className="personal-wechat-composer" aria-label="发送消息">
+    <section
+      className={`personal-wechat-composer${className ? ` ${className}` : ''}`}
+      aria-label="发送消息"
+    >
       <SegmentedControl
         className="personal-wechat-composer-mode"
         aria-label="消息类型"
@@ -262,158 +267,167 @@ export function PersonalWechatChatComposer({
         <SegmentedControlItem value="voice">语音</SegmentedControlItem>
       </SegmentedControl>
 
-      {mode === 'text' && (
-        <div className="personal-wechat-text-editor">
-          <Textarea
-            aria-label="消息内容"
-            placeholder="输入消息"
-            value={text}
-            maxLength={2000}
-            rows={3}
-            disabled={isBusy}
-            onChange={(event) => {
-              setText(event.target.value)
-              setFeedback(null)
-            }}
-          />
-          <span>{text.length} / 2000</span>
-        </div>
-      )}
-
-      {mode === 'image' && (
-        <div className="personal-wechat-file-editor">
-          <div>
-            <strong>{image?.name || '还没有选择图片'}</strong>
-            <small>{image ? image.path : '支持 PNG、JPG、GIF 和 WebP，最大 20 MB'}</small>
+      <div className="personal-wechat-composer-editor">
+        {mode === 'text' && (
+          <div className="personal-wechat-text-editor">
+            <Textarea
+              aria-label="消息内容"
+              placeholder="输入消息"
+              value={text}
+              maxLength={2000}
+              rows={3}
+              disabled={isBusy}
+              onChange={(event) => {
+                setText(event.target.value)
+                setFeedback(null)
+              }}
+            />
+            <span>{text.length} / 2000</span>
           </div>
-          <Button variant="outline" size="sm" onClick={() => void selectImage()} disabled={isBusy}>
-            {image ? '重新选择' : '选择图片'}
-          </Button>
-        </div>
-      )}
+        )}
 
-      {mode === 'voice' && (
-        <div className="personal-wechat-voice-editor">
-          <SegmentedControl
-            aria-label="语音来源"
-            value={voiceSource}
-            onValueChange={(value) => {
-              clearGeneratedVoice()
-              setVoiceSource(value as VoiceSource)
-              setFeedback(null)
-            }}
-            disabled={isBusy}
-          >
-            <SegmentedControlItem value="generated">输入文字生成</SegmentedControlItem>
-            <SegmentedControlItem value="file">选择本地文件</SegmentedControlItem>
-          </SegmentedControl>
-          {voiceSource === 'generated' ? (
-            <>
-              <div className="personal-wechat-voice-heading">
-                <span>{selectedTtsVoice?.name || '尚未选择音色'}</span>
-                {onOpenTextToSpeechSettings && (
-                  <Button variant="link" size="sm" onClick={onOpenTextToSpeechSettings}>
-                    语音设置
-                  </Button>
-                )}
-              </div>
-              <Textarea
-                aria-label="语音文字"
-                placeholder="输入要生成的文字"
-                value={voiceText}
-                maxLength={1000}
-                rows={2}
-                disabled={isBusy}
-                onChange={(event) => {
-                  clearGeneratedVoice()
-                  setVoiceText(event.target.value)
-                  setFeedback(null)
-                }}
-              />
-              {generatedVoice ? (
-                <div className="personal-wechat-generated-result">
-                  <audio
-                    ref={generatedAudioRef}
-                    src={generatedVoice.audioDataUrl}
-                    preload="metadata"
-                    onLoadedMetadata={(event) => setPreviewDuration(event.currentTarget.duration)}
-                    onTimeUpdate={(event) => setPreviewCurrentTime(event.currentTarget.currentTime)}
-                    onPause={() => setIsPreviewPlaying(false)}
-                    onPlay={() => setIsPreviewPlaying(true)}
-                    onEnded={() => {
-                      setIsPreviewPlaying(false)
-                      setPreviewCurrentTime(0)
-                    }}
-                  />
-                  <div>
-                    <strong>语音已生成</strong>
-                    <span>
-                      {formatAudioTime(previewCurrentTime)} / {formatAudioTime(previewDuration)}
-                    </span>
-                    <div className="personal-wechat-preview-track">
-                      <span style={{ width: `${Math.min(100, previewProgress)}%` }} />
+        {mode === 'image' && (
+          <div className="personal-wechat-file-editor">
+            <div>
+              <strong>{image?.name || '还没有选择图片'}</strong>
+              <small>{image ? image.path : '支持 PNG、JPG、GIF 和 WebP，最大 20 MB'}</small>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void selectImage()}
+              disabled={isBusy}
+            >
+              {image ? '重新选择' : '选择图片'}
+            </Button>
+          </div>
+        )}
+
+        {mode === 'voice' && (
+          <div className="personal-wechat-voice-editor">
+            <SegmentedControl
+              aria-label="语音来源"
+              value={voiceSource}
+              onValueChange={(value) => {
+                clearGeneratedVoice()
+                setVoiceSource(value as VoiceSource)
+                setFeedback(null)
+              }}
+              disabled={isBusy}
+            >
+              <SegmentedControlItem value="generated">输入文字生成</SegmentedControlItem>
+              <SegmentedControlItem value="file">选择本地文件</SegmentedControlItem>
+            </SegmentedControl>
+            {voiceSource === 'generated' ? (
+              <>
+                <div className="personal-wechat-voice-heading">
+                  <span>{selectedTtsVoice?.name || '尚未选择音色'}</span>
+                  {onOpenTextToSpeechSettings && (
+                    <Button variant="link" size="sm" onClick={onOpenTextToSpeechSettings}>
+                      语音设置
+                    </Button>
+                  )}
+                </div>
+                <Textarea
+                  aria-label="语音文字"
+                  placeholder="输入要生成的文字"
+                  value={voiceText}
+                  maxLength={1000}
+                  rows={2}
+                  disabled={isBusy}
+                  onChange={(event) => {
+                    clearGeneratedVoice()
+                    setVoiceText(event.target.value)
+                    setFeedback(null)
+                  }}
+                />
+                {generatedVoice ? (
+                  <div className="personal-wechat-generated-result">
+                    <audio
+                      ref={generatedAudioRef}
+                      src={generatedVoice.audioDataUrl}
+                      preload="metadata"
+                      onLoadedMetadata={(event) => setPreviewDuration(event.currentTarget.duration)}
+                      onTimeUpdate={(event) =>
+                        setPreviewCurrentTime(event.currentTarget.currentTime)
+                      }
+                      onPause={() => setIsPreviewPlaying(false)}
+                      onPlay={() => setIsPreviewPlaying(true)}
+                      onEnded={() => {
+                        setIsPreviewPlaying(false)
+                        setPreviewCurrentTime(0)
+                      }}
+                    />
+                    <div>
+                      <strong>语音已生成</strong>
+                      <span>
+                        {formatAudioTime(previewCurrentTime)} / {formatAudioTime(previewDuration)}
+                      </span>
+                      <div className="personal-wechat-preview-track">
+                        <span style={{ width: `${Math.min(100, previewProgress)}%` }} />
+                      </div>
+                    </div>
+                    <div className="personal-wechat-generated-result-actions">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          const audio = generatedAudioRef.current
+                          if (!audio) return
+                          if (audio.paused) {
+                            await audio.play()
+                            setIsPreviewPlaying(true)
+                          } else {
+                            audio.pause()
+                          }
+                        }}
+                        disabled={busy}
+                      >
+                        {isPreviewPlaying ? '暂停' : '试听'}
+                      </Button>
+                      <Button size="sm" onClick={() => void sendGenerated()} disabled={!canSend}>
+                        {busy ? '发送中…' : '发送'}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void sendGeneratedAlternative()}
+                        disabled={!canSend}
+                        title="使用另一条语音发送路径"
+                      >
+                        {busy ? '发送中…' : '空白语音？重新处理'}
+                      </Button>
                     </div>
                   </div>
-                  <div className="personal-wechat-generated-result-actions">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={async () => {
-                        const audio = generatedAudioRef.current
-                        if (!audio) return
-                        if (audio.paused) {
-                          await audio.play()
-                          setIsPreviewPlaying(true)
-                        } else {
-                          audio.pause()
-                        }
-                      }}
-                      disabled={busy}
-                    >
-                      {isPreviewPlaying ? '暂停' : '试听'}
-                    </Button>
-                    <Button size="sm" onClick={() => void sendGenerated()} disabled={!canSend}>
-                      {busy ? '发送中…' : '发送'}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void sendGeneratedAlternative()}
-                      disabled={!canSend}
-                      title="使用另一条语音发送路径"
-                    >
-                      {busy ? '发送中…' : '空白语音？重新处理'}
-                    </Button>
-                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() => void generateVoice()}
+                    disabled={!generatedReady || isBusy}
+                  >
+                    {isGenerating ? '正在生成…' : '生成语音'}
+                  </Button>
+                )}
+              </>
+            ) : (
+              <div className="personal-wechat-file-editor">
+                <div>
+                  <strong>{voice?.name || '还没有选择语音文件'}</strong>
+                  <small>{voice ? voice.path : '支持 SILK、MP3、WAV、M4A、AAC、OGG 和 FLAC'}</small>
                 </div>
-              ) : (
                 <Button
+                  variant="outline"
                   size="sm"
-                  onClick={() => void generateVoice()}
-                  disabled={!generatedReady || isBusy}
+                  onClick={() => void selectVoice()}
+                  disabled={isBusy}
                 >
-                  {isGenerating ? '正在生成…' : '生成语音'}
+                  {voice ? '重新选择' : '选择语音'}
                 </Button>
-              )}
-            </>
-          ) : (
-            <div className="personal-wechat-file-editor">
-              <div>
-                <strong>{voice?.name || '还没有选择语音文件'}</strong>
-                <small>{voice ? voice.path : '支持 SILK、MP3、WAV、M4A、AAC、OGG 和 FLAC'}</small>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void selectVoice()}
-                disabled={isBusy}
-              >
-                {voice ? '重新选择' : '选择语音'}
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        )}
+      </div>
 
       <div className="personal-wechat-composer-footer">
         {feedback && (

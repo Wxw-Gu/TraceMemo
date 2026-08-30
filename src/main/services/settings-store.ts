@@ -41,6 +41,7 @@ export interface AppSettings {
   ttsModel: TextToSpeechModel
   /** Keep a running personal-WeChat OneBot process across app restarts. */
   keepPersonalWechatProcess?: boolean
+  windowsWechatPort: string
 }
 
 function getDefaultDbRoot(): string {
@@ -123,7 +124,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   showStartupProgress: true,
   ttsSelectedVoiceId: '',
   ttsModel: 's2.1-pro-free',
-  keepPersonalWechatProcess: false
+  keepPersonalWechatProcess: false,
+  windowsWechatPort: ''
 }
 
 const SETTINGS_FILE = path.join(

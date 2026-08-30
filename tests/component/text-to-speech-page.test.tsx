@@ -14,10 +14,6 @@ const getSettings = vi.fn()
 const saveSettings = vi.fn()
 const listVoices = vi.fn()
 const openApiKeys = vi.fn()
-const getRuntimeStatus = vi.fn()
-const onRuntimeProgress = vi.fn(() => vi.fn())
-const openRuntimeDirectory = vi.fn()
-const removeRuntime = vi.fn()
 
 const response = {
   success: true,
@@ -55,7 +51,6 @@ const response = {
 
 describe('TextToSpeechPage', () => {
   beforeEach(() => {
-    sessionStorage.clear()
     getSettings.mockReset().mockResolvedValue(response)
     listVoices.mockReset().mockResolvedValue({
       success: true,
@@ -75,42 +70,13 @@ describe('TextToSpeechPage', () => {
       }
     }))
     openApiKeys.mockReset().mockResolvedValue({ success: true })
-    getRuntimeStatus.mockReset().mockResolvedValue({
-      version: 'v0.0.18',
-      state: 'ready',
-      downloadedBytes: 100,
-      totalBytes: 100,
-      progress: 1,
-      platform: 'darwin',
-      architecture: 'arm64',
-      supported: true,
-      removable: true,
-      directory: '/tmp/personal-wechat-runtime'
-    })
-    onRuntimeProgress.mockReset().mockReturnValue(vi.fn())
-    openRuntimeDirectory.mockReset().mockResolvedValue({ success: true })
-    removeRuntime.mockReset().mockResolvedValue({
-      version: 'v0.0.18',
-      state: 'missing',
-      downloadedBytes: 0,
-      totalBytes: 100,
-      progress: 0,
-      platform: 'darwin',
-      architecture: 'arm64',
-      supported: true,
-      removable: false
-    })
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
         getTextToSpeechSettings: getSettings,
         saveTextToSpeechSettings: saveSettings,
         listTextToSpeechVoices: listVoices,
-        openFishAudioApiKeys: openApiKeys,
-        getPersonalWechatRuntimeStatus: getRuntimeStatus,
-        onPersonalWechatRuntimeProgress: onRuntimeProgress,
-        openPersonalWechatRuntimeDirectory: openRuntimeDirectory,
-        removePersonalWechatRuntime: removeRuntime
+        openFishAudioApiKeys: openApiKeys
       }
     })
   })
@@ -148,7 +114,7 @@ describe('TextToSpeechPage', () => {
 
   it('opens the official Fish Audio API key page through the main process', async () => {
     render(<TextToSpeechPage onNotice={vi.fn()} />)
-    await screen.findByText('微信发送组件')
+    await screen.findByText('API 设置')
     fireEvent.click(screen.getByRole('button', { name: '前往 api.fish.audio 获取 Key' }))
     await waitFor(() => expect(openApiKeys).toHaveBeenCalledTimes(1))
   })
@@ -170,49 +136,11 @@ describe('TextToSpeechPage', () => {
     await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ clearApiKey: true }))
   })
 
-  it('keeps runtime directory and refresh actions wired to the existing API', async () => {
-    const user = userEvent.setup()
+  it('keeps the speech page free of personal WeChat runtime controls', async () => {
     render(<TextToSpeechPage onNotice={vi.fn()} />)
 
-    await user.click(await screen.findByRole('button', { name: '打开目录' }))
-    expect(openRuntimeDirectory).toHaveBeenCalledOnce()
-    await user.click(screen.getByRole('button', { name: '重新检测' }))
-    expect(getRuntimeStatus).toHaveBeenCalledTimes(2)
-  })
-
-  it('opens supported versions from both triggers and restores focus after closing', async () => {
-    const user = userEvent.setup()
-    render(<TextToSpeechPage onNotice={vi.fn()} />)
-
-    const guideTrigger = await screen.findByRole('button', { name: '查看支持版本' })
-    await user.click(guideTrigger)
-    expect(screen.getByRole('dialog', { name: '支持的微信版本' })).toBeVisible()
-    expect(screen.getByText('请安装下列完整版本之一。')).toBeVisible()
-    expect(screen.getByRole('link', { name: /下载微信历史版本/ })).toHaveAttribute(
-      'href',
-      'https://github.com/zsbai/wechat-versions/releases'
-    )
-    expect(screen.getByText('4.1.6.12')).toBeVisible()
-    expect(screen.getByText('4.1.11.53')).toBeVisible()
-
-    await user.keyboard('{Escape}')
-    expect(screen.queryByRole('dialog', { name: '支持的微信版本' })).not.toBeInTheDocument()
-    expect(guideTrigger).toHaveFocus()
-
-    const runtimeTrigger = screen.getByRole('button', { name: '支持版本' })
-    await user.click(runtimeTrigger)
-    const dialog = screen.getByRole('dialog', { name: '支持的微信版本' })
-    expect(dialog).toBeVisible()
-    await user.click(dialog.previousElementSibling as HTMLElement)
-    expect(screen.queryByRole('dialog', { name: '支持的微信版本' })).not.toBeInTheDocument()
-    expect(runtimeTrigger).toHaveFocus()
-  })
-
-  it('keeps the session handoff that opens supported versions automatically', async () => {
-    sessionStorage.setItem('wxe:show-supported-wechat-versions', '1')
-    render(<TextToSpeechPage onNotice={vi.fn()} />)
-
-    expect(await screen.findByRole('dialog', { name: '支持的微信版本' })).toBeVisible()
-    expect(sessionStorage.getItem('wxe:show-supported-wechat-versions')).toBeNull()
+    expect(await screen.findByText('API 设置')).toBeVisible()
+    expect(screen.queryByText(/微信|OneBot/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('支持的微信版本')).not.toBeInTheDocument()
   })
 })

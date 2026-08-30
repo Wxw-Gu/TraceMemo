@@ -1857,6 +1857,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('wechat-personal:setKeepProcess', (_, keep: boolean) =>
     personalWechatSendService.setKeepOneBotProcess(Boolean(keep))
   )
+  ipcMain.handle('wechat-personal:checkStatus', (_, port?: string) =>
+    personalWechatSendService.checkWindowsStatus(port)
+  )
   ipcMain.handle('wechat-personal:getRuntimeStatus', () => personalWechatRuntimeManager.getStatus())
   ipcMain.handle('wechat-personal:downloadRuntime', () => personalWechatRuntimeManager.download())
   ipcMain.handle('wechat-personal:cancelRuntimeDownload', () => ({
@@ -1874,9 +1877,18 @@ app.whenReady().then(async () => {
     return error ? { success: false, error } : { success: true }
   })
   ipcMain.handle('wechat-personal:rebind', () => personalWechatSendService.rebind())
-  ipcMain.handle('wechat-personal:send', (_, request: PersonalWechatSendRequest) =>
-    personalWechatSendService.send(request)
-  )
+  ipcMain.handle('wechat-personal:send', async (_, request: PersonalWechatSendRequest) => {
+    if (request.type !== 'voice' || String(request.fromId || '').trim()) {
+      return personalWechatSendService.send(request)
+    }
+    let fromId = ''
+    try {
+      const self = await chat.getSelfAccountInfoAsync()
+      fromId = String(self?.wxid || '').trim()
+    } catch {
+    }
+    return personalWechatSendService.send(fromId ? { ...request, fromId } : request)
+  })
   ipcMain.handle('wechat-personal:getVoiceDiagnostic', () =>
     personalWechatSendService.getLatestVoiceDiagnostic()
   )
@@ -1913,7 +1925,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('agent-hub:selectTestImage', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const result = await dialog.showOpenDialog(window!, {
-      title: '选择要测试发送的图片',
+      title: '选择要发送的图片',
       properties: ['openFile'],
       filters: [
         { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },

@@ -5,6 +5,7 @@ export type SettingsCategoryId =
   | 'voice-recognition'
   | 'wechat-send'
   | 'text-to-speech'
+  | 'personal-wechat-send'
   | 'ai-model'
   | 'recall-protection'
   | 'local-api'

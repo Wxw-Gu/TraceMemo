@@ -24,6 +24,11 @@ export interface VoiceAudioDecoder {
   decode(source: EncodedVoiceSource): Promise<DecodedVoiceAudio>
 }
 
+export interface EncodedSilkAudio {
+  data: Buffer
+  durationMs: number
+}
+
 export type SilkWasmRuntimeLocation = {
   packagePath: string
   wasmPath: string
@@ -83,6 +88,23 @@ export class SilkAudioDecoder implements VoiceAudioDecoder {
       channels: 1,
       sourceHash: source.sourceHash
     }
+  }
+}
+
+export class SilkAudioEncoder {
+  async encode(pcm: Buffer, sampleRate: number): Promise<EncodedSilkAudio> {
+    const locations = getSilkWasmRuntimeLocations()
+    const runtime = findSilkWasmRuntimeLocation(locations)
+    if (!runtime) throw new Error('silk.wasm 未找到')
+    const silkWasm = nodeRequire(runtime.packagePath) as {
+      encode?: (
+        data: Buffer,
+        sampleRate: number
+      ) => Promise<{ data: Uint8Array; duration?: number }>
+    }
+    if (!silkWasm.encode) throw new Error('silk-wasm 运行时无效')
+    const result = await silkWasm.encode(pcm, sampleRate)
+    return { data: Buffer.from(result.data), durationMs: Math.round(Number(result.duration) || 0) }
   }
 }
 

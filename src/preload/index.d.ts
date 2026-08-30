@@ -438,6 +438,7 @@ declare global {
           showStartupProgress: boolean
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
+          windowsWechatPort: string
           imageXorKey: string
           imageAesKey: string
         }
@@ -477,6 +478,7 @@ declare global {
           showStartupProgress: boolean
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
+          windowsWechatPort: string
           imageXorKey: string
           imageAesKey: string
         }
@@ -499,6 +501,7 @@ declare global {
           showStartupProgress: boolean
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
+          windowsWechatPort: string
           imageXorKey: string
           imageAesKey: string
         }>
@@ -517,6 +520,7 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          windowsWechatPort: string
           imageXorKey: string
           imageAesKey: string
         }
@@ -596,6 +600,7 @@ declare global {
       getPersonalWechatSendCapability: () => Promise<PersonalWechatSendCapability>
       getPersonalWechatKeepOneBotProcess: () => Promise<boolean>
       setPersonalWechatKeepOneBotProcess: (keep: boolean) => Promise<boolean>
+      checkPersonalWechatSenderStatus: (port?: string) => Promise<PersonalWechatSenderStatus>
       getPersonalWechatRuntimeStatus: () => Promise<PersonalWechatRuntimeStatus>
       downloadPersonalWechatRuntime: () => Promise<PersonalWechatRuntimeDownloadResult>
       cancelPersonalWechatRuntimeDownload: () => Promise<{ success: boolean }>

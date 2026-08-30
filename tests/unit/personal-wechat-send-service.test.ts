@@ -13,9 +13,13 @@ vi.mock('electron', () => ({
 
 import {
   buildPersonalWechatVoiceDiagnostic,
+  buildWindowsWechatRequest,
   buildPersonalWechatOneBotRequest,
   findWechatImagePath,
   findPersonalWechatRuntime,
+  normalizeWindowsWechatPort,
+  parseWindowsLoginStatus,
+  parseWindowsHookResponse,
   parsePersonalWechatHookLog
 } from '../../src/main/services/personal-wechat-send-service'
 
@@ -125,6 +129,91 @@ describe('personal WeChat OneBot request', () => {
       body: {
         user_id: 'filehelper',
         message: [{ type: 'record', data: { file: 'base64://dm9pY2U=' } }]
+      }
+    })
+  })
+})
+
+describe('Windows request', () => {
+  it('accepts only a valid configured local port', () => {
+    expect(normalizeWindowsWechatPort('')).toBeNull()
+    expect(normalizeWindowsWechatPort(' 4567 ')).toBe('4567')
+    expect(normalizeWindowsWechatPort('0')).toBeNull()
+    expect(normalizeWindowsWechatPort('65536')).toBeNull()
+    expect(normalizeWindowsWechatPort('port')).toBeNull()
+  })
+
+  it('requires ret=0 for message responses but accepts the status shape', () => {
+    expect(parseWindowsHookResponse('{"ret":0,"retmsg":"success"}', true)).toEqual({
+      ret: 0,
+      retmsg: 'success'
+    })
+    expect(parseWindowsHookResponse('{"IsLogin":0,"hWeixin":123}', false)).toEqual({
+      IsLogin: 0,
+      hWeixin: 123
+    })
+    expect(() => parseWindowsHookResponse('{"ret":1,"retmsg":"fail"}', true)).toThrow('fail')
+    expect(() => parseWindowsHookResponse('{"retmsg":"success"}', true)).toThrow('success')
+    expect(() => parseWindowsHookResponse('{}', true)).toThrow('ret=undefined')
+    expect(() => parseWindowsHookResponse('', true)).toThrow('空响应')
+  })
+
+  it('allows Windows sending only for a strict logged-in status', () => {
+    expect(parseWindowsLoginStatus({ status: true })).toBe(true)
+    expect(parseWindowsLoginStatus({ status: false })).toBe(false)
+    expect(parseWindowsLoginStatus({ status: 1 })).toBe(false)
+    expect(parseWindowsLoginStatus({ status: 'true' })).toBe(false)
+    expect(parseWindowsLoginStatus({ IsLogin: 1, hWeixin: 123 })).toBe(false)
+  })
+
+  it('builds the unified text request', () => {
+    expect(
+      buildWindowsWechatRequest({
+        to: ' wxid_fixture ',
+        type: 'text',
+        text: ' 测试发送 ',
+        isGroup: false
+      })
+    ).toEqual({
+      endpoint: '/SendMsg',
+      body: { toWxid: 'wxid_fixture', type: 'text', msg: '测试发送' }
+    })
+  })
+
+  it('builds the unified image request with a local path', () => {
+    expect(
+      buildWindowsWechatRequest({
+        to: 'room@chatroom',
+        type: 'image',
+        filePath: 'C:\\fixture\\image.png',
+        isGroup: true
+      })
+    ).toEqual({
+      endpoint: '/SendMsg',
+      body: { toWxid: 'room@chatroom', type: 'image', msg: 'C:\\fixture\\image.png' }
+    })
+  })
+
+  it('builds the unified voice request with sender wxid and duration', () => {
+    expect(
+      buildWindowsWechatRequest(
+        {
+          to: 'wxid_fixture',
+          type: 'voice',
+          filePath: '/source/input.wav',
+          fromId: ' wxid_self ',
+          isGroup: false
+        },
+        { filePath: 'C:\\Temp\\prepared.silk', durationMs: 1234 }
+      )
+    ).toEqual({
+      endpoint: '/SendMsg',
+      body: {
+        toWxid: 'wxid_fixture',
+        type: 'voice',
+        msg: 'C:\\Temp\\prepared.silk',
+        fromWxid: 'wxid_self',
+        duration: 1234
       }
     })
   })

@@ -21,6 +21,7 @@ interface ChatWindowProps {
   onLoadOlderMessages?: () => Promise<void>
   onCreateGroupReport?: () => void
   onOpenTextToSpeechSettings?: () => void
+  onOpenPersonalWechatSettings?: () => void
   isAiLoading?: boolean
   jumpToTime?: number | null
 }
@@ -38,6 +39,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   onLoadOlderMessages,
   onCreateGroupReport,
   onOpenTextToSpeechSettings,
+  onOpenPersonalWechatSettings,
   isAiLoading = false,
   jumpToTime
 }) => {
@@ -171,6 +173,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           isGroupChat={isGroupChat}
           onClose={() => setSendDialogOpen(false)}
           onOpenTextToSpeechSettings={onOpenTextToSpeechSettings}
+          onOpenPersonalWechatSettings={onOpenPersonalWechatSettings}
         />
       )}
 

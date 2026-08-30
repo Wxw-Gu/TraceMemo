@@ -98,6 +98,8 @@ describe('preload IPC contract', () => {
 
     await api.getPersonalWechatSenderStatus()
     expect(invoke).toHaveBeenLastCalledWith('wechat-personal:getStatus')
+    await api.checkPersonalWechatSenderStatus('4567')
+    expect(invoke).toHaveBeenLastCalledWith('wechat-personal:checkStatus', '4567')
     await api.rebindPersonalWechatSender()
     expect(invoke).toHaveBeenLastCalledWith('wechat-personal:rebind')
     const sendRequest = {

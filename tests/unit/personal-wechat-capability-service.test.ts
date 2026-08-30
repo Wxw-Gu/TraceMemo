@@ -31,12 +31,25 @@ const status = (
 
 describe('PersonalWechatCapabilityService', () => {
   it.each([
-    ['unsupported', status({ platform: 'win32' })],
+    ['unsupported', status({ platform: 'linux' })],
     ['unconfigured', status({ runtimeReady: false, boundWechatPid: undefined })],
     ['needs_binding', status({ runtimeReady: true, boundWechatPid: undefined })],
     ['needs_verification', status({ boundWechatPid: 123 })],
     ['ready', status({ state: 'online', boundWechatPid: 123, canSendImage: true, canSend: true })],
-    ['error', status({ state: 'error', boundWechatPid: 123, error: 'hook failed' })]
+    ['error', status({ state: 'error', boundWechatPid: 123, error: 'hook failed' })],
+    ['needs_verification', status({ platform: 'win32', endpoint: '127.0.0.1:4567' })],
+    [
+      'ready',
+      status({
+        platform: 'win32',
+        state: 'online',
+        endpoint: '127.0.0.1:4567',
+        canSend: true,
+        canSendText: true,
+        canSendImage: true,
+        canSendVoice: true
+      })
+    ]
   ])('maps %s', (expected, senderStatus) => {
     const service = new PersonalWechatCapabilityService({ getStatus: async () => senderStatus })
     return expect(service.getPersonalWechatSendCapability()).resolves.toMatchObject({

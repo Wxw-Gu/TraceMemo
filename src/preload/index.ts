@@ -369,6 +369,8 @@ const api = {
     ipcRenderer.invoke('wechat-personal:getKeepProcess'),
   setPersonalWechatKeepOneBotProcess: (keep: boolean): Promise<boolean> =>
     ipcRenderer.invoke('wechat-personal:setKeepProcess', keep),
+  checkPersonalWechatSenderStatus: (port?: string): Promise<PersonalWechatSenderStatus> =>
+    ipcRenderer.invoke('wechat-personal:checkStatus', port),
   getPersonalWechatRuntimeStatus: (): Promise<PersonalWechatRuntimeStatus> =>
     ipcRenderer.invoke('wechat-personal:getRuntimeStatus'),
   downloadPersonalWechatRuntime: (): Promise<PersonalWechatRuntimeDownloadResult> =>

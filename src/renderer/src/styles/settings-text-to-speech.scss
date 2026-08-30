@@ -125,7 +125,8 @@
   }
 }
 
-.tts-hook-warning {
+.tts-hook-warning,
+.tts-send-warning {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
@@ -150,7 +151,7 @@
   }
 }
 
-.tts-hook-warning-icon {
+.tts-send-warning-icon {
   width: 24px;
   height: 24px;
   display: grid;
@@ -202,6 +203,24 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.tts-windows-endpoint-actions {
+  align-items: flex-end;
+  min-width: 250px;
+}
+
+.tts-windows-port-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tts-windows-port-input {
+  width: 128px;
 }
 
 .tts-runtime-progress {

@@ -18,6 +18,7 @@ import {
   DialogTitle,
   Switch
 } from '../ui'
+import { isMac, isWindows } from '../../utils/runtime-environment'
 import {
   PersonalWechatChatComposer,
   type ChatMessage,
@@ -25,14 +26,16 @@ import {
 } from './PersonalWechatChatComposer'
 import { PersonalWechatSetupGuide } from './PersonalWechatSetupGuide'
 import { PersonalWechatVoiceDiagnosticDialog } from './PersonalWechatVoiceDiagnosticDialog'
+import { PersonalWechatWindowsSendDialog } from './PersonalWechatWindowsSendDialog'
 
 type SelectedLocalFile = { path: string; name: string }
 
-interface PersonalWechatSendDialogProps {
+export interface PersonalWechatSendDialogProps {
   contact: Contact
   isGroupChat: boolean
   onClose: () => void
   onOpenTextToSpeechSettings?: () => void
+  onOpenPersonalWechatSettings?: () => void
   initialMode?: PersonalWechatComposerMode
   initialImage?: SelectedLocalFile | null
 }
@@ -63,7 +66,12 @@ function fallbackStatus(error: unknown): PersonalWechatSenderStatus {
   }
 }
 
-export function PersonalWechatSendDialog({
+export function PersonalWechatSendDialog(props: PersonalWechatSendDialogProps): React.ReactElement {
+  if (isWindows) return <PersonalWechatWindowsSendDialog {...props} />
+  return <PersonalWechatMacSendDialog {...props} />
+}
+
+function PersonalWechatMacSendDialog({
   contact,
   isGroupChat,
   onClose,
@@ -110,7 +118,9 @@ export function PersonalWechatSendDialog({
     setSendError(null)
     try {
       const [nextRuntime, nextSender] = await Promise.all([
-        window.api.getPersonalWechatRuntimeStatus?.() || Promise.resolve(null),
+        isMac
+          ? window.api.getPersonalWechatRuntimeStatus?.() || Promise.resolve(null)
+          : Promise.resolve(null),
         window.api.getPersonalWechatSenderStatus()
       ])
       if (requestId !== requestIdRef.current) return
@@ -135,6 +145,7 @@ export function PersonalWechatSendDialog({
 
   useEffect(() => {
     void refreshStatus()
+    if (!isMac) return undefined
     const unsubscribe = window.api.onPersonalWechatRuntimeProgress?.((status) => {
       setRuntimeProgress(status)
       setRuntimeStatus(status)
@@ -144,6 +155,7 @@ export function PersonalWechatSendDialog({
   }, [refreshStatus])
 
   useEffect(() => {
+    if (!isMac) return undefined
     let active = true
     const readKeepProcess = window.api.getPersonalWechatKeepOneBotProcess
     if (!readKeepProcess) return undefined
@@ -156,6 +168,7 @@ export function PersonalWechatSendDialog({
   }, [])
 
   const handleKeepOneBotProcessChange = async (keep: boolean): Promise<void> => {
+    if (!isMac) return
     const saveKeepProcess = window.api.setPersonalWechatKeepOneBotProcess
     if (!saveKeepProcess) {
       setSendError('请重启 TraceMemo 后再使用“保留 OneBot 进程”')
@@ -252,6 +265,7 @@ export function PersonalWechatSendDialog({
   }
 
   const handleOpenVoiceDiagnostic = async (): Promise<void> => {
+    if (!isMac) return
     const diagnostic = await window.api.getPersonalWechatVoiceDiagnostic()
     setVoiceDiagnostic(diagnostic)
     setVoiceDiagnosticOpen(true)
@@ -348,7 +362,7 @@ export function PersonalWechatSendDialog({
               </div>
             )}
           </div>
-          {setupReady && composerStarted && (
+          {setupReady && composerStarted && isMac && (
             <div className="personal-wechat-chat-footer flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>保留 OneBot 进程</span>
@@ -364,15 +378,19 @@ export function PersonalWechatSendDialog({
             </div>
           )}
           {(!setupReady || !composerStarted) && (
-            <div className="personal-wechat-chat-footer flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span>保留 OneBot 进程</span>
-                <Switch
-                  checked={keepOneBotProcess}
-                  onCheckedChange={(checked) => void handleKeepOneBotProcessChange(checked)}
-                  aria-label="保留 OneBot 进程"
-                />
-              </div>
+            <div
+              className={`personal-wechat-chat-footer flex items-center ${isMac ? 'justify-between' : 'justify-end'}`}
+            >
+              {isMac && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>保留 OneBot 进程</span>
+                  <Switch
+                    checked={keepOneBotProcess}
+                    onCheckedChange={(checked) => void handleKeepOneBotProcessChange(checked)}
+                    aria-label="保留 OneBot 进程"
+                  />
+                </div>
+              )}
               <Button variant="outline" onClick={handleClose} disabled={isBusy}>
                 关闭
               </Button>

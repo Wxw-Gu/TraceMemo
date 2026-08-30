@@ -104,6 +104,13 @@ export function SettingsWorkspace({
         )
       case 'text-to-speech':
         return <TextToSpeechPage onNotice={onNotice} />
+      case 'personal-wechat-send':
+        return (
+          <PersonalWechatSendPage
+            onNotice={onNotice}
+            onOpenTextToSpeechSettings={onOpenTextToSpeechSettings}
+          />
+        )
       case 'recall-protection':
         return <RecallProtectionPage onNotice={onNotice} />
       case 'advanced':

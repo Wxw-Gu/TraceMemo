@@ -275,7 +275,32 @@
 }
 
 .personal-wechat-send-mode {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  border: 1px solid var(--wxex-border);
+  background: var(--wxex-bg-sidebar);
+  padding: 3px;
+
+  > [role='radio'] {
+    min-width: 0;
+    min-height: 34px;
+    border-radius: var(--wxex-radius-sm);
+    padding: 0 10px;
+    color: var(--wxex-text-secondary);
+    line-height: 1.2;
+    white-space: nowrap;
+
+    &:hover:not(:disabled):not([data-state='checked']) {
+      background: var(--wxex-brand-soft);
+      color: var(--wxex-brand);
+    }
+
+    &[data-state='checked'] {
+      background: var(--wxex-bg-elevated);
+      color: var(--wxex-brand);
+      box-shadow: var(--wxex-shadow-popover);
+    }
+  }
 }
 
 .personal-wechat-send-status-dot {
@@ -944,6 +969,22 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.personal-wechat-composer-editor {
+  box-sizing: border-box;
+  height: 248px;
+  min-height: 248px;
+  min-width: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.personal-wechat-composer-editor > .personal-wechat-text-editor,
+.personal-wechat-composer-editor > .personal-wechat-voice-editor,
+.personal-wechat-composer-editor > .personal-wechat-file-editor {
+  box-sizing: border-box;
+  min-height: 100%;
+}
+
 .personal-wechat-text-editor,
 .personal-wechat-voice-editor,
 .personal-wechat-file-editor {
@@ -951,8 +992,14 @@
   gap: 8px;
 }
 
+.personal-wechat-composer-editor > .personal-wechat-text-editor {
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
 .personal-wechat-text-editor textarea {
-  resize: vertical;
+  min-height: 0;
+  resize: none;
 }
 
 .personal-wechat-text-editor > span {
@@ -965,6 +1012,15 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
+}
+
+.personal-wechat-composer-editor > .personal-wechat-file-editor {
+  height: 100%;
+  align-content: center;
+}
+
+.personal-wechat-composer-editor > .personal-wechat-voice-editor {
+  align-content: start;
 }
 
 .personal-wechat-file-editor > div {
@@ -1070,6 +1126,10 @@
   }
   .personal-wechat-generated-result {
     grid-template-columns: 1fr;
+  }
+  .personal-wechat-composer-editor {
+    height: 280px;
+    min-height: 280px;
   }
 }
 

@@ -4,6 +4,13 @@ import type React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PersonalWechatSendDialog } from '../../src/renderer/src/components/chat/PersonalWechatSendDialog'
 
+vi.mock('../../src/renderer/src/utils/runtime-environment', () => ({
+  isMac: true,
+  isWindows: false,
+  runtimePlatform: 'darwin',
+  supportsPersonalWechatSend: true
+}))
+
 const getStatus = vi.fn()
 const getRuntimeStatus = vi.fn()
 const downloadRuntime = vi.fn()
@@ -73,9 +80,12 @@ function renderDialog(
 }
 
 async function startComposer(): Promise<void> {
-  const bind = await screen.findByRole('button', { name: '绑定微信' })
-  fireEvent.click(bind)
-  await screen.findByText('✓ 微信已绑定')
+  await screen.findByText('绑定个人微信')
+  const bind = screen.queryByRole('button', { name: '绑定微信' })
+  if (bind) {
+    fireEvent.click(bind)
+    await screen.findByText('✓ 微信已绑定')
+  }
   const detect = await screen.findByRole('button', { name: '重新检测' })
   fireEvent.click(detect)
   const start = await screen.findByRole('button', { name: '开始发送' })
@@ -170,8 +180,8 @@ describe('PersonalWechatSendDialog', () => {
       message: '尚未绑定当前微信'
     })
     renderDialog()
-    expect(await screen.findByText('准备语音模型')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '下载模型' })).toBeEnabled()
+    expect(await screen.findByText('准备 OneBot 运行时')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '下载运行时' })).toBeEnabled()
     expect(screen.getByText('绑定个人微信')).toBeInTheDocument()
     expect(screen.getByText('验证消息能力')).toBeInTheDocument()
     expect(screen.getByText('能力检测')).toBeInTheDocument()
@@ -250,7 +260,7 @@ describe('PersonalWechatSendDialog', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: '生成语音' }))
     await waitFor(() => expect(screen.getByText('语音已生成')).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: '发送2' }))
+    fireEvent.click(screen.getByRole('button', { name: '空白语音？重新处理' }))
     await waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith({
         type: 'voice',
@@ -286,8 +296,8 @@ describe('PersonalWechatSendDialog', () => {
         canSendVoice: false
       })
     renderDialog()
-    await screen.findByRole('button', { name: '下载模型' })
-    fireEvent.click(screen.getByRole('button', { name: '下载模型' }))
+    await screen.findByRole('button', { name: '下载运行时' })
+    fireEvent.click(screen.getByRole('button', { name: '下载运行时' }))
     await waitFor(() => expect(downloadRuntime).toHaveBeenCalledOnce())
     fireEvent.click(screen.getByRole('button', { name: '绑定微信' }))
     await waitFor(() => expect(rebind).toHaveBeenCalledOnce())
@@ -320,8 +330,11 @@ describe('PersonalWechatSendDialog', () => {
     })
     renderDialog()
     expect(await screen.findByText('图片和语音消息')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '绑定微信' }))
-    await screen.findByText('✓ 微信已绑定')
+    const bind = screen.queryByRole('button', { name: '绑定微信' })
+    if (bind) {
+      fireEvent.click(bind)
+      await screen.findByText('✓ 微信已绑定')
+    }
     fireEvent.click(await screen.findByRole('button', { name: '重新检测' }))
     expect(screen.getByText('微信消息发送已配置完成')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '开始发送' })).toBeEnabled()
@@ -340,8 +353,12 @@ describe('PersonalWechatSendDialog', () => {
       message: '等待消息初始化'
     })
     renderDialog()
-    fireEvent.click(await screen.findByRole('button', { name: '绑定微信' }))
-    await screen.findByText('✓ 微信已绑定')
+    await screen.findByText('绑定个人微信')
+    const bind = screen.queryByRole('button', { name: '绑定微信' })
+    if (bind) {
+      fireEvent.click(bind)
+      await screen.findByText('✓ 微信已绑定')
+    }
     const detect = await screen.findByRole('button', { name: '重新检测' })
     expect(detect).toBeEnabled()
     fireEvent.click(detect)

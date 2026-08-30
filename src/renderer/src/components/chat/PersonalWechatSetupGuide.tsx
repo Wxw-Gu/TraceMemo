@@ -5,6 +5,7 @@ import type {
   PersonalWechatRuntimeStatus
 } from '../../../../shared/personal-wechat-runtime'
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui'
+import { isMac } from '../../utils/runtime-environment'
 import { PersonalWechatSupportedVersionsContent } from './PersonalWechatSupportedVersionsContent'
 
 interface PersonalWechatSetupGuideProps {
@@ -37,8 +38,10 @@ function bindingHint(status: PersonalWechatSenderStatus): string {
   if (status.state === 'wechat_not_running') return '请先启动并登录微信。'
   if (status.state === 'unsupported_platform') return '当前系统暂不支持个人微信发送。'
   if (status.state === 'unsupported_version')
-    return '当前微信版本暂不支持，请查看语音设置中的支持版本。'
-  if (status.state === 'runtime_missing') return '请先完成语音模型准备。'
+    return '当前微信版本暂不支持，请查看微信发送设置中的支持版本。'
+  if (status.state === 'runtime_missing') {
+    return isMac ? '请先完成 OneBot 运行时准备。' : '请先完成发送运行时准备。'
+  }
   if (status.state === 'error') return '连接微信时遇到问题，请稍后重试。'
   return '请启动并登录当前微信，TraceMemo 会自动绑定正在使用的账号。'
 }
@@ -70,6 +73,7 @@ export function PersonalWechatSetupGuide({
   onOpenTextToSpeechSettings
 }: PersonalWechatSetupGuideProps): React.ReactElement {
   const [showSupportedVersions, setShowSupportedVersions] = useState(false)
+  const runtimeLabel = isMac ? 'OneBot 运行时' : '发送运行时'
   const runtimeReady = runtimeStatus?.state === 'ready' || senderStatus?.runtimeReady === true
   const runtimeDownloading = runtimeBusy || runtimeStatus?.state === 'downloading'
   const connected = sessionBound && (senderStatus ? isWechatBound(senderStatus) : false)
@@ -101,12 +105,12 @@ export function PersonalWechatSetupGuide({
         >
           <span className="personal-wechat-step-number">{runtimeReady ? '✓' : '1'}</span>
           <div className="personal-wechat-step-content">
-            <strong>准备语音模型</strong>
-            <p>发送语音消息需要本地模型，首次使用时下载一次即可。</p>
+            <strong>准备 {runtimeLabel}</strong>
+            <p>个人微信发送需要 {runtimeLabel}，首次使用时下载一次即可。</p>
             {runtimeDownloading ? (
               <div className="personal-wechat-download-progress" aria-live="polite">
                 <div>
-                  <span>正在准备模型</span>
+                  <span>正在准备 {runtimeLabel}</span>
                   <span>{progressPercent}%</span>
                 </div>
                 <div className="personal-wechat-progress-track">
@@ -114,18 +118,20 @@ export function PersonalWechatSetupGuide({
                 </div>
               </div>
             ) : runtimeReady ? (
-              <span className="personal-wechat-step-status">✓ 语音模型已准备</span>
+              <span className="personal-wechat-step-status">✓ {runtimeLabel}已准备</span>
             ) : (
               <Button
                 size="sm"
                 onClick={onDownloadRuntime}
                 disabled={runtimeBusy || runtimeStatus?.state === 'unsupported'}
               >
-                下载模型
+                下载运行时
               </Button>
             )}
             {runtimeStatus?.error && !runtimeDownloading && !runtimeReady && (
-              <p className="personal-wechat-step-error">模型准备失败，请重试或查看语音设置。</p>
+              <p className="personal-wechat-step-error">
+                运行时准备失败，请重试或查看微信发送设置。
+              </p>
             )}
           </div>
         </li>
@@ -277,7 +283,9 @@ export function PersonalWechatSetupGuide({
         <dl>
           {[
             ['微信进程', senderStatus?.wechatPid ? `PID ${senderStatus.wechatPid}` : '未检测到'],
-            ['OneBot', senderStatus?.oneBotPid ? `PID ${senderStatus.oneBotPid}` : '未启动'],
+            ...(isMac
+              ? [['OneBot', senderStatus?.oneBotPid ? `PID ${senderStatus.oneBotPid}` : '未启动']]
+              : []),
             ['绑定进程', diagnosticValue(senderStatus?.boundWechatPid)],
             [
               '接口监听',

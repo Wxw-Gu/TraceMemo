@@ -22,6 +22,7 @@ interface ReportViewerProps {
   ) => Promise<{ success: boolean; error?: string }>
   sendTarget?: Contact | null
   personalWechatSendSupported?: boolean
+  onOpenPersonalWechatSettings?: () => void
 }
 
 const calculateFitZoom = (
@@ -50,7 +51,8 @@ export function ReportViewer({
   onReveal,
   onSwitchTemplate,
   sendTarget = null,
-  personalWechatSendSupported = supportsPersonalWechatSend
+  personalWechatSendSupported = supportsPersonalWechatSend,
+  onOpenPersonalWechatSettings
 }: ReportViewerProps): React.ReactElement {
   const [zoom, setZoom] = useState(1)
   const [fitZoom, setFitZoom] = useState(1)
@@ -276,6 +278,7 @@ export function ReportViewer({
             name: report.pngPath.split(/[\\/]/).pop() || '群聊日报.png'
           }}
           onClose={() => setSendDialogOpen(false)}
+          onOpenPersonalWechatSettings={onOpenPersonalWechatSettings}
         />
       )}
     </main>

@@ -46,5 +46,6 @@ export const SETTINGS_CATEGORY_LABELS = {
   ...Object.fromEntries(
     SETTINGS_NAVIGATION.flatMap((group) => group.items.map((item) => [item.id, item.label]))
   ),
+  'personal-wechat-send': '微信发送',
   'storage-export': '存储与导出'
 } as Record<SettingsCategoryId, string>

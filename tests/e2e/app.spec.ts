@@ -260,9 +260,9 @@ test('SETTINGS-01 supported WeChat versions dialog is keyboard-safe and fits the
       .getByRole('navigation', { name: '一级导航' })
       .getByRole('button', { name: '设置' })
       .click()
-    await fixture.page.getByRole('button', { name: '文字转语音' }).click()
+    await fixture.page.getByRole('button', { name: '微信发送' }).click()
 
-    const trigger = fixture.page.getByRole('button', { name: '查看支持版本' })
+    const trigger = fixture.page.getByRole('button', { name: '支持版本' })
     await expect(trigger).toBeVisible()
     await trigger.click()
     const dialog = fixture.page.getByRole('dialog', { name: '支持的微信版本' })
@@ -278,6 +278,7 @@ test('SETTINGS-01 supported WeChat versions dialog is keyboard-safe and fits the
     await expect(dialog).toHaveCount(0)
     await expect(trigger).toBeFocused()
 
+    await fixture.page.getByRole('button', { name: '文字转语音' }).click()
     const modelSelect = fixture.page.getByRole('combobox', { name: '合成模型' })
     await modelSelect.scrollIntoViewIfNeeded()
     await modelSelect.click()

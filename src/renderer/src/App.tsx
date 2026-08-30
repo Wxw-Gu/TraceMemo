@@ -1753,6 +1753,7 @@ function App(): React.ReactElement {
         onLoadOlderMessages={handleLoadOlderMessages}
         onCreateGroupReport={handleOpenReportWorkspace}
         onOpenTextToSpeechSettings={openTextToSpeechSettings}
+        onOpenPersonalWechatSettings={openWechatSendSettings}
         isAiLoading={reportGeneration.isGenerating}
         jumpToTime={archiveJumpTime}
       />
@@ -1821,6 +1822,7 @@ function App(): React.ReactElement {
               onReveal={handleRevealReport}
               onSwitchTemplate={handleSwitchReportTemplate}
               sendTarget={selectedReportContact}
+              onOpenPersonalWechatSettings={openWechatSendSettings}
             />
             <ReportInfoPanel report={selectedReport} onReveal={handleRevealReport} />
           </div>

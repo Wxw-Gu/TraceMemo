@@ -87,6 +87,8 @@ export interface PersonalWechatSendVoiceRequest extends PersonalWechatSendBaseRe
   filePath: string
   /** Internal comparison switch for the temporary voice regression test. */
   voiceSendMode?: 'normalized' | 'legacy'
+  fromId?: string
+  durationMs?: number
 }
 
 export type PersonalWechatSendRequest =
