@@ -96,6 +96,123 @@
   }
 }
 
+.voice-encoding-environment {
+  display: grid;
+  gap: 15px;
+  margin-bottom: 28px;
+
+  &.status-ready {
+    border-color: color-mix(in srgb, var(--wxex-success) 38%, var(--wxex-border));
+  }
+
+  &.status-incomplete,
+  &.status-error {
+    border-color: color-mix(in srgb, var(--wxex-warning) 42%, var(--wxex-border));
+  }
+}
+
+.voice-encoding-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+
+  h2 {
+    margin: 0;
+    color: var(--wxex-text-primary);
+    font-size: 16px;
+  }
+
+  p {
+    max-width: 620px;
+    margin: 5px 0 0;
+    color: var(--wxex-text-secondary);
+    font-size: 11px;
+    line-height: 17px;
+  }
+}
+
+.voice-encoding-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 11px;
+  border-radius: var(--wxex-radius-sm);
+  background: var(--wxex-bg-main);
+
+  strong {
+    color: var(--wxex-text-primary);
+    font-size: 12px;
+  }
+
+  span {
+    color: var(--wxex-text-muted);
+    font-size: 11px;
+  }
+
+  .status-ready & strong {
+    color: var(--wxex-success);
+  }
+
+  .status-incomplete & strong,
+  .status-error & strong {
+    color: var(--wxex-warning);
+  }
+}
+
+.voice-encoding-checks {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.voice-encoding-check {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-sm);
+  background: var(--wxex-bg-elevated);
+  padding: 10px 11px;
+
+  > span {
+    color: var(--wxex-text-primary);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  &.is-ready > span {
+    color: var(--wxex-success);
+  }
+
+  &.is-missing > span {
+    color: var(--wxex-text-primary);
+  }
+
+  small {
+    min-height: 17px;
+    overflow: hidden;
+    color: var(--wxex-text-muted);
+    font-size: 10px;
+    line-height: 17px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  button {
+    justify-self: start;
+    margin-top: 2px;
+  }
+}
+
+.voice-encoding-empty {
+  margin: 0;
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+}
+
 .tts-auto-update-guide {
   display: grid;
   gap: 6px;
@@ -628,12 +745,17 @@
   .tts-voice-grid {
     grid-template-columns: 1fr;
   }
+
+  .voice-encoding-checks {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
   .tts-api-heading,
   .tts-voice-heading,
   .tts-api-footer,
+  .voice-encoding-heading,
   .tts-usage-guide-heading {
     align-items: stretch;
     flex-direction: column;

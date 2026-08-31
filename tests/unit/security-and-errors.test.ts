@@ -95,6 +95,6 @@ describe('personal WeChat runtime security invariants', () => {
       resolve('src/main/services/personal-wechat-send-service.ts'),
       'utf8'
     )
-    expect(senderSource).toContain('buildRuntimePythonPath(preflight.runtime.root)')
+    expect(senderSource).toContain('buildPersonalWechatRuntimeEnvironment(preflight.runtime.root)')
   })
 })

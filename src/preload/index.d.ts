@@ -74,6 +74,10 @@ import type {
   PersonalWechatRuntimeProgressEvent,
   PersonalWechatRuntimeStatus
 } from '../shared/personal-wechat-runtime'
+import type {
+  PersonalWechatVoiceEncodingEnvironment,
+  PersonalWechatVoiceEncodingEnvironmentResult
+} from '../shared/personal-wechat-voice-runtime'
 import type { AppLogEntry } from '../shared/app-log'
 import type {
   AppUpdateCheckResult,
@@ -601,6 +605,10 @@ declare global {
       getPersonalWechatKeepOneBotProcess: () => Promise<boolean>
       setPersonalWechatKeepOneBotProcess: (keep: boolean) => Promise<boolean>
       checkPersonalWechatSenderStatus: (port?: string) => Promise<PersonalWechatSenderStatus>
+      checkPersonalWechatVoiceEncodingEnvironment: () => Promise<PersonalWechatVoiceEncodingEnvironment>
+      installPersonalWechatPilk: () => Promise<PersonalWechatVoiceEncodingEnvironmentResult>
+      openPersonalWechatVoicePythonDownload: () => Promise<{ success: boolean; error?: string }>
+      openPersonalWechatVoiceFfmpegDownload: () => Promise<{ success: boolean; error?: string }>
       getPersonalWechatRuntimeStatus: () => Promise<PersonalWechatRuntimeStatus>
       downloadPersonalWechatRuntime: () => Promise<PersonalWechatRuntimeDownloadResult>
       cancelPersonalWechatRuntimeDownload: () => Promise<{ success: boolean }>

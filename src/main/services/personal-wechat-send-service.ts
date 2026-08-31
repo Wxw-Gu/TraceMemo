@@ -254,7 +254,7 @@ export function buildPersonalWechatOneBotRequest(
   }
 }
 
-function buildRuntimePath(): string {
+export function buildPersonalWechatRuntimePath(): string {
   const existing = String(process.env['PATH'] || '')
   const bundledFfmpeg = String(ffmpegStaticPath || '')
     .replace('app.asar', 'app.asar.unpacked')
@@ -263,10 +263,23 @@ function buildRuntimePath(): string {
   return [dirname(bundledFfmpeg), existing].filter(Boolean).join(delimiter)
 }
 
-function buildRuntimePythonPath(runtimeRoot: string): string {
+export function buildPersonalWechatRuntimePythonPath(runtimeRoot: string): string {
   return [join(runtimeRoot, 'python'), String(process.env['PYTHONPATH'] || '')]
     .filter(Boolean)
     .join(delimiter)
+}
+
+/**
+ * Build the same environment used when TraceMemo starts OneBot.
+ * Keep this in one place so runtime checks cannot accidentally inspect a
+ * different Python or ffmpeg than the sender process.
+ */
+export function buildPersonalWechatRuntimeEnvironment(runtimeRoot?: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    PATH: buildPersonalWechatRuntimePath(),
+    ...(runtimeRoot ? { PYTHONPATH: buildPersonalWechatRuntimePythonPath(runtimeRoot) } : {})
+  }
 }
 
 function bundledFfmpegExecutable(): string {
@@ -282,7 +295,7 @@ async function convertAudioToPcm(audioData: Buffer): Promise<Buffer> {
       bundledFfmpegExecutable(),
       ['-v', 'error', '-i', 'pipe:0', '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1'],
       {
-        env: { ...process.env, PATH: buildRuntimePath() },
+        env: buildPersonalWechatRuntimeEnvironment(),
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true
       }
@@ -1224,6 +1237,13 @@ export class PersonalWechatSendService {
     this.lastError = ''
   }
 
+  /** Restart the existing OneBot runtime after an environment change. */
+  async restartRuntime(): Promise<PersonalWechatSenderStatus> {
+    if (process.platform === 'win32') return this.getWindowsStatus()
+    await this.terminate(true)
+    return this.rebind()
+  }
+
   private async ensureRunning(): Promise<PersonalWechatSenderStatus> {
     const currentStatus = await this.getStatus()
     if (currentStatus.state === 'online' || currentStatus.state === 'hook_not_ready') {
@@ -1375,6 +1395,7 @@ export class PersonalWechatSendService {
         try {
           unlinkSync(temporaryVoicePath)
         } catch {
+          // Temporary files are best-effort cleanup only.
         }
       }
     }
@@ -1384,6 +1405,32 @@ export class PersonalWechatSendService {
     const preflight = await this.preflight()
     if (!preflight.runtime || !preflight.status.configPath) {
       return preflight.status
+    }
+
+    try {
+      const { personalWechatVoiceEnvironmentService } =
+        await import('./personal-wechat-voice-environment-service')
+      const environment = await personalWechatVoiceEnvironmentService.check()
+      if (!environment.pilk.ready) {
+        appLogger.write({
+          level: 'warn',
+          scope: 'VoiceRuntime',
+          message: 'WARNING: pilk unavailable, OneBot may fallback to go-silk.',
+          details: {
+            python: environment.python.executable,
+            pythonReady: environment.python.ready,
+            ffmpegReady: environment.ffmpeg.ready,
+            runtimeReady: environment.runtimeReady
+          }
+        })
+      }
+    } catch (error) {
+      appLogger.write({
+        level: 'warn',
+        scope: 'VoiceRuntime',
+        message: 'Voice encoding environment check failed before OneBot start',
+        details: { error: error instanceof Error ? error.message : String(error) }
+      })
     }
 
     const pid = preflight.status.wechatPid
@@ -1405,11 +1452,7 @@ export class PersonalWechatSendService {
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
-        env: {
-          ...process.env,
-          PATH: buildRuntimePath(),
-          PYTHONPATH: buildRuntimePythonPath(preflight.runtime.root)
-        }
+        env: buildPersonalWechatRuntimeEnvironment(preflight.runtime.root)
       }
     )
     this.child = child

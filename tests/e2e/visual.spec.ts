@@ -740,6 +740,42 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
 }
 
 for (const appearanceTheme of ['light', 'dark'] as const) {
+  test(`SETTINGS-06A voice encoding environment ${appearanceTheme} visual @visual`, async () => {
+    const fixture = await launchTestApp({ now: visualNow, appearanceTheme })
+    const pageErrors: Error[] = []
+    fixture.page.on('pageerror', (error) => pageErrors.push(error))
+    try {
+      await fixture.setWindowContentSize(visualViewport)
+      await fixture.page
+        .getByRole('navigation', { name: '一级导航' })
+        .getByRole('button', { name: '设置' })
+        .click()
+      await fixture.page.getByRole('button', { name: '文字转语音' }).click()
+      const environment = fixture.page.locator('.voice-encoding-environment')
+      await environment.scrollIntoViewIfNeeded()
+      await expect(environment.getByRole('heading', { name: '语音编码环境' })).toBeVisible()
+      await expect(environment.getByRole('button', { name: '检查编码环境' })).toBeVisible()
+      await expect(environment.getByRole('status')).toContainText('尚未检查')
+      await expect(fixture.page.locator('html')).toHaveAttribute('data-theme', appearanceTheme)
+      expect(
+        await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+      ).toBe(true)
+      expect(pageErrors).toEqual([])
+      await clearScreenshotFocus(fixture.page)
+      await expect(environment).toHaveScreenshot(
+        `settings-text-to-speech-voice-environment-${appearanceTheme}.png`,
+        {
+          animations: 'disabled',
+          caret: 'hide'
+        }
+      )
+    } finally {
+      await fixture.close()
+    }
+  })
+}
+
+for (const appearanceTheme of ['light', 'dark'] as const) {
   test(`SETTINGS-07 voice recognition controls ${appearanceTheme} visual @visual`, async () => {
     const fixture = await launchTestApp({ now: visualNow, appearanceTheme })
     const pageErrors: Error[] = []

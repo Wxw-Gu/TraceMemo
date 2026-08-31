@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '../../../components/ui'
+import { VoiceEncodingEnvironmentSection } from '../components/VoiceEncodingEnvironmentSection'
 
 const VOICE_PAGE_SIZE = 24
 
@@ -431,6 +432,8 @@ export function TextToSpeechPage({
               </li>
             </ol>
           </section>
+
+          <VoiceEncodingEnvironmentSection onNotice={onNotice} />
 
           <h2 className="settings-section-heading">API 设置</h2>
           <section className="settings-card tts-api-card">

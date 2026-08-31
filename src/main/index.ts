@@ -115,6 +115,7 @@ import { personalWechatSendService } from './services/personal-wechat-send-servi
 import { getPersonalWechatSendCapability } from './services/personal-wechat-capability-service'
 import { scheduledReportService } from './services/scheduled-report-service'
 import { PersonalWechatRuntimeManager } from './services/personal-wechat-runtime-manager'
+import { personalWechatVoiceEnvironmentService } from './services/personal-wechat-voice-environment-service'
 import type { PersonalWechatSendRequest } from '../shared/personal-wechat'
 import type {
   ScheduledReportCreateInput,
@@ -1860,6 +1861,48 @@ app.whenReady().then(async () => {
   ipcMain.handle('wechat-personal:checkStatus', (_, port?: string) =>
     personalWechatSendService.checkWindowsStatus(port)
   )
+  ipcMain.handle('wechat-personal:checkVoiceEnvironment', () =>
+    personalWechatVoiceEnvironmentService.check()
+  )
+  ipcMain.handle('wechat-personal:installPilk', async () => {
+    const result = await personalWechatVoiceEnvironmentService.installPilk()
+    if (!result.success || process.platform !== 'darwin') return result
+
+    const senderStatus = await personalWechatSendService.getStatus()
+    if (!senderStatus.oneBotPid) return result
+    try {
+      const restartedStatus = await personalWechatSendService.restartRuntime()
+      return {
+        ...result,
+        restarted: restartedStatus.state !== 'error',
+        ...(restartedStatus.state === 'error'
+          ? { restartError: restartedStatus.error || restartedStatus.message }
+          : {})
+      }
+    } catch (error) {
+      return {
+        ...result,
+        restarted: false,
+        restartError: error instanceof Error ? error.message : String(error)
+      }
+    }
+  })
+  ipcMain.handle('wechat-personal:openVoicePythonDownload', async () => {
+    try {
+      await shell.openExternal('https://www.python.org/downloads/macos/')
+      return { success: true }
+    } catch {
+      return { success: false, error: '无法打开 Python 下载页面' }
+    }
+  })
+  ipcMain.handle('wechat-personal:openVoiceFfmpegDownload', async () => {
+    try {
+      await shell.openExternal('https://brew.sh/')
+      return { success: true }
+    } catch {
+      return { success: false, error: '无法打开 FFmpeg 安装页面' }
+    }
+  })
   ipcMain.handle('wechat-personal:getRuntimeStatus', () => personalWechatRuntimeManager.getStatus())
   ipcMain.handle('wechat-personal:downloadRuntime', () => personalWechatRuntimeManager.download())
   ipcMain.handle('wechat-personal:cancelRuntimeDownload', () => ({
@@ -1886,6 +1929,7 @@ app.whenReady().then(async () => {
       const self = await chat.getSelfAccountInfoAsync()
       fromId = String(self?.wxid || '').trim()
     } catch {
+      // The sender can still operate without an account wxid for non-voice messages.
     }
     return personalWechatSendService.send(fromId ? { ...request, fromId } : request)
   })

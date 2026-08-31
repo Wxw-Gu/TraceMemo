@@ -46,6 +46,10 @@ import type {
   PersonalWechatRuntimeProgressEvent,
   PersonalWechatRuntimeStatus
 } from '../shared/personal-wechat-runtime'
+import type {
+  PersonalWechatVoiceEncodingEnvironment,
+  PersonalWechatVoiceEncodingEnvironmentResult
+} from '../shared/personal-wechat-voice-runtime'
 import type { AppLogEntry } from '../shared/app-log'
 import type { AppUpdateState } from '../shared/app-update'
 import type { CacheSummary } from '../shared/cache'
@@ -371,6 +375,15 @@ const api = {
     ipcRenderer.invoke('wechat-personal:setKeepProcess', keep),
   checkPersonalWechatSenderStatus: (port?: string): Promise<PersonalWechatSenderStatus> =>
     ipcRenderer.invoke('wechat-personal:checkStatus', port),
+  checkPersonalWechatVoiceEncodingEnvironment:
+    (): Promise<PersonalWechatVoiceEncodingEnvironment> =>
+      ipcRenderer.invoke('wechat-personal:checkVoiceEnvironment'),
+  installPersonalWechatPilk: (): Promise<PersonalWechatVoiceEncodingEnvironmentResult> =>
+    ipcRenderer.invoke('wechat-personal:installPilk'),
+  openPersonalWechatVoicePythonDownload: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('wechat-personal:openVoicePythonDownload'),
+  openPersonalWechatVoiceFfmpegDownload: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('wechat-personal:openVoiceFfmpegDownload'),
   getPersonalWechatRuntimeStatus: (): Promise<PersonalWechatRuntimeStatus> =>
     ipcRenderer.invoke('wechat-personal:getRuntimeStatus'),
   downloadPersonalWechatRuntime: (): Promise<PersonalWechatRuntimeDownloadResult> =>

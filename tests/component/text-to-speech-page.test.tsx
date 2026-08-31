@@ -14,6 +14,10 @@ const getSettings = vi.fn()
 const saveSettings = vi.fn()
 const listVoices = vi.fn()
 const openApiKeys = vi.fn()
+const checkVoiceEncodingEnvironment = vi.fn()
+const installPilk = vi.fn()
+const openPythonDownload = vi.fn()
+const openFfmpegDownload = vi.fn()
 
 const response = {
   success: true,
@@ -70,13 +74,21 @@ describe('TextToSpeechPage', () => {
       }
     }))
     openApiKeys.mockReset().mockResolvedValue({ success: true })
+    checkVoiceEncodingEnvironment.mockReset()
+    installPilk.mockReset()
+    openPythonDownload.mockReset().mockResolvedValue({ success: true })
+    openFfmpegDownload.mockReset().mockResolvedValue({ success: true })
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
         getTextToSpeechSettings: getSettings,
         saveTextToSpeechSettings: saveSettings,
         listTextToSpeechVoices: listVoices,
-        openFishAudioApiKeys: openApiKeys
+        openFishAudioApiKeys: openApiKeys,
+        checkPersonalWechatVoiceEncodingEnvironment: checkVoiceEncodingEnvironment,
+        installPersonalWechatPilk: installPilk,
+        openPersonalWechatVoicePythonDownload: openPythonDownload,
+        openPersonalWechatVoiceFfmpegDownload: openFfmpegDownload
       }
     })
   })
@@ -136,11 +148,46 @@ describe('TextToSpeechPage', () => {
     await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ clearApiKey: true }))
   })
 
-  it('keeps the speech page free of personal WeChat runtime controls', async () => {
+  it('shows the macOS voice encoding environment entry without exposing OneBot controls', async () => {
     render(<TextToSpeechPage onNotice={vi.fn()} />)
 
     expect(await screen.findByText('API 设置')).toBeVisible()
-    expect(screen.queryByText(/微信|OneBot/i)).not.toBeInTheDocument()
+    expect(screen.getByText('语音编码环境')).toBeVisible()
+    expect(screen.queryByText(/OneBot/i)).not.toBeInTheDocument()
     expect(screen.queryByText('支持的微信版本')).not.toBeInTheDocument()
+  })
+
+  it('checks the actual encoding environment and offers pilk repair', async () => {
+    const onNotice = vi.fn()
+    const incompleteEnvironment = {
+      state: 'incomplete' as const,
+      ready: false,
+      runtimeReady: true,
+      python: { ready: true, executable: '/usr/local/bin/python3', version: '3.12.11' },
+      pilk: { ready: false, error: '未安装' },
+      ffmpeg: { ready: true, executable: '/runtime/ffmpeg', version: '6.1' },
+      encoder: 'go-silk' as const,
+      message: '语音编码环境不完整，OneBot 可能回退到 go-silk'
+    }
+    const readyEnvironment = {
+      ...incompleteEnvironment,
+      state: 'ready' as const,
+      ready: true,
+      pilk: { ready: true, version: '0.2.4', path: '/user/pilk/__init__.py' },
+      encoder: 'pilk' as const,
+      message: '语音编码环境正常，可以使用 pilk 编码'
+    }
+    checkVoiceEncodingEnvironment.mockResolvedValue(incompleteEnvironment)
+    installPilk.mockResolvedValue({ success: true, environment: readyEnvironment })
+
+    render(<TextToSpeechPage onNotice={onNotice} />)
+    fireEvent.click(await screen.findByRole('button', { name: '检查编码环境' }))
+    expect(await screen.findByText('⚠ 编码环境不完整')).toBeVisible()
+    expect(screen.getByRole('button', { name: '安装 pilk' })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: '安装 pilk' }))
+    await waitFor(() => expect(installPilk).toHaveBeenCalledTimes(1))
+    expect(onNotice).toHaveBeenCalledWith('语音编码环境已修复。重新启动语音发送服务后生效。')
+    expect(await screen.findByText('✓ 编码环境正常')).toBeVisible()
   })
 })
