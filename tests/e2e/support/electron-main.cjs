@@ -606,6 +606,19 @@ handle('db:getMessages', (md5, startTime, endTime, options) => {
   if (options && options.limit) messages = messages.slice(-options.limit)
   return messages
 })
+handle('test:messageChange', (payload = {}) => {
+  const md5 = String(payload.md5 || '')
+  const message = payload.message
+  if (md5 && message && Array.isArray(fixture.messages[md5])) {
+    fixture.messages[md5].push(message)
+  }
+  const event = payload.event || { db: 'message_0.db', table: 'message', action: 'update' }
+  const json = typeof event === 'string' ? event : JSON.stringify(event)
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type: 'update', json })
+  }
+  return { success: true }
+})
 handle('db:getGroupSnapshot', (md5) =>
   md5.startsWith('group-')
     ? {

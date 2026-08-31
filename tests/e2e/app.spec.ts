@@ -229,6 +229,44 @@ test('CHAT-01 archive More menu is keyboard-safe and keeps the page usable', asy
   }
 })
 
+test('CHAT-REALTIME-01 archive refreshes from a native message-shard event', async () => {
+  const fixture = await launchTestApp()
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.setWindowContentSize({ width: 820, height: 600 })
+    await fixture.page.getByText('产品测试群', { exact: true }).click()
+    await expect(fixture.page.getByText('这是一条脱敏测试消息', { exact: true })).toBeVisible()
+
+    const result = await fixture.page.evaluate(() =>
+      window.electron.ipcRenderer.invoke('test:messageChange', {
+        md5: 'group-regular-md5',
+        event: { db: 'message_0.db', table: 'message', action: 'update' },
+        message: {
+          id: 'msg-monitor',
+          localId: 999,
+          from: 'user',
+          type: '普通文本',
+          datetime: '2026-08-31 12:00:00',
+          content: '消息',
+          isSender: false,
+          name: '测试成员',
+          senderId: 'wxid_fixture_member',
+          createTime: Math.floor(Date.now() / 1000),
+          contentData: { type: 'text', content: '消息' }
+        }
+      })
+    )
+    expect(result).toEqual({ success: true })
+    await expect(fixture.page.getByText('消息', { exact: true })).toBeVisible({
+      timeout: 3_000
+    })
+    expect(pageErrors).toEqual([])
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('CHAT-02 personal WeChat send dialog is keyboard-safe and fits the viewport', async () => {
   test.skip(process.platform !== 'darwin', 'Personal WeChat sending is currently macOS-only')
   const fixture = await launchTestApp()
