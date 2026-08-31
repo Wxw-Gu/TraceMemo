@@ -284,6 +284,92 @@ test('API-02 Agent target segmented control visual @visual', async () => {
 })
 
 for (const appearanceTheme of ['light', 'dark'] as const) {
+  test(`EXIT-01 group exit monitor page ${appearanceTheme} visual @visual`, async () => {
+    const fixture = await launchTestApp({ now: visualNow, appearanceTheme })
+    const pageErrors: Error[] = []
+    fixture.page.on('pageerror', (error) => pageErrors.push(error))
+    try {
+      await fixture.setWindowContentSize(visualViewport)
+      await fixture.page.getByRole('button', { name: '退群监控' }).click()
+      await expect(
+        fixture.page.getByRole('heading', { name: '退群监控', exact: true })
+      ).toBeVisible()
+      await expect(
+        fixture.page.getByText('测试成员退出了产品测试群', { exact: true })
+      ).toBeVisible()
+      await expect(fixture.page.getByText(/240 人 → 239 人/)).toBeVisible()
+      expect(
+        await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+      ).toBe(true)
+      expect(pageErrors).toEqual([])
+      await clearScreenshotFocus(fixture.page)
+      await expect(fixture.page).toHaveScreenshot(`group-exit-monitor-${appearanceTheme}.png`, {
+        animations: 'disabled',
+        caret: 'hide'
+      })
+    } finally {
+      await fixture.close()
+    }
+  })
+
+  test(`EXIT-02 group exit monitor management ${appearanceTheme} visual @visual`, async () => {
+    const fixture = await launchTestApp({ now: visualNow, appearanceTheme })
+    const pageErrors: Error[] = []
+    fixture.page.on('pageerror', (error) => pageErrors.push(error))
+    try {
+      await fixture.setWindowContentSize(visualViewport)
+      await fixture.page.getByRole('button', { name: '退群监控' }).click()
+      await fixture.page.getByRole('button', { name: '管理群聊' }).click()
+      await expect(
+        fixture.page.getByRole('heading', { name: '管理群聊', exact: true })
+      ).toBeVisible()
+      await expect(fixture.page.getByRole('checkbox', { name: '监控产品测试群' })).toBeChecked()
+      expect(
+        await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+      ).toBe(true)
+      expect(pageErrors).toEqual([])
+      await clearScreenshotFocus(fixture.page)
+      await expect(fixture.page).toHaveScreenshot(
+        `group-exit-monitor-manage-${appearanceTheme}.png`,
+        {
+          animations: 'disabled',
+          caret: 'hide'
+        }
+      )
+    } finally {
+      await fixture.close()
+    }
+  })
+
+  test(`EXIT-03 group exit monitor setup empty ${appearanceTheme} visual @visual`, async () => {
+    const fixture = await launchTestApp({ now: visualNow, appearanceTheme })
+    const pageErrors: Error[] = []
+    fixture.page.on('pageerror', (error) => pageErrors.push(error))
+    try {
+      await fixture.setWindowContentSize(visualViewport)
+      await fixture.page.getByRole('button', { name: '退群监控' }).click()
+      await fixture.page.getByRole('button', { name: '管理群聊' }).click()
+      await fixture.page.getByRole('checkbox', { name: '监控产品测试群' }).click()
+      await fixture.page.getByRole('checkbox', { name: '监控折叠群聊样本' }).click()
+      await fixture.page.getByRole('button', { name: '保存监控群聊' }).click()
+      await expect(fixture.page.getByText('还没有设置监控群聊', { exact: true })).toBeVisible()
+      expect(
+        await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+      ).toBe(true)
+      expect(pageErrors).toEqual([])
+      await clearScreenshotFocus(fixture.page)
+      await expect(fixture.page).toHaveScreenshot(
+        `group-exit-monitor-empty-${appearanceTheme}.png`,
+        {
+          animations: 'disabled',
+          caret: 'hide'
+        }
+      )
+    } finally {
+      await fixture.close()
+    }
+  })
+
   test(`REPORT-00 report configuration controls ${appearanceTheme} visual @visual`, async () => {
     const fixture = await launchTestApp({ now: visualNow, appearanceTheme })
     const pageErrors: Error[] = []

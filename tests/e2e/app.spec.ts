@@ -117,7 +117,7 @@ test('KEY-03 changing one key does not invalidate archive data or unrelated sett
 
 test('NAV-01 NAV-02 every top-level page is unique and switchable', async () => {
   const fixture = await launchTestApp()
-  const labels = ['档案', '问问微信', '日报', 'Agent', '导出', 'API', '设置']
+  const labels = ['档案', '问问微信', '日报', '退群监控', 'Agent', '导出', 'API', '设置']
   try {
     const navigation = fixture.page.getByRole('navigation', { name: '一级导航' })
     await expect(navigation).toBeVisible()
@@ -126,6 +126,55 @@ test('NAV-01 NAV-02 every top-level page is unique and switchable', async () => 
       await navigation.getByRole('button', { name: label }).click()
       await expect(fixture.page.locator(`main.app-shell-main[aria-label="${label}"]`)).toBeVisible()
     }
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('NAV-03 exit monitor page shows a member departure event and stays within the viewport', async () => {
+  const fixture = await launchTestApp()
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.setWindowContentSize({ width: 820, height: 600 })
+    await fixture.page.getByRole('button', { name: '退群监控' }).click()
+    await expect(fixture.page.getByRole('heading', { name: '退群监控', exact: true })).toBeVisible()
+    await expect(fixture.page.getByText('测试成员退出了产品测试群', { exact: true })).toBeVisible()
+    await expect(fixture.page.getByText(/240 人 → 239 人/)).toBeVisible()
+    await expect(fixture.page.getByText('实时监听已启用')).toBeVisible()
+    await expect(fixture.page.getByRole('button', { name: '立即检查' })).toBeEnabled()
+    await expect(fixture.page.getByRole('button', { name: '清空记录' })).toBeEnabled()
+    expect(
+      await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true)
+    expect(pageErrors).toEqual([])
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('NAV-04 exit monitor management can save an empty scope and show the setup state', async () => {
+  const fixture = await launchTestApp()
+  try {
+    await fixture.page.getByRole('button', { name: '退群监控' }).click()
+    await fixture.page.getByRole('button', { name: '管理群聊' }).click()
+    await expect(fixture.page.getByRole('heading', { name: '管理群聊', exact: true })).toBeVisible()
+    await expect(fixture.page.getByText('发送能力已就绪', { exact: true })).toBeVisible()
+    await expect(fixture.page.getByRole('checkbox', { name: '监控产品测试群' })).toBeChecked()
+    await fixture.page.getByRole('button', { name: '查看退群监测模板' }).click()
+    await expect(fixture.page.getByLabel('退群监测模板内容')).toHaveValue(/用户: \{user\}/)
+    await expect(fixture.page.getByLabel('退群监测模板内容')).toHaveValue(/群备注: \{groupRemark\}/)
+    const customTemplate = '[退群监测]\n用户: {user}\n群备注: {groupRemark}'
+    await fixture.page.getByLabel('退群监测模板内容').fill(customTemplate)
+    await fixture.page.getByRole('button', { name: '保存模板' }).click()
+    await fixture.page.getByRole('button', { name: '查看退群监测模板' }).click()
+    await expect(fixture.page.getByLabel('退群监测模板内容')).toHaveValue(customTemplate)
+    await fixture.page.keyboard.press('Escape')
+    await fixture.page.getByRole('checkbox', { name: '监控产品测试群' }).click()
+    await fixture.page.getByRole('checkbox', { name: '监控折叠群聊样本' }).click()
+    await fixture.page.getByRole('button', { name: '保存监控群聊' }).click()
+    await expect(fixture.page.getByText('还没有设置监控群聊', { exact: true })).toBeVisible()
+    await expect(fixture.page.getByRole('button', { name: '选择群聊' })).toBeVisible()
   } finally {
     await fixture.close()
   }

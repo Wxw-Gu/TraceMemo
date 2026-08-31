@@ -111,6 +111,7 @@ import {
 } from './services/bootstrap-cache'
 import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
+import { groupExitMonitorService } from './services/group-exit-monitor-service'
 import { personalWechatSendService } from './services/personal-wechat-send-service'
 import { getPersonalWechatSendCapability } from './services/personal-wechat-capability-service'
 import { scheduledReportService } from './services/scheduled-report-service'
@@ -746,6 +747,7 @@ app.whenReady().then(async () => {
           chat.getCurrentAccountRoot() === selectedRoot
         ) {
           console.log('[WCDB4] db:init reuse current connection')
+          void groupExitMonitorService.start(true)
           return { success: true, monitoring: true }
         }
         const nextWechatDb = await WechatDb.create(key, selectedRoot)
@@ -753,6 +755,7 @@ app.whenReady().then(async () => {
           await nextWechatDb.closeAsync()
           return { success: false, error: '应用正在退出，数据库连接已取消', monitoring: false }
         }
+        groupExitMonitorService.stop()
         const resolvedRoot = nextWechatDb.getWcdb4Client().getAccountRoot()
         if (resolvedRoot) {
           // 同步更新 imageKeyRoot，避免自动获取图片密钥时扫描到错误目录
@@ -774,11 +777,13 @@ app.whenReady().then(async () => {
         videoAssetService = new VideoAssetService(wcdb4Client)
         const monitoring = await wcdb4Client.startMonitor((type, json) => {
           wcdb4Client.invalidateSessionCache()
+          groupExitMonitorService.notifyDatabaseChanged(json)
           recallArchiveMonitor?.handleDatabaseChange(json)
           for (const window of BrowserWindow.getAllWindows()) {
             if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
           }
         })
+        void groupExitMonitorService.start(monitoring)
         const recentSession = sessions[0]
         if (recentSession?.username) {
           void wcdb4Client
@@ -1122,6 +1127,24 @@ app.whenReady().then(async () => {
     }
     return snapshot
   })
+
+  ipcMain.handle('group-exit-monitor:getState', () => groupExitMonitorService.getState())
+  ipcMain.handle(
+    'group-exit-monitor:setGroups',
+    (_, roomIds: string[], notificationRoomIds?: string[]) =>
+      groupExitMonitorService.setMonitoredRoomIds(
+        Array.isArray(roomIds) ? roomIds : [],
+        Array.isArray(notificationRoomIds) ? notificationRoomIds : []
+      )
+  )
+  ipcMain.handle('group-exit-monitor:setTemplate', (_, template: unknown) =>
+    groupExitMonitorService.setNotificationTemplate(template)
+  )
+  ipcMain.handle('group-exit-monitor:checkNow', () => groupExitMonitorService.checkNow())
+  ipcMain.handle('group-exit-monitor:clearEvents', () => groupExitMonitorService.clearEvents())
+  ipcMain.handle('group-exit-monitor:markRead', (_, readAt?: number) =>
+    groupExitMonitorService.markRead(readAt)
+  )
 
   ipcMain.handle('db:search', (_, keyword: string) => chat.searchMessages(keyword))
   ipcMain.handle(
@@ -1734,12 +1757,21 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('db:reopenWithRoot', async (_, accountRoot: string) => {
+    groupExitMonitorService.stop()
     const ok = chat.reopenWithRoot(accountRoot)
     if (!ok) return { success: false, error: '数据库未初始化或重新打开失败' }
     const client = chat.getChatDb()?.getWcdb4Client()
     if (client) {
       voiceService = new VoiceService(client)
       voiceRecognition?.connect(voiceService, client.getAccountRoot())
+      const monitoring = await client.startMonitor((type, json) => {
+        client.invalidateSessionCache()
+        groupExitMonitorService.notifyDatabaseChanged(json)
+        for (const window of BrowserWindow.getAllWindows()) {
+          if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
+        }
+      })
+      void groupExitMonitorService.start(monitoring)
     }
     // 同步 imageKeyRoot，避免自动获取扫描到旧目录
     const settings = loadSettings()
@@ -1773,6 +1805,7 @@ app.whenReady().then(async () => {
     voiceBatchService?.cancel()
     voiceRecognition?.disconnect()
     voiceService = null
+    groupExitMonitorService.stop()
     if (options?.closeNative !== false && chat.isReady()) chat.setChatDb(null)
     return { success: true }
   })
@@ -2027,6 +2060,7 @@ app.on('before-quit', (event) => {
   void (async () => {
     agentHubService.stop()
     scheduledReportService.stop()
+    groupExitMonitorService.stop()
     flushBootstrapCacheWritesSync()
     const [, nativeCallsDrained] = await Promise.all([
       apiServer.stop().catch(() => undefined),
