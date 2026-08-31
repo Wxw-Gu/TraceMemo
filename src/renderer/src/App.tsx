@@ -35,6 +35,7 @@ import {
   mergeMessagePages,
   sortMessagesChronologically
 } from './utils/message-pages'
+import { isRelevantMessageMonitorEvent, parseWcdbMonitorEvent } from './utils/message-monitor'
 import { enrichQuotedMessages } from './utils/quoted-messages'
 import type { SelectableReportTemplateId } from '../../shared/report-templates'
 import { switchGeneratedReportTemplate } from './utils/report-template-switch'
@@ -77,7 +78,7 @@ interface SelfInfo {
 
 const MAC_KEY_FAQ_URL = 'https://github.com/Wxw-Gu/TraceMemo/blob/main/docs/mac-disable-sip.md'
 const FIRST_USE_WELCOME_SEEN_KEY = 'wxe_first_use_welcome_seen'
-const MESSAGE_MONITOR_DEBOUNCE_MS = 8000
+const MESSAGE_MONITOR_DEBOUNCE_MS = 350
 const INITIAL_MESSAGE_COUNT = 20
 const MESSAGE_PAGE_SIZE = 100
 const MESSAGE_PREFETCH_COUNT = INITIAL_MESSAGE_COUNT + MESSAGE_PAGE_SIZE
@@ -1387,11 +1388,14 @@ function App(): React.ReactElement {
         const latestMessages = await window.api.getMessages(contactMd5, undefined, undefined, {
           limit: INITIAL_MESSAGE_COUNT
         })
+        if (disposed || selectedContactMd5Ref.current !== contactMd5) return
+        const nextHistory = mergeMessagePages(messageHistoryRef.current, latestMessages)
+        messageHistoryRef.current = nextHistory
         const nextMessages = applyGroupMemberMeta(
           selectedContact,
-          mergeSyntheticMessages(selectedContact, latestMessages)
+          mergeSyntheticMessages(selectedContact, nextHistory.slice(-INITIAL_MESSAGE_COUNT))
         )
-        if (!disposed) {
+        if (!disposed && selectedContactMd5Ref.current === contactMd5) {
           setMessages((current) =>
             areMessagesEquivalent(current, nextMessages) ? current : nextMessages
           )
@@ -1411,11 +1415,13 @@ function App(): React.ReactElement {
     }
 
     const unsubscribe = window.api.onWcdbChange(({ json }) => {
-      const eventText = String(json || '').toLowerCase()
-      const targetIds = [contactMd5, selectedContact.m_nsUsrName]
-        .filter(Boolean)
-        .map((value) => value.toLowerCase())
-      if (!targetIds.some((targetId) => eventText.includes(targetId))) return
+      const payload = String(json || '')
+      const targetIds = [contactMd5, selectedContact.m_nsUsrName].filter(Boolean)
+      if (!isRelevantMessageMonitorEvent(payload, targetIds)) return
+      const event = parseWcdbMonitorEvent(payload)
+      if (event?.table || event?.db) {
+        console.debug(`event queued table=${event.table || 'unknown'} db=${event.db || 'unknown'}`)
+      }
       if (refreshTimer) window.clearTimeout(refreshTimer)
       refreshTimer = window.setTimeout(() => {
         refreshTimer = null
