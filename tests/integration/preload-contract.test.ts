@@ -67,6 +67,25 @@ describe('preload IPC contract', () => {
     await api.getAIVisionRuntimeConfig()
     expect(invoke).toHaveBeenLastCalledWith('ai:getVisionRuntimeConfig')
 
+    await api.getGroupExitMonitorState()
+    expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:getState')
+    await api.setGroupExitMonitorGroups(['room@chatroom'])
+    expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:setGroups', ['room@chatroom'])
+    await api.setGroupExitMonitorGroups(['room@chatroom'], ['room@chatroom'])
+    expect(invoke).toHaveBeenLastCalledWith(
+      'group-exit-monitor:setGroups',
+      ['room@chatroom'],
+      ['room@chatroom']
+    )
+    await api.setGroupExitMonitorNotificationTemplate('用户: {user}')
+    expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:setTemplate', '用户: {user}')
+    await api.checkGroupExitMonitorNow()
+    expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:checkNow')
+    await api.clearGroupExitMonitorEvents()
+    expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:clearEvents')
+    await api.markGroupExitMonitorRead(123)
+    expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:markRead', 123)
+
     await api.getImage('fixture-md5', 'fixture.dat', 'fixture-session', {
       force: true,
       priority: 0
@@ -162,5 +181,27 @@ describe('preload IPC contract', () => {
     expect(callback).toHaveBeenCalledWith({ type: 'insert', json: '{"fixture":true}' })
     unsubscribe()
     expect(removeListener).toHaveBeenCalledWith('wcdb-change', listener)
+  })
+
+  it('unsubscribes the same listener registered for group exit state', async () => {
+    const api = await loadApi()
+    const callback = vi.fn()
+    const unsubscribe = api.onGroupExitMonitorState(callback)
+    expect(on).toHaveBeenCalledWith('group-exit-monitor:state', expect.any(Function))
+    const listener = on.mock.calls.at(-1)?.[1]
+    listener(
+      {},
+      {
+        events: [],
+        running: false,
+        nativeMonitorActive: false,
+        monitoredGroupCount: 0,
+        lastReadAt: 0,
+        unreadCount: 0
+      }
+    )
+    expect(callback).toHaveBeenCalledOnce()
+    unsubscribe()
+    expect(removeListener).toHaveBeenCalledWith('group-exit-monitor:state', listener)
   })
 })

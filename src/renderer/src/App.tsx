@@ -41,6 +41,7 @@ import { switchGeneratedReportTemplate } from './utils/report-template-switch'
 import { runtimePlatform } from './utils/runtime-environment'
 import { useToast } from './components/ui'
 import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
+import { GroupExitMonitorWorkspace } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -1908,6 +1909,8 @@ function App(): React.ReactElement {
         return renderArchiveWorkspace()
       case 'report':
         return renderReportWorkspace()
+      case 'exit-monitor':
+        return <GroupExitMonitorWorkspace dbReady={isDatabaseConnected} contacts={contacts} />
       case 'agent-hub':
         return <AgentHubWorkspace />
       case 'api':

@@ -234,6 +234,98 @@ const handle = (channel, fn) => {
   ipcMain.handle(channel, async (event, ...args) => fn(...args))
 }
 
+const groupExitEvent = {
+  id: 'fixture-exit-event',
+  contactId: 'group-regular-md5',
+  roomId: 'group_regular@chatroom',
+  groupName: '产品测试群',
+  memberWxid: 'wxid_fixture_member',
+  memberName: '测试成员',
+  wechatName: '测试成员微信名',
+  groupRemark: '测试成员群备注',
+  contactRemark: '测试成员通讯录备注',
+  previousCount: 240,
+  currentCount: 239,
+  delta: -1,
+  message: '测试成员退出了产品测试群',
+  detectedAt: fixtureNowMs - 60 * 1000
+}
+let groupExitMonitorState = {
+  events: [groupExitEvent],
+  running: connected,
+  nativeMonitorActive: connected,
+  monitoredGroupCount: 2,
+  monitorSelectionConfigured: true,
+  monitoredRoomIds: ['group_regular@chatroom', 'group_folded@chatroom'],
+  notificationRoomIds: [],
+  notificationTemplate:
+    '[退群监测]\n\n用户: {user}\n\n群备注: {groupRemark}\n\n微信号: {wxid}\n\n退群时间: {time}',
+  lastCheckedAt: fixtureNowMs - 30 * 1000,
+  lastReadAt: 0,
+  unreadCount: 1
+}
+const cloneGroupExitMonitorState = () => ({
+  ...groupExitMonitorState,
+  events: groupExitMonitorState.events.map((event) => ({ ...event })),
+  unreadCount: groupExitMonitorState.events.filter(
+    (event) => event.detectedAt > groupExitMonitorState.lastReadAt
+  ).length
+})
+handle('group-exit-monitor:getState', () => cloneGroupExitMonitorState())
+handle('group-exit-monitor:setGroups', (roomIds, notificationRoomIds) => {
+  const selected = Array.isArray(roomIds)
+    ? roomIds.filter((roomId) => typeof roomId === 'string' && roomId.endsWith('@chatroom'))
+    : []
+  const notifications = Array.isArray(notificationRoomIds)
+    ? notificationRoomIds.filter(
+        (roomId) => typeof roomId === 'string' && selected.includes(roomId)
+      )
+    : []
+  groupExitMonitorState = {
+    ...groupExitMonitorState,
+    monitorSelectionConfigured: true,
+    monitoredRoomIds: [...new Set(selected)],
+    notificationRoomIds: [...new Set(notifications)],
+    monitoredGroupCount: selected.length,
+    lastCheckedAt: fixtureNowMs
+  }
+  return cloneGroupExitMonitorState()
+})
+handle('group-exit-monitor:setTemplate', (template) => {
+  if (typeof template !== 'string' || !template.trim()) throw new Error('模板不能为空')
+  groupExitMonitorState = {
+    ...groupExitMonitorState,
+    notificationTemplate: template.trim()
+  }
+  return cloneGroupExitMonitorState()
+})
+handle('group-exit-monitor:checkNow', () => {
+  groupExitMonitorState = {
+    ...groupExitMonitorState,
+    lastCheckedAt: fixtureNowMs
+  }
+  return cloneGroupExitMonitorState()
+})
+handle('group-exit-monitor:clearEvents', () => {
+  groupExitMonitorState = {
+    ...groupExitMonitorState,
+    events: [],
+    lastReadAt: fixtureNowMs
+  }
+  return cloneGroupExitMonitorState()
+})
+handle('group-exit-monitor:markRead', (readAt) => {
+  const requestedAt = Number(readAt)
+  groupExitMonitorState = {
+    ...groupExitMonitorState,
+    lastReadAt: Math.max(
+      groupExitMonitorState.lastReadAt,
+      Number.isFinite(requestedAt) && requestedAt > 0 ? requestedAt : fixtureNowMs
+    )
+  }
+  return cloneGroupExitMonitorState()
+})
+
 const scheduledReportTasks = []
 const scheduledReportExecutions = []
 const scheduledReportNextRun = (scheduleTime) => {

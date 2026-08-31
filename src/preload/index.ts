@@ -52,6 +52,7 @@ import type {
 } from '../shared/personal-wechat-voice-runtime'
 import type { AppLogEntry } from '../shared/app-log'
 import type { AppUpdateState } from '../shared/app-update'
+import type { GroupExitMonitorState } from '../shared/group-exit-monitor'
 import type { CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress } from '../shared/export'
 import type { ImageDecoderSelectionResult, ImageDecoderStatus } from '../shared/image-decryption'
@@ -128,6 +129,29 @@ const api = {
     options?: { limit?: number }
   ) => ipcRenderer.invoke('db:getMessages', userMd5, startTime, endTime, options),
   getGroupSnapshot: (userMd5: string) => ipcRenderer.invoke('db:getGroupSnapshot', userMd5),
+  getGroupExitMonitorState: (): Promise<GroupExitMonitorState> =>
+    ipcRenderer.invoke('group-exit-monitor:getState'),
+  setGroupExitMonitorGroups: (
+    roomIds: string[],
+    notificationRoomIds?: string[]
+  ): Promise<GroupExitMonitorState> =>
+    notificationRoomIds === undefined
+      ? ipcRenderer.invoke('group-exit-monitor:setGroups', roomIds)
+      : ipcRenderer.invoke('group-exit-monitor:setGroups', roomIds, notificationRoomIds),
+  setGroupExitMonitorNotificationTemplate: (template: string): Promise<GroupExitMonitorState> =>
+    ipcRenderer.invoke('group-exit-monitor:setTemplate', template),
+  checkGroupExitMonitorNow: (): Promise<GroupExitMonitorState> =>
+    ipcRenderer.invoke('group-exit-monitor:checkNow'),
+  clearGroupExitMonitorEvents: (): Promise<GroupExitMonitorState> =>
+    ipcRenderer.invoke('group-exit-monitor:clearEvents'),
+  markGroupExitMonitorRead: (readAt?: number): Promise<GroupExitMonitorState> =>
+    ipcRenderer.invoke('group-exit-monitor:markRead', readAt),
+  onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: GroupExitMonitorState): void =>
+      callback(state)
+    ipcRenderer.on('group-exit-monitor:state', listener)
+    return () => ipcRenderer.removeListener('group-exit-monitor:state', listener)
+  },
   search: (keyword: string) => ipcRenderer.invoke('db:search', keyword),
   searchKnowledge: (request: KnowledgeSearchIpcRequest): Promise<KnowledgeSearchIpcResult> =>
     ipcRenderer.invoke('knowledge:search', request),

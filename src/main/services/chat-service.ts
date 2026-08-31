@@ -583,8 +583,8 @@ export function getGroupSnapshot(userMd5: string): GroupSnapshot | null {
   const roomId = wcdb4Client.getUsernameByMd5(userMd5)
   if (!roomId || !roomId.endsWith('@chatroom')) return null
 
-  const members = wcdb4Client
-    .getGroupMembers(roomId)
+  const rawMembers = wcdb4Client.getGroupMembers(roomId)
+  const members = (Array.isArray(rawMembers) ? rawMembers : [])
     .filter((member) => member?.m_nsUsrName)
     .map((member) => ({
       wxid: member.m_nsUsrName,
@@ -604,7 +604,8 @@ export async function getGroupSnapshotAsync(userMd5: string): Promise<GroupSnaps
   const roomId = wcdb4Client.getUsernameByMd5(userMd5)
   if (!roomId || !roomId.endsWith('@chatroom')) return null
 
-  const members = (await wcdb4Client.getGroupMembersAsync(roomId))
+  const rawMembers = await wcdb4Client.getGroupMembersAsync(roomId)
+  const members = (Array.isArray(rawMembers) ? rawMembers : [])
     .filter((member) => member?.m_nsUsrName)
     .map((member) => ({
       wxid: member.m_nsUsrName,

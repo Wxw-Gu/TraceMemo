@@ -987,6 +987,11 @@ export class Wcdb4Client {
     this.sessionDisplayNamesHydrated = false
   }
 
+  /** 清理群备注缓存，不影响会话缓存。 */
+  invalidateGroupNicknameCache(): void {
+    this.groupNicknameCache.clear()
+  }
+
   getChatTables(): { name: string; db_number: string }[] {
     if (this.cachedChatTables) return this.cachedChatTables
     const sessions =
@@ -2740,14 +2745,15 @@ export class Wcdb4Client {
     ])
     const content = this.decodeMessageContent(contentRaw, compressRaw)
     const contentSender = this.extractSenderFromMessageContent(content)
-    const sender = this.pickString(row, [
-      'sender_username',
-      'senderUsername',
-      'sender',
-      'fromUsername',
-      'from_username',
-      'WCDB_CT_sender_username'
-    ]) || contentSender
+    const sender =
+      this.pickString(row, [
+        'sender_username',
+        'senderUsername',
+        'sender',
+        'fromUsername',
+        'from_username',
+        'WCDB_CT_sender_username'
+      ]) || contentSender
     const createTime = this.pickNumber(row, [
       'create_time',
       'createTime',
@@ -2795,21 +2801,32 @@ export class Wcdb4Client {
       'mesDes',
       'WCDB_CT_is_send'
     ])
-    const parsedIsSend = rawIsSend === undefined || rawIsSend === null
-      ? false
-      : this.pickBoolean(row, [
-          'computed_is_send',
-          'computedIsSend',
-          'is_send',
-          'isSend',
-          'mesDes',
-          'WCDB_CT_is_send'
-        ])
-    const isSelfSender = sender ? this.getMyUsernameCandidates().some((candidate) => {
-      const left = String(candidate || '').trim().toLowerCase()
-      const right = String(sender || '').trim().toLowerCase()
-      return Boolean(left && right && (left === right || left.startsWith(`${right}_`) || right.startsWith(`${left}_`)))
-    }) : false
+    const parsedIsSend =
+      rawIsSend === undefined || rawIsSend === null
+        ? false
+        : this.pickBoolean(row, [
+            'computed_is_send',
+            'computedIsSend',
+            'is_send',
+            'isSend',
+            'mesDes',
+            'WCDB_CT_is_send'
+          ])
+    const isSelfSender = sender
+      ? this.getMyUsernameCandidates().some((candidate) => {
+          const left = String(candidate || '')
+            .trim()
+            .toLowerCase()
+          const right = String(sender || '')
+            .trim()
+            .toLowerCase()
+          return Boolean(
+            left &&
+            right &&
+            (left === right || left.startsWith(`${right}_`) || right.startsWith(`${left}_`))
+          )
+        })
+      : false
     const isSend = isSelfSender || parsedIsSend
 
     return {
@@ -2828,11 +2845,14 @@ export class Wcdb4Client {
 
   /** 解决群里自己的消息被识别成 user */
   private extractSenderFromMessageContent(content: string): string {
-    const firstLine = String(content || '').split(/\r?\n/, 1)[0].trim()
+    const firstLine = String(content || '')
+      .split(/\r?\n/, 1)[0]
+      .trim()
     if (!firstLine || firstLine.length > 128 || /[<>]/.test(firstLine)) return ''
     const candidate = firstLine.replace(/:$/, '').trim()
     if (!candidate || /\s/.test(candidate)) return ''
-    if (candidate.includes('@') || candidate.startsWith('wxid_') || candidate.startsWith('gh_')) return candidate
+    if (candidate.includes('@') || candidate.startsWith('wxid_') || candidate.startsWith('gh_'))
+      return candidate
     return this.getMyUsernameCandidates().includes(candidate) ? candidate : ''
   }
 

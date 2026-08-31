@@ -79,6 +79,7 @@ import type {
   PersonalWechatVoiceEncodingEnvironmentResult
 } from '../shared/personal-wechat-voice-runtime'
 import type { AppLogEntry } from '../shared/app-log'
+import type { GroupExitMonitorState } from '../shared/group-exit-monitor'
 import type {
   AppUpdateCheckResult,
   AppUpdateInstallResult,
@@ -254,6 +255,16 @@ declare global {
           avatar: string
         }[]
       } | null>
+      getGroupExitMonitorState: () => Promise<GroupExitMonitorState>
+      setGroupExitMonitorGroups: (
+        roomIds: string[],
+        notificationRoomIds?: string[]
+      ) => Promise<GroupExitMonitorState>
+      setGroupExitMonitorNotificationTemplate: (template: string) => Promise<GroupExitMonitorState>
+      checkGroupExitMonitorNow: () => Promise<GroupExitMonitorState>
+      clearGroupExitMonitorEvents: () => Promise<GroupExitMonitorState>
+      markGroupExitMonitorRead: (readAt?: number) => Promise<GroupExitMonitorState>
+      onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => () => void
       search: (keyword: string) => Promise<string | null>
       searchKnowledge: (request: KnowledgeSearchIpcRequest) => Promise<KnowledgeSearchIpcResult>
       runAiSearch: (request: AiSearchPipelineRequest) => Promise<AiSearchPipelineResult>
