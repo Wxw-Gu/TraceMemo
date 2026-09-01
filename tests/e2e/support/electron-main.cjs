@@ -16,6 +16,7 @@ const imageData = `data:image/png;base64,${fs.readFileSync(path.join(root, 'reso
 const voiceData = 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA='
 const configuredNow = Number(process.env.WXE_E2E_NOW_MS)
 const updateSimulation = process.env.WXE_E2E_UPDATE_SIMULATION === '1'
+const personalWechatSupported = process.platform === 'darwin' || process.platform === 'win32'
 const unsignedMacUpdate = process.env.WXE_E2E_UNSIGNED_MAC_UPDATE === '1'
 const fixtureNowMs =
   Number.isFinite(configuredNow) && configuredNow > 0 ? configuredNow : Date.now()
@@ -378,8 +379,8 @@ handle('wechat-personal:getRuntimeStatus', () => ({
 }))
 handle('wechat-personal:getStatus', () => ({
   state: 'online',
-  platform: 'darwin',
-  arch: 'arm64',
+  platform: process.platform,
+  arch: process.arch,
   sipDisabled: true,
   wechatRunning: true,
   wechatPid: 4668,
@@ -404,16 +405,16 @@ handle('wechat-personal:getStatus', () => ({
   message: '个人微信已绑定'
 }))
 handle('wechat-personal:getSendCapability', () => ({
-  supported: process.platform === 'darwin',
-  ready: process.platform === 'darwin',
-  status: process.platform === 'darwin' ? 'ready' : 'unsupported',
+  supported: personalWechatSupported,
+  ready: personalWechatSupported,
+  status: personalWechatSupported ? 'ready' : 'unsupported',
   capabilities: {
-    text: process.platform === 'darwin',
-    image: process.platform === 'darwin',
-    voice: process.platform === 'darwin'
+    text: personalWechatSupported,
+    image: personalWechatSupported,
+    voice: personalWechatSupported
   },
   senderStatus: {
-    state: process.platform === 'darwin' ? 'online' : 'unsupported_platform',
+    state: personalWechatSupported ? 'online' : 'unsupported_platform',
     platform: process.platform,
     arch: process.arch,
     sipDisabled: true,
@@ -429,14 +430,16 @@ handle('wechat-personal:getSendCapability', () => ({
     imageHookInstalled: true,
     imageHookReady: true,
     messageListenerReady: true,
-    canSend: process.platform === 'darwin',
-    canSendText: process.platform === 'darwin',
-    canSendImage: process.platform === 'darwin',
-    canSendVoice: process.platform === 'darwin',
+    canSend: personalWechatSupported,
+    canSendText: personalWechatSupported,
+    canSendImage: personalWechatSupported,
+    canSendVoice: personalWechatSupported,
     message: '个人微信已绑定'
   },
   message:
-    process.platform === 'darwin' ? '个人微信已准备好发送日报' : '微信消息发送目前仅支持 macOS'
+    personalWechatSupported
+      ? '个人微信已准备好发送日报'
+      : '微信消息发送目前仅支持 macOS 和 Windows'
 }))
 handle('scheduled-report:list', () => [...scheduledReportTasks])
 handle('scheduled-report:listExecutions', (taskId) =>

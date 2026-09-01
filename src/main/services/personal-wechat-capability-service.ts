@@ -36,7 +36,7 @@ export class PersonalWechatCapabilityService {
       senderStatus,
       message:
         status === 'unsupported'
-          ? '微信消息发送目前仅支持 macOS'
+          ? '微信消息发送目前仅支持 macOS 和 Windows'
           : senderStatus.message ||
             (status === 'needs_binding' || status === 'unconfigured'
               ? '请先绑定个人微信'

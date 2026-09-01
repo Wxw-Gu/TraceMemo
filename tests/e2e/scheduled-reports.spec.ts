@@ -2,7 +2,10 @@ import { expect, test } from '@playwright/test'
 import { launchTestApp } from './support/electron'
 
 test('SCHEDULED-REPORT-UI-01 opens the scheduled report dialog without viewport overflow', async () => {
-  test.skip(process.platform !== 'darwin', 'The scheduled report send capability is macOS-only')
+  test.skip(
+    process.platform !== 'darwin' && process.platform !== 'win32',
+    'The scheduled report send capability requires macOS or Windows'
+  )
   const fixture = await launchTestApp({ now: Date.parse('2026-08-27T08:30:00+08:00') })
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))

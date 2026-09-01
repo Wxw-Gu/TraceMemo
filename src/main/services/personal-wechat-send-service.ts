@@ -1,10 +1,19 @@
 import { app } from 'electron'
 import { execFile, spawn, type ChildProcess } from 'child_process'
 import { createHash, randomBytes, randomUUID } from 'crypto'
-import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from 'fs'
 import { createConnection } from 'net'
 import { homedir, tmpdir } from 'os'
-import { delimiter, dirname, join, sep } from 'path'
+import { delimiter, dirname, extname, join, sep } from 'path'
 import ffmpegStaticPath from 'ffmpeg-static'
 import { promisify } from 'util'
 import type {
@@ -41,6 +50,12 @@ const WECHAT_FILES_ROOT = join(
   homedir(),
   'Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files'
 )
+
+const ASCII_PATH_PATTERN = /^[\x20-\x7e]+$/
+
+function isAsciiPath(value: string): boolean {
+  return ASCII_PATH_PATTERN.test(value)
+}
 
 export function normalizeWindowsWechatPort(value: unknown): string | null {
   const text = String(value ?? '').trim()
@@ -591,6 +606,59 @@ async function prepareWindowsVoiceFile(filePath: string): Promise<{
   }
 }
 
+function windowsImageTempRoot(): string {
+  const candidates = [
+    process.platform === 'win32' && process.env['PUBLIC']
+      ? join(process.env['PUBLIC'], 'TraceMemo', 'temp')
+      : undefined,
+    process.platform === 'win32' && process.env['ProgramData']
+      ? join(process.env['ProgramData'], 'TraceMemo', 'temp')
+      : undefined,
+    process.platform === 'win32' ? join('C:', 'Users', 'Public', 'TraceMemo', 'temp') : undefined,
+    tmpdir(),
+    process.env['TEMP'],
+    process.env['TMP']
+  ]
+  for (const candidate of candidates) {
+    const normalized = String(candidate || '').trim()
+    if (!normalized || !isAsciiPath(normalized)) continue
+    try {
+      mkdirSync(normalized, { recursive: true })
+      return normalized
+    } catch {
+      //
+    }
+  }
+  throw new Error('无法创建 Windows 图片临时目录')
+}
+
+export function prepareWindowsImageFile(filePath: string): {
+  filePath: string
+  temporary: boolean
+} {
+  const normalized = String(filePath || '').trim()
+  if (isAsciiPath(normalized)) return { filePath: normalized, temporary: false }
+
+  const extension = extname(normalized).toLowerCase()
+  const safeExtension = /^\.[a-z0-9]{1,8}$/.test(extension) ? extension : '.png'
+  const temporaryPath = join(
+    windowsImageTempRoot(),
+    `tm-img-${randomBytes(8).toString('hex')}${safeExtension}`
+  )
+  if (!isAsciiPath(temporaryPath)) throw new Error('Windows 图片临时路径必须只包含 ASCII 字符')
+  try {
+    copyFileSync(normalized, temporaryPath)
+  } catch (error) {
+    try {
+      unlinkSync(temporaryPath)
+    } catch {
+      // A partially copied file is best-effort cleanup only.
+    }
+    throw error
+  }
+  return { filePath: temporaryPath, temporary: true }
+}
+
 async function readWechatVersion(): Promise<string> {
   const { stdout } = await execFileAsync('/usr/libexec/PlistBuddy', [
     '-c',
@@ -736,6 +804,17 @@ async function requestWithTimeout(
 
 type WindowsHookResponse = Record<string, unknown>
 
+export class WindowsHookHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly responseBody: string
+  ) {
+    const detail = responseBody.trim()
+    super(detail ? `HTTP ${status}: ${detail.slice(0, 1_000)}` : `HTTP ${status}`)
+    this.name = 'WindowsHookHttpError'
+  }
+}
+
 export function parseWindowsHookResponse(
   responseText: string,
   requireSuccessRet = false
@@ -843,7 +922,7 @@ async function requestWindowsHook(
   if (method !== 'GET') init.body = JSON.stringify(body)
   const response = await requestWithTimeout(`http://${host}${endpoint}`, init, timeoutMs)
   const responseText = await response.text()
-  if (!response.ok) throw new Error(responseText || `HTTP ${response.status}`)
+  if (!response.ok) throw new WindowsHookHttpError(response.status, responseText)
   return parseWindowsHookResponse(responseText, method === 'POST')
 }
 
@@ -1354,11 +1433,20 @@ export class PersonalWechatSendService {
     const status = await this.getWindowsStatus()
     if (!status.canSend) return { success: false, status, error: status.error || status.message }
 
+    let temporaryImagePath: string | undefined
     let temporaryVoicePath: string | undefined
     try {
       if (request.type === 'text') {
         const windowsRequest = buildWindowsWechatRequest(request)
         await requestWindowsHook(windowsRequest.endpoint, windowsRequest.body)
+      } else if (request.type === 'image') {
+        const preparedImage = prepareWindowsImageFile(request.filePath)
+        temporaryImagePath = preparedImage.temporary ? preparedImage.filePath : undefined
+        const windowsRequest = buildWindowsWechatRequest({
+          ...request,
+          filePath: preparedImage.filePath
+        })
+        await requestWindowsHook(windowsRequest.endpoint, windowsRequest.body, 60_000)
       } else if (request.type === 'voice') {
         const fromId = String(request.fromId || '').trim()
         if (!fromId) throw new Error('无法识别当前微信账号 wxid，无法发送语音')
@@ -1391,6 +1479,13 @@ export class PersonalWechatSendService {
         error: `发送失败：${message}`
       }
     } finally {
+      if (temporaryImagePath) {
+        try {
+          unlinkSync(temporaryImagePath)
+        } catch {
+          // Temporary files are best-effort cleanup only.
+        }
+      }
       if (temporaryVoicePath) {
         try {
           unlinkSync(temporaryVoicePath)

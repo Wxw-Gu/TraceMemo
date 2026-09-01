@@ -39,7 +39,7 @@ import { isRelevantMessageMonitorEvent, parseWcdbMonitorEvent } from './utils/me
 import { enrichQuotedMessages } from './utils/quoted-messages'
 import type { SelectableReportTemplateId } from '../../shared/report-templates'
 import { switchGeneratedReportTemplate } from './utils/report-template-switch'
-import { runtimePlatform } from './utils/runtime-environment'
+import { runtimePlatform, supportsPersonalWechatSend } from './utils/runtime-environment'
 import { useToast } from './components/ui'
 import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
 import { GroupExitMonitorWorkspace } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
@@ -1783,24 +1783,24 @@ function App(): React.ReactElement {
           type="button"
           role="tab"
           aria-selected={reportSection === 'scheduled'}
-          aria-disabled={runtimePlatform !== 'darwin'}
-          className={`${reportSection === 'scheduled' ? 'active' : ''} ${runtimePlatform !== 'darwin' ? 'unsupported' : ''}`}
+          aria-disabled={!supportsPersonalWechatSend}
+          className={`${reportSection === 'scheduled' ? 'active' : ''} ${!supportsPersonalWechatSend ? 'unsupported' : ''}`}
           onClick={() => {
-            if (runtimePlatform !== 'darwin') {
-              toast({ description: '定时日报目前仅支持 macOS。', duration: 3200 })
+            if (!supportsPersonalWechatSend) {
+              toast({ description: '定时日报目前仅支持 macOS 和 Windows。', duration: 3200 })
               return
             }
             setReportSection('scheduled')
           }}
         >
-          定时日报{runtimePlatform !== 'darwin' && <small>仅 macOS</small>}
+          定时日报{!supportsPersonalWechatSend && <small>仅 macOS / Windows</small>}
         </button>
       </div>
       <div className="report-workspace-body">
         {reportSection === 'scheduled' ? (
           <ScheduledReportsWorkspace
             contacts={contacts}
-            platformSupported={runtimePlatform === 'darwin'}
+            platformSupported={supportsPersonalWechatSend}
             onOpenWechatSettings={openWechatSendSettings}
             onOpenModelSettings={openModelSettings}
             onNotice={(message, variant) =>

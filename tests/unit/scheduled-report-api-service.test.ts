@@ -136,7 +136,7 @@ describe('ScheduledReportApiService', () => {
     }
   )
 
-  it('enforces the macOS platform gate even if a provider reports ready', async () => {
+  it('allows Windows when the image send capability is ready', async () => {
     const { service } = makeApi()
     const api = new ScheduledReportApiService({
       service,
@@ -144,6 +144,23 @@ describe('ScheduledReportApiService', () => {
       listContacts: () => contacts,
       isDatabaseReady: () => true,
       platform: 'win32'
+    })
+    const created = await api.create({
+      group: '技术交流群',
+      schedule: { type: 'daily', time: '09:00' }
+    })
+    expect(created.group).toMatchObject({ talker: 'tech@chatroom' })
+    expect(service.createTask).toHaveBeenCalledOnce()
+  })
+
+  it('keeps unsupported platforms blocked even if a provider reports ready', async () => {
+    const { service } = makeApi()
+    const api = new ScheduledReportApiService({
+      service,
+      getCapability: async () => capability('ready'),
+      listContacts: () => contacts,
+      isDatabaseReady: () => true,
+      platform: 'linux'
     })
     await expect(
       api.create({ group: '技术交流群', schedule: { type: 'daily', time: '09:00' } })

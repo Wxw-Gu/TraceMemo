@@ -115,7 +115,7 @@ export function ChatHeader({
         ) : (
           <Tooltip>
             <TooltipTrigger asChild>
-              <span tabIndex={0} aria-label="仅支持 macOS">
+              <span tabIndex={0} aria-label="仅支持 macOS 和 Windows">
                 <Button
                   variant="outline"
                   size="sm"
@@ -129,7 +129,7 @@ export function ChatHeader({
                 </Button>
               </span>
             </TooltipTrigger>
-            <TooltipContent>仅支持 macOS</TooltipContent>
+            <TooltipContent>仅支持 macOS 和 Windows</TooltipContent>
           </Tooltip>
         )}
         <Button
