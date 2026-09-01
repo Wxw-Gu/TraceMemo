@@ -72,6 +72,7 @@ describe('AI model settings', () => {
     expect(screen.getByLabelText('供应商名称')).toHaveFocus()
     expect(screen.getByLabelText('模型名称')).toHaveAttribute('placeholder', '例如：DeepSeek Chat')
     expect(screen.getByLabelText('模型 ID')).toHaveAttribute('placeholder', '例如：deepseek-chat')
+    expect(screen.getByRole('combobox', { name: '思考模式' })).toHaveTextContent('跟随模型默认')
   })
 
   it('reveals and focuses the provider editor when editing an existing provider', async () => {

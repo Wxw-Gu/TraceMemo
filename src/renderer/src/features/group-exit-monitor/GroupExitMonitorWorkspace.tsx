@@ -167,7 +167,8 @@ function GroupExitNotificationTemplate({
         />
         <div className="exit-monitor-template-meta">
           <span>
-            支持 {`{user}`}、{`{groupRemark}`}、{`{wxid}`}、{`{time}`}
+            支持 {`{user}`}、{`{groupRemark}`}、{`{wxid}`}、{`{previousCount}`}、{`{currentCount}`}
+            、{`{time}`}
           </span>
           <span>
             {draft.length}/{GROUP_EXIT_NOTIFICATION_TEMPLATE_MAX_LENGTH}

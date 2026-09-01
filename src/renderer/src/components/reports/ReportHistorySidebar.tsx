@@ -37,8 +37,6 @@ interface ReportGroup {
   reports: GeneratedReportRecord[]
 }
 
-const DAY_MS = 86400000
-
 const dateKey = (value: string): number => {
   const parsed = new Date(value).getTime()
   return Number.isFinite(parsed) ? parsed : 0
@@ -62,12 +60,15 @@ const groupLabelFor = (value: string): string => {
   if (!Number.isFinite(date.getTime())) return '更早'
 
   const now = new Date()
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-  const startOfYesterday = startOfToday - DAY_MS
-  const time = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+  const startOfToday = new Date(now)
+  startOfToday.setHours(0, 0, 0, 0)
+  const startOfYesterday = new Date(startOfToday)
+  startOfYesterday.setDate(startOfYesterday.getDate() - 1)
+  const time = new Date(date)
+  time.setHours(0, 0, 0, 0)
 
-  if (time >= startOfToday) return '今天'
-  if (time >= startOfYesterday) return '昨天'
+  if (time.getTime() >= startOfToday.getTime()) return '今天'
+  if (time.getTime() >= startOfYesterday.getTime()) return '昨天'
   if (date.getFullYear() === now.getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日`
   return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
 }

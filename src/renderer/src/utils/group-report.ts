@@ -919,20 +919,33 @@ export const SUMMARY_TYPE_OPTIONS: {
   }
 ]
 
-export const getSummaryDateRange = (
-  range: SummaryDateRange
+export const getSummaryDateRangeAt = (
+  range: SummaryDateRange,
+  now = new Date()
 ): { startTime: number; endTime: number } => {
-  const now = new Date()
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000
-  const endTime = Math.floor(Date.now() / 1000)
+  const startOfToday = new Date(now)
+  startOfToday.setHours(0, 0, 0, 0)
+  const startOfYesterday = new Date(startOfToday)
+  startOfYesterday.setDate(startOfYesterday.getDate() - 1)
+  const startOfTodaySeconds = Math.floor(startOfToday.getTime() / 1000)
+  const endTime = Math.floor(now.getTime() / 1000)
   if (range === 'yesterday') {
-    return { startTime: startOfToday - 86400, endTime: startOfToday - 1 }
+    return {
+      startTime: Math.floor(startOfYesterday.getTime() / 1000),
+      endTime: startOfTodaySeconds - 1
+    }
   }
   if (range === '7days') {
-    return { startTime: startOfToday - 6 * 86400, endTime }
+    const startOfSevenDayWindow = new Date(startOfToday)
+    startOfSevenDayWindow.setDate(startOfSevenDayWindow.getDate() - 6)
+    return { startTime: Math.floor(startOfSevenDayWindow.getTime() / 1000), endTime }
   }
-  return { startTime: startOfToday, endTime }
+  return { startTime: startOfTodaySeconds, endTime }
 }
+
+export const getSummaryDateRange = (
+  range: SummaryDateRange
+): { startTime: number; endTime: number } => getSummaryDateRangeAt(range)
 
 export const isInternalName = (value?: string): boolean => {
   const text = String(value || '').trim()

@@ -16,6 +16,8 @@ import type {
   ScheduledReportTask,
   ScheduledReportUpdateInput
 } from '../../shared/scheduled-report'
+import type { SaveGeneratedReportRequest } from '../../shared/report-history'
+import { saveGeneratedReport } from '../report-history-service'
 import { generateAgentGroupReport } from './agent-group-report-service'
 import { personalWechatSendService } from './personal-wechat-send-service'
 import { personalWechatCapabilityService } from './personal-wechat-capability-service'
@@ -29,6 +31,9 @@ const TICK_MS = 15_000
 export interface ScheduledReportDependencies {
   getCapability: () => Promise<PersonalWechatSendCapability>
   generateReport: typeof generateAgentGroupReport
+  saveGeneratedReport: (
+    request: SaveGeneratedReportRequest
+  ) => ReturnType<typeof saveGeneratedReport>
   send: (request: PersonalWechatSendRequest) => ReturnType<typeof personalWechatSendService.send>
   storageDir: string
   isDatabaseReady: () => boolean
@@ -38,12 +43,22 @@ export interface ScheduledReportDependencies {
 const defaultDependencies = (): ScheduledReportDependencies => ({
   getCapability: () => personalWechatCapabilityService.getPersonalWechatSendCapability(),
   generateReport: generateAgentGroupReport,
+  saveGeneratedReport,
   send: (request) => personalWechatSendService.send(request),
   storageDir: path.join(app.getPath('userData'), STORAGE_DIR),
   isDatabaseReady: () => isChatReady()
 })
 
 const rangeValues = new Set<ScheduledReportRange>(['today', 'yesterday', '7days', 'recent24h'])
+
+const reportRangeLabel = (range: ScheduledReportRange): string =>
+  range === 'recent24h'
+    ? '最近 24 小时'
+    : range === '7days'
+      ? '近 7 天'
+      : range === 'today'
+        ? '今天'
+        : '昨日'
 
 export function validateScheduleTime(value: string): boolean {
   return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(value || '').trim())
@@ -308,6 +323,38 @@ export class ScheduledReportService {
       }
       if (!generated.success || !generated.pngPath) {
         return finish('failed', `report_generation_failed:${generated.error || '日报生成失败'}`)
+      }
+      const reportContact = resolveMd5(task.group)
+      let savedHistory: Awaited<ReturnType<typeof this.deps.saveGeneratedReport>>
+      try {
+        savedHistory = await this.deps.saveGeneratedReport({
+          contactId: reportContact?.md5 || task.group,
+          contactName: generated.groupName || reportContact?.m_nsNickName || task.group,
+          contactAvatar: reportContact?.avatar,
+          dateRange: generated.reportMetadata?.dateRange || reportRangeLabel(task.reportRange),
+          reportDate: generated.reportMetadata?.reportDate,
+          messageCount: generated.messageCount || generated.reportMetadata?.messageCount || 0,
+          generatedAt: new Date().toISOString(),
+          htmlPath: generated.htmlPath,
+          pngPath: generated.pngPath,
+          duration: generated.duration,
+          modelName: generated.modelName,
+          tokenUsage: generated.tokenUsage,
+          reportSnapshot: generated.reportSnapshot,
+          reportMetadata: generated.reportMetadata,
+          templateId: task.templateId
+        })
+      } catch (error) {
+        return finish(
+          'failed',
+          `report_history_save_failed:${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+      if (!savedHistory.success) {
+        return finish(
+          'failed',
+          `report_history_save_failed:${savedHistory.error || '日报历史保存失败'}`
+        )
       }
       const target = this.resolveTarget(task)
       if (!target) return finish('failed', 'wechat_send_failed:未找到指定微信群')

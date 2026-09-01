@@ -1,4 +1,5 @@
 import type { Contact, Message } from '../../shared/types'
+import type { GroupDailyReport, GroupReportMetadata } from '../../shared/group-report'
 import { exportGroupReport } from '../group-report-service'
 import { getGroupSnapshot, listMessages, resolveMd5 } from './chat-service'
 import { AIProviderService } from './ai-provider-service'
@@ -32,14 +33,26 @@ export interface AgentGroupReportRequest {
 export interface AgentGroupReportResult {
   success: boolean
   groupName?: string
+  htmlPath?: string
   pngPath?: string
   messageCount?: number
+  reportSnapshot?: GroupDailyReport
+  reportMetadata?: GroupReportMetadata
+  modelName?: string
+  tokenUsage?: {
+    input?: number
+    output?: number
+    total?: number
+    estimated?: boolean
+  }
+  duration?: number
   error?: string
 }
 
 export async function generateAgentGroupReport(
   request: AgentGroupReportRequest
 ): Promise<AgentGroupReportResult> {
+  const startedAt = Date.now()
   const query = String(request.group || '')
     .trim()
     .replace(/群聊?$/, '')
@@ -54,7 +67,10 @@ export async function generateAgentGroupReport(
   const range = request.range === 'yesterday' || request.range === '7days' ? request.range : 'today'
   const { startTime, endTime } =
     request.range === 'recent24h'
-      ? { startTime: Math.floor(Date.now() / 1000) - 86400, endTime: Math.floor(Date.now() / 1000) }
+      ? (() => {
+          const now = Math.floor(Date.now() / 1000)
+          return { startTime: now - 86400, endTime: now }
+        })()
       : getSummaryDateRange(range)
   let messages = listMessages(contact.md5, startTime, endTime) as Message[]
   if (!messages.length) return { success: false, error: '所选时间范围没有可总结的消息' }
@@ -98,6 +114,7 @@ export async function generateAgentGroupReport(
   }
 
   const input = await buildGroupReportInput(messages, contact as Contact, true, 'full')
+  const runtime = aiProvider.getRuntimeConfig()
   const ai = await aiProvider.chat(
     [
       { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
@@ -106,6 +123,7 @@ export async function generateAgentGroupReport(
     { timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
   )
   if (!ai.success || !ai.data) return { success: false, error: ai.error || 'AI 总结失败' }
+  let tokenUsage = ai.usage
   const parseReport = (raw: string): ReturnType<typeof parseGroupDailyReport> =>
     parseGroupDailyReport(
       raw,
@@ -133,6 +151,7 @@ export async function generateAgentGroupReport(
         error: `${repaired.error || 'AI 修复日报 JSON 失败'}（原始错误：${cause}）`
       }
     }
+    tokenUsage = mergeTokenUsage(tokenUsage, repaired.usage)
     try {
       report = parseReport(repaired.data)
     } catch (repairError) {
@@ -153,7 +172,27 @@ export async function generateAgentGroupReport(
   return {
     success: true,
     groupName: input.metadata.groupName,
+    htmlPath: exported.htmlPath,
     pngPath: exported.pngPath,
-    messageCount: messages.length
+    messageCount: messages.length,
+    reportSnapshot: report,
+    reportMetadata: input.metadata,
+    modelName: runtime.modelName || runtime.model,
+    tokenUsage,
+    duration: Date.now() - startedAt
+  }
+}
+
+function mergeTokenUsage(
+  first: AgentGroupReportResult['tokenUsage'],
+  second: AgentGroupReportResult['tokenUsage']
+): AgentGroupReportResult['tokenUsage'] {
+  if (!first) return second
+  if (!second) return first
+  return {
+    input: (first.input || 0) + (second.input || 0),
+    output: (first.output || 0) + (second.output || 0),
+    total: (first.total || 0) + (second.total || 0),
+    estimated: Boolean(first.estimated || second.estimated)
   }
 }

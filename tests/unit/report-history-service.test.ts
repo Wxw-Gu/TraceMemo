@@ -71,6 +71,7 @@ describe('generated report template history', () => {
       dateRange: '今天',
       messageCount: 10,
       generatedAt: '2026-08-12T10:00:00.000Z',
+      reportDate: '2026-08-11',
       generatedImage: `data:image/png;base64,${Buffer.from('mobile-01').toString('base64')}`,
       htmlPath: originalHtml,
       reportSnapshot,
@@ -79,6 +80,7 @@ describe('generated report template history', () => {
     })
     expect(saved.success).toBe(true)
     expect(saved.record).toBeDefined()
+    expect(saved.record?.reportDate).toBe('2026-08-11')
 
     const updated = await updateGeneratedReportTemplate({
       reportId: saved.record!.id,

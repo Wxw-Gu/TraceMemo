@@ -65,6 +65,7 @@ describe('group exit monitor member diff', () => {
     expect(message).toContain('用户: 微信名')
     expect(message).toContain('群备注: 未设置')
     expect(message).toContain('微信号: wxid_fixture')
+    expect(message).toContain('人数: 240 -> 239')
     expect(message).toContain('退群时间: 2026-08-31 00:19:07')
   })
 
@@ -97,8 +98,8 @@ describe('group exit monitor member diff', () => {
         message: '群昵称退出了测试群',
         detectedAt: new Date(2026, 7, 31, 0, 19, 7).getTime()
       },
-      '{user}|{groupRemark}|{wxid}|{time}'
+      '{user}|{groupRemark}|{wxid}|{previousCount}|{currentCount}|{time}'
     )
-    expect(message).toBe('微信名|群内昵称|wxid_fixture|2026-08-31 00:19:07')
+    expect(message).toBe('微信名|群内昵称|wxid_fixture|2|1|2026-08-31 00:19:07')
   })
 })
