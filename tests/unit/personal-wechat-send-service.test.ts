@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync
+} from 'fs'
 import { tmpdir } from 'os'
 import { join, sep } from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -20,7 +28,9 @@ import {
   normalizeWindowsWechatPort,
   parseWindowsLoginStatus,
   parseWindowsHookResponse,
-  parsePersonalWechatHookLog
+  parsePersonalWechatHookLog,
+  prepareWindowsImageFile,
+  WindowsHookHttpError
 } from '../../src/main/services/personal-wechat-send-service'
 
 const temporaryDirectories: string[] = []
@@ -158,6 +168,14 @@ describe('Windows request', () => {
     expect(() => parseWindowsHookResponse('', true)).toThrow('空响应')
   })
 
+  it('preserves the Windows Hook HTTP status and response body', () => {
+    const error = new WindowsHookHttpError(500, '{"ret":-9,"retmsg":"image failed"}')
+    expect(error.message).toBe('HTTP 500: {"ret":-9,"retmsg":"image failed"}')
+    expect(error.status).toBe(500)
+    expect(error.responseBody).toContain('image failed')
+    expect(new WindowsHookHttpError(500, '').message).toBe('HTTP 500')
+  })
+
   it('allows Windows sending only for a strict logged-in status', () => {
     expect(parseWindowsLoginStatus({ status: true })).toBe(true)
     expect(parseWindowsLoginStatus({ status: false })).toBe(false)
@@ -216,6 +234,31 @@ describe('Windows request', () => {
         duration: 1234
       }
     })
+  })
+
+  it('copies adjacent non-ASCII image paths to ASCII temporary files', () => {
+    const root = temporaryDirectory()
+    const content = Buffer.from('fixture-image')
+    for (const fileName of ['测试图片_2026-08-31_经典.png', '测试图片_2026-08-31_经典版.png']) {
+      const source = join(root, fileName)
+      writeFileSync(source, content)
+
+      const prepared = prepareWindowsImageFile(source)
+
+      expect(prepared.temporary).toBe(true)
+      expect(prepared.filePath).not.toContain(fileName)
+      expect(prepared.filePath).toMatch(/^[\x20-\x7e]+$/)
+      expect(readFileSync(prepared.filePath)).toEqual(content)
+      unlinkSync(prepared.filePath)
+    }
+  })
+
+  it('keeps an ASCII image path unchanged', () => {
+    const root = temporaryDirectory()
+    const source = join(root, 'report.png')
+    writeFileSync(source, 'fixture-image')
+
+    expect(prepareWindowsImageFile(source)).toEqual({ filePath: source, temporary: false })
   })
 })
 

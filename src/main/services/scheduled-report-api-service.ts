@@ -301,14 +301,15 @@ export class ScheduledReportApiService {
   private applyPlatformCapability(
     capability: PersonalWechatSendCapability
   ): PersonalWechatSendCapability {
-    if ((this.deps.platform || process.platform) === 'darwin') return capability
+    const platform = this.deps.platform || process.platform
+    if (platform === 'darwin' || platform === 'win32') return capability
     return {
       ...capability,
       supported: false,
       ready: false,
       status: 'unsupported',
       capabilities: { text: false, image: false, voice: false },
-      message: '微信消息发送目前仅支持 macOS'
+      message: '微信消息发送目前仅支持 macOS 和 Windows'
     }
   }
 

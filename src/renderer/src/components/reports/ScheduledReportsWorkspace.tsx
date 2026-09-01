@@ -106,7 +106,7 @@ const capabilityCopy = (capability: PersonalWechatSendCapability | null): string
     case 'ready':
       return '✓ 微信发送能力已就绪'
     case 'unsupported':
-      return '微信消息发送目前仅支持 macOS'
+      return '微信消息发送目前仅支持 macOS 和 Windows'
     case 'needs_binding':
     case 'unconfigured':
       return '请先绑定个人微信'
@@ -127,7 +127,7 @@ const readableError = (error?: string): string => {
   const value = String(error || '')
   if (value.includes('wechat_not_ready') || value.includes('仅支持 macOS')) {
     if (value.includes('unsupported') || value.includes('仅支持'))
-      return '微信消息发送目前仅支持 macOS'
+      return '微信消息发送目前仅支持 macOS 和 Windows'
     if (value.includes('needs_binding') || value.includes('unconfigured')) return '请先绑定个人微信'
     if (value.includes('needs_verification')) return '请先完成微信消息能力检测'
     return '微信发送能力不可用，请检查微信连接。'
@@ -576,7 +576,7 @@ export function ScheduledReportsWorkspace({
         status: 'unsupported',
         capabilities: { text: false, image: false, voice: false },
         senderStatus: {} as PersonalWechatSendCapability['senderStatus'],
-        message: '微信消息发送目前仅支持 macOS'
+        message: '定时日报目前仅支持 macOS 和 Windows'
       })
       setTasks([])
       setExecutions([])

@@ -647,7 +647,7 @@ describe('daily report controls', () => {
 
     const button = screen.getByRole('button', { name: '发送到当前群聊' })
     expect(button).toBeDisabled()
-    expect(button.parentElement).toHaveAttribute('title', '仅支持 macOS')
+    expect(button.parentElement).toHaveAttribute('title', '仅支持 macOS 和 Windows')
   })
 
   it('switches templates from the top toolbar using the saved report snapshot', async () => {

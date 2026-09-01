@@ -81,7 +81,9 @@ describe('ScheduledReportsWorkspace', () => {
         onOpenWechatSettings={onOpenWechatSettings}
       />
     )
-    await waitFor(() => expect(screen.getByText('微信消息发送目前仅支持 macOS')).toBeVisible())
+    await waitFor(() =>
+      expect(screen.getByText('微信消息发送目前仅支持 macOS 和 Windows')).toBeVisible()
+    )
     expect(screen.getByRole('button', { name: /新建定时日报/ })).toBeDisabled()
   })
 

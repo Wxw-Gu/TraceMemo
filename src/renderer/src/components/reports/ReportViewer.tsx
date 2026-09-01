@@ -80,7 +80,7 @@ export function ReportViewer({
 
   const title = useMemo(() => (report ? `${report.contactName} 群聊日报` : 'AI 日报'), [report])
   const sendToGroupHint = !personalWechatSendSupported
-    ? '仅支持 macOS'
+    ? '仅支持 macOS 和 Windows'
     : !sendTarget
       ? '未找到这份日报对应的群聊'
       : !report?.pngPath

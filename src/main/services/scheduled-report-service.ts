@@ -344,7 +344,7 @@ export class ScheduledReportService {
   }
 
   private creationError(capability: PersonalWechatSendCapability): string {
-    if (capability.status === 'unsupported') return '微信消息发送目前仅支持 macOS'
+    if (capability.status === 'unsupported') return '微信消息发送目前仅支持 macOS 和 Windows'
     if (capability.status === 'needs_binding' || capability.status === 'unconfigured')
       return '请先绑定个人微信'
     if (capability.status === 'needs_verification') return '请先完成微信消息能力检测'
