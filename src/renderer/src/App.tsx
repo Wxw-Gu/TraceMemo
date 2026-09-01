@@ -437,6 +437,7 @@ function App(): React.ReactElement {
     modelConfig: reportTextModelConfig,
     visionModelConfig: aiVisionModelConfig
   })
+  const reportHistoryRequestRef = React.useRef(0)
   const lastCapturedReportKeyRef = React.useRef('')
 
   React.useEffect(() => {
@@ -531,8 +532,10 @@ function App(): React.ReactElement {
   }
 
   const loadGeneratedReports = React.useCallback(async (): Promise<void> => {
+    const requestId = ++reportHistoryRequestRef.current
     try {
       const result = await window.api.listGeneratedReports()
+      if (requestId !== reportHistoryRequestRef.current) return
       if (!result.success) {
         setReportNotice(result.error || '日报历史加载失败')
         return
@@ -543,6 +546,7 @@ function App(): React.ReactElement {
         current && reports.some((report) => report.id === current) ? current : null
       )
     } catch (error) {
+      if (requestId !== reportHistoryRequestRef.current) return
       setReportNotice(error instanceof Error ? error.message : String(error))
     }
   }, [])
@@ -816,6 +820,15 @@ function App(): React.ReactElement {
     if (!isAuthenticated) return
     void loadGeneratedReports()
   }, [isAuthenticated, loadGeneratedReports])
+
+  React.useEffect(() => {
+    if (!isAuthenticated || activePage !== 'report') return
+    void loadGeneratedReports()
+    const refreshTimer = window.setInterval(() => {
+      void loadGeneratedReports()
+    }, 15_000)
+    return () => window.clearInterval(refreshTimer)
+  }, [activePage, isAuthenticated, loadGeneratedReports, reportSection, reportWorkspaceView])
 
   const handleLogin = async (keyInput?: string, accountRootInput?: string): Promise<void> => {
     const keyToUse = keyInput || dbKey
@@ -1597,6 +1610,7 @@ function App(): React.ReactElement {
             : summaryDateRange === '7days'
               ? '近 7 天'
               : '今天',
+        reportDate: reportMetadata.reportDate,
         messageCount: reportGeneration.reportMessages.length,
         generatedAt: new Date().toISOString(),
         generatedImage: reportGeneration.generatedImage || undefined,

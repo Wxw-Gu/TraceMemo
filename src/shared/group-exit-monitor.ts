@@ -27,8 +27,7 @@ export interface GroupExitMonitorEvent {
   detectedAt: number
 }
 
-/** 管理页预览和自动通知共用的模板。 */
-export const GROUP_EXIT_NOTIFICATION_TEMPLATE = [
+const LEGACY_GROUP_EXIT_NOTIFICATION_TEMPLATE = [
   '[退群监测]',
   '',
   '用户: {user}',
@@ -40,11 +39,28 @@ export const GROUP_EXIT_NOTIFICATION_TEMPLATE = [
   '退群时间: {time}'
 ].join('\n')
 
+/** 管理页预览和自动通知共用的模板。 */
+export const GROUP_EXIT_NOTIFICATION_TEMPLATE = [
+  '[退群监测]',
+  '',
+  '用户: {user}',
+  '',
+  '群备注: {groupRemark}',
+  '',
+  '微信号: {wxid}',
+  '',
+  '人数: {previousCount} -> {currentCount}',
+  '',
+  '退群时间: {time}'
+].join('\n')
+
 export const GROUP_EXIT_NOTIFICATION_TEMPLATE_MAX_LENGTH = 2_000
 export const GROUP_EXIT_NOTIFICATION_TEMPLATE_PLACEHOLDERS = [
   'user',
   'groupRemark',
   'wxid',
+  'previousCount',
+  'currentCount',
   'time'
 ] as const
 
@@ -79,6 +95,10 @@ export function validateGroupExitNotificationTemplate(
 }
 
 export function normalizeGroupExitNotificationTemplate(value: unknown): string {
+  const template = typeof value === 'string' ? value.replace(/\r\n?/g, '\n').trim() : ''
+  if (template === LEGACY_GROUP_EXIT_NOTIFICATION_TEMPLATE) {
+    return GROUP_EXIT_NOTIFICATION_TEMPLATE
+  }
   const result = validateGroupExitNotificationTemplate(value)
   return result.valid && result.template ? result.template : GROUP_EXIT_NOTIFICATION_TEMPLATE
 }
@@ -105,14 +125,18 @@ export function renderGroupExitMonitorNotification(
     user,
     groupRemark,
     wxid,
+    previousCount: String(event.previousCount),
+    currentCount: String(event.currentCount),
     time: formatGroupExitMonitorTime(event.detectedAt)
   }
   return normalizeGroupExitNotificationTemplate(template).replace(
-    /\{(user|groupRemark|wxid|time)\}/g,
+    /\{(user|groupRemark|wxid|previousCount|currentCount|time)\}/g,
     (placeholder) => {
       if (placeholder === '{user}') return values.user
       if (placeholder === '{groupRemark}') return values.groupRemark
       if (placeholder === '{wxid}') return values.wxid
+      if (placeholder === '{previousCount}') return values.previousCount
+      if (placeholder === '{currentCount}') return values.currentCount
       return values.time
     }
   )

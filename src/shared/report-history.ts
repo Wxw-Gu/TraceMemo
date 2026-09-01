@@ -62,6 +62,8 @@ export interface SaveGeneratedReportRequest {
   dateRange: string
   messageCount: number
   generatedAt: string
+  /** 实际覆盖的本地日期；缺省时由 generatedAt 推导。 */
+  reportDate?: string
   generatedImage?: string
   htmlPath?: string
   pngPath?: string

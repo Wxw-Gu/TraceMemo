@@ -8,6 +8,7 @@ export type AIProviderType =
 export type AIAuthType = 'bearer' | 'x-api-key' | 'custom-header' | 'none'
 
 export type AIOpenAIProtocol = 'chat-completions' | 'responses'
+export type AIThinkingMode = 'default' | 'disabled'
 
 export interface AIProviderAuth {
   type: AIAuthType
@@ -38,6 +39,7 @@ export interface AIProviderAdvancedSettings {
   maxTokens?: number
   stream?: boolean
   apiProtocol?: AIOpenAIProtocol
+  thinking?: AIThinkingMode
   extraHeaders: Record<string, string>
 }
 

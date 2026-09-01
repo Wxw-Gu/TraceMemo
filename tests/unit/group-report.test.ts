@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildGroupReportInput,
+  getSummaryDateRangeAt,
   parseGroupDailyReport
 } from '../../src/renderer/src/utils/group-report'
 import { summaryContent } from '../../src/renderer/src/utils/group-report-facts'
@@ -322,5 +323,26 @@ describe('group report parsing', () => {
 
     expect(input.imageInsightSummary).toMatchObject({ total: 0, succeeded: 0, failed: 0 })
     expect(input.media.gallery).toEqual([])
+  })
+})
+describe('summary date ranges', () => {
+  it('uses local calendar days for today, yesterday, and seven-day ranges', () => {
+    const now = new Date(2026, 0, 1, 12, 34, 56)
+    const today = new Date(2026, 0, 1)
+    const yesterday = new Date(2025, 11, 31)
+    const sevenDaysAgo = new Date(2025, 11, 26)
+
+    expect(getSummaryDateRangeAt('today', now)).toEqual({
+      startTime: today.getTime() / 1000,
+      endTime: now.getTime() / 1000
+    })
+    expect(getSummaryDateRangeAt('yesterday', now)).toEqual({
+      startTime: yesterday.getTime() / 1000,
+      endTime: today.getTime() / 1000 - 1
+    })
+    expect(getSummaryDateRangeAt('7days', now)).toEqual({
+      startTime: sevenDaysAgo.getTime() / 1000,
+      endTime: now.getTime() / 1000
+    })
   })
 })

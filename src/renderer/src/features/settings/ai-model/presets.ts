@@ -98,6 +98,7 @@ export function createProviderFromPreset(presetId = 'deepseek'): AIProviderConfi
       maxTokens: 4096,
       stream: false,
       apiProtocol: 'chat-completions',
+      thinking: 'default',
       extraHeaders: {}
     }
   }

@@ -32,7 +32,13 @@ type AIRequestResult = {
 }
 interface OpenAIResponsePayload {
   error?: { message?: string }
-  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>
+  choices?: Array<{
+    message?: {
+      content?: string | Array<{ type?: string; text?: string }> | null
+      reasoning_content?: string
+    }
+    finish_reason?: string
+  }>
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
 }
 interface OpenAIStreamPayload {
@@ -263,6 +269,7 @@ export class AIProviderService {
   ): Promise<{
     success: boolean
     data?: string
+    finishReason?: string
     usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
     error?: string
   }> {
@@ -352,6 +359,7 @@ export class AIProviderService {
     onDelta?: AIChatDeltaHandler
   ): Promise<{
     data: string
+    finishReason?: string
     usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
   }> {
     if (options?.apiKey) return this.requestLegacy(messages, options, signal, onDelta)
@@ -634,6 +642,18 @@ function toOpenAIMessages(messages: AIMessage[]): Array<{ role: string; content:
   }))
 }
 
+function openAIMessageText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((part) => {
+      if (!part || typeof part !== 'object') return ''
+      const text = (part as { text?: unknown }).text
+      return typeof text === 'string' ? text : ''
+    })
+    .join('')
+}
+
 function toOpenAIResponsesRequest(messages: AIMessage[]): {
   instructions?: string
   input: Array<{ role: string; content: unknown[] }>
@@ -723,6 +743,7 @@ async function requestOpenAICompatible(
         messages: toOpenAIMessages(messages),
         temperature: provider.advanced.temperature,
         max_tokens: testing ? 8 : modelMaxTokens(provider, model),
+        ...(provider.advanced.thinking === 'disabled' ? { thinking: { type: 'disabled' } } : {}),
         ...(provider.advanced.stream ? { stream: true } : {})
       })
     },
@@ -741,7 +762,7 @@ async function requestOpenAICompatible(
       }
       const payload = await parseJsonResponse<OpenAIResponsePayload>(response)
       return {
-        data: String(payload.choices?.[0]?.message?.content || ''),
+        data: openAIMessageText(payload.choices?.[0]?.message?.content),
         finishReason: String(payload.choices?.[0]?.finish_reason || 'unknown'),
         usage: toOpenAIUsage(payload.usage)
       }
@@ -935,7 +956,7 @@ async function parseOpenAIStream(
       throw new Error('模型服务返回了无法解析的流式数据')
     }
     if (payload.error?.message) throw new Error(payload.error.message)
-    const content = String(payload.choices?.[0]?.message?.content || '')
+    const content = openAIMessageText(payload.choices?.[0]?.message?.content)
     if (content) onDelta?.(content)
     return {
       data: content,

@@ -260,7 +260,7 @@ let groupExitMonitorState = {
   monitoredRoomIds: ['group_regular@chatroom', 'group_folded@chatroom'],
   notificationRoomIds: [],
   notificationTemplate:
-    '[退群监测]\n\n用户: {user}\n\n群备注: {groupRemark}\n\n微信号: {wxid}\n\n退群时间: {time}',
+    '[退群监测]\n\n用户: {user}\n\n群备注: {groupRemark}\n\n微信号: {wxid}\n\n人数: {previousCount} -> {currentCount}\n\n退群时间: {time}',
   lastCheckedAt: fixtureNowMs - 30 * 1000,
   lastReadAt: 0,
   unreadCount: 1
@@ -329,6 +329,7 @@ handle('group-exit-monitor:markRead', (readAt) => {
 
 const scheduledReportTasks = []
 const scheduledReportExecutions = []
+const generatedReports = []
 const scheduledReportNextRun = (scheduleTime) => {
   const [hours, minutes] = String(scheduleTime || '09:00')
     .split(':')
@@ -839,11 +840,19 @@ handle('report:prepareTemplateSwitch', () => ({
     values: { REPORT_TITLE: '固定脱敏群日报' }
   }
 }))
-handle('report:listGenerated', () => ({ success: true, reports: [] }))
-handle('report:saveGenerated', (request) => ({
-  success: true,
-  record: { id: 'fixture-report-record', ...request }
-}))
+handle('report:listGenerated', () => ({ success: true, reports: [...generatedReports] }))
+handle('report:saveGenerated', (request) => {
+  const record = {
+    id: 'fixture-report-record',
+    ...request,
+    htmlStatus: request.htmlPath ? 'ready' : 'missing',
+    pngStatus: request.pngPath ? 'ready' : 'missing'
+  }
+  const index = generatedReports.findIndex((report) => report.id === record.id)
+  if (index >= 0) generatedReports[index] = record
+  else generatedReports.unshift(record)
+  return { success: true, record }
+})
 handle('report:updateGeneratedTemplate', (request) => ({
   success: true,
   record: { id: request.reportId, templateId: request.templateId }

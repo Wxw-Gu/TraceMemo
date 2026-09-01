@@ -174,7 +174,7 @@ export async function saveGeneratedReport(
       dateRange: request.dateRange,
       messageCount: request.messageCount,
       generatedAt: timestamp.toISOString(),
-      reportDate: `${year}-${month}-${pad2(timestamp.getDate())}`,
+      reportDate: request.reportDate?.trim() || `${year}-${month}-${pad2(timestamp.getDate())}`,
       htmlPath: savedHtmlPath,
       pngPath: savedPngPath,
       jsonPath,

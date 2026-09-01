@@ -357,6 +357,29 @@ export function AIProviderEditor({
                 </Select>
                 <small>Codex 或仅支持 /responses 的中转服务请选择 Responses API。</small>
               </label>
+              <label className="wide">
+                思考模式
+                <Select
+                  value={provider.advanced.thinking || 'default'}
+                  onValueChange={(value) =>
+                    patch({
+                      advanced: {
+                        ...provider.advanced,
+                        thinking: value as AIProviderConfig['advanced']['thinking']
+                      }
+                    })
+                  }
+                >
+                  <SelectTrigger aria-label="思考模式">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">跟随模型默认</SelectItem>
+                    <SelectItem value="disabled">禁用思考（thinking: disabled）</SelectItem>
+                  </SelectContent>
+                </Select>
+                <small>仅 Chat Completions 兼容接口会发送禁用参数。</small>
+              </label>
               <label className="wide ai-provider-stream-toggle" htmlFor="ai-provider-stream">
                 <span className="ai-provider-stream-toggle-control">
                   <Checkbox

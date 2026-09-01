@@ -1,4 +1,4 @@
-import { mkdtempSync, readJsonSync, rmSync } from 'fs-extra'
+import { mkdtempSync, readJsonSync, rmSync, writeJsonSync } from 'fs-extra'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -32,6 +32,7 @@ vi.mock('../../src/main/services/personal-wechat-send-service', () => ({
 }))
 
 import { GroupExitMonitorService } from '../../src/main/services/group-exit-monitor-service'
+import { GROUP_EXIT_NOTIFICATION_TEMPLATE } from '../../src/shared/group-exit-monitor'
 
 const member = { wxid: 'wxid_member', wechatNickname: '微信名', groupNickname: '群内名' }
 
@@ -75,6 +76,17 @@ describe('GroupExitMonitorService', () => {
       template
     )
     expect(() => service.setNotificationTemplate('用户: {unknown}')).toThrow('不支持的占位符')
+  })
+
+  it('migrates the previous default notification template', () => {
+    writeJsonSync(join(mocks.userData, 'group-exit-monitor.json'), {
+      notificationTemplate:
+        '[退群监测]\n\n用户: {user}\n\n群备注: {groupRemark}\n\n微信号: {wxid}\n\n退群时间: {time}'
+    })
+
+    const service = new GroupExitMonitorService()
+
+    expect(service.getState().notificationTemplate).toBe(GROUP_EXIT_NOTIFICATION_TEMPLATE)
   })
 
   it('keeps the previous baseline when a native snapshot contains null members', async () => {

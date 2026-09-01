@@ -34,6 +34,7 @@ describe('scheduled report scheduling', () => {
     const generatedPath = join(storageDir, 'report.png')
     let generated = 0
     let sent = 0
+    const saveHistory = vi.fn().mockResolvedValue({ success: true })
     const service = new ScheduledReportService({
       storageDir,
       now: () => now,
@@ -46,6 +47,7 @@ describe('scheduled report scheduling', () => {
         sent += 1
         return { success: true, status: capability.senderStatus }
       },
+      saveGeneratedReport: saveHistory,
       isDatabaseReady: () => true
     })
     const created = await service.createTask({
@@ -61,6 +63,14 @@ describe('scheduled report scheduling', () => {
     expect(run.data?.status).toBe('success')
     expect(generated).toBe(1)
     expect(sent).toBe(1)
+    expect(saveHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contactName: '研发群',
+        reportDate: undefined,
+        pngPath: generatedPath,
+        messageCount: 0
+      })
+    )
     expect(await service.listExecutions(taskId)).toHaveLength(1)
     const restored = new ScheduledReportService({
       storageDir,
@@ -74,5 +84,31 @@ describe('scheduled report scheduling', () => {
     expect(
       JSON.parse(await readFile(join(storageDir, 'executions.json'), 'utf8'))[0].message
     ).toContain('微信发送成功')
+  })
+
+  it('does not send a generated report when history persistence fails', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-history-'))
+    const generatedPath = join(storageDir, 'report.png')
+    const send = vi.fn().mockResolvedValue({ success: true, status: capability.senderStatus })
+    const service = new ScheduledReportService({
+      storageDir,
+      getCapability: async () => capability,
+      generateReport: async () => ({ success: true, pngPath: generatedPath }),
+      saveGeneratedReport: vi.fn().mockResolvedValue({ success: false, error: '磁盘不可写' }),
+      send,
+      isDatabaseReady: () => true
+    })
+    const created = await service.createTask({
+      name: '历史失败日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '09:00'
+    })
+
+    const result = await service.runScheduledReportNow(created.data!.id)
+
+    expect(result.success).toBe(false)
+    expect(result.data?.error).toContain('report_history_save_failed:磁盘不可写')
+    expect(send).not.toHaveBeenCalled()
   })
 })
