@@ -86,6 +86,7 @@ export interface FormattedMessage {
 export interface GroupSnapshot {
   roomId: string
   memberCount: number
+  groupName?: string
   members: {
     wxid: string
     nickname: string
@@ -94,6 +95,15 @@ export interface GroupSnapshot {
     remark: string
     avatar: string
   }[]
+}
+
+export interface GroupMembershipSnapshot {
+  roomId: string
+  memberIds: string[]
+}
+
+export interface GroupMembershipBatchSnapshot extends GroupMembershipSnapshot {
+  status: 'ok' | 'not_found'
 }
 
 const MSG_TYPE_DICT: Record<number, string> = {
@@ -234,6 +244,19 @@ export async function listContactsAsync(filter?: string): Promise<FormattedConta
     hydrateStatuses: true
   })
   return listContacts(filter)
+}
+
+/** 读取已缓存/轻量 Session 群名，不执行成员、头像或联系人资料 hydration。 */
+export async function getGroupNamesAsync(): Promise<Record<string, string>> {
+  if (!dbRef) return {}
+  const sessions = await dbRef.getWcdb4Client().getSessionsAsync({ hydrateDisplayNames: false })
+  const names: Record<string, string> = {}
+  for (const session of sessions) {
+    if (!session.username.endsWith('@chatroom')) continue
+    const name = String(session.nickname || '').trim()
+    if (name) names[session.username] = name
+  }
+  return names
 }
 
 export async function getContactAvatars(usernames: string[]): Promise<Record<string, string>> {
@@ -615,7 +638,40 @@ export async function getGroupSnapshotAsync(userMd5: string): Promise<GroupSnaps
       remark: member.remark || '',
       avatar: member.m_nsHeadImgUrl || ''
     }))
-  return { roomId, memberCount: members.length, members }
+  const session = wcdb4Client.getSessions().find((item) => item.username === roomId)
+  return {
+    roomId,
+    groupName: session?.nickname || undefined,
+    memberCount: members.length,
+    members
+  }
+}
+
+/** 退群检测专用轻量读取，不执行成员名称或头像 hydration。 */
+export async function getGroupMemberIdsAsync(
+  roomId: string
+): Promise<GroupMembershipSnapshot | null> {
+  if (!dbRef || !roomId.endsWith('@chatroom')) return null
+  const memberIds = await dbRef.getWcdb4Client().getGroupMemberIdsAsync(roomId)
+  return memberIds ? { roomId, memberIds } : null
+}
+
+export function isGroupMemberIdsBatchAvailable(): boolean {
+  return Boolean(dbRef?.getWcdb4Client().isGroupMemberIdsBatchAvailable())
+}
+
+export async function getGroupMemberIdsBatchAsync(
+  roomIds: string[]
+): Promise<GroupMembershipBatchSnapshot[] | null> {
+  if (!dbRef) return null
+  const results = await dbRef.getWcdb4Client().getGroupMemberIdsBatchAsync(roomIds)
+  return results
+    ? results.map((result) => ({
+        roomId: result.roomId,
+        status: result.status,
+        memberIds: result.memberWxids
+      }))
+    : null
 }
 
 export function searchMessages(keyword: string): string | null {
