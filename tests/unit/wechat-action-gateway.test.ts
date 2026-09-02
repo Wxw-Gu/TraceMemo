@@ -205,6 +205,20 @@ describe('WechatActionGateway', () => {
     expect(mocks.sender.send).not.toHaveBeenCalled()
   })
 
+  it('用户主动发送只依赖微信发送能力', async () => {
+    const gateway = createGateway()
+    const result = await gateway.execute({
+      origin: 'user_tts',
+      purpose: 'tts_voice',
+      triggerType: 'user',
+      recipient: { type: 'contact', id: 'wxid_user' },
+      content: { type: 'text', text: '用户主动发送' }
+    })
+
+    expect(result).toMatchObject({ status: 'sent', decision: 'allow' })
+    expect(mocks.sender.send).toHaveBeenCalledOnce()
+  })
+
   it('converts a transport throw into SEND_FAILED', async () => {
     const gateway = createGateway()
     mocks.sender.send.mockRejectedValueOnce(new Error('connector timeout'))

@@ -31,6 +31,7 @@ type GroupSelectionFilter = 'all' | 'selected' | 'unselected'
 interface GroupExitMonitorWorkspaceProps {
   dbReady: boolean
   contacts?: Contact[]
+  onOpenSendSettings?: () => void
 }
 
 const EMPTY_STATE: GroupExitMonitorState = {
@@ -81,9 +82,11 @@ const sendCapabilityTone = (capability: PersonalWechatSendCapability | null): st
   capability?.ready && capability.capabilities.text ? 'ready' : 'unready'
 
 function EventNotificationStatus({
-  event
+  event,
+  onOpenSendSettings
 }: {
   event: GroupExitMonitorState['events'][number]
+  onOpenSendSettings?: () => void
 }): React.ReactElement {
   const status = event.notificationStatus || event.notification?.status || 'not_requested'
   const details =
@@ -108,6 +111,13 @@ function EventNotificationStatus({
     <div className={`exit-monitor-event-notification ${details.tone}`}>
       <span>{details.label}</span>
       {details.description ? <small>{details.description}</small> : null}
+      {(event.notification?.errorCode === 'SEND_CAPABILITY_UNAVAILABLE' ||
+        event.notification?.errorCode === 'SEND_NOT_READY') &&
+      onOpenSendSettings ? (
+        <Button variant="link" size="sm" onClick={onOpenSendSettings}>
+          去设置
+        </Button>
+      ) : null}
     </div>
   )
 }
@@ -428,7 +438,8 @@ function ManageGroups({
 
 export function GroupExitMonitorWorkspace({
   dbReady,
-  contacts = []
+  contacts = [],
+  onOpenSendSettings
 }: GroupExitMonitorWorkspaceProps): React.ReactElement {
   const [state, setState] = React.useState<GroupExitMonitorState>(EMPTY_STATE)
   const [checking, setChecking] = React.useState(false)
@@ -815,7 +826,10 @@ export function GroupExitMonitorWorkspace({
                           群人数 {event.previousCount} 人 → {event.currentCount} 人
                         </p>
                       ) : null}
-                      <EventNotificationStatus event={event} />
+                      <EventNotificationStatus
+                        event={event}
+                        onOpenSendSettings={onOpenSendSettings}
+                      />
                       <dl className="exit-monitor-event-details">
                         <div>
                           <dt>微信名</dt>

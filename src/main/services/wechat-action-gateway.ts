@@ -32,7 +32,6 @@ export interface WechatActionGatewayDependencies {
     | WechatActionMemberEventReference
     | Promise<WechatActionMemberEventReference | undefined>
     | undefined
-  checkEntitlement?: (request: WechatActionRequest) => boolean | Promise<boolean>
   getUserDataPath?: () => string
   now?: () => Date
 }
@@ -137,33 +136,6 @@ export class WechatActionGateway {
         startedAt,
         policy.reasonCode || 'POLICY_BLOCKED',
         policy.reason || '该发送动作未通过策略检查'
-      )
-    }
-
-    let entitled = true
-    try {
-      entitled = this.deps.checkEntitlement
-        ? await this.deps.checkEntitlement(request)
-        : await checkEntitlement(request)
-    } catch (error) {
-      entitled = false
-      return this.finishBlocked(
-        actionId,
-        request,
-        idempotencyKey,
-        startedAt,
-        'POLICY_BLOCKED',
-        error instanceof Error ? error.message : String(error)
-      )
-    }
-    if (!entitled) {
-      return this.finishBlocked(
-        actionId,
-        request,
-        idempotencyKey,
-        startedAt,
-        'POLICY_BLOCKED',
-        '该发送动作未获得当前账号的使用权限'
       )
     }
 
@@ -481,12 +453,6 @@ export function evaluateWechatActionPolicy(
 export function shouldUseAiPolicy(request: WechatActionRequest): boolean {
   void request
   return false
-}
-
-/** 当前默认允许发送，后续可在这里补充权限限制。 */
-export function checkEntitlement(request: WechatActionRequest): boolean {
-  void request
-  return true
 }
 
 export function normalizeActionRequest(value: unknown): WechatActionRequest | null {
