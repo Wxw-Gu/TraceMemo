@@ -24,19 +24,37 @@ type StoredState = {
   monitoredRoomIds?: string[]
   notificationRoomIds?: string[]
   notificationTemplate?: unknown
+  snapshots?: Partial<StoredGroupSnapshot>[]
 }
 
 type GroupSnapshotRecord = {
   contactId: string
   roomId: string
   groupName: string
+  capturedAt: number
   members: GroupExitMonitorMember[]
   /** 查询失败时保留旧快照。 */
   membersValid?: boolean
 }
 
+type GroupMembershipRecord = Omit<GroupSnapshotRecord, 'members'> & {
+  memberIds: string[]
+}
+
+type MembershipMode = 'batch' | 'legacy'
+
+type MembershipReadResult = {
+  mode: MembershipMode
+  groupCount: number
+  groups: GroupMembershipRecord[] | null
+}
+
+type StoredGroupSnapshot = Pick<
+  GroupSnapshotRecord,
+  'contactId' | 'roomId' | 'groupName' | 'capturedAt' | 'members'
+>
+
 const DB_CHANGE_DEBOUNCE_MS = 350
-const GROUP_READ_CONCURRENCY = 8
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000
 const MAX_EVENTS = 500
 
@@ -58,6 +76,10 @@ class GroupExitMonitorService {
   private checking = false
   private checkQueued = false
   private initializing = false
+  private hydrating = false
+  private hydrationQueue = new Set<string>()
+  private hydrationBatchStartedAt: number | null = null
+  private hydrationBatchGroups = 0
   private lastCheckedAt: number | undefined
   private lastReadAt = 0
   private events: GroupExitMonitorEvent[] = []
@@ -66,8 +88,11 @@ class GroupExitMonitorService {
   private notificationRoomIds = new Set<string>()
   private loaded = false
   private accountRoot = ''
+  private groupNamesByRoomId = new Map<string, string>()
+  private groupNamesRefreshPending = true
   private eventSequence = 0
   private scopeGeneration = 0
+  private legacyFallbackLogged = false
   private notificationTemplate = normalizeGroupExitNotificationTemplate(undefined)
 
   constructor(deps: GroupExitMonitorServiceDependencies = {}) {
@@ -94,10 +119,15 @@ class GroupExitMonitorService {
   async start(nativeMonitorActive: boolean): Promise<void> {
     this.ensureLoaded()
     const currentRoot = chat.getCurrentAccountRoot()
+    if (!currentRoot) {
+      this.active = true
+      this.nativeMonitorActive = nativeMonitorActive
+      this.broadcast()
+      return
+    }
     if (
-      currentRoot &&
-      this.accountRoot &&
-      path.resolve(currentRoot) !== path.resolve(this.accountRoot)
+      (this.accountRoot && !sameAccountRoot(currentRoot, this.accountRoot)) ||
+      (!this.accountRoot && this.snapshots.size > 0)
     ) {
       this.actionGateway.clearMemberEvents?.()
       this.events = []
@@ -105,32 +135,31 @@ class GroupExitMonitorService {
       this.monitorSelectionConfigured = true
       this.monitoredRoomIds.clear()
       this.notificationRoomIds.clear()
+      this.snapshots.clear()
+      this.groupNamesByRoomId.clear()
     }
-    if (currentRoot) this.accountRoot = currentRoot
+    this.accountRoot = currentRoot
+    this.groupNamesRefreshPending = true
     this.active = true
     this.nativeMonitorActive = nativeMonitorActive
-    this.snapshots.clear()
     this.checkQueued = false
     this.initializing = true
     const scopeGeneration = ++this.scopeGeneration
-    const generation = this.eventSequence + 1
-    this.eventSequence = generation
+    this.eventSequence += 1
     try {
-      const groups = await this.readGroups()
-      if (
-        !this.active ||
-        this.eventSequence !== generation ||
-        this.scopeGeneration !== scopeGeneration
-      )
-        return
-      if (groups) this.replaceSnapshots(groups)
-      this.save()
-      this.broadcast()
+      const checked = await this.runMembershipCheck(scopeGeneration)
+      if (!this.active || this.scopeGeneration !== scopeGeneration) return
+      if (!checked) {
+        this.save()
+        this.broadcast()
+      }
     } finally {
       this.initializing = false
       if (this.checkQueued && this.active) {
         this.checkQueued = false
         void this.check()
+      } else {
+        this.startNextSnapshotHydration()
       }
     }
   }
@@ -140,8 +169,9 @@ class GroupExitMonitorService {
     this.nativeMonitorActive = false
     this.eventSequence += 1
     this.scopeGeneration += 1
-    this.snapshots.clear()
     this.checkQueued = false
+    this.hydrationQueue.clear()
+    this.groupNamesRefreshPending = true
     if (this.changeTimer) clearTimeout(this.changeTimer)
     this.changeTimer = null
     this.broadcast()
@@ -154,6 +184,7 @@ class GroupExitMonitorService {
     } catch {
       // 缓存清理失败时继续检查。
     }
+    this.groupNamesRefreshPending = true
     if (this.changeTimer) clearTimeout(this.changeTimer)
     this.changeTimer = setTimeout(() => {
       this.changeTimer = null
@@ -175,13 +206,19 @@ class GroupExitMonitorService {
     this.eventSequence += 1
     this.scopeGeneration += 1
     this.monitorSelectionConfigured = true
-    this.monitoredRoomIds = normalizeRoomIds(roomIds)
+    const nextMonitoredRoomIds = normalizeRoomIds(roomIds)
+    for (const roomId of this.snapshots.keys()) {
+      if (!nextMonitoredRoomIds.has(roomId)) this.snapshots.delete(roomId)
+    }
+    for (const roomId of this.hydrationQueue) {
+      if (!nextMonitoredRoomIds.has(roomId)) this.hydrationQueue.delete(roomId)
+    }
+    this.monitoredRoomIds = nextMonitoredRoomIds
+    this.groupNamesRefreshPending = true
     const requestedNotifications = normalizeRoomIds(notificationRoomIds)
     this.notificationRoomIds = new Set(
       Array.from(requestedNotifications).filter((roomId) => this.monitoredRoomIds.has(roomId))
     )
-    // 更换监控范围后重新建基线，避免旧快照误报。
-    this.snapshots.clear()
     this.lastCheckedAt = undefined
     this.save()
     this.broadcast()
@@ -221,8 +258,16 @@ class GroupExitMonitorService {
   }
 
   private async check(): Promise<void> {
-    if (!this.active || !chat.isReady()) return
-    if (this.initializing) {
+    const currentRoot = chat.getCurrentAccountRoot()
+    if (
+      !this.active ||
+      !chat.isReady() ||
+      !currentRoot ||
+      !this.accountRoot ||
+      !sameAccountRoot(currentRoot, this.accountRoot)
+    )
+      return
+    if (this.initializing || this.hydrating) {
       this.checkQueued = true
       return
     }
@@ -234,143 +279,240 @@ class GroupExitMonitorService {
     this.checking = true
     const scopeGeneration = this.scopeGeneration
     try {
-      const groups = await this.readGroups()
-      if (!groups || !this.active || scopeGeneration !== this.scopeGeneration) return
-
-      const currentRoomIds = new Set(groups.map((group) => group.roomId))
-      for (const roomId of this.snapshots.keys()) {
-        if (!currentRoomIds.has(roomId)) this.snapshots.delete(roomId)
-      }
-
-      const notificationTasks: Promise<void>[] = []
-      for (const next of groups) {
-        if (scopeGeneration !== this.scopeGeneration) return
-        if (next.membersValid === false) continue
-        const previous = this.snapshots.get(next.roomId)
-        if (previous?.membersValid === false) {
-          this.snapshots.set(next.roomId, next)
-          continue
-        }
-        // 空数组可能是查询失败，先保留旧基线，避免误报。
-        if (previous && previous.members.length > 0 && next.members.length === 0) continue
-
-        this.snapshots.set(next.roomId, next)
-        if (!previous) continue
-
-        // 只有群人数下降才记录退群。
-        if (next.members.length >= previous.members.length) continue
-
-        const removed = findRemovedGroupMembers(previous.members, next.members)
-        for (const member of removed) {
-          const event = this.recordExit(next, member, previous.members.length, next.members.length)
-          if (event && this.notificationRoomIds.has(next.roomId)) {
-            notificationTasks.push(this.notifyGroup(next, event))
-          }
-        }
-      }
-      if (notificationTasks.length) await Promise.all(notificationTasks)
-      if (!this.active || scopeGeneration !== this.scopeGeneration) return
-      this.lastCheckedAt = Date.now()
-      this.save()
-      this.broadcast()
+      await this.runMembershipCheck(scopeGeneration)
     } finally {
       this.checking = false
       if (this.checkQueued && this.active) {
         this.checkQueued = false
         void this.check()
+      } else {
+        this.startNextSnapshotHydration()
       }
     }
   }
 
-  private async readGroups(): Promise<GroupSnapshotRecord[] | null> {
+  private async runMembershipCheck(scopeGeneration: number): Promise<boolean> {
+    const startedAt = Date.now()
+    const result = await this.readMemberships()
+    const membershipCostMs = Date.now() - startedAt
+    let changedGroups = 0
+    if (result.groups && this.active && scopeGeneration === this.scopeGeneration) {
+      changedGroups = await this.applyCurrentMemberships(result.groups, scopeGeneration)
+    }
+    console.log(
+      `[GroupMonitor] check mode=${result.mode} groups=${result.groupCount} membershipCostMs=${membershipCostMs} changedGroups=${changedGroups} totalCostMs=${Date.now() - startedAt}`
+    )
+    return result.groups !== null
+  }
+
+  private async readMemberships(): Promise<MembershipReadResult> {
+    await this.refreshGroupNamesIfNeeded()
     const database = chat.getChatDb()
-    if (!database) return null
+    const roomIds = Array.from(this.monitoredRoomIds)
+    const batchAvailable = chat.isGroupMemberIdsBatchAvailable()
+    const mode: MembershipMode = batchAvailable ? 'batch' : 'legacy'
+    if (!database) return { mode, groupCount: roomIds.length, groups: null }
     try {
       const client = database.getWcdb4Client()
-      const rawSessions = await client.getSessionsAsync({ hydrateDisplayNames: true })
-      const sessions = Array.isArray(rawSessions) ? rawSessions : []
-      const groups = sessions.filter(
-        (session) =>
-          session.username?.endsWith('@chatroom') === true &&
-          (!this.monitorSelectionConfigured || this.monitoredRoomIds.has(session.username))
-      )
-      const records: Array<GroupSnapshotRecord | null> = new Array(groups.length).fill(null)
-      let nextIndex = 0
-      const workerCount = Math.min(GROUP_READ_CONCURRENCY, groups.length)
-      await Promise.all(
-        Array.from({ length: workerCount }, async () => {
-          while (true) {
-            const index = nextIndex++
-            if (index >= groups.length) return
-            const session = groups[index]
-            const contactId = client.md5(session.username)
-            try {
-              const snapshot = await chat.getGroupSnapshotAsync(contactId)
-              const groupName = cleanGroupName(session.nickname, session.username)
-              if (!snapshot || snapshot.roomId !== session.username) {
-                records[index] = {
-                  contactId,
-                  roomId: session.username,
-                  groupName,
-                  members: [],
-                  membersValid: false
-                }
-                continue
-              }
-              const rawMembers = (snapshot as { members?: unknown }).members
-              if (!Array.isArray(rawMembers)) {
-                console.warn(
-                  `[GroupMonitor] 群成员快照不是数组 roomId=${session.username}; 保留上一份基线`
-                )
-                records[index] = {
-                  contactId,
-                  roomId: session.username,
-                  groupName,
-                  members: [],
-                  membersValid: false
-                }
-                continue
-              }
-              records[index] = {
-                contactId,
-                roomId: snapshot.roomId,
-                groupName: cleanGroupName(session.nickname, snapshot.roomId),
-                members: rawMembers
-                  .filter((member) => member?.wxid)
-                  .map((member) => ({
-                    wxid: member.wxid,
-                    nickname: member.nickname,
-                    groupNickname: member.groupNickname,
-                    wechatNickname: member.wechatNickname,
-                    remark: member.remark,
-                    avatar: member.avatar
-                  })),
-                membersValid: true
-              }
-            } catch (error) {
-              console.warn(`[GroupMonitor] 读取群成员失败 roomId=${session.username}:`, error)
-              records[index] = {
-                contactId,
-                roomId: session.username,
-                groupName: cleanGroupName(session.nickname, session.username),
-                members: [],
-                membersValid: false
-              }
+      const capturedAt = Date.now()
+
+      if (batchAvailable) {
+        const snapshots = await chat.getGroupMemberIdsBatchAsync(roomIds)
+        if (!snapshots) return { mode, groupCount: roomIds.length, groups: null }
+        return {
+          mode,
+          groupCount: roomIds.length,
+          groups: snapshots.map((snapshot) => {
+            const previous = this.snapshots.get(snapshot.roomId)
+            return {
+              contactId: previous?.contactId || client.md5(snapshot.roomId),
+              roomId: snapshot.roomId,
+              groupName: resolveGroupName(snapshot.roomId, this.groupNamesByRoomId, previous),
+              capturedAt,
+              memberIds: normalizeMemberIds(snapshot.memberIds),
+              membersValid: snapshot.status === 'ok'
             }
-          }
+          })
+        }
+      }
+
+      if (!this.legacyFallbackLogged) {
+        this.legacyFallbackLogged = true
+        console.warn('[GroupMonitor] batch membership unavailable; using legacy fallback')
+      }
+      const groups: GroupMembershipRecord[] = []
+      for (const roomId of roomIds) {
+        const previous = this.snapshots.get(roomId)
+        const snapshot = await chat.getGroupMemberIdsAsync(roomId)
+        groups.push({
+          contactId: previous?.contactId || client.md5(roomId),
+          roomId,
+          groupName: resolveGroupName(roomId, this.groupNamesByRoomId, previous),
+          capturedAt,
+          memberIds: snapshot?.roomId === roomId ? normalizeMemberIds(snapshot.memberIds) : [],
+          membersValid: snapshot?.roomId === roomId
         })
-      )
-      return records.filter((record): record is GroupSnapshotRecord => Boolean(record))
+      }
+      return { mode, groupCount: roomIds.length, groups }
     } catch (error) {
-      console.warn('[GroupMonitor] 读取群成员快照失败:', error)
-      return null
+      console.warn('[GroupMonitor] 读取群成员状态失败:', error)
+      return { mode, groupCount: roomIds.length, groups: null }
     }
   }
 
-  private replaceSnapshots(groups: GroupSnapshotRecord[]): void {
-    this.snapshots = new Map(
-      groups.filter((group) => group.membersValid !== false).map((group) => [group.roomId, group])
+  private async applyCurrentMemberships(
+    groups: GroupMembershipRecord[],
+    scopeGeneration: number
+  ): Promise<number> {
+    const notifications: Array<{ group: GroupSnapshotRecord; event: GroupExitMonitorEvent }> = []
+    let changedGroups = 0
+    for (const membership of groups) {
+      if (!this.active || scopeGeneration !== this.scopeGeneration) return changedGroups
+      if (membership.membersValid === false) continue
+      const previous = this.snapshots.get(membership.roomId)
+      // 空数组可能是查询失败，先保留旧基线，避免误报和覆盖最后有效快照。
+      if (previous && previous.members.length > 0 && membership.memberIds.length === 0) continue
+
+      const previousMembers = new Map(previous?.members.map((member) => [member.wxid, member]))
+      const next: GroupSnapshotRecord = {
+        contactId: membership.contactId,
+        roomId: membership.roomId,
+        groupName:
+          membership.groupName === membership.roomId && previous
+            ? previous.groupName
+            : membership.groupName,
+        capturedAt: membership.capturedAt,
+        members: membership.memberIds.map(
+          (wxid) => previousMembers.get(wxid) || ({ wxid } satisfies GroupExitMonitorMember)
+        ),
+        membersValid: true
+      }
+      const membershipChanged = !previous || !sameMemberIds(previous.members, membership.memberIds)
+      if (membershipChanged) changedGroups += 1
+
+      if (previous && next.members.length < previous.members.length) {
+        const removed = findRemovedGroupMembers(previous.members, next.members)
+        for (const member of removed) {
+          const event = this.recordExit(next, member, previous.members.length, next.members.length)
+          if (event && this.notificationRoomIds.has(next.roomId)) {
+            notifications.push({ group: next, event })
+          }
+        }
+      }
+
+      // Last Good Snapshot 必须在 Diff 完成后才能替换。
+      this.snapshots.set(next.roomId, next)
+      if (next.members.some((member) => !hasMemberMetadata(member))) {
+        this.hydrationQueue.add(next.roomId)
+      }
+    }
+
+    if (!this.active || scopeGeneration !== this.scopeGeneration) return changedGroups
+    this.lastCheckedAt = Date.now()
+    // 先把事件和新基线作为同一检查点落盘，再执行可失败的通知动作。
+    this.save()
+    this.broadcast()
+    if (notifications.length) {
+      await Promise.all(notifications.map(({ group, event }) => this.notifyGroup(group, event)))
+    }
+    return changedGroups
+  }
+
+  private startNextSnapshotHydration(): void {
+    if (!this.active) {
+      this.finishHydrationBatch()
+      return
+    }
+    if (this.initializing || this.checking || this.hydrating) return
+    if (this.checkQueued || this.changeTimer) {
+      this.finishHydrationBatch()
+      return
+    }
+
+    const roomId = this.hydrationQueue.values().next().value as string | undefined
+    if (!roomId) {
+      this.finishHydrationBatch()
+      return
+    }
+    this.hydrationQueue.delete(roomId)
+    const baseline = this.snapshots.get(roomId)
+    if (!baseline || !this.monitoredRoomIds.has(roomId)) {
+      this.startNextSnapshotHydration()
+      return
+    }
+
+    this.hydrating = true
+    if (this.hydrationBatchStartedAt === null) this.hydrationBatchStartedAt = Date.now()
+    this.hydrationBatchGroups += 1
+    const scopeGeneration = this.scopeGeneration
+    void chat
+      .getGroupSnapshotAsync(baseline.contactId)
+      .then((snapshot) => {
+        const current = this.snapshots.get(roomId)
+        if (
+          !snapshot ||
+          snapshot.roomId !== roomId ||
+          !this.active ||
+          scopeGeneration !== this.scopeGeneration ||
+          !current ||
+          !sameMemberIds(
+            current.members,
+            snapshot.members.map((member) => member.wxid)
+          )
+        )
+          return
+
+        const hydrated = new Map(
+          normalizeSnapshotMembers(snapshot.members).map((member) => [member.wxid, member])
+        )
+        this.snapshots.set(roomId, {
+          ...current,
+          groupName: resolveGroupName(roomId, this.groupNamesByRoomId, current, snapshot.groupName),
+          members: current.members.map((member) => {
+            const refreshed = hydrated.get(member.wxid)
+            return refreshed ? { ...member, ...refreshed } : member
+          })
+        })
+        this.hydrationQueue.delete(roomId)
+        this.save()
+        this.broadcast()
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.hydrating = false
+        if (this.checkQueued && this.active) {
+          this.finishHydrationBatch()
+          this.checkQueued = false
+          void this.check()
+        } else if (this.changeTimer) {
+          this.finishHydrationBatch()
+        } else {
+          this.startNextSnapshotHydration()
+        }
+      })
+  }
+
+  private finishHydrationBatch(): void {
+    if (this.hydrationBatchStartedAt === null || this.hydrationBatchGroups === 0) return
+    console.log(
+      `[GroupMonitor] hydration groups=${this.hydrationBatchGroups} costMs=${Date.now() - this.hydrationBatchStartedAt}`
     )
+    this.hydrationBatchStartedAt = null
+    this.hydrationBatchGroups = 0
+  }
+
+  private async refreshGroupNamesIfNeeded(): Promise<void> {
+    if (!this.groupNamesRefreshPending) return
+    this.groupNamesRefreshPending = false
+    try {
+      const names = await chat.getGroupNamesAsync()
+      for (const [roomId, name] of Object.entries(names || {})) {
+        const resolved = normalizeKnownGroupName(roomId, name)
+        if (resolved) this.groupNamesByRoomId.set(roomId, resolved)
+      }
+    } catch {
+      // Session 群名是展示信息；读取失败时继续使用快照中的已知群名。
+    }
   }
 
   private recordExit(
@@ -508,6 +650,7 @@ class GroupExitMonitorService {
       this.notificationTemplate = normalizeGroupExitNotificationTemplate(
         stored.notificationTemplate
       )
+      this.snapshots = normalizeSnapshots(stored.snapshots, this.monitoredRoomIds)
     } catch {
       // 首次启动或文件损坏时从空记录开始。
       this.events = []
@@ -516,6 +659,7 @@ class GroupExitMonitorService {
       this.monitoredRoomIds.clear()
       this.notificationRoomIds.clear()
       this.notificationTemplate = normalizeGroupExitNotificationTemplate(undefined)
+      this.snapshots.clear()
     }
   }
 
@@ -532,12 +676,13 @@ class GroupExitMonitorService {
           monitorSelectionConfigured: this.monitorSelectionConfigured,
           monitoredRoomIds: Array.from(this.monitoredRoomIds),
           notificationRoomIds: Array.from(this.notificationRoomIds),
-          notificationTemplate: this.notificationTemplate
+          notificationTemplate: this.notificationTemplate,
+          snapshots: Array.from(this.snapshots.values(), toStoredSnapshot)
         },
         { spaces: 2 }
       )
     } catch (error) {
-      console.warn('[GroupMonitor] 保存事件失败:', error)
+      console.warn('[GroupMonitor] 保存状态失败:', error)
     }
   }
 
@@ -555,6 +700,120 @@ function normalizeRoomIds(roomIds: string[]): Set<string> {
       .map((roomId) => String(roomId || '').trim())
       .filter((roomId) => roomId.endsWith('@chatroom'))
   )
+}
+
+function normalizeMemberIds(values: unknown[]): string[] {
+  return Array.from(
+    new Set(values.map((value) => String(value || '').trim()).filter((value) => Boolean(value)))
+  )
+}
+
+function sameMemberIds(previous: GroupExitMonitorMember[], nextIds: string[]): boolean {
+  if (previous.length !== nextIds.length) return false
+  const previousIds = new Set(previous.map((member) => member.wxid))
+  return nextIds.every((wxid) => previousIds.has(wxid))
+}
+
+function hasMemberMetadata(member: GroupExitMonitorMember): boolean {
+  return Boolean(
+    member.nickname?.trim() ||
+    member.groupNickname?.trim() ||
+    member.wechatNickname?.trim() ||
+    member.remark?.trim()
+  )
+}
+
+function sameAccountRoot(left: string, right: string): boolean {
+  const normalize = (value: string): string => {
+    const resolved = path.resolve(value)
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+  }
+  return normalize(left) === normalize(right)
+}
+
+function normalizeSnapshots(
+  values: Partial<StoredGroupSnapshot>[] | undefined,
+  monitoredRoomIds: Set<string>
+): Map<string, GroupSnapshotRecord> {
+  const snapshots = new Map<string, GroupSnapshotRecord>()
+  if (!Array.isArray(values)) return snapshots
+  for (const value of values) {
+    const roomId = String(value?.roomId || '').trim()
+    const capturedAt = Number(value?.capturedAt)
+    if (
+      !roomId.endsWith('@chatroom') ||
+      !monitoredRoomIds.has(roomId) ||
+      !Number.isFinite(capturedAt) ||
+      capturedAt <= 0 ||
+      !Array.isArray(value?.members)
+    ) {
+      continue
+    }
+    snapshots.set(roomId, {
+      contactId: String(value.contactId || ''),
+      roomId,
+      groupName: cleanGroupName(value.groupName, roomId),
+      capturedAt,
+      members: normalizeSnapshotMembers(value.members)
+    })
+  }
+  return snapshots
+}
+
+function normalizeSnapshotMembers(values: GroupExitMonitorMember[]): GroupExitMonitorMember[] {
+  const members: GroupExitMonitorMember[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    const wxid = String(value?.wxid || '').trim()
+    if (!wxid || seen.has(wxid)) continue
+    seen.add(wxid)
+    members.push({
+      wxid,
+      ...optionalMemberField('nickname', value.nickname),
+      ...optionalMemberField('groupNickname', value.groupNickname),
+      ...optionalMemberField('wechatNickname', value.wechatNickname),
+      ...optionalMemberField('remark', value.remark),
+      ...optionalMemberField('avatar', value.avatar)
+    })
+  }
+  return members
+}
+
+function optionalMemberField<K extends keyof GroupExitMonitorMember>(
+  key: K,
+  value: unknown
+): Partial<Pick<GroupExitMonitorMember, K>> {
+  const normalized = String(value || '').trim()
+  return normalized ? ({ [key]: normalized } as Pick<GroupExitMonitorMember, K>) : {}
+}
+
+function normalizeKnownGroupName(roomId: string, value: unknown): string {
+  const name = String(value || '').trim()
+  return name && name !== roomId && !name.endsWith('@chatroom') ? name : ''
+}
+
+function resolveGroupName(
+  roomId: string,
+  namesByRoomId: Map<string, string>,
+  previous?: Pick<GroupSnapshotRecord, 'groupName'>,
+  hydratedName?: unknown
+): string {
+  return (
+    normalizeKnownGroupName(roomId, namesByRoomId.get(roomId)) ||
+    normalizeKnownGroupName(roomId, previous?.groupName) ||
+    normalizeKnownGroupName(roomId, hydratedName) ||
+    roomId
+  )
+}
+
+function toStoredSnapshot(snapshot: GroupSnapshotRecord): StoredGroupSnapshot {
+  return {
+    contactId: snapshot.contactId,
+    roomId: snapshot.roomId,
+    groupName: snapshot.groupName,
+    capturedAt: snapshot.capturedAt,
+    members: normalizeSnapshotMembers(snapshot.members)
+  }
 }
 
 function cleanGroupName(value: string | undefined, roomId: string): string {

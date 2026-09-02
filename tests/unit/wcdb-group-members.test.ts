@@ -87,6 +87,35 @@ describe('WCDB group member names', () => {
     )
   })
 
+  it('reads only member ids without hydrating names or avatars', async () => {
+    const getGroupMembers = vi.fn()
+    const callJsonAsync = vi.fn(async () => [
+      ...groupMemberRows,
+      { username: 'wxid-other' },
+      { username: 'wxid-member' },
+      { username: '' }
+    ])
+    const getGroupNicknamesAsync = vi.fn()
+    const readContactMemberNamesAsync = vi.fn()
+    const hydrateAvatarUrlsAsync = vi.fn()
+    const client = Object.assign(Object.create(Wcdb4Client.prototype), {
+      wcdbGetGroupMembers: getGroupMembers,
+      callJsonAsync,
+      getGroupNicknamesAsync,
+      readContactMemberNamesAsync,
+      hydrateAvatarUrlsAsync
+    }) as Wcdb4Client
+
+    await expect(client.getGroupMemberIdsAsync('fixture@chatroom')).resolves.toEqual([
+      'wxid-member',
+      'wxid-other'
+    ])
+    expect(callJsonAsync).toHaveBeenCalledOnce()
+    expect(getGroupNicknamesAsync).not.toHaveBeenCalled()
+    expect(readContactMemberNamesAsync).not.toHaveBeenCalled()
+    expect(hydrateAvatarUrlsAsync).not.toHaveBeenCalled()
+  })
+
   it('falls back to the group nickname without leaking an ambiguous member nickname', () => {
     const getGroupMembers = vi.fn(() => 0)
     const executeQuery = vi.fn(() => 0)
@@ -121,12 +150,14 @@ describe('WCDB group member names', () => {
       wxid: ''
     }) as Wcdb4Client
 
-    const finalizeMessages = (client as unknown as {
-      finalizeMessages: (
-        username: string,
-        rows: Record<string, unknown>[]
-      ) => Array<{ senderNickname?: string }>
-    }).finalizeMessages
+    const finalizeMessages = (
+      client as unknown as {
+        finalizeMessages: (
+          username: string,
+          rows: Record<string, unknown>[]
+        ) => Array<{ senderNickname?: string }>
+      }
+    ).finalizeMessages
 
     expect(
       finalizeMessages.call(client, 'fixture@chatroom', [
@@ -140,5 +171,112 @@ describe('WCDB group member names', () => {
       ])
     ).toMatchObject([{ senderNickname: '真实群昵称' }])
     expect(client.getGroupNicknames).toHaveBeenCalledWith('fixture@chatroom')
+  })
+})
+
+describe('WCDB group member batch', () => {
+  it('reads 200 rooms with one batch call and no legacy member call', async () => {
+    const roomIds = Array.from({ length: 200 }, (_, index) => `room-${index}@chatroom`)
+    const batchResult = roomIds.map((roomId, index) => ({
+      roomId,
+      status: 'ok',
+      memberWxids: [`wxid_${index}`]
+    }))
+    const batchAsync = vi.fn(
+      (
+        _handle: number,
+        _roomIdsJson: string,
+        outJson: [unknown],
+        callback: (error: unknown, result: number) => void
+      ) => {
+        outJson[0] = 'batch-json-pointer'
+        callback(null, 0)
+      }
+    )
+    const legacyAsync = vi.fn()
+    const batchBinding = Object.assign(vi.fn(), { async: batchAsync })
+    const legacyBinding = Object.assign(vi.fn(), { async: legacyAsync })
+    const client = Object.assign(Object.create(Wcdb4Client.prototype), {
+      wcdbGetGroupMembersBatch: batchBinding,
+      wcdbGetGroupMembers: legacyBinding,
+      handle: 42,
+      closing: false,
+      nativeCallsInFlight: new Set<Promise<unknown>>(),
+      koffi: { decode: vi.fn(() => JSON.stringify(batchResult)) },
+      wcdbFreeString: vi.fn()
+    }) as Wcdb4Client
+
+    await expect(client.getGroupMemberIdsBatchAsync(roomIds)).resolves.toEqual(batchResult)
+    expect(batchAsync).toHaveBeenCalledOnce()
+    expect(batchAsync).toHaveBeenCalledWith(
+      42,
+      JSON.stringify(roomIds),
+      expect.any(Array),
+      expect.any(Function)
+    )
+    expect(legacyAsync).not.toHaveBeenCalled()
+  })
+
+  it('trims and deduplicates room ids while preserving request order', async () => {
+    const batchBinding = vi.fn()
+    const requestedRoomIds = ['b@chatroom', 'a@chatroom']
+    const callJsonAsync = vi.fn(async () =>
+      requestedRoomIds.map((roomId) => ({ roomId, status: 'ok', memberWxids: [] }))
+    )
+    const client = Object.assign(Object.create(Wcdb4Client.prototype), {
+      wcdbGetGroupMembersBatch: batchBinding,
+      callJsonAsync
+    }) as Wcdb4Client
+
+    await expect(
+      client.getGroupMemberIdsBatchAsync([
+        ' b@chatroom ',
+        'a@chatroom',
+        'b@chatroom',
+        '',
+        ' a@chatroom '
+      ])
+    ).resolves.toEqual([
+      { roomId: 'b@chatroom', status: 'ok', memberWxids: [] },
+      { roomId: 'a@chatroom', status: 'ok', memberWxids: [] }
+    ])
+    expect(callJsonAsync).toHaveBeenCalledWith(batchBinding, JSON.stringify(requestedRoomIds))
+  })
+
+  it.each([
+    ['non-array result', { roomId: 'a@chatroom' }],
+    ['missing room result', [{ roomId: 'a@chatroom', status: 'ok', memberWxids: ['wxid_a'] }]],
+    [
+      'duplicate room result',
+      [
+        { roomId: 'a@chatroom', status: 'ok', memberWxids: ['wxid_a'] },
+        { roomId: 'a@chatroom', status: 'ok', memberWxids: ['wxid_b'] }
+      ]
+    ],
+    [
+      'unknown status',
+      [
+        { roomId: 'a@chatroom', status: 'stale', memberWxids: ['wxid_a'] },
+        { roomId: 'b@chatroom', status: 'ok', memberWxids: ['wxid_b'] }
+      ]
+    ],
+    [
+      'malformed member list',
+      [
+        { roomId: 'a@chatroom', status: 'ok', memberWxids: ['wxid_a'] },
+        { roomId: 'b@chatroom', status: 'ok', memberWxids: [null] }
+      ]
+    ]
+  ])('rejects an invalid batch: %s', async (_name, rawResult) => {
+    const batchBinding = vi.fn()
+    const callJsonAsync = vi.fn(async () => rawResult)
+    const client = Object.assign(Object.create(Wcdb4Client.prototype), {
+      wcdbGetGroupMembersBatch: batchBinding,
+      callJsonAsync
+    }) as Wcdb4Client
+
+    await expect(
+      client.getGroupMemberIdsBatchAsync(['a@chatroom', 'b@chatroom'])
+    ).resolves.toBeNull()
   })
 })

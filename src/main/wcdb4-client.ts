@@ -59,6 +59,46 @@ export interface Wcdb4GroupMember {
   m_nsHeadImgUrl: string
 }
 
+export type Wcdb4GroupMemberBatchStatus = 'ok' | 'not_found'
+
+export interface Wcdb4GroupMemberIdsBatchItem {
+  roomId: string
+  status: Wcdb4GroupMemberBatchStatus
+  memberWxids: string[]
+}
+
+function normalizeGroupMemberIdsBatch(
+  value: unknown,
+  requestedRoomIds: string[]
+): Wcdb4GroupMemberIdsBatchItem[] | null {
+  if (!Array.isArray(value) || value.length !== requestedRoomIds.length) return null
+  const requested = new Set(requestedRoomIds)
+  const results = new Map<string, Wcdb4GroupMemberIdsBatchItem>()
+  for (const rawItem of value) {
+    if (!rawItem || typeof rawItem !== 'object') return null
+    const item = rawItem as Record<string, unknown>
+    const roomId = typeof item.roomId === 'string' ? item.roomId.trim() : ''
+    const status = item.status
+    if (
+      !roomId ||
+      !requested.has(roomId) ||
+      results.has(roomId) ||
+      (status !== 'ok' && status !== 'not_found') ||
+      !Array.isArray(item.memberWxids) ||
+      item.memberWxids.some((memberWxid) => typeof memberWxid !== 'string' || !memberWxid.trim())
+    ) {
+      return null
+    }
+    results.set(roomId, {
+      roomId,
+      status,
+      memberWxids: Array.from(new Set(item.memberWxids.map((memberWxid) => memberWxid.trim())))
+    })
+  }
+  if (results.size !== requestedRoomIds.length) return null
+  return requestedRoomIds.map((roomId) => results.get(roomId)!)
+}
+
 /**
  * 联系人表中独立保存的成员名称字段。
  *
@@ -394,6 +434,9 @@ export class Wcdb4Client {
     | null = null
   private wcdbGetGroupMembers:
     | ((handle: number, chatroomId: string, outJson: WcdbVoidOut) => number)
+    | null = null
+  private wcdbGetGroupMembersBatch:
+    | ((handle: number, chatroomIdsJson: string, outJson: WcdbVoidOut) => number)
     | null = null
   private wcdbGetGroupNicknames:
     | ((handle: number, chatroomId: string, outJson: WcdbVoidOut) => number)
@@ -1901,6 +1944,55 @@ export class Wcdb4Client {
   }
 
   /**
+   * 退群检测热路径：只读取原始成员行并提取 wxid，不补群昵称、联系人资料或头像。
+   * null 表示读取失败，避免调用方把失败误判为成员列表为空。
+   */
+  async getGroupMemberIdsAsync(chatroomId: string): Promise<string[] | null> {
+    if (!this.wcdbGetGroupMembers || !chatroomId) return null
+
+    try {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbGetGroupMembers as unknown as KoffiAsyncFunction,
+        chatroomId
+      )
+      const memberRows = Array.isArray(rows) ? rows : []
+      return Array.from(new Set(this.groupMemberUsernames(memberRows)))
+    } catch (error) {
+      console.warn(`[WCDB4] async group member ids failed chatroom=${chatroomId}:`, error)
+      return null
+    }
+  }
+
+  isGroupMemberIdsBatchAvailable(): boolean {
+    return Boolean(this.wcdbGetGroupMembersBatch)
+  }
+
+  async getGroupMemberIdsBatchAsync(
+    roomIds: string[]
+  ): Promise<Wcdb4GroupMemberIdsBatchItem[] | null> {
+    const requestedRoomIds = Array.from(
+      new Set(
+        (Array.isArray(roomIds) ? roomIds : [])
+          .map((roomId) => String(roomId || '').trim())
+          .filter(Boolean)
+      )
+    )
+    if (requestedRoomIds.length === 0) return []
+    if (!this.wcdbGetGroupMembersBatch) return null
+
+    try {
+      const raw = await this.callJsonAsync<unknown>(
+        this.wcdbGetGroupMembersBatch as unknown as KoffiAsyncFunction,
+        JSON.stringify(requestedRoomIds)
+      )
+      return normalizeGroupMemberIdsBatch(raw, requestedRoomIds)
+    } catch (error) {
+      console.warn('[WCDB4] async group member ids batch failed:', error)
+      return null
+    }
+  }
+
+  /**
    * 将群成员接口与联系人表组装为语义明确的成员快照。
    *
    * 群昵称只接受群聊数据；微信昵称与通讯录备注只接受 contact 表。即使群成员
@@ -2388,6 +2480,14 @@ export class Wcdb4Client {
       ) as (handle: number, chatroomId: string, outJson: WcdbVoidOut) => number
     } catch {
       this.wcdbGetGroupMembers = null
+    }
+
+    try {
+      this.wcdbGetGroupMembersBatch = lib.func(
+        'int32 wcdb_get_group_members_batch(int64 handle, const char* chatroomIdsJson, _Out_ void** outJson)'
+      ) as (handle: number, chatroomIdsJson: string, outJson: WcdbVoidOut) => number
+    } catch {
+      this.wcdbGetGroupMembersBatch = null
     }
 
     try {
