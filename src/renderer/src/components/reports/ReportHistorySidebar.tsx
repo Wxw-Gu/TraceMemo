@@ -12,6 +12,7 @@ import {
   Input
 } from '../ui'
 import type { GeneratedReportRecord } from './types'
+import type { Contact } from '../../../../shared/types'
 
 interface SelfInfo {
   wxid: string
@@ -22,6 +23,7 @@ interface SelfInfo {
 
 interface ReportHistorySidebarProps {
   reports: GeneratedReportRecord[]
+  contacts?: Contact[]
   selectedReportId: string | null
   selfInfo: SelfInfo | null
   dbReady: boolean
@@ -88,8 +90,12 @@ const buildGroups = (reports: GeneratedReportRecord[]): ReportGroup[] => {
   return groups
 }
 
+const reportTitle = (report: GeneratedReportRecord): string =>
+  report.source === 'scheduled' ? `${report.contactName}的定时日报` : report.contactName
+
 export function ReportHistorySidebar({
   reports,
+  contacts = [],
   selectedReportId,
   selfInfo,
   dbReady,
@@ -105,6 +111,15 @@ export function ReportHistorySidebar({
   const [deletePending, setDeletePending] = useState(false)
   const deleteTriggerRef = useRef<HTMLButtonElement | null>(null)
   const restoreDeleteFocusRef = useRef(false)
+  const contactAvatars = useMemo(() => {
+    const result = new Map<string, string>()
+    contacts.forEach((contact) => {
+      if (!contact.avatar) return
+      result.set(contact.md5, contact.avatar)
+      result.set(contact.m_nsUsrName, contact.avatar)
+    })
+    return result
+  }, [contacts])
 
   useEffect(() => {
     if (pendingDelete || !restoreDeleteFocusRef.current) return
@@ -116,9 +131,10 @@ export function ReportHistorySidebar({
     const lower = keyword.trim().toLowerCase()
     const filteredReports = reports
       .filter((report) => {
-        const haystack = `${report.contactName} ${report.dateRange} ${formatGeneratedAt(
-          report.generatedAt
-        )}`.toLowerCase()
+        const haystack =
+          `${reportTitle(report)} ${report.contactName} ${report.dateRange} ${formatGeneratedAt(
+            report.generatedAt
+          )}`.toLowerCase()
         return lower ? haystack.includes(lower) : true
       })
       .sort((left, right) => dateKey(right.generatedAt) - dateKey(left.generatedAt))
@@ -187,10 +203,10 @@ export function ReportHistorySidebar({
                   }}
                 >
                   <span className="report-history-avatar">
-                    {report.contactAvatar ? (
+                    {report.contactAvatar || contactAvatars.get(report.contactId) ? (
                       <img
-                        src={report.contactAvatar}
-                        alt={report.contactName}
+                        src={report.contactAvatar || contactAvatars.get(report.contactId)}
+                        alt={reportTitle(report)}
                         referrerPolicy="no-referrer"
                       />
                     ) : (
@@ -198,7 +214,7 @@ export function ReportHistorySidebar({
                     )}
                   </span>
                   <span className="report-history-text">
-                    <b>{report.contactName}</b>
+                    <b>{reportTitle(report)}</b>
                     <small>{formatGeneratedAt(report.generatedAt)}</small>
                     <small>{report.messageCount} 条消息</small>
                     <em>PNG{report.pngStatus === 'ready' ? '已保存' : '缺失'}</em>

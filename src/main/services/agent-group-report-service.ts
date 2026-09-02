@@ -7,6 +7,7 @@ import type {
   ScheduledReportMemberNameMode,
   ScheduledReportMessageType
 } from '../../shared/scheduled-report'
+import type { ScheduledReportExecutionStage } from '../../shared/scheduled-report'
 import type { SelectableReportTemplateId } from '../../shared/report-templates'
 import { resolveMemberName } from '../../shared/member-names'
 import {
@@ -47,6 +48,10 @@ export interface AgentGroupReportResult {
   }
   duration?: number
   error?: string
+  errorCode?: string
+  errorStage?: ScheduledReportExecutionStage
+  errorStatus?: number
+  errorType?: string
 }
 
 export async function generateAgentGroupReport(
@@ -57,11 +62,11 @@ export async function generateAgentGroupReport(
     .trim()
     .replace(/群聊?$/, '')
     .trim()
-  if (!query) return { success: false, error: '缺少群聊名称' }
+  if (!query) return reportFailure('缺少群聊名称', 'data', 'CHAT_NOT_FOUND')
   const contact = resolveMd5(query)
-  if (!contact) return { success: false, error: `没有找到群聊“${query}”` }
+  if (!contact) return reportFailure(`没有找到群聊“${query}”`, 'data', 'CHAT_NOT_FOUND')
   if (contact.type !== 'group' && !contact.m_nsUsrName.endsWith('@chatroom')) {
-    return { success: false, error: `“${query}”不是群聊` }
+    return reportFailure(`“${query}”不是群聊`, 'data', 'CHAT_NOT_FOUND')
   }
 
   const range = request.range === 'yesterday' || request.range === '7days' ? request.range : 'today'
@@ -73,7 +78,7 @@ export async function generateAgentGroupReport(
         })()
       : getSummaryDateRange(range)
   let messages = listMessages(contact.md5, startTime, endTime) as Message[]
-  if (!messages.length) return { success: false, error: '所选时间范围没有可总结的消息' }
+  if (!messages.length) return reportFailure('所选时间范围没有可总结的消息', 'data', 'NO_MESSAGES')
 
   const messageTypeMap: Record<ScheduledReportMessageType, string[]> = {
     text: ['普通文本'],
@@ -91,7 +96,7 @@ export async function generateAgentGroupReport(
     ).flatMap((type) => messageTypeMap[type] || [])
   )
   messages = messages.filter((message) => selectedTypes.has(message.type))
-  if (!messages.length) return { success: false, error: '所选时间范围没有可总结的消息' }
+  if (!messages.length) return reportFailure('所选时间范围没有可总结的消息', 'data', 'NO_MESSAGES')
 
   const snapshot = getGroupSnapshot(contact.md5)
   if (snapshot) {
@@ -122,7 +127,13 @@ export async function generateAgentGroupReport(
     ],
     { timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
   )
-  if (!ai.success || !ai.data) return { success: false, error: ai.error || 'AI 总结失败' }
+  if (!ai.success || !ai.data) {
+    return {
+      ...reportFailure(ai.error || 'AI 总结失败', 'ai', ai.errorCode),
+      ...(ai.errorStatus !== undefined ? { errorStatus: ai.errorStatus } : {}),
+      ...(ai.errorType ? { errorType: ai.errorType } : {})
+    }
+  }
   let tokenUsage = ai.usage
   const parseReport = (raw: string): ReturnType<typeof parseGroupDailyReport> =>
     parseGroupDailyReport(
@@ -147,18 +158,24 @@ export async function generateAgentGroupReport(
     if (!repaired.success || !repaired.data) {
       const cause = parseError instanceof Error ? parseError.message : String(parseError)
       return {
-        success: false,
-        error: `${repaired.error || 'AI 修复日报 JSON 失败'}（原始错误：${cause}）`
+        ...reportFailure(
+          `${repaired.error || 'AI 修复日报 JSON 失败'}（原始错误：${cause}）`,
+          'ai',
+          repaired.errorCode
+        ),
+        ...(repaired.errorStatus !== undefined ? { errorStatus: repaired.errorStatus } : {}),
+        ...(repaired.errorType ? { errorType: repaired.errorType } : {})
       }
     }
     tokenUsage = mergeTokenUsage(tokenUsage, repaired.usage)
     try {
       report = parseReport(repaired.data)
     } catch (repairError) {
-      return {
-        success: false,
-        error: repairError instanceof Error ? repairError.message : String(repairError)
-      }
+      return reportFailure(
+        repairError instanceof Error ? repairError.message : String(repairError),
+        'report',
+        'REPORT_GENERATION_FAILED'
+      )
     }
   }
   const exported = await exportGroupReport({
@@ -167,7 +184,7 @@ export async function generateAgentGroupReport(
     templateId: request.templateId
   })
   if (!exported.success || !exported.pngPath) {
-    return { success: false, error: exported.error || '总结图片生成失败' }
+    return reportFailure(exported.error || '总结图片生成失败', 'report', 'REPORT_GENERATION_FAILED')
   }
   return {
     success: true,
@@ -194,5 +211,18 @@ function mergeTokenUsage(
     output: (first.output || 0) + (second.output || 0),
     total: (first.total || 0) + (second.total || 0),
     estimated: Boolean(first.estimated || second.estimated)
+  }
+}
+
+function reportFailure(
+  error: string,
+  errorStage: ScheduledReportExecutionStage,
+  errorCode?: string
+): AgentGroupReportResult {
+  return {
+    success: false,
+    error,
+    errorStage,
+    ...(errorCode ? { errorCode } : {})
   }
 }

@@ -460,6 +460,27 @@ function createScheduledReportRoute(
     }
   }
 
+  const retryPrefix = `${SCHEDULED_REPORTS_ROUTE}/executions/`
+  if (pathname.startsWith(retryPrefix)) {
+    const segments = pathname.slice(retryPrefix.length).split('/').filter(Boolean)
+    if (segments.length !== 2 || segments[1] !== 'retry-send') return undefined
+    let executionId: string
+    try {
+      executionId = decodeURIComponent(segments[0])
+    } catch {
+      return undefined
+    }
+    return async ({ req, res }) => {
+      if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
+      try {
+        const execution = await api.retrySend(executionId)
+        sendJson(res, 200, { success: execution.status !== 'failed', execution })
+      } catch (error) {
+        sendScheduledError(res, error)
+      }
+    }
+  }
+
   const prefix = `${SCHEDULED_REPORTS_ROUTE}/`
   if (!pathname.startsWith(prefix)) return undefined
   const segments = pathname.slice(prefix.length).split('/').filter(Boolean)
@@ -500,7 +521,7 @@ function createScheduledReportRoute(
       }
       if (action === 'run' && req.method === 'POST') {
         const execution = await api.run(taskId)
-        sendJson(res, 200, { success: execution.status === 'success', execution })
+        sendJson(res, 200, { success: execution.status !== 'failed', execution })
         return
       }
       if (action === 'executions' && req.method === 'GET') {

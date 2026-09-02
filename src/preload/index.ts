@@ -37,6 +37,8 @@ import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
 import type {
   ScheduledReportCreateInput,
   ScheduledReportExecution,
+  ScheduledReportNotificationSettings,
+  ScheduledReportNotificationSettingsResult,
   ScheduledReportResult,
   ScheduledReportTask,
   ScheduledReportUpdateInput
@@ -441,6 +443,12 @@ const api = {
     ipcRenderer.invoke('scheduled-report:list'),
   listScheduledReportExecutions: (taskId?: string): Promise<ScheduledReportExecution[]> =>
     ipcRenderer.invoke('scheduled-report:listExecutions', taskId),
+  getScheduledReportNotificationSettings: (): Promise<ScheduledReportNotificationSettings> =>
+    ipcRenderer.invoke('scheduled-report:getNotificationSettings'),
+  setScheduledReportNotificationEnabled: (
+    enabled: boolean
+  ): Promise<ScheduledReportNotificationSettingsResult> =>
+    ipcRenderer.invoke('scheduled-report:setNotificationEnabled', enabled),
   createScheduledReport: (
     request: ScheduledReportCreateInput
   ): Promise<ScheduledReportResult<ScheduledReportTask>> =>
@@ -461,6 +469,14 @@ const api = {
     taskId: string
   ): Promise<ScheduledReportResult<ScheduledReportExecution>> =>
     ipcRenderer.invoke('scheduled-report:runNow', taskId),
+  retryScheduledReportSend: (
+    executionId: string
+  ): Promise<ScheduledReportResult<ScheduledReportExecution>> =>
+    ipcRenderer.invoke('scheduled-report:retrySend', executionId),
+  testScheduledReportErrorNotification: (
+    taskId: string
+  ): Promise<ScheduledReportResult<ScheduledReportExecution>> =>
+    ipcRenderer.invoke('scheduled-report:testErrorNotification', taskId),
   getPersonalWechatVoiceDiagnostic: (): Promise<PersonalWechatVoiceDiagnostic | null> =>
     ipcRenderer.invoke('wechat-personal:getVoiceDiagnostic'),
   getAgentHubStatus: () => ipcRenderer.invoke('agent-hub:getStatus'),

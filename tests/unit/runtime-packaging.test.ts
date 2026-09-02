@@ -8,6 +8,9 @@ const nodeRequire = createRequire(import.meta.url)
 const asar = nodeRequire('@electron/asar') as {
   createPackage: (source: string, destination: string) => Promise<void>
 }
+const { hasWindowsSherpaRuntime } = nodeRequire('../../scripts/prepare-win-runtime.cjs') as {
+  hasWindowsSherpaRuntime: (runtimeRoot: string) => boolean
+}
 const {
   validateAsarRuntimeDependencies,
   validateFfmpegRuntime,
@@ -66,6 +69,30 @@ describe('production runtime packaging', () => {
     expect(config).toContain('electronLanguages:')
     expect(config).not.toContain('win32-arm64')
     expect(config).not.toContain('macos/')
+  })
+
+  it('installs cross-platform optional dependencies before Windows packaging', () => {
+    const packageJson = JSON.parse(
+      readFileSync(resolve(__dirname, '../../package.json'), 'utf8')
+    ) as { scripts: Record<string, string> }
+
+    expect(packageJson.scripts['prepare:win-runtime']).toBe(
+      'node scripts/prepare-win-runtime.cjs && npm run prepare:ffmpeg:win'
+    )
+    expect(packageJson.scripts['build:win']).toContain('npm run prepare:win-runtime')
+    expect(packageJson.scripts['release:win']).toContain('npm run prepare:win-runtime')
+  })
+
+  it('detects an incomplete Windows sherpa runtime before invoking pnpm', () => {
+    const runtimeRoot = join(root, 'win-sherpa-runtime')
+    mkdirSync(runtimeRoot, { recursive: true })
+    expect(hasWindowsSherpaRuntime(runtimeRoot)).toBe(false)
+
+    writeFileSync(join(runtimeRoot, 'package.json'), '{}')
+    expect(hasWindowsSherpaRuntime(runtimeRoot)).toBe(false)
+
+    writeFileSync(join(runtimeRoot, 'sherpa-onnx.node'), 'fixture')
+    expect(hasWindowsSherpaRuntime(runtimeRoot)).toBe(true)
   })
 
   it('rejects an app archive with missing runtime dependencies', async () => {

@@ -1,4 +1,4 @@
-import type { ScheduledReportRange, ScheduledReportExecutionStatus } from './scheduled-report'
+import type { ScheduledReportRange, ScheduledReportExecution } from './scheduled-report'
 
 export type ScheduledReportApiSchedule = {
   type: 'daily'
@@ -55,13 +55,4 @@ export interface ScheduledReportApiUpdateRequest {
   enabled?: boolean
 }
 
-export interface ScheduledReportApiExecution {
-  id: string
-  taskId: string
-  startedAt: string
-  finishedAt?: string
-  status: ScheduledReportExecutionStatus
-  error?: string
-  message?: string
-  scheduledSlot?: string
-}
+export type ScheduledReportApiExecution = ScheduledReportExecution

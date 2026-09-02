@@ -1512,6 +1512,10 @@ function App(): React.ReactElement {
     setActivePage('settings')
   }
 
+  const openAgentHub = (): void => {
+    setActivePage('agent-hub')
+  }
+
   const dismissFirstUseWelcome = (): void => {
     try {
       localStorage.setItem(FIRST_USE_WELCOME_SEEN_KEY, '1')
@@ -1604,6 +1608,7 @@ function App(): React.ReactElement {
         contactId: reportSourceContact.md5,
         contactName: contactDisplayName(reportSourceContact),
         contactAvatar: reportSourceContact.avatar || undefined,
+        source: 'manual',
         dateRange:
           summaryDateRange === 'yesterday'
             ? '昨日'
@@ -1816,6 +1821,7 @@ function App(): React.ReactElement {
             contacts={contacts}
             platformSupported={supportsPersonalWechatSend}
             onOpenWechatSettings={openWechatSendSettings}
+            onOpenAgentHub={openAgentHub}
             onOpenModelSettings={openModelSettings}
             onNotice={(message, variant) =>
               toast({ description: message, variant, duration: 3200 })
@@ -1825,6 +1831,7 @@ function App(): React.ReactElement {
           <div className="report-center-page">
             <ReportHistorySidebar
               reports={generatedReports}
+              contacts={contacts}
               selectedReportId={selectedReportId}
               selfInfo={selfInfo}
               dbReady={isDatabaseConnected}

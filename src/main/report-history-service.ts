@@ -171,6 +171,7 @@ export async function saveGeneratedReport(
       contactId: request.contactId,
       contactName: request.contactName,
       contactAvatar: request.contactAvatar,
+      source: request.source,
       dateRange: request.dateRange,
       messageCount: request.messageCount,
       generatedAt: timestamp.toISOString(),

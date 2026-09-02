@@ -122,6 +122,7 @@ import type {
   ScheduledReportCreateInput,
   ScheduledReportUpdateInput
 } from '../shared/scheduled-report'
+import { isTruthyDebugFlag } from '../shared/debug-flags'
 import { TextToSpeechSettingsService } from './services/text-to-speech-settings-service'
 import type {
   ListTextToSpeechVoicesRequest,
@@ -1315,6 +1316,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('scheduled-report:listExecutions', (_, taskId?: string) =>
     scheduledReportService.listExecutions(taskId)
   )
+  ipcMain.handle('scheduled-report:getNotificationSettings', () =>
+    scheduledReportService.getNotificationSettings()
+  )
+  ipcMain.handle('scheduled-report:setNotificationEnabled', (_, enabled: boolean) =>
+    scheduledReportService.setNotificationEnabled(Boolean(enabled))
+  )
   ipcMain.handle('scheduled-report:create', (_, request: ScheduledReportCreateInput) =>
     scheduledReportService.createTask(request)
   )
@@ -1332,6 +1339,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('scheduled-report:runNow', (_, taskId: string) =>
     scheduledReportService.runScheduledReportNow(taskId)
   )
+  ipcMain.handle('scheduled-report:retrySend', (_, executionId: string) =>
+    scheduledReportService.retryScheduledReportSend(executionId)
+  )
+  ipcMain.handle('scheduled-report:testErrorNotification', (_, taskId: string) => {
+    if (!isTruthyDebugFlag(import.meta.env.VITE_SCHEDULED_REPORT_DEBUG)) {
+      return Promise.resolve({
+        success: false,
+        error: '调试测试按钮未开启，请在 .env 中设置 VITE_SCHEDULED_REPORT_DEBUG=true。'
+      })
+    }
+    return scheduledReportService.testScheduledReportErrorNotification(taskId)
+  })
 
   ipcMain.handle('report:reveal', async (_, filePath: string) => {
     try {

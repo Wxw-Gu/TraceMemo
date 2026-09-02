@@ -782,6 +782,41 @@ describe('daily report controls', () => {
     expect(deleteTrigger).toHaveFocus()
   })
 
+  it('labels scheduled reports and uses the hydrated contact avatar as a fallback', () => {
+    const report: GeneratedReportRecord = {
+      id: 'scheduled-report-history',
+      contactId: groupContact.md5,
+      contactName: groupContact.m_nsNickName,
+      source: 'scheduled',
+      dateRange: '昨日',
+      messageCount: 10,
+      generatedAt: '2026-08-17T10:00:00.000Z',
+      reportDate: '2026-08-16',
+      htmlStatus: 'ready',
+      pngStatus: 'ready'
+    }
+
+    render(
+      <ReportHistorySidebar
+        reports={[report]}
+        contacts={[{ ...groupContact, avatar: 'data:image/png;base64,avatar' }]}
+        selectedReportId={report.id}
+        selfInfo={null}
+        dbReady
+        onSelectReport={vi.fn()}
+        onCreateReport={vi.fn()}
+        onDeleteReport={vi.fn(async () => ({ success: true }))}
+        onOpenSettings={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText('测试群的定时日报')).toBeVisible()
+    expect(screen.getByRole('img', { name: '测试群的定时日报' })).toHaveAttribute(
+      'src',
+      'data:image/png;base64,avatar'
+    )
+  })
+
   it('prevents duplicate report deletion, keeps failures open, and closes after success', async () => {
     const user = userEvent.setup()
     const report: GeneratedReportRecord = {
