@@ -32,6 +32,15 @@ test('SCHEDULED-REPORT-UI-01 opens the scheduled report dialog without viewport 
     await expect(dialog.getByPlaceholder('搜索群聊')).toBeVisible()
     await expect(dialog.getByRole('button', { name: '创建定时日报' })).toBeVisible()
 
+    const customRange = dialog.locator('[aria-disabled="true"]')
+    await expect(customRange).toHaveCount(1)
+    const customLabel = customRange.getByText('自定义', { exact: true })
+    const customHint = customRange.getByText('即将支持', { exact: true })
+    await expect(customLabel).toHaveCSS('white-space', 'nowrap')
+    await expect(customHint).toHaveCSS('white-space', 'nowrap')
+    expect((await customLabel.boundingBox())?.height).toBeLessThanOrEqual(20)
+    expect((await customHint.boundingBox())?.height).toBeLessThanOrEqual(20)
+
     const selects = dialog.getByRole('combobox')
     await expect(selects).toHaveCount(2)
     await selects.nth(0).click()
@@ -55,11 +64,11 @@ test('SCHEDULED-REPORT-UI-01 opens the scheduled report dialog without viewport 
     expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(600)
 
     await dialog.getByPlaceholder('例如：技术交流 · 每日日报').fill('E2E 定时日报')
-    await dialog.getByRole('radio', { name: '今天' }).click()
+    await dialog.getByRole('radio', { name: '今日' }).click()
     await dialog.getByRole('button', { name: '创建定时日报' }).click()
     await expect(dialog).toHaveCount(0)
     await expect(fixture.page.getByText('E2E 定时日报', { exact: true })).toBeVisible()
-    await expect(fixture.page.getByText('今天', { exact: true })).toBeVisible()
+    await expect(fixture.page.getByText('今日', { exact: true })).toBeVisible()
 
     await fixture.page.getByRole('button', { name: '设置' }).click()
     await fixture.page.getByRole('button', { name: '微信发送', exact: true }).click()

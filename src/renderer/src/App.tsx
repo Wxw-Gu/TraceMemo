@@ -1614,7 +1614,7 @@ function App(): React.ReactElement {
             ? '昨日'
             : summaryDateRange === '7days'
               ? '近 7 天'
-              : '今天',
+              : '今日',
         reportDate: reportMetadata.reportDate,
         messageCount: reportGeneration.reportMessages.length,
         generatedAt: new Date().toISOString(),

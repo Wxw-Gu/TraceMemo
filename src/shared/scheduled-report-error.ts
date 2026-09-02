@@ -95,7 +95,7 @@ const messagesFor = (
       return {
         severity: 'error',
         userTitle: '日报生成失败',
-        userMessage: '今天的聊天内容较多，超过当前 AI 模型一次可以处理的内容长度。',
+        userMessage: '今日的聊天内容较多，超过当前 AI 模型一次可以处理的内容长度。',
         suggestedAction: '可以缩短日报范围，或更换支持更长上下文的模型。',
         retryable: true
       }

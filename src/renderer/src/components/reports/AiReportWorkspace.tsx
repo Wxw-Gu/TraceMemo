@@ -58,7 +58,7 @@ interface AiReportWorkspaceProps {
 const rangeLabel = (range: SummaryDateRange): string => {
   if (range === 'yesterday') return '昨日'
   if (range === '7days') return '近 7 天'
-  return '今天'
+  return '今日'
 }
 
 const modelLabel = (model: string): string => {
