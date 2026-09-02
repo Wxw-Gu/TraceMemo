@@ -1,0 +1,66 @@
+appId: com.tracememo.app
+productName: TraceMemo
+afterPack: scripts/after-pack.cjs
+directories:
+  buildResources: build
+files:
+  - out
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+extraMetadata:
+  main: out/main/index.js
+asarUnpack:
+  - resources/**
+  - node_modules/ffmpeg-static/**
+  - node_modules/silk-wasm/**
+  - node_modules/sherpa-onnx-node/**
+  - node_modules/sherpa-onnx-*/**
+extraResources:
+  # Keep the updater provider in every packaged Windows app. electron-builder also
+  # regenerates this file during publish, using the same release configuration.
+  - from: build/app-update.yml
+    to: app-update.yml
+  # Keep only resources required by the Windows x64 runtime.
+  - from: resources
+    to: resources
+    filter:
+      - icon.png
+      - daily_report_templates.html
+      - mobile_daily_report.html
+      - mobile_daily_report_v1.html
+      - mobile_daily_report_v2.html
+      - connectors/wechat/win32-x64/**
+      - key/win32/x64/**
+      - runtime/win32/**
+      - wcdb/win32/x64/**
+  - from: docs/skill/tracememo-reader
+    to: skill/tracememo-reader
+    filter:
+      - '**/*'
+win:
+  icon: icon.ico
+  executableName: TraceMemo
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${name}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+npmRebuild: false
+electronLanguages:
+  - zh-CN
+  - en-US
+publish:
+  provider: github
+  owner: Wxw-Gu
+  repo: TraceMemo
+  releaseType: release

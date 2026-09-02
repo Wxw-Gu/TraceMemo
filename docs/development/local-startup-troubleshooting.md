@@ -12,6 +12,16 @@
 
 `6131` 是应用提供给本机集成使用的 API 端口，不是 Vite 的页面端口。
 
+## WCDB 消息读取诊断
+
+`WCDB_DEBUG_LOGS` 默认关闭。需要排查消息读取链路时，可以在启动命令前设置为 `1`：
+
+```bash
+WCDB_DEBUG_LOGS=1 pnpm dev
+```
+
+开启后会输出 `GETMSG-xxx` 请求耗时和 native `WCDB-EXPLAIN` 执行计划，不记录聊天正文。取消该环境变量或设为 `0` 即可关闭。
+
 ## Go 命令找不到
 
 如果 `pnpm dev` 在构建微信连接器时出现 `spawnSync go ENOENT`，先执行：

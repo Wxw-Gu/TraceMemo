@@ -1,5 +1,6 @@
 import type { ApiEndpoint, ApiServiceState, ApiSettings } from '../model/types'
 import { type ReactElement } from 'react'
+import { Button, Input, Textarea } from '../../../components/ui'
 import { buildApiUrl } from '../utils/buildApiUrl'
 
 interface Props {
@@ -62,7 +63,8 @@ export function ApiRequestTester({
                 {parameter.label}
                 {parameter.required && <b>必填</b>}
               </span>
-              <input
+              <Input
+                className="h-8 text-xs"
                 value={params[parameter.key] || ''}
                 onChange={(event) => update(parameter.key, event.target.value)}
                 placeholder={parameter.placeholder}
@@ -74,7 +76,8 @@ export function ApiRequestTester({
       {endpoint.body && (
         <label className="api-json-input">
           <span>JSON 请求体</span>
-          <textarea
+          <Textarea
+            className="min-h-[180px] resize-y font-mono text-xs"
             value={body}
             onChange={(event) => onBody(event.target.value)}
             spellCheck={false}
@@ -83,23 +86,23 @@ export function ApiRequestTester({
       )}
       {endpoint.id === 'agent-send' && (
         <div className="api-upload-test-row">
-          <button type="button" onClick={() => void selectTestImage()}>
+          <Button size="sm" variant="outline" onClick={() => void selectTestImage()}>
             选择测试图片
-          </button>
+          </Button>
           <span>选择后只会填入本地路径；点击“发送请求”才会真正发送。</span>
         </div>
       )}
       <div className="api-tester-actions">
-        <button type="button" onClick={onClear}>
+        <Button size="sm" variant="ghost" onClick={onClear}>
           清空
-        </button>
-        <button type="button" onClick={() => void onCopyCurl()}>
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => void onCopyCurl()}>
           复制 curl
-        </button>
-        <button
-          type="button"
-          className="api-primary-button"
+        </Button>
+        <Button
+          size="sm"
           disabled={!service?.running || state === 'loading'}
+          aria-busy={state === 'loading'}
           onClick={onSend}
         >
           {state === 'loading'
@@ -107,7 +110,7 @@ export function ApiRequestTester({
             : service?.running
               ? '发送请求'
               : '请先启动本地 API 服务'}
-        </button>
+        </Button>
       </div>
       {error && <p className="api-inline-error">{error}</p>}
     </section>

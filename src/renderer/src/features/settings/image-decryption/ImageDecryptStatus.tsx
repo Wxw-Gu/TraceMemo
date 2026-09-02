@@ -1,4 +1,5 @@
 import type { SettingsSelfInfo } from '../model/types'
+import { Button } from '../../../components/ui'
 import type { ImageDecryptionState } from './types'
 import { formatImageConfigTime } from './utils'
 
@@ -54,9 +55,9 @@ export function ImageDecryptStatus({
         </div>
       </dl>
       {state.config?.configured ? (
-        <button className="database-key-secondary" disabled={disabled} onClick={onValidate}>
+        <Button variant="outline" disabled={disabled} onClick={onValidate}>
           重新验证
-        </button>
+        </Button>
       ) : null}
     </section>
   )

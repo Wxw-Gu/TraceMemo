@@ -1,4 +1,5 @@
 import type { AIProviderSummary, AIRuntimeModelConfig } from '../../../../../shared/ai-provider'
+import { Button, Textarea } from '../../../components/ui'
 import type { AIVisionTestState } from './types'
 
 export function AIImageUnderstandingTest({
@@ -67,7 +68,7 @@ export function AIImageUnderstandingTest({
 
       <label className="ai-vision-prompt">
         识别提示词
-        <textarea
+        <Textarea
           value={state.prompt}
           onChange={(event) => onPromptChange(event.target.value)}
           rows={3}
@@ -101,14 +102,17 @@ export function AIImageUnderstandingTest({
       ) : null}
 
       <footer>
-        {state.image ? <button onClick={onClear}>移除图片</button> : null}
-        <button
-          className="database-key-primary"
+        {state.image ? (
+          <Button variant="outline" onClick={onClear}>
+            移除图片
+          </Button>
+        ) : null}
+        <Button
           disabled={!runtime?.configured || !state.image || testing || !state.prompt.trim()}
           onClick={onTest}
         >
           {testing ? '识别中…' : '开始识别'}
-        </button>
+        </Button>
       </footer>
     </section>
   )

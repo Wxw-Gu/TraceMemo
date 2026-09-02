@@ -1,6 +1,7 @@
 import type { SettingsSelfInfo } from '../model/types'
 import type { DatabaseKeyState } from './types'
 import { formatValidationTime } from './utils'
+import { Button } from '../../../components/ui'
 
 export function DatabaseKeyStatus({
   state,
@@ -45,14 +46,9 @@ export function DatabaseKeyStatus({
           </dd>
         </div>
       </dl>
-      <button
-        type="button"
-        className="database-key-secondary"
-        onClick={onValidate}
-        disabled={disabled}
-      >
+      <Button variant="outline" onClick={onValidate} disabled={disabled}>
         重新验证
-      </button>
+      </Button>
     </section>
   )
 }

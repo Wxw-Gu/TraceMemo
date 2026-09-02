@@ -53,6 +53,15 @@ export function AiIcon({ className }: IconProps): React.ReactElement {
   )
 }
 
+export function SendIcon({ className }: IconProps): React.ReactElement {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="m4 5 16 7-16 7 3-7-3-7Z" />
+      <path d="M7 12h13" />
+    </svg>
+  )
+}
+
 export function CloseIcon({ className }: IconProps): React.ReactElement {
   return (
     <svg className={className} viewBox="0 0 24 24" aria-hidden="true" focusable="false">

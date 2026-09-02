@@ -30,7 +30,7 @@ try {
   ])
 
   process.env.WCDB_RESOURCES_PATH = process.env.WCDB_RESOURCES_PATH || resourcesRoot
-  process.env.WEFLOW_PROJECT_NAME = process.env.WEFLOW_PROJECT_NAME || 'WeFlow'
+  process.env.TRACEMEMO_PROJECT_NAME = process.env.TRACEMEMO_PROJECT_NAME || 'TraceMemo'
   prependPath(dllDirs.filter((dir) => fs.existsSync(dir)))
 } catch (error) {
   console.error('[TraceMemo] failed to enforce local DLL priority:', error)

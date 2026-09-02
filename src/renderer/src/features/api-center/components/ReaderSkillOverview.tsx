@@ -1,4 +1,11 @@
 import { type ReactElement } from 'react'
+import {
+  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '../../../components/ui'
 import type { ApiServiceState, SkillStatus } from '../model/types'
 import type { AgentInstallTarget } from '../model/skillDistribution'
 import { SkillDetails } from './SkillDetails'
@@ -46,26 +53,29 @@ export function ReaderSkillOverview({
             <p>通过本地 HTTP API 读取 TraceMemo 已解锁的微信聊天数据</p>
           </div>
           <div className="api-header-actions">
-            <button type="button" onClick={onPreview} disabled={!skill?.available}>
+            <Button size="sm" variant="outline" onClick={onPreview} disabled={!skill?.available}>
               预览 Skill
-            </button>
-            <button
-              type="button"
-              className="api-primary-button"
+            </Button>
+            <Button
+              size="sm"
               disabled={!service?.running || !skill?.available}
               onClick={onCopyInstruction}
             >
               复制安装指令
-            </button>
-            <details className="api-skill-more">
-              <summary>更多</summary>
-              <button type="button" onClick={onOpenFolder} disabled={!skill?.available}>
-                打开本地文件夹
-              </button>
-              <button type="button" onClick={onOpenGithub}>
-                查看 GitHub 最新版本
-              </button>
-            </details>
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="ghost">
+                  更多
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={onOpenFolder} disabled={!skill?.available}>
+                  打开本地文件夹
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onOpenGithub}>查看 GitHub 最新版本</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
         {!skill?.available && (

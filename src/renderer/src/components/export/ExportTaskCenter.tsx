@@ -1,4 +1,5 @@
 import React from 'react'
+import { Button, Progress } from '../ui'
 import type { ExportTaskRecord } from './exportTypes'
 
 interface ExportTaskCenterProps {
@@ -60,49 +61,60 @@ export function ExportTaskCenter({
 
   return (
     <>
-      <button type="button" className="export-task-center-button" onClick={onToggle}>
+      <Button className="mb-3 self-start" size="sm" variant="outline" onClick={onToggle}>
         任务中心{taskCount > 0 ? ` (${taskCount})` : ''}
-      </button>
+      </Button>
       {open && (
-        <section className="export-task-center">
-          <div className="export-section-heading">
-            <h3>导出任务</h3>
-            <span>{tasks.length} 条记录</span>
+        <section className="mb-[18px] rounded-lg border border-border bg-surface p-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-xs font-bold tracking-normal text-foreground">导出任务</h3>
+            <span className="text-xs text-primary">{tasks.length} 条记录</span>
           </div>
           {tasks.length === 0 ? (
-            <p>暂无导出记录</p>
+            <p className="mt-3 text-xs text-muted-foreground">暂无导出记录</p>
           ) : (
             tasks.map((task) => {
               const detail = taskDetail(task)
               return (
-                <div className="export-task-row" key={task.jobId}>
-                  <span>
-                    <strong>{task.targetLabel}</strong>
-                    <small>
+                <div
+                  className="grid grid-cols-[minmax(0,1fr)_110px_auto] items-center gap-3 border-t border-border py-2 text-xs text-muted-foreground first:mt-2"
+                  key={task.jobId}
+                >
+                  <span className="grid min-w-0 gap-0.5">
+                    <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-foreground">
+                      {task.targetLabel}
+                    </strong>
+                    <small className="overflow-hidden text-ellipsis whitespace-nowrap">
                       {task.format.toUpperCase()} · {phaseLabels[task.progress.phase]}
                     </small>
                     {detail && (
                       <small
-                        className={`export-task-detail ${task.status}`}
+                        className={`export-task-detail ${task.status} whitespace-normal [overflow-wrap:anywhere] ${
+                          task.status === 'completed'
+                            ? 'text-primary'
+                            : task.status === 'failed'
+                              ? 'text-destructive'
+                              : ''
+                        }`}
                         title={task.status === 'failed' ? detail : undefined}
                       >
                         {detail}
                       </small>
                     )}
                   </span>
-                  <span className="export-task-progress">
-                    <i style={{ width: `${task.progress.percent ?? 0}%` }} />
-                    <b>{task.progress.percent ?? 0}%</b>
+                  <span className="grid gap-1 text-right text-[10px] text-muted-foreground">
+                    <Progress className="h-1.5" value={task.progress.percent ?? 0} />
+                    <b className="font-medium">{task.progress.percent ?? 0}%</b>
                   </span>
                   {task.status === 'running' && (
-                    <button type="button" onClick={() => onCancel(task.jobId)}>
+                    <Button size="sm" variant="outline" onClick={() => onCancel(task.jobId)}>
                       取消
-                    </button>
+                    </Button>
                   )}
                   {task.status === 'failed' && (
-                    <button type="button" onClick={() => void copyTaskLog(task)}>
+                    <Button size="sm" variant="outline" onClick={() => void copyTaskLog(task)}>
                       {copiedJobId === task.jobId ? '已复制' : '复制日志'}
-                    </button>
+                    </Button>
                   )}
                 </div>
               )

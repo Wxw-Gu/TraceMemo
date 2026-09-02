@@ -361,40 +361,6 @@ body {
   background: var(--wxex-bg-main);
 }
 
-.app-page-placeholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  color: var(--wxex-text-secondary);
-  text-align: center;
-
-  h2 {
-    margin: 0 0 8px;
-    color: var(--wxex-text-primary);
-    font-size: 20px;
-    font-weight: 600;
-    line-height: 28px;
-  }
-
-  p {
-    margin: 0;
-    font-size: 13px;
-    line-height: 20px;
-  }
-}
-.app-page-placeholder-eyebrow {
-  margin-bottom: 8px;
-  color: var(--wxex-brand);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0;
-}
-
-
 .app-container {
   display: flex;
   width: 100%;

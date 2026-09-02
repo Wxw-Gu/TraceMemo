@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ExportWorkspace } from '../../src/renderer/src/components/export/ExportWorkspace'
@@ -31,6 +31,7 @@ describe('ExportWorkspace multi-chat selection', () => {
         onExportProgress: vi.fn(() => vi.fn()),
         getVoiceModelStatus: vi.fn().mockRejectedValue(new Error('fixture model unavailable')),
         getGroupSnapshot: vi.fn(async () => ({ members: [] })),
+        selectExportDirectory: vi.fn(async () => ({ canceled: false, path: '/fixture/export' })),
         cancelExport: vi.fn(async () => ({ success: true })),
         revealExport: vi.fn(async () => ({ success: true }))
       }
@@ -63,17 +64,21 @@ describe('ExportWorkspace multi-chat selection', () => {
     const { loadPreviewMessages } = renderWorkspace(onStartExport)
 
     expect(screen.getAllByText('聊天 A')).toHaveLength(2)
-    expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled()
+    expect(screen.getByRole('radio', { name: 'CSV' })).toBeEnabled()
     expect(await screen.findByText('聊天 A 的预览')).toBeVisible()
 
     await userEvent.click(screen.getByRole('button', { name: '+ 添加聊天' }))
     await userEvent.click(screen.getByRole('button', { name: /聊天 B/ }))
 
     expect(screen.getByText('已选 2 / 5 个')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'CSV' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'JSON' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Markdown' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: /HTML/ })).toHaveClass('active')
+    expect(screen.getByRole('radio', { name: 'CSV' })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: 'JSON' })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: 'Markdown' })).toBeDisabled()
+    expect(
+      within(screen.getByRole('radiogroup', { name: '导出格式' })).getByRole('radio', {
+        name: /HTML/
+      })
+    ).toBeChecked()
     expect(await screen.findByText('聊天 B 的预览')).toBeVisible()
     expect(screen.getByText('2 个聊天 · 合并预览')).toBeVisible()
 
@@ -90,7 +95,7 @@ describe('ExportWorkspace multi-chat selection', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '恢复默认' }))
     expect(screen.queryByText('已选 2 / 5 个')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled()
+    expect(screen.getByRole('radio', { name: 'CSV' })).toBeEnabled()
     expect(screen.getAllByText('聊天 A').length).toBeGreaterThanOrEqual(2)
     expect(loadPreviewMessages).toHaveBeenCalledWith(contacts[0])
     expect(contacts[0].md5).toBe('contact-1')
@@ -122,10 +127,10 @@ describe('ExportWorkspace multi-chat selection', () => {
     await userEvent.click(screen.getByRole('button', { name: /全部导出/ }))
 
     expect(screen.getByText(/全部群聊 1 个和全部联系人 5 个/)).toBeVisible()
-    expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'CSV' })).toHaveClass('active')
-    expect(screen.getByRole('button', { name: 'JSON' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Markdown' })).toBeEnabled()
+    expect(screen.getByRole('radio', { name: 'CSV' })).toBeEnabled()
+    expect(screen.getByRole('radio', { name: 'CSV' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'JSON' })).toBeEnabled()
+    expect(screen.getByRole('radio', { name: 'Markdown' })).toBeEnabled()
     expect(loadPreviewMessages).toHaveBeenCalledTimes(1)
 
     await userEvent.click(screen.getByRole('button', { name: '开始导出' }))
@@ -196,6 +201,25 @@ describe('ExportWorkspace multi-chat selection', () => {
     expect(document.querySelector('.export-all-chat-avatar.group')).toHaveTextContent('群')
     expect(document.querySelector('.export-all-chat-avatar.user')).not.toBeInTheDocument()
     expect(loadPreviewMessages).not.toHaveBeenCalled()
+  })
+
+  it('keeps custom dates and output directory selection in the workspace request', async () => {
+    const onStartExport = vi.fn(async () => ({ success: false }))
+    renderWorkspace(onStartExport)
+
+    await userEvent.click(screen.getByRole('radio', { name: '自定义时间' }))
+    await userEvent.type(screen.getByLabelText('开始时间'), '2026-08-01T09:30')
+    await userEvent.type(screen.getByLabelText('结束时间'), '2026-08-02T18:45')
+    await userEvent.click(screen.getByRole('button', { name: '选择位置' }))
+
+    expect(await screen.findByText('/fixture/export/聊天 A_聊天档案.csv')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: '开始导出' }))
+    await waitFor(() => expect(onStartExport).toHaveBeenCalledOnce())
+    expect(onStartExport.mock.calls[0][0]).toMatchObject({
+      outputDirectory: '/fixture/export',
+      startTime: Math.floor(new Date('2026-08-01T09:30').getTime() / 1000),
+      endTime: Math.floor(new Date('2026-08-02T18:45').getTime() / 1000)
+    })
   })
 })
 

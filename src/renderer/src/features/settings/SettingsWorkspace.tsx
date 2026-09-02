@@ -12,6 +12,7 @@ import { CacheCleanupPage } from './pages/CacheCleanupPage'
 import { AppearancePage } from './pages/AppearancePage'
 import { AboutPage } from './pages/AboutPage'
 import { VoiceRecognitionPage } from './pages/VoiceRecognitionPage'
+import { TextToSpeechPage } from './pages/TextToSpeechPage'
 import type { Contact } from '../../../../shared/types'
 import type { AIRuntimeModelConfig } from '../../../../shared/ai-provider'
 
@@ -91,12 +92,21 @@ export function SettingsWorkspace({
         return <AIModelPage onRuntimeChange={onAIRuntimeChange} onNotice={onNotice} />
       case 'voice-recognition':
         return <VoiceRecognitionPage onNotice={onNotice} />
+      case 'text-to-speech':
+        return <TextToSpeechPage onNotice={onNotice} />
       case 'recall-protection':
         return <RecallProtectionPage onNotice={onNotice} />
       case 'advanced':
         return <AdvancedPage onNotice={onNotice} />
       case 'cache-cleanup':
         return <CacheCleanupPage onNotice={onNotice} />
+      case 'storage-export':
+        return (
+          <SettingsEmptyState
+            label={SETTINGS_CATEGORY_LABELS[selectedCategory]}
+            description="导出格式与范围请前往「导出」工作区设置。"
+          />
+        )
       case 'appearance':
         return <AppearancePage onNotice={onNotice} onAppearanceChange={onAppearanceChange} />
       case 'about':

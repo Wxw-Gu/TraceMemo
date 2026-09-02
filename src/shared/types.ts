@@ -24,6 +24,11 @@ export interface Message {
   name?: string
   senderId?: string
   contentData?: ParsedContent
+  media?: {
+    type: 'image'
+    available: boolean
+    url: string
+  }
   voiceDataUrl?: string
   voiceDuration?: number
   voiceTranscript?: string

@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import type { GeneratedReportRecord } from './types'
+import { Button } from '../ui'
 
 interface ReportInfoPanelProps {
   report: GeneratedReportRecord | null
@@ -165,9 +166,9 @@ export function ReportInfoPanel({ report, onReveal }: ReportInfoPanelProps): Rea
               </div>
             </div>
             {(report.pngPath || report.htmlPath) && (
-              <button type="button" onClick={() => void revealReport()}>
+              <Button variant="outline" size="sm" onClick={() => void revealReport()}>
                 打开文件夹
-              </button>
+              </Button>
             )}
             {revealStatus && <p>{revealStatus}</p>}
           </section>
@@ -199,9 +200,9 @@ export function ReportInfoPanel({ report, onReveal }: ReportInfoPanelProps): Rea
             {path ? (
               <>
                 <code>{path}</code>
-                <button type="button" onClick={() => void copyPath()}>
+                <Button variant="outline" size="sm" onClick={() => void copyPath()}>
                   复制文件路径
-                </button>
+                </Button>
                 {copyStatus && <p>{copyStatus}</p>}
               </>
             ) : (

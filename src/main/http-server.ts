@@ -14,6 +14,7 @@ import { generateAgentGroupReport } from './services/agent-group-report-service'
 import { agentHubService } from './services/agent-hub-service'
 import { safeError, safeLog, safeWarn } from './safe-log'
 import { apiTokenStore } from './api-token-store'
+import { HttpMediaError, readImageMedia, type HttpImageResult } from './http-media-service'
 
 export const DEFAULT_HTTP_HOST = '127.0.0.1'
 export const DEFAULT_HTTP_PORT = 6131
@@ -33,6 +34,7 @@ interface RouteContext {
 
 export interface HttpServerOptions {
   tokenProvider?: () => string | null
+  mediaProvider?: (messageId: string) => Promise<HttpImageResult>
 }
 
 type RouteHandler = (ctx: RouteContext) => void | Promise<void>
@@ -88,6 +90,26 @@ function sendUnauthorized(res: ServerResponse): void {
 
 function sendError(res: ServerResponse, status: number, message: string, extra?: unknown): void {
   sendJson(res, status, { error: message, status, ...(extra ? { details: extra } : {}) })
+}
+
+function sendBinary(res: ServerResponse, status: number, result: HttpImageResult): void {
+  res.writeHead(status, {
+    'Content-Type': result.mimeType,
+    'Content-Length': result.buffer.length,
+    'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff'
+  })
+  res.end(result.buffer)
+}
+
+function sanitizeChatlogMessage(message: Record<string, unknown>): Record<string, unknown> {
+  const contentData = message.contentData
+  if (!contentData || typeof contentData !== 'object' || !('aeskey' in contentData)) {
+    return message
+  }
+  const safeContentData = { ...(contentData as Record<string, unknown>) }
+  delete safeContentData.aeskey
+  return { ...message, contentData: safeContentData }
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -252,7 +274,9 @@ const routes: Record<string, RouteHandler> = {
       contact: resolved,
       query: { talker, time: timeParam, startTime, endTime },
       count: messages.length,
-      messages
+      messages: messages.map((message) =>
+        sanitizeChatlogMessage(message as unknown as Record<string, unknown>)
+      )
     })
   },
 
@@ -343,12 +367,63 @@ const routes: Record<string, RouteHandler> = {
   }
 }
 
+const MEDIA_ROUTE_PREFIX = '/api/v1/media/'
+
+function createMediaRoute(
+  mediaProvider: (messageId: string) => Promise<HttpImageResult>
+): RouteHandler {
+  return async ({ req, res, url }) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      return sendError(res, 405, '需要 GET 请求')
+    }
+    const encodedMessageId = url.pathname.slice(MEDIA_ROUTE_PREFIX.length)
+    let messageId: string
+    try {
+      messageId = decodeURIComponent(encodedMessageId)
+    } catch {
+      return sendError(res, 422, 'messageId 格式无效')
+    }
+    if (!messageId || messageId.includes('/') || messageId.includes('\\')) {
+      return sendError(res, 422, 'messageId 格式无效')
+    }
+    try {
+      const result = await mediaProvider(messageId)
+      if (req.method === 'HEAD') {
+        res.writeHead(200, {
+          'Content-Type': result.mimeType,
+          'Content-Length': result.buffer.length,
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff'
+        })
+        res.end()
+        return
+      }
+      sendBinary(res, 200, result)
+    } catch (error) {
+      if (error instanceof HttpMediaError) {
+        const status =
+          error.code === 'NOT_READY'
+            ? 503
+            : error.code === 'NOT_IMAGE'
+              ? 422
+              : error.code === 'NOT_FOUND'
+                ? 404
+                : 500
+        return sendError(res, status, error.message)
+      }
+      safeError('[HttpServer] media request failed:', error)
+      return sendError(res, 500, '图片读取失败')
+    }
+  }
+}
+
 export function startHttpServer(
   host: string = DEFAULT_HTTP_HOST,
   port: number = DEFAULT_HTTP_PORT,
   options: HttpServerOptions = {}
 ): Promise<HttpServerHandle> {
   const tokenProvider = options.tokenProvider || (() => apiTokenStore.getTokenForAuthentication())
+  const mediaProvider = options.mediaProvider || readImageMedia
   return new Promise((resolve, reject) => {
     const server: Server = http.createServer(async (req, res) => {
       try {
@@ -360,7 +435,11 @@ export function startHttpServer(
           res.writeHead(204)
           return res.end()
         }
-        const handler = routes[url.pathname]
+        const handler =
+          routes[url.pathname] ||
+          (url.pathname.startsWith(MEDIA_ROUTE_PREFIX)
+            ? createMediaRoute(mediaProvider)
+            : undefined)
         if (!handler) {
           return sendError(res, 404, `端点不存在: ${url.pathname}`)
         }

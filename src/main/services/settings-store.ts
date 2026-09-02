@@ -2,6 +2,7 @@ import { app } from 'electron'
 import fs from 'fs-extra'
 import path from 'path'
 import os from 'os'
+import type { TextToSpeechModel } from '../../shared/text-to-speech'
 
 /**
  * 把 V3 时代的 "...\\Documents\\WeChat Files" 路径重定向到
@@ -36,6 +37,8 @@ export interface AppSettings {
   appearanceTheme: 'system' | 'light' | 'dark'
   compactMode: boolean
   showStartupProgress: boolean
+  ttsSelectedVoiceId: string
+  ttsModel: TextToSpeechModel
 }
 
 function getDefaultDbRoot(): string {
@@ -55,31 +58,11 @@ function getDefaultDbRootCandidates(home: string): string[] {
   // 仅支持 WeChat 4.0：剔除 V3 时代的 "WeChat Files" 目录，
   // 只认 xwechat_files（含 Documents\ 和 AppData\Roaming\Tencent\ 两种合法位置）。
   const candidates = [
-    ...getWeflowDbPathCandidates(home),
     path.join(home, 'Documents', 'xwechat_files'),
     path.join(os.homedir(), 'AppData', 'Roaming', 'Tencent', 'xwechat_files')
   ]
 
   return unique(candidates)
-}
-
-function getWeflowDbPathCandidates(home: string): string[] {
-  const configPaths = [
-    path.join(home, 'AppData', 'Roaming', 'weflow', 'WeFlow-config.json'),
-    path.join(home, 'AppData', 'Roaming', 'WeFlow', 'WeFlow-config.json')
-  ]
-  const candidates: string[] = []
-  for (const configPath of configPaths) {
-    try {
-      const config = fs.readJsonSync(configPath) as { dbPath?: unknown }
-      if (typeof config.dbPath === 'string' && config.dbPath.trim()) {
-        candidates.push(config.dbPath.trim())
-      }
-    } catch {
-      // WeFlow is optional; ignore missing or unreadable config.
-    }
-  }
-  return candidates
 }
 
 function unique(values: string[]): string[] {
@@ -135,7 +118,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoLoginPreferenceSet: false,
   appearanceTheme: 'system',
   compactMode: false,
-  showStartupProgress: true
+  showStartupProgress: true,
+  ttsSelectedVoiceId: '',
+  ttsModel: 's2.1-pro-free'
 }
 
 const SETTINGS_FILE = path.join(

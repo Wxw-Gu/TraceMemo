@@ -8,17 +8,17 @@
 
 <p align="center">
   本地优先的微信聊天记录工作台：查看、搜索、提问、总结和导出<br />
-  查看聊天 · 找回信息 · AI 问答 · 群聊日报总结 · 语音转写 · 导出 · 微信机器人 · Agent 接入
+  查看聊天 · 找回信息 · AI 问答 · 微信群聊总结 · 语音转写 · 导出 · 微信机器人 · Agent 接入
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/stars/Wxw-Gu/WechatExplorer?style=for-the-badge" alt="GitHub stars" />
-  <img src="https://img.shields.io/github/downloads/Wxw-Gu/WechatExplorer/total?style=for-the-badge" alt="GitHub downloads" />
-  <img src="https://img.shields.io/github/v/release/Wxw-Gu/WechatExplorer?style=for-the-badge" alt="Latest release" />
+  <img src="https://img.shields.io/github/stars/Wxw-Gu/TraceMemo?style=for-the-badge" alt="GitHub stars" />
+  <img src="https://img.shields.io/github/downloads/Wxw-Gu/TraceMemo/total?style=for-the-badge" alt="GitHub downloads" />
+  <img src="https://img.shields.io/github/v/release/Wxw-Gu/TraceMemo?style=for-the-badge" alt="Latest release" />
 </p>
 
 <p align="center">
-  <a href="https://github.com/Wxw-Gu/WechatExplorer/releases"><b>下载 TraceMemo</b></a>
+  <a href="https://github.com/Wxw-Gu/TraceMemo/releases"><b>下载 TraceMemo</b></a>
   ·
   <a href="./docs/user-guide/getting-started.md"><b>第一次使用</b></a>
   ·
@@ -309,7 +309,7 @@ flowchart LR
 
 ## 快速开始
 
-1. 从 [GitHub Releases](https://github.com/Wxw-Gu/WechatExplorer/releases) 下载安装包。
+1. 从 [GitHub Releases](https://github.com/Wxw-Gu/TraceMemo/releases) 下载安装包。
 2. 启动 TraceMemo，按照“第一次使用”页面选择微信数据目录。
 3. 第一次使用请先点击“开始连接”，按页面提示准备连接组件并获取数据库密钥；只有已经有密钥的高级用户才需要“手动连接”。
 4. 连接成功后打开“档案”，确认联系人和聊天消息已经出现。
@@ -438,6 +438,14 @@ TraceMemo 在支持微信 4.x 时，参考并使用了 **[WeFlow](https://github
 感谢所有开源作者，也感谢所有帮助 TraceMemo 发现问题、提出建议和持续使用它的人。
 
 ---
+
+## 最后说两句
+
+这个项目起初只是一个一时兴起的项目，所以它大概也不会有一份特别严肃的产品路线图。
+
+我可能会按照自己的兴趣继续折腾，也可能突然加入一些奇奇怪怪、但觉得有意思的功能—— 比如让AI给某个好友, 某个群发一个语音条(逗逗群友) 或者定时生成群聊日报并做成微信卡片。
+
+也因此，这个项目随时可能继续折腾，也可能因为其他事情暂时搁置。如果你有想要的功能，可以提Issue；如果觉得现有实现不符合你的需求，也欢迎直接 Fork 后自己改。
 
 <p align="center">
   <b>TraceMemo（迹忆）</b>

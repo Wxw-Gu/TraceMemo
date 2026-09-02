@@ -1,9 +1,7 @@
 import React from 'react'
-import {
-  SUMMARY_DATE_OPTIONS,
-  SummaryDateRange
-} from '../../utils/group-report'
+import { SUMMARY_DATE_OPTIONS, SummaryDateRange } from '../../utils/group-report'
 import { RangeMessageState } from '../../hooks/useGroupReportGeneration'
+import { SegmentedControl, SegmentedControlItem } from '../ui'
 
 interface ReportRangeSelectorProps {
   value: SummaryDateRange
@@ -33,22 +31,31 @@ export function ReportRangeSelector({
         <h3>总结范围</h3>
         <span className={rangeState.status === 'error' ? 'danger' : ''}>{countText}</span>
       </div>
-      <div className="report-range-options">
+      <SegmentedControl
+        className="report-range-options w-full"
+        aria-label="总结范围"
+        value={value}
+        disabled={disabled}
+        onValueChange={(nextValue) => onChange(nextValue as SummaryDateRange)}
+      >
         {SUMMARY_DATE_OPTIONS.map((option) => (
-          <button
+          <SegmentedControlItem
             key={option.value}
-            type="button"
-            className={value === option.value ? 'active' : ''}
-            disabled={disabled}
-            onClick={() => onChange(option.value)}
+            className="h-auto min-h-10 whitespace-normal px-2 py-1.5 text-center"
+            value={option.value}
           >
             {option.label}
-          </button>
+          </SegmentedControlItem>
         ))}
-        <button type="button" disabled title="当前业务尚未支持自定义开始和结束时间">
-          自定义 <span>即将支持</span>
-        </button>
-      </div>
+        <SegmentedControlItem
+          className="h-auto min-h-10 flex-col gap-0 whitespace-normal px-2 py-1.5 text-center"
+          value="custom"
+          disabled
+          title="当前业务尚未支持自定义开始和结束时间"
+        >
+          自定义 <small>即将支持</small>
+        </SegmentedControlItem>
+      </SegmentedControl>
     </section>
   )
 }

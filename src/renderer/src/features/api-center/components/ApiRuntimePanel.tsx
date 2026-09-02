@@ -5,6 +5,7 @@ import type {
   RequestHistoryItem
 } from '../model/types'
 import { type ReactElement } from 'react'
+import { Button } from '../../../components/ui'
 import { isLoopbackHost } from '../utils/buildApiUrl'
 import { formatJson, formatResponseSize, inferResponseCount } from '../utils/formatResponse'
 
@@ -78,27 +79,23 @@ export function ApiRuntimePanel({
           {service?.error && <p className="api-inline-error">{service.error}</p>}
           <div className="api-runtime-actions">
             {service?.running ? (
-              <button type="button" onClick={() => onControl('stop')}>
+              <Button size="sm" variant="outline" onClick={() => onControl('stop')}>
                 停止服务
-              </button>
+              </Button>
             ) : (
-              <button
-                type="button"
-                className="api-primary-button"
-                onClick={() => onControl('start')}
-              >
+              <Button size="sm" onClick={() => onControl('start')}>
                 启动服务
-              </button>
+              </Button>
             )}
-            <button type="button" onClick={() => onControl('restart')}>
+            <Button size="sm" variant="ghost" onClick={() => onControl('restart')}>
               重启服务
-            </button>
-            <button type="button" onClick={copyAddress}>
+            </Button>
+            <Button size="sm" variant="ghost" onClick={copyAddress}>
               复制地址
-            </button>
-            <button type="button" onClick={onOpenSettings}>
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onOpenSettings}>
               API 设置
-            </button>
+            </Button>
           </div>
         </section>
         {!localOnly && (
@@ -118,27 +115,30 @@ export function ApiRuntimePanel({
           </code>
           {tokenStatus?.error && <p className="api-inline-error">{tokenStatus.error}</p>}
           <div className="api-runtime-actions">
-            <button
-              type="button"
+            <Button
+              size="sm"
+              variant="ghost"
               disabled={!tokenStatus?.hasToken}
               onClick={() => void (revealedToken ? onHideToken() : onRevealToken())}
             >
               {revealedToken ? '隐藏 Token' : '显示 Token'}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
               disabled={!tokenStatus?.hasToken}
               onClick={() => void onCopyToken()}
             >
               复制 Token
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
               disabled={!tokenStatus?.available}
               onClick={() => void onRotateToken()}
             >
               重新生成 Token
-            </button>
+            </Button>
           </div>
         </section>
         <section>
@@ -160,12 +160,13 @@ export function ApiRuntimePanel({
                   ? ` · ${inferResponseCount(response.data)} 条`
                   : ''}
               </p>
-              <button
-                type="button"
+              <Button
+                size="sm"
+                variant="ghost"
                 onClick={() => void onCopy(formatJson(response.text), 'JSON 响应已复制')}
               >
                 复制 JSON
-              </button>
+              </Button>
             </>
           ) : (
             <p className="api-empty-text">尚未在本页面发起测试请求。</p>

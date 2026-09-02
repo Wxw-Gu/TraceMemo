@@ -37,6 +37,9 @@ import {
 import { enrichQuotedMessages } from './utils/quoted-messages'
 import type { SelectableReportTemplateId } from '../../shared/report-templates'
 import { switchGeneratedReportTemplate } from './utils/report-template-switch'
+import { runtimePlatform } from './utils/runtime-environment'
+import { useToast } from './components/ui'
+import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -70,7 +73,7 @@ interface SelfInfo {
   accountRoot: string
 }
 
-const MAC_KEY_FAQ_URL = 'https://github.com/Wxw-Gu/WechatExplorer/blob/main/docs/mac-disable-sip.md'
+const MAC_KEY_FAQ_URL = 'https://github.com/Wxw-Gu/TraceMemo/blob/main/docs/mac-disable-sip.md'
 const FIRST_USE_WELCOME_SEEN_KEY = 'wxe_first_use_welcome_seen'
 const MESSAGE_MONITOR_DEBOUNCE_MS = 8000
 const INITIAL_MESSAGE_COUNT = 20
@@ -213,6 +216,7 @@ const buildSyntheticGroupMessages = (
 void buildSyntheticGroupMessages
 
 function App(): React.ReactElement {
+  const { toast } = useToast()
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false)
   const [isDatabaseConnecting, setIsDatabaseConnecting] = useState(false)
@@ -327,9 +331,9 @@ function App(): React.ReactElement {
   messagesRef.current = messages
   React.useEffect(() => {
     if (!reportNotice) return
-    const timer = window.setTimeout(() => setReportNotice(''), 3200)
-    return () => window.clearTimeout(timer)
-  }, [reportNotice])
+    toast({ description: reportNotice, duration: 3200 })
+    setReportNotice('')
+  }, [reportNotice, toast])
   React.useEffect(() => {
     const openVoiceRecognitionSettings = (): void => {
       setSettingsCategory('voice-recognition')
@@ -1465,8 +1469,18 @@ function App(): React.ReactElement {
     setActivePage('settings')
   }
 
+  const openUpdateSettings = (): void => {
+    setSettingsCategory('about')
+    setActivePage('settings')
+  }
+
   const openModelSettings = (): void => {
     setSettingsCategory('ai-model')
+    setActivePage('settings')
+  }
+
+  const openTextToSpeechSettings = (): void => {
+    setSettingsCategory('text-to-speech')
     setActivePage('settings')
   }
 
@@ -1619,6 +1633,9 @@ function App(): React.ReactElement {
   ])
 
   const selectedReport = generatedReports.find((report) => report.id === selectedReportId) || null
+  const selectedReportContact = selectedReport
+    ? contacts.find((contact) => contact.md5 === selectedReport.contactId) || null
+    : null
 
   const openReportResult = (): void => {
     if (isSavingGeneratedReport) {
@@ -1727,6 +1744,7 @@ function App(): React.ReactElement {
         onReloadAvatars={handleReloadCurrentAvatars}
         onLoadOlderMessages={handleLoadOlderMessages}
         onCreateGroupReport={handleOpenReportWorkspace}
+        onOpenTextToSpeechSettings={openTextToSpeechSettings}
         isAiLoading={reportGeneration.isGenerating}
         jumpToTime={archiveJumpTime}
       />
@@ -1755,6 +1773,7 @@ function App(): React.ReactElement {
           onCopyImage={handleCopyReportImage}
           onReveal={handleRevealReport}
           onSwitchTemplate={handleSwitchReportTemplate}
+          sendTarget={selectedReportContact}
         />
         <ReportInfoPanel report={selectedReport} onReveal={handleRevealReport} />
       </div>
@@ -2001,7 +2020,7 @@ function App(): React.ReactElement {
   if (!isAuthenticated) {
     return (
       <DatabaseConnectionPage
-        platform={window.electron.process.platform}
+        platform={runtimePlatform}
         mode={databaseConnectionMode}
         dbKey={dbKey}
         dbRoot={dbRootInput}
@@ -2100,7 +2119,7 @@ function App(): React.ReactElement {
       appearanceTheme={appearanceSettings.theme}
       compactMode={appearanceSettings.compactMode}
     >
-      {reportNotice && <div className="app-toast">{reportNotice}</div>}
+      <AppUpdatePrompt onDownloadStart={openUpdateSettings} onNotice={setReportNotice} />
       {showFirstUseWelcome && (
         <FirstUseWelcome
           onDismiss={dismissFirstUseWelcome}

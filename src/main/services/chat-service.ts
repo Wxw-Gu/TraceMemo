@@ -15,6 +15,7 @@ import {
 } from '../../shared/windows-runtime'
 import { mergeRecallArchiveMessages, recordRecallArchiveMessages } from './recall-archive-service'
 import type { ExportImageQuality } from '../../shared/image-quality'
+import { wcdbDebugLog } from '../wcdb-debug'
 
 export function getCurrentKey(): string {
   if (!dbRef) return ''
@@ -58,6 +59,11 @@ export interface FormattedMessage {
   name?: string
   senderId?: string
   contentData?: ReturnType<typeof parseMessageContent>
+  media?: {
+    type: 'image'
+    available: boolean
+    url: string
+  }
   voiceDataUrl?: string
   voiceDuration?: number
   voiceTranscript?: string
@@ -121,6 +127,16 @@ function normalizeMsgType(value: string | number | undefined): number {
 let dbRef: WechatDb | null = null
 let shutdownRequested = false
 
+export interface ImageMessageReference {
+  messageId: string
+  sessionId: string
+  imageMd5?: string
+  imageDatName?: string
+  createTime?: number
+}
+
+const imageMessageReferences = new Map<string, ImageMessageReference | null>()
+
 export function setChatDb(db: WechatDb | null): boolean {
   if (shutdownRequested) {
     db?.close()
@@ -128,7 +144,15 @@ export function setChatDb(db: WechatDb | null): boolean {
   }
   dbRef?.close()
   dbRef = db
+  imageMessageReferences.clear()
   return true
+}
+
+export function getImageMessageReference(messageId: string): ImageMessageReference | null {
+  if (!dbRef) return null
+  const normalizedId = String(messageId || '').trim()
+  if (!normalizedId) return null
+  return imageMessageReferences.get(normalizedId) || null
 }
 
 export async function closeChatDbForQuit(): Promise<boolean> {
@@ -226,7 +250,8 @@ function listSourceMessages(
   startTime?: number,
   endTime?: number,
   options?: { limit?: number },
-  rawMessagesOverride?: WechatMessage[]
+  rawMessagesOverride?: WechatMessage[],
+  requestId = 'NO-REQUEST'
 ): FormattedMessage[] {
   if (!dbRef) return []
 
@@ -234,13 +259,13 @@ function listSourceMessages(
   const wcdb4Client = dbRef.getWcdb4Client()
   const username = wcdb4Client.getUsernameByMd5(userMd5)
   const isGroupChat = Boolean(username?.endsWith('@chatroom'))
-  console.log(
-    `[ChatService] listMessages begin md5=${userMd5} username=${username || ''} start=${startTime || 0} end=${endTime || 0} limit=${options?.limit || 0}`
+  wcdbDebugLog(
+    `[${requestId}] ChatService listSourceMessages start md5=${userMd5} username=${username || ''} start=${startTime || 0} end=${endTime || 0} limit=${options?.limit || 0}`
   )
   const rawMessages =
     rawMessagesOverride ?? dbRef.getUserMessages(userMd5, startTime, endTime, options)
-  console.log(
-    `[ChatService] listMessages native done md5=${userMd5} raw=${rawMessages.length} cost=${Date.now() - startedAt}ms`
+  wcdbDebugLog(
+    `[${requestId}] ChatService raw snapshot ready raw=${rawMessages.length} cost=${Date.now() - startedAt}ms`
   )
 
   const formatted = rawMessages.map((msg: WechatMessage) => {
@@ -403,10 +428,44 @@ function listSourceMessages(
 
     const recoveredFromRecallJournal = Boolean(msg['_wxe_recovered'] || msg.raw?.['_wxe_recovered'])
 
-    return {
-      id: recoveredFromRecallJournal
+    const messageId = String(
+      recoveredFromRecallJournal
         ? `recovered:${msg.mesLocalID || msg.serverId || createTime}`
-        : msg.mesLocalID || Math.random().toString(),
+        : msg.mesLocalID || Math.random().toString()
+    )
+    const imageContent = contentData?.type === 'image' ? contentData : undefined
+    const media = imageContent
+      ? {
+          type: 'image' as const,
+          available: Boolean(imageContent.md5 || imageContent.datName),
+          url: `/api/v1/media/${encodeURIComponent(messageId)}`
+        }
+      : undefined
+    if (imageContent && media) {
+      const reference: ImageMessageReference = {
+        messageId,
+        sessionId: username || '',
+        imageMd5: imageContent.md5,
+        imageDatName: imageContent.datName,
+        createTime
+      }
+      const previous = imageMessageReferences.get(messageId)
+      if (
+        previous &&
+        (previous.sessionId !== reference.sessionId ||
+          previous.imageMd5 !== reference.imageMd5 ||
+          previous.imageDatName !== reference.imageDatName)
+      ) {
+        // Local message ids can repeat between conversations. Never resolve an
+        // ambiguous id to the wrong account or image.
+        imageMessageReferences.set(messageId, null)
+      } else if (previous !== null) {
+        imageMessageReferences.set(messageId, reference)
+      }
+    }
+
+    return {
+      id: messageId,
       from: contentData?.type === 'system' ? 'system' : isMine ? 'assistant' : 'user',
       isSender: isMine,
       type: displayType,
@@ -420,7 +479,8 @@ function listSourceMessages(
       serverId: typeof msg.serverId === 'string' ? msg.serverId : undefined,
       createTime,
       recoveredFromRecallJournal,
-      contentData
+      contentData,
+      media
     }
   })
 
@@ -447,14 +507,43 @@ export async function listMessagesAsync(
   userMd5: string,
   startTime?: number,
   endTime?: number,
-  options?: { limit?: number }
+  options?: { limit?: number },
+  requestId = 'NO-REQUEST'
 ): Promise<FormattedMessage[]> {
   if (!dbRef) return []
-  const rawMessages = await dbRef.getUserMessagesAsync(userMd5, startTime, endTime, options)
-  const sourceMessages = listSourceMessages(userMd5, startTime, endTime, options, rawMessages)
+  const startedAt = Date.now()
+  wcdbDebugLog(`[${requestId}] ChatService listMessagesAsync start md5=${userMd5}`)
+  const rawMessages = await dbRef.getUserMessagesAsync(
+    userMd5,
+    startTime,
+    endTime,
+    options,
+    requestId
+  )
+  wcdbDebugLog(
+    `[${requestId}] ChatService getUserMessagesAsync end raw=${rawMessages.length} cost=${Date.now() - startedAt}ms`
+  )
+  const sourceMessages = listSourceMessages(
+    userMd5,
+    startTime,
+    endTime,
+    options,
+    rawMessages,
+    requestId
+  )
   const username = dbRef.getWcdb4Client().getUsernameByMd5(userMd5) || ''
   recordRecallArchiveMessages(userMd5, username, sourceMessages)
-  return mergeRecallArchiveMessages(userMd5, sourceMessages, startTime, endTime, options?.limit)
+  const result = mergeRecallArchiveMessages(
+    userMd5,
+    sourceMessages,
+    startTime,
+    endTime,
+    options?.limit
+  )
+  wcdbDebugLog(
+    `[${requestId}] ChatService listMessagesAsync end formatted=${result.length} cost=${Date.now() - startedAt}ms`
+  )
+  return result
 }
 
 export async function listMessagesForExport(

@@ -18,13 +18,15 @@ export const SETTINGS_NAVIGATION: SettingsNavigationGroup[] = [
     label: '智能能力',
     items: [
       { id: 'voice-recognition', label: '语音转文字' },
+      { id: 'text-to-speech', label: '文字转语音' },
       { id: 'ai-model', label: 'AI 模型' }
     ]
   },
   {
     label: '数据管理',
     items: [
-      { id: 'storage-export', label: '存储与导出' },
+      // “存储与导出”暂不开放；保留 category/render case 以兼容已有页面状态。
+      // { id: 'storage-export', label: '存储与导出' },
       { id: 'cache-cleanup', label: '缓存与清理' }
     ]
   },
@@ -39,6 +41,9 @@ export const SETTINGS_NAVIGATION: SettingsNavigationGroup[] = [
   }
 ]
 
-export const SETTINGS_CATEGORY_LABELS = Object.fromEntries(
-  SETTINGS_NAVIGATION.flatMap((group) => group.items.map((item) => [item.id, item.label]))
-) as Record<SettingsCategoryId, string>
+export const SETTINGS_CATEGORY_LABELS = {
+  ...Object.fromEntries(
+    SETTINGS_NAVIGATION.flatMap((group) => group.items.map((item) => [item.id, item.label]))
+  ),
+  'storage-export': '存储与导出'
+} as Record<SettingsCategoryId, string>

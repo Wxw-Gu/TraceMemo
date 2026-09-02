@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { DatabaseConnectionPage } from '../../src/renderer/src/components/DatabaseConnectionPage'
+import { TooltipProvider } from '../../src/renderer/src/components/ui'
 
 function renderPage(
   overrides: Partial<ComponentProps<typeof DatabaseConnectionPage>> = {}
@@ -65,7 +66,14 @@ function renderPage(
     onClearKey: vi.fn(),
     ...overrides
   }
-  return { props, ...render(<DatabaseConnectionPage {...props} />) }
+  return {
+    props,
+    ...render(
+      <TooltipProvider>
+        <DatabaseConnectionPage {...props} />
+      </TooltipProvider>
+    )
+  }
 }
 
 describe('DatabaseConnectionPage', () => {
@@ -119,7 +127,11 @@ describe('DatabaseConnectionPage', () => {
   it('keeps connect disabled until a valid 64-character key is supplied', () => {
     const { rerender, props } = renderPage()
     expect(screen.getByRole('button', { name: '连接数据库' })).toBeDisabled()
-    rerender(<DatabaseConnectionPage {...props} dbKey={'a'.repeat(64)} />)
+    rerender(
+      <TooltipProvider>
+        <DatabaseConnectionPage {...props} dbKey={'a'.repeat(64)} />
+      </TooltipProvider>
+    )
     expect(screen.getByRole('button', { name: '连接数据库' })).toBeEnabled()
   })
 
@@ -175,11 +187,41 @@ describe('DatabaseConnectionPage', () => {
     expect(onCopyDiagnostics).toHaveBeenCalledOnce()
     expect(onGuideNext).toHaveBeenCalledOnce()
 
-    rerender(<DatabaseConnectionPage {...props} mode="automatic" guideStep={2} />)
+    rerender(
+      <TooltipProvider>
+        <DatabaseConnectionPage {...props} mode="automatic" guideStep={2} />
+      </TooltipProvider>
+    )
     expect(screen.getByRole('button', { name: '我已准备好' })).toBeEnabled()
     expect(screen.getByRole('button', { name: '返回上一步' })).toBeEnabled()
     expect(screen.getByRole('button', { name: '取消并重新检查' })).toBeEnabled()
   })
+
+  it('keeps mode, account and key visibility callbacks unchanged', async () => {
+    const onModeChange = vi.fn()
+    const onSelectAccount = vi.fn()
+    const onToggleDbKey = vi.fn()
+    const { props, rerender } = renderPage({
+      mode: 'automatic',
+      onModeChange,
+      onSelectAccount,
+      onToggleDbKey
+    })
+
+    await userEvent.click(screen.getByRole('tab', { name: /高级用户/ }))
+    expect(onModeChange).toHaveBeenCalledWith('manual')
+    await userEvent.click(screen.getByRole('button', { name: /脱敏账号 A/ }))
+    expect(onSelectAccount).toHaveBeenCalledWith(props.accounts[0])
+
+    rerender(
+      <TooltipProvider>
+        <DatabaseConnectionPage {...props} mode="manual" />
+      </TooltipProvider>
+    )
+    await userEvent.click(screen.getByRole('button', { name: '显示密钥' }))
+    expect(onToggleDbKey).toHaveBeenCalledOnce()
+  })
+
   it('provides the official Visual C++ runtime download on Windows', () => {
     renderPage({
       status: '当前 Windows 缺少 Microsoft Visual C++ 运行库',
@@ -191,5 +233,4 @@ describe('DatabaseConnectionPage', () => {
       'https://aka.ms/vc14/vc_redist.x64.exe'
     )
   })
-
 })

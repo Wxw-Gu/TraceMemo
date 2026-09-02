@@ -62,7 +62,11 @@ export class VoiceService {
     if (!pcmResult.success) return pcmResult
     const pcmData = pcmResult.audio.pcm
 
-    const wavData = this.createWavBuffer(pcmData, 24000)
+    const wavData = this.createWavBuffer(
+      pcmData,
+      pcmResult.audio.sampleRate,
+      pcmResult.audio.channels
+    )
     console.log(
       '[VoiceService] wavData length:',
       wavData.length,

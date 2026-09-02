@@ -114,6 +114,20 @@ describe('KnowledgeSearchService legacy fallback', () => {
     await service.dispose()
   })
 
+  it('accepts username and Chat_<md5> aliases in the legacy fallback scope', async () => {
+    const service = new KnowledgeSearchService('/tmp/wxe-knowledge-fallback', '/missing-worker.js')
+    const result = await service.search({
+      text: 'Knowledge Worker fallback',
+      terms: ['Knowledge Worker', 'fallback'],
+      conversationIds: ['fixture-contact', 'Chat_fixture-conversation'],
+      limit: 10
+    })
+
+    expect(listMessagesAsync).toHaveBeenCalledWith('fixture-conversation', undefined, undefined)
+    expect(result.evidence).toHaveLength(1)
+    await service.dispose()
+  })
+
   it('hydrates a cached voice transcript and incrementally indexes only its conversation', async () => {
     chatState.ready = true
     chatState.accountId = 'C:/fixtures/account-a'

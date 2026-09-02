@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import type { JSX, MouseEvent } from 'react'
+import type { JSX, KeyboardEvent, MouseEvent } from 'react'
 import { getCachedLoadedImage, requestImage } from './image-loader'
 
 interface ImageBubbleProps {
@@ -156,6 +156,12 @@ export function ImageBubble({
     if (imageUrl) onImageClick?.(imageUrl)
   }
 
+  const handlePreviewKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return
+    event.preventDefault()
+    void handleClick()
+  }
+
   if (loading) {
     return (
       <div ref={containerRef} className="image-bubble image-loading" onClick={handleClick}>
@@ -184,7 +190,14 @@ export function ImageBubble({
   }
 
   return (
-    <div className="image-bubble image-loaded" onClick={handleClick}>
+    <div
+      className="image-bubble image-loaded"
+      role="button"
+      tabIndex={0}
+      aria-label="查看图片"
+      onClick={handleClick}
+      onKeyDown={handlePreviewKeyDown}
+    >
       <img
         src={imageUrl}
         alt="图片"

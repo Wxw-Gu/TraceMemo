@@ -603,23 +603,49 @@ export function saveCachedGroupSnapshot(
   accountRoot: string,
   userMd5: string,
   snapshot: CachedGroupSnapshot
-): void {
+): CachedGroupSnapshot {
   const normalizedRoot = normalizeRoot(accountRoot)
-  if (!normalizedRoot || !userMd5) return
+  if (!normalizedRoot || !userMd5) return snapshot
   const paths = getAccountCachePaths(normalizedRoot)
   const file = getGroupCacheFile(normalizedRoot, userMd5)
+  const previous = readGroupSnapshotFile(normalizedRoot, userMd5)?.snapshot
+  const previousByWxid = new Map((previous?.members || []).map((member) => [member.wxid, member]))
+  const mergedSnapshot: CachedGroupSnapshot = previous && previous.roomId === snapshot.roomId
+    ? {
+        ...snapshot,
+        members: snapshot.members.map((member) => {
+          const oldMember = previousByWxid.get(member.wxid)
+          const freshGroupNickname = String(member.groupNickname || '').trim()
+          const freshWechatNickname = String(member.wechatNickname || '').trim()
+          const oldGroupNickname = String(oldMember?.groupNickname || '').trim()
+          const freshLooksLikeContactFallback =
+            !freshGroupNickname ||
+            freshGroupNickname === freshWechatNickname
+          const groupNickname =
+            freshLooksLikeContactFallback && oldGroupNickname
+              ? oldGroupNickname
+              : freshGroupNickname
+          return {
+            ...member,
+            groupNickname,
+            nickname: groupNickname || member.nickname
+          }
+        })
+      }
+    : snapshot
   const value: CachedGroupSnapshotFile = {
     version: CACHE_VERSION,
     platform: process.platform,
     accountRoot: normalizedRoot,
     userMd5,
     updatedAt: Date.now(),
-    snapshot
+    snapshot: mergedSnapshot
   }
   touchMemory(groupMemory, file, value, MAX_MEMORY_GROUP_SNAPSHOTS)
   scheduleWrite(file, value, {
     prune: { directory: paths.groups, maxFiles: MAX_GROUP_SNAPSHOTS }
   })
+  return mergedSnapshot
 }
 
 export function saveCachedMessages(

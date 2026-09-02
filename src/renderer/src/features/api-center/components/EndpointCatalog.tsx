@@ -1,5 +1,6 @@
 import { API_ENDPOINTS } from '../model/apiEndpoints'
 import { type ReactElement } from 'react'
+import { Button } from '../../../components/ui'
 
 export function EndpointCatalog({
   activeEndpointId,
@@ -38,12 +39,22 @@ export function EndpointCatalog({
               <small>{endpoint.description}</small>
             </span>
             <span>
-              <button type="button" onClick={() => void onCopy(endpoint.path)}>
+              <Button
+                className="h-7 px-2 text-[11px]"
+                size="sm"
+                variant="ghost"
+                onClick={() => void onCopy(endpoint.path)}
+              >
                 复制
-              </button>
-              <button type="button" onClick={() => onSelect(endpoint.id)}>
+              </Button>
+              <Button
+                className="h-7 px-2 text-[11px]"
+                size="sm"
+                variant="outline"
+                onClick={() => onSelect(endpoint.id)}
+              >
                 测试
-              </button>
+              </Button>
             </span>
           </div>
         ))}

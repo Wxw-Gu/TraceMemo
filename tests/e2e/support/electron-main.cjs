@@ -12,9 +12,13 @@ app.setPath('logs', path.join(userData, 'logs'))
 app.commandLine.appendSwitch('disable-gpu')
 
 const VALID_KEY = 'a'.repeat(64)
-const imageData =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII='
+const imageData = `data:image/png;base64,${fs.readFileSync(path.join(root, 'resources/icon.png')).toString('base64')}`
 const voiceData = 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA='
+const configuredNow = Number(process.env.WXE_E2E_NOW_MS)
+const updateSimulation = process.env.WXE_E2E_UPDATE_SIMULATION === '1'
+const unsignedMacUpdate = process.env.WXE_E2E_UNSIGNED_MAC_UPDATE === '1'
+const fixtureNowMs =
+  Number.isFinite(configuredNow) && configuredNow > 0 ? configuredNow : Date.now()
 
 const formatFixtureDateTime = (timestampSeconds) => {
   const date = new Date(timestampSeconds * 1000)
@@ -24,7 +28,7 @@ const formatFixtureDateTime = (timestampSeconds) => {
 
 const allFixtureMessages = Object.values(fixture.messages).flat()
 const latestFixtureTime = Math.max(...allFixtureMessages.map((message) => message.createTime || 0))
-const fixtureTimeOffset = Math.floor(Date.now() / 1000) - 3600 - latestFixtureTime
+const fixtureTimeOffset = Math.floor(fixtureNowMs / 1000) - 3600 - latestFixtureTime
 for (const message of allFixtureMessages) {
   message.createTime = (message.createTime || latestFixtureTime) + fixtureTimeOffset
   message.datetime = formatFixtureDateTime(message.createTime)
@@ -206,7 +210,7 @@ let settings = {
   debugEnabled: false,
   autoLogin: connected,
   autoLoginPreferenceSet: true,
-  appearanceTheme: 'light',
+  appearanceTheme: process.env.WXE_E2E_APPEARANCE_THEME === 'dark' ? 'dark' : 'light',
   compactMode: false,
   showStartupProgress: false,
   imageXorKey: '0x40',
@@ -241,6 +245,65 @@ handle('settings:set', (patch) => {
   settings = { ...settings, ...patch }
   return { settings, settingsPath: path.join(userData, 'settings.json') }
 })
+handle('tts:getSettings', () => ({
+  success: true,
+  settings: {
+    provider: 'fish-audio',
+    hasApiKey: false,
+    hasStoredApiKey: false,
+    hasEnvironmentApiKey: false,
+    keySource: 'missing',
+    encryptionAvailable: true,
+    selectedVoiceId: '',
+    outputFormat: 'mp3',
+    model: 's2.1-pro-free',
+    phase: 'ready'
+  },
+  voices: []
+}))
+handle('wechat-personal:getRuntimeStatus', () => ({
+  version: 'v0.0.18',
+  state: 'ready',
+  downloadedBytes: 100,
+  totalBytes: 100,
+  progress: 1,
+  platform: 'darwin',
+  architecture: 'arm64',
+  supported: true,
+  removable: true
+}))
+handle('wechat-personal:getStatus', () => ({
+  state: 'online',
+  platform: 'darwin',
+  arch: 'arm64',
+  sipDisabled: true,
+  wechatRunning: true,
+  wechatPid: 4668,
+  boundWechatPid: 4668,
+  oneBotPid: 5401,
+  endpoint: '127.0.0.1:58080',
+  endpointReady: true,
+  wechatVersion: '4.1.11.53',
+  runtimeReady: true,
+  attachReady: true,
+  baseAddress: '0x114ef8000',
+  baseAddressReady: true,
+  textHookInstalled: true,
+  textHookReady: true,
+  imageHookInstalled: true,
+  imageHookReady: true,
+  messageListenerReady: true,
+  canSend: true,
+  canSendText: true,
+  canSendImage: true,
+  canSendVoice: true,
+  message: '个人微信已绑定'
+}))
+handle('wechat-share:getConfig', () => ({
+  success: true,
+  configured: true,
+  serviceUrl: 'https://share.example.test'
+}))
 handle('key:getSavedDbKey', () => ({
   success: true,
   key: savedKey || undefined,
@@ -384,6 +447,33 @@ handle('voice:downloadModel', () => ({ success: true, status: voiceModelStatus('
 handle('voice:cancelModelDownload', () => ({ success: true }))
 handle('voice:removeModel', () => voiceModelStatus())
 handle('voice:openModelDirectory', () => ({ success: true }))
+handle('voice:getBatchProgress', () => ({
+  accountIdentity: 'fixture-account',
+  state: 'idle',
+  total: 0,
+  processed: 0,
+  cached: 0,
+  succeeded: 0,
+  failed: 0,
+  elapsedMs: 0,
+  estimatedRemainingMs: null
+}))
+handle('voice:getBatchConversationSummaries', (request) =>
+  request.conversationIds.map((conversationId, index) => ({
+    conversationId,
+    voiceMessageCount: index + 3
+  }))
+)
+handle('voice:getBatchPreflight', (request) => ({
+  accountIdentity: 'fixture-account',
+  conversationCount: request.conversationIds.length,
+  voiceMessageCount: request.conversationIds.length * 3,
+  cachedCount: 0,
+  pendingCount: request.conversationIds.length * 3,
+  failedCount: 0,
+  estimatedDurationMs: null,
+  modelReady: false
+}))
 handle('voice:recognize', () => ({ success: true, transcript: '固定脱敏转写文本', language: 'zh' }))
 handle('voice:cancelRecognition', () => ({ success: true }))
 handle('db:getSticker', (url) =>
@@ -551,8 +641,35 @@ handle('app-log:write', (entry) => {
 })
 handle('app-log:getPath', () => path.join(userData, 'logs', 'e2e.log'))
 handle('app-log:reveal', () => undefined)
-handle('cache:getSummary', () => ({ bootstrapBytes: 0, electronBytes: 0, totalBytes: 0 }))
-handle('cache:clear', () => ({ bootstrapBytes: 0, electronBytes: 0, totalBytes: 0 }))
+const cacheSummary = () => ({
+  items: [
+    {
+      id: 'bootstrap',
+      label: '启动缓存',
+      description: '联系人和会话的本地启动快照',
+      sizeBytes: 4096,
+      fileCount: 2
+    },
+    {
+      id: 'electron',
+      label: '界面缓存',
+      description: 'Electron 页面资源和网络缓存',
+      sizeBytes: 2 * 1024 * 1024,
+      fileCount: 12
+    },
+    {
+      id: 'knowledge',
+      label: '本地知识库索引',
+      description: '问问微信使用的本地检索索引',
+      sizeBytes: 12 * 1024 * 1024,
+      fileCount: 8
+    }
+  ],
+  totalBytes: 14 * 1024 * 1024 + 4096,
+  updatedAt: fixtureNowMs
+})
+handle('cache:getSummary', cacheSummary)
+handle('cache:clear', cacheSummary)
 handle('api:getStatus', () => ({ running: false, host: settings.apiHost, port: settings.apiPort }))
 handle('api:tokenStatus', () => ({
   success: true,
@@ -579,6 +696,19 @@ handle('api:rotateToken', () => ({
   maskedToken: '••••••••••••••••'
 }))
 handle('api:copyCurl', () => ({ success: true }))
+handle('api:skillStatus', () => ({
+  available: true,
+  version: 'v1.2',
+  filePath: '/fixture/tracememo-reader/SKILL.md',
+  directoryPath: '/fixture/tracememo-reader',
+  source: 'development',
+  githubUrl: 'https://example.test/tracememo-reader'
+}))
+handle('api:readSkill', () => ({
+  success: true,
+  content:
+    '# TraceMemo Reader\n\n## 能力\n- 读取本地聊天记录\n- 导出群聊日报\n\n仅在用户授权后访问。'
+}))
 handle('api:start', () => ({ running: true, host: settings.apiHost, port: settings.apiPort }))
 handle('api:stop', () => ({ running: false, host: settings.apiHost, port: settings.apiPort }))
 handle('api:toggle', (enabled) => ({
@@ -586,6 +716,19 @@ handle('api:toggle', (enabled) => ({
   host: settings.apiHost,
   port: settings.apiPort
 }))
+const agentHubStatus = () => ({
+  hub: 'offline',
+  connector: 'disconnected',
+  updatedAt: fixtureNowMs,
+  dataApi: 'online',
+  databaseReady: true
+})
+handle('agent-hub:getStatus', agentHubStatus)
+handle('agent-hub:getLogs', () => [])
+handle('agent-hub:clearLogs', () => ({ success: true }))
+handle('agent-hub:startLogin', () => ({ status: agentHubStatus() }))
+handle('agent-hub:cancelLogin', () => ({ status: agentHubStatus() }))
+handle('agent-hub:disconnect', () => ({ status: agentHubStatus() }))
 handle('image:getConfig', () => ({
   success: true,
   configured: true,
@@ -660,9 +803,83 @@ handle('accounts:discover', (inputPath) =>
         ]
       }
 )
-handle('agent-hub:getStatus', () => ({ state: 'disconnected', connected: false }))
-handle('agent-hub:getLogs', () => [])
-handle('app-update:getState', () => ({ status: 'idle', currentVersion: '2.2.0' }))
+let appUpdateState = updateSimulation
+  ? {
+      status: 'available',
+      currentVersion: '1.9.0',
+      delivery: 'automatic',
+      version: '2.0.0',
+      source: 'startup',
+      isSimulation: true
+    }
+  : unsignedMacUpdate
+    ? {
+        status: 'available',
+        currentVersion: '2.2.2',
+        delivery: 'release-page',
+        version: '2.2.3',
+        source: 'startup'
+      }
+    : { status: 'idle', currentVersion: '2.2.0', delivery: 'automatic' }
+let openedUpdateDownloadUrl = ''
+handle('app-update:getState', () => appUpdateState)
+handle('app-update:openDownloadPage', () => {
+  openedUpdateDownloadUrl = 'https://github.com/Wxw-Gu/TraceMemo/releases/latest'
+  return { success: true }
+})
+handle('app-update:getOpenedDownloadUrl', () => openedUpdateDownloadUrl)
+handle('app-update:download', async () => {
+  if (!updateSimulation) return { success: true, state: appUpdateState }
+  const total = 60 * 1024 * 1024
+  const steps = [0, 5, 12, 21, 33, 46, 58, 69, 78, 86, 93, 97, 100]
+  let previousTransferred = 0
+  appUpdateState = {
+    ...appUpdateState,
+    status: 'downloading',
+    percent: 0,
+    transferred: 0,
+    total,
+    bytesPerSecond: 0
+  }
+  for (const percent of steps.slice(1)) {
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const transferred = Math.round((total * percent) / 100)
+    const bytesPerSecond = Math.round((transferred - previousTransferred) / 0.15)
+    previousTransferred = transferred
+    appUpdateState = {
+      ...appUpdateState,
+      status: 'downloading',
+      percent,
+      transferred,
+      total,
+      bytesPerSecond
+    }
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('app-update:state', appUpdateState)
+    }
+  }
+  appUpdateState = {
+    ...appUpdateState,
+    status: 'downloaded',
+    percent: 100,
+    transferred: total,
+    total,
+    bytesPerSecond: undefined
+  }
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('app-update:state', appUpdateState)
+  }
+  return { success: true, state: appUpdateState }
+})
+handle('app-update:install', async () =>
+  updateSimulation
+    ? {
+        success: true,
+        simulated: true,
+        message: '开发模拟模式：更新安装动作已模拟，未实际退出应用。'
+      }
+    : { success: true }
+)
 
 for (const channel of [
   'export:start',
@@ -678,8 +895,6 @@ for (const channel of [
   'image:selectDecoder',
   'image:openDecoderDownload',
   'app-update:check',
-  'app-update:download',
-  'app-update:install',
   'agent-hub:clearLogs',
   'agent-hub:startLogin',
   'agent-hub:cancelLogin',

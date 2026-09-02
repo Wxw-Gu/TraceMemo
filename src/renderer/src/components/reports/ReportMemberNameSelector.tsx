@@ -1,5 +1,6 @@
 import React from 'react'
 import { ReportMemberNamePreference } from '../../hooks/useGroupReportGeneration'
+import { RadioGroup, RadioGroupItem } from '../ui'
 
 const OPTIONS: {
   value: ReportMemberNamePreference
@@ -36,18 +37,22 @@ export function ReportMemberNameSelector({
     <section className="report-section">
       <h3>成员名称</h3>
       <p className="report-section-desc">选择日报中群成员的显示名称，默认使用群昵称。</p>
-      <div className="report-template-list">
+      <RadioGroup
+        className="report-template-list"
+        value={value}
+        disabled={disabled}
+        onValueChange={(nextValue) => onChange(nextValue as ReportMemberNamePreference)}
+      >
         {OPTIONS.map((option) => (
           <label
             className={`report-template-item ${value === option.value ? 'active' : ''} ${disabled ? 'disabled' : ''}`}
             key={option.value}
+            htmlFor={`report-member-name-${option.value}`}
           >
-            <input
-              type="radio"
-              name="report-member-name"
-              checked={value === option.value}
-              disabled={disabled}
-              onChange={() => onChange(option.value)}
+            <RadioGroupItem
+              id={`report-member-name-${option.value}`}
+              value={option.value}
+              aria-label={option.label}
             />
             <div className="report-template-body">
               <div className="report-template-title">{option.label}</div>
@@ -55,7 +60,7 @@ export function ReportMemberNameSelector({
             </div>
           </label>
         ))}
-      </div>
+      </RadioGroup>
     </section>
   )
 }

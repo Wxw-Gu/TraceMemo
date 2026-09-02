@@ -22,7 +22,7 @@
 
 ## 2. 安装并启动
 
-安装包统一从 [GitHub Releases](https://github.com/Wxw-Gu/WechatExplorer/releases) 下载。
+安装包统一从 [GitHub Releases](https://github.com/Wxw-Gu/TraceMemo/releases) 下载。
 
 ### Windows
 

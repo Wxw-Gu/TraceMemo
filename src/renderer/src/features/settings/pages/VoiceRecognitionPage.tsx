@@ -6,6 +6,19 @@ import type {
   VoiceBatchRange,
   VoiceModelStatus
 } from '../../../../../shared/voice-recognition'
+import {
+  Button,
+  Checkbox,
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Tabs,
+  TabsList,
+  TabsTrigger
+} from '../../../components/ui'
 
 const SENSEVOICE_URL = 'https://github.com/FunAudioLLM/SenseVoice'
 const SHERPA_URL = 'https://github.com/k2-fsa/sherpa-onnx'
@@ -396,38 +409,37 @@ export function VoiceRecognitionPage({
             </div>
             <div className="voice-model-actions">
               {status?.state === 'downloading' ? (
-                <button type="button" onClick={() => void cancelDownload()}>
+                <Button variant="outline" size="sm" onClick={() => void cancelDownload()}>
                   取消下载
-                </button>
+                </Button>
               ) : status?.state === 'ready' ? (
                 <>
-                  <button type="button" onClick={() => void openDirectory()}>
+                  <Button variant="outline" size="sm" onClick={() => void openDirectory()}>
                     打开模型目录
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-danger-button"
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
                     disabled={busy}
                     onClick={() => void removeModel()}
                   >
                     删除模型
-                  </button>
+                  </Button>
                 </>
               ) : (
-                <button
-                  type="button"
-                  className="settings-primary-button"
+                <Button
+                  size="sm"
                   disabled={busy || !status?.supported}
                   onClick={() => void download()}
                 >
                   {status?.state === 'invalid' || status?.state === 'error'
                     ? '重新下载模型'
                     : '下载模型'}
-                </button>
+                </Button>
               )}
-              <button type="button" disabled={busy} onClick={() => void refresh()}>
+              <Button variant="outline" size="sm" disabled={busy} onClick={() => void refresh()}>
                 重新检测
-              </button>
+              </Button>
             </div>
             {status?.state === 'downloading' && (
               <div className="voice-model-progress">
@@ -460,29 +472,21 @@ export function VoiceRecognitionPage({
             <div className="voice-batch-workspace">
               <div className="voice-conversation-picker">
                 <div className="voice-conversation-toolbar">
-                  <div className="voice-conversation-tabs" role="tablist" aria-label="会话类别">
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={conversationCategory === 'group'}
-                      className={conversationCategory === 'group' ? 'active' : ''}
-                      onClick={() => setConversationCategory('group')}
-                    >
-                      群聊{' '}
-                      <span>{contacts.filter((contact) => contact.type === 'group').length}</span>
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={conversationCategory === 'user'}
-                      className={conversationCategory === 'user' ? 'active' : ''}
-                      onClick={() => setConversationCategory('user')}
-                    >
-                      联系人{' '}
-                      <span>{contacts.filter((contact) => contact.type === 'user').length}</span>
-                    </button>
-                  </div>
-                  <input
+                  <Tabs
+                    value={conversationCategory}
+                    onValueChange={(value) => setConversationCategory(value as 'group' | 'user')}
+                  >
+                    <TabsList aria-label="会话类别">
+                      <TabsTrigger value="group">
+                        群聊 {contacts.filter((contact) => contact.type === 'group').length}
+                      </TabsTrigger>
+                      <TabsTrigger value="user">
+                        联系人 {contacts.filter((contact) => contact.type === 'user').length}
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                  <Input
+                    className="h-8 w-[min(190px,42%)]"
                     type="search"
                     value={conversationQuery}
                     aria-label="搜索会话"
@@ -501,14 +505,17 @@ export function VoiceRecognitionPage({
                         className={`voice-conversation-row ${selected ? 'selected' : ''}`}
                         key={contact.md5}
                       >
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           checked={selected}
                           disabled={Boolean(batchRunning)}
-                          onChange={() => toggleConversation(contact.md5)}
+                          onCheckedChange={() => toggleConversation(contact.md5)}
                         />
                         <span className="voice-conversation-avatar" aria-hidden>
-                          {contactName(contact).slice(0, 1)}
+                          {contact.avatar ? (
+                            <img src={contact.avatar} alt="" referrerPolicy="no-referrer" />
+                          ) : (
+                            contactName(contact).slice(0, 1)
+                          )}
                         </span>
                         <span className="voice-conversation-copy">
                           <strong>{contactName(contact)}</strong>
@@ -531,47 +538,51 @@ export function VoiceRecognitionPage({
 
                 {pageCount > 1 && (
                   <div className="voice-conversation-pagination" aria-label="会话分页">
-                    <button
-                      type="button"
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       aria-label="上一页"
                       disabled={conversationPage === 0 || Boolean(batchRunning)}
                       onClick={() => setConversationPage((current) => current - 1)}
                     >
                       上一页
-                    </button>
+                    </Button>
                     <span>
                       {conversationPage + 1} / {pageCount}
                     </span>
-                    <button
-                      type="button"
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       aria-label="下一页"
                       disabled={conversationPage >= pageCount - 1 || Boolean(batchRunning)}
                       onClick={() => setConversationPage((current) => current + 1)}
                     >
                       下一页
-                    </button>
+                    </Button>
                   </div>
                 )}
               </div>
 
               <aside className="voice-batch-summary" aria-label="本次转写">
-                <label className="voice-batch-field">
+                <div className="voice-batch-field">
                   <span>时间范围</span>
-                  <select
-                    aria-label="语音转写时间范围"
+                  <Select
                     value={batchRange}
                     disabled={Boolean(batchRunning)}
-                    onChange={(event) =>
-                      setBatchRange(event.currentTarget.value as VoiceBatchRange)
-                    }
+                    onValueChange={(value) => setBatchRange(value as VoiceBatchRange)}
                   >
-                    {Object.entries(BATCH_RANGE_LABELS).map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    <SelectTrigger aria-label="语音转写时间范围">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(BATCH_RANGE_LABELS).map(([value, label]) => (
+                        <SelectItem key={value} value={value}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <dl className="voice-batch-selection-stats">
                   <div>
                     <dt>已选会话</dt>
@@ -596,23 +607,21 @@ export function VoiceRecognitionPage({
                   </p>
                 )}
                 <div className="voice-batch-summary-actions">
-                  <button
-                    type="button"
-                    className="settings-primary-button"
+                  <Button
                     disabled={
                       batchBusy || !selectedConversationIds.length || status?.state !== 'ready'
                     }
                     onClick={() => void startBatch()}
                   >
                     开始转写
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="outline"
                     disabled={batchBusy || !selectedConversationIds.length || Boolean(batchRunning)}
                     onClick={() => setSelectedConversationIds([])}
                   >
                     清空选择
-                  </button>
+                  </Button>
                 </div>
               </aside>
             </div>
@@ -641,14 +650,19 @@ export function VoiceRecognitionPage({
             {(batchRunning || batchProgress?.state === 'partially_failed') && (
               <div className="voice-batch-actions">
                 {batchRunning && (
-                  <button type="button" disabled={batchBusy} onClick={() => void cancelBatch()}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={batchBusy}
+                    onClick={() => void cancelBatch()}
+                  >
                     取消任务
-                  </button>
+                  </Button>
                 )}
                 {batchProgress?.state === 'partially_failed' && (
-                  <button type="button" disabled={batchBusy} onClick={() => void retryFailed()}>
+                  <Button size="sm" disabled={batchBusy} onClick={() => void retryFailed()}>
                     重试失败项
-                  </button>
+                  </Button>
                 )}
               </div>
             )}

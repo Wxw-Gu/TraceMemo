@@ -7,7 +7,7 @@ const SKILL_RELATIVE_PATHS = [
   join('skill', 'tracememo-reader', 'SKILL.md'),
   join('skill', 'wechatexplorer-reader', 'SKILL.md')
 ]
-const GITHUB_URL = 'https://github.com/Wxw-Gu/WechatExplorer/tree/main/docs/skill/tracememo-reader'
+const GITHUB_URL = 'https://github.com/Wxw-Gu/TraceMemo/tree/main/docs/skill/tracememo-reader'
 const SKILL_VERSION = 'v1.2'
 
 type SkillResourceSource = 'development' | 'bundled'

@@ -1,4 +1,5 @@
 import React from 'react'
+import { Button, Progress } from '../ui'
 import type { Message } from './exportTypes'
 import type { ExportJobProgress, ExportStatus, SelfInfo } from './exportTypes'
 import { formatPreviewTime } from './exportUtils'
@@ -68,12 +69,12 @@ export function ExportPreviewPanel({
     : ''
 
   return (
-    <aside className={`export-preview-panel ${status !== 'idle' ? `status-${status}` : ''}`}>
+    <aside className="export-preview-panel flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-border max-[1100px]:hidden">
       {status === 'idle' && (
         <>
-          <div className="export-preview-heading">
-            <strong>导出预览</strong>
-            <span>
+          <div className="flex h-[52px] shrink-0 items-center justify-between border-b border-border px-[18px] text-xs text-foreground">
+            <strong className="font-semibold">导出预览</strong>
+            <span className="text-[11px] text-muted-foreground">
               {allExport
                 ? `${selectedCount} 个聊天 · 分目录导出`
                 : selectedCount > 1
@@ -81,8 +82,10 @@ export function ExportPreviewPanel({
                   : '仅预览最近 20 条'}
             </span>
           </div>
-          <div className="export-message-preview">
-            <div className="export-preview-date">{allExport ? '全量归档' : '最近消息'}</div>
+          <div className="min-h-0 flex-1 overflow-auto px-3.5 py-4">
+            <div className="mx-auto mb-[18px] w-fit rounded-full bg-muted px-2.5 py-1 text-[10px] text-muted-foreground">
+              {allExport ? '全量归档' : '最近消息'}
+            </div>
             {(allExport
               ? [
                   {
@@ -107,132 +110,153 @@ export function ExportPreviewPanel({
                       isSender: false
                     }
                   ]
-            ).map((message) => (
-              <div
-                key={`${message.exportConversationId || 'single'}:${message.id}`}
-                className={`export-preview-message ${message.isSender ? 'mine' : ''} ${
-                  message.contentData?.type === 'system' && message.contentData.pat ? 'system' : ''
-                }`}
-              >
-                <span className="export-preview-avatar">
-                  {message.img || (message.isSender && selfInfo?.avatar) ? (
-                    <img src={message.img || selfInfo?.avatar} alt="" />
-                  ) : (
-                    (message.isSender ? '我' : message.name || '友').slice(0, 1)
-                  )}
-                </span>
-                <span className="export-preview-bubble">
-                  <small>
-                    {selectedCount > 1 && message.exportConversationName
-                      ? `${message.exportConversationName} · `
-                      : ''}
-                    {message.name || (message.isSender ? '我' : '联系人')} ·{' '}
-                    {formatPreviewTime(message)}
-                  </small>
-                  {message.content || `[${message.type}]`}
-                </span>
-              </div>
-            ))}
+            ).map((message) => {
+              const systemMessage = Boolean(
+                message.contentData?.type === 'system' && message.contentData.pat
+              )
+              return (
+                <div
+                  key={`${message.exportConversationId || 'single'}:${message.id}`}
+                  className={`mx-auto mb-[15px] flex w-full max-w-[620px] items-start gap-2 ${
+                    message.isSender ? 'flex-row-reverse' : ''
+                  } ${systemMessage ? 'justify-center' : ''}`}
+                >
+                  <span
+                    className={`h-[30px] w-[30px] shrink-0 place-items-center overflow-hidden rounded-lg bg-primary/10 text-[11px] font-bold text-primary ${
+                      systemMessage ? 'hidden' : 'grid'
+                    }`}
+                  >
+                    {message.img || (message.isSender && selfInfo?.avatar) ? (
+                      <img
+                        className="h-full w-full object-cover"
+                        src={message.img || selfInfo?.avatar}
+                        alt=""
+                      />
+                    ) : (
+                      (message.isSender ? '我' : message.name || '友').slice(0, 1)
+                    )}
+                  </span>
+                  <span
+                    className={`export-preview-bubble max-w-[78%] rounded-lg px-2.5 py-2 text-xs leading-[18px] text-foreground shadow-surface ${
+                      systemMessage
+                        ? 'max-w-[92%] bg-muted px-2.5 py-1 text-center text-[11px] text-muted-foreground shadow-none'
+                        : message.isSender
+                          ? 'bg-accent'
+                          : 'bg-surface'
+                    }`}
+                  >
+                    <small
+                      className={`${systemMessage ? 'hidden' : 'mb-1 block'} text-[10px] text-muted-foreground`}
+                    >
+                      {selectedCount > 1 && message.exportConversationName
+                        ? `${message.exportConversationName} · `
+                        : ''}
+                      {message.name || (message.isSender ? '我' : '联系人')} ·{' '}
+                      {formatPreviewTime(message)}
+                    </small>
+                    {message.content || `[${message.type}]`}
+                  </span>
+                </div>
+              )
+            })}
           </div>
-          <div className="export-preview-stats export-preview-real-stats">
-            <span>
+          <div className="grid shrink-0 gap-3 border-t border-border p-[18px]">
+            <span className="flex justify-between text-xs text-muted-foreground">
               预览消息<strong>{previewItems.length}</strong>
             </span>
-            <span>
+            <span className="flex justify-between text-xs text-muted-foreground">
               媒体预览<strong>{previewMediaCount}</strong>
             </span>
-            <span>
+            <span className="flex justify-between text-xs text-muted-foreground">
               预估文本大小
-              <strong>
+              <strong className="font-semibold text-foreground">
                 {previewBytes < 1024
                   ? `${previewBytes} B`
                   : `${(previewBytes / 1024).toFixed(1)} KB`}
               </strong>
             </span>
           </div>
-          <div className="export-preview-stats">
-            <span>
-              消息总数<strong>待统计</strong>
-            </span>
-            <span>
-              媒体文件<strong>待统计</strong>
-            </span>
-            <span>
-              预计大小<strong>待统计</strong>
-            </span>
-          </div>
         </>
       )}
       {status === 'running' && (
-        <div className="export-job-state">
-          <h2>正在导出</h2>
-          <p>导出任务在后台运行，不影响档案浏览。</p>
+        <div className="grid h-full content-center gap-3 p-7 text-center">
+          <h2 className="text-lg font-bold tracking-normal text-foreground">正在导出</h2>
+          <p className="text-xs leading-[18px] text-muted-foreground">
+            导出任务在后台运行，不影响档案浏览。
+          </p>
           {currentTargetText && (
-            <div className="export-current-target">
-              <span>{progress?.currentTargetType === 'group' ? '群聊' : '联系人'}</span>
-              <strong>{currentTargetText}</strong>
+            <div className="my-1 grid gap-1 rounded-lg border border-border bg-surface p-3">
+              <span className="text-[10px] text-muted-foreground">
+                {progress?.currentTargetType === 'group' ? '群聊' : '联系人'}
+              </span>
+              <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-xs text-foreground">
+                {currentTargetText}
+              </strong>
             </div>
           )}
-          <ol>
-            <li className="done">准备导出</li>
+          <ol className="my-2 grid list-none gap-2.5 p-0 text-left">
+            <li className="done text-xs text-success before:mr-2 before:content-['✓']">准备导出</li>
             {steps.map((step, index) => (
               <li
                 key={step.phase}
-                className={
-                  index < currentStepIndex ? 'done' : index === currentStepIndex ? 'current' : ''
-                }
+                className={`${
+                  index < currentStepIndex
+                    ? "done text-success before:content-['✓']"
+                    : index === currentStepIndex
+                      ? "current font-semibold text-foreground before:content-['●']"
+                      : "text-muted-foreground before:content-['○']"
+                } text-xs before:mr-2`}
               >
                 {step.label}
               </li>
             ))}
           </ol>
-          <div
-            className={`export-progress-bar ${indeterminate ? 'indeterminate' : ''}`}
-            role="progressbar"
+          <Progress
+            className="h-1.5"
+            value={percent}
+            indeterminate={indeterminate}
             aria-label="导出进度"
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={indeterminate ? undefined : percent}
             aria-valuetext={indeterminate ? '正在读取消息' : `${percent}%`}
-          >
-            <span style={indeterminate ? undefined : { width: `${percent}%` }} />
-          </div>
-          <strong>{progressText}</strong>
-          <button type="button" className="export-cancel-button" onClick={() => onCancel(jobId)}>
+          />
+          <strong className="text-xs font-medium text-muted-foreground">{progressText}</strong>
+          <Button variant="outline" onClick={() => onCancel(jobId)}>
             取消导出
-          </button>
+          </Button>
         </div>
       )}
       {status === 'completed' && (
-        <div className="export-job-state completed">
-          <div className="export-success-icon">✓</div>
-          <h2>导出完成</h2>
-          <p>聊天档案已成功保存。</p>
-          <div className="export-complete-summary">
-            <span>
-              导出消息<strong>{progress?.processed.toLocaleString() || '已完成'}</strong>
+        <div className="grid h-full content-center gap-3 p-7 text-center">
+          <div className="mx-auto grid h-[58px] w-[58px] place-items-center rounded-full border-[5px] border-primary/10 bg-surface text-3xl text-primary">
+            ✓
+          </div>
+          <h2 className="text-lg font-bold tracking-normal text-foreground">导出完成</h2>
+          <p className="text-xs text-muted-foreground">聊天档案已成功保存。</p>
+          <div className="my-3 grid gap-3 rounded-lg bg-muted p-3.5 text-left">
+            <span className="flex justify-between text-xs text-muted-foreground">
+              导出消息
+              <strong className="font-semibold text-foreground">
+                {progress?.processed.toLocaleString() || '已完成'}
+              </strong>
             </span>
-            <span>
-              媒体资源<strong>按设置处理</strong>
+            <span className="flex justify-between text-xs text-muted-foreground">
+              媒体资源<strong className="font-semibold text-foreground">按设置处理</strong>
             </span>
-            <span>
-              输出位置<strong>已保存</strong>
+            <span className="flex justify-between text-xs text-muted-foreground">
+              输出位置<strong className="font-semibold text-foreground">已保存</strong>
             </span>
           </div>
-          <button
-            type="button"
-            className="export-primary-button"
-            onClick={() => progress?.outputPath && onReveal(progress.outputPath)}
-          >
+          <Button onClick={() => progress?.outputPath && onReveal(progress.outputPath)}>
             {allExport ? '打开导出目录' : '打开档案'}
-          </button>
-          <button
-            type="button"
-            className="export-open-folder-button"
+          </Button>
+          <Button
+            variant="outline"
             onClick={() => progress?.outputPath && onReveal(progress.outputPath)}
           >
             在文件夹中显示
-          </button>
+          </Button>
         </div>
       )}
     </aside>

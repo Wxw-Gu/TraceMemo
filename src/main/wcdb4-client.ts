@@ -5,6 +5,7 @@ import crypto from 'crypto'
 import { createRequire } from 'module'
 import { createConnection, Socket } from 'net'
 import { getResourceRoots } from './resource-paths'
+import { wcdbDebugLog } from './wcdb-debug'
 
 export interface Wcdb4Session {
   username: string
@@ -513,7 +514,6 @@ export class Wcdb4Client {
     if (process.platform === 'win32') {
       // 仅支持 WeChat 4.0：只认 xwechat_files，V3 时代的 "WeChat Files" 不再加入候选
       const candidates = [
-        ...Wcdb4Client.getWeflowDbPathCandidates(home),
         path.join(home, 'Documents', 'xwechat_files'),
         path.join(home, 'AppData', 'Roaming', 'Tencent', 'xwechat_files')
       ]
@@ -522,25 +522,6 @@ export class Wcdb4Client {
     return [
       path.join(home, 'Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files')
     ]
-  }
-
-  private static getWeflowDbPathCandidates(home: string): string[] {
-    const configPaths = [
-      path.join(home, 'AppData', 'Roaming', 'weflow', 'WeFlow-config.json'),
-      path.join(home, 'AppData', 'Roaming', 'WeFlow', 'WeFlow-config.json')
-    ]
-    const candidates: string[] = []
-    for (const configPath of configPaths) {
-      try {
-        const config = fs.readJsonSync(configPath) as { dbPath?: unknown }
-        if (typeof config.dbPath === 'string' && config.dbPath.trim()) {
-          candidates.push(config.dbPath.trim())
-        }
-      } catch {
-        // WeFlow is optional; ignore missing or unreadable config.
-      }
-    }
-    return candidates
   }
 
   private static hasDbStorage(candidate: string): boolean {
@@ -998,6 +979,11 @@ export class Wcdb4Client {
     this.cachedSessions = null
     this.cachedChatTables = null
     this.sessionsInFlight = null
+    // Session rows can change their folded/muted flags independently of the
+    // contact list. Invalidate the status snapshot together with sessions so
+    // the next hydrated contact load reads the current WeChat state.
+    this.sessionStatusCache.clear()
+    this.sessionStatusesUpdatedAt = 0
     this.sessionDisplayNamesHydrated = false
   }
 
@@ -1094,13 +1080,23 @@ export class Wcdb4Client {
     username: string,
     startTime?: number,
     endTime?: number,
-    options: Wcdb4MessageQueryOptions = {}
+    options: Wcdb4MessageQueryOptions = {},
+    requestId = 'NO-REQUEST'
   ): Promise<Wcdb4Message[]> {
     const startedAt = Date.now()
     const maxRows = this.normalizeMessageLimit(options.limit)
+    wcdbDebugLog(
+      `[${requestId}] WCDB getMessagesAsync start username=${username} maxRows=${maxRows || 0} start=${startTime || 0} end=${endTime || 0}`
+    )
     let cursorMessages: Wcdb4Message[] = []
     try {
-      cursorMessages = await this.getMessagesByCursorAsync(username, startTime, endTime, maxRows)
+      cursorMessages = await this.getMessagesByCursorAsync(
+        username,
+        startTime,
+        endTime,
+        maxRows,
+        requestId
+      )
     } catch (error) {
       console.warn(`[WCDB4] async cursor messages failed username=${username}:`, error)
     }
@@ -1113,12 +1109,28 @@ export class Wcdb4Client {
     // enumerate. A bounded query must inspect all matching stores so history
     // cannot silently stop at a shard boundary.
     let tableMessages: Wcdb4Message[] = []
-    if (endTime || cursorMessages.length === 0) {
-      tableMessages = await this.getMessagesByTableScanAsync(username, startTime, endTime, maxRows)
+    const cursorSatisfiesLimit = maxRows !== undefined && cursorMessages.length >= maxRows
+    let tableScanExecuted = false
+    if (!cursorSatisfiesLimit && (endTime || cursorMessages.length === 0)) {
+      tableScanExecuted = true
+      tableMessages = await this.getMessagesByTableScanAsync(
+        username,
+        startTime,
+        endTime,
+        maxRows,
+        requestId
+      )
     }
+    wcdbDebugLog(
+      `[${requestId}] WCDB message source decision cursorSatisfiesLimit=${cursorSatisfiesLimit} tableScanExecuted=${tableScanExecuted} cursorRows=${cursorMessages.length} tableRows=${tableMessages.length}`
+    )
+    const mergeStartedAt = Date.now()
     const messages = this.mergeMessageRows(cursorMessages, tableMessages, maxRows)
-    console.log(
-      `[WCDB4] getMessages async username=${username} rows=${messages.length} cursor=${cursorMessages.length} tables=${tableMessages.length} cost=${Date.now() - startedAt}ms`
+    wcdbDebugLog(
+      `[${requestId}] WCDB mergeMessageRows cost=${Date.now() - mergeStartedAt}ms finalRows=${messages.length}`
+    )
+    wcdbDebugLog(
+      `[${requestId}] WCDB getMessagesAsync end username=${username} rows=${messages.length} cursor=${cursorMessages.length} tables=${tableMessages.length} totalCost=${Date.now() - startedAt}ms`
     )
     return messages
   }
@@ -1225,13 +1237,20 @@ export class Wcdb4Client {
     username: string,
     startTime?: number,
     endTime?: number,
-    limit?: number
+    limit?: number,
+    requestId = 'NO-REQUEST'
   ): Promise<Wcdb4Message[]> {
     if (!this.wcdbExecQuery) return []
 
+    const startedAt = Date.now()
+    wcdbDebugLog(`[${requestId}] WCDB table scan start username=${username}`)
     let tables: Wcdb4MessageStore[] = []
     try {
+      const statsStartedAt = Date.now()
       tables = await this.listMessageStoresAsync(username)
+      wcdbDebugLog(
+        `[${requestId}] WCDB get_message_table_stats end stores=${tables.length} cost=${Date.now() - statsStartedAt}ms`
+      )
     } catch (error) {
       console.warn(`[WCDB4] async message table stats failed username=${username}:`, error)
       throw new Error(
@@ -1254,11 +1273,15 @@ export class Wcdb4Client {
     for (const table of tables) {
       try {
         const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
+        const queryStartedAt = Date.now()
         const rows = await this.callJsonAsync<Record<string, unknown>[]>(
           this.wcdbExecQuery as unknown as KoffiAsyncFunction,
           'message',
           table.dbPath,
           sql
+        )
+        wcdbDebugLog(
+          `[${requestId}] WCDB exec_query table=${table.tableName} db=${table.dbPath} rows=${Array.isArray(rows) ? rows.length : 0} cost=${Date.now() - queryStartedAt}ms`
         )
         successfulTables += 1
         if (Array.isArray(rows)) allRows.push(...rows)
@@ -1274,7 +1297,11 @@ export class Wcdb4Client {
       throw new Error('历史消息分片均读取失败，请检查数据目录或微信数据版本')
     }
 
-    return this.finalizeMessages(username, allRows, startTime, endTime, limit)
+    const result = this.finalizeMessages(username, allRows, startTime, endTime, limit)
+    wcdbDebugLog(
+      `[${requestId}] WCDB table scan end rows=${result.length} cost=${Date.now() - startedAt}ms`
+    )
+    return result
   }
 
   installRecallJournal(usernames: string[]): { installed: number; failed: number } {
@@ -1682,6 +1709,13 @@ export class Wcdb4Client {
   ): Wcdb4Message[] {
     const messages = rows.map((row) => this.normalizeMessage(row))
 
+    // Message rows carry a sender id, while the group-local display name lives
+    // in the separate group nickname map. Resolve that map once per group
+    // snapshot so chat bubbles do not fall back to the contact nickname.
+    const groupNicknames = username.endsWith('@chatroom')
+      ? this.getGroupNicknames(username)
+      : undefined
+
     const sorted = messages
       .filter((message) => {
         const createTime = Number(message.msgCreateTime)
@@ -1695,7 +1729,10 @@ export class Wcdb4Client {
 
     return visibleMessages.map((message) => {
       if (!message.sender) return message
-      const senderNickname = this.displayNameCache.get(message.sender) || message.senderNickname
+      const senderNickname =
+        groupNicknames?.get(message.sender) ||
+        this.displayNameCache.get(message.sender) ||
+        message.senderNickname
       const senderAvatar = this.avatarCache.get(message.sender) || message.senderAvatar
       const shouldPrefixSender =
         username.endsWith('@chatroom') &&
@@ -1747,7 +1784,8 @@ export class Wcdb4Client {
     username: string,
     startTime?: number,
     endTime?: number,
-    limit?: number
+    limit?: number,
+    requestId = 'NO-REQUEST'
   ): Promise<Wcdb4Message[]> {
     if (!this.wcdbOpenMessageCursor || !this.wcdbFetchMessageBatch) return []
 
@@ -1757,6 +1795,10 @@ export class Wcdb4Client {
     const begin = this.normalizeTimestamp(startTime || 0)
     const end = this.normalizeTimestamp(endTime || 0)
     const ascending = limit ? 0 : 1
+    wcdbDebugLog(
+      `[${requestId}] WCDB open_message_cursor start username=${username} batchSize=${batchSize} ascending=${ascending} begin=${begin} end=${end}`
+    )
+    const openStartedAt = Date.now()
     const openResult = await this.callAsyncCode(
       this.wcdbOpenMessageCursor as unknown as KoffiAsyncFunction,
       handle,
@@ -1767,14 +1809,20 @@ export class Wcdb4Client {
       end,
       cursorOut
     )
+    wcdbDebugLog(
+      `[${requestId}] WCDB open_message_cursor end code=${openResult} cursor=${cursorOut[0]} cost=${Date.now() - openStartedAt}ms`
+    )
     if (openResult !== 0 || cursorOut[0] <= 0) return []
 
     const cursor = cursorOut[0]
     const allRows: Record<string, unknown>[] = []
+    let fetchIndex = 0
     try {
       while (true) {
+        fetchIndex += 1
         const outJson: WcdbVoidOut = [null]
         const outHasMore: [number] = [0]
+        const fetchStartedAt = Date.now()
         const fetchResult = await this.callAsyncCode(
           this.wcdbFetchMessageBatch as unknown as KoffiAsyncFunction,
           handle,
@@ -1782,24 +1830,43 @@ export class Wcdb4Client {
           outJson,
           outHasMore
         )
-        if (fetchResult !== 0 || !outJson[0]) break
+        const fetchNativeCost = Date.now() - fetchStartedAt
+        if (fetchResult !== 0 || !outJson[0]) {
+          wcdbDebugLog(
+            `[${requestId}] WCDB fetch_message_batch #${fetchIndex} code=${fetchResult} nativeCost=${fetchNativeCost}ms output=${Boolean(outJson[0])}`
+          )
+          break
+        }
         try {
+          const decodeStartedAt = Date.now()
           const json = this.koffi!.decode(outJson[0], 'char', -1)
           const batch = JSON.parse(json) as Record<string, unknown>[]
           if (Array.isArray(batch)) allRows.push(...batch)
+          wcdbDebugLog(
+            `[${requestId}] WCDB fetch_message_batch #${fetchIndex} code=${fetchResult} nativeCost=${fetchNativeCost}ms jsonCost=${Date.now() - decodeStartedAt}ms batchRows=${Array.isArray(batch) ? batch.length : 0} hasMore=${outHasMore[0]}`
+          )
         } finally {
           this.wcdbFreeString?.(outJson[0])
         }
         if (!outHasMore[0] || (limit && allRows.length >= limit)) break
       }
     } finally {
+      const closeStartedAt = Date.now()
       try {
         this.wcdbCloseMessageCursor?.(handle, cursor)
       } catch {
         // Best-effort cursor cleanup.
       }
+      wcdbDebugLog(
+        `[${requestId}] WCDB close_message_cursor cursor=${cursor} cost=${Date.now() - closeStartedAt}ms fetches=${fetchIndex}`
+      )
     }
-    return this.finalizeMessages(username, allRows, startTime, endTime, limit)
+    const finalizeStartedAt = Date.now()
+    const result = this.finalizeMessages(username, allRows, startTime, endTime, limit)
+    wcdbDebugLog(
+      `[${requestId}] WCDB finalizeMessages cost=${Date.now() - finalizeStartedAt}ms rows=${result.length}`
+    )
+    return result
   }
 
   async getGroupMembersAsync(chatroomId: string): Promise<Wcdb4GroupMember[]> {
@@ -2672,6 +2739,7 @@ export class Wcdb4Client {
       'WCDB_CT_compressContent'
     ])
     const content = this.decodeMessageContent(contentRaw, compressRaw)
+    const contentSender = this.extractSenderFromMessageContent(content)
     const sender = this.pickString(row, [
       'sender_username',
       'senderUsername',
@@ -2679,7 +2747,7 @@ export class Wcdb4Client {
       'fromUsername',
       'from_username',
       'WCDB_CT_sender_username'
-    ])
+    ]) || contentSender
     const createTime = this.pickNumber(row, [
       'create_time',
       'createTime',
@@ -2719,7 +2787,7 @@ export class Wcdb4Client {
       'type',
       'WCDB_CT_local_type'
     ])
-    const isSend = this.pickBoolean(row, [
+    const rawIsSend = this.pickValue(row, [
       'computed_is_send',
       'computedIsSend',
       'is_send',
@@ -2727,6 +2795,22 @@ export class Wcdb4Client {
       'mesDes',
       'WCDB_CT_is_send'
     ])
+    const parsedIsSend = rawIsSend === undefined || rawIsSend === null
+      ? false
+      : this.pickBoolean(row, [
+          'computed_is_send',
+          'computedIsSend',
+          'is_send',
+          'isSend',
+          'mesDes',
+          'WCDB_CT_is_send'
+        ])
+    const isSelfSender = sender ? this.getMyUsernameCandidates().some((candidate) => {
+      const left = String(candidate || '').trim().toLowerCase()
+      const right = String(sender || '').trim().toLowerCase()
+      return Boolean(left && right && (left === right || left.startsWith(`${right}_`) || right.startsWith(`${left}_`)))
+    }) : false
+    const isSend = isSelfSender || parsedIsSend
 
     return {
       mesLocalID: localId || `${createTime}-${this.md5(JSON.stringify(row))}`,
@@ -2740,6 +2824,16 @@ export class Wcdb4Client {
       senderAvatar: sender ? this.avatarCache.get(sender) : undefined,
       raw: row
     }
+  }
+
+  /** 解决群里自己的消息被识别成 user */
+  private extractSenderFromMessageContent(content: string): string {
+    const firstLine = String(content || '').split(/\r?\n/, 1)[0].trim()
+    if (!firstLine || firstLine.length > 128 || /[<>]/.test(firstLine)) return ''
+    const candidate = firstLine.replace(/:$/, '').trim()
+    if (!candidate || /\s/.test(candidate)) return ''
+    if (candidate.includes('@') || candidate.startsWith('wxid_') || candidate.startsWith('gh_')) return candidate
+    return this.getMyUsernameCandidates().includes(candidate) ? candidate : ''
   }
 
   private shouldHydrateSessionDisplayName(session: Wcdb4Session): boolean {

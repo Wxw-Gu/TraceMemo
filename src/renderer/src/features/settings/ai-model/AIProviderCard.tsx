@@ -1,4 +1,5 @@
 import type { AIProviderSummary } from '../../../../../shared/ai-provider'
+import { Button } from '../../../components/ui'
 import { PROVIDER_TYPE_LABELS } from './presets'
 
 const STATUS_LABELS = { untested: '未测试', connected: '已连接', error: '连接失败' }
@@ -48,16 +49,18 @@ export function AIProviderCard({
       </dl>
       {provider.lastError ? <p className="ai-provider-error">{provider.lastError}</p> : null}
       <footer>
-        <button onClick={onEdit}>编辑</button>
-        <button disabled={testing} onClick={onTest}>
+        <Button variant="outline" size="sm" onClick={onEdit}>
+          编辑
+        </Button>
+        <Button variant="outline" size="sm" disabled={testing} onClick={onTest}>
           {testing ? '测试中…' : '测试连接'}
-        </button>
-        <button disabled={provider.isDefault} onClick={onDefault}>
+        </Button>
+        <Button variant="outline" size="sm" disabled={provider.isDefault} onClick={onDefault}>
           {provider.isDefault ? '当前默认' : '设为默认'}
-        </button>
-        <button className="danger" onClick={onDelete}>
+        </Button>
+        <Button variant="destructive" size="sm" onClick={onDelete}>
           删除
-        </button>
+        </Button>
       </footer>
     </article>
   )

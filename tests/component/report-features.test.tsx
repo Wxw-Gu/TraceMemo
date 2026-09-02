@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ReportGroupMemberSelector } from '../../src/renderer/src/components/reports/ReportGroupMemberSelector'
 import { ReportTaskStatusPanel } from '../../src/renderer/src/components/reports/ReportTaskStatusPanel'
@@ -6,7 +7,12 @@ import { ReportTemplateSelector } from '../../src/renderer/src/components/report
 import { ReportViewer } from '../../src/renderer/src/components/reports/ReportViewer'
 import { ReportInfoPanel } from '../../src/renderer/src/components/reports/ReportInfoPanel'
 import { ReportToolbar } from '../../src/renderer/src/components/reports/ReportToolbar'
+import { ReportHistorySidebar } from '../../src/renderer/src/components/reports/ReportHistorySidebar'
 import { ModelSummary } from '../../src/renderer/src/components/reports/ModelSummary'
+import { MessageTypeSelector } from '../../src/renderer/src/components/reports/MessageTypeSelector'
+import { ReportDensitySelector } from '../../src/renderer/src/components/reports/ReportDensitySelector'
+import { ReportRangeSelector } from '../../src/renderer/src/components/reports/ReportRangeSelector'
+import { SUMMARY_TYPE_OPTIONS } from '../../src/renderer/src/utils/group-report'
 import type { Contact } from '../../src/shared/types'
 import type { GeneratedReportRecord } from '../../src/shared/report-history'
 
@@ -41,6 +47,44 @@ describe('daily report controls', () => {
       value: {
         getAppLogPath: vi.fn(async () => ''),
         revealAppLog: vi.fn(async () => undefined),
+        getPersonalWechatSenderStatus: vi.fn(async () => ({
+          state: 'online',
+          platform: 'darwin',
+          arch: 'arm64',
+          sipDisabled: true,
+          wechatRunning: true,
+          runtimeReady: true,
+          endpoint: '127.0.0.1:58080',
+          endpointReady: true,
+          attachReady: true,
+          baseAddressReady: true,
+          textHookInstalled: true,
+          textHookReady: true,
+          imageHookInstalled: true,
+          imageHookReady: true,
+          messageListenerReady: true,
+          canSend: true,
+          canSendText: true,
+          canSendImage: true,
+          canSendVoice: true,
+          message: '个人微信已绑定'
+        })),
+        getTextToSpeechSettings: vi.fn(async () => ({
+          success: true,
+          settings: {
+            provider: 'fish-audio',
+            hasApiKey: false,
+            hasStoredApiKey: false,
+            hasEnvironmentApiKey: false,
+            keySource: 'missing',
+            encryptionAvailable: true,
+            selectedVoiceId: '',
+            outputFormat: 'mp3',
+            model: 's2.1-pro-free',
+            phase: 'ready'
+          },
+          voices: []
+        })),
         listAIProviders: vi.fn(async () => ({ success: true, providers: [] })),
         getGroupSnapshot: vi.fn(async () => ({
           members: [
@@ -63,6 +107,44 @@ describe('daily report controls', () => {
           ]
         }))
       }
+    })
+  })
+
+  it('uses unified option and checkbox controls while preserving report selection rules', async () => {
+    const user = userEvent.setup()
+    const onRangeChange = vi.fn()
+    const onTypesChange = vi.fn()
+    render(
+      <>
+        <ReportRangeSelector
+          value="today"
+          messageCount={4}
+          rangeState={{ status: 'success', error: '' }}
+          disabled={false}
+          onChange={onRangeChange}
+        />
+        <MessageTypeSelector
+          value={['text']}
+          counts={Object.fromEntries(SUMMARY_TYPE_OPTIONS.map((option) => [option.value, 1]))}
+          disabled={false}
+          onChange={onTypesChange}
+        />
+        <ReportDensitySelector />
+      </>
+    )
+
+    expect(screen.getByRole('radio', { name: '今天' })).toBeChecked()
+    await user.click(screen.getByRole('radio', { name: '近 7 天' }))
+    expect(onRangeChange).toHaveBeenCalledWith('7days')
+    expect(screen.getAllByRole('checkbox')).toHaveLength(SUMMARY_TYPE_OPTIONS.length)
+    const textCheckbox = screen.getAllByRole('checkbox')[0]
+    expect(textCheckbox).toBeChecked()
+    expect(textCheckbox).toBeDisabled()
+    await user.click(screen.getAllByRole('checkbox')[1])
+    expect(onTypesChange).toHaveBeenCalledWith(['text', 'image'])
+    expect(screen.getByRole('radio', { name: /标准/ })).toBeChecked()
+    screen.getAllByRole('radio', { name: /简洁|标准|深度/ }).forEach((item) => {
+      expect(item).toBeDisabled()
     })
   })
 
@@ -163,6 +245,7 @@ describe('daily report controls', () => {
   })
 
   it('allows switching models and retrying only the model step', async () => {
+    const user = userEvent.setup()
     const onRetry = vi.fn()
     window.api.listAIProviders = vi.fn(async () => ({
       success: true,
@@ -206,7 +289,10 @@ describe('daily report controls', () => {
     )
 
     const retryButton = await screen.findByRole('button', { name: '使用所选模型重新生成' })
+    const retryModel = screen.getByRole('combobox', { name: '切换模型' })
+    await user.click(retryModel)
     expect(screen.getByRole('option', { name: '备用服务 · 备用模型' })).toBeVisible()
+    await user.click(screen.getByRole('option', { name: '备用服务 · 备用模型' }))
     fireEvent.click(retryButton)
     expect(onRetry).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: 'provider-2', model: 'model-2' })
@@ -214,7 +300,8 @@ describe('daily report controls', () => {
     expect(screen.getByText(/从第三步继续/)).toBeVisible()
   })
 
-  it('selects separate text-summary and image-understanding models with the 10-minute cache rule', () => {
+  it('selects separate text-summary and image-understanding models with the 10-minute cache rule', async () => {
+    const user = userEvent.setup()
     const onTextModelChange = vi.fn()
     const onVisionModelChange = vi.fn()
     const textModels = [
@@ -243,6 +330,14 @@ describe('daily report controls', () => {
         modelName: 'GPT-5.6 Sol',
         configured: true as const,
         status: 'connected' as const
+      },
+      {
+        providerId: 'vision-provider',
+        providerName: 'Vision',
+        model: 'vision-model',
+        modelName: 'Vision Model',
+        configured: true as const,
+        status: 'connected' as const
       }
     ]
     render(
@@ -259,13 +354,14 @@ describe('daily report controls', () => {
 
     const textSelect = screen.getByRole('combobox', { name: '文字总结模型' })
     const visionSelect = screen.getByRole('combobox', { name: '图片理解模型' })
-    expect(textSelect).toHaveValue('deepseek::deepseek-chat')
-    expect(visionSelect).toHaveValue('sol-provider::gpt-5.6-sol')
-    expect(screen.getAllByRole('option', { name: 'OpenAI · GPT-5.6 Sol' })).toHaveLength(2)
-    fireEvent.change(textSelect, { target: { value: 'openai::gpt-5.6-sol' } })
-    fireEvent.change(visionSelect, { target: { value: 'sol-provider::gpt-5.6-sol' } })
+    expect(textSelect).toHaveTextContent('DeepSeek · DeepSeek Chat')
+    expect(visionSelect).toHaveTextContent('OpenAI · GPT-5.6 Sol')
+    await user.click(textSelect)
+    await user.click(screen.getByRole('option', { name: 'OpenAI · GPT-5.6 Sol' }))
+    await user.click(visionSelect)
+    await user.click(screen.getByRole('option', { name: 'Vision · Vision Model' }))
     expect(onTextModelChange).toHaveBeenCalledWith(textModels[1])
-    expect(onVisionModelChange).toHaveBeenCalledWith(visionModels[0])
+    expect(onVisionModelChange).toHaveBeenCalledWith(visionModels[1])
     expect(screen.getByText(/图片识别缓存 10 分钟/)).toBeVisible()
   })
 
@@ -396,7 +492,8 @@ describe('daily report controls', () => {
     globalThis.ResizeObserver = originalResizeObserver
   })
 
-  it('keeps secondary report actions inside More and labels both AI model roles', () => {
+  it('keeps the file action inside More and labels both AI model roles', async () => {
+    const user = userEvent.setup()
     render(
       <>
         <ReportToolbar
@@ -431,16 +528,128 @@ describe('daily report controls', () => {
       </>
     )
 
-    expect(screen.queryByRole('button', { name: '生成微信卡片' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '更多' }))
-    expect(screen.getByRole('button', { name: '生成微信卡片' })).toBeVisible()
+    expect(screen.queryByRole('menuitem', { name: '生成微信卡片' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '更多' }))
+    expect(screen.getByRole('menuitem', { name: '生成微信卡片' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: '打开文件夹' })).toBeVisible()
     expect(screen.getByText('文字模型')).toBeVisible()
     expect(screen.getByText('DeepSeek Chat')).toBeVisible()
     expect(screen.getByText('图片模型')).toBeVisible()
     expect(screen.getByText('gpt-5.6-sol')).toBeVisible()
+
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('menuitem', { name: '生成微信卡片' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '更多' })).toHaveFocus()
+  })
+
+  it('keeps unavailable toolbar actions disabled inside More', async () => {
+    const user = userEvent.setup()
+    const onReveal = vi.fn()
+    const onShare = vi.fn()
+
+    render(
+      <ReportToolbar
+        canCopyImage={false}
+        canReveal={false}
+        canShare={false}
+        canSwitchTemplate={false}
+        isSwitchingTemplate={false}
+        onSwitchTemplate={vi.fn()}
+        onRegenerate={vi.fn()}
+        onCopyImage={vi.fn()}
+        onReveal={onReveal}
+        onShare={onShare}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: '切换模板' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '复制图片' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '打开报告' })).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: '更多' }))
+    const shareItem = screen.getByRole('menuitem', { name: '生成微信卡片' })
+    const revealItem = screen.getByRole('menuitem', { name: '打开文件夹' })
+    expect(shareItem).toHaveAttribute('data-disabled')
+    expect(revealItem).toHaveAttribute('data-disabled')
+    await user.click(shareItem)
+    await user.click(revealItem)
+    expect(onShare).not.toHaveBeenCalled()
+    expect(onReveal).not.toHaveBeenCalled()
+  })
+
+  it('opens the current group send dialog with the report PNG preselected', async () => {
+    const report: GeneratedReportRecord = {
+      id: 'report-send',
+      contactId: groupContact.md5,
+      contactName: groupContact.m_nsNickName,
+      dateRange: '今天',
+      messageCount: 10,
+      generatedAt: '2026-08-17T10:00:00.000Z',
+      reportDate: '2026-08-17',
+      htmlStatus: 'ready',
+      pngStatus: 'ready',
+      generatedImage: 'data:image/png;base64,fixture',
+      pngPath: '/Users/fixture/测试群日报.png'
+    }
+
+    render(
+      <ReportViewer
+        report={report}
+        hasReports
+        onBackToConfigure={vi.fn()}
+        onRegenerate={vi.fn()}
+        onCopyImage={vi.fn(async () => ({ success: true }))}
+        onReveal={vi.fn(async () => ({ success: true }))}
+        onSwitchTemplate={vi.fn(async () => ({ success: true }))}
+        sendTarget={groupContact}
+        personalWechatSendSupported
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '发送到当前群聊' }))
+
+    expect(await screen.findByRole('dialog', { name: '测试群' })).toBeVisible()
+    expect(screen.getByRole('radio', { name: '图片' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText('测试群日报.png')).toBeVisible()
+    expect(screen.getByText('/Users/fixture/测试群日报.png')).toBeVisible()
+  })
+
+  it('disables current group sending outside macOS with a readable hover hint', () => {
+    const report: GeneratedReportRecord = {
+      id: 'report-send-disabled',
+      contactId: groupContact.md5,
+      contactName: groupContact.m_nsNickName,
+      dateRange: '今天',
+      messageCount: 10,
+      generatedAt: '2026-08-17T10:00:00.000Z',
+      reportDate: '2026-08-17',
+      htmlStatus: 'ready',
+      pngStatus: 'ready',
+      generatedImage: 'data:image/png;base64,fixture',
+      pngPath: '/Users/fixture/测试群日报.png'
+    }
+
+    render(
+      <ReportViewer
+        report={report}
+        hasReports
+        onBackToConfigure={vi.fn()}
+        onRegenerate={vi.fn()}
+        onCopyImage={vi.fn(async () => ({ success: true }))}
+        onReveal={vi.fn(async () => ({ success: true }))}
+        onSwitchTemplate={vi.fn(async () => ({ success: true }))}
+        sendTarget={groupContact}
+        personalWechatSendSupported={false}
+      />
+    )
+
+    const button = screen.getByRole('button', { name: '发送到当前群聊' })
+    expect(button).toBeDisabled()
+    expect(button.parentElement).toHaveAttribute('title', '仅支持 macOS')
   })
 
   it('switches templates from the top toolbar using the saved report snapshot', async () => {
+    const user = userEvent.setup()
     const onSwitchTemplate = vi.fn(async () => ({ success: true }))
     const report: GeneratedReportRecord = {
       id: 'report-switch',
@@ -470,10 +679,10 @@ describe('daily report controls', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '切换模板' }))
+    await user.click(screen.getByRole('button', { name: '切换模板' }))
     expect(screen.getByText('仅重新排版，不调用 AI')).toBeVisible()
     expect(screen.getByRole('menuitem', { name: /默认模板经典日报/ })).toBeVisible()
-    fireEvent.click(screen.getByRole('menuitem', { name: /Mobile 03AI Command Center/ }))
+    await user.click(screen.getByRole('menuitem', { name: /Mobile 03AI Command Center/ }))
     await waitFor(() => expect(onSwitchTemplate).toHaveBeenCalledWith(report, 'mobile-dashboard'))
 
     rerender(
@@ -523,15 +732,111 @@ describe('daily report controls', () => {
   })
 
   it('loads and displays group nickname, WeChat nickname, and remark separately', async () => {
+    const user = userEvent.setup()
     render(<ReportGroupMemberSelector sourceContact={groupContact} />)
 
     await waitFor(() => expect(screen.getAllByText('群内昵称一')).toHaveLength(2))
     expect(screen.getByText('微信昵称一')).toBeVisible()
     expect(screen.getByText('通讯录备注一')).toBeVisible()
     expect(screen.getByText('wxid-one')).toBeVisible()
+    await user.click(screen.getByRole('combobox', { name: '选择群成员' }))
+    await user.click(screen.getByRole('option', { name: '群内昵称二' }))
+    expect(screen.getByText('微信昵称二')).toBeVisible()
+    expect(screen.getByText('wxid-two')).toBeVisible()
   })
 
-  it('offers the classic default plus three mobile and two desktop report templates', () => {
+  it('cancels report deletion and restores focus to the delete trigger', async () => {
+    const user = userEvent.setup()
+    const report: GeneratedReportRecord = {
+      id: 'report-delete-cancel',
+      contactId: 'group-md5',
+      contactName: '测试群',
+      dateRange: '今天',
+      messageCount: 10,
+      generatedAt: '2026-08-17T10:00:00.000Z',
+      reportDate: '2026-08-17',
+      htmlStatus: 'ready',
+      pngStatus: 'ready'
+    }
+
+    render(
+      <ReportHistorySidebar
+        reports={[report]}
+        selectedReportId={report.id}
+        selfInfo={null}
+        dbReady
+        onSelectReport={vi.fn()}
+        onCreateReport={vi.fn()}
+        onDeleteReport={vi.fn(async () => ({ success: true }))}
+        onOpenSettings={vi.fn()}
+      />
+    )
+
+    const deleteTrigger = screen.getByRole('button', { name: '删除日报' })
+    await user.click(deleteTrigger)
+    expect(screen.getByRole('alertdialog', { name: '删除日报？' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('alertdialog', { name: '删除日报？' })).not.toBeInTheDocument()
+    expect(deleteTrigger).toHaveFocus()
+  })
+
+  it('prevents duplicate report deletion, keeps failures open, and closes after success', async () => {
+    const user = userEvent.setup()
+    const report: GeneratedReportRecord = {
+      id: 'report-delete-result',
+      contactId: 'group-md5',
+      contactName: '测试群',
+      dateRange: '今天',
+      messageCount: 10,
+      generatedAt: '2026-08-17T10:00:00.000Z',
+      reportDate: '2026-08-17',
+      htmlStatus: 'ready',
+      pngStatus: 'ready'
+    }
+    let settleDelete: ((result: { success: boolean; error?: string }) => void) | undefined
+    const onDeleteReport = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ success: boolean; error?: string }>((resolve) => {
+            settleDelete = resolve
+          })
+      )
+      .mockResolvedValueOnce({ success: true })
+
+    render(
+      <ReportHistorySidebar
+        reports={[report]}
+        selectedReportId={report.id}
+        selfInfo={null}
+        dbReady
+        onSelectReport={vi.fn()}
+        onCreateReport={vi.fn()}
+        onDeleteReport={onDeleteReport}
+        onOpenSettings={vi.fn()}
+      />
+    )
+
+    await user.click(screen.getByRole('button', { name: '删除日报' }))
+    await user.click(screen.getByRole('button', { name: '删除', exact: true }))
+    const pendingButton = screen.getByRole('button', { name: '删除中…' })
+    expect(pendingButton).toBeDisabled()
+    await user.click(pendingButton)
+    expect(onDeleteReport).toHaveBeenCalledTimes(1)
+
+    settleDelete?.({ success: false, error: '文件正在使用' })
+    expect(await screen.findByText('文件正在使用')).toBeVisible()
+    expect(screen.getByRole('alertdialog', { name: '删除日报？' })).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: '删除', exact: true }))
+    await waitFor(() => expect(onDeleteReport).toHaveBeenCalledTimes(2))
+    await waitFor(() =>
+      expect(screen.queryByRole('alertdialog', { name: '删除日报？' })).not.toBeInTheDocument()
+    )
+  })
+
+  it('offers the classic default plus three mobile and two desktop report templates', async () => {
+    const user = userEvent.setup()
     const onChange = vi.fn()
     render(<ReportTemplateSelector value="v1" onChange={onChange} />)
 
@@ -549,8 +854,13 @@ describe('daily report controls', () => {
 
     const previewButtons = screen.getAllByRole('button', { name: '查看版式' })
     expect(previewButtons).toHaveLength(6)
-    fireEvent.click(previewButtons[2])
-    fireEvent.click(screen.getByRole('button', { name: '选择此模板' }))
+    await user.click(previewButtons[2])
+    let dialog = screen.getByRole('dialog', { name: 'AI Magazine' })
+    await user.click(within(dialog).getAllByRole('button', { name: '关闭' })[1])
+    expect(document.activeElement).toBe(previewButtons[2])
+    await user.click(previewButtons[2])
+    dialog = screen.getByRole('dialog', { name: 'AI Magazine' })
+    await user.click(within(dialog).getByRole('button', { name: '选择此模板' }))
 
     expect(onChange).toHaveBeenCalledWith('mobile-magazine')
   })

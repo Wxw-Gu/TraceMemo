@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ExportWorkspace } from '../../src/renderer/src/components/export/ExportWorkspace'
@@ -56,7 +56,11 @@ describe('export voice transcripts', () => {
       />
     )
 
-    await userEvent.click(screen.getAllByRole('button', { name: /HTML/ })[0])
+    await userEvent.click(
+      within(screen.getByRole('radiogroup', { name: '导出格式' })).getByRole('radio', {
+        name: /HTML/
+      })
+    )
     await userEvent.click(screen.getByRole('checkbox', { name: '语音' }))
 
     const transcriptOption = await screen.findByRole('checkbox', {

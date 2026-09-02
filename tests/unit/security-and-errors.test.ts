@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { classifyStickerHttpFailure } from '../../src/shared/sticker'
 
@@ -49,5 +49,44 @@ describe('sticker HTTP failures', () => {
       'resource_removed'
     )
     expect(classifyStickerHttpFailure(429, 'https://fixture.invalid/a').code).toBe('rate_limited')
+  })
+})
+
+describe('personal WeChat runtime security invariants', () => {
+  it('waits for sender termination during application shutdown', () => {
+    const mainSource = readFileSync(resolve('src/main/index.ts'), 'utf8')
+    const shutdownStart = mainSource.indexOf("app.on('before-quit'")
+    const shutdownEnd = mainSource.indexOf('function showMainWindow', shutdownStart)
+    const shutdownSource = mainSource.slice(shutdownStart, shutdownEnd)
+
+    expect(shutdownStart).toBeGreaterThanOrEqual(0)
+    expect(shutdownEnd).toBeGreaterThan(shutdownStart)
+    expect(shutdownSource).toContain('await Promise.all([')
+    expect(shutdownSource).toContain('personalWechatSendService.terminate()')
+    expect(shutdownSource).not.toContain('personalWechatSendService.stop()')
+
+    const senderSource = readFileSync(
+      resolve('src/main/services/personal-wechat-send-service.ts'),
+      'utf8'
+    )
+    expect(senderSource).toContain("process.kill(pid, 'SIGTERM')")
+    expect(senderSource).toContain("process.kill(pid, 'SIGKILL')")
+    expect(senderSource).toContain('const trackedPid = this.child?.pid')
+  })
+
+  it('does not install Python packages while preparing the sender runtime', () => {
+    const runtimeManagerSource = readFileSync(
+      resolve('src/main/services/personal-wechat-runtime-manager.ts'),
+      'utf8'
+    )
+    const preparationScriptSource = readFileSync(
+      resolve('scripts/prepare-wechat-chatter-runtime.cjs'),
+      'utf8'
+    )
+
+    for (const source of [runtimeManagerSource, preparationScriptSource]) {
+      expect(source).not.toContain('pilk==')
+      expect(source).not.toMatch(/['"]pip['"]/)
+    }
   })
 })

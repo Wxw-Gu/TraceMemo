@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { AIRuntimeModelConfig } from '../../../../../shared/ai-provider'
+import { Button } from '../../../components/ui'
 import { AIProviderCard } from '../ai-model/AIProviderCard'
 import { AIProviderEditor } from '../ai-model/AIProviderEditor'
 import { AIImageUnderstandingTest } from '../ai-model/AIImageUnderstandingTest'
@@ -13,23 +14,28 @@ export function AIModelPage({
   onNotice: (message: string) => void
 }): React.ReactElement {
   const controller = useAIModelSettingsController({ onRuntimeChange, onNotice })
-  const shouldRevealNewEditor = useRef(false)
+  const shouldRevealEditor = useRef(false)
   const runtime = controller.state.runtime
   const defaultProvider = controller.state.providers.find(
     (provider) => provider.id === runtime?.providerId
   )
 
   useEffect(() => {
-    if (!controller.state.editor || !shouldRevealNewEditor.current) return
-    shouldRevealNewEditor.current = false
+    if (!controller.state.editor || !shouldRevealEditor.current) return
+    shouldRevealEditor.current = false
     const editor = document.getElementById('ai-provider-editor')
     editor?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     editor?.querySelector<HTMLInputElement>('#ai-provider-name')?.focus({ preventScroll: true })
   }, [controller.state.editor])
 
   const openNewProvider = (): void => {
-    shouldRevealNewEditor.current = true
+    shouldRevealEditor.current = true
     controller.openNew()
+  }
+
+  const openProviderEditor = (provider: (typeof controller.state.providers)[number]): void => {
+    shouldRevealEditor.current = true
+    controller.openEdit(provider)
   }
 
   return (
@@ -39,9 +45,7 @@ export function AIModelPage({
           <h1>AI 模型</h1>
           <p>管理模型供应商、连接信息和默认模型</p>
         </div>
-        <button className="database-key-primary" onClick={openNewProvider}>
-          添加供应商
-        </button>
+        <Button onClick={openNewProvider}>添加供应商</Button>
       </header>
       <div className="settings-page-scroll">
         <div className="settings-page-content ai-model-content">
@@ -86,7 +90,7 @@ export function AIModelPage({
                 key={provider.id}
                 provider={provider}
                 testing={controller.state.testingId === provider.id}
-                onEdit={() => controller.openEdit(provider)}
+                onEdit={() => openProviderEditor(provider)}
                 onTest={() => void controller.test(provider.id)}
                 onDefault={() => void controller.setDefault(provider.id)}
                 onDelete={() => void controller.remove(provider.id)}

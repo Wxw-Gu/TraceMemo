@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { CacheSummary } from '../../../../../shared/cache'
+import { Button } from '../../../components/ui'
 
-const SEARCH_CACHE_KEYS = ['wxe_ai_search_cache_v8', 'wxe_ai_search_history_v1', 'wxe_export_tasks']
+const SEARCH_CACHE_KEYS = [
+  'wxe_ai_search_cache_v8',
+  'wxe_ai_search_cache_v9',
+  'wxe_ai_search_cache_v10',
+  'wxe_ai_search_cache_v11',
+  'wxe_ai_search_cache_v12',
+  'wxe_ai_search_history_v1',
+  'wxe_export_tasks'
+]
 
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`
@@ -76,9 +85,9 @@ export function CacheCleanupPage({
           <h1>缓存与清理</h1>
           <p>管理本地加速数据，不会删除微信原始聊天记录或数据库密钥。</p>
         </div>
-        <button type="button" className="settings-header-action" onClick={() => void refresh()}>
+        <Button variant="outline" size="sm" onClick={() => void refresh()}>
           刷新占用
-        </button>
+        </Button>
       </header>
       <div className="settings-page-scroll">
         <div className="settings-page-content">
@@ -88,14 +97,15 @@ export function CacheCleanupPage({
               <strong>{formatBytes(summary?.totalBytes || 0)}</strong>
               <small>清理后首次打开档案可能需要重新读取。</small>
             </div>
-            <button
-              type="button"
-              className="settings-danger-button"
+            <Button
+              variant="destructive"
+              size="sm"
               disabled={busyScope !== null}
+              aria-busy={busyScope === 'all'}
               onClick={() => void clear('all')}
             >
               {busyScope === 'all' ? '清理中...' : '清理全部'}
-            </button>
+            </Button>
           </section>
 
           <h2 className="settings-section-heading">缓存分类</h2>
@@ -111,21 +121,25 @@ export function CacheCleanupPage({
                 </div>
                 <div className="settings-cache-actions">
                   {item.id === 'knowledge' && (
-                    <button
-                      type="button"
+                    <Button
+                      variant="outline"
+                      size="sm"
                       disabled={busyScope !== null}
+                      aria-busy={busyScope === 'knowledge-directory'}
                       onClick={() => void openKnowledge()}
                     >
                       {busyScope === 'knowledge-directory' ? '打开中...' : '打开文件夹'}
-                    </button>
+                    </Button>
                   )}
-                  <button
-                    type="button"
+                  <Button
+                    variant="outline"
+                    size="sm"
                     disabled={busyScope !== null}
+                    aria-busy={busyScope === item.id}
                     onClick={() => void clear(item.id)}
                   >
                     {busyScope === item.id ? '清理中...' : '清理'}
-                  </button>
+                  </Button>
                 </div>
               </section>
             ))}
@@ -135,9 +149,15 @@ export function CacheCleanupPage({
                 <p>清理最近提问、检索结果和导出任务列表，不影响聊天数据库。</p>
                 <small>浏览器本地缓存</small>
               </div>
-              <button type="button" disabled={busyScope !== null} onClick={clearLocal}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busyScope !== null}
+                aria-busy={busyScope === 'local'}
+                onClick={clearLocal}
+              >
                 {busyScope === 'local' ? '清理中...' : '清理'}
-              </button>
+              </Button>
             </section>
           </div>
 

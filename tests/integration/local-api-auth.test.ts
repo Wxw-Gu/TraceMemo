@@ -12,6 +12,19 @@ const fixture = vi.hoisted(() => ({
       type: 'user' as const
     }
   ],
+  chatlogMessages: [
+    {
+      id: 'message:1',
+      type: '图片',
+      content: '',
+      contentData: { type: 'image', md5: 'fixture-md5', aeskey: 'do-not-return' },
+      media: {
+        type: 'image',
+        available: true,
+        url: '/api/v1/media/message%3A1'
+      }
+    }
+  ],
   testSend: vi.fn(async () => ({ success: true, status: 'sent' }))
 }))
 
@@ -27,7 +40,7 @@ vi.mock('electron', () => ({
 vi.mock('../../src/main/services/chat-service', () => ({
   isReady: () => true,
   listContacts: () => fixture.contacts,
-  listMessages: () => [],
+  listMessages: () => fixture.chatlogMessages,
   getGroupSnapshot: () => ({ members: [] }),
   listRecentChat: () => [],
   resolveMd5: () => fixture.contacts[0]
@@ -55,6 +68,7 @@ vi.mock('../../src/main/services/agent-hub-service', () => ({
 
 import { apiTokenStore } from '../../src/main/api-token-store'
 import { apiServer, startHttpServer, type HttpServerHandle } from '../../src/main/http-server'
+import { HttpMediaError } from '../../src/main/http-media-service'
 import {
   buildLocalApiCurlCommand,
   testLocalApiRequest
@@ -68,9 +82,10 @@ function baseUrl(handle: HttpServerHandle): string {
 }
 
 async function startFixtureServer(
-  tokenProvider = (): string => VALID_TOKEN
+  tokenProvider = (): string => VALID_TOKEN,
+  mediaProvider?: (messageId: string) => Promise<{ buffer: Buffer; mimeType: string }>
 ): Promise<HttpServerHandle> {
-  const handle = await startHttpServer('127.0.0.1', 0, { tokenProvider })
+  const handle = await startHttpServer('127.0.0.1', 0, { tokenProvider, mediaProvider })
   handles.push(handle)
   return handle
 }
@@ -118,6 +133,7 @@ describe('Local API authentication', () => {
     ['GET', '/api/v1/chatroom'],
     ['GET', '/api/v1/recent_chat'],
     ['GET', '/api/v1/chatlog'],
+    ['GET', '/api/v1/media/message-1'],
     ['GET', '/api/v1/group_snapshot'],
     ['GET', '/api/v1/resolve'],
     ['POST', '/api/v1/report'],
@@ -131,6 +147,58 @@ describe('Local API authentication', () => {
       ...(method === 'POST' ? { headers: { 'Content-Type': 'application/json' }, body: '{}' } : {})
     })
     expect(response.status).toBe(401)
+  })
+
+  it('returns image bytes from the authenticated media route without exposing a path', async () => {
+    const provider = vi.fn(async (messageId: string) => {
+      expect(messageId).toBe('message:1')
+      return { buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]), mimeType: 'image/jpeg' }
+    })
+    const handle = await startFixtureServer(() => VALID_TOKEN, provider)
+    const response = await fetch(
+      `${baseUrl(handle)}/api/v1/media/${encodeURIComponent('message:1')}`,
+      {
+        headers: { Authorization: `Bearer ${VALID_TOKEN}` }
+      }
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('image/jpeg')
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xd9]))
+    expect(provider).toHaveBeenCalledOnce()
+    expect(JSON.stringify(response.headers)).not.toMatch(/path|token|database/i)
+  })
+
+  it('adds media metadata to chatlog while redacting image keys', async () => {
+    const handle = await startFixtureServer()
+    const response = await fetch(`${baseUrl(handle)}/api/v1/chatlog?talker=测试联系人`, {
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` }
+    })
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.messages[0]).toMatchObject({
+      id: 'message:1',
+      media: {
+        type: 'image',
+        available: true,
+        url: '/api/v1/media/message%3A1'
+      }
+    })
+    expect(body.messages[0].contentData).not.toHaveProperty('aeskey')
+  })
+
+  it('maps media lookup failures to stable API statuses', async () => {
+    const handle = await startFixtureServer(
+      () => VALID_TOKEN,
+      async () => {
+        throw new HttpMediaError('NOT_IMAGE', '消息不是可读取的图片消息')
+      }
+    )
+    const response = await fetch(`${baseUrl(handle)}/api/v1/media/message-1`, {
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` }
+    })
+    expect(response.status).toBe(422)
+    await expect(response.json()).resolves.toMatchObject({ status: 422 })
   })
 
   it.each(['Basic xxx', 'Bearer', 'bearer xxx', 'Bearer    xxx', 'xxx'])(

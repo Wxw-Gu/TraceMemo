@@ -277,6 +277,90 @@ describe('AiSearchPipelineService', () => {
     ])
   })
 
+  it('keeps single-chat matches out of a global group lookup and covers groups in Final Evidence', async () => {
+    const groups = Array.from({ length: 10 }, (_, index) => ({
+      md5: `group-${index + 1}`,
+      m_nsUsrName: `group-${index + 1}@chatroom`,
+      m_nsNickName: `测试群 ${index + 1}`,
+      type: 'group' as const
+    }))
+    listContactsAsync.mockResolvedValue([
+      ...groups,
+      {
+        md5: 'direct-contact',
+        m_nsUsrName: 'wxid_direct',
+        m_nsNickName: '单聊联系人',
+        type: 'user' as const
+      }
+    ])
+    knowledge.search.mockResolvedValue({
+      source: 'knowledge',
+      state: 'ready',
+      indexedMessageCount: 2_000,
+      indexedChunkCount: 300,
+      totalMessages: 2_000,
+      evidence: [
+        {
+          chunkId: 'direct-chunk',
+          conversationId: 'direct-contact',
+          startTime: 1785900000000,
+          endTime: 1785900000000,
+          messageId: 'direct-message',
+          sender: '单聊联系人',
+          senderId: 'direct-sender',
+          timestamp: 1785900000000,
+          messageIds: ['direct-message'],
+          text: 'WechatExplorer',
+          score: -1
+        },
+        ...groups.map((group, index) => ({
+          chunkId: `group-chunk-${index + 1}`,
+          conversationId: group.md5,
+          startTime: 1785899000000 - index,
+          endTime: 1785899000000 - index,
+          messageId: `group-message-${index + 1}`,
+          sender: `群成员 ${index + 1}`,
+          senderId: `group-sender-${index + 1}`,
+          timestamp: 1785899000000 - index,
+          messageIds: [`group-message-${index + 1}`],
+          text: 'WechatExplorer',
+          score: -(index + 2)
+        }))
+      ]
+    })
+    aiProvider.chat.mockReset()
+    aiProvider.chat
+      .mockResolvedValueOnce({
+        success: true,
+        data: '{"action":"tool","tool":"search_messages","arguments":{"query":"WechatExplorer"}}'
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: '{"action":"finalize","reason":"已覆盖多个群聊"}'
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: '多个群聊提到过 WechatExplorer。[E1]'
+      })
+
+    const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
+    const result = await service.run(
+      {
+        requestId: 'global-group-coverage',
+        text: '哪个群说过 WechatExplorer',
+        scope: 'global',
+        range: '30d'
+      },
+      () => undefined
+    )
+
+    expect(result.plan.intent).toBe('global_group_topic_search')
+    expect(result.evidence).toHaveLength(8)
+    expect(result.evidence.every((item) => item.conversationType === 'group')).toBe(true)
+    expect(new Set(result.evidence.map((item) => item.conversationId)).size).toBe(8)
+    expect(result.evidence.some((item) => item.conversationId === 'direct-contact')).toBe(false)
+  })
+
   it('keeps real evidence when the answer model fails', async () => {
     aiProvider.chat.mockReset()
     aiProvider.chat
@@ -530,7 +614,11 @@ describe('AiSearchPipelineService', () => {
     expect(knowledge.search).toHaveBeenCalledWith(
       expect.objectContaining({
         terms: [],
-        conversationIds: ['zhongtian-contact'],
+        conversationIds: expect.arrayContaining([
+          'zhongtian-contact',
+          'wxid_zhongtian',
+          'Chat_zhongtian-contact'
+        ]),
         startTime: expect.any(Number)
       })
     )
@@ -640,7 +728,11 @@ describe('AiSearchPipelineService', () => {
     expect(knowledge.search).toHaveBeenCalledWith(
       expect.objectContaining({
         terms: ['健身'],
-        conversationIds: ['zhongtian-contact'],
+        conversationIds: expect.arrayContaining([
+          'zhongtian-contact',
+          'wxid_zhongtian',
+          'Chat_zhongtian-contact'
+        ]),
         startTime: expect.any(Number)
       })
     )
@@ -1119,7 +1211,14 @@ describe('AiSearchPipelineService', () => {
       retrieval: { conversationId: 'selected-contact' }
     })
     expect(knowledge.search).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationIds: ['selected-contact'], terms: [] })
+      expect.objectContaining({
+        conversationIds: expect.arrayContaining([
+          'selected-contact',
+          'wxid_selected',
+          'Chat_selected-contact'
+        ]),
+        terms: []
+      })
     )
     expect(aiProvider.chat.mock.calls[0]?.[0][1].content).toContain('conversation-1')
     expect(result.agent.trace).not.toContainEqual(

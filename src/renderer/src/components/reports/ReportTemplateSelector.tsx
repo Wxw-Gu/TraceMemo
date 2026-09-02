@@ -1,10 +1,22 @@
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import {
   DEFAULT_REPORT_TEMPLATE,
   REPORT_TEMPLATES,
   type ReportTemplateDefinition,
   type SelectableReportTemplateId
 } from '../../../../shared/report-templates'
+import {
+  Button,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  RadioGroup,
+  RadioGroupItem
+} from '../ui'
 
 export type { SelectableReportTemplateId } from '../../../../shared/report-templates'
 
@@ -58,6 +70,7 @@ export const ReportTemplateSelector: React.FC<ReportTemplateSelectorProps> = ({
   disabled
 }) => {
   const [previewing, setPreviewing] = useState<ReportTemplateDefinition | null>(null)
+  const previewTriggerRef = useRef<HTMLButtonElement | null>(null)
   const mobileTemplates = REPORT_TEMPLATES.filter((template) => template.platform === 'mobile')
   const desktopTemplates = REPORT_TEMPLATES.filter((template) => template.platform === 'desktop')
 
@@ -75,14 +88,11 @@ export const ReportTemplateSelector: React.FC<ReportTemplateSelectorProps> = ({
               key={template.id}
               className={`report-template-item ${active ? 'active' : ''} ${disabled ? 'disabled' : ''}`}
             >
-              <label>
-                <input
-                  type="radio"
-                  name="report-template"
+              <label htmlFor={`report-template-${template.id}`}>
+                <RadioGroupItem
+                  id={`report-template-${template.id}`}
                   value={template.id}
-                  checked={active}
-                  disabled={disabled}
-                  onChange={() => onChange(template.id)}
+                  aria-label={template.name}
                 />
                 <TemplateDiagram template={template} />
                 <div className="report-template-body">
@@ -91,13 +101,16 @@ export const ReportTemplateSelector: React.FC<ReportTemplateSelectorProps> = ({
                   <div className="report-template-tagline">{template.tagline}</div>
                 </div>
               </label>
-              <button
-                type="button"
-                className="report-template-preview-btn"
-                onClick={() => setPreviewing(template)}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={(event) => {
+                  previewTriggerRef.current = event.currentTarget
+                  setPreviewing(template)
+                }}
               >
                 查看版式
-              </button>
+              </Button>
             </div>
           )
         })}
@@ -111,52 +124,66 @@ export const ReportTemplateSelector: React.FC<ReportTemplateSelectorProps> = ({
       <p className="report-section-desc">
         默认模板与五套新版模板读取同一份真实日报数据。手机模板适合长图和群内分享，桌面模板适合宽屏阅读与归档。
       </p>
-      <div className="report-template-catalog">
+      <RadioGroup
+        className="report-template-catalog"
+        value={value}
+        disabled={disabled}
+        onValueChange={(nextValue) => onChange(nextValue as SelectableReportTemplateId)}
+      >
         {renderGroup('默认模板', [DEFAULT_REPORT_TEMPLATE])}
         {renderGroup('手机端 · 375–414 px', mobileTemplates)}
         {renderGroup('电脑端 · 1280–1920 px', desktopTemplates)}
-      </div>
-      {previewing && (
-        <div className="report-template-preview-mask" onClick={() => setPreviewing(null)}>
-          <div
-            className="report-template-preview-card"
-            onClick={(event) => event.stopPropagation()}
+      </RadioGroup>
+      <Dialog
+        open={Boolean(previewing)}
+        onOpenChange={(open) => {
+          if (!open) setPreviewing(null)
+        }}
+      >
+        {previewing && (
+          <DialogContent
+            className="report-template-preview-card max-h-[90vh] max-w-[520px] overflow-y-auto bg-surface-muted p-[18px]"
+            onCloseAutoFocus={(event) => {
+              event.preventDefault()
+              previewTriggerRef.current?.focus()
+            }}
           >
-            <div className="report-template-preview-heading">
-              <div>
-                <span>{previewing.label}</span>
-                <h4>{previewing.name}</h4>
+            <DialogHeader className="pr-8">
+              <div className="report-template-preview-heading">
+                <div>
+                  <span>{previewing.label}</span>
+                  <DialogTitle>{previewing.name}</DialogTitle>
+                </div>
+                <em>
+                  {previewing.platform === 'desktop'
+                    ? '桌面宽屏'
+                    : previewing.platform === 'default'
+                      ? '经典长图'
+                      : '手机长图'}
+                </em>
               </div>
-              <em>
-                {previewing.platform === 'desktop'
-                  ? '桌面宽屏'
-                  : previewing.platform === 'default'
-                    ? '经典长图'
-                    : '手机长图'}
-              </em>
-            </div>
-            <p className="muted">{previewing.tagline}</p>
+              <DialogDescription>{previewing.tagline}</DialogDescription>
+            </DialogHeader>
             <TemplateDiagram template={previewing} />
-            <p className="report-template-preview-note">
+            <DialogDescription className="report-template-preview-note">
               生成时会自动代入当前群聊的真实头像、昵称、消息、讨论摘要、Q&amp;A、统计与关键词。
-            </p>
-            <div className="report-template-preview-actions">
-              <button type="button" className="secondary" onClick={() => setPreviewing(null)}>
-                关闭
-              </button>
-              <button
-                type="button"
+            </DialogDescription>
+            <DialogFooter className="report-template-preview-actions">
+              <DialogClose asChild>
+                <Button variant="outline">关闭</Button>
+              </DialogClose>
+              <Button
                 onClick={() => {
                   onChange(previewing.id)
                   setPreviewing(null)
                 }}
               >
                 选择此模板
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        )}
+      </Dialog>
     </section>
   )
 }

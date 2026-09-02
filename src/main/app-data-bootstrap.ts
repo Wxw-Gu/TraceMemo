@@ -9,17 +9,12 @@ export const LEGACY_MIGRATION_RESULT_FD_ENV = 'TRACEMEMO_LEGACY_MIGRATION_RESULT
 
 // This module must remain the first main-process import. Static imports in
 // settings/cache services can otherwise resolve Electron paths before the
-// TraceMemo userData is installed before any consumers. macOS uses the old
-// safeStorage identity only inside the helper; Windows keeps in both
-// processes because WCDB requires that technical runtime name.
+// TraceMemo userData is installed before any consumers. The migration helper
+// temporarily uses the legacy identity; normal Windows builds use TraceMemo.
 const isLegacyMigrationHelper = process.env[LEGACY_MIGRATION_HELPER_ENV] === '1'
-const legacyRuntimeName = process.platform === 'win32' ? 'WeFlow' : LEGACY_USER_DATA_NAME
+const legacyRuntimeName = LEGACY_USER_DATA_NAME
 const runtimeName =
-  process.platform === 'win32'
-    ? 'WeFlow'
-    : isLegacyMigrationHelper
-      ? legacyRuntimeName
-      : TRACE_MEMO_RUNTIME_NAME
+  isLegacyMigrationHelper ? legacyRuntimeName : TRACE_MEMO_RUNTIME_NAME
 app.setName(runtimeName)
 
 const isolatedUserData = process.env['WXE_USER_DATA']

@@ -1,9 +1,12 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AutoDetectImageKeySection } from '../../src/renderer/src/features/settings/image-decryption/AutoDetectImageKeySection'
+import { ImageDecryptStatus } from '../../src/renderer/src/features/settings/image-decryption/ImageDecryptStatus'
 import { ImageTestSection } from '../../src/renderer/src/features/settings/image-decryption/ImageTestSection'
 import { initialImageDecryptionState } from '../../src/renderer/src/features/settings/image-decryption/imageDecryptionReducer'
 import type { ImageBatchTestState } from '../../src/renderer/src/features/settings/image-decryption/types'
+import type { ImageDecryptionStatus } from '../../src/shared/image-decryption'
 
 const emptyBatchTest: ImageBatchTestState = {
   running: false,
@@ -12,11 +15,103 @@ const emptyBatchTest: ImageBatchTestState = {
   items: []
 }
 
+const imageStatus: ImageDecryptionStatus = {
+  configured: true,
+  saved: true,
+  encryptionAvailable: true,
+  source: 'secure-storage',
+  resourceRoot: '/fixture/images',
+  platform: 'darwin',
+  autoDetectSupported: true,
+  wechatRunning: true,
+  accountIdentified: true,
+  cacheState: 'normal',
+  decoder: {
+    installed: true,
+    available: true,
+    source: 'bundled',
+    selected: false
+  },
+  resources: {
+    imageIndex: { state: 'available', detail: '正常' },
+    imageDirectory: { state: 'available', detail: '正常' },
+    thumbnail: { state: 'available', detail: '正常' },
+    original: { state: 'available', detail: '正常' },
+    sticker: { state: 'available', detail: '正常' },
+    video: { state: 'available', detail: '正常' }
+  }
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
 
 describe('ImageTestSection', () => {
+  it('uses shared buttons for status validation and automatic key actions', async () => {
+    const user = userEvent.setup()
+    const onValidate = vi.fn()
+    const onDetect = vi.fn()
+    const onSave = vi.fn()
+    const configuredState = {
+      ...initialImageDecryptionState,
+      config: {
+        success: true,
+        configured: true,
+        saved: true,
+        encryptionAvailable: true,
+        source: 'secure-storage' as const,
+        resourceRoot: '/fixture/images'
+      },
+      status: imageStatus
+    }
+    const { rerender } = render(
+      <ImageDecryptStatus
+        state={configuredState}
+        selfInfo={null}
+        disabled={false}
+        onValidate={onValidate}
+      />
+    )
+
+    const validate = screen.getByRole('button', { name: '重新验证' })
+    expect(validate).not.toHaveClass('database-key-secondary')
+    await user.click(validate)
+    expect(onValidate).toHaveBeenCalledOnce()
+
+    rerender(
+      <AutoDetectImageKeySection
+        state={{ ...configuredState, autoPhase: 'success', autoAccount: '测试账号' }}
+        disabled={false}
+        canSave
+        onDetect={onDetect}
+        onSave={onSave}
+      />
+    )
+
+    const detect = screen.getByRole('button', { name: '开始自动获取' })
+    const save = screen.getByRole('button', { name: '保存图片密钥' })
+    expect(detect).not.toHaveClass('database-key-secondary')
+    expect(save).not.toHaveClass('database-key-primary')
+    await user.click(detect)
+    await user.click(save)
+    expect(onDetect).toHaveBeenCalledOnce()
+    expect(onSave).toHaveBeenCalledOnce()
+  })
+
+  it('keeps automatic detection disabled while scanning', () => {
+    render(
+      <AutoDetectImageKeySection
+        state={{ ...initialImageDecryptionState, status: imageStatus, autoPhase: 'scanning' }}
+        disabled={false}
+        canSave={false}
+        onDetect={vi.fn()}
+        onSave={vi.fn()}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: '扫描中…' })).toBeDisabled()
+  })
+
   it('keeps the file step successful when decryption fails and copies diagnostics', async () => {
     const onCopyLog = vi.fn()
     render(
@@ -88,6 +183,7 @@ describe('ImageTestSection', () => {
 
   it('filters groups and contacts before starting a batch test', async () => {
     const onBatchTest = vi.fn()
+    const onSelect = vi.fn()
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(
       <ImageTestSection
@@ -111,7 +207,7 @@ describe('ImageTestSection', () => {
         batchTest={emptyBatchTest}
         disabled={false}
         canSave={false}
-        onSelect={vi.fn()}
+        onSelect={onSelect}
         onTest={vi.fn()}
         onBatchTest={onBatchTest}
         onStopBatchTest={vi.fn()}
@@ -120,9 +216,13 @@ describe('ImageTestSection', () => {
       />
     )
 
-    await userEvent.click(screen.getByRole('button', { name: '群聊 1' }))
+    await userEvent.click(screen.getByRole('radio', { name: '群聊 1' }))
+    expect(screen.getByRole('radio', { name: '群聊 1' })).toBeChecked()
+    await userEvent.click(screen.getByRole('combobox', { name: '选择会话' }))
     expect(screen.getByRole('option', { name: '测试群聊' })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: '测试联系人' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('option', { name: '测试群聊' }))
+    expect(onSelect).toHaveBeenCalledWith('group-md5')
 
     await userEvent.click(screen.getByRole('button', { name: '测试筛选结果（1）' }))
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('测试 1 个会话'))

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import type { Contact } from '../../../../shared/types'
+import { Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui'
 
 interface ReportGroupMember {
   wxid: string
@@ -89,7 +90,7 @@ export function ReportGroupMemberSelector({
         选择一名成员对照群昵称、微信昵称和通讯录备注，确认日报使用的名称来源。
       </p>
       <div className="report-member-tools">
-        <input
+        <Input
           type="search"
           value={filter}
           disabled={disabled || loading}
@@ -97,22 +98,23 @@ export function ReportGroupMemberSelector({
           placeholder="搜索成员或 wxid"
           aria-label="搜索群成员"
         />
-        <select
-          value={selectedMember?.wxid || ''}
+        <Select
+          key={`${sourceContactId}:${loading ? 'loading' : 'ready'}`}
+          value={selectedMember?.wxid || undefined}
           disabled={disabled || loading || !filteredMembers.length}
-          onChange={(event) => setSelectedWxid(event.target.value)}
-          aria-label="选择群成员"
+          onValueChange={setSelectedWxid}
         >
-          {filteredMembers.length ? (
-            filteredMembers.map((member) => (
-              <option key={member.wxid} value={member.wxid}>
+          <SelectTrigger aria-label="选择群成员">
+            <SelectValue placeholder="暂无成员" />
+          </SelectTrigger>
+          <SelectContent>
+            {filteredMembers.map((member) => (
+              <SelectItem key={member.wxid} value={member.wxid}>
                 {displayMemberName(member)}
-              </option>
-            ))
-          ) : (
-            <option value="">暂无成员</option>
-          )}
-        </select>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       {loading && <p className="report-member-status">正在读取群成员...</p>}
       {error && <p className="report-member-status error">{error}</p>}
