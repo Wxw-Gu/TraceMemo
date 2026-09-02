@@ -644,7 +644,7 @@ export class ScheduledReportService {
       fallbackStage: ScheduledReportExecutionStage,
       status: 'failed' | 'waiting_to_send' | 'partial_success' = 'failed',
       patch: Partial<ScheduledReportExecution> = {},
-      notificationType: ScheduledReportNotificationType = 'failure',
+      notificationType: ScheduledReportNotificationType | null = 'failure',
       code?: string,
       errorStatus?: number,
       errorType?: string
@@ -691,13 +691,15 @@ export class ScheduledReportService {
           suggestedAction: normalized.suggestedAction,
           retryable: normalized.retryable
         },
-        {
-          type: notificationType,
-          severity: normalized.severity,
-          title: normalized.userTitle,
-          message: normalized.userMessage,
-          suggestedAction: normalized.suggestedAction
-        }
+        notificationType
+          ? {
+              type: notificationType,
+              severity: normalized.severity,
+              title: normalized.userTitle,
+              message: normalized.userMessage,
+              suggestedAction: normalized.suggestedAction
+            }
+          : undefined
       )
       return completed
     }
@@ -840,7 +842,7 @@ export class ScheduledReportService {
             sendStatus: unavailable ? 'unavailable' : 'failed',
             sendError: actionError
           },
-          'partial_success',
+          unavailable ? null : 'partial_success',
           unavailable ? 'WECHAT_SEND_UNAVAILABLE' : 'WECHAT_SEND_FAILED'
         )
       }

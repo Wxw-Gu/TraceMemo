@@ -181,7 +181,7 @@ describe('GroupExitMonitorService', () => {
     expect(mocks.capability.getPersonalWechatSendCapability).not.toHaveBeenCalled()
   })
 
-  it('keeps the member event when the Gateway reports unavailable capability', async () => {
+  it('微信发送能力不可用时仍保留退群事件', async () => {
     installGroupDb()
     mocks.capability.getPersonalWechatSendCapability.mockResolvedValue({
       ready: false,

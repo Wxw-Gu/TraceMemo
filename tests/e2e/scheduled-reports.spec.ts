@@ -73,7 +73,7 @@ test('SCHEDULED-REPORT-UI-01 opens the scheduled report dialog without viewport 
     await fixture.page.getByRole('button', { name: '设置' }).click()
     await fixture.page.getByRole('button', { name: '微信发送', exact: true }).click()
     await expect(fixture.page.getByRole('heading', { name: '微信发送' })).toBeVisible()
-    await expect(fixture.page.getByRole('heading', { name: '发送能力' })).toBeVisible()
+    await expect(fixture.page.getByRole('heading', { name: '发送能力', exact: true })).toBeVisible()
 
     expect(pageErrors).toEqual([])
   } finally {

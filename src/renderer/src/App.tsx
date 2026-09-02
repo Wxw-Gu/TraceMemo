@@ -1937,7 +1937,13 @@ function App(): React.ReactElement {
       case 'report':
         return renderReportWorkspace()
       case 'exit-monitor':
-        return <GroupExitMonitorWorkspace dbReady={isDatabaseConnected} contacts={contacts} />
+        return (
+          <GroupExitMonitorWorkspace
+            dbReady={isDatabaseConnected}
+            contacts={contacts}
+            onOpenSendSettings={openWechatSendSettings}
+          />
+        )
       case 'agent-hub':
         return <AgentHubWorkspace />
       case 'api':

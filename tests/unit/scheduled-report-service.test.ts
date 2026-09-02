@@ -435,7 +435,11 @@ describe('scheduled report scheduling', () => {
       ...makeDependencies({
         getAgentHubStatus: () => hubStatus,
         sendNotification,
-        getCapability: async () => unavailableCapability
+        send: async () => ({
+          success: false,
+          status: capability.senderStatus,
+          error: '连接器暂时不可用'
+        })
       })
     })
     const created = await service.createTask({
@@ -544,12 +548,88 @@ describe('scheduled report scheduling', () => {
       pngPath: '/tmp/saved.png',
       reportId: 'report-1',
       sendStatus: 'unavailable',
-      notificationStatus: 'sent'
+      notificationStatus: 'not_needed'
     })
     expect(generateReport).toHaveBeenCalledOnce()
     expect(saveHistory).toHaveBeenCalledOnce()
     expect(send).not.toHaveBeenCalled()
-    expect(await service.listNotifications()).toHaveLength(1)
+    expect(await service.listNotifications()).toHaveLength(0)
+  })
+
+  it('keeps a generated report waiting without creating a notification when sending is unavailable', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-send-block-'))
+    await enableNotifications(storageDir)
+    const sendAction = vi.fn(async () => ({
+      actionId: 'send-unavailable-action',
+      status: 'failed' as const,
+      decision: 'allow' as const,
+      errorCode: 'SEND_CAPABILITY_UNAVAILABLE' as const,
+      reason: '当前微信发送能力不可用',
+      startedAt: '2026-08-27T01:00:00.000Z',
+      finishedAt: '2026-08-27T01:00:01.000Z'
+    }))
+    const sendNotification = vi.fn()
+    const service = new ScheduledReportService({
+      storageDir,
+      ...makeDependencies({ sendAction, sendNotification })
+    })
+    const created = await service.createTask({
+      name: '发送能力未就绪日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '09:00'
+    })
+
+    const execution = await runScheduled(service, created.data!.id)
+
+    expect(execution).toMatchObject({
+      status: 'waiting_to_send',
+      errorCode: 'WECHAT_SEND_UNAVAILABLE',
+      sendStatus: 'unavailable',
+      notificationStatus: 'not_needed',
+      pngPath: '/tmp/saved.png'
+    })
+    expect(sendNotification).not.toHaveBeenCalled()
+    expect(await service.listNotifications()).toHaveLength(0)
+  })
+
+  it('keeps unavailable sending waiting on retry without creating a notification', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-send-retry-'))
+    await enableNotifications(storageDir)
+    const sendAction = vi.fn(async () => ({
+      actionId: 'send-unavailable-action',
+      status: 'failed' as const,
+      decision: 'allow' as const,
+      errorCode: 'SEND_CAPABILITY_UNAVAILABLE' as const,
+      reason: '当前微信发送能力不可用',
+      startedAt: '2026-08-27T01:00:00.000Z',
+      finishedAt: '2026-08-27T01:00:01.000Z'
+    }))
+    const sendNotification = vi.fn()
+    const service = new ScheduledReportService({
+      storageDir,
+      ...makeDependencies({ sendAction, sendNotification })
+    })
+    const created = await service.createTask({
+      name: '发送能力未就绪重试日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '09:00'
+    })
+    const first = await runScheduled(service, created.data!.id)
+
+    const retried = await service.retryScheduledReportSend(first.id)
+
+    expect(retried.data).toMatchObject({
+      status: 'waiting_to_send',
+      errorCode: 'WECHAT_SEND_UNAVAILABLE',
+      retryCount: 1,
+      sendStatus: 'unavailable',
+      notificationStatus: 'not_needed'
+    })
+    expect(sendAction).toHaveBeenCalledTimes(2)
+    expect(sendNotification).not.toHaveBeenCalled()
+    expect(await service.listNotifications()).toHaveLength(0)
   })
 
   it('keeps notifications pending when no reliable recipient is available', async () => {
@@ -559,7 +639,11 @@ describe('scheduled report scheduling', () => {
     const service = new ScheduledReportService({
       storageDir,
       ...makeDependencies({
-        getCapability: async () => unavailableCapability,
+        send: async () => ({
+          success: false,
+          status: capability.senderStatus,
+          error: '微信发送失败'
+        }),
         getNotificationRecipient: () => undefined,
         sendNotification
       })
@@ -591,7 +675,11 @@ describe('scheduled report scheduling', () => {
     const service = new ScheduledReportService({
       storageDir,
       ...makeDependencies({
-        getCapability: async () => unavailableCapability,
+        send: async () => ({
+          success: false,
+          status: capability.senderStatus,
+          error: '微信发送失败'
+        }),
         sendNotification
       })
     })

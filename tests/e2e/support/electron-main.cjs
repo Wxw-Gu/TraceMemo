@@ -20,6 +20,7 @@ const personalWechatSupported = process.platform === 'darwin' || process.platfor
 const unsignedMacUpdate = process.env.WXE_E2E_UNSIGNED_MAC_UPDATE === '1'
 const fixtureNowMs =
   Number.isFinite(configuredNow) && configuredNow > 0 ? configuredNow : Date.now()
+let keepOneBotProcess = false
 
 const formatFixtureDateTime = (timestampSeconds) => {
   const date = new Date(timestampSeconds * 1000)
@@ -442,6 +443,11 @@ handle('wechat-personal:getSendCapability', () => ({
     ? '个人微信已准备好发送日报'
     : '微信消息发送目前仅支持 macOS 和 Windows'
 }))
+handle('wechat-personal:getKeepProcess', () => keepOneBotProcess)
+handle('wechat-personal:setKeepProcess', (keep) => {
+  keepOneBotProcess = Boolean(keep)
+  return keepOneBotProcess
+})
 handle('scheduled-report:list', () => [...scheduledReportTasks])
 handle('scheduled-report:listExecutions', (taskId) =>
   taskId
