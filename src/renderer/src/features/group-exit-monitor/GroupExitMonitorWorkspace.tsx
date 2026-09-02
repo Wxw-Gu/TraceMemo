@@ -80,6 +80,38 @@ const sendCapabilityLabel = (capability: PersonalWechatSendCapability | null): s
 const sendCapabilityTone = (capability: PersonalWechatSendCapability | null): string =>
   capability?.ready && capability.capabilities.text ? 'ready' : 'unready'
 
+function EventNotificationStatus({
+  event
+}: {
+  event: GroupExitMonitorState['events'][number]
+}): React.ReactElement {
+  const status = event.notificationStatus || event.notification?.status || 'not_requested'
+  const details =
+    status === 'sent'
+      ? { label: '已通知当前群聊', tone: 'sent', description: '' }
+      : status === 'pending'
+        ? { label: '正在通知当前群聊', tone: 'pending', description: '' }
+        : status === 'blocked'
+          ? { label: '通知已拦截', tone: 'blocked', description: '该操作未通过发送策略检查。' }
+          : status === 'failed'
+            ? {
+                label: '通知未发送',
+                tone: 'failed',
+                description:
+                  event.notification?.errorCode === 'SEND_CAPABILITY_UNAVAILABLE' ||
+                  event.notification?.errorCode === 'SEND_NOT_READY'
+                    ? '当前微信发送能力不可用，退群事件已正常记录。'
+                    : '退群事件已正常记录，但通知发送失败。'
+              }
+            : { label: '仅记录', tone: 'recorded', description: '' }
+  return (
+    <div className={`exit-monitor-event-notification ${details.tone}`}>
+      <span>{details.label}</span>
+      {details.description ? <small>{details.description}</small> : null}
+    </div>
+  )
+}
+
 function SendCapabilityStatus({
   capability,
   className = ''
@@ -783,6 +815,7 @@ export function GroupExitMonitorWorkspace({
                           群人数 {event.previousCount} 人 → {event.currentCount} 人
                         </p>
                       ) : null}
+                      <EventNotificationStatus event={event} />
                       <dl className="exit-monitor-event-details">
                         <div>
                           <dt>微信名</dt>

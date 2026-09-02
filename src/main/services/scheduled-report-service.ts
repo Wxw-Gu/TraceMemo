@@ -4,8 +4,10 @@ import { promises as fs } from 'fs'
 import path from 'path'
 import type {
   PersonalWechatSendCapability,
-  PersonalWechatSendRequest
+  PersonalWechatSendRequest,
+  PersonalWechatSendResult
 } from '../../shared/personal-wechat'
+import type { WechatActionRequest, WechatActionResult } from '../../shared/wechat-action'
 import type { AgentHubStatus } from '../../shared/agent-hub'
 import type {
   ScheduledReportCreateInput,
@@ -33,8 +35,8 @@ import {
 import type { SaveGeneratedReportRequest } from '../../shared/report-history'
 import { saveGeneratedReport } from '../report-history-service'
 import { generateAgentGroupReport } from './agent-group-report-service'
-import { personalWechatSendService } from './personal-wechat-send-service'
 import { personalWechatCapabilityService } from './personal-wechat-capability-service'
+import { WechatActionGateway, wechatActionGateway } from './wechat-action-gateway'
 import { getContactAvatars, isReady as isChatReady, resolveMd5 } from './chat-service'
 import { agentHubService, type AgentHubNotificationResult } from './agent-hub-service'
 
@@ -55,7 +57,8 @@ export interface ScheduledReportDependencies {
   saveGeneratedReport: (
     request: SaveGeneratedReportRequest
   ) => ReturnType<typeof saveGeneratedReport>
-  send: (request: PersonalWechatSendRequest) => ReturnType<typeof personalWechatSendService.send>
+  send: (request: PersonalWechatSendRequest) => Promise<PersonalWechatSendResult>
+  sendAction?: (input: ScheduledReportSendActionInput) => Promise<WechatActionResult>
   sendNotification: (input: { to?: string; text: string }) => Promise<AgentHubNotificationResult>
   getNotificationRecipient: () => string | undefined
   getAgentHubStatus: () => AgentHubStatus
@@ -65,11 +68,43 @@ export interface ScheduledReportDependencies {
   now?: () => Date
 }
 
+export interface ScheduledReportSendActionInput {
+  target: string
+  filePath: string
+  executionId: string
+  triggerType: 'scheduled' | 'manual'
+  retryCount?: number
+  taskId?: string
+}
+
+function buildScheduledReportActionRequest(
+  input: ScheduledReportSendActionInput
+): WechatActionRequest {
+  return {
+    idempotencyKey:
+      input.retryCount && input.retryCount > 0
+        ? `scheduled_report:${input.executionId}:retry:${input.retryCount}`
+        : `scheduled_report:${input.executionId}`,
+    origin: 'scheduled_report',
+    purpose: 'scheduled_report',
+    triggerType: input.triggerType === 'scheduled' ? 'automation' : 'user',
+    sourceId: input.executionId,
+    executionId: input.executionId,
+    recipient: { type: 'group', id: input.target },
+    content: { type: 'image', path: input.filePath },
+    metadata: {
+      taskId: input.taskId,
+      retryCount: input.retryCount || 0
+    }
+  }
+}
+
 const defaultDependencies = (): ScheduledReportDependencies => ({
   getCapability: () => personalWechatCapabilityService.getPersonalWechatSendCapability(),
   generateReport: generateAgentGroupReport,
   saveGeneratedReport,
-  send: (request) => personalWechatSendService.send(request),
+  send: (request) => sendRequestThroughGateway(request),
+  sendAction: (input) => wechatActionGateway.execute(buildScheduledReportActionRequest(input)),
   sendNotification: (input) => agentHubService.sendNotification(input),
   getNotificationRecipient: () => agentHubService.getNotificationRecipient(),
   getAgentHubStatus: () => agentHubService.getStatus(),
@@ -77,6 +112,35 @@ const defaultDependencies = (): ScheduledReportDependencies => ({
   storageDir: path.join(app.getPath('userData'), STORAGE_DIR),
   isDatabaseReady: () => isChatReady()
 })
+
+async function sendRequestThroughGateway(
+  request: PersonalWechatSendRequest
+): Promise<PersonalWechatSendResult> {
+  const content =
+    request.type === 'text'
+      ? { type: 'text' as const, text: request.text }
+      : { type: request.type, path: request.filePath }
+  const action = await wechatActionGateway.execute({
+    origin: 'scheduled_report',
+    purpose: 'scheduled_report',
+    triggerType: 'automation',
+    recipient: {
+      type: request.isGroup ? 'group' : 'contact',
+      id: request.to
+    },
+    content
+  })
+  const sendResult = action.sendResult
+  const status =
+    sendResult && typeof sendResult === 'object' && 'status' in sendResult
+      ? (sendResult as { status: PersonalWechatSendResult['status'] }).status
+      : ({} as PersonalWechatSendResult['status'])
+  return {
+    success: action.status === 'sent',
+    status,
+    ...(action.reason || action.errorCode ? { error: action.reason || action.errorCode } : {})
+  }
+}
 
 const rangeValues = new Set<ScheduledReportRange>(['today', 'yesterday', '7days', 'recent24h'])
 
@@ -148,7 +212,21 @@ export class ScheduledReportService {
   private readonly retrying = new Map<string, Promise<ScheduledReportExecution>>()
 
   constructor(deps?: Partial<ScheduledReportDependencies>) {
-    this.deps = { ...defaultDependencies(), ...deps }
+    const defaults = defaultDependencies()
+    const merged = { ...defaults, ...deps }
+    if (deps?.send && !deps.sendAction) {
+      // 保留注入的传输实现，方便测试和内嵌场景，同时让日报发送继续使用统一的发送入口。
+      const legacyGateway = new WechatActionGateway({
+        getCapability: merged.getCapability,
+        send: merged.send,
+        getUserDataPath: () => merged.storageDir,
+        ...(merged.now ? { now: merged.now } : {})
+      })
+      merged.sendAction = (input) => legacyGateway.execute(buildScheduledReportActionRequest(input))
+    } else if (!merged.sendAction) {
+      merged.sendAction = defaults.sendAction
+    }
+    this.deps = merged
   }
 
   async start(): Promise<void> {
@@ -626,8 +704,6 @@ export class ScheduledReportService {
 
     try {
       await update({ currentStage: 'precheck' })
-      let capability: PersonalWechatSendCapability | null = null
-      let capabilityCheckError = ''
 
       await update({ currentStage: 'data' })
       await update({ currentStage: 'ai' })
@@ -717,27 +793,6 @@ export class ScheduledReportService {
       }
       await update({ reportId, htmlPath, pngPath, currentStage: 'send' })
 
-      try {
-        capability = await this.deps.getCapability()
-      } catch (error) {
-        capabilityCheckError = error instanceof Error ? error.message : String(error)
-      }
-      if (!capability?.ready || !capability.capabilities.image) {
-        const technicalMessage =
-          capabilityCheckError ||
-          capability?.error ||
-          capability?.message ||
-          '个人微信发送能力不可用'
-        return finishError(
-          technicalMessage,
-          'send',
-          'waiting_to_send',
-          { sendStatus: 'unavailable', sendError: technicalMessage },
-          'partial_success',
-          'WECHAT_SEND_UNAVAILABLE'
-        )
-      }
-
       const target = this.resolveTarget(task)
       if (!target) {
         return finishError(
@@ -750,13 +805,14 @@ export class ScheduledReportService {
         )
       }
       await update({ sendTarget: target, currentStage: 'send' })
-      let sent: Awaited<ReturnType<ScheduledReportDependencies['send']>>
+      let action: WechatActionResult
       try {
-        sent = await this.deps.send({
-          type: 'image',
-          to: target,
-          isGroup: true,
-          filePath: pngPath
+        action = await this.deps.sendAction!({
+          target,
+          filePath: pngPath,
+          executionId: execution.id,
+          triggerType,
+          taskId: task.id
         })
       } catch (error) {
         return finishError(
@@ -771,14 +827,21 @@ export class ScheduledReportService {
           'WECHAT_SEND_FAILED'
         )
       }
-      if (!sent.success) {
+      if (action.status !== 'sent') {
+        const unavailable =
+          action.errorCode === 'SEND_CAPABILITY_UNAVAILABLE' ||
+          action.errorCode === 'SEND_NOT_READY'
+        const actionError = action.reason || action.errorCode || '微信发送失败'
         return finishError(
-          sent.error || '微信发送失败',
+          actionError,
           'send',
+          unavailable ? 'waiting_to_send' : 'partial_success',
+          {
+            sendStatus: unavailable ? 'unavailable' : 'failed',
+            sendError: actionError
+          },
           'partial_success',
-          { sendStatus: 'failed', sendError: sent.error || '微信发送失败' },
-          'partial_success',
-          'WECHAT_SEND_FAILED'
+          unavailable ? 'WECHAT_SEND_UNAVAILABLE' : 'WECHAT_SEND_FAILED'
         )
       }
       return this.finalizeExecution(task, execution, {
@@ -844,38 +907,28 @@ export class ScheduledReportService {
       )
     }
 
-    let capability: PersonalWechatSendCapability | null = null
-    try {
-      capability = await this.deps.getCapability()
-    } catch (error) {
-      return finishRetryError(error, 'WECHAT_SEND_UNAVAILABLE', 'unavailable', 'waiting_to_send')
-    }
-    if (!capability.ready || !capability.capabilities.image) {
-      return finishRetryError(
-        capability.error || capability.message || '个人微信发送能力不可用',
-        'WECHAT_SEND_UNAVAILABLE',
-        'unavailable',
-        'waiting_to_send'
-      )
-    }
-
     const target = working.sendTarget || this.resolveTarget(task)
     if (!target) {
       return finishRetryError('未找到指定微信群', 'WECHAT_SEND_FAILED', 'failed', 'partial_success')
     }
     try {
-      const sent = await this.deps.send({
-        type: 'image',
-        to: target,
-        isGroup: true,
-        filePath: working.pngPath
+      const action = await this.deps.sendAction!({
+        target,
+        filePath: working.pngPath,
+        executionId: working.id,
+        triggerType: working.triggerType || 'scheduled',
+        retryCount,
+        taskId: task.id
       })
-      if (!sent.success) {
+      if (action.status !== 'sent') {
+        const unavailable =
+          action.errorCode === 'SEND_CAPABILITY_UNAVAILABLE' ||
+          action.errorCode === 'SEND_NOT_READY'
         return finishRetryError(
-          sent.error || '微信发送失败',
-          'WECHAT_SEND_FAILED',
-          'failed',
-          'partial_success'
+          action.reason || action.errorCode || '微信发送失败',
+          unavailable ? 'WECHAT_SEND_UNAVAILABLE' : 'WECHAT_SEND_FAILED',
+          unavailable ? 'unavailable' : 'failed',
+          unavailable ? 'waiting_to_send' : 'partial_success'
         )
       }
     } catch (error) {
@@ -932,18 +985,21 @@ export class ScheduledReportService {
       ...patch,
       finishedAt: (this.deps.now?.() || new Date()).toISOString()
     }
-    await this.persistExecution(completed)
+    // 让执行记录在通知完成前保持进行中，避免日报已结束但通知状态尚未更新。
+    const notified = notification
+      ? await this.notifyExecution(task, completed, notification)
+      : completed
+    await this.persistExecution(notified)
     const taskIndex = this.tasks!.findIndex((item) => item.id === task.id)
     if (taskIndex >= 0) {
       this.tasks![taskIndex] = {
         ...this.tasks![taskIndex],
-        lastRunAt: completed.finishedAt,
-        updatedAt: completed.finishedAt!
+        lastRunAt: notified.finishedAt,
+        updatedAt: notified.finishedAt!
       }
       await this.saveTasks()
     }
-    if (notification) return this.notifyExecution(task, completed, notification)
-    return { ...completed }
+    return { ...notified }
   }
 
   private async persistExecution(execution: ScheduledReportExecution): Promise<void> {

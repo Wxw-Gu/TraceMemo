@@ -159,4 +159,84 @@ describe('GroupExitMonitorService', () => {
       text: '退群: 另一个人/未设置/wxid_other'
     })
   })
+
+  it('records an exit without creating a send action when notification is disabled', async () => {
+    installGroupDb()
+    mocks.chat.getGroupSnapshotAsync
+      .mockResolvedValueOnce({
+        roomId: 'room@chatroom',
+        members: [member, { wxid: 'wxid_other', wechatNickname: '另一个人' }]
+      })
+      .mockResolvedValueOnce({ roomId: 'room@chatroom', members: [member] })
+    const service = new GroupExitMonitorService()
+    service.setMonitoredRoomIds(['room@chatroom'])
+    await service.start(true)
+    const state = await service.checkNow()
+
+    expect(state.events[0]).toMatchObject({
+      memberWxid: 'wxid_other',
+      notificationStatus: 'not_requested'
+    })
+    expect(mocks.sender.send).not.toHaveBeenCalled()
+    expect(mocks.capability.getPersonalWechatSendCapability).not.toHaveBeenCalled()
+  })
+
+  it('keeps the member event when the Gateway reports unavailable capability', async () => {
+    installGroupDb()
+    mocks.capability.getPersonalWechatSendCapability.mockResolvedValue({
+      ready: false,
+      supported: true,
+      status: 'needs_binding',
+      capabilities: { text: false, image: false, voice: false },
+      senderStatus: {},
+      message: '当前微信发送能力不可用'
+    })
+    mocks.chat.getGroupSnapshotAsync
+      .mockResolvedValueOnce({
+        roomId: 'room@chatroom',
+        members: [member, { wxid: 'wxid_other', wechatNickname: '另一个人' }]
+      })
+      .mockResolvedValueOnce({ roomId: 'room@chatroom', members: [member] })
+    const service = new GroupExitMonitorService()
+    service.setMonitoredRoomIds(['room@chatroom'], ['room@chatroom'])
+    await service.start(true)
+    const state = await service.checkNow()
+
+    expect(state.events[0]).toMatchObject({
+      notificationStatus: 'failed',
+      notification: {
+        status: 'failed',
+        errorCode: 'SEND_CAPABILITY_UNAVAILABLE'
+      }
+    })
+    expect(mocks.sender.send).not.toHaveBeenCalled()
+  })
+
+  it('does not send twice when the same snapshot diff is checked again', async () => {
+    installGroupDb()
+    mocks.capability.getPersonalWechatSendCapability.mockResolvedValue({
+      ready: true,
+      capabilities: { text: true, image: false, voice: false },
+      supported: true,
+      status: 'ready',
+      senderStatus: {},
+      message: 'ready'
+    })
+    mocks.sender.send.mockResolvedValue({ success: true })
+    mocks.chat.getGroupSnapshotAsync
+      .mockResolvedValueOnce({
+        roomId: 'room@chatroom',
+        members: [member, { wxid: 'wxid_other', wechatNickname: '另一个人' }]
+      })
+      .mockResolvedValueOnce({ roomId: 'room@chatroom', members: [member] })
+      .mockResolvedValueOnce({ roomId: 'room@chatroom', members: [member] })
+    const service = new GroupExitMonitorService()
+    service.setMonitoredRoomIds(['room@chatroom'], ['room@chatroom'])
+    await service.start(true)
+    await service.checkNow()
+    await service.checkNow()
+
+    expect(mocks.sender.send).toHaveBeenCalledOnce()
+    expect(service.getState().events).toHaveLength(1)
+  })
 })
