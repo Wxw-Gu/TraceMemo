@@ -1,4 +1,5 @@
 import React from 'react'
+import { Button } from '../ui'
 
 interface ReportZoomBarProps {
   zoom: number
@@ -17,19 +18,19 @@ export function ReportZoomBar({
 }: ReportZoomBarProps): React.ReactElement {
   return (
     <div className="report-zoom-bar">
-      <button type="button" onClick={() => onZoomChange(clampZoom(zoom / 1.25))}>
+      <Button variant="ghost" size="sm" onClick={() => onZoomChange(clampZoom(zoom / 1.25))}>
         缩小
-      </button>
+      </Button>
       <span title="100% 为完整显示在当前预览框内">{Math.round(zoom * 100)}%</span>
-      <button type="button" onClick={() => onZoomChange(clampZoom(zoom * 1.25))}>
+      <Button variant="ghost" size="sm" onClick={() => onZoomChange(clampZoom(zoom * 1.25))}>
         放大
-      </button>
-      <button type="button" onClick={onFitPage}>
+      </Button>
+      <Button variant="ghost" size="sm" onClick={onFitPage}>
         完整显示
-      </button>
-      <button type="button" onClick={onActualSize}>
+      </Button>
+      <Button variant="ghost" size="sm" onClick={onActualSize}>
         原始大小
-      </button>
+      </Button>
     </div>
   )
 }

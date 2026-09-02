@@ -1,4 +1,5 @@
 import { type ReactElement } from 'react'
+import { Button } from '../../../components/ui'
 import type { ApiServiceState, SkillStatus } from '../model/types'
 import { type AgentInstallTarget } from '../model/skillDistribution'
 import { SkillTargetSelector } from './SkillTargetSelector'
@@ -52,9 +53,9 @@ export function SkillInstallFlow({
               {skill?.available ? '可用' : '不可用'}
             </p>
             {!service?.running && (
-              <button type="button" className="api-primary-button" onClick={onStart}>
+              <Button size="sm" onClick={onStart}>
                 启动服务
-              </button>
+              </Button>
             )}
             {!skill?.available && (
               <p className="api-inline-error">{skill?.error || '本地 Skill 文件不可用'}</p>
@@ -74,17 +75,12 @@ export function SkillInstallFlow({
             <h3>粘贴并验证</h3>
             <p>将安装指令粘贴到 Agent；安装后应调用 health 接口验证连接。</p>
             <div className="skill-flow-actions">
-              <button
-                type="button"
-                className="api-primary-button"
-                disabled={!ready}
-                onClick={onCopyInstruction}
-              >
+              <Button size="sm" disabled={!ready} onClick={onCopyInstruction}>
                 {buttonLabel[target]}
-              </button>
-              <button type="button" disabled={!ready} onClick={onCopyVerification}>
+              </Button>
+              <Button size="sm" variant="outline" disabled={!ready} onClick={onCopyVerification}>
                 复制测试问题
-              </button>
+              </Button>
             </div>
           </div>
         </section>

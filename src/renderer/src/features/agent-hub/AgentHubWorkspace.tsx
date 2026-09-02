@@ -5,6 +5,14 @@ import type {
   AgentHubStatus,
   WechatConnectorStatus
 } from '../../../../shared/agent-hub'
+import {
+  Button,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '../../components/ui'
 
 const STATUS_LABELS: Record<WechatConnectorStatus, string> = {
   checking: '正在检查',
@@ -127,14 +135,13 @@ export function AgentHubWorkspace(): React.ReactElement {
                   {status.connector === 'scanned' ? '请在手机上确认登录' : '使用微信扫描二维码'}
                 </h3>
                 <p>二维码仅用于机器人账号登录，不会读取你的微信密码。</p>
-                <button
-                  type="button"
-                  className="agent-hub-button secondary"
+                <Button
+                  variant="outline"
                   disabled={busy}
                   onClick={() => void runAction(() => window.api.cancelAgentHubLogin())}
                 >
                   取消
-                </button>
+                </Button>
               </div>
             </div>
           ) : status.connector === 'online' ? (
@@ -160,32 +167,28 @@ export function AgentHubWorkspace(): React.ReactElement {
           <div className="agent-hub-actions">
             {status.connector === 'online' ? (
               <>
-                <button
-                  type="button"
-                  className="agent-hub-button secondary"
+                <Button
+                  variant="outline"
                   disabled={busy}
                   onClick={() => void runAction(() => window.api.startAgentHubLogin())}
                 >
                   重新扫码登录
-                </button>
-                <button
-                  type="button"
-                  className="agent-hub-button danger"
+                </Button>
+                <Button
+                  variant="destructive"
                   disabled={busy}
                   onClick={() => void runAction(() => window.api.disconnectAgentHub())}
                 >
                   断开连接
-                </button>
+                </Button>
               </>
             ) : !isLoginFlow ? (
-              <button
-                type="button"
-                className="agent-hub-button primary"
+              <Button
                 disabled={busy || status.hub !== 'online'}
                 onClick={() => void runAction(() => window.api.startAgentHubLogin())}
               >
                 {busy ? '正在获取二维码…' : '扫码登录微信机器人'}
-              </button>
+              </Button>
             ) : null}
           </div>
         </section>
@@ -217,11 +220,11 @@ export function AgentHubWorkspace(): React.ReactElement {
               <i />
               使用已配置 AI 理解自然语言
             </li>
-            <li>
+            <li className="agent-hub-capability-status">
               <i className={status.dataApi === 'online' ? '' : 'offline'} />
               本地数据 API：{status.dataApi === 'online' ? '已连接' : '未连接'}
             </li>
-            <li>
+            <li className="agent-hub-capability-status">
               <i className={status.databaseReady ? '' : 'offline'} />
               微信数据库：{status.databaseReady ? '可查询' : '未就绪'}
             </li>
@@ -236,26 +239,31 @@ export function AgentHubWorkspace(): React.ReactElement {
             <h2>运行日志</h2>
           </div>
           <div className="agent-hub-log-actions">
-            <select
-              aria-label="筛选日志来源"
+            <Select
               value={logSource}
-              onChange={(event) => setLogSource(event.target.value as 'all' | AgentHubLogSource)}
+              onValueChange={(value) => setLogSource(value as 'all' | AgentHubLogSource)}
             >
-              <option value="all">全部来源</option>
-              <option value="system">系统</option>
-              <option value="agent-hub">Agent Hub</option>
-              <option value="wechat-connector">微信连接器</option>
-            </select>
-            <button
-              type="button"
+              <SelectTrigger aria-label="筛选日志来源" className="h-8 min-w-32">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部来源</SelectItem>
+                <SelectItem value="system">系统</SelectItem>
+                <SelectItem value="agent-hub">Agent Hub</SelectItem>
+                <SelectItem value="wechat-connector">微信连接器</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => void copyLogs()}
               disabled={visibleLogs.length === 0}
             >
               复制日志
-            </button>
-            <button type="button" onClick={() => void clearLogs()}>
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => void clearLogs()}>
               清空
-            </button>
+            </Button>
           </div>
         </div>
         <div className="agent-hub-log-body" ref={logBodyRef}>

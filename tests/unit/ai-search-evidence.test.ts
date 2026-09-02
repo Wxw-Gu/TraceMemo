@@ -34,6 +34,7 @@ describe('Final Evidence builder', () => {
 
     expect(result.candidateCount).toBe(16)
     expect(result.evidence).toHaveLength(8)
+    expect(result.collection).toHaveLength(16)
     expect(result.evidence.map((item) => item.id)).toEqual([
       'E1',
       'E2',
@@ -69,6 +70,40 @@ describe('Final Evidence builder', () => {
     const result = buildFinalEvidence([candidate(1, { sourceKind: 'voice' })], 8)
 
     expect(result.evidence[0]).toMatchObject({ id: 'E1', sourceKind: 'voice' })
+  })
+
+  it('covers different conversations before filling remaining relevance slots', () => {
+    const candidates = Array.from({ length: 24 }, (_, index) =>
+      candidate(index + 1, {
+        conversationId: `conversation-${Math.floor(index / 2) + 1}`,
+        conversationName: `群聊 ${Math.floor(index / 2) + 1}`,
+        score: -(index + 1)
+      })
+    )
+
+    const result = buildFinalEvidence(candidates, 8, { strategy: 'conversation_coverage' })
+
+    expect(result.evidence).toHaveLength(8)
+    expect(new Set(result.evidence.map((item) => item.conversationId)).size).toBe(8)
+    expect(new Set(result.evidence.map((item) => item.conversationId))).toEqual(
+      new Set(Array.from({ length: 8 }, (_, index) => `conversation-${12 - index}`))
+    )
+  })
+
+  it('keeps sender coverage separate from conversation coverage', () => {
+    const candidates = Array.from({ length: 12 }, (_, index) =>
+      candidate(index + 1, {
+        conversationId: `conversation-${Math.floor(index / 3) + 1}`,
+        senderId: `sender-${Math.floor(index / 2) + 1}`,
+        sender: `成员 ${Math.floor(index / 2) + 1}`,
+        score: -(index + 1)
+      })
+    )
+
+    const result = buildFinalEvidence(candidates, 8, { strategy: 'sender_coverage' })
+
+    expect(result.evidence).toHaveLength(8)
+    expect(new Set(result.evidence.map((item) => item.senderId)).size).toBe(6)
   })
 
   it('removes citations which do not resolve to Final Evidence', () => {

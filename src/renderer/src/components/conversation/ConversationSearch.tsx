@@ -1,4 +1,5 @@
 import React from 'react'
+import { Input } from '../ui'
 
 interface ConversationSearchProps {
   value: string
@@ -23,8 +24,10 @@ export function ConversationSearch({
       <span className="conversation-search-icon">
         <SearchIcon />
       </span>
-      <input
-        type="text"
+      <Input
+        type="search"
+        aria-label="搜索会话"
+        className="h-[34px] pl-9"
         value={value}
         placeholder="搜索群聊、联系人或 wxid"
         onChange={(event) => onChange(event.target.value)}

@@ -1,3 +1,4 @@
+import { Button } from '../../../components/ui'
 import type { ImageDecryptionState } from './types'
 
 const PHASE_LABELS = {
@@ -46,13 +47,11 @@ export function AutoDetectImageKeySection({
               ? '扫描本机微信缓存并通过图片模板验证候选密钥。'
               : '扫描微信进程内存并通过本地图片模板验证候选密钥。'}
             <br />
-            <small className="image-auto-scope-hint">
-              仅支持 WeChat 4.0，V3 及以下无法解析
-            </small>
+            <small className="image-auto-scope-hint">仅支持 WeChat 4.0，V3 及以下无法解析</small>
           </p>
         </div>
-        <button
-          className="database-key-secondary"
+        <Button
+          variant="outline"
           disabled={
             disabled ||
             autoBusy ||
@@ -63,7 +62,7 @@ export function AutoDetectImageKeySection({
           onClick={onDetect}
         >
           {state.autoPhase === 'scanning' ? '扫描中…' : '开始自动获取'}
-        </button>
+        </Button>
       </div>
       <ul>
         <li className={state.status.wechatRunning ? 'ok' : ''}>
@@ -95,9 +94,9 @@ export function AutoDetectImageKeySection({
           <strong>图片密钥验证成功</strong>
           <span>发现账号：{state.autoAccount || '当前微信账号'}</span>
           <span>图片解析：正常</span>
-          <button className="database-key-primary" disabled={!canSave} onClick={onSave}>
+          <Button disabled={!canSave} onClick={onSave}>
             {state.autoPhase === 'saved' ? '已保存' : '保存图片密钥'}
-          </button>
+          </Button>
         </div>
       ) : null}
     </section>

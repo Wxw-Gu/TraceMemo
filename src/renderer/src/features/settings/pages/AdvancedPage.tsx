@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Button, Switch } from '../../../components/ui'
 
 export function AdvancedPage({
   onNotice
@@ -40,16 +41,16 @@ export function AdvancedPage({
                 <b>显示诊断日志</b>
                 <small>开启后，检索页显示诊断日志入口并记录匹配统计，不记录聊天正文。</small>
               </span>
-              <input
-                type="checkbox"
+              <Switch
                 checked={debugEnabled}
-                onChange={(event) => void changeDebugEnabled(event.target.checked)}
+                onCheckedChange={(checked) => void changeDebugEnabled(checked)}
+                aria-label="显示诊断日志"
               />
             </label>
             <div className="settings-debug-actions">
-              <button type="button" onClick={() => void window.api.revealAppLog()}>
+              <Button variant="outline" size="sm" onClick={() => void window.api.revealAppLog()}>
                 打开诊断日志
-              </button>
+              </Button>
               <small>关闭调试日志后，仍会保留错误和崩溃日志。</small>
             </div>
           </section>

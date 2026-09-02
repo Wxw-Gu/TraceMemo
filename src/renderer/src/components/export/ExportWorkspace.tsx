@@ -9,6 +9,7 @@ import type {
   ExportTarget
 } from '../../../../shared/export'
 import { ExportContactPanel } from './ExportContactPanel'
+import { ExportConfigurationPanel } from './ExportConfigurationPanel'
 import { ExportPreviewPanel } from './ExportPreviewPanel'
 import { ExportTaskCenter } from './ExportTaskCenter'
 import type {
@@ -19,7 +20,7 @@ import type {
   ExportWorkspaceProps,
   GroupMemberName
 } from './exportTypes'
-import { displayName, formatLabels, formatOrder, messageKinds } from './exportUtils'
+import { displayName } from './exportUtils'
 import type { VoiceModelStatus } from '../../../../shared/voice-recognition'
 import { resolveMemberName } from '../../../../shared/member-names'
 
@@ -445,6 +446,12 @@ export function ExportWorkspace({
     ? `${outputDirectory}/${outputName}${format === 'html' ? (zip ? '.zip' : '/') : `.${format === 'markdown' ? 'md' : format}`}`
     : targetPath
 
+  const selectOutputDirectory = (): void => {
+    void window.api.selectExportDirectory().then((result) => {
+      if (!result.canceled && result.path) setOutputDirectory(result.path)
+    })
+  }
+
   return (
     <div className="export-workspace">
       <ExportContactPanel
@@ -470,8 +477,8 @@ export function ExportWorkspace({
         onOpenSettings={onOpenSettings}
       />
 
-      <main className="export-config-panel">
-        <div className="export-config-scroll">
+      <ExportConfigurationPanel
+        taskCenter={
           <ExportTaskCenter
             open={taskCenterOpen}
             taskCount={taskCount}
@@ -479,327 +486,55 @@ export function ExportWorkspace({
             onToggle={() => setTaskCenterOpen((open) => !open)}
             onCancel={(taskJobId) => void onCancelExport(taskJobId)}
           />
-          <header className="export-config-header">
-            <span className="export-chat-avatar-stack" aria-hidden>
-              {exportAll
-                ? allContactTypes.map((type) => (
-                    <span
-                      className={`export-chat-avatar export-all-chat-avatar ${type}`}
-                      key={type}
-                    >
-                      {type === 'group' ? '群' : '联'}
-                    </span>
-                  ))
-                : selectedContacts.slice(0, 3).map((contact) => (
-                    <span className="export-chat-avatar" key={contact.md5}>
-                      {contact.avatar ? (
-                        <img src={contact.avatar} alt="" />
-                      ) : (
-                        displayName(contact).slice(0, 1)
-                      )}
-                    </span>
-                  ))}
-            </span>
-            <span className="export-config-title">
-              <h1>导出设置</h1>
-              <p>{selectedLabel}</p>
-            </span>
-            <button
-              type="button"
-              className="export-add-chat-button"
-              disabled={exportAll}
-              onClick={() => {
-                setExportAll(false)
-                setSelectionMode((current) => !current)
-              }}
-            >
-              {exportAll ? '已选择全部聊天' : selectionMode ? '完成选择' : '+ 添加聊天'}
-            </button>
-          </header>
-
-          <section className="export-section export-format-top">
-            <h3>导出格式</h3>
-            <div className="export-format-grid">
-              {formatOrder.map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={format === value ? 'active' : ''}
-                  disabled={!exportAll && exportContacts.length > 1 && value !== 'html'}
-                  onClick={() => setFormat(value)}
-                >
-                  <strong>{formatLabels[value].label}</strong>
-                  {formatLabels[value].hint && <small>{formatLabels[value].hint}</small>}
-                </button>
-              ))}
-            </div>
-            <p className="export-helper-text">
-              {exportAll
-                ? '全部导出固定使用全部时间；每个群聊或联系人都会在自己的目录中生成所选格式的独立档案。'
-                : selectedContacts.length > 1
-                  ? '多聊天合并仅支持 HTML，会保留每条消息所属的聊天。'
-                  : 'CSV 默认最快；HTML 会包含图片、引用和其他媒体，导出时间可能较长。'}
-            </p>
-            {format === 'html' && (
-              <>
-                <div className="export-html-options">
-                  <label>
-                    <input
-                      type="radio"
-                      name="html-package-top"
-                      checked={!zip}
-                      onChange={() => setZip(false)}
-                    />{' '}
-                    HTML 资源包
-                  </label>
-                  <label>
-                    <input
-                      type="radio"
-                      name="html-package-top"
-                      checked={zip}
-                      onChange={() => setZip(true)}
-                    />{' '}
-                    HTML 资源包并压缩为 ZIP
-                  </label>
-                </div>
-                <p className="export-helper-text">
-                  使用相同名称再次导出时，会把新消息合并进已有档案，不会删除之前导出的消息。
-                </p>
-              </>
-            )}
-          </section>
-
-          <section className="export-section">
-            <div className="export-section-heading">
-              <h3>时间范围</h3>
-              <span>{status === 'completed' ? '已完成导出' : '消息数量将在开始导出后统计'}</span>
-            </div>
-            <div className="export-range-toggle">
-              <button
-                type="button"
-                className={range === 'all' ? 'active' : ''}
-                onClick={() => setRange('all')}
-              >
-                全部时间
-              </button>
-              {!exportAll && (
-                <>
-                  <button
-                    type="button"
-                    className={range === 'today' ? 'active' : ''}
-                    onClick={() => setRange('today')}
-                  >
-                    今天
-                  </button>
-                  <button
-                    type="button"
-                    className={range === 'threeDays' ? 'active' : ''}
-                    onClick={() => setRange('threeDays')}
-                  >
-                    最近 3 天
-                  </button>
-                  <button
-                    type="button"
-                    className={range === 'sevenDays' ? 'active' : ''}
-                    onClick={() => setRange('sevenDays')}
-                  >
-                    最近 7 天
-                  </button>
-                  <button
-                    type="button"
-                    className={range === 'custom' ? 'active' : ''}
-                    onClick={() => setRange('custom')}
-                  >
-                    自定义时间
-                  </button>
-                </>
-              )}
-            </div>
-            {!exportAll && range === 'custom' && (
-              <div className="export-date-fields">
-                <label>
-                  开始时间
-                  <input
-                    type="datetime-local"
-                    value={startDate}
-                    onChange={(event) => setStartDate(event.target.value)}
-                  />
-                </label>
-                <label>
-                  结束时间
-                  <input
-                    type="datetime-local"
-                    value={endDate}
-                    onChange={(event) => setEndDate(event.target.value)}
-                  />
-                </label>
-              </div>
-            )}
-          </section>
-
-          <section className="export-section">
-            <h3>消息内容</h3>
-            <div className="export-kind-grid">
-              {messageKinds.map(([value, label]) => (
-                <label key={value} className="export-check-row">
-                  <input
-                    type="checkbox"
-                    checked={selectedKinds.has(value)}
-                    onChange={() => toggleKind(value)}
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
-            </div>
-          </section>
-
-          <section className="export-section">
-            <h3>消息显示名称</h3>
-            <div className="export-name-mode-grid" role="radiogroup" aria-label="消息显示名称">
-              {nameOptions.map((option) => (
-                <label key={option.value} className="export-name-mode-option">
-                  <input
-                    type="radio"
-                    name="export-name-mode"
-                    checked={nameMode === option.value}
-                    onChange={() => setNameMode(option.value)}
-                  />
-                  <span>{option.label}</span>
-                </label>
-              ))}
-            </div>
-          </section>
-
-          <section className="export-section">
-            <h3>资源处理</h3>
-            <label className="export-media-master">
-              <span>包含图片、视频、语音、表情及文件附件</span>
-              <input
-                type="checkbox"
-                checked={includeMedia}
-                disabled={format !== 'html'}
-                onChange={(event) => setIncludeMedia(event.target.checked)}
-              />
-            </label>
-            <div
-              className={`export-media-options ${includeMedia && format === 'html' ? '' : 'disabled'}`}
-            >
-              <label className="export-check-row">
-                <input
-                  type="checkbox"
-                  checked={preferOriginal}
-                  disabled={!includeMedia || format !== 'html'}
-                  onChange={(event) => setPreferOriginal(event.target.checked)}
-                />
-                <span>优先导出原图</span>
-              </label>
-              <label className="export-check-row">
-                <input
-                  type="checkbox"
-                  checked={fallbackThumbnail}
-                  disabled={!includeMedia || format !== 'html'}
-                  onChange={(event) => setFallbackThumbnail(event.target.checked)}
-                />
-                <span>原图缺失时使用缩略图</span>
-              </label>
-              <label className="export-check-row">
-                <input
-                  type="checkbox"
-                  checked={keepMissing}
-                  disabled={!includeMedia || format !== 'html'}
-                  onChange={(event) => setKeepMissing(event.target.checked)}
-                />
-                <span>媒体缺失时保留占位说明</span>
-              </label>
-              <label className="export-check-row">
-                <input
-                  type="checkbox"
-                  checked={includeVoiceTranscripts && voiceModelStatus?.state === 'ready'}
-                  disabled={
-                    !includeMedia ||
-                    format !== 'html' ||
-                    !selectedKinds.has('voice') ||
-                    voiceModelStatus?.state !== 'ready'
-                  }
-                  onChange={(event) => setIncludeVoiceTranscripts(event.target.checked)}
-                />
-                <span>语音转文字，显示在语音条下方</span>
-              </label>
-            </div>
-            <p className="export-helper-text">
-              资源文件仅在 HTML 导出中生效，CSV、JSON 和 Markdown 只保留文本内容。
-            </p>
-            <div className="export-resource-statuses">
-              <span>图片解密：已就绪</span>
-              <span>视频资源：可用</span>
-              <span>语音资源：可用</span>
-              <span>
-                语音转文字：
-                {voiceModelStatus?.state === 'ready' ? '已就绪' : '请先在设置中准备模型'}
-              </span>
-              <span>表情资源：按需解析</span>
-              <span>文件附件：按需复制</span>
-            </div>
-            <p className="export-helper-text">媒体资源会延长导出时间，缺失资源不会中断任务。</p>
-            <label className="export-media-master">
-              <span>在聊天气泡旁显示头像</span>
-              <input
-                type="checkbox"
-                checked={includeAvatars}
-                onChange={(event) => setIncludeAvatars(event.target.checked)}
-              />
-            </label>
-          </section>
-
-          <section className="export-section export-save-section">
-            <h3>保存设置</h3>
-            <label>
-              文件名称
-              <input
-                value={fileName}
-                onChange={(event) => setFileName(event.target.value)}
-                placeholder={defaultOutputName}
-              />
-            </label>
-            <div className="export-target-path">
-              <span>保存位置</span>
-              <strong>{selectedTargetPath}</strong>
-              <button type="button" onClick={() => {
-                void window.api.selectExportDirectory().then((result) => {
-                  if (!result.canceled && result.path) setOutputDirectory(result.path)
-                })
-              }}>选择位置</button>
-            </div>
-            {format === 'html' && (
-              <p className="export-helper-text">
-                可以分多次选择不同时间范围，逐步补齐同一个聊天档案。
-              </p>
-            )}
-          </section>
-        </div>
-        <footer className="export-action-bar">
-          <span className={`export-ready-dot ${status === 'completed' ? 'completed' : ''}`} />
-          <span>
-            {status === 'running'
-              ? '正在后台导出'
-              : status === 'completed'
-                ? '导出完成'
-                : '准备就绪'}
-          </span>
-          <span className="export-target-summary">路径：{selectedTargetPath}</span>
-          <button type="button" className="export-reset-button" onClick={resetDefaults}>
-            恢复默认
-          </button>
-          <button
-            type="button"
-            className="export-primary-button"
-            disabled={!activeContact || !exportContacts.length || status === 'running'}
-            onClick={handleStart}
-          >
-            {status === 'running' ? '正在导出' : status === 'completed' ? '再次导出' : '开始导出'}
-          </button>
-        </footer>
-      </main>
+        }
+        selectedContacts={selectedContacts}
+        exportAll={exportAll}
+        allContactTypes={allContactTypes}
+        selectedLabel={selectedLabel}
+        selectionMode={selectionMode}
+        exportContactCount={exportContacts.length}
+        format={format}
+        range={range}
+        startDate={startDate}
+        endDate={endDate}
+        selectedKinds={selectedKinds}
+        nameOptions={nameOptions}
+        nameMode={nameMode}
+        includeMedia={includeMedia}
+        includeVoiceTranscripts={includeVoiceTranscripts}
+        includeAvatars={includeAvatars}
+        preferOriginal={preferOriginal}
+        fallbackThumbnail={fallbackThumbnail}
+        keepMissing={keepMissing}
+        voiceModelStatus={voiceModelStatus}
+        zip={zip}
+        fileName={fileName}
+        defaultOutputName={defaultOutputName}
+        selectedTargetPath={selectedTargetPath}
+        status={status}
+        canStart={Boolean(activeContact && exportContacts.length && status !== 'running')}
+        onToggleSelectionMode={() => {
+          setExportAll(false)
+          setSelectionMode((current) => !current)
+        }}
+        onFormatChange={setFormat}
+        onZipChange={setZip}
+        onRangeChange={setRange}
+        onStartDateChange={setStartDate}
+        onEndDateChange={setEndDate}
+        onToggleKind={toggleKind}
+        onNameModeChange={setNameMode}
+        onIncludeMediaChange={setIncludeMedia}
+        onIncludeVoiceTranscriptsChange={setIncludeVoiceTranscripts}
+        onIncludeAvatarsChange={setIncludeAvatars}
+        onPreferOriginalChange={setPreferOriginal}
+        onFallbackThumbnailChange={setFallbackThumbnail}
+        onKeepMissingChange={setKeepMissing}
+        onFileNameChange={setFileName}
+        onSelectOutputDirectory={selectOutputDirectory}
+        onReset={resetDefaults}
+        onStart={() => void handleStart()}
+      />
 
       <ExportPreviewPanel
         status={status}

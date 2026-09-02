@@ -17,6 +17,7 @@ import { ReportMemberNameSelector } from './ReportMemberNameSelector'
 import { ReportGroupMemberSelector } from './ReportGroupMemberSelector'
 import { ReportSectionSelector } from './ReportSectionSelector'
 import { ReportTemplateSelector, SelectableReportTemplateId } from './ReportTemplateSelector'
+import { Button, Input } from '../ui'
 
 interface AiReportWorkspaceProps {
   sourceContact: Contact | null
@@ -198,7 +199,8 @@ export function AiReportWorkspace({
             <p>大群聊和图片识别耗时较长，可单独设置本次日报最多等待时间。</p>
           </div>
           <label>
-            <input
+            <Input
+              className="w-24"
               type="number"
               min={30}
               max={1800}
@@ -227,18 +229,16 @@ export function AiReportWorkspace({
               <img src={generatedImage} alt="生成的群聊日报" />
             </div>
             <div className="report-result-actions">
-              <button type="button" onClick={onViewResult}>
-                查看生成结果
-              </button>
-              <button type="button" onClick={handleCopy}>
+              <Button onClick={onViewResult}>查看生成结果</Button>
+              <Button variant="outline" onClick={handleCopy}>
                 复制图片
-              </button>
-              <button type="button" onClick={handleReveal} disabled={!reportPaths}>
+              </Button>
+              <Button variant="outline" onClick={handleReveal} disabled={!reportPaths}>
                 在文件夹中显示
-              </button>
-              <button type="button" onClick={onCloseResult}>
+              </Button>
+              <Button variant="ghost" onClick={onCloseResult}>
                 关闭预览
-              </button>
+              </Button>
             </div>
             {actionStatus && <p className="report-action-status">{actionStatus}</p>}
           </section>
@@ -253,13 +253,13 @@ export function AiReportWorkspace({
         <div className="report-footer-actions">
           {disabledReason && !isGenerating && <span>{disabledReason}</span>}
           {hasReportResult && !isGenerating && (
-            <button type="button" className="secondary" onClick={onViewResult}>
+            <Button className="min-w-[92px]" variant="outline" onClick={onViewResult}>
               查看结果
-            </button>
+            </Button>
           )}
-          <button type="button" disabled={!canGenerate} onClick={onGenerate}>
+          <Button className="min-w-[132px]" disabled={!canGenerate} onClick={onGenerate}>
             {isGenerating ? '正在生成日报' : '开始生成日报'}
-          </button>
+          </Button>
         </div>
       </footer>
     </main>

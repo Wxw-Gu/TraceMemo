@@ -1,4 +1,5 @@
 import { Wcdb4Client, Wcdb4MessageQueryOptions } from './wcdb4-client'
+import { wcdbDebugLog } from './wcdb-debug'
 
 export interface UserContact {
   m_nsUsrName: string
@@ -197,13 +198,26 @@ export class WechatDb {
     userMd5: string,
     startTime?: number,
     endTime?: number,
-    options?: Wcdb4MessageQueryOptions
+    options?: Wcdb4MessageQueryOptions,
+    requestId = 'NO-REQUEST'
   ): Promise<WechatMessage[]> {
     this.ensureChatTableMapping()
     const username = this.chatMd5ToUsername.get(userMd5)
     if (!username) return []
-    const messages = await this.wcdb4Client.getMessagesAsync(username, startTime, endTime, options)
-    return messages.map((message) => ({ ...message.raw, ...message }))
+    const startedAt = Date.now()
+    wcdbDebugLog(`[${requestId}] WechatDb getUserMessagesAsync start username=${username}`)
+    const messages = await this.wcdb4Client.getMessagesAsync(
+      username,
+      startTime,
+      endTime,
+      options,
+      requestId
+    )
+    const mapped = messages.map((message) => ({ ...message.raw, ...message }))
+    wcdbDebugLog(
+      `[${requestId}] WechatDb getUserMessagesAsync end rows=${mapped.length} cost=${Date.now() - startedAt}ms`
+    )
+    return mapped
   }
 
   public async getUserMessagesForExport(

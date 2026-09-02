@@ -56,7 +56,18 @@ describe('message grouping and dates', () => {
 })
 
 describe('search cache', () => {
-  beforeEach(() => localStorage.clear())
+  beforeEach(() => {
+    const values = new Map<string, string>()
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        clear: () => values.clear(),
+        getItem: (key: string) => values.get(key) ?? null,
+        removeItem: (key: string) => values.delete(key),
+        setItem: (key: string, value: string) => values.set(key, String(value))
+      }
+    })
+  })
 
   it('normalizes the key and survives invalid persisted state', () => {
     const key = buildSearchCacheKey('global', '', '7d', '  Windows 性能  ')

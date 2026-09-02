@@ -7,6 +7,7 @@
   }
   .api-header-actions {
     max-width: 260px;
+    flex-shrink: 0;
     justify-content: flex-end;
   }
   .api-endpoint-head,
@@ -17,6 +18,17 @@
   }
   .api-flow {
     overflow-x: auto;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 900px) {
+  .api-workspace-heading {
+    flex-direction: column;
+  }
+  .api-header-actions {
+    max-width: none;
+    flex-wrap: wrap;
     justify-content: flex-start;
   }
 }
@@ -152,8 +164,7 @@
   font: 13px/18px var(--wxex-font);
 }
 
-.report-history-empty button,
-.report-center-empty button {
+.report-history-empty button {
   justify-self: start;
   min-height: 32px;
   padding: 0 12px;
@@ -169,65 +180,6 @@
   flex: 0 0 auto;
   padding: 12px;
   border-top: 1px solid var(--wxex-border);
-}
-
-.report-delete-confirm {
-  position: fixed;
-  inset: 0;
-  z-index: 30;
-  display: grid;
-  place-items: center;
-  background: rgba(32, 39, 36, 0.28);
-}
-
-.report-delete-confirm-card {
-  display: grid;
-  width: min(360px, calc(100vw - 48px));
-  gap: 12px;
-  padding: 18px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-lg);
-  background: var(--wxex-bg-main);
-  box-shadow: var(--wxex-shadow-popover);
-}
-
-.report-delete-confirm-card h2 {
-  margin: 0;
-  color: var(--wxex-text-primary);
-  font: 700 18px/24px var(--wxex-font);
-}
-
-.report-delete-confirm-card p {
-  margin: 0;
-  color: var(--wxex-text-secondary);
-  font: 13px/20px var(--wxex-font);
-}
-
-.report-delete-confirm-card > div {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.report-delete-confirm-card button {
-  min-height: 32px;
-  padding: 0 14px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-md);
-  background: var(--wxex-bg-elevated);
-  color: var(--wxex-text-primary);
-  cursor: pointer;
-  font: 600 13px/18px var(--wxex-font);
-}
-
-.report-delete-confirm-card button.danger {
-  border-color: #a64242;
-  background: #a64242;
-  color: #fff;
-}
-
-.report-delete-error {
-  color: #a64242 !important;
 }
 
 .report-viewer {
@@ -272,110 +224,44 @@
   gap: 8px;
 }
 
-.report-viewer-toolbar button,
-.report-zoom-bar button,
-.report-more-popover button,
-.report-settings-section button {
-  min-height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-md);
-  background: var(--wxex-bg-elevated);
-  color: var(--wxex-text-primary);
-  cursor: pointer;
-  font: 600 13px/18px var(--wxex-font);
-}
-
-.report-viewer-toolbar button.primary {
-  border-color: var(--wxex-ai);
-  background: var(--wxex-ai);
-  color: #fff;
-}
-
-.report-viewer-toolbar button:disabled {
-  color: var(--wxex-text-muted);
-  cursor: not-allowed;
-  opacity: 0.72;
-}
-
-.report-more-menu {
+.report-toolbar-button-hint {
   position: relative;
+  display: inline-flex;
 }
 
-.report-template-switch-menu {
-  position: relative;
+.report-toolbar-button-hint > button:disabled {
+  pointer-events: none;
 }
 
-.report-template-switch-popover {
+.report-toolbar-button-hint::after {
   position: absolute;
-  top: 38px;
+  top: calc(100% + 8px);
   right: 0;
-  z-index: 9;
-  width: 260px;
-  padding: 8px;
+  z-index: 20;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 6px 9px;
   border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-md);
-  background: var(--wxex-bg-elevated);
-  box-shadow: var(--wxex-shadow-popover);
-}
-
-.report-template-switch-popover p {
-  margin: 0 4px 6px;
-  color: var(--wxex-text-muted);
-  font: 12px/18px var(--wxex-font);
-}
-
-.report-template-switch-popover button {
-  display: grid;
-  width: 100%;
-  min-height: 42px;
-  grid-template-columns: 62px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border: 0;
   border-radius: 6px;
-  background: transparent;
+  background: var(--wxex-text-primary);
+  color: var(--wxex-bg-elevated);
+  content: attr(title);
+  font: 12px/17px var(--wxex-font);
+  opacity: 0;
+  pointer-events: none;
   text-align: left;
+  transform: translateY(-3px);
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+  white-space: normal;
 }
 
-.report-template-switch-popover button:hover,
-.report-template-switch-popover button.active {
-  background: var(--wxex-ai-soft);
-}
-
-.report-template-switch-popover button span,
-.report-template-switch-popover button i {
-  color: var(--wxex-text-muted);
-  font: 11px/16px var(--wxex-font);
-  font-style: normal;
-}
-
-.report-template-switch-popover button b {
-  overflow: hidden;
-  color: var(--wxex-text-primary);
-  font: 600 13px/18px var(--wxex-font);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.report-more-popover {
-  position: absolute;
-  top: 38px;
-  right: 0;
-  z-index: 8;
-  min-width: 128px;
-  padding: 6px;
-  border: 1px solid var(--wxex-border);
-  border-radius: var(--wxex-radius-md);
-  background: var(--wxex-bg-elevated);
-  box-shadow: var(--wxex-shadow-popover);
-}
-
-.report-more-popover button {
-  width: 100%;
-  border: 0;
-  text-align: left;
+.report-toolbar-button-hint:hover::after,
+.report-toolbar-button-hint:focus-visible::after,
+.report-toolbar-button-hint:focus-within::after {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .report-viewer-status {
@@ -469,10 +355,6 @@
 .report-center-empty p {
   margin: 0;
   font: 13px/20px var(--wxex-font);
-}
-
-.report-center-empty button {
-  justify-self: center;
 }
 
 .report-settings-panel {
@@ -650,7 +532,7 @@
   padding: 12px 14px;
   border: 1.5px solid var(--wxex-border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--wxex-bg-elevated);
   transition:
     border-color 0.2s,
     background 0.2s;
@@ -658,7 +540,7 @@
 
 .report-template-item.active {
   border-color: var(--wxex-primary, #07c160);
-  background: #f0fbf3;
+  background: var(--wxex-brand-soft);
 }
 
 .report-template-item.disabled {
@@ -681,10 +563,6 @@
   font: 800 10px/14px var(--wxex-font);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-.report-template-item input[type='radio'] {
-  accent-color: var(--wxex-primary, #07c160);
 }
 
 .report-template-body {
@@ -889,49 +767,6 @@
   line-height: 1.5;
 }
 
-.report-template-preview-btn {
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  border-radius: 8px;
-  border: 1px solid var(--wxex-border);
-  background: #fff;
-  color: var(--wxex-text-primary, #1f2933);
-  cursor: pointer;
-  transition:
-    background 0.2s,
-    color 0.2s,
-    border-color 0.2s;
-}
-
-.report-template-preview-btn:hover {
-  background: var(--wxex-primary, #07c160);
-  color: #fff;
-  border-color: var(--wxex-primary, #07c160);
-}
-
-/* 预览遮罩 */
-.report-template-preview-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 999;
-  padding: 20px;
-}
-
-.report-template-preview-card {
-  background: #f3f5f7;
-  border-radius: 18px;
-  padding: 18px;
-  width: min(520px, 100%);
-  max-height: 90vh;
-  overflow-y: auto;
-  box-shadow: 0 16px 60px rgba(15, 23, 42, 0.25);
-}
-
 .report-template-preview-card > .report-template-diagram {
   width: 100%;
   height: 260px;
@@ -1000,19 +835,6 @@
   font-style: normal;
 }
 
-.report-template-preview-card h4 {
-  margin: 0 0 6px;
-  font-size: 17px;
-  font-weight: 800;
-}
-
-.report-template-preview-card p.muted {
-  margin: 0 0 14px;
-  font-size: 12px;
-  color: var(--wxex-text-secondary, #485465);
-  line-height: 1.5;
-}
-
 .report-template-preview-frame {
   display: grid;
   gap: 8px;
@@ -1074,22 +896,6 @@
   margin-top: 14px;
 }
 
-.report-template-preview-actions button {
-  padding: 9px 14px;
-  border-radius: 10px;
-  border: none;
-  background: var(--wxex-primary, #07c160);
-  color: #fff;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.report-template-preview-actions button.secondary {
-  border: 1px solid var(--wxex-border);
-  background: #fff;
-  color: var(--wxex-text-primary);
-}
-
 .settings-auto-login-card {
   padding: 18px 20px;
 }
@@ -1146,12 +952,6 @@
   color: var(--wxex-text-secondary);
   font: 12px/18px var(--wxex-font);
 }
-.settings-recall-option input {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
-  accent-color: var(--wxex-brand);
-}
 .settings-recall-notice {
   display: grid;
   gap: 3px;
@@ -1185,199 +985,4 @@
 .api-upload-test-row span {
   color: var(--wxex-text-muted);
   font: 11px/17px var(--wxex-font);
-}
-.wechat-share-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 10000;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgba(20, 31, 27, 0.46);
-  backdrop-filter: blur(8px);
-}
-.wechat-share-dialog {
-  width: min(540px, calc(100vw - 48px));
-  max-height: calc(100vh - 48px);
-  overflow: auto;
-  border: 1px solid rgba(95, 129, 116, 0.2);
-  border-radius: 22px;
-  background: #fff;
-  box-shadow: 0 28px 90px rgba(14, 32, 25, 0.24);
-  color: #17241f;
-  font-family: var(--wxex-font);
-}
-.wechat-share-dialog,
-.wechat-share-dialog * {
-  box-sizing: border-box;
-}
-.wechat-share-dialog > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  padding: 24px 26px 18px;
-  border-bottom: 1px solid #e8eeeb;
-}
-.wechat-share-dialog h2,
-.wechat-share-dialog h3,
-.wechat-share-dialog p {
-  margin: 0;
-}
-.wechat-share-dialog header h2 {
-  color: #17241f;
-  font-size: 20px;
-}
-.wechat-share-dialog header p {
-  margin-top: 6px;
-  color: #718078;
-  font-size: 13px;
-}
-.wechat-share-dialog-close {
-  width: 32px;
-  height: 32px;
-  border: 0;
-  border-radius: 50%;
-  background: #f1f5f3;
-  color: #5f6d67;
-  font-size: 22px;
-  line-height: 1;
-}
-.wechat-share-form {
-  display: grid;
-  gap: 18px;
-  padding: 24px 26px 26px;
-}
-.wechat-share-form label {
-  display: grid;
-  gap: 8px;
-}
-.wechat-share-form label > span {
-  color: #33463e;
-  font-size: 13px;
-  font-weight: 650;
-}
-.wechat-share-form input,
-.wechat-share-form textarea {
-  min-width: 0;
-  max-width: 100%;
-  width: 100%;
-  border: 1px solid #cfdbd6;
-  border-radius: 11px;
-  background: #fbfdfc;
-  padding: 11px 13px;
-  color: #1f2c27;
-  font: inherit;
-  outline: none;
-}
-.wechat-share-form input:focus,
-.wechat-share-form textarea:focus {
-  border-color: #32a978;
-  box-shadow: 0 0 0 3px rgba(50, 169, 120, 0.12);
-}
-.wechat-share-service-config {
-  min-width: 0;
-  display: grid;
-  gap: 14px;
-  padding: 16px;
-  border: 1px solid #d6e8df;
-  border-radius: 14px;
-  background: #f2faf6;
-}
-.wechat-share-service-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  min-width: 0;
-  padding: 13px 15px;
-  border: 1px solid #dce6e1;
-  border-radius: 12px;
-  background: #f7faf8;
-}
-.wechat-share-service-summary > div {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-.wechat-share-service-summary span {
-  color: #728078;
-  font-size: 11px;
-}
-.wechat-share-service-summary b {
-  overflow: hidden;
-  color: #2c4138;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.wechat-share-service-summary button {
-  flex: 0 0 auto;
-  min-height: 30px;
-  padding: 0 11px;
-}
-.wechat-share-service-config h3 {
-  color: #23523f;
-  font-size: 14px;
-}
-.wechat-share-service-config p,
-.wechat-share-privacy {
-  color: #68776f;
-  font-size: 12px;
-  line-height: 1.6;
-}
-.wechat-share-privacy {
-  padding: 12px 14px;
-  border-radius: 10px;
-  background: #f5f7f6;
-}
-.wechat-share-form > footer,
-.wechat-share-success > div {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-}
-.wechat-share-form button,
-.wechat-share-success button {
-  min-height: 38px;
-  padding: 0 17px;
-  border: 1px solid #ced9d4;
-  border-radius: 10px;
-  background: #fff;
-  color: #34463f;
-}
-.wechat-share-form button.primary,
-.wechat-share-success button.primary {
-  border-color: #15945e;
-  background: #15945e;
-  color: #fff;
-}
-.wechat-share-form button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-.wechat-share-success {
-  display: grid;
-  justify-items: center;
-  gap: 11px;
-  padding: 28px;
-  text-align: center;
-}
-.wechat-share-success > img {
-  width: 260px;
-  max-width: 80%;
-  border: 10px solid #fff;
-  border-radius: 14px;
-  box-shadow: 0 10px 35px rgba(27, 59, 46, 0.12);
-}
-.wechat-share-success h3 {
-  color: #203029;
-  font-size: 18px;
-}
-.wechat-share-success p,
-.wechat-share-success small {
-  color: #6c7b74;
-  line-height: 1.6;
-}
-.wechat-share-success > div {
-  margin-top: 12px;
 }

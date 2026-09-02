@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import { Contact } from '../../../../shared/types'
 import { AccountSummary } from '../account/AccountSummary'
+import { Button, Input } from '../ui'
 
 interface SelfInfo {
   wxid: string
@@ -56,7 +57,8 @@ export function ReportSourceSidebar({
           <circle cx="10.5" cy="10.5" r="5.5" />
           <path d="m15 15 4 4" />
         </svg>
-        <input
+        <Input
+          className="pl-9"
           value={keyword}
           onChange={(event) => setKeyword(event.target.value)}
           placeholder="搜索群聊"
@@ -69,9 +71,9 @@ export function ReportSourceSidebar({
             const nickname = contact.m_nsNickName.trim()
             const displayName = nickname || contact.m_nsUsrName || '未命名群聊'
             return (
-              <button
+              <Button
                 key={contact.md5}
-                type="button"
+                variant="ghost"
                 className={`report-source-item ${selected ? 'active' : ''}`}
                 onClick={() => onSelectContact(contact)}
                 title={contact.m_nsUsrName}
@@ -86,7 +88,7 @@ export function ReportSourceSidebar({
                 <span className="report-source-text">
                   <span>{displayName}</span>
                 </span>
-              </button>
+              </Button>
             )
           })
         ) : (

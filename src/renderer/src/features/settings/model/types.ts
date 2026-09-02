@@ -3,6 +3,7 @@ export type SettingsCategoryId =
   | 'database-key'
   | 'image-key'
   | 'voice-recognition'
+  | 'text-to-speech'
   | 'ai-model'
   | 'recall-protection'
   | 'local-api'

@@ -1,6 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { ToastProvider, TooltipProvider } from './components/ui'
+import './styles/tailwind.css'
 import './styles/index.scss'
 
 window.addEventListener('error', (event) => {
@@ -36,6 +38,10 @@ window.addEventListener('unhandledrejection', (event) => {
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <TooltipProvider>
+      <ToastProvider>
+        <App />
+      </ToastProvider>
+    </TooltipProvider>
   </React.StrictMode>
 )

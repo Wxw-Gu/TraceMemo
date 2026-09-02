@@ -1,5 +1,6 @@
 import type { DatabaseKeyState } from './types'
 import { formatValidationTime, isDatabaseKeyFormatValid } from './utils'
+import { Button } from '../../../components/ui'
 
 export function DatabaseKeyDiagnostics({
   state,
@@ -57,9 +58,9 @@ export function DatabaseKeyDiagnostics({
           <dd>{state.environment?.autoDetectSupported ? '支持' : '不支持'}</dd>
         </div>
       </dl>
-      <button type="button" onClick={onCopy}>
+      <Button variant="ghost" size="sm" className="mx-4 mb-4" onClick={onCopy}>
         复制诊断信息
-      </button>
+      </Button>
     </details>
   )
 }
