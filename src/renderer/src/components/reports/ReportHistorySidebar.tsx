@@ -69,8 +69,8 @@ const groupLabelFor = (value: string): string => {
   const time = new Date(date)
   time.setHours(0, 0, 0, 0)
 
-  if (time.getTime() >= startOfToday.getTime()) return '今天'
-  if (time.getTime() >= startOfYesterday.getTime()) return '昨天'
+  if (time.getTime() >= startOfToday.getTime()) return '今日'
+  if (time.getTime() >= startOfYesterday.getTime()) return '昨日'
   if (date.getFullYear() === now.getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日`
   return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
 }

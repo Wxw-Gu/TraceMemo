@@ -86,7 +86,7 @@ const reportRangeLabel = (range: ScheduledReportRange): string =>
     : range === '7days'
       ? '近 7 天'
       : range === 'today'
-        ? '今天'
+        ? '今日'
         : '昨日'
 
 interface ScheduledReportNotificationPayload {

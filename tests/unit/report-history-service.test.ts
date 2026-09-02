@@ -41,7 +41,7 @@ const reportSnapshot = {
 const reportMetadata = {
   groupName: '测试群',
   reportDate: '2026-08-12',
-  dateRange: '今天',
+  dateRange: '今日',
   messageCount: 10,
   activeUsers: 3,
   timeSpan: '09:00–18:00',
@@ -68,7 +68,7 @@ describe('generated report template history', () => {
     const saved = await saveGeneratedReport({
       contactId: 'group-md5',
       contactName: '测试群',
-      dateRange: '今天',
+      dateRange: '今日',
       messageCount: 10,
       generatedAt: '2026-08-12T10:00:00.000Z',
       reportDate: '2026-08-11',
@@ -114,7 +114,7 @@ describe('generated report template history', () => {
     const saved = await saveGeneratedReport({
       contactId: 'legacy-group',
       contactName: '旧报告',
-      dateRange: '今天',
+      dateRange: '今日',
       messageCount: 5,
       generatedAt: '2026-08-12T11:00:00.000Z',
       generatedImage: `data:image/png;base64,${Buffer.from('legacy').toString('base64')}`,
@@ -142,7 +142,7 @@ describe('generated report template history', () => {
     const saved = await saveGeneratedReport({
       contactId: 'legacy-snapshot-group',
       contactName: '旧报告快照',
-      dateRange: '今天',
+      dateRange: '今日',
       messageCount: 8,
       generatedAt: '2026-08-12T12:00:00.000Z',
       generatedImage: `data:image/png;base64,${Buffer.from('legacy-snapshot').toString('base64')}`,
@@ -172,7 +172,7 @@ describe('generated report template history', () => {
     const saved = await saveGeneratedReport({
       contactId: 'classic-group',
       contactName: '经典日报群',
-      dateRange: '今天',
+      dateRange: '今日',
       messageCount: 6,
       generatedAt: '2026-08-12T13:00:00.000Z',
       generatedImage: `data:image/png;base64,${Buffer.from('classic').toString('base64')}`,

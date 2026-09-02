@@ -254,6 +254,42 @@ describe('scheduled report scheduling', () => {
     ).toContain('微信发送成功')
   })
 
+  it('passes a selected today range through a scheduled 20:00 execution', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-today-'))
+    let currentTime = new Date(2026, 7, 27, 19, 59, 0)
+    const generateReport = vi.fn(async () => ({
+      success: true,
+      groupName: '研发群',
+      pngPath: '/tmp/generated.png',
+      messageCount: 1
+    }))
+    const service = new ScheduledReportService({
+      storageDir,
+      now: () => currentTime,
+      getCapability: async () => capability,
+      generateReport,
+      saveGeneratedReport: async () => ({ success: true, record: reportRecord('/tmp/saved.png') }),
+      send: async () => ({ success: true, status: capability.senderStatus }),
+      isDatabaseReady: () => true
+    })
+    const created = await service.createTask({
+      name: '今日日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '20:00',
+      reportRange: 'today'
+    })
+    expect(created.success).toBe(true)
+    currentTime = new Date(2026, 7, 27, 20, 0, 0)
+
+    const execution = await runScheduled(service, created.data!.id)
+
+    expect(execution.status).toBe('success')
+    expect(generateReport).toHaveBeenCalledWith(
+      expect.objectContaining({ group: '研发群', range: 'today' })
+    )
+  })
+
   it('does not send a generated report when history persistence fails', async () => {
     const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-history-'))
     const generatedPath = join(storageDir, 'report.png')

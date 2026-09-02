@@ -66,8 +66,8 @@ const rangeLabel = (range: ScheduledReportRange): string =>
     : range === '7days'
       ? '近 7 天'
       : range === 'today'
-        ? '今天'
-        : '昨天'
+        ? '今日'
+        : '昨日'
 
 const isScheduledReportRange = (value: unknown): value is ScheduledReportRange =>
   value === 'today' || value === 'yesterday' || value === '7days' || value === 'recent24h'
@@ -99,7 +99,7 @@ const formatDateTime = (value?: string): string => {
   if (Number.isNaN(date.getTime())) return '时间未知'
   const now = new Date()
   const dayLabel =
-    date.toDateString() === now.toDateString() ? '今天' : date.toLocaleDateString('zh-CN')
+    date.toDateString() === now.toDateString() ? '今日' : date.toLocaleDateString('zh-CN')
   return `${dayLabel} ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
 }
 
@@ -386,7 +386,7 @@ function ScheduledReportDialog({
               </span>
             </div>
             <SegmentedControl
-              className="w-full"
+              className="grid w-full grid-cols-2 gap-1 sm:grid-cols-5"
               aria-label="总结范围"
               value={reportRange}
               onValueChange={(value) => setReportRange(value as ScheduledReportRange)}
@@ -395,20 +395,24 @@ function ScheduledReportDialog({
                 <SegmentedControlItem
                   key={option.value}
                   value={option.value}
-                  className="min-h-9 flex-1"
+                  className="min-h-9 w-full min-w-0 whitespace-nowrap"
                 >
                   {option.label}
                 </SegmentedControlItem>
               ))}
-              <SegmentedControlItem value="recent24h" className="min-h-9 flex-1">
+              <SegmentedControlItem
+                value="recent24h"
+                className="min-h-9 w-full min-w-0 whitespace-nowrap"
+              >
                 最近24小时
               </SegmentedControlItem>
               <span
                 aria-disabled="true"
                 title="当前业务尚未支持自定义时间"
-                className="inline-flex min-h-8 min-w-0 flex-1 cursor-not-allowed items-center justify-center rounded-sm px-3 text-xs font-medium text-disabled-foreground opacity-100"
+                className="inline-flex min-h-9 w-full min-w-0 cursor-not-allowed flex-col items-center justify-center gap-0 rounded-sm px-2 py-1 text-xs font-medium leading-4 text-disabled-foreground opacity-100"
               >
-                自定义 <small>即将支持</small>
+                <span className="whitespace-nowrap">自定义</span>
+                <small className="whitespace-nowrap text-[11px] leading-[14px]">即将支持</small>
               </span>
             </SegmentedControl>
           </div>

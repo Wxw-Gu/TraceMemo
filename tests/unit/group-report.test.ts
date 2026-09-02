@@ -345,4 +345,14 @@ describe('summary date ranges', () => {
       endTime: now.getTime() / 1000
     })
   })
+
+  it('keeps a scheduled 20:00 today report on the current local calendar day', () => {
+    const now = new Date(2026, 7, 27, 20, 0, 0)
+    const startOfToday = new Date(2026, 7, 27, 0, 0, 0)
+
+    expect(getSummaryDateRangeAt('today', now)).toEqual({
+      startTime: startOfToday.getTime() / 1000,
+      endTime: now.getTime() / 1000
+    })
+  })
 })

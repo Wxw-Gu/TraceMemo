@@ -98,7 +98,7 @@ const activityLine = Array.from(document.querySelectorAll('.analytics > .card'))
 const values = {
   REPORT_TITLE: title,
   REPORT_DATE: reportDate,
-  DATE_RANGE: '今天',
+  DATE_RANGE: '今日',
   TIME_SPAN: statValues[2] || dateTimeRange,
   HERO_SUMMARY: overview,
   HERO_TAKEAWAY: '',

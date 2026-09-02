@@ -129,7 +129,7 @@ WeFlow 帮我跨过了微信 4.x 数据访问这道门槛，我才有机会继�
 | 找一句记得原文或关键词的聊天              | [档案](./docs/user-guide/chat-archive.md)                           | 连接微信数据，不需要 AI              |
 | 找一件记得大意、但不知道在哪聊过的事      | [问问微信](./docs/user-guide/ai-search.md)                          | 配置 AI 服务，并选择会话和时间范围   |
 | 让长期、跨群聊查找更稳定                  | [问问微信 → 本地知识库](./docs/user-guide/knowledge.md)             | 主动建立本地索引；不会自动创建       |
-| 快速了解一个群今天、昨天或近 7 天聊了什么 | [日报](./docs/user-guide/report.md)                                 | 选择群聊并配置 AI 服务               |
+| 快速了解一个群今日、昨日或近 7 天聊了什么 | [日报](./docs/user-guide/report.md)                                 | 选择群聊并配置 AI 服务               |
 | 把群聊日报生成微信分享卡片（实验性）      | [微信分享卡片](./docs/deployment/experimental-wechat-share-card.md) | 自备 Cloudflare、域名和微信测试号    |
 | 把微信语音变成可搜索的文字                | [设置 → 语音转文字](./docs/user-guide/voice.md)                     | 准备本地语音模型                     |
 | 把聊天保存成 HTML、Markdown、CSV 或 JSON  | [导出](./docs/user-guide/export.md)                                 | 选择聊天、时间和格式，不需要 AI      |

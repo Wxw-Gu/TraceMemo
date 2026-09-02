@@ -6,7 +6,7 @@ const structuredReport = {
   id: 'report-1',
   contactId: 'group-1',
   contactName: '测试群',
-  dateRange: '今天',
+  dateRange: '今日',
   messageCount: 10,
   generatedAt: '2026-08-12T10:00:00.000Z',
   reportDate: '2026-08-12',

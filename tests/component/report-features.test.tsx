@@ -133,7 +133,7 @@ describe('daily report controls', () => {
       </>
     )
 
-    expect(screen.getByRole('radio', { name: '今天' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: '今日' })).toBeChecked()
     await user.click(screen.getByRole('radio', { name: '近 7 天' }))
     expect(onRangeChange).toHaveBeenCalledWith('7days')
     expect(screen.getAllByRole('checkbox')).toHaveLength(SUMMARY_TYPE_OPTIONS.length)
@@ -382,7 +382,7 @@ describe('daily report controls', () => {
       id: 'report-1',
       contactId: 'group-md5',
       contactName: '测试群',
-      dateRange: '今天',
+      dateRange: '今日',
       messageCount: 10,
       generatedAt: '2026-08-12T10:00:00.000Z',
       reportDate: '2026-08-12',
@@ -443,7 +443,7 @@ describe('daily report controls', () => {
       id: 'temporary-result',
       contactId: 'group-md5',
       contactName: '测试群',
-      dateRange: '今天',
+      dateRange: '今日',
       messageCount: 10,
       generatedAt: '2026-08-13T10:00:00.000Z',
       reportDate: '2026-08-13',
@@ -514,7 +514,7 @@ describe('daily report controls', () => {
             id: 'model-info',
             contactId: 'group-md5',
             contactName: '测试群',
-            dateRange: '今天',
+            dateRange: '今日',
             messageCount: 10,
             generatedAt: '2026-08-13T10:00:00.000Z',
             reportDate: '2026-08-13',
@@ -582,7 +582,7 @@ describe('daily report controls', () => {
       id: 'report-send',
       contactId: groupContact.md5,
       contactName: groupContact.m_nsNickName,
-      dateRange: '今天',
+      dateRange: '今日',
       messageCount: 10,
       generatedAt: '2026-08-17T10:00:00.000Z',
       reportDate: '2026-08-17',
@@ -621,7 +621,7 @@ describe('daily report controls', () => {
       id: 'report-send-disabled',
       contactId: groupContact.md5,
       contactName: groupContact.m_nsNickName,
-      dateRange: '今天',
+      dateRange: '今日',
       messageCount: 10,
       generatedAt: '2026-08-17T10:00:00.000Z',
       reportDate: '2026-08-17',
@@ -657,7 +657,7 @@ describe('daily report controls', () => {
       id: 'report-switch',
       contactId: 'group-md5',
       contactName: '测试群',
-      dateRange: '今天',
+      dateRange: '今日',
       messageCount: 10,
       generatedAt: '2026-08-12T10:00:00.000Z',
       reportDate: '2026-08-12',
@@ -753,7 +753,7 @@ describe('daily report controls', () => {
       id: 'report-delete-cancel',
       contactId: 'group-md5',
       contactName: '测试群',
-      dateRange: '今天',
+      dateRange: '今日',
       messageCount: 10,
       generatedAt: '2026-08-17T10:00:00.000Z',
       reportDate: '2026-08-17',
@@ -823,7 +823,7 @@ describe('daily report controls', () => {
       id: 'report-delete-result',
       contactId: 'group-md5',
       contactName: '测试群',
-      dateRange: '今天',
+      dateRange: '今日',
       messageCount: 10,
       generatedAt: '2026-08-17T10:00:00.000Z',
       reportDate: '2026-08-17',

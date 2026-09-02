@@ -128,6 +128,26 @@ describe('ScheduledReportsWorkspace', () => {
     )
   })
 
+  it('keeps scheduled report range labels readable in compact layouts', async () => {
+    vi.mocked(window.api.listScheduledReports).mockResolvedValue([])
+    render(
+      <ScheduledReportsWorkspace
+        contacts={[group]}
+        onNotice={onNotice}
+        onOpenWechatSettings={onOpenWechatSettings}
+        onOpenAgentHub={onOpenAgentHub}
+      />
+    )
+
+    await waitFor(() => expect(screen.getByText('还没有定时日报')).toBeVisible())
+    fireEvent.click(screen.getAllByRole('button', { name: /新建定时日报/ })[0])
+
+    const range = screen.getByRole('radiogroup', { name: '总结范围' })
+    expect(range).toHaveClass('grid-cols-2', 'sm:grid-cols-5')
+    expect(screen.getByText('自定义', { exact: true })).toHaveClass('whitespace-nowrap')
+    expect(screen.getByText('即将支持', { exact: true })).toHaveClass('whitespace-nowrap')
+  })
+
   it('keeps the notification switch off by default and loads the persisted setting', async () => {
     render(
       <ScheduledReportsWorkspace

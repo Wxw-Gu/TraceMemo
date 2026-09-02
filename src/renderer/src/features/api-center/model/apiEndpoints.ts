@@ -69,7 +69,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
   }),
   endpoint('agent-group-report', {
     name: '生成群聊总结图片',
-    description: '读取指定群聊并生成今天、昨天或近 7 天的总结长图。',
+    description: '读取指定群聊并生成今日、昨日或近 7 天的总结长图。',
     body: true
   }),
   endpoint('agent-send', {

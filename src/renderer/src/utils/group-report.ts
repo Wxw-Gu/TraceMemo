@@ -43,7 +43,7 @@ JSON 结构必须为：
   "overview": "1至2句整体讨论风格与氛围",
   "hero": {
     "headline": "一句抓重点的日报标题",
-    "summary": "一句总结今天发生了什么，最多3行",
+    "summary": "一句总结今日发生了什么，最多3行",
     "keyTakeaway": "最重要结论，没有可空",
     "pendingNote": "最值得跟进的一项，没有可空",
     "statusLine": "例如：今日形成 3 个结论 · 2 个待办 · 1 个问题尚未解决"
@@ -645,7 +645,7 @@ const postProcessReport = (
       topics[0]?.title ||
       `${metadata.groupName}${mode === 'compact' ? '速览' : '日报'}`,
     summary: truncate(
-      report.hero?.summary || report.overview || '今天群里有新的讨论进展。',
+      report.hero?.summary || report.overview || '今日群里有新的讨论进展。',
       mode === 'compact' ? 84 : 120
     ),
     keyTakeaway: report.hero?.keyTakeaway
@@ -814,7 +814,7 @@ export const parseGroupDailyReport = (
         ? {
             headline: asString(heroRoot.headline) || topics[0]?.title || '今日群聊速览',
             summary:
-              asString(heroRoot.summary) || asString(root.overview) || '今天群里有新的讨论进展。',
+              asString(heroRoot.summary) || asString(root.overview) || '今日群里有新的讨论进展。',
             keyTakeaway: asString(heroRoot.keyTakeaway),
             pendingNote: asString(heroRoot.pendingNote),
             statusLine: asString(heroRoot.statusLine)
@@ -864,7 +864,7 @@ export type SummaryMessageType =
   | 'system'
 
 export const SUMMARY_DATE_OPTIONS: { value: SummaryDateRange; label: string }[] = [
-  { value: 'today', label: '今天' },
+  { value: 'today', label: '今日' },
   { value: 'yesterday', label: '昨日' },
   { value: '7days', label: '近 7 天' }
 ]
@@ -923,6 +923,8 @@ export const getSummaryDateRangeAt = (
   range: SummaryDateRange,
   now = new Date()
 ): { startTime: number; endTime: number } => {
+  // These ranges are local calendar dates. Only the separate recent24h mode
+  // uses a rolling 24-hour window in the scheduled-report service.
   const startOfToday = new Date(now)
   startOfToday.setHours(0, 0, 0, 0)
   const startOfYesterday = new Date(startOfToday)

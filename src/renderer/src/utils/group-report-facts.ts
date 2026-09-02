@@ -586,7 +586,7 @@ const buildMediaSection = async (
     funBadges.push({
       title: '高能输出王',
       owner: topSpeaker[0],
-      note: `今天一共发了 ${topSpeaker[1]} 条消息。`
+      note: `今日一共发了 ${topSpeaker[1]} 条消息。`
     })
   }
   if (visionGallery[0]) {
