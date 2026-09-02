@@ -645,6 +645,71 @@ describe('scheduled report scheduling', () => {
     })
   })
 
+  it('routes scheduled report sends and retries through the Action Gateway adapter', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-gateway-'))
+    const send = vi.fn()
+    const sendAction = vi
+      .fn()
+      .mockResolvedValueOnce({
+        actionId: 'action-1',
+        status: 'failed' as const,
+        decision: 'allow' as const,
+        errorCode: 'SEND_FAILED' as const,
+        reason: '连接器暂时不可用',
+        startedAt: '2026-08-27T01:00:00.000Z',
+        finishedAt: '2026-08-27T01:00:01.000Z'
+      })
+      .mockResolvedValueOnce({
+        actionId: 'action-2',
+        status: 'sent' as const,
+        decision: 'allow' as const,
+        startedAt: '2026-08-27T01:01:00.000Z',
+        finishedAt: '2026-08-27T01:01:01.000Z'
+      })
+    const service = new ScheduledReportService({
+      storageDir,
+      ...makeDependencies({ send, sendAction })
+    })
+    const created = await service.createTask({
+      name: 'Gateway 日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '09:00'
+    })
+
+    const first = await runScheduled(service, created.data!.id)
+    const recovered = await service.retryScheduledReportSend(first.id)
+
+    expect(first).toMatchObject({
+      status: 'partial_success',
+      pngPath: '/tmp/saved.png',
+      sendTarget: '研发群@chatroom'
+    })
+    expect(recovered.data).toMatchObject({ status: 'success', retryCount: 1 })
+    expect(send).not.toHaveBeenCalled()
+    expect(sendAction).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        target: '研发群@chatroom',
+        filePath: '/tmp/saved.png',
+        triggerType: 'scheduled',
+        executionId: first.id,
+        taskId: created.data!.id
+      })
+    )
+    expect(sendAction).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        target: '研发群@chatroom',
+        filePath: '/tmp/saved.png',
+        triggerType: 'scheduled',
+        executionId: first.id,
+        retryCount: 1,
+        taskId: created.data!.id
+      })
+    )
+  })
+
   it('retries an existing PNG without generating the report again', async () => {
     const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-retry-'))
     await enableNotifications(storageDir)

@@ -1,3 +1,5 @@
+import type { WechatActionResult } from './wechat-action'
+
 export interface GroupExitMonitorMember {
   wxid: string
   nickname?: string
@@ -5,6 +7,23 @@ export interface GroupExitMonitorMember {
   wechatNickname?: string
   remark?: string
   avatar?: string
+}
+
+export type GroupExitNotificationStatus =
+  | 'not_requested'
+  | 'pending'
+  | 'sent'
+  | 'blocked'
+  | 'failed'
+
+export interface GroupExitNotificationState {
+  status: GroupExitNotificationStatus
+  actionId?: string
+  decision?: WechatActionResult['decision']
+  errorCode?: string
+  reason?: string
+  startedAt?: string
+  finishedAt?: string
 }
 
 export interface GroupExitMonitorEvent {
@@ -25,6 +44,9 @@ export interface GroupExitMonitorEvent {
   delta: number
   message: string
   detectedAt: number
+  /** 可选通知的结果；退群检测与通知发送彼此独立。 */
+  notificationStatus?: GroupExitNotificationStatus
+  notification?: GroupExitNotificationState
 }
 
 const LEGACY_GROUP_EXIT_NOTIFICATION_TEMPLATE = [
@@ -140,6 +162,14 @@ export function renderGroupExitMonitorNotification(
       return values.time
     }
   )
+}
+
+/** 主进程中的辅助函数，供生成通知和预览时共用。 */
+export function buildMemberLeftNotification(
+  event: GroupExitMonitorEvent,
+  template = GROUP_EXIT_NOTIFICATION_TEMPLATE
+): string {
+  return renderGroupExitMonitorNotification(event, template)
 }
 
 export interface GroupExitMonitorState {

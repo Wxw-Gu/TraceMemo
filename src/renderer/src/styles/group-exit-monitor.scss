@@ -350,6 +350,40 @@
   color: var(--wxex-danger);
 }
 
+.exit-monitor-event-notification {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 7px;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.exit-monitor-event-notification span {
+  font-weight: 600;
+}
+
+.exit-monitor-event-notification small {
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.exit-monitor-event-notification.sent {
+  color: var(--wxex-success);
+}
+
+.exit-monitor-event-notification.blocked,
+.exit-monitor-event-notification.failed {
+  color: var(--wxex-danger);
+}
+
+.exit-monitor-event-notification.pending {
+  color: var(--wxex-brand);
+}
+
 .exit-monitor-event-details {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

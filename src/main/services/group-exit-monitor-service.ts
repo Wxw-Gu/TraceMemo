@@ -2,16 +2,17 @@ import { app, BrowserWindow } from 'electron'
 import fs from 'fs-extra'
 import path from 'path'
 import * as chat from './chat-service'
-import { personalWechatCapabilityService } from './personal-wechat-capability-service'
-import { personalWechatSendService } from './personal-wechat-send-service'
+import { wechatActionGateway, type WechatActionGateway } from './wechat-action-gateway'
 import {
+  buildMemberLeftNotification,
   findRemovedGroupMembers,
   groupExitMemberName,
   normalizeGroupExitNotificationTemplate,
-  renderGroupExitMonitorNotification,
   validateGroupExitNotificationTemplate,
   type GroupExitMonitorEvent,
   type GroupExitMonitorMember,
+  type GroupExitNotificationStatus,
+  type GroupExitNotificationState,
   type GroupExitMonitorState
 } from '../../shared/group-exit-monitor'
 
@@ -39,7 +40,17 @@ const GROUP_READ_CONCURRENCY = 8
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000
 const MAX_EVENTS = 500
 
+export interface GroupExitMonitorServiceDependencies {
+  actionGateway?: GroupExitActionGateway
+}
+
+type GroupExitActionGateway = Pick<WechatActionGateway, 'execute'> &
+  Partial<
+    Pick<WechatActionGateway, 'registerMemberEvent' | 'registerMemberEvents' | 'clearMemberEvents'>
+  >
+
 class GroupExitMonitorService {
+  private readonly actionGateway: GroupExitActionGateway
   private active = false
   private nativeMonitorActive = false
   private snapshots = new Map<string, GroupSnapshotRecord>()
@@ -58,6 +69,10 @@ class GroupExitMonitorService {
   private eventSequence = 0
   private scopeGeneration = 0
   private notificationTemplate = normalizeGroupExitNotificationTemplate(undefined)
+
+  constructor(deps: GroupExitMonitorServiceDependencies = {}) {
+    this.actionGateway = deps.actionGateway || wechatActionGateway
+  }
 
   getState(): GroupExitMonitorState {
     this.ensureLoaded()
@@ -84,6 +99,7 @@ class GroupExitMonitorService {
       this.accountRoot &&
       path.resolve(currentRoot) !== path.resolve(this.accountRoot)
     ) {
+      this.actionGateway.clearMemberEvents?.()
       this.events = []
       this.lastReadAt = 0
       this.monitorSelectionConfigured = true
@@ -189,6 +205,7 @@ class GroupExitMonitorService {
   clearEvents(): GroupExitMonitorState {
     this.ensureLoaded()
     this.events = []
+    this.actionGateway.clearMemberEvents?.()
     this.lastReadAt = Date.now()
     this.save()
     this.broadcast()
@@ -225,6 +242,7 @@ class GroupExitMonitorService {
         if (!currentRoomIds.has(roomId)) this.snapshots.delete(roomId)
       }
 
+      const notificationTasks: Promise<void>[] = []
       for (const next of groups) {
         if (scopeGeneration !== this.scopeGeneration) return
         if (next.membersValid === false) continue
@@ -246,10 +264,12 @@ class GroupExitMonitorService {
         for (const member of removed) {
           const event = this.recordExit(next, member, previous.members.length, next.members.length)
           if (event && this.notificationRoomIds.has(next.roomId)) {
-            void this.notifyGroup(next, event)
+            notificationTasks.push(this.notifyGroup(next, event))
           }
         }
       }
+      if (notificationTasks.length) await Promise.all(notificationTasks)
+      if (!this.active || scopeGeneration !== this.scopeGeneration) return
       this.lastCheckedAt = Date.now()
       this.save()
       this.broadcast()
@@ -388,8 +408,10 @@ class GroupExitMonitorService {
       currentCount,
       delta: currentCount - previousCount,
       message,
-      detectedAt
+      detectedAt,
+      notificationStatus: 'not_requested'
     }
+    this.actionGateway.registerMemberEvent?.(event)
     this.events = [event, ...this.events].slice(0, MAX_EVENTS)
     console.log(
       `[GroupMonitor] detected member exit roomId=${group.roomId} member=${member.wxid} ${previousCount}->${currentCount}`
@@ -401,29 +423,64 @@ class GroupExitMonitorService {
     group: GroupSnapshotRecord,
     event: GroupExitMonitorEvent
   ): Promise<void> {
+    event.notificationStatus = 'pending'
+    event.notification = { status: 'pending' }
+    this.save()
+    this.broadcast()
     try {
-      const capability = await personalWechatCapabilityService.getPersonalWechatSendCapability()
-      if (!capability.ready || !capability.capabilities.text) {
-        console.warn(`[GroupMonitor] 跳过群聊通知 roomId=${group.roomId}: ${capability.message}`)
-        return
-      }
-      // 具体传输方式由发送服务按平台处理。
-      const result = await personalWechatSendService.send({
-        type: 'text',
-        to: group.roomId,
-        isGroup: true,
-        text: renderGroupExitMonitorNotification(event, this.notificationTemplate)
+      const result = await this.actionGateway.execute({
+        idempotencyKey: `member_left_notification:${event.id}`,
+        origin: 'member_monitor',
+        purpose: 'member_left_notification',
+        triggerType: 'automation',
+        sourceId: event.id,
+        recipient: {
+          type: 'group',
+          id: group.roomId,
+          name: group.groupName
+        },
+        content: {
+          type: 'text',
+          text: buildMemberLeftNotification(event, this.notificationTemplate)
+        },
+        metadata: {
+          memberId: event.memberWxid,
+          memberName: event.memberName,
+          detectedAt: event.detectedAt,
+          eventType: 'member_left',
+          eventRoomId: event.roomId
+        }
       })
-      if (!result.success) {
+      const notification: GroupExitNotificationState = {
+        status: result.status,
+        actionId: result.actionId,
+        decision: result.decision,
+        ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+        ...(result.reason ? { reason: result.reason } : {}),
+        startedAt: result.startedAt,
+        finishedAt: result.finishedAt
+      }
+      event.notificationStatus = result.status
+      event.notification = notification
+      if (result.status !== 'sent') {
         console.warn(
-          `[GroupMonitor] 群聊通知发送失败 roomId=${group.roomId}: ${result.error || ''}`
+          `[GroupMonitor] 群聊通知未发送 roomId=${group.roomId} status=${result.status} code=${result.errorCode || ''}`
         )
       }
     } catch (error) {
+      event.notificationStatus = 'failed'
+      event.notification = {
+        status: 'failed',
+        errorCode: 'UNKNOWN',
+        reason: error instanceof Error ? error.message : String(error)
+      }
       console.warn(
         `[GroupMonitor] 群聊通知异常 roomId=${group.roomId}:`,
         error instanceof Error ? error.message : String(error)
       )
+    } finally {
+      this.save()
+      this.broadcast()
     }
   }
 
@@ -437,6 +494,7 @@ class GroupExitMonitorService {
     try {
       const stored = fs.readJsonSync(this.filePath()) as StoredState
       this.events = normalizeEvents(stored.events)
+      this.actionGateway.registerMemberEvents?.(this.events)
       this.lastReadAt = Number(stored.lastReadAt) || 0
       this.accountRoot = String(stored.accountRoot || '')
       // 没有显式范围时按空范围处理，保留已有选择。
@@ -556,11 +614,39 @@ function normalizeEvents(
         ? Number(value.delta)
         : currentCount - previousCount,
       message: String(value.message || `${memberName}退出了${groupName}`),
-      detectedAt
+      detectedAt,
+      ...(value.notificationStatus
+        ? { notificationStatus: normalizeNotificationStatus(value.notificationStatus) }
+        : {}),
+      ...(value.notification && typeof value.notification === 'object'
+        ? { notification: normalizeNotification(value.notification) }
+        : {})
     })
     if (normalized.length >= MAX_EVENTS) break
   }
   return normalized
+}
+
+function normalizeNotificationStatus(value: unknown): GroupExitNotificationStatus {
+  const status = String(value || '').trim()
+  return status === 'pending' || status === 'sent' || status === 'blocked' || status === 'failed'
+    ? status
+    : 'not_requested'
+}
+
+function normalizeNotification(value: object): GroupExitNotificationState {
+  const input = value as Partial<GroupExitNotificationState>
+  return {
+    status: normalizeNotificationStatus(input.status),
+    ...(input.actionId ? { actionId: String(input.actionId) } : {}),
+    ...(input.decision === 'allow' || input.decision === 'block'
+      ? { decision: input.decision }
+      : {}),
+    ...(input.errorCode ? { errorCode: String(input.errorCode) } : {}),
+    ...(input.reason ? { reason: String(input.reason) } : {}),
+    ...(input.startedAt ? { startedAt: String(input.startedAt) } : {}),
+    ...(input.finishedAt ? { finishedAt: String(input.finishedAt) } : {})
+  }
 }
 
 function isContactEvent(rawPayload: string): boolean {
