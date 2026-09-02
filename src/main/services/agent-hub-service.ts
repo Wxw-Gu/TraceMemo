@@ -1,7 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import { ChildProcess, execFile, spawn } from 'child_process'
 import { randomBytes, timingSafeEqual } from 'crypto'
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { dirname, join } from 'path'
 import { promisify } from 'util'
@@ -38,6 +38,19 @@ interface InboundMessage {
   from_user_id?: string
   message_id?: string | number
   items?: Array<{ type?: number; text?: string }>
+}
+
+interface AgentHubNotificationRecipient {
+  accountId?: string
+  userId: string
+  updatedAt: number
+}
+
+export interface AgentHubNotificationResult {
+  success: boolean
+  status: 'sent' | 'recipient_unavailable' | 'connector_offline' | 'token_expired' | 'send_failed'
+  recipient?: string
+  error?: string
 }
 
 interface GroupReportIntent {
@@ -94,7 +107,7 @@ export function resolveWechatConnectorBinaryPath(
   )
 }
 
-class AgentHubService {
+export class AgentHubService {
   private hubServer: Server | null = null
   private connectorChild: ChildProcess | null = null
   private loginChild: ChildProcess | null = null
@@ -103,6 +116,8 @@ class AgentHubService {
   private logs: AgentHubLogEntry[] = []
   private nextLogId = 1
   private readonly processedMessages = new Map<string, number>()
+  private notificationRecipient: AgentHubNotificationRecipient | null = null
+  private notificationRecipientLoaded = false
   private readonly inboundToken =
     process.env['AGENT_HUB_INBOUND_TOKEN'] || randomBytes(32).toString('hex')
   private status: AgentHubStatus = {
@@ -115,6 +130,7 @@ class AgentHubService {
   async start(settings: AppSettings): Promise<boolean> {
     void settings
     this.stopping = false
+    this.loadNotificationRecipient()
     const hubStarted = await this.startHub()
     await this.initializeConnector()
     return hubStarted
@@ -122,6 +138,53 @@ class AgentHubService {
 
   getStatus(): AgentHubStatus {
     return { ...this.status }
+  }
+
+  /** The last user who sent an inbound message to this Agent Hub bot. */
+  getNotificationRecipient(): string | undefined {
+    this.loadNotificationRecipient()
+    return this.notificationRecipient?.userId
+  }
+
+  async sendNotification(input: {
+    to?: string
+    text: string
+  }): Promise<AgentHubNotificationResult> {
+    const to = String(input.to || this.getNotificationRecipient() || '').trim()
+    const text = String(input.text || '').trim()
+    if (!to || !text) {
+      return {
+        success: false,
+        status: 'recipient_unavailable',
+        error: 'Agent Hub 尚未记录可靠的通知接收者'
+      }
+    }
+    const accountId = this.notificationRecipient?.accountId || this.status.accountId
+    try {
+      const response = await this.postConnectorMessage({
+        accountId,
+        to,
+        text,
+        timeoutMs: 30_000
+      })
+      if (response.ok) return { success: true, status: 'sent', recipient: to }
+      const expired = /token|session|expired|unauthorized/i.test(response.body)
+      return {
+        success: false,
+        status: expired ? 'token_expired' : 'send_failed',
+        recipient: to,
+        error: expired
+          ? 'Agent Hub 微信连接器登录凭证已失效'
+          : `Agent Hub 通知发送失败：${response.body || response.status}`
+      }
+    } catch (error) {
+      return {
+        success: false,
+        status: 'connector_offline',
+        recipient: to,
+        error: `Agent Hub 微信连接器不可用：${this.errorMessage(error)}`
+      }
+    }
   }
 
   getLogs(): AgentHubLogEntry[] {
@@ -154,29 +217,24 @@ class AgentHubService {
       }
     }
     try {
-      const response = await fetch(`http://${CONNECTOR_ADDR}/api/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          account_id: this.status.accountId,
-          to,
-          text: text || undefined,
-          media_url: mediaUrl || undefined
-        }),
-        signal: AbortSignal.timeout(30_000)
+      const response = await this.postConnectorMessage({
+        accountId: this.status.accountId,
+        to,
+        text: text || undefined,
+        mediaUrl: mediaUrl || undefined,
+        timeoutMs: 30_000
       })
-      const body = await response.text()
       if (response.ok) {
         this.addLog('system', 'info', 'API 页面发送测试成功')
         return { success: true, status: 'sent', message: '发送成功' }
       }
-      const expired = /token|session|expired|unauthorized/i.test(body)
+      const expired = /token|session|expired|unauthorized/i.test(response.body)
       return {
         success: false,
         status: expired ? 'token_expired' : 'send_failed',
         message: expired
           ? '微信登录凭证已失效，请重新扫码登录'
-          : `发送失败：${body || response.status}`
+          : `发送失败：${response.body || response.status}`
       }
     } catch (error) {
       return {
@@ -326,6 +384,7 @@ class AgentHubService {
     }
     const from = String(inbound.from_user_id || '').trim()
     if (!from) return this.sendHubJson(response, 400, { error: 'from_user_id is required' })
+    this.rememberNotificationRecipient(inbound.account_id, from)
 
     const messageId = String(inbound.message_id || '')
     this.cleanProcessedMessages()
@@ -791,18 +850,35 @@ class AgentHubService {
     text?: string,
     mediaUrl?: string
   ): Promise<void> {
+    const response = await this.postConnectorMessage({
+      accountId: inbound.account_id || this.status.accountId,
+      to: String(inbound.from_user_id || '').trim(),
+      text,
+      mediaUrl,
+      timeoutMs: mediaUrl ? 60_000 : 30_000
+    })
+    if (!response.ok) throw new Error(response.body || `HTTP ${response.status}`)
+  }
+
+  private async postConnectorMessage(input: {
+    accountId?: string
+    to: string
+    text?: string
+    mediaUrl?: string
+    timeoutMs: number
+  }): Promise<{ ok: boolean; status: number; body: string }> {
     const response = await fetch(`http://${CONNECTOR_ADDR}/api/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        account_id: inbound.account_id,
-        to: inbound.from_user_id,
-        text,
-        media_url: mediaUrl
+        account_id: input.accountId,
+        to: input.to,
+        text: input.text,
+        media_url: input.mediaUrl
       }),
-      signal: AbortSignal.timeout(mediaUrl ? 60_000 : 30_000)
+      signal: AbortSignal.timeout(input.timeoutMs)
     })
-    if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`)
+    return { ok: response.ok, status: response.status, body: await response.text() }
   }
 
   private matchRecentChatIntent(text: string): number | null {
@@ -963,6 +1039,51 @@ class AgentHubService {
         error: error instanceof Error ? error.message : String(error)
       })
     }
+  }
+
+  private loadNotificationRecipient(): void {
+    if (this.notificationRecipientLoaded) return
+    this.notificationRecipientLoaded = true
+    try {
+      const stored = JSON.parse(readFileSync(this.notificationRecipientPath(), 'utf8')) as {
+        accountId?: unknown
+        userId?: unknown
+        updatedAt?: unknown
+      }
+      const userId = String(stored.userId || '').trim()
+      if (userId) {
+        this.notificationRecipient = {
+          userId,
+          accountId: String(stored.accountId || '').trim() || undefined,
+          updatedAt: Number(stored.updatedAt) || Date.now()
+        }
+      }
+    } catch {
+      this.notificationRecipient = null
+    }
+  }
+
+  private rememberNotificationRecipient(accountId: string | undefined, userId: string): void {
+    const normalizedUserId = String(userId || '').trim()
+    if (!normalizedUserId) return
+    const recipient: AgentHubNotificationRecipient = {
+      userId: normalizedUserId,
+      accountId: String(accountId || this.status.accountId || '').trim() || undefined,
+      updatedAt: Date.now()
+    }
+    this.notificationRecipient = recipient
+    this.notificationRecipientLoaded = true
+    try {
+      const filePath = this.notificationRecipientPath()
+      mkdirSync(dirname(filePath), { recursive: true })
+      writeFileSync(filePath, JSON.stringify(recipient, null, 2), 'utf8')
+    } catch (error) {
+      this.addLog('agent-hub', 'warn', `通知接收者保存失败：${this.errorMessage(error)}`)
+    }
+  }
+
+  private notificationRecipientPath(): string {
+    return join(app.getPath('userData'), 'agent-hub', 'notification-recipient.json')
   }
 
   private async loadAccounts(): Promise<{ accountId: string; wechatUserId: string }[]> {

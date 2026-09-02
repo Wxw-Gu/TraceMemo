@@ -65,6 +65,8 @@ import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
 import type {
   ScheduledReportCreateInput,
   ScheduledReportExecution,
+  ScheduledReportNotificationSettings,
+  ScheduledReportNotificationSettingsResult,
   ScheduledReportResult,
   ScheduledReportTask,
   ScheduledReportUpdateInput
@@ -636,6 +638,10 @@ declare global {
       ) => Promise<PersonalWechatSendResult>
       listScheduledReports: () => Promise<ScheduledReportTask[]>
       listScheduledReportExecutions: (taskId?: string) => Promise<ScheduledReportExecution[]>
+      getScheduledReportNotificationSettings: () => Promise<ScheduledReportNotificationSettings>
+      setScheduledReportNotificationEnabled: (
+        enabled: boolean
+      ) => Promise<ScheduledReportNotificationSettingsResult>
       createScheduledReport: (
         request: ScheduledReportCreateInput
       ) => Promise<ScheduledReportResult<ScheduledReportTask>>
@@ -651,6 +657,12 @@ declare global {
         enabled: boolean
       ) => Promise<ScheduledReportResult<ScheduledReportTask>>
       runScheduledReportNow: (
+        taskId: string
+      ) => Promise<ScheduledReportResult<ScheduledReportExecution>>
+      retryScheduledReportSend: (
+        executionId: string
+      ) => Promise<ScheduledReportResult<ScheduledReportExecution>>
+      testScheduledReportErrorNotification: (
         taskId: string
       ) => Promise<ScheduledReportResult<ScheduledReportExecution>>
       getPersonalWechatVoiceDiagnostic: () => Promise<PersonalWechatVoiceDiagnostic | null>

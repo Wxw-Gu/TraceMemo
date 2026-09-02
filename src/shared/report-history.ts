@@ -6,12 +6,14 @@ import type {
 import type { SelectableReportTemplateId } from './report-templates'
 
 export type ReportAssetStatus = 'ready' | 'missing'
+export type GeneratedReportSource = 'manual' | 'scheduled'
 
 export interface GeneratedReportRecord {
   id: string
   contactId: string
   contactName: string
   contactAvatar?: string
+  source?: GeneratedReportSource
   dateRange: string
   messageCount: number
   generatedAt: string
@@ -59,6 +61,7 @@ export interface SaveGeneratedReportRequest {
   contactId: string
   contactName: string
   contactAvatar?: string
+  source?: GeneratedReportSource
   dateRange: string
   messageCount: number
   generatedAt: string

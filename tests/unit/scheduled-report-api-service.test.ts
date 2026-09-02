@@ -123,7 +123,7 @@ describe('ScheduledReportApiService', () => {
   })
 
   it.each(['unsupported', 'unconfigured', 'needs_binding', 'needs_verification', 'error'] as const)(
-    'rejects creation before touching the task service for capability state %s',
+    'allows creation and leaves a send warning for capability state %s',
     async (status) => {
       const { api, service } = makeApi({ capability: capability(status) })
       await expect(
@@ -131,8 +131,8 @@ describe('ScheduledReportApiService', () => {
           group: '技术交流群',
           schedule: { type: 'daily', time: '09:00' }
         })
-      ).rejects.toMatchObject({ code: 'wechat_not_ready', status: 409 })
-      expect(service.createTask).not.toHaveBeenCalled()
+      ).resolves.toMatchObject({ id: 'task-1' })
+      expect(service.createTask).toHaveBeenCalledOnce()
     }
   )
 
@@ -153,7 +153,7 @@ describe('ScheduledReportApiService', () => {
     expect(service.createTask).toHaveBeenCalledOnce()
   })
 
-  it('keeps unsupported platforms blocked even if a provider reports ready', async () => {
+  it('allows task creation on an unsupported platform for later recovery', async () => {
     const { service } = makeApi()
     const api = new ScheduledReportApiService({
       service,
@@ -164,8 +164,8 @@ describe('ScheduledReportApiService', () => {
     })
     await expect(
       api.create({ group: '技术交流群', schedule: { type: 'daily', time: '09:00' } })
-    ).rejects.toMatchObject({ code: 'wechat_not_ready', status: 409 })
-    expect(service.createTask).not.toHaveBeenCalled()
+    ).resolves.toMatchObject({ id: 'task-1' })
+    expect(service.createTask).toHaveBeenCalledOnce()
   })
 
   it('returns candidates for ambiguous group names and rejects duplicate tasks', async () => {

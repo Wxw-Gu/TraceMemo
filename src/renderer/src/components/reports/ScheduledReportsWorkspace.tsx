@@ -6,6 +6,7 @@ import type {
   ScheduledReportExecution,
   ScheduledReportMessageType,
   ScheduledReportMemberNameMode,
+  ScheduledReportNotificationCapabilityReason,
   ScheduledReportRange,
   ScheduledReportTask
 } from '../../../../shared/scheduled-report'
@@ -46,6 +47,7 @@ import {
   type SummaryDateRange
 } from '../../utils/group-report'
 import { REPORT_TEMPLATES, DEFAULT_REPORT_TEMPLATE } from '../../../../shared/report-templates'
+import { isTruthyDebugFlag } from '../../../../shared/debug-flags'
 
 type ReportDialogMode = 'create' | 'edit'
 
@@ -53,6 +55,7 @@ interface ScheduledReportsWorkspaceProps {
   contacts: Contact[]
   platformSupported?: boolean
   onOpenWechatSettings: () => void
+  onOpenAgentHub: () => void
   onOpenModelSettings?: () => void
   onNotice: (message: string, variant?: 'default' | 'success' | 'warning' | 'destructive') => void
 }
@@ -125,24 +128,37 @@ const capabilityTone = (capability: PersonalWechatSendCapability | null): string
 
 const readableError = (error?: string): string => {
   const value = String(error || '')
-  if (value.includes('wechat_not_ready') || value.includes('仅支持 macOS')) {
-    if (value.includes('unsupported') || value.includes('仅支持'))
-      return '微信消息发送目前仅支持 macOS 和 Windows'
-    if (value.includes('needs_binding') || value.includes('unconfigured')) return '请先绑定个人微信'
-    if (value.includes('needs_verification')) return '请先完成微信消息能力检测'
-    return '微信发送能力不可用，请检查微信连接。'
-  }
-  if (value.includes('wechat_send_failed')) return '微信发送失败，请检查微信连接。'
-  if (value.includes('report_generation_failed')) return '日报生成失败，请稍后重试。'
   return value || '操作失败，请稍后重试。'
+}
+
+const notificationFailureCopy = (
+  reason?: ScheduledReportNotificationCapabilityReason,
+  error?: string
+): string => {
+  if (reason === 'agent_hub_offline') return '需要先连接 Agent Hub 微信机器人，才能接收异常通知。'
+  if (reason === 'connector_offline') return 'Agent Hub 微信连接器当前未在线，请先恢复连接。'
+  if (reason === 'recipient_not_bound') {
+    return 'Agent Hub 已连接，但还不知道异常通知应该发送给谁。请先在微信中给 TraceMemo 机器人发送一条消息，完成通知接收者绑定。'
+  }
+  if (reason === 'settings_persist_failed') return '异常通知开关保存失败，请稍后重试。'
+  return error ? `异常通知测试发送失败：${error}` : '异常通知测试发送失败，请检查 Agent Hub 连接。'
 }
 
 const executionLabel = (execution: ScheduledReportExecution): string => {
   if (execution.status === 'running') return '生成中 · 待发送'
   if (execution.status === 'success') return '已生成并发送'
-  if (execution.error?.includes('report_generation_failed')) return '日报生成失败'
-  if (execution.error?.includes('wechat_not_ready')) return '微信发送能力不可用'
-  return '微信发送失败'
+  if (execution.status === 'waiting_to_send') return '日报已生成，但未发送'
+  if (execution.status === 'partial_success') return '日报已生成，微信发送失败'
+  if (execution.status === 'waiting_for_recovery') return '等待恢复'
+  if (execution.status === 'skipped') return execution.userTitle || '暂无可生成的日报'
+  return execution.userTitle || '日报生成失败'
+}
+
+const executionDescription = (execution: ScheduledReportExecution): string => {
+  if (execution.status === 'success') {
+    return execution.sendTarget ? `已发送到：${execution.sendTarget}` : '日报已生成并发送'
+  }
+  return execution.userMessage || execution.message || '本次定时日报执行失败。'
 }
 
 function GroupAvatar({ contact }: { contact: Contact }): React.ReactElement {
@@ -550,11 +566,19 @@ export function ScheduledReportsWorkspace({
   contacts,
   platformSupported = true,
   onOpenWechatSettings,
+  onOpenAgentHub,
   onOpenModelSettings,
   onNotice
 }: ScheduledReportsWorkspaceProps): React.ReactElement {
   const [capability, setCapability] = React.useState<PersonalWechatSendCapability | null>(null)
   const [capabilityError, setCapabilityError] = React.useState(false)
+  const [notificationEnabled, setNotificationEnabled] = React.useState(false)
+  const [notificationBusy, setNotificationBusy] = React.useState(false)
+  const [notificationSettingsError, setNotificationSettingsError] = React.useState(false)
+  const [notificationFailure, setNotificationFailure] = React.useState<{
+    reason?: ScheduledReportNotificationCapabilityReason
+    error?: string
+  } | null>(null)
   const [tasks, setTasks] = React.useState<ScheduledReportTask[]>([])
   const [executions, setExecutions] = React.useState<ScheduledReportExecution[]>([])
   const [loading, setLoading] = React.useState(true)
@@ -580,14 +604,23 @@ export function ScheduledReportsWorkspace({
       })
       setTasks([])
       setExecutions([])
+      try {
+        const settings = await window.api.getScheduledReportNotificationSettings()
+        setNotificationEnabled(settings.enabled)
+        setNotificationSettingsError(false)
+      } catch {
+        setNotificationSettingsError(true)
+      }
       setLoading(false)
       return
     }
-    const [taskResult, executionResult, capabilityResult] = await Promise.allSettled([
-      window.api.listScheduledReports(),
-      window.api.listScheduledReportExecutions(),
-      window.api.getPersonalWechatSendCapability()
-    ])
+    const [taskResult, executionResult, capabilityResult, notificationSettingsResult] =
+      await Promise.allSettled([
+        window.api.listScheduledReports(),
+        window.api.listScheduledReportExecutions(),
+        window.api.getPersonalWechatSendCapability(),
+        window.api.getScheduledReportNotificationSettings()
+      ])
     if (taskResult.status === 'fulfilled') setTasks(taskResult.value)
     else setListError(true)
     if (executionResult.status === 'fulfilled') setExecutions(executionResult.value)
@@ -596,6 +629,12 @@ export function ScheduledReportsWorkspace({
       setCapabilityError(false)
     } else {
       setCapabilityError(true)
+    }
+    if (notificationSettingsResult.status === 'fulfilled') {
+      setNotificationEnabled(notificationSettingsResult.value.enabled)
+      setNotificationSettingsError(false)
+    } else {
+      setNotificationSettingsError(true)
     }
     setLoading(false)
   }, [platformSupported])
@@ -624,9 +663,38 @@ export function ScheduledReportsWorkspace({
           setCapabilityError(false)
         })
         .catch(() => setCapabilityError(true))
+      void window.api
+        .getScheduledReportNotificationSettings()
+        .then((settings) => {
+          setNotificationEnabled(settings.enabled)
+          setNotificationSettingsError(false)
+        })
+        .catch(() => setNotificationSettingsError(true))
     }, 15_000)
     return () => window.clearInterval(timer)
   }, [dialogOpen, refreshTasks])
+
+  const setNotification = async (enabled: boolean): Promise<void> => {
+    setNotificationBusy(true)
+    try {
+      const result = await window.api.setScheduledReportNotificationEnabled(enabled)
+      setNotificationEnabled(result.data.enabled)
+      if (result.success) {
+        setNotificationFailure(null)
+        onNotice(enabled ? '微信异常通知已开启' : '微信异常通知已关闭', 'success')
+      } else {
+        setNotificationFailure({ reason: result.reason, error: result.error })
+        onNotice(notificationFailureCopy(result.reason, result.error), 'warning')
+      }
+    } catch (error) {
+      setNotificationEnabled(false)
+      const message = readableError(error instanceof Error ? error.message : String(error))
+      setNotificationFailure({ reason: 'send_failed', error: message })
+      onNotice(message, 'warning')
+    } finally {
+      setNotificationBusy(false)
+    }
+  }
 
   const submit = async (input: ScheduledReportCreateInput, taskId?: string): Promise<void> => {
     setSaving(true)
@@ -666,14 +734,70 @@ export function ScheduledReportsWorkspace({
     try {
       const result = await window.api.runScheduledReportNow(task.id)
       await refreshTasks()
-      if (!result.success)
-        onNotice(readableError(result.error || result.data?.error), 'destructive')
-      else onNotice('日报已生成并发送', 'success')
+      const execution = result.data
+      if (execution?.status === 'waiting_to_send') {
+        onNotice('日报已生成，但未发送', 'warning')
+      } else if (execution?.status === 'partial_success') {
+        onNotice('日报已生成，微信发送失败', 'warning')
+      } else if (execution?.status === 'success') {
+        onNotice('日报已生成并发送', 'success')
+      } else if (execution?.status === 'skipped') {
+        onNotice('本次没有可生成的日报', 'default')
+      } else if (!result.success) {
+        onNotice(
+          execution?.userMessage || readableError(result.error || execution?.error),
+          'destructive'
+        )
+      }
     } catch (error) {
       onNotice(readableError(error instanceof Error ? error.message : String(error)), 'destructive')
     } finally {
       setBusyTaskId(null)
     }
+  }
+
+  const retrySend = async (execution: ScheduledReportExecution): Promise<void> => {
+    const task = tasks.find((item) => item.id === execution.taskId)
+    const busyId = task?.id || execution.id
+    setBusyTaskId(busyId)
+    try {
+      const result = await window.api.retryScheduledReportSend(execution.id)
+      await refreshTasks()
+      if (result.data?.status === 'success') onNotice('日报已重新发送', 'success')
+      else if (result.data?.status === 'waiting_to_send')
+        onNotice('微信发送能力仍未恢复', 'warning')
+      else onNotice(result.data?.userMessage || readableError(result.error), 'warning')
+    } catch (error) {
+      onNotice(readableError(error instanceof Error ? error.message : String(error)), 'destructive')
+    } finally {
+      setBusyTaskId(null)
+    }
+  }
+
+  const testErrorNotification = async (task: ScheduledReportTask): Promise<void> => {
+    setBusyTaskId(task.id)
+    try {
+      const result = await window.api.testScheduledReportErrorNotification(task.id)
+      await refreshTasks()
+      if (result.data?.notificationStatus === 'sent') {
+        onNotice('测试错误信息已发送到 Agent Hub 微信通知接收者', 'success')
+      } else {
+        onNotice(readableError(result.error), 'warning')
+      }
+    } catch (error) {
+      onNotice(readableError(error instanceof Error ? error.message : String(error)), 'destructive')
+    } finally {
+      setBusyTaskId(null)
+    }
+  }
+
+  const openReport = async (execution: ScheduledReportExecution): Promise<void> => {
+    if (!execution.pngPath) {
+      onNotice('该执行记录没有可查看的日报文件', 'destructive')
+      return
+    }
+    const result = await window.api.revealGroupReport(execution.pngPath)
+    if (!result.success) onNotice(result.error || '日报文件打开失败', 'destructive')
   }
 
   const confirmDelete = async (): Promise<void> => {
@@ -711,8 +835,7 @@ export function ScheduledReportsWorkspace({
         .slice(0, 8),
     [executions]
   )
-  const canCreate = capability?.status === 'ready'
-
+  const showDebugNotificationButton = isTruthyDebugFlag(import.meta.env.VITE_SCHEDULED_REPORT_DEBUG)
   return (
     <div className="report-scheduled-page">
       <div className="report-scheduled-header">
@@ -720,10 +843,50 @@ export function ScheduledReportsWorkspace({
           <h1>定时日报</h1>
           <p>每天自动生成群聊日报，并发送到指定微信群。</p>
         </div>
-        <Button onClick={openCreate} disabled={!canCreate}>
-          <span aria-hidden>＋</span> 新建定时日报
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">微信异常通知</span>
+            <Switch
+              aria-label="微信异常通知"
+              checked={notificationEnabled}
+              disabled={!platformSupported || notificationBusy || notificationSettingsError}
+              onCheckedChange={(value) => void setNotification(value)}
+            />
+            {notificationEnabled && <span className="text-sm text-success">✓</span>}
+          </div>
+          <Button onClick={openCreate}>
+            <span aria-hidden>＋</span> 新建定时日报
+          </Button>
+        </div>
       </div>
+      {notificationEnabled && (
+        <p className="-mt-3 text-xs text-muted-foreground">
+          定时日报出现异常时，通过 Agent Hub 微信机器人通知你。
+        </p>
+      )}
+      {notificationFailure && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm"
+        >
+          <span>
+            {notificationFailureCopy(notificationFailure.reason, notificationFailure.error)}
+          </span>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button variant="link" size="sm" onClick={onOpenAgentHub}>
+              前往 Agent Hub
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={notificationBusy}
+              onClick={() => void setNotification(true)}
+            >
+              重试
+            </Button>
+          </div>
+        </div>
+      )}
       <div className={`report-wechat-capability ${capabilityTone(capability)}`}>
         <span className="font-medium">微信发送能力</span>
         <span
@@ -760,7 +923,7 @@ export function ScheduledReportsWorkspace({
       ) : tasks.length ? (
         <div className="overflow-x-auto rounded-xl border border-border-subtle bg-surface">
           <div className="min-w-[760px]">
-            <div className="grid grid-cols-[1.5fr_.8fr_1fr_1fr_.8fr_1fr_190px] gap-3 border-b border-border-subtle px-5 py-3 text-xs font-medium text-muted-foreground">
+            <div className="grid grid-cols-[1.5fr_.8fr_1fr_1fr_.8fr_1fr_300px] gap-3 border-b border-border-subtle px-5 py-3 text-xs font-medium text-muted-foreground">
               <span>任务名称</span>
               <span>执行时间</span>
               <span>日报范围</span>
@@ -776,7 +939,7 @@ export function ScheduledReportsWorkspace({
               return (
                 <div
                   key={task.id}
-                  className="grid grid-cols-[1.5fr_.8fr_1fr_1fr_.8fr_1fr_190px] items-center gap-3 border-b border-border-subtle px-5 py-4 last:border-b-0"
+                  className="grid grid-cols-[1.5fr_.8fr_1fr_1fr_.8fr_1fr_300px] items-center gap-3 border-b border-border-subtle px-5 py-4 last:border-b-0"
                 >
                   <div className="flex min-w-0 items-center gap-3">
                     {group && <GroupAvatar contact={group} />}
@@ -813,6 +976,16 @@ export function ScheduledReportsWorkspace({
                     >
                       {running ? '生成中…' : '立即执行'}
                     </Button>
+                    {showDebugNotificationButton && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void testErrorNotification(task)}
+                        disabled={running}
+                      >
+                        {running ? '测试中…' : '测试错误信息发送'}
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -850,7 +1023,7 @@ export function ScheduledReportsWorkspace({
           </div>
           <h2>还没有定时日报</h2>
           <p>创建一个任务，让 TraceMemo 每天自动生成群聊日报并发送到微信。</p>
-          <Button onClick={openCreate} disabled={!canCreate}>
+          <Button onClick={openCreate}>
             <span aria-hidden>＋</span> 新建定时日报
           </Button>
         </div>
@@ -867,20 +1040,85 @@ export function ScheduledReportsWorkspace({
             {sortedExecutions.map((execution) => {
               const task = tasks.find((item) => item.id === execution.taskId)
               const success = execution.status === 'success'
+              const skipped = execution.status === 'skipped'
+              const sendPending =
+                execution.status === 'waiting_to_send' || execution.status === 'partial_success'
+              const busy = busyTaskId === (task?.id || execution.id)
               return (
                 <div
                   key={execution.id}
-                  className="flex items-center gap-3 rounded-lg border border-border-subtle bg-surface px-4 py-3"
+                  className="flex items-start gap-3 rounded-lg border border-border-subtle bg-surface px-4 py-3"
                 >
                   <span
-                    className={`text-lg ${success ? 'text-success' : execution.status === 'running' ? 'text-warning' : 'text-destructive'}`}
+                    className={`pt-0.5 text-lg ${success ? 'text-success' : skipped ? 'text-muted-foreground' : execution.status === 'running' || sendPending ? 'text-warning' : 'text-destructive'}`}
                     aria-hidden
                   >
-                    {success ? '✓' : execution.status === 'running' ? '…' : '×'}
+                    {success
+                      ? '✓'
+                      : skipped
+                        ? '–'
+                        : execution.status === 'running'
+                          ? '…'
+                          : sendPending
+                            ? '!'
+                            : '×'}
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{task?.name || '定时日报'}</p>
                     <p className="text-xs text-muted-foreground">{executionLabel(execution)}</p>
+                    <p className="mt-1 text-sm text-foreground">
+                      {executionDescription(execution)}
+                    </p>
+                    {execution.suggestedAction && execution.status !== 'success' && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        建议：{execution.suggestedAction}
+                      </p>
+                    )}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {sendPending && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => void retrySend(execution)}
+                        >
+                          {busy ? '发送中…' : '重新发送'}
+                        </Button>
+                      )}
+                      {execution.status === 'failed' && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => task && void runNow(task)}
+                        >
+                          {busy ? '执行中…' : '重新执行'}
+                        </Button>
+                      )}
+                      {execution.pngPath && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => void openReport(execution)}
+                        >
+                          查看日报
+                        </Button>
+                      )}
+                      {execution.status !== 'success' &&
+                        execution.errorCode?.startsWith('WECHAT_') && (
+                          <Button size="sm" variant="ghost" onClick={onOpenWechatSettings}>
+                            去检测
+                          </Button>
+                        )}
+                      {execution.technicalMessage && (
+                        <details className="text-xs text-muted-foreground">
+                          <summary className="cursor-pointer">查看详情</summary>
+                          <p className="mt-1 max-w-xl whitespace-pre-wrap break-words">
+                            {execution.technicalMessage}
+                          </p>
+                        </details>
+                      )}
+                    </div>
                   </div>
                   <time className="text-xs text-muted-foreground">
                     {formatDateTime(execution.finishedAt || execution.startedAt)}

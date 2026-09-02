@@ -27,7 +27,8 @@ export interface ScheduledReportApiDependencies {
     | 'deleteTask'
     | 'setTaskEnabled'
     | 'runScheduledReportNow'
-  >
+  > &
+    Partial<Pick<ScheduledReportService, 'retryScheduledReportSend'>>
   getCapability: () => Promise<PersonalWechatSendCapability>
   listContacts: () => FormattedContact[]
   isDatabaseReady: () => boolean
@@ -102,7 +103,6 @@ export class ScheduledReportApiService {
     request: ScheduledReportApiCreateRequest
   ): Promise<ScheduledReportApiTask> {
     this.assertDatabaseReady()
-    await this.assertCapabilityReady()
     if (!isRecord(request))
       throw new ScheduledReportApiError(400, 'invalid_request', '请求体格式无效')
 
@@ -250,6 +250,18 @@ export class ScheduledReportApiService {
     return result.data
   }
 
+  async retrySend(executionId: string): Promise<ScheduledReportExecution> {
+    const retry = this.deps.service.retryScheduledReportSend
+    if (!retry) {
+      throw new ScheduledReportApiError(501, 'not_supported', '当前运行时不支持重新发送日报')
+    }
+    const result = await retry.call(this.deps.service, executionId)
+    if (!result.data) {
+      throw new ScheduledReportApiError(404, 'not_found', result.error || '未找到定时日报执行记录')
+    }
+    return result.data
+  }
+
   async executions(taskId: string): Promise<ScheduledReportApiExecution[]> {
     this.assertDatabaseReady()
     const task = await this.findTask(taskId)
@@ -275,27 +287,6 @@ export class ScheduledReportApiService {
     } finally {
       release()
     }
-  }
-
-  private async assertCapabilityReady(): Promise<void> {
-    let capability: PersonalWechatSendCapability
-    try {
-      capability = this.applyPlatformCapability(await this.deps.getCapability())
-    } catch (error) {
-      throw new ScheduledReportApiError(
-        503,
-        'wechat_capability_unavailable',
-        '微信发送能力检测失败，请在 TraceMemo 设置中检查个人微信。',
-        error instanceof Error ? error.message : String(error)
-      )
-    }
-    if (capability.ready && capability.capabilities.image) return
-    throw new ScheduledReportApiError(
-      409,
-      'wechat_not_ready',
-      capability.message || 'TraceMemo 当前还没有完成微信消息发送能力配置',
-      { capability: publicCapability(capability) }
-    )
   }
 
   private applyPlatformCapability(

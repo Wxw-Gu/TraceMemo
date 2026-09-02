@@ -31,7 +31,7 @@ type AIRequestResult = {
   usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
 }
 interface OpenAIResponsePayload {
-  error?: { message?: string }
+  error?: { message?: string; code?: string | number; type?: string }
   choices?: Array<{
     message?: {
       content?: string | Array<{ type?: string; text?: string }> | null
@@ -42,12 +42,12 @@ interface OpenAIResponsePayload {
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
 }
 interface OpenAIStreamPayload {
-  error?: { message?: string }
+  error?: { message?: string; code?: string | number; type?: string }
   choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
 }
 interface OpenAIResponsesPayload {
-  error?: { message?: string }
+  error?: { message?: string; code?: string | number; type?: string }
   incomplete_details?: { reason?: string }
   status?: string
   output_text?: string
@@ -61,14 +61,33 @@ interface OpenAIResponsesStreamPayload {
   type?: string
   delta?: string
   message?: string
-  error?: { message?: string }
+  error?: { message?: string; code?: string | number; type?: string }
   response?: OpenAIResponsesPayload
 }
 interface AnthropicResponsePayload {
-  error?: { message?: string }
+  error?: { message?: string; type?: string }
   content?: Array<{ type?: string; text?: string }>
   stop_reason?: string
   usage?: { input_tokens?: number; output_tokens?: number }
+}
+
+export class AIProviderRequestError extends Error {
+  readonly status?: number
+  readonly code?: string
+  readonly type?: string
+  readonly responseBody?: unknown
+
+  constructor(
+    message: string,
+    details: { status?: number; code?: unknown; type?: unknown; responseBody?: unknown } = {}
+  ) {
+    super(message)
+    this.name = 'AIProviderRequestError'
+    this.status = details.status
+    this.code = typeof details.code === 'string' ? details.code : undefined
+    this.type = typeof details.type === 'string' ? details.type : undefined
+    this.responseBody = details.responseBody
+  }
 }
 
 export class AIProviderService {
@@ -272,12 +291,15 @@ export class AIProviderService {
     finishReason?: string
     usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
     error?: string
+    errorCode?: string
+    errorStatus?: number
+    errorType?: string
   }> {
     try {
       return { success: true, ...(await this.request(messages, options, false, signal, onDelta)) }
     } catch (error) {
       if (signal?.aborted) throw error
-      return { success: false, error: safeAIError(error) }
+      return { success: false, error: safeAIError(error), ...aiProviderErrorDetails(error) }
     }
   }
 
@@ -752,7 +774,15 @@ async function requestOpenAICompatible(
     async (response) => {
       if (!response.ok) {
         const payload = await parseJsonResponse<OpenAIResponsePayload>(response)
-        throw new Error(payload.error?.message || `AI 请求失败 (${response.status})`)
+        throw new AIProviderRequestError(
+          payload.error?.message || `AI 请求失败 (${response.status})`,
+          {
+            status: response.status,
+            code: payload.error?.code,
+            type: payload.error?.type,
+            responseBody: payload.error
+          }
+        )
       }
       if (
         provider.advanced.stream &&
@@ -810,7 +840,15 @@ async function requestOpenAIResponses(
     async (response) => {
       if (!response.ok) {
         const payload = await parseJsonResponse<OpenAIResponsesPayload>(response)
-        throw new Error(payload.error?.message || `AI 请求失败 (${response.status})`)
+        throw new AIProviderRequestError(
+          payload.error?.message || `AI 请求失败 (${response.status})`,
+          {
+            status: response.status,
+            code: payload.error?.code,
+            type: payload.error?.type,
+            responseBody: payload.error
+          }
+        )
       }
       if (provider.advanced.stream) return parseOpenAIResponsesStream(response, onDelta)
       const payload = await parseJsonResponse<OpenAIResponsesPayload>(response)
@@ -867,7 +905,14 @@ async function requestAnthropic(
     async (response) => {
       const payload = await parseJsonResponse<AnthropicResponsePayload>(response)
       if (!response.ok)
-        throw new Error(payload.error?.message || `Anthropic 请求失败 (${response.status})`)
+        throw new AIProviderRequestError(
+          payload.error?.message || `Anthropic 请求失败 (${response.status})`,
+          {
+            status: response.status,
+            type: payload.error?.type,
+            responseBody: payload.error
+          }
+        )
       return {
         data: Array.isArray(payload.content)
           ? payload.content
@@ -1154,6 +1199,27 @@ function safeAIError(error: unknown): string {
   if (error instanceof DOMException && error.name === 'AbortError') return 'AI 请求已取消'
   const message = error instanceof Error ? error.message : String(error)
   return message.replace(/sk-[a-z0-9_-]+/gi, '***').slice(0, 300)
+}
+
+function aiProviderErrorDetails(error: unknown): {
+  errorCode?: string
+  errorStatus?: number
+  errorType?: string
+} {
+  if (error instanceof AIProviderRequestError) {
+    return {
+      ...(error.code ? { errorCode: error.code } : {}),
+      ...(error.status !== undefined ? { errorStatus: error.status } : {}),
+      ...(error.type ? { errorType: error.type } : {})
+    }
+  }
+  const record = error && typeof error === 'object' ? (error as Record<string, unknown>) : undefined
+  const status = Number(record?.status)
+  return {
+    ...(typeof record?.code === 'string' ? { errorCode: record.code } : {}),
+    ...(Number.isFinite(status) && status > 0 ? { errorStatus: status } : {}),
+    ...(typeof record?.type === 'string' ? { errorType: record.type } : {})
+  }
 }
 
 function parseVisionImage(dataUrl: string): { mimeType: string; base64: string; bytes: number } {

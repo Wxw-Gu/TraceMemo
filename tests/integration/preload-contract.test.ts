@@ -141,6 +141,13 @@ describe('preload IPC contract', () => {
     expect(invoke).toHaveBeenLastCalledWith('wechat-personal:getVoiceDiagnostic')
     await api.selectPersonalWechatImage()
     expect(invoke).toHaveBeenLastCalledWith('wechat-personal:selectImage')
+
+    await api.getScheduledReportNotificationSettings()
+    expect(invoke).toHaveBeenLastCalledWith('scheduled-report:getNotificationSettings')
+    await api.setScheduledReportNotificationEnabled(true)
+    expect(invoke).toHaveBeenLastCalledWith('scheduled-report:setNotificationEnabled', true)
+    await api.testScheduledReportErrorNotification('task-1')
+    expect(invoke).toHaveBeenLastCalledWith('scheduled-report:testErrorNotification', 'task-1')
   })
 
   it('preserves key API return values without exposing ipcRenderer', async () => {

@@ -330,6 +330,7 @@ handle('group-exit-monitor:markRead', (readAt) => {
 const scheduledReportTasks = []
 const scheduledReportExecutions = []
 const generatedReports = []
+let scheduledReportNotificationEnabled = false
 const scheduledReportNextRun = (scheduleTime) => {
   const [hours, minutes] = String(scheduleTime || '09:00')
     .split(':')
@@ -437,10 +438,9 @@ handle('wechat-personal:getSendCapability', () => ({
     canSendVoice: personalWechatSupported,
     message: '个人微信已绑定'
   },
-  message:
-    personalWechatSupported
-      ? '个人微信已准备好发送日报'
-      : '微信消息发送目前仅支持 macOS 和 Windows'
+  message: personalWechatSupported
+    ? '个人微信已准备好发送日报'
+    : '微信消息发送目前仅支持 macOS 和 Windows'
 }))
 handle('scheduled-report:list', () => [...scheduledReportTasks])
 handle('scheduled-report:listExecutions', (taskId) =>
@@ -448,6 +448,21 @@ handle('scheduled-report:listExecutions', (taskId) =>
     ? scheduledReportExecutions.filter((execution) => execution.taskId === taskId)
     : [...scheduledReportExecutions]
 )
+handle('scheduled-report:getNotificationSettings', () => ({
+  enabled: scheduledReportNotificationEnabled
+}))
+handle('scheduled-report:setNotificationEnabled', (enabled) => {
+  if (enabled) {
+    return {
+      success: false,
+      data: { enabled: false },
+      reason: 'agent_hub_offline',
+      error: '需要先连接 Agent Hub 微信机器人，才能接收异常通知。'
+    }
+  }
+  scheduledReportNotificationEnabled = false
+  return { success: true, data: { enabled: false } }
+})
 handle('scheduled-report:create', (request) => {
   const now = new Date(fixtureNowMs).toISOString()
   const task = {
@@ -495,16 +510,67 @@ handle('scheduled-report:setEnabled', (taskId, enabled) => {
 handle('scheduled-report:runNow', (taskId) => {
   const task = scheduledReportTasks.find((item) => item.id === taskId)
   if (!task) return { success: false, error: '任务不存在' }
+  const pngPath = path.join(
+    userData,
+    `fixture-scheduled-report-${scheduledReportExecutions.length + 1}.png`
+  )
+  fs.writeFileSync(pngPath, Buffer.from(imageData.split(',')[1], 'base64'))
   const execution = {
     id: `fixture-execution-${scheduledReportExecutions.length + 1}`,
     taskId,
+    triggerType: 'manual',
     startedAt: new Date(fixtureNowMs).toISOString(),
     finishedAt: new Date(fixtureNowMs).toISOString(),
     status: 'success',
+    currentStage: 'send',
+    scheduledSlot: new Date(fixtureNowMs).toISOString().slice(0, 10),
+    retryCount: 0,
+    reportId: `fixture-report-record-${scheduledReportExecutions.length + 1}`,
+    pngPath,
+    sendTarget: task.target,
+    sendStatus: 'success',
+    notificationStatus: 'not_needed',
     message: '日报生成成功，微信发送成功'
   }
   scheduledReportExecutions.push(execution)
   task.lastRunAt = execution.finishedAt
+  return { success: true, data: execution }
+})
+handle('scheduled-report:retrySend', (executionId) => {
+  const execution = scheduledReportExecutions.find((item) => item.id === executionId)
+  if (!execution) return { success: false, error: '执行记录不存在' }
+  execution.status = 'success'
+  execution.currentStage = 'send'
+  execution.finishedAt = new Date(fixtureNowMs).toISOString()
+  execution.retryCount = Number(execution.retryCount || 0) + 1
+  execution.sendStatus = 'success'
+  execution.message = '日报生成成功，微信发送成功'
+  return { success: true, data: execution }
+})
+handle('scheduled-report:testErrorNotification', (taskId) => {
+  const task = scheduledReportTasks.find((item) => item.id === taskId)
+  if (!task) return { success: false, error: '任务不存在' }
+  const now = new Date(fixtureNowMs).toISOString()
+  const execution = {
+    id: `fixture-debug-execution-${scheduledReportExecutions.length + 1}`,
+    taskId,
+    triggerType: 'scheduled',
+    startedAt: now,
+    finishedAt: now,
+    status: 'failed',
+    currentStage: 'notify',
+    failedStage: 'report',
+    errorCode: 'DEBUG_TEST_NOTIFICATION',
+    technicalMessage: '这是调试用的模拟错误信息；本次没有调用 AI。',
+    userTitle: '定时日报错误通知测试',
+    userMessage: '这是一条调试用的模拟错误通知，用于验证 Agent Hub 推送链路。',
+    suggestedAction: '确认微信中是否收到这条测试通知。',
+    retryable: false,
+    retryCount: 0,
+    sendStatus: 'unavailable',
+    notificationStatus: 'sent'
+  }
+  scheduledReportExecutions.unshift(execution)
   return { success: true, data: execution }
 })
 handle('wechat-share:getConfig', () => ({

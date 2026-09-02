@@ -224,7 +224,7 @@ describe('scheduled report Local HTTP API', () => {
     expect(service.createTask).toHaveBeenCalledOnce()
   })
 
-  it('rejects unsupported capability, ambiguous groups, and duplicate tasks', async () => {
+  it('allows unavailable sending capability while still rejecting ambiguous groups', async () => {
     fixture.capability = {
       ...fixture.capability,
       ready: false,
@@ -232,13 +232,16 @@ describe('scheduled report Local HTTP API', () => {
       message: '请先绑定个人微信'
     }
     const first = await startFixture()
-    const blocked = await fetch(`${baseUrl(first.handle)}/api/v1/scheduled-reports`, {
-      method: 'POST',
-      headers: { ...auth, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ group: '技术交流群', schedule: { type: 'daily', time: '09:00' } })
-    })
-    expect(blocked.status).toBe(409)
-    expect(await blocked.json()).toMatchObject({ error: 'wechat_not_ready' })
+    const createdWhileUnavailable = await fetch(
+      `${baseUrl(first.handle)}/api/v1/scheduled-reports`,
+      {
+        method: 'POST',
+        headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group: '技术交流群', schedule: { type: 'daily', time: '09:00' } })
+      }
+    )
+    expect(createdWhileUnavailable.status).toBe(201)
+    expect(await createdWhileUnavailable.json()).toMatchObject({ created: true })
 
     fixture.capability = { ...fixture.capability, ready: true, status: 'ready' }
     fixture.contacts = fixture.contacts.map((contact) => ({ ...contact, m_nsNickName: '重复群' }))
