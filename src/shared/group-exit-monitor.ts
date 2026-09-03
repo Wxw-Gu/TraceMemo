@@ -174,6 +174,7 @@ export function buildMemberLeftNotification(
 
 export interface GroupExitMonitorState {
   events: GroupExitMonitorEvent[]
+  enabled: boolean
   running: boolean
   nativeMonitorActive: boolean
   monitoredGroupCount: number

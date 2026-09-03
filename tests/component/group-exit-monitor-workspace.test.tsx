@@ -41,6 +41,7 @@ const state: GroupExitMonitorState = {
       detectedAt: 1_756_600_100_000
     }
   ],
+  enabled: true,
   running: true,
   nativeMonitorActive: true,
   monitoredGroupCount: 3,
@@ -91,6 +92,28 @@ describe('GroupExitMonitorWorkspace', () => {
     expect(screen.getByText('小艾通讯录备注')).toBeVisible()
     expect(screen.getByText('wxid_alice')).toBeVisible()
     expect(screen.getByText('实时监听已启用')).toBeVisible()
+  })
+
+  it('persists the master switch and shows the paused state', async () => {
+    const user = userEvent.setup()
+    const pausedState = { ...state, enabled: false, running: false }
+    const setEnabled = vi.fn().mockResolvedValue(pausedState)
+    window.api = {
+      getGroupExitMonitorState: vi.fn().mockResolvedValue(state),
+      onGroupExitMonitorState: vi.fn(() => () => undefined),
+      setGroupExitMonitorEnabled: setEnabled,
+      checkGroupExitMonitorNow: vi.fn().mockResolvedValue(state),
+      clearGroupExitMonitorEvents: vi.fn().mockResolvedValue(state)
+    } as typeof window.api
+
+    renderWorkspace(<GroupExitMonitorWorkspace dbReady />)
+    const masterSwitch = await screen.findByRole('switch', { name: '退群监控总开关' })
+    expect(masterSwitch).toBeChecked()
+    await user.click(masterSwitch)
+
+    await waitFor(() => expect(setEnabled).toHaveBeenCalledWith(false))
+    expect(screen.getByText('监控已暂停')).toBeVisible()
+    expect(screen.getByRole('button', { name: '立即检查' })).toBeDisabled()
   })
 
   it('filters to groups that have exit events and clears the history', async () => {

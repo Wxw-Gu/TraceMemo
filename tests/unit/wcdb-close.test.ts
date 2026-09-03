@@ -6,6 +6,21 @@ function setPrivate(target: object, key: string, value: unknown): void {
 }
 
 describe('Wcdb4Client shutdown', () => {
+  it('invalidates only requested avatar cache entries', () => {
+    const client = Object.create(Wcdb4Client.prototype) as Wcdb4Client
+    const avatarCache = new Map([
+      ['wxid_changed', 'https://old.example/avatar.jpg'],
+      ['wxid_stable', 'data:image/png;base64,stable']
+    ])
+    setPrivate(client, 'avatarCache', avatarCache)
+
+    client.invalidateAvatarCache(['wxid_changed'])
+
+    expect(avatarCache).toEqual(
+      new Map([['wxid_stable', 'data:image/png;base64,stable']])
+    )
+  })
+
   it('clears folded contact status snapshots when sessions are invalidated', () => {
     const client = Object.create(Wcdb4Client.prototype) as Wcdb4Client
     const statusCache = new Map([['group@chatroom', { isFolded: true, isMuted: false }]])

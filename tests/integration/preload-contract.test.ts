@@ -69,6 +69,8 @@ describe('preload IPC contract', () => {
 
     await api.getGroupExitMonitorState()
     expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:getState')
+    await api.setGroupExitMonitorEnabled(false)
+    expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:setEnabled', false)
     await api.setGroupExitMonitorGroups(['room@chatroom'])
     expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:setGroups', ['room@chatroom'])
     await api.setGroupExitMonitorGroups(['room@chatroom'], ['room@chatroom'])
@@ -85,6 +87,8 @@ describe('preload IPC contract', () => {
     expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:clearEvents')
     await api.markGroupExitMonitorRead(123)
     expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:markRead', 123)
+    await api.listWechatActionLogs()
+    expect(invoke).toHaveBeenLastCalledWith('wechat-action-log:list')
 
     await api.getImage('fixture-md5', 'fixture.dat', 'fixture-session', {
       force: true,

@@ -9,6 +9,8 @@ export interface Contact {
   avatar?: string
   wechatNickname?: string
   remark?: string
+  alias?: string
+  wechatId?: string
   isFolded?: boolean
   isMuted?: boolean
 }

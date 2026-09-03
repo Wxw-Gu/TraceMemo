@@ -12,6 +12,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Switch,
   Textarea,
   Tooltip,
   TooltipContent,
@@ -36,6 +37,7 @@ interface GroupExitMonitorWorkspaceProps {
 
 const EMPTY_STATE: GroupExitMonitorState = {
   events: [],
+  enabled: true,
   running: false,
   nativeMonitorActive: false,
   monitoredGroupCount: 0,
@@ -443,6 +445,7 @@ export function GroupExitMonitorWorkspace({
 }: GroupExitMonitorWorkspaceProps): React.ReactElement {
   const [state, setState] = React.useState<GroupExitMonitorState>(EMPTY_STATE)
   const [checking, setChecking] = React.useState(false)
+  const [togglingEnabled, setTogglingEnabled] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
   const [error, setError] = React.useState('')
   const [sendCapability, setSendCapability] = React.useState<PersonalWechatSendCapability | null>(
@@ -633,6 +636,20 @@ export function GroupExitMonitorWorkspace({
     }
   }
 
+  const setMonitorEnabled = async (enabled: boolean): Promise<void> => {
+    const api = window.api
+    if (togglingEnabled || typeof api.setGroupExitMonitorEnabled !== 'function') return
+    setTogglingEnabled(true)
+    setError('')
+    try {
+      setState(await api.setGroupExitMonitorEnabled(enabled))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setTogglingEnabled(false)
+    }
+  }
+
   const toggleManageGroup = (roomId: string): void => {
     const wasSelected = selectedManageRoomIds.has(roomId)
     setSelectedManageRoomIds((current) => {
@@ -702,6 +719,8 @@ export function GroupExitMonitorWorkspace({
 
   const statusLabel = !dbReady
     ? '数据库未连接'
+    : !state.enabled
+      ? '监控已暂停'
     : state.running && state.nativeMonitorActive
       ? '实时监听已启用'
       : state.running
@@ -717,6 +736,15 @@ export function GroupExitMonitorWorkspace({
           <p>实时关注微信群成员变化，成员数量减少时自动留下退群动态。</p>
         </div>
         <div className="exit-monitor-header-actions">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <span>退群监控</span>
+            <Switch
+              checked={state.enabled}
+              disabled={togglingEnabled}
+              onCheckedChange={(checked) => void setMonitorEnabled(checked)}
+              aria-label="退群监控总开关"
+            />
+          </label>
           <span className={`exit-monitor-status ${state.running ? 'running' : ''}`}>
             <span className="exit-monitor-status-dot" aria-hidden="true" />
             {statusLabel}
@@ -729,7 +757,7 @@ export function GroupExitMonitorWorkspace({
             variant="outline"
             size="sm"
             onClick={() => void checkNow()}
-            disabled={!dbReady || checking}
+            disabled={!dbReady || !state.enabled || checking}
           >
             {checking ? '检查中...' : '立即检查'}
           </Button>
@@ -869,7 +897,7 @@ export function GroupExitMonitorWorkspace({
                         : '连接微信数据库后，退群事件会显示在这里。'
                   }
                   action={
-                    !state.events.length && dbReady ? (
+                    !state.events.length && dbReady && state.enabled ? (
                       <Button variant="outline" size="sm" onClick={() => void checkNow()}>
                         立即检查
                       </Button>

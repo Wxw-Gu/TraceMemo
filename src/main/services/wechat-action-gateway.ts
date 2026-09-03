@@ -21,6 +21,7 @@ import { personalWechatSendService } from './personal-wechat-send-service'
 
 const MAX_AUDIT_RECORDS = 500
 const MAX_CONTENT_PREVIEW_LENGTH = 240
+export const AUTOMATION_SEND_INTERVAL_MS = 3_000
 const AUTOMATION_PURPOSE_ALLOWLIST = new Set(['scheduled_report', 'member_left_notification'])
 
 export interface WechatActionGatewayDependencies {
@@ -34,6 +35,7 @@ export interface WechatActionGatewayDependencies {
     | undefined
   getUserDataPath?: () => string
   now?: () => Date
+  wait?: (milliseconds: number) => Promise<void>
 }
 
 interface LoadedAuditState {
@@ -46,12 +48,16 @@ export interface WechatActionPolicyContext {
 }
 
 const defaultDependencies = (): Required<
-  Pick<WechatActionGatewayDependencies, 'getCapability' | 'send' | 'getUserDataPath' | 'now'>
+  Pick<
+    WechatActionGatewayDependencies,
+    'getCapability' | 'send' | 'getUserDataPath' | 'now' | 'wait'
+  >
 > => ({
   getCapability: () => personalWechatCapabilityService.getPersonalWechatSendCapability(),
   send: (request) => personalWechatSendService.send(request),
   getUserDataPath: () => app.getPath('userData'),
-  now: () => new Date()
+  now: () => new Date(),
+  wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 })
 
 /**
@@ -60,12 +66,20 @@ const defaultDependencies = (): Required<
  */
 export class WechatActionGateway {
   private readonly deps: Required<
-    Pick<WechatActionGatewayDependencies, 'getCapability' | 'send' | 'getUserDataPath' | 'now'>
+    Pick<
+      WechatActionGatewayDependencies,
+      'getCapability' | 'send' | 'getUserDataPath' | 'now' | 'wait'
+    >
   > &
-    Omit<WechatActionGatewayDependencies, 'getCapability' | 'send' | 'getUserDataPath' | 'now'>
+    Omit<
+      WechatActionGatewayDependencies,
+      'getCapability' | 'send' | 'getUserDataPath' | 'now' | 'wait'
+    >
   private readonly memberEvents = new Map<string, WechatActionMemberEventReference>()
   private readonly inFlight = new Map<string, Promise<WechatActionResult>>()
   private auditState: LoadedAuditState | null = null
+  private automationSendTail: Promise<void> = Promise.resolve()
+  private lastAutomationSendStartedAt: number | undefined
 
   constructor(deps: WechatActionGatewayDependencies = {}) {
     this.deps = { ...defaultDependencies(), ...deps }
@@ -85,6 +99,10 @@ export class WechatActionGateway {
 
   clearMemberEvents(): void {
     this.memberEvents.clear()
+  }
+
+  listAuditRecords(): WechatActionAuditRecord[] {
+    return this.loadAuditState().records.map((record) => ({ ...record }))
   }
 
   async execute(request: WechatActionRequest): Promise<WechatActionResult> {
@@ -176,7 +194,7 @@ export class WechatActionGateway {
 
     let sendResult: PersonalWechatSendResult
     try {
-      sendResult = await this.deps.send(toPersonalWechatSendRequest(request))
+      sendResult = await this.send(request)
     } catch (error) {
       return this.finishFailed(
         actionId,
@@ -199,6 +217,26 @@ export class WechatActionGateway {
       )
     }
     return this.finishSent(actionId, request, idempotencyKey, startedAt, sendResult)
+  }
+
+  private send(request: WechatActionRequest): Promise<PersonalWechatSendResult> {
+    const sendRequest = toPersonalWechatSendRequest(request)
+    if (request.triggerType !== 'automation') return this.deps.send(sendRequest)
+
+    const queued = this.automationSendTail.then(async () => {
+      const now = this.deps.now().getTime()
+      const remaining = this.lastAutomationSendStartedAt !== undefined
+        ? Math.max(0, AUTOMATION_SEND_INTERVAL_MS - (now - this.lastAutomationSendStartedAt))
+        : 0
+      if (remaining > 0) await this.deps.wait(remaining)
+      this.lastAutomationSendStartedAt = this.deps.now().getTime()
+      return this.deps.send(sendRequest)
+    })
+    this.automationSendTail = queued.then(
+      () => undefined,
+      () => undefined
+    )
+    return queued
   }
 
   private async resolveEventContext(
@@ -364,6 +402,7 @@ export class WechatActionGateway {
       ...(request.executionId ? { executionId: request.executionId } : {}),
       recipientType: request.recipient.type,
       recipientId: request.recipient.id,
+      ...(request.recipient.name ? { recipientName: request.recipient.name } : {}),
       contentType: request.content.type,
       ...contentAudit(request.content),
       createdAt: result.startedAt,

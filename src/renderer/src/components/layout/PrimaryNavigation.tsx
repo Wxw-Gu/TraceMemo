@@ -46,6 +46,13 @@ function NavIcon({ page }: NavIconProps): React.ReactElement {
           <path d="m16.5 9 3 3-3 3" />
         </svg>
       )
+    case 'logs':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M6 5.5h12v13H6z" />
+          <path d="M9 9h6M9 12h6M9 15h4" />
+        </svg>
+      )
     case 'export':
       return (
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">

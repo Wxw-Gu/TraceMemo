@@ -16,22 +16,29 @@ export function ConversationItem({
   const wxid = contact.m_nsUsrName
   const displayName = nickname || wxid || '未命名会话'
   const initial = (displayName || wxid || '?').charAt(0)
-  const [repairedAvatar, setRepairedAvatar] = useState<{ username: string; source: string }>()
+  const [repairedAvatar, setRepairedAvatar] = useState<{
+    username: string
+    source: string
+    replaces: string
+  }>()
   const [failedAvatar, setFailedAvatar] = useState<{ username: string; source: string }>()
-  const repairedSource = repairedAvatar?.username === wxid ? repairedAvatar.source : undefined
+  const repairedSource =
+    repairedAvatar?.username === wxid && repairedAvatar.replaces === contact.avatar
+      ? repairedAvatar.source
+      : undefined
   const avatar = repairedSource || contact.avatar
   const avatarFailed = failedAvatar?.username === wxid && failedAvatar.source === avatar
 
   const handleAvatarError = (): void => {
     if (!avatar || avatarFailed) return
     setFailedAvatar({ username: wxid, source: avatar })
-    if (contact.type !== 'group' || avatar.startsWith('data:')) return
+    if (avatar.startsWith('data:')) return
     void window.api
-      .getContactAvatars([wxid])
+      .getContactAvatars([wxid], { refresh: true })
       .then((avatars) => {
         const fallback = avatars[wxid]
         if (!fallback || fallback === avatar) return
-        setRepairedAvatar({ username: wxid, source: fallback })
+        setRepairedAvatar({ username: wxid, source: fallback, replaces: avatar })
         setFailedAvatar(undefined)
       })
       .catch(() => undefined)

@@ -112,6 +112,7 @@ import {
 import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
 import { groupExitMonitorService } from './services/group-exit-monitor-service'
+import { wechatActionLogService } from './services/wechat-action-log-service'
 import { personalWechatSendService } from './services/personal-wechat-send-service'
 import { getPersonalWechatSendCapability } from './services/personal-wechat-capability-service'
 import { scheduledReportService } from './services/scheduled-report-service'
@@ -1079,11 +1080,14 @@ app.whenReady().then(async () => {
     return contacts
   })
 
-  ipcMain.handle('db:getContactAvatars', async (_, usernames: string[]) => {
-    const avatars = await chat.getContactAvatars(usernames)
-    if (chat.isReady()) mergeBootstrapAvatars(chat.getCurrentAccountRoot(), avatars)
-    return avatars
-  })
+  ipcMain.handle(
+    'db:getContactAvatars',
+    async (_, usernames: string[], options?: { refresh?: boolean }) => {
+      const avatars = await chat.getContactAvatars(usernames, options)
+      if (chat.isReady()) mergeBootstrapAvatars(chat.getCurrentAccountRoot(), avatars)
+      return avatars
+    }
+  )
 
   ipcMain.handle(
     'db:getMessages',
@@ -1130,6 +1134,9 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('group-exit-monitor:getState', () => groupExitMonitorService.getState())
+  ipcMain.handle('group-exit-monitor:setEnabled', (_, enabled: boolean) =>
+    groupExitMonitorService.setEnabled(enabled === true)
+  )
   ipcMain.handle(
     'group-exit-monitor:setGroups',
     (_, roomIds: string[], notificationRoomIds?: string[]) =>
@@ -1146,6 +1153,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('group-exit-monitor:markRead', (_, readAt?: number) =>
     groupExitMonitorService.markRead(readAt)
   )
+  ipcMain.handle('wechat-action-log:list', () => wechatActionLogService.list())
 
   ipcMain.handle('db:search', (_, keyword: string) => chat.searchMessages(keyword))
   ipcMain.handle(

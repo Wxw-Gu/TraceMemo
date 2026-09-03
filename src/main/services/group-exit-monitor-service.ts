@@ -17,6 +17,7 @@ import {
 } from '../../shared/group-exit-monitor'
 
 type StoredState = {
+  enabled?: boolean
   accountRoot?: string
   events?: Partial<GroupExitMonitorEvent>[]
   lastReadAt?: number
@@ -70,6 +71,7 @@ type GroupExitActionGateway = Pick<WechatActionGateway, 'execute'> &
 class GroupExitMonitorService {
   private readonly actionGateway: GroupExitActionGateway
   private active = false
+  private enabled = true
   private nativeMonitorActive = false
   private snapshots = new Map<string, GroupSnapshotRecord>()
   private changeTimer: NodeJS.Timeout | null = null
@@ -103,7 +105,8 @@ class GroupExitMonitorService {
     this.ensureLoaded()
     return {
       events: [...this.events],
-      running: this.active && chat.isReady(),
+      enabled: this.enabled,
+      running: this.enabled && this.active && chat.isReady(),
       nativeMonitorActive: this.nativeMonitorActive,
       monitoredGroupCount: this.snapshots.size,
       monitorSelectionConfigured: this.monitorSelectionConfigured,
@@ -143,6 +146,11 @@ class GroupExitMonitorService {
     this.active = true
     this.nativeMonitorActive = nativeMonitorActive
     this.checkQueued = false
+    if (!this.enabled) {
+      this.save()
+      this.broadcast()
+      return
+    }
     this.initializing = true
     const scopeGeneration = ++this.scopeGeneration
     this.eventSequence += 1
@@ -178,7 +186,7 @@ class GroupExitMonitorService {
   }
 
   notifyDatabaseChanged(rawPayload: string): void {
-    if (!this.active || !isContactEvent(rawPayload)) return
+    if (!this.enabled || !this.active || !isContactEvent(rawPayload)) return
     try {
       chat.getChatDb()?.getWcdb4Client().invalidateGroupNicknameCache()
     } catch {
@@ -193,6 +201,8 @@ class GroupExitMonitorService {
   }
 
   async checkNow(): Promise<GroupExitMonitorState> {
+    this.ensureLoaded()
+    if (!this.enabled) return this.getState()
     if (!this.active && chat.isReady()) await this.start(false)
     await this.check()
     return this.getState()
@@ -223,7 +233,31 @@ class GroupExitMonitorService {
     this.save()
     this.broadcast()
     // 建立基线放到后台，保存配置可以立即返回。
-    if (this.active) void this.check()
+    if (this.enabled && this.active) void this.check()
+    return this.getState()
+  }
+
+  async setEnabled(enabled: boolean): Promise<GroupExitMonitorState> {
+    this.ensureLoaded()
+    if (this.enabled === enabled) return this.getState()
+
+    this.enabled = enabled
+    this.eventSequence += 1
+    this.scopeGeneration += 1
+    this.checkQueued = false
+    this.hydrationQueue.clear()
+    if (this.changeTimer) clearTimeout(this.changeTimer)
+    this.changeTimer = null
+
+    if (enabled) {
+      // 用户主动暂停期间的成员变化不补报；重新开启后从当前状态建立新基线。
+      this.snapshots.clear()
+      this.lastCheckedAt = undefined
+      this.groupNamesRefreshPending = true
+    }
+    this.save()
+    this.broadcast()
+    if (enabled && this.active && chat.isReady()) await this.check()
     return this.getState()
   }
 
@@ -261,6 +295,7 @@ class GroupExitMonitorService {
     const currentRoot = chat.getCurrentAccountRoot()
     if (
       !this.active ||
+      !this.enabled ||
       !chat.isReady() ||
       !currentRoot ||
       !this.accountRoot ||
@@ -296,7 +331,7 @@ class GroupExitMonitorService {
     const result = await this.readMemberships()
     const membershipCostMs = Date.now() - startedAt
     let changedGroups = 0
-    if (result.groups && this.active && scopeGeneration === this.scopeGeneration) {
+    if (result.groups && this.enabled && this.active && scopeGeneration === this.scopeGeneration) {
       changedGroups = await this.applyCurrentMemberships(result.groups, scopeGeneration)
     }
     console.log(
@@ -367,7 +402,9 @@ class GroupExitMonitorService {
     const notifications: Array<{ group: GroupSnapshotRecord; event: GroupExitMonitorEvent }> = []
     let changedGroups = 0
     for (const membership of groups) {
-      if (!this.active || scopeGeneration !== this.scopeGeneration) return changedGroups
+      if (!this.enabled || !this.active || scopeGeneration !== this.scopeGeneration) {
+        return changedGroups
+      }
       if (membership.membersValid === false) continue
       const previous = this.snapshots.get(membership.roomId)
       // 空数组可能是查询失败，先保留旧基线，避免误报和覆盖最后有效快照。
@@ -407,7 +444,9 @@ class GroupExitMonitorService {
       }
     }
 
-    if (!this.active || scopeGeneration !== this.scopeGeneration) return changedGroups
+    if (!this.enabled || !this.active || scopeGeneration !== this.scopeGeneration) {
+      return changedGroups
+    }
     this.lastCheckedAt = Date.now()
     // 先把事件和新基线作为同一检查点落盘，再执行可失败的通知动作。
     this.save()
@@ -419,7 +458,7 @@ class GroupExitMonitorService {
   }
 
   private startNextSnapshotHydration(): void {
-    if (!this.active) {
+    if (!this.enabled || !this.active) {
       this.finishHydrationBatch()
       return
     }
@@ -635,6 +674,7 @@ class GroupExitMonitorService {
     this.loaded = true
     try {
       const stored = fs.readJsonSync(this.filePath()) as StoredState
+      this.enabled = stored.enabled !== false
       this.events = normalizeEvents(stored.events)
       this.actionGateway.registerMemberEvents?.(this.events)
       this.lastReadAt = Number(stored.lastReadAt) || 0
@@ -654,6 +694,7 @@ class GroupExitMonitorService {
     } catch {
       // 首次启动或文件损坏时从空记录开始。
       this.events = []
+      this.enabled = true
       this.lastReadAt = 0
       this.monitorSelectionConfigured = true
       this.monitoredRoomIds.clear()
@@ -671,6 +712,7 @@ class GroupExitMonitorService {
         this.filePath(),
         {
           accountRoot: this.accountRoot,
+          enabled: this.enabled,
           events: this.events,
           lastReadAt: this.lastReadAt,
           monitorSelectionConfigured: this.monitorSelectionConfigured,

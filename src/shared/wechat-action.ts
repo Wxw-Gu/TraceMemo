@@ -87,6 +87,7 @@ export interface WechatActionAuditRecord {
   executionId?: string
   recipientType: WechatActionRecipient['type']
   recipientId: string
+  recipientName?: string
   contentType: WechatActionContent['type']
   contentPreview?: string
   contentHash?: string

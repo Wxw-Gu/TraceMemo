@@ -82,6 +82,7 @@ import type {
 } from '../shared/personal-wechat-voice-runtime'
 import type { AppLogEntry } from '../shared/app-log'
 import type { GroupExitMonitorState } from '../shared/group-exit-monitor'
+import type { ActionLogEntry } from '../shared/action-log'
 import type {
   AppUpdateCheckResult,
   AppUpdateInstallResult,
@@ -213,7 +214,10 @@ declare global {
         updatedAt: number
       } | null>
       getContacts: (filter?: string) => Promise<Contact[]>
-      getContactAvatars: (usernames: string[]) => Promise<Record<string, string>>
+      getContactAvatars: (
+        usernames: string[],
+        options?: { refresh?: boolean }
+      ) => Promise<Record<string, string>>
       getCachedMessages: (
         userMd5: string,
         startTime?: number,
@@ -258,6 +262,7 @@ declare global {
         }[]
       } | null>
       getGroupExitMonitorState: () => Promise<GroupExitMonitorState>
+      setGroupExitMonitorEnabled: (enabled: boolean) => Promise<GroupExitMonitorState>
       setGroupExitMonitorGroups: (
         roomIds: string[],
         notificationRoomIds?: string[]
@@ -266,6 +271,7 @@ declare global {
       checkGroupExitMonitorNow: () => Promise<GroupExitMonitorState>
       clearGroupExitMonitorEvents: () => Promise<GroupExitMonitorState>
       markGroupExitMonitorRead: (readAt?: number) => Promise<GroupExitMonitorState>
+      listWechatActionLogs: () => Promise<ActionLogEntry[]>
       onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => () => void
       search: (keyword: string) => Promise<string | null>
       searchKnowledge: (request: KnowledgeSearchIpcRequest) => Promise<KnowledgeSearchIpcResult>

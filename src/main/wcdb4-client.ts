@@ -13,6 +13,8 @@ export interface Wcdb4Session {
   avatar?: string
   wechatNickname?: string
   remark?: string
+  alias?: string
+  wechatId?: string
   isFolded?: boolean
   isMuted?: boolean
   raw: Record<string, unknown>
@@ -1028,6 +1030,14 @@ export class Wcdb4Client {
     this.sessionStatusCache.clear()
     this.sessionStatusesUpdatedAt = 0
     this.sessionDisplayNamesHydrated = false
+  }
+
+  invalidateAvatarCache(usernames?: string[]): void {
+    if (!usernames) {
+      this.avatarCache.clear()
+      return
+    }
+    for (const username of this.uniq(usernames)) this.avatarCache.delete(username)
   }
 
   /** 清理群备注缓存，不影响会话缓存。 */
@@ -2813,12 +2823,22 @@ export class Wcdb4Client {
       'contactRemark',
       'contact_remark'
     ])
+    const alias = this.pickString(row, ['alias', 'aliasName', 'alias_name', 'm_nsAlias'])
+    const wechatId = this.pickString(row, [
+      'wechatId',
+      'wechat_id',
+      'wxAccount',
+      'wx_account',
+      'account'
+    ])
     const status = this.sessionStatusCache.get(username)
     return {
       username,
       nickname,
       wechatNickname,
       remark,
+      alias,
+      wechatId: wechatId || alias,
       isFolded: status?.isFolded,
       isMuted: status?.isMuted,
       raw: row
