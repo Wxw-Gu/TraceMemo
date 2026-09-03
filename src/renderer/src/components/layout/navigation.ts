@@ -3,6 +3,7 @@ export type AppPage =
   | 'search'
   | 'report'
   | 'exit-monitor'
+  | 'logs'
   | 'agent-hub'
   | 'export'
   | 'api'
@@ -18,6 +19,7 @@ export const PRIMARY_NAV_ITEMS: NavigationItem[] = [
   { id: 'search', label: '问问微信' },
   { id: 'report', label: '日报' },
   { id: 'exit-monitor', label: '退群监控' },
+  // { id: 'logs', label: '日志' },
   { id: 'agent-hub', label: 'Agent' },
   { id: 'export', label: '导出' },
   { id: 'api', label: 'API' },

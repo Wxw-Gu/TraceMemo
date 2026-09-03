@@ -119,6 +119,54 @@ describe('GroupExitMonitorService', () => {
     expect(service.getState().notificationTemplate).toBe(GROUP_EXIT_NOTIFICATION_TEMPLATE)
   })
 
+  it('persists OFF without checking contact changes or deleting configuration', async () => {
+    vi.useFakeTimers()
+    installGroupDb()
+    writeBaseline(
+      [{ roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }],
+      ['room@chatroom']
+    )
+    const service = new GroupExitMonitorService()
+    await service.setEnabled(false)
+    await service.start(true)
+    service.notifyDatabaseChanged('{"table":"contact","action":"update"}')
+    await vi.advanceTimersByTimeAsync(500)
+
+    expect(mocks.chat.getGroupMemberIdsBatchAsync).not.toHaveBeenCalled()
+    expect(service.getState()).toMatchObject({ enabled: false, running: false })
+    const stored = readJsonSync(join(mocks.userData, 'group-exit-monitor.json'))
+    expect(stored).toMatchObject({
+      enabled: false,
+      monitoredRoomIds: ['room@chatroom'],
+      notificationRoomIds: ['room@chatroom']
+    })
+    expect(stored.snapshots[0].members).toEqual([member, otherMember])
+    vi.useRealTimers()
+  })
+
+  it('rebuilds the current baseline when re-enabled without reporting paused exits', async () => {
+    installGroupDb()
+    writeBaseline(
+      [{ roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }],
+      ['room@chatroom']
+    )
+    const service = new GroupExitMonitorService()
+    await service.setEnabled(false)
+    await service.start(true)
+    mocks.chat.getGroupMemberIdsBatchAsync.mockResolvedValue([
+      { roomId: 'room@chatroom', status: 'ok', memberIds: [member.wxid] }
+    ])
+
+    const nextState = await service.setEnabled(true)
+
+    expect(nextState).toMatchObject({ enabled: true, running: true, events: [] })
+    expect(mocks.chat.getGroupMemberIdsBatchAsync).toHaveBeenCalledOnce()
+    expect(mocks.sender.send).not.toHaveBeenCalled()
+    const stored = readJsonSync(join(mocks.userData, 'group-exit-monitor.json'))
+    expect(stored.enabled).toBe(true)
+    expect(stored.snapshots[0].members).toEqual([{ wxid: member.wxid }])
+  })
+
   it('uses the Session nickname when establishing a new group baseline', async () => {
     installGroupDb()
     const callOrder: string[] = []

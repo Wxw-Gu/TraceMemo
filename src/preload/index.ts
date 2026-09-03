@@ -55,6 +55,7 @@ import type {
 import type { AppLogEntry } from '../shared/app-log'
 import type { AppUpdateState } from '../shared/app-update'
 import type { GroupExitMonitorState } from '../shared/group-exit-monitor'
+import type { ActionLogEntry } from '../shared/action-log'
 import type { CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress } from '../shared/export'
 import type { ImageDecoderSelectionResult, ImageDecoderStatus } from '../shared/image-decryption'
@@ -119,7 +120,8 @@ const api = {
   getBootstrapCache: () => ipcRenderer.invoke('db:getBootstrapCache'),
   getStartupCache: () => ipcRenderer.invoke('db:getStartupCache'),
   getContacts: (filter?: string) => ipcRenderer.invoke('db:getContacts', filter),
-  getContactAvatars: (usernames: string[]) => ipcRenderer.invoke('db:getContactAvatars', usernames),
+  getContactAvatars: (usernames: string[], options?: { refresh?: boolean }) =>
+    ipcRenderer.invoke('db:getContactAvatars', usernames, options),
   getCachedMessages: (userMd5: string, startTime?: number, endTime?: number) =>
     ipcRenderer.invoke('db:getCachedMessages', userMd5, startTime, endTime),
   getCachedMessagePage: (userMd5: string, startTime?: number, endTime?: number) =>
@@ -133,6 +135,8 @@ const api = {
   getGroupSnapshot: (userMd5: string) => ipcRenderer.invoke('db:getGroupSnapshot', userMd5),
   getGroupExitMonitorState: (): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:getState'),
+  setGroupExitMonitorEnabled: (enabled: boolean): Promise<GroupExitMonitorState> =>
+    ipcRenderer.invoke('group-exit-monitor:setEnabled', enabled),
   setGroupExitMonitorGroups: (
     roomIds: string[],
     notificationRoomIds?: string[]
@@ -148,6 +152,8 @@ const api = {
     ipcRenderer.invoke('group-exit-monitor:clearEvents'),
   markGroupExitMonitorRead: (readAt?: number): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:markRead', readAt),
+  listWechatActionLogs: (): Promise<ActionLogEntry[]> =>
+    ipcRenderer.invoke('wechat-action-log:list'),
   onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: GroupExitMonitorState): void =>
       callback(state)

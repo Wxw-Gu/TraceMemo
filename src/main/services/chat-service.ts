@@ -44,6 +44,8 @@ export interface FormattedContact {
   avatar?: string
   wechatNickname?: string
   remark?: string
+  alias?: string
+  wechatId?: string
   isFolded?: boolean
   isMuted?: boolean
 }
@@ -202,6 +204,8 @@ export function listContacts(filter?: string): FormattedContact[] {
       avatar: typeof user.avatar === 'string' ? user.avatar : undefined,
       wechatNickname: user.wechatNickname,
       remark: user.remark,
+      alias: user.alias,
+      wechatId: user.wechatId,
       isFolded: user.isFolded,
       isMuted: user.isMuted
     })
@@ -259,13 +263,18 @@ export async function getGroupNamesAsync(): Promise<Record<string, string>> {
   return names
 }
 
-export async function getContactAvatars(usernames: string[]): Promise<Record<string, string>> {
+export async function getContactAvatars(
+  usernames: string[],
+  options?: { refresh?: boolean }
+): Promise<Record<string, string>> {
   if (!dbRef) return {}
   const normalized = Array.from(
     new Set((usernames || []).map((username) => String(username || '').trim()).filter(Boolean))
   )
   if (normalized.length === 0) return {}
-  return dbRef.getWcdb4Client().getAvatarUrlsAsync(normalized)
+  const client = dbRef.getWcdb4Client()
+  if (options?.refresh) client.invalidateAvatarCache(normalized)
+  return client.getAvatarUrlsAsync(normalized)
 }
 
 function listSourceMessages(

@@ -16,7 +16,10 @@ vi.mock('../../src/main/services/personal-wechat-send-service', () => ({
   personalWechatSendService: mocks.sender
 }))
 
-import { WechatActionGateway } from '../../src/main/services/wechat-action-gateway'
+import {
+  AUTOMATION_SEND_INTERVAL_MS,
+  WechatActionGateway
+} from '../../src/main/services/wechat-action-gateway'
 import type { PersonalWechatSendCapability } from '../../src/shared/personal-wechat'
 import type { WechatActionResult } from '../../src/shared/wechat-action'
 
@@ -230,5 +233,146 @@ describe('WechatActionGateway', () => {
       errorCode: 'SEND_FAILED',
       reason: 'connector timeout'
     })
+  })
+
+  it('sends accepted automation actions in FIFO order at least three seconds apart', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-03T08:00:00.000Z'))
+    const gateway = createGateway()
+    const sentAt: Array<{ to: string; at: number }> = []
+    mocks.sender.send.mockImplementation(async (request: { to: string }) => {
+      sentAt.push({ to: request.to, at: Date.now() })
+      return { success: true, status: {} }
+    })
+    const action = (id: string) =>
+      gateway.execute({
+        idempotencyKey: `scheduled:${id}`,
+        origin: 'scheduled_report',
+        purpose: 'scheduled_report',
+        triggerType: 'automation',
+        executionId: id,
+        recipient: { type: 'group', id: `${id}@chatroom` },
+        content: { type: 'image', path: `/tmp/${id}.png` }
+      })
+
+    const pending = [action('A'), action('B'), action('C')]
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sentAt).toEqual([{ to: 'A@chatroom', at: Date.now() }])
+
+    await vi.advanceTimersByTimeAsync(AUTOMATION_SEND_INTERVAL_MS - 1)
+    expect(sentAt).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(sentAt.map((item) => item.to)).toEqual(['A@chatroom', 'B@chatroom'])
+    await vi.advanceTimersByTimeAsync(AUTOMATION_SEND_INTERVAL_MS)
+    await Promise.all(pending)
+
+    expect(sentAt.map((item) => item.to)).toEqual([
+      'A@chatroom',
+      'B@chatroom',
+      'C@chatroom'
+    ])
+    expect(sentAt[1].at - sentAt[0].at).toBe(AUTOMATION_SEND_INTERVAL_MS)
+    expect(sentAt[2].at - sentAt[1].at).toBe(AUTOMATION_SEND_INTERVAL_MS)
+    vi.useRealTimers()
+  })
+
+  it('keeps the safety interval after a failed automatic send', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-03T09:00:00.000Z'))
+    const gateway = createGateway()
+    const sentAt: number[] = []
+    mocks.sender.send.mockImplementation(async () => {
+      sentAt.push(Date.now())
+      if (sentAt.length === 1) throw new Error('first failed')
+      return { success: true, status: {} }
+    })
+    const first = memberAction(gateway)
+    await vi.advanceTimersByTimeAsync(0)
+    gateway.registerMemberEvent({ id: 'event-2', roomId: 'room@chatroom' })
+    const second = gateway.execute({
+      origin: 'member_monitor',
+      purpose: 'member_left_notification',
+      triggerType: 'automation',
+      sourceId: 'event-2',
+      recipient: { type: 'group', id: 'room@chatroom' },
+      content: { type: 'text', text: '李四已退出群聊' }
+    })
+
+    await vi.advanceTimersByTimeAsync(AUTOMATION_SEND_INTERVAL_MS)
+    const results = await Promise.all([first, second])
+
+    expect(results.map((result) => result.status)).toEqual(['failed', 'sent'])
+    expect(sentAt[1] - sentAt[0]).toBe(AUTOMATION_SEND_INTERVAL_MS)
+    vi.useRealTimers()
+  })
+
+  it('lets a user action send immediately while an automatic action is waiting', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-03T09:30:00.000Z'))
+    const gateway = createGateway()
+    const sent: Array<{ to: string; at: number }> = []
+    mocks.sender.send.mockImplementation(async (request: { to: string }) => {
+      sent.push({ to: request.to, at: Date.now() })
+      return { success: true, status: {} }
+    })
+    const automaticAction = (id: string) =>
+      gateway.execute({
+        idempotencyKey: `scheduled:${id}`,
+        origin: 'scheduled_report',
+        purpose: 'scheduled_report',
+        triggerType: 'automation',
+        executionId: id,
+        recipient: { type: 'group', id: `${id}@chatroom` },
+        content: { type: 'image', path: `/tmp/${id}.png` }
+      })
+
+    const first = automaticAction('first')
+    const waiting = automaticAction('waiting')
+    await vi.advanceTimersByTimeAsync(0)
+    const userResult = await gateway.execute({
+      origin: 'user_tts',
+      purpose: 'tts_voice',
+      triggerType: 'user',
+      recipient: { type: 'contact', id: 'wxid_user' },
+      content: { type: 'text', text: '用户主动发送' }
+    })
+
+    expect(userResult.status).toBe('sent')
+    expect(sent).toEqual([
+      { to: 'first@chatroom', at: Date.now() },
+      { to: 'wxid_user', at: Date.now() }
+    ])
+
+    await vi.advanceTimersByTimeAsync(AUTOMATION_SEND_INTERVAL_MS)
+    await Promise.all([first, waiting])
+    expect(sent[2]).toEqual({ to: 'waiting@chatroom', at: Date.now() })
+    vi.useRealTimers()
+  })
+
+  it('does not put capability failures into the automatic send queue', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-03T10:00:00.000Z'))
+    const gateway = createGateway()
+    mocks.capability.getPersonalWechatSendCapability
+      .mockResolvedValueOnce({ ...readyCapability, ready: false })
+      .mockResolvedValueOnce(readyCapability)
+
+    await expect(memberAction(gateway)).resolves.toMatchObject({
+      status: 'failed',
+      errorCode: 'SEND_CAPABILITY_UNAVAILABLE'
+    })
+    const startedAt = Date.now()
+    await gateway.execute({
+      origin: 'scheduled_report',
+      purpose: 'scheduled_report',
+      triggerType: 'automation',
+      executionId: 'execution-ready',
+      recipient: { type: 'group', id: 'room@chatroom' },
+      content: { type: 'image', path: '/tmp/report.png' }
+    })
+
+    expect(mocks.sender.send).toHaveBeenCalledOnce()
+    expect(Date.now()).toBe(startedAt)
+    vi.useRealTimers()
   })
 })

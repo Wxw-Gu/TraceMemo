@@ -7,6 +7,8 @@ export interface UserContact {
   avatar?: string
   wechatNickname?: string
   remark?: string
+  alias?: string
+  wechatId?: string
   isFolded?: boolean
   isMuted?: boolean
 }
@@ -102,15 +104,21 @@ export class WechatDb {
         avatar: session.avatar,
         wechatNickname: session.wechatNickname,
         remark: session.remark,
+        alias: session.alias,
+        wechatId: session.wechatId,
         isFolded: session.isFolded,
         isMuted: session.isMuted
       }))
       .filter((contact) => {
         if (!keyword) return true
-        return (
-          contact.m_nsUsrName.toLowerCase().includes(keyword) ||
-          contact.nickname.toLowerCase().includes(keyword)
-        )
+        return [
+          contact.remark,
+          contact.wechatNickname,
+          contact.nickname,
+          contact.alias,
+          contact.wechatId,
+          contact.m_nsUsrName
+        ].some((value) => value?.toLocaleLowerCase().includes(keyword))
       })
   }
 

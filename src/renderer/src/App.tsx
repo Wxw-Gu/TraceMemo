@@ -43,6 +43,9 @@ import { runtimePlatform, supportsPersonalWechatSend } from './utils/runtime-env
 import { useToast } from './components/ui'
 import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
 import { GroupExitMonitorWorkspace } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
+import { LogsWorkspace } from './features/logs/LogsWorkspace'
+import { selectContactAvatarRefreshUsernames } from './utils/contact-avatar'
+import { filterContacts } from './utils/contact-search'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -135,16 +138,6 @@ const areMessagesEquivalent = (left: Message[], right: Message[]): boolean => {
     if (getMessageIdentity(left[index]) !== getMessageIdentity(right[index])) return false
   }
   return true
-}
-
-const filterContactList = (list: Contact[], keyword: string): Contact[] => {
-  const lower = keyword.trim().toLowerCase()
-  if (!lower) return list
-  return list.filter((contact) =>
-    [contact.m_nsNickName, contact.m_nsUsrName, contact.remark, contact.wechatNickname].some(
-      (value) => value?.toLowerCase().includes(lower)
-    )
-  )
 }
 
 type GroupSnapshot = {
@@ -598,7 +591,7 @@ function App(): React.ReactElement {
     options?.onProgress?.('正在加载联系人...', 35)
     const list = await window.api.getContacts()
     setContacts(list)
-    setFilteredContacts(filterContactList(list, options?.filterKeyword || ''))
+    setFilteredContacts(filterContacts(list, options?.filterKeyword || ''))
     const runId = ++contactAvatarHydrationRunRef.current
     const hydrate = (): Promise<void> => hydrateContactAvatars(list, runId, options?.onProgress)
     if (options?.waitForAvatars) {
@@ -615,21 +608,7 @@ function App(): React.ReactElement {
     runId: number,
     onProgress?: (message: string, percent?: number) => void
   ): Promise<void> => {
-    const usernames = Array.from(
-      new Set(
-        list
-          .map((contact) => contact.m_nsUsrName)
-          .filter((username, index) => {
-            const contact = list[index]
-            return (
-              username &&
-              !contact.avatar &&
-              !username.startsWith('Group_') &&
-              !username.startsWith('Unknown_')
-            )
-          })
-      )
-    )
+    const usernames = selectContactAvatarRefreshUsernames(list)
     onProgress?.(
       usernames.length ? `正在加载头像 0/${usernames.length}...` : '头像缓存已就绪',
       usernames.length ? 55 : 90
@@ -641,7 +620,7 @@ function App(): React.ReactElement {
       const chunk = usernames.slice(index, index + chunkSize)
       if (chunk.length === 0) continue
       try {
-        const avatars = await window.api.getContactAvatars(chunk)
+        const avatars = await window.api.getContactAvatars(chunk, { refresh: true })
         if (runId !== contactAvatarHydrationRunRef.current) return
         loadedCount += chunk.length
         onProgress?.(
@@ -1052,7 +1031,7 @@ function App(): React.ReactElement {
     if (!contact) return
 
     try {
-      const avatars = await window.api.getContactAvatars([contact.m_nsUsrName])
+      const avatars = await window.api.getContactAvatars([contact.m_nsUsrName], { refresh: true })
       const avatar = avatars[contact.m_nsUsrName]
       if (avatar) {
         const updateContact = (item: Contact): Contact =>
@@ -1457,7 +1436,7 @@ function App(): React.ReactElement {
   ])
 
   const handleSearchContacts = (keyword: string): void => {
-    setFilteredContacts(filterContactList(contacts, keyword))
+    setFilteredContacts(filterContacts(contacts, keyword))
   }
 
   const handleRefreshContacts = async (filterKeyword: string): Promise<void> => {
@@ -1944,6 +1923,8 @@ function App(): React.ReactElement {
             onOpenSendSettings={openWechatSendSettings}
           />
         )
+      case 'logs':
+        return <LogsWorkspace />
       case 'agent-hub':
         return <AgentHubWorkspace />
       case 'api':
