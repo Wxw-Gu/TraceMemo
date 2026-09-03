@@ -925,7 +925,7 @@ app.whenReady().then(async () => {
     }
     const result =
       process.platform === 'win32'
-        ? await keyServiceWin.autoGetImageKeyByMemoryScan(accountRoot, onStatus)
+        ? await keyServiceWin.autoGetImageKey(accountRoot, onStatus, wxid)
         : await keyServiceMac.autoGetImageKey(accountRoot, onStatus, wxid)
 
     if (!result.success || !result.aesKey) return result
