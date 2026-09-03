@@ -14,7 +14,7 @@ const contact: Contact = {
 }
 
 describe('filterContacts', () => {
-  it.each(['Shinven', '小号', '工作', 'abc123', 'WECHAT_ABC', 'WXID_xxy']) (
+  it.each(['Shinven', '小号', '工作', 'gongzuoshouji', 'gzsj', 'abc123', 'WECHAT_ABC', 'WXID_xxy'])(
     'matches all contact identity fields with %s',
     (query) => {
       expect(filterContacts([contact], `  ${query}  `)).toEqual([contact])
@@ -25,5 +25,19 @@ describe('filterContacts', () => {
     const list = [contact]
     expect(filterContacts(list, '   ')).toBe(list)
     expect(filterContacts(list, 'not-found')).toEqual([])
+  })
+
+  it('matches pinyin when the Chinese name is stored in m_nsNickName', () => {
+    const list = [{ ...contact, remark: '', wechatNickname: '' }]
+
+    expect(filterContacts(list, 'xiaohao')).toEqual(list)
+    expect(filterContacts(list, 'xh')).toEqual(list)
+  })
+
+  it('matches pinyin for a dedicated Chinese remark', () => {
+    const list = [{ ...contact, m_nsNickName: 'Shinven', remark: '小号' }]
+
+    expect(filterContacts(list, 'xiaohao')).toEqual(list)
+    expect(filterContacts(list, 'xh')).toEqual(list)
   })
 })

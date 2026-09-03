@@ -45,7 +45,11 @@ import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
 import { GroupExitMonitorWorkspace } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
 import { LogsWorkspace } from './features/logs/LogsWorkspace'
 import { selectContactAvatarRefreshUsernames } from './utils/contact-avatar'
-import { filterContacts } from './utils/contact-search'
+import {
+  buildContactSearchIndex,
+  filterContactSearchIndex,
+  type ContactSearchIndex
+} from '../../shared/contact-search'
 
 const SIDEBAR_MIN_WIDTH = 260
 const SIDEBAR_MAX_WIDTH = 380
@@ -140,6 +144,9 @@ const areMessagesEquivalent = (left: Message[], right: Message[]): boolean => {
   return true
 }
 
+const filterContactList = (index: ContactSearchIndex, keyword: string): Contact[] =>
+  filterContactSearchIndex(index, keyword)
+
 type GroupSnapshot = {
   roomId: string
   memberCount: number
@@ -218,6 +225,7 @@ function App(): React.ReactElement {
   const [isDatabaseConnecting, setIsDatabaseConnecting] = useState(false)
   const [dbKey, setDbKey] = useState(getDevelopmentDatabaseKey)
   const [contacts, setContacts] = useState<Contact[]>([])
+  const contactSearchIndex = React.useMemo(() => buildContactSearchIndex(contacts), [contacts])
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [isMessagesLoading, setIsMessagesLoading] = useState(false)
@@ -591,7 +599,9 @@ function App(): React.ReactElement {
     options?.onProgress?.('正在加载联系人...', 35)
     const list = await window.api.getContacts()
     setContacts(list)
-    setFilteredContacts(filterContacts(list, options?.filterKeyword || ''))
+    setFilteredContacts(
+      filterContactSearchIndex(buildContactSearchIndex(list), options?.filterKeyword || '')
+    )
     const runId = ++contactAvatarHydrationRunRef.current
     const hydrate = (): Promise<void> => hydrateContactAvatars(list, runId, options?.onProgress)
     if (options?.waitForAvatars) {
@@ -1436,7 +1446,7 @@ function App(): React.ReactElement {
   ])
 
   const handleSearchContacts = (keyword: string): void => {
-    setFilteredContacts(filterContacts(contacts, keyword))
+    setFilteredContacts(filterContactList(contactSearchIndex, keyword))
   }
 
   const handleRefreshContacts = async (filterKeyword: string): Promise<void> => {

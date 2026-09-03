@@ -57,4 +57,35 @@ describe('ConversationSidebar', () => {
     await userEvent.click(screen.getByRole('button', { name: '公众号 (1)' }))
     expect(screen.getByText('测试公众号')).toBeInTheDocument()
   })
+
+  it('reveals contact results when searching a collapsed contact section', async () => {
+    render(
+      <TooltipProvider>
+        <ConversationSidebar
+          contacts={[
+            {
+              m_nsUsrName: 'wxid_fixture',
+              m_nsNickName: '微信昵称',
+              md5: 'contact-md5',
+              type: 'user',
+              remark: '小号'
+            }
+          ]}
+          selectedContact={null}
+          onSelectContact={vi.fn()}
+          onSearch={vi.fn()}
+          onContentFilter={vi.fn()}
+          width={320}
+          selfInfo={null}
+          dbReady
+          onOpenSettings={vi.fn()}
+          onRefresh={vi.fn(async () => undefined)}
+        />
+      </TooltipProvider>
+    )
+
+    expect(screen.queryByText('微信昵称')).not.toBeInTheDocument()
+    await userEvent.type(screen.getByRole('searchbox', { name: '搜索会话' }), 'xiaohao')
+    expect(screen.getByText('微信昵称')).toBeInTheDocument()
+  })
 })

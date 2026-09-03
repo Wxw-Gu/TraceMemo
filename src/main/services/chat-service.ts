@@ -16,6 +16,11 @@ import {
 import { mergeRecallArchiveMessages, recordRecallArchiveMessages } from './recall-archive-service'
 import type { ExportImageQuality } from '../../shared/image-quality'
 import { wcdbDebugLog } from '../wcdb-debug'
+import {
+  buildContactSearchIndex,
+  filterContactSearchIndex,
+  type ContactSearchIndex
+} from '../../shared/contact-search'
 
 export function getCurrentKey(): string {
   if (!dbRef) return ''
@@ -46,6 +51,8 @@ export interface FormattedContact {
   remark?: string
   alias?: string
   wechatId?: string
+  wxid?: string
+  legacyIdentifier?: string
   isFolded?: boolean
   isMuted?: boolean
 }
@@ -137,6 +144,7 @@ function normalizeMsgType(value: string | number | undefined): number {
 }
 
 let dbRef: WechatDb | null = null
+let contactSearchIndexCache: { signature: string; index: ContactSearchIndex } | null = null
 let shutdownRequested = false
 
 export interface ImageMessageReference {
@@ -156,6 +164,7 @@ export function setChatDb(db: WechatDb | null): boolean {
   }
   dbRef?.close()
   dbRef = db
+  contactSearchIndexCache = null
   imageMessageReferences.clear()
   return true
 }
@@ -188,7 +197,7 @@ export function listContacts(filter?: string): FormattedContact[] {
 
   const contacts: FormattedContact[] = []
   const groupContacts = dbRef.getAllGroupContacts()
-  const userList = dbRef.getUserList(filter)
+  const userList = dbRef.getUserList()
   const existingMd5s = new Set<string>()
 
   for (const user of userList) {
@@ -206,6 +215,8 @@ export function listContacts(filter?: string): FormattedContact[] {
       remark: user.remark,
       alias: user.alias,
       wechatId: user.wechatId,
+      wxid: user.wxid || user.m_nsUsrName,
+      legacyIdentifier: user.legacyIdentifier,
       isFolded: user.isFolded,
       isMuted: user.isMuted
     })
@@ -236,7 +247,30 @@ export function listContacts(filter?: string): FormattedContact[] {
       }
     }
   }
-  return contacts
+  if (!filter) return contacts
+  const signature = contacts
+    .map((contact) =>
+      [
+        contact.md5,
+        contact.m_nsNickName,
+        contact.remark,
+        contact.wechatNickname,
+        contact.alias,
+        contact.wechatId,
+        contact.wxid,
+        contact.legacyIdentifier,
+        contact.avatar,
+        contact.isFolded,
+        contact.isMuted
+      ]
+        .map((value) => String(value || ''))
+        .join('\u0001')
+    )
+    .join('\u0002')
+  if (!contactSearchIndexCache || contactSearchIndexCache.signature !== signature) {
+    contactSearchIndexCache = { signature, index: buildContactSearchIndex(contacts) }
+  }
+  return filterContactSearchIndex(contactSearchIndexCache.index, filter)
 }
 
 export async function listContactsAsync(filter?: string): Promise<FormattedContact[]> {
@@ -247,6 +281,7 @@ export async function listContactsAsync(filter?: string): Promise<FormattedConta
     hydrateDisplayNames: true,
     hydrateStatuses: true
   })
+  await dbRef.hydrateContactIdentitiesAsync?.()
   return listContacts(filter)
 }
 
@@ -703,13 +738,18 @@ export function resolveMd5(query: string): FormattedContact | null {
     (c) =>
       c.md5 === trimmed ||
       c.m_nsUsrName.toLowerCase() === lower ||
+      c.wechatId?.toLowerCase() === lower ||
+      c.wxid?.toLowerCase() === lower ||
       c.m_nsNickName.toLowerCase() === lower
   )
   if (exact) return exact
 
   const partial = contacts.find(
     (c) =>
-      c.m_nsNickName.toLowerCase().includes(lower) || c.m_nsUsrName.toLowerCase().includes(lower)
+      c.m_nsNickName.toLowerCase().includes(lower) ||
+      c.m_nsUsrName.toLowerCase().includes(lower) ||
+      c.wechatId?.toLowerCase().includes(lower) ||
+      c.wxid?.toLowerCase().includes(lower)
   )
   return partial || null
 }

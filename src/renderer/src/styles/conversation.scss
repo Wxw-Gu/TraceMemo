@@ -287,6 +287,15 @@
   white-space: nowrap;
 }
 
+.conversation-item-meta {
+  overflow: hidden;
+  color: var(--wxex-text-muted);
+  font-size: 10px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conversation-sidebar-account {
   box-sizing: border-box;
   flex: 0 0 auto;

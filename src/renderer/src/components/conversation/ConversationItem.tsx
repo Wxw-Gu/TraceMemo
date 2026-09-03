@@ -13,9 +13,10 @@ export function ConversationItem({
   onSelect
 }: ConversationItemProps): React.ReactElement {
   const nickname = contact.m_nsNickName?.trim()
-  const wxid = contact.m_nsUsrName
-  const displayName = nickname || wxid || '未命名会话'
-  const initial = (displayName || wxid || '?').charAt(0)
+  const avatarUsername = contact.m_nsUsrName
+  const internalWxid = contact.wxid || avatarUsername
+  const displayName = nickname || internalWxid || '未命名会话'
+  const initial = (displayName || internalWxid || '?').charAt(0)
   const [repairedAvatar, setRepairedAvatar] = useState<{
     username: string
     source: string
@@ -23,22 +24,22 @@ export function ConversationItem({
   }>()
   const [failedAvatar, setFailedAvatar] = useState<{ username: string; source: string }>()
   const repairedSource =
-    repairedAvatar?.username === wxid && repairedAvatar.replaces === contact.avatar
+    repairedAvatar?.username === avatarUsername && repairedAvatar.replaces === contact.avatar
       ? repairedAvatar.source
       : undefined
   const avatar = repairedSource || contact.avatar
-  const avatarFailed = failedAvatar?.username === wxid && failedAvatar.source === avatar
+  const avatarFailed = failedAvatar?.username === avatarUsername && failedAvatar.source === avatar
 
   const handleAvatarError = (): void => {
     if (!avatar || avatarFailed) return
-    setFailedAvatar({ username: wxid, source: avatar })
+    setFailedAvatar({ username: avatarUsername, source: avatar })
     if (avatar.startsWith('data:')) return
     void window.api
-      .getContactAvatars([wxid], { refresh: true })
+      .getContactAvatars([avatarUsername], { refresh: true })
       .then((avatars) => {
-        const fallback = avatars[wxid]
+        const fallback = avatars[avatarUsername]
         if (!fallback || fallback === avatar) return
-        setRepairedAvatar({ username: wxid, source: fallback, replaces: avatar })
+        setRepairedAvatar({ username: avatarUsername, source: fallback, replaces: avatar })
         setFailedAvatar(undefined)
       })
       .catch(() => undefined)
@@ -49,7 +50,11 @@ export function ConversationItem({
       type="button"
       className={`conversation-item ${active ? 'active' : ''}`}
       onClick={() => onSelect(contact)}
-      title={wxid && wxid !== displayName ? wxid : displayName}
+      title={
+        contact.wechatId ||
+        contact.alias ||
+        (internalWxid !== displayName ? internalWxid : displayName)
+      }
     >
       <span className="conversation-item-active-mark" aria-hidden />
       <span className="conversation-item-avatar">
@@ -68,6 +73,9 @@ export function ConversationItem({
       </span>
       <span className="conversation-item-body">
         <span className="conversation-item-name">{displayName}</span>
+        {contact.wechatId && (
+          <span className="conversation-item-meta">微信号: {contact.wechatId}</span>
+        )}
       </span>
     </button>
   )

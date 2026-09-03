@@ -151,6 +151,15 @@ export function ConversationSidebar({
   const handleSearchChange = (term: string): void => {
     setSearchTerm(term)
     onSearch(term)
+    if (term.trim()) {
+      setExpandedSections((current) => ({
+        ...current,
+        groups: true,
+        folded: true,
+        officialAccounts: true,
+        contacts: true
+      }))
+    }
   }
 
   const handleRefresh = async (): Promise<void> => {

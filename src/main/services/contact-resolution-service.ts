@@ -22,7 +22,8 @@ const aliases = (contact: Contact): Array<{ value: string; primary: boolean }> =
     { value: contact.m_nsNickName, primary: true },
     { value: contact.remark || '', primary: false },
     { value: contact.wechatNickname || '', primary: false },
-    { value: contact.m_nsUsrName, primary: false },
+    { value: contact.wechatId || contact.alias || '', primary: false },
+    { value: contact.wxid || contact.m_nsUsrName, primary: false },
     ...safeGroupAlias
   ].filter((item) => Boolean(normalizeContactName(item.value)))
 }
@@ -81,7 +82,7 @@ export function resolveContact(
   const contact = matches.get(candidate.conversationId)!.contact
   return {
     matched: true,
-    personId: contact.m_nsUsrName,
+    personId: contact.wxid || contact.m_nsUsrName,
     conversationId: contact.md5,
     canonicalName: displayName(contact),
     displayName: candidate.displayName,
