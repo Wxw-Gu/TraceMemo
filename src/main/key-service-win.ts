@@ -1,10 +1,15 @@
 import { join, dirname, delimiter } from 'path'
-import { existsSync, copyFileSync, mkdirSync } from 'fs'
+import { existsSync, copyFileSync, mkdirSync, readdirSync } from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import os from 'os'
 import crypto from 'crypto'
 import { getResourceRoots as getSharedResourceRoots } from './resource-paths'
+import {
+  deriveV4ImageKeys,
+  extractKvcommCode,
+  normalizeV4AccountId
+} from '../shared/wechat-image-key-derivation'
 
 const execFileAsync = promisify(execFile)
 
@@ -683,7 +688,8 @@ export class KeyService {
     if (loginRequired) {
       return {
         success: false,
-        error: '微信可能已经启动并登录，请先在微信客户端保持未登录状态，具体点击上方“查看5分钟上手教程” ',
+        error:
+          '微信可能已经启动并登录，请先在微信客户端保持未登录状态，具体点击上方“查看5分钟上手教程” ',
         logs
       }
     }
@@ -696,8 +702,7 @@ export class KeyService {
     onProgress?: (message: string) => void,
     wxidParam?: string
   ): Promise<ImageKeyResult> {
-    void wxidParam
-    return this.autoGetImageKeyByMemoryScan(manualDir || '', onProgress)
+    return this.autoGetImageKeyByMemoryScan(manualDir || '', onProgress, wxidParam)
   }
 
   // --- 内存扫描备选方案（融合 Dart+Python 优点）---
@@ -706,7 +711,8 @@ export class KeyService {
 
   async autoGetImageKeyByMemoryScan(
     userDir: string,
-    onProgress?: (message: string) => void
+    onProgress?: (message: string) => void,
+    wxidParam?: string
   ): Promise<ImageKeyResult> {
     if (!this.ensureWin32()) return { success: false, error: '仅支持 Windows' }
 
@@ -781,6 +787,18 @@ export class KeyService {
 
       onProgress?.(`XOR 密钥: 0x${xorKey.toString(16).padStart(2, '0')}，正在查找微信进程...`)
 
+      const derived = this._deriveImageKeyByLocalMetadata(
+        userDir,
+        wxidParam,
+        ciphertext,
+        xorKey,
+        onProgress
+      )
+      if (derived) {
+        onProgress?.('通过本机账号元数据推导并验证图片密钥成功')
+        return { success: true, xorKey: derived.xorKey, aesKey: derived.aesKey, verified: true }
+      }
+
       // 2. 找微信 PID
       const pid = await this.findWeChatPid()
       if (!pid) return { success: false, error: '微信进程未运行，请先启动微信' }
@@ -809,6 +827,73 @@ export class KeyService {
     } catch (e) {
       return { success: false, error: `内存扫描失败: ${e}` }
     }
+  }
+
+  private _deriveImageKeyByLocalMetadata(
+    userDir: string,
+    wxidParam: string | undefined,
+    ciphertext: Buffer,
+    expectedXorKey: number,
+    onProgress?: (message: string) => void
+  ): { xorKey: number; aesKey: string } | null {
+    const codes = new Set<number>()
+    for (const directory of this._getKvcommCandidates(userDir)) {
+      try {
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          if (!entry.isFile()) continue
+          const code = extractKvcommCode(entry.name)
+          if (code !== null) codes.add(code)
+        }
+      } catch {
+        // Candidate paths differ across WeChat releases and installations.
+      }
+    }
+
+    const accountIds = new Set<string>()
+    for (const candidate of [wxidParam, userDir]) {
+      const normalized = normalizeV4AccountId(candidate || '')
+      if (normalized) accountIds.add(normalized)
+    }
+    onProgress?.(`正在校验本机账号元数据候选（code=${codes.size}, account=${accountIds.size}）...`)
+
+    for (const accountId of accountIds) {
+      for (const code of codes) {
+        const derived = deriveV4ImageKeys(code, accountId)
+        if (!derived || derived.xorKey !== expectedXorKey) continue
+        if (this._verifyAesKey(Buffer.from(derived.aesKey, 'ascii'), ciphertext)) return derived
+      }
+    }
+    return null
+  }
+
+  private _getKvcommCandidates(userDir: string): string[] {
+    const candidates: string[] = []
+    const seen = new Set<string>()
+    const add = (candidate: string | undefined) => {
+      if (!candidate) return
+      const normalized = candidate.replace(/[\\/]+$/, '')
+      const identity = normalized.toLowerCase()
+      if (!normalized || seen.has(identity)) return
+      seen.add(identity)
+      candidates.push(normalized)
+    }
+
+    const roaming = process.env.APPDATA
+    const local = process.env.LOCALAPPDATA
+    add(roaming && join(roaming, 'Tencent', 'xwechat', 'net', 'kvcomm'))
+    add(roaming && join(roaming, 'Tencent', 'xwechat_files', 'app_data', 'net', 'kvcomm'))
+    add(local && join(local, 'Tencent', 'xwechat', 'net', 'kvcomm'))
+    add(local && join(local, 'Tencent', 'xwechat_files', 'app_data', 'net', 'kvcomm'))
+    add(local && join(local, 'Tencent', 'WeChat', 'xwechat', 'net', 'kvcomm'))
+
+    let cursor = userDir
+    for (let depth = 0; cursor && depth < 6; depth++) {
+      add(join(cursor, 'net', 'kvcomm'))
+      const parent = dirname(cursor)
+      if (parent === cursor) break
+      cursor = parent
+    }
+    return candidates
   }
 
   private async _findTemplateData(
