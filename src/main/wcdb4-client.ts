@@ -15,6 +15,8 @@ export interface Wcdb4Session {
   remark?: string
   alias?: string
   wechatId?: string
+  wxid?: string
+  legacyIdentifier?: string
   isFolded?: boolean
   isMuted?: boolean
   raw: Record<string, unknown>
@@ -110,6 +112,13 @@ function normalizeGroupMemberIdsBatch(
 type Wcdb4ContactMemberNames = {
   wechatNickname: string
   remark: string
+}
+
+export type Wcdb4ContactIdentity = {
+  username: string
+  wechatId?: string
+  wxid: string
+  legacyIdentifier?: string
 }
 
 export interface Wcdb4ImageHardlink {
@@ -385,6 +394,7 @@ export class Wcdb4Client {
   private koffi: KoffiModule | null = null
   private handle: number | null = null
   private displayNameCache = new Map<string, string>()
+  private contactIdentityCache = new Map<string, Wcdb4ContactIdentity>()
   private avatarCache = new Map<string, string>()
   private sessionStatusCache = new Map<string, { isFolded: boolean; isMuted: boolean }>()
   private groupNicknameCache = new Map<string, Map<string, string>>()
@@ -733,6 +743,7 @@ export class Wcdb4Client {
     this.sessionStatusesInFlight = null
     this.sessionStatusesUpdatedAt = 0
     this.displayNameCache.clear()
+    this.contactIdentityCache?.clear()
     this.avatarCache.clear()
     this.sessionStatusCache.clear()
     this.groupNicknameCache.clear()
@@ -933,6 +944,32 @@ export class Wcdb4Client {
     return this.cachedSessions
   }
 
+  getContactIdentity(username: string): Wcdb4ContactIdentity | undefined {
+    return this.contactIdentityCache.get(username)
+  }
+
+  async hydrateContactIdentitiesAsync(usernames: string[]): Promise<void> {
+    if (!this.wcdbExecQuery || usernames.length === 0) return
+    const missing = this.uniq(usernames).filter(
+      (username) => !this.contactIdentityCache.has(username)
+    )
+    if (missing.length === 0) return
+    const inList = missing.map((username) => `'${username.replace(/'/g, "''")}'`).join(',')
+    try {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+        'contact',
+        '',
+        `SELECT * FROM contact WHERE username IN (${inList})`
+      )
+      for (const identity of this.contactIdentitiesFromRows(rows)) {
+        this.contactIdentityCache.set(identity.username, identity)
+      }
+    } catch {
+      // Older native builds may not expose the contact table.
+    }
+  }
+
   async getSessionsAsync(options: Wcdb4SessionQueryOptions = {}): Promise<Wcdb4Session[]> {
     const hydrateDisplayNames = options.hydrateDisplayNames !== false
     if (this.cachedSessions) {
@@ -1030,6 +1067,7 @@ export class Wcdb4Client {
     this.sessionStatusCache.clear()
     this.sessionStatusesUpdatedAt = 0
     this.sessionDisplayNamesHydrated = false
+    this.contactIdentityCache?.clear()
   }
 
   invalidateAvatarCache(usernames?: string[]): void {
@@ -2793,6 +2831,7 @@ export class Wcdb4Client {
       'username',
       'user_name',
       'userName',
+      'm_nsUsrName',
       'usrName',
       'UsrName',
       'talker',
@@ -2807,6 +2846,7 @@ export class Wcdb4Client {
       'displayName',
       'display_name',
       'remark',
+      'm_nsNickName',
       'name'
     ])
     const wechatNickname = this.pickString(row, [
@@ -2814,6 +2854,7 @@ export class Wcdb4Client {
       'wechat_nickname',
       'nickname',
       'nickName',
+      'm_nsNickName',
       'name'
     ])
     const remark = this.pickString(row, [
@@ -2827,9 +2868,21 @@ export class Wcdb4Client {
     const wechatId = this.pickString(row, [
       'wechatId',
       'wechat_id',
+      'wechatID',
       'wxAccount',
       'wx_account',
       'account'
+    ])
+    const wxid = this.pickString(row, ['wxid', 'wx_id', 'internalWxid']) || username
+    const legacyIdentifier = this.pickString(row, [
+      'legacyIdentifier',
+      'legacy_identifier',
+      'originalIdentifier',
+      'original_identifier',
+      'originalUsername',
+      'original_username',
+      'initialIdentifier',
+      'initial_identifier'
     ])
     const status = this.sessionStatusCache.get(username)
     return {
@@ -2839,6 +2892,8 @@ export class Wcdb4Client {
       remark,
       alias,
       wechatId: wechatId || alias,
+      wxid,
+      legacyIdentifier: legacyIdentifier || undefined,
       isFolded: status?.isFolded,
       isMuted: status?.isMuted,
       raw: row
@@ -3169,6 +3224,42 @@ export class Wcdb4Client {
     }
 
     return result
+  }
+
+  private contactIdentitiesFromRows(rows: Record<string, unknown>[]): Wcdb4ContactIdentity[] {
+    if (!Array.isArray(rows)) return []
+    return rows.flatMap((row) => {
+      const username = this.pickString(row, ['username', 'user_name', 'userName', 'm_nsUsrName'])
+      if (!username) return []
+      const alias = this.pickString(row, ['alias', 'aliasName', 'alias_name', 'm_nsAlias'])
+      const wechatId = this.pickString(row, [
+        'wechatId',
+        'wechat_id',
+        'wechatID',
+        'wxAccount',
+        'wx_account',
+        'account'
+      ])
+      const wxid = this.pickString(row, ['wxid', 'wx_id', 'internalWxid']) || username
+      const legacyIdentifier = this.pickString(row, [
+        'legacyIdentifier',
+        'legacy_identifier',
+        'originalIdentifier',
+        'original_identifier',
+        'originalUsername',
+        'original_username',
+        'initialIdentifier',
+        'initial_identifier'
+      ])
+      return [
+        {
+          username,
+          wechatId: wechatId || alias || undefined,
+          wxid,
+          legacyIdentifier: legacyIdentifier || undefined
+        }
+      ]
+    })
   }
 
   private readContactAvatarUrls(usernames: string[]): Map<string, string> {

@@ -23,6 +23,10 @@ import type {
 import { displayName } from './exportUtils'
 import type { VoiceModelStatus } from '../../../../shared/voice-recognition'
 import { resolveMemberName } from '../../../../shared/member-names'
+import {
+  buildContactSearchIndex,
+  filterContactSearchIndex
+} from '../../../../shared/contact-search'
 
 const ALL_CONTACT_TYPES: ExportContactType[] = ['group', 'user']
 const contactTypeKey = (types: ExportContactType[] | undefined): string =>
@@ -57,6 +61,7 @@ export function ExportWorkspace({
   const [selectedContacts, setSelectedContacts] = useState<Contact[]>(() =>
     initialSelection ? [initialSelection] : []
   )
+  const contactSearchIndex = useMemo(() => buildContactSearchIndex(contacts), [contacts])
   const [activeContactId, setActiveContactId] = useState(initialSelection?.md5 || '')
   const [previewByContact, setPreviewByContact] = useState<Record<string, Message[]>>({})
   const [range, setRange] = useState<ExportRange>(() => (runningAllTask ? 'all' : 'today'))
@@ -109,15 +114,8 @@ export function ExportWorkspace({
   }, [exportAll, loadPreviewMessages, previewByContact, selectedContacts])
 
   const filteredContacts = useMemo(() => {
-    const keyword = contactFilter.trim().toLowerCase()
-    return contacts.filter((contact) => {
-      if (contactType !== 'all' && contact.type !== contactType) return false
-      if (!keyword) return true
-      return [contact.m_nsNickName, contact.m_nsUsrName].some((value) =>
-        value.toLowerCase().includes(keyword)
-      )
-    })
-  }, [contactFilter, contactType, contacts])
+    return filterContactSearchIndex(contactSearchIndex, contactFilter, contactType)
+  }, [contactFilter, contactSearchIndex, contactType])
 
   const activeContact =
     selectedContacts.find((contact) => contact.md5 === activeContactId) ||

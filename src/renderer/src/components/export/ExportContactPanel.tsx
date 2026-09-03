@@ -75,7 +75,11 @@ function ExportContactRow({
           {name}
         </strong>
         <small className="text-[11px] text-muted-foreground">
-          {contact.type === 'group' ? '群聊' : '联系人'}
+          {contact.type === 'group'
+            ? '群聊'
+            : contact.wechatId
+              ? `联系人 · 微信号: ${contact.wechatId}`
+              : '联系人'}
         </small>
       </span>
       {showSelection && (

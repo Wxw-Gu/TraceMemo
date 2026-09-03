@@ -9,6 +9,8 @@ export interface UserContact {
   remark?: string
   alias?: string
   wechatId?: string
+  wxid?: string
+  legacyIdentifier?: string
   isFolded?: boolean
   isMuted?: boolean
 }
@@ -105,7 +107,15 @@ export class WechatDb {
         wechatNickname: session.wechatNickname,
         remark: session.remark,
         alias: session.alias,
-        wechatId: session.wechatId,
+        wechatId:
+          session.wechatId || this.wcdb4Client.getContactIdentity(session.username)?.wechatId,
+        wxid:
+          session.wxid ||
+          this.wcdb4Client.getContactIdentity(session.username)?.wxid ||
+          session.username,
+        legacyIdentifier:
+          session.legacyIdentifier ||
+          this.wcdb4Client.getContactIdentity(session.username)?.legacyIdentifier,
         isFolded: session.isFolded,
         isMuted: session.isMuted
       }))
@@ -117,9 +127,17 @@ export class WechatDb {
           contact.nickname,
           contact.alias,
           contact.wechatId,
+          contact.wxid,
           contact.m_nsUsrName
         ].some((value) => value?.toLocaleLowerCase().includes(keyword))
       })
+  }
+
+  public async hydrateContactIdentitiesAsync(): Promise<void> {
+    const sessions = this.wcdb4Client.getSessions()
+    await this.wcdb4Client.hydrateContactIdentitiesAsync(
+      sessions.map((session) => session.username)
+    )
   }
 
   public getAllGroupContacts(): Record<string, string> {

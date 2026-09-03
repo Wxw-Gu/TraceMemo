@@ -1,17 +1,7 @@
 import type { Contact } from '../../../shared/types'
+import { buildContactSearchIndex, filterContactSearchIndex } from '../../../shared/contact-search'
 
 export function filterContacts(list: Contact[], keyword: string): Contact[] {
-  const query = keyword.trim().toLocaleLowerCase()
-  if (!query) return list
-
-  return list.filter((contact) =>
-    [
-      contact.remark,
-      contact.wechatNickname,
-      contact.m_nsNickName,
-      contact.alias,
-      contact.wechatId,
-      contact.m_nsUsrName
-    ].some((value) => value?.trim().toLocaleLowerCase().includes(query))
-  )
+  if (!keyword.trim()) return list
+  return filterContactSearchIndex(buildContactSearchIndex(list), keyword)
 }

@@ -11,6 +11,8 @@ export interface Contact {
   remark?: string
   alias?: string
   wechatId?: string
+  wxid?: string
+  legacyIdentifier?: string
   isFolded?: boolean
   isMuted?: boolean
 }
