@@ -16,7 +16,7 @@ import {
   dialog,
   protocol
 } from 'electron'
-import { basename, dirname, extname, join } from 'path'
+import { dirname, extname, join } from 'path'
 import { existsSync, promises as fsPromises } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -113,12 +113,17 @@ import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
 import { groupExitMonitorService } from './services/group-exit-monitor-service'
 import { wechatActionLogService } from './services/wechat-action-log-service'
+import { wechatActionGateway } from './services/wechat-action-gateway'
 import { personalWechatSendService } from './services/personal-wechat-send-service'
 import { getPersonalWechatSendCapability } from './services/personal-wechat-capability-service'
 import { scheduledReportService } from './services/scheduled-report-service'
 import { PersonalWechatRuntimeManager } from './services/personal-wechat-runtime-manager'
 import { personalWechatVoiceEnvironmentService } from './services/personal-wechat-voice-environment-service'
-import type { PersonalWechatSendRequest } from '../shared/personal-wechat'
+import type {
+  PersonalWechatGeneratedTtsVoiceRequest,
+  PersonalWechatSendRequest,
+  PersonalWechatSendResult
+} from '../shared/personal-wechat'
 import type {
   ScheduledReportCreateInput,
   ScheduledReportUpdateInput
@@ -911,6 +916,20 @@ app.whenReady().then(async () => {
       }
     }
   )
+  // 日报等系统动作仍复用现有发送服务；普通聊天不再暴露这个入口。
+  ipcMain.handle('wechat-personal:send', async (_, request: PersonalWechatSendRequest) => {
+    if (request.type !== 'voice' || String(request.fromId || '').trim()) {
+      return personalWechatSendService.send(request)
+    }
+    let fromId = ''
+    try {
+      const self = await chat.getSelfAccountInfoAsync()
+      fromId = String(self?.wxid || '').trim()
+    } catch {
+      // 无法读取账号 wxid 时仍交给发送服务返回规范化错误。
+    }
+    return personalWechatSendService.send(fromId ? { ...request, fromId } : request)
+  })
 
   ipcMain.handle('key:autoGetImageKey', async (event, options?: { save?: boolean }) => {
     const settings = loadSettings()
@@ -1980,52 +1999,40 @@ app.whenReady().then(async () => {
     return error ? { success: false, error } : { success: true }
   })
   ipcMain.handle('wechat-personal:rebind', () => personalWechatSendService.rebind())
-  ipcMain.handle('wechat-personal:send', async (_, request: PersonalWechatSendRequest) => {
-    if (request.type !== 'voice' || String(request.fromId || '').trim()) {
-      return personalWechatSendService.send(request)
+  ipcMain.handle(
+    'wechat-personal:sendGeneratedTtsVoice',
+    async (_, request: PersonalWechatGeneratedTtsVoiceRequest) => {
+      const to = String(request?.to || '').trim()
+      const filePath = String(request?.filePath || '').trim()
+      let fromId = ''
+      try {
+        const self = await chat.getSelfAccountInfoAsync()
+        fromId = String(self?.wxid || '').trim()
+      } catch {
+        // Windows 语音发送需要当前账号 wxid；Gateway 会继续规范化失败结果。
+      }
+      const action = await wechatActionGateway.execute({
+        origin: 'user_tts',
+        purpose: 'tts_voice',
+        triggerType: 'user',
+        recipient: {
+          type: request?.isGroup || to.endsWith('@chatroom') ? 'group' : 'contact',
+          id: to
+        },
+        content: { type: 'voice', path: filePath },
+        metadata: fromId ? { fromId } : undefined
+      })
+      const sendResult =
+        action.sendResult && typeof action.sendResult === 'object'
+          ? (action.sendResult as PersonalWechatSendResult)
+          : undefined
+      const status = sendResult?.status || (await personalWechatSendService.getStatus())
+      return { action, status }
     }
-    let fromId = ''
-    try {
-      const self = await chat.getSelfAccountInfoAsync()
-      fromId = String(self?.wxid || '').trim()
-    } catch {
-      // The sender can still operate without an account wxid for non-voice messages.
-    }
-    return personalWechatSendService.send(fromId ? { ...request, fromId } : request)
-  })
+  )
   ipcMain.handle('wechat-personal:getVoiceDiagnostic', () =>
     personalWechatSendService.getLatestVoiceDiagnostic()
   )
-  ipcMain.handle('wechat-personal:selectImage', async (event) => {
-    const window = BrowserWindow.fromWebContents(event.sender)
-    const result = await dialog.showOpenDialog(window!, {
-      title: '选择要通过个人微信发送的图片',
-      properties: ['openFile'],
-      filters: [
-        { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },
-        { name: '所有文件', extensions: ['*'] }
-      ]
-    })
-    if (result.canceled || !result.filePaths[0]) return { canceled: true }
-    return {
-      canceled: false,
-      path: result.filePaths[0],
-      name: basename(result.filePaths[0])
-    }
-  })
-  ipcMain.handle('wechat-personal:selectVoice', async (event) => {
-    const window = BrowserWindow.fromWebContents(event.sender)
-    const result = await dialog.showOpenDialog(window!, {
-      title: '选择要通过个人微信发送的语音',
-      properties: ['openFile'],
-      filters: [
-        { name: '语音', extensions: ['silk', 'mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'] },
-        { name: '所有文件', extensions: ['*'] }
-      ]
-    })
-    if (result.canceled || !result.filePaths[0]) return { canceled: true }
-    return { canceled: false, path: result.filePaths[0], name: basename(result.filePaths[0]) }
-  })
   ipcMain.handle('agent-hub:selectTestImage', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const result = await dialog.showOpenDialog(window!, {

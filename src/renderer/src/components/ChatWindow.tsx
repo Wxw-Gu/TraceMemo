@@ -124,6 +124,25 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       return typeMatch && contentMatch
     })
   }, [messages, contentFilter])
+
+  const handleOpenPersonalWechatSend = useCallback(async (): Promise<void> => {
+    try {
+      const status = await window.api.getPersonalWechatSenderStatus()
+      if (!status.canSendVoice) {
+        if (onOpenPersonalWechatSettings) {
+          onOpenPersonalWechatSettings()
+          return
+        }
+      }
+    } catch {
+      if (onOpenPersonalWechatSettings) {
+        onOpenPersonalWechatSettings()
+        return
+      }
+    }
+    setSendDialogOpen(true)
+  }, [onOpenPersonalWechatSettings])
+
   if (!contact) return <EmptyConversationState />
 
   return (
@@ -138,7 +157,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         onContentFilterChange={onContentFilterChange || (() => undefined)}
         onRefresh={onRefresh}
         onRefreshData={onRefreshData}
-        onTestSend={() => setSendDialogOpen(true)}
+        onTestSend={() => void handleOpenPersonalWechatSend()}
         onOpenAiSettings={onCreateGroupReport || (() => undefined)}
       />
       <DataTrustBar messageCount={messages.length} />

@@ -275,7 +275,7 @@ test('CHAT-02 personal WeChat send dialog is keyboard-safe and fits the viewport
   try {
     await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page.getByText('产品测试群', { exact: true }).click()
-    const trigger = fixture.page.getByRole('button', { name: '发送消息' })
+    const trigger = fixture.page.getByRole('button', { name: '文字转语音' })
     await trigger.click()
     const dialog = fixture.page.getByRole('dialog', { name: '产品测试群' })
     await expect(dialog).toBeVisible()

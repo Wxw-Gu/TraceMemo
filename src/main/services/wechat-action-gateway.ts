@@ -584,7 +584,19 @@ function toPersonalWechatSendRequest(request: WechatActionRequest): PersonalWech
   if (request.content.type === 'image') {
     return { ...base, type: 'image', filePath: request.content.path }
   }
-  return { ...base, type: 'voice', filePath: request.content.path }
+  const metadata = request.metadata && typeof request.metadata === 'object' ? request.metadata : {}
+  const fromId = typeof metadata.fromId === 'string' ? metadata.fromId.trim() : ''
+  const durationMs =
+    typeof metadata.durationMs === 'number' && Number.isFinite(metadata.durationMs)
+      ? metadata.durationMs
+      : undefined
+  return {
+    ...base,
+    type: 'voice',
+    filePath: request.content.path,
+    ...(fromId ? { fromId } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {})
+  }
 }
 
 function contentAudit(

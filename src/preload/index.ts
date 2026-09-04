@@ -26,8 +26,8 @@ import type {
 } from '../shared/image-insight'
 import type { AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 import type {
-  PersonalWechatImageSelectionResult,
-  PersonalWechatVoiceSelectionResult,
+  PersonalWechatGeneratedTtsVoiceRequest,
+  PersonalWechatGeneratedTtsVoiceResult,
   PersonalWechatSendRequest,
   PersonalWechatSendResult,
   PersonalWechatSenderStatus,
@@ -438,10 +438,11 @@ const api = {
   },
   rebindPersonalWechatSender: (): Promise<PersonalWechatSenderStatus> =>
     ipcRenderer.invoke('wechat-personal:rebind'),
-  selectPersonalWechatImage: (): Promise<PersonalWechatImageSelectionResult> =>
-    ipcRenderer.invoke('wechat-personal:selectImage'),
-  selectPersonalWechatVoice: (): Promise<PersonalWechatVoiceSelectionResult> =>
-    ipcRenderer.invoke('wechat-personal:selectVoice'),
+  sendGeneratedTtsVoice: (
+    request: PersonalWechatGeneratedTtsVoiceRequest
+  ): Promise<PersonalWechatGeneratedTtsVoiceResult> =>
+    ipcRenderer.invoke('wechat-personal:sendGeneratedTtsVoice', request),
+  // 日报图片发送仍使用现有业务发送链路；普通聊天 Composer 不暴露此入口。
   sendPersonalWechatMessage: (
     request: PersonalWechatSendRequest
   ): Promise<PersonalWechatSendResult> => ipcRenderer.invoke('wechat-personal:send', request),

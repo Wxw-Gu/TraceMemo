@@ -77,13 +77,9 @@ export function PersonalWechatSetupGuide({
   const runtimeReady = runtimeStatus?.state === 'ready' || senderStatus?.runtimeReady === true
   const runtimeDownloading = runtimeBusy || runtimeStatus?.state === 'downloading'
   const connected = sessionBound && (senderStatus ? isWechatBound(senderStatus) : false)
-  const canSendText = Boolean(senderStatus?.canSendText)
-  const canSendImage = Boolean(senderStatus?.canSendImage)
   const canSendVoice = Boolean(senderStatus?.canSendVoice)
-  const mediaReady = canSendImage || canSendVoice
-  const detectedTextReady = detectionAttempted && canSendText
-  const detectedMediaReady = detectionAttempted && mediaReady
-  const verificationComplete = connected && detectedTextReady && detectedMediaReady
+  const detectedVoiceReady = detectionAttempted && canSendVoice
+  const verificationComplete = connected && detectedVoiceReady
   const allReady = verificationComplete
   const progress = runtimeProgress || runtimeStatus
   const progressPercent = Math.max(0, Math.min(100, Math.round((progress?.progress || 0) * 100)))
@@ -94,7 +90,7 @@ export function PersonalWechatSetupGuide({
         <div>
           <span className="personal-wechat-eyebrow">首次使用</span>
           <h2>先准备好微信消息功能</h2>
-          <p>只需几步，TraceMemo 就能像普通聊天窗口一样发送文字、图片和语音。</p>
+          <p>只需几步，TraceMemo 就能在当前会话中生成并发送语音。</p>
         </div>
         {allReady && <span className="personal-wechat-setup-complete">已完成</span>}
       </div>
@@ -191,14 +187,8 @@ export function PersonalWechatSetupGuide({
           <span className="personal-wechat-step-number">{verificationComplete ? '✓' : '3'}</span>
           <div className="personal-wechat-step-content">
             <strong>验证消息能力</strong>
-            <p>
-              请打开手机微信，给任意好友手动发送：
-              <br />① 一条文字消息
-              <br />② 一张图片
-            </p>
-            <p className="personal-wechat-step-hint">
-              TraceMemo 需要通过你主动发送的消息初始化微信消息能力。完成后点击“重新检测”。
-            </p>
+            <p>请打开微信，可以给任意好友发送一张图片，完成一次能力初始化。</p>
+            <p className="personal-wechat-step-hint">完成后点击“重新检测”。</p>
             {connected && !verificationComplete && (
               <Button
                 size="sm"
@@ -211,7 +201,7 @@ export function PersonalWechatSetupGuide({
             )}
             {detectionAttempted && !detecting && !verificationComplete && (
               <p className="personal-wechat-step-hint" role="status">
-                暂未检测到新的消息，请确认已在手机微信中发送文字和图片，然后再次检测。
+                暂未检测到语音发送能力，请确认微信已完成初始化后再次检测。
               </p>
             )}
           </div>
@@ -224,10 +214,7 @@ export function PersonalWechatSetupGuide({
           <div className="personal-wechat-step-content">
             <strong>能力检测</strong>
             <div className="personal-wechat-capabilities" aria-label="微信消息能力">
-              {[
-                ['文字消息', detectedTextReady],
-                ['图片和语音消息', detectedMediaReady]
-              ].map(([label, ready]) => (
+              {[['语音消息', detectedVoiceReady]].map(([label, ready]) => (
                 <span key={String(label)} className={ready ? 'is-ready' : ''}>
                   <b aria-hidden>{ready ? '✓' : '−'}</b>
                   {label}

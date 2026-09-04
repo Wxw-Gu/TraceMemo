@@ -54,8 +54,8 @@ import type {
 } from '../shared/image-insight'
 import type { AgentHubActionResult, AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 import type {
-  PersonalWechatImageSelectionResult,
-  PersonalWechatVoiceSelectionResult,
+  PersonalWechatGeneratedTtsVoiceRequest,
+  PersonalWechatGeneratedTtsVoiceResult,
   PersonalWechatSendRequest,
   PersonalWechatSendResult,
   PersonalWechatSenderStatus,
@@ -637,8 +637,9 @@ declare global {
         callback: (status: PersonalWechatRuntimeProgressEvent) => void
       ) => () => void
       rebindPersonalWechatSender: () => Promise<PersonalWechatSenderStatus>
-      selectPersonalWechatImage: () => Promise<PersonalWechatImageSelectionResult>
-      selectPersonalWechatVoice: () => Promise<PersonalWechatVoiceSelectionResult>
+      sendGeneratedTtsVoice: (
+        request: PersonalWechatGeneratedTtsVoiceRequest
+      ) => Promise<PersonalWechatGeneratedTtsVoiceResult>
       sendPersonalWechatMessage: (
         request: PersonalWechatSendRequest
       ) => Promise<PersonalWechatSendResult>

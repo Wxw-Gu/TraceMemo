@@ -106,11 +106,12 @@ export function ChatHeader({
             variant="outline"
             size="sm"
             className="chat-header-text-action"
-            aria-label="发送消息"
+            aria-label="文字转语音"
+            title="文字转语音"
             onClick={onTestSend}
           >
             <SendIcon />
-            <span>发送消息</span>
+            <span>文字转语音</span>
           </Button>
         ) : (
           <Tooltip>
@@ -120,12 +121,13 @@ export function ChatHeader({
                   variant="outline"
                   size="sm"
                   className="chat-header-text-action"
-                  aria-label="发送消息"
+                  aria-label="文字转语音"
+                  title="文字转语音"
                   onClick={onTestSend}
                   disabled
                 >
                   <SendIcon />
-                  <span>发送消息</span>
+                  <span>文字转语音</span>
                 </Button>
               </span>
             </TooltipTrigger>
