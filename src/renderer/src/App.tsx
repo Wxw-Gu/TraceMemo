@@ -1393,9 +1393,11 @@ function App(): React.ReactElement {
         if (disposed || selectedContactMd5Ref.current !== contactMd5) return
         const nextHistory = mergeMessagePages(messageHistoryRef.current, latestMessages)
         messageHistoryRef.current = nextHistory
+        // 监控刷新仅获取最新页面。保留用户已加载的历史记录数量，而不是将视图回滚到20条
+        const visibleMessageCount = Math.max(INITIAL_MESSAGE_COUNT, messagesRef.current.length)
         const nextMessages = applyGroupMemberMeta(
           selectedContact,
-          mergeSyntheticMessages(selectedContact, nextHistory.slice(-INITIAL_MESSAGE_COUNT))
+          mergeSyntheticMessages(selectedContact, nextHistory.slice(-visibleMessageCount))
         )
         if (!disposed && selectedContactMd5Ref.current === contactMd5) {
           setMessages((current) =>
