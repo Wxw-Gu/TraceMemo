@@ -125,7 +125,11 @@ export class VoiceService {
           codec: 'silk',
           sourceHash: createHash('sha256').update(silkData).digest('hex')
         })
-        const wavData = this.createWavBuffer(decoded.pcm, 24000)
+        const wavData = this.createWavBuffer(
+          decoded.pcm,
+          decoded.sampleRate,
+          decoded.channels
+        )
         const data = wavData.toString('base64')
         const cacheKey = this.buildCacheKey(
           reference.sessionId,
@@ -239,7 +243,7 @@ export class VoiceService {
 
   private createWavBuffer(
     pcmData: Buffer,
-    sampleRate: number = 24000,
+    sampleRate: number = 16000,
     channels: number = 1
   ): Buffer {
     const pcmLength = pcmData.length
