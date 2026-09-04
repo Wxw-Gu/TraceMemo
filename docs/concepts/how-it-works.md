@@ -19,7 +19,44 @@ flowchart LR
   M[微信机器人消息] --> N[Agent Hub]
   N --> B
   N --> F
+  B --> O[Monitor / Snapshot]
+  O --> P[Proposed Action]
+  F --> P
+  P --> Q[Policy]
+  Q --> R[Action Gateway]
+  R --> S[Personal WeChat Send Capability]
+  S --> T[Action Audit / Logs]
 ```
+
+## Remember → Understand → Monitor → Act
+
+TraceMemo 的工作方式可以概括为：
+
+```text
+Remember → Understand → Monitor → Act
+```
+
+先读取和整理微信信息，再由 AI、Knowledge 或日报帮助理解；Monitor 负责发现成员变化，明确的业务动作再进入执行边界。回答和动作结果都应能回到来源或记录核对。
+
+## 退群监控
+
+退群监控使用成员快照判断变化：
+
+```text
+Current Membership → Snapshot Diff → Member Event
+```
+
+上一份有效快照（Last Good Snapshot）不会被不完整读取覆盖，因此重启后仍可继续监控通知。
+
+## 动作执行与审计
+
+自动发送和监控动作经过统一边界：
+
+```text
+Feature → Policy → Gateway → Capability → Execution → Audit
+```
+
+Policy blocked 表示策略不允许，Capability unavailable 表示当前发送能力不可用，Send failed 表示已经尝试但执行失败。Action Audit / Logs 会保留执行结果；定时日报即使发送失败，也会保留已生成的报告记录。
 
 ## 哪些步骤在本机
 
