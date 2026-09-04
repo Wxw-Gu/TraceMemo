@@ -160,11 +160,11 @@ describe('PersonalWechatSendPage on Windows', () => {
     expect(screen.queryByText(/OneBot/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('switch', { name: '保留 OneBot 进程' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '语音发送诊断' })).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '个人微信发送' })).toBeVisible()
-    expect(screen.getByRole('region', { name: '发送消息' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: '文字转语音' })).toBeVisible()
+    expect(screen.getByRole('region', { name: '文字转语音' })).toBeVisible()
   })
 
-  it('opens the Windows send dialog in text mode by default', async () => {
+  it('opens the Windows send dialog in TTS mode by default', async () => {
     getPersonalWechatSenderStatus.mockResolvedValue(windowsStatus)
 
     render(
@@ -180,11 +180,8 @@ describe('PersonalWechatSendPage on Windows', () => {
       />
     )
 
-    expect(await screen.findByRole('radio', { name: '文字' })).toHaveAttribute(
-      'data-state',
-      'checked'
-    )
-    expect(screen.getByRole('textbox', { name: '消息内容' })).toBeVisible()
+    expect(await screen.findByRole('textbox', { name: '语音文字' })).toBeVisible()
+    expect(screen.queryByRole('radio', { name: '文字' })).not.toBeInTheDocument()
   })
 
   it('keeps the Windows voice page focused on speech settings', async () => {

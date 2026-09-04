@@ -133,18 +133,23 @@ describe('preload IPC contract', () => {
     expect(invoke).toHaveBeenLastCalledWith('wechat-personal:checkStatus', '4567')
     await api.rebindPersonalWechatSender()
     expect(invoke).toHaveBeenLastCalledWith('wechat-personal:rebind')
-    const sendRequest = {
+    const ttsRequest = {
       to: 'fixture@chatroom',
-      type: 'text' as const,
-      text: '测试消息',
-      isGroup: true
+      isGroup: true,
+      filePath: '/tmp/generated.mp3'
     }
-    await api.sendPersonalWechatMessage(sendRequest)
-    expect(invoke).toHaveBeenLastCalledWith('wechat-personal:send', sendRequest)
+    await api.sendGeneratedTtsVoice(ttsRequest)
+    expect(invoke).toHaveBeenLastCalledWith('wechat-personal:sendGeneratedTtsVoice', ttsRequest)
+    const reportImageRequest = {
+      type: 'image' as const,
+      to: 'fixture@chatroom',
+      isGroup: true,
+      filePath: '/tmp/report.png'
+    }
+    await api.sendPersonalWechatMessage(reportImageRequest)
+    expect(invoke).toHaveBeenLastCalledWith('wechat-personal:send', reportImageRequest)
     await api.getPersonalWechatVoiceDiagnostic()
     expect(invoke).toHaveBeenLastCalledWith('wechat-personal:getVoiceDiagnostic')
-    await api.selectPersonalWechatImage()
-    expect(invoke).toHaveBeenLastCalledWith('wechat-personal:selectImage')
 
     await api.getScheduledReportNotificationSettings()
     expect(invoke).toHaveBeenLastCalledWith('scheduled-report:getNotificationSettings')

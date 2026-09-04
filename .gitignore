@@ -13,15 +13,11 @@ resources/connectors/wechat/
 resources/connectors/wechat-personal/
 .omc
 .codex/
-services/share-card-worker/.wrangler/
-services/share-card-worker/wrangler.local.jsonc
 skills-lock.json
-docs/design/
-docs/ui-redesign-plan.md
-docs/ui-redesign-spec.md
 AGENTS.md
 findings.md
 progress.md
 task_plan.md
 .agents
 *__screenshots__
+.ai-local

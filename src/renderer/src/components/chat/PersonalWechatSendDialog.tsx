@@ -21,8 +21,7 @@ import {
 import { isMac, isWindows } from '../../utils/runtime-environment'
 import {
   PersonalWechatChatComposer,
-  type ChatMessage,
-  type PersonalWechatComposerMode
+  type ChatMessage
 } from './PersonalWechatChatComposer'
 import { PersonalWechatSetupGuide } from './PersonalWechatSetupGuide'
 import { PersonalWechatVoiceDiagnosticDialog } from './PersonalWechatVoiceDiagnosticDialog'
@@ -36,7 +35,7 @@ export interface PersonalWechatSendDialogProps {
   onClose: () => void
   onOpenTextToSpeechSettings?: () => void
   onOpenPersonalWechatSettings?: () => void
-  initialMode?: PersonalWechatComposerMode
+  initialMode?: 'text' | 'image' | 'voice'
   initialImage?: SelectedLocalFile | null
 }
 
@@ -76,7 +75,6 @@ function PersonalWechatMacSendDialog({
   isGroupChat,
   onClose,
   onOpenTextToSpeechSettings,
-  initialMode = 'text',
   initialImage = null
 }: PersonalWechatSendDialogProps): React.ReactElement {
   const [senderStatus, setSenderStatus] = useState<PersonalWechatSenderStatus | null>(null)
@@ -89,28 +87,20 @@ function PersonalWechatMacSendDialog({
   const [runtimeBusy, setRuntimeBusy] = useState(false)
   const [sendBusy, setSendBusy] = useState(false)
   const [detectionAttempted, setDetectionAttempted] = useState(false)
-  // Status can be reconstructed from a previous OneBot process/log. These
-  // session gates ensure the user explicitly binds and detects after opening
-  // the flow instead of inheriting stale readiness.
+  // 状态可能来自之前的 OneBot 进程或日志；发送入口只信任当前语音能力状态。
   const [sessionBound, setSessionBound] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sendError, setSendError] = useState<string | null>(null)
   const [voiceDiagnostic, setVoiceDiagnostic] = useState<PersonalWechatVoiceDiagnostic | null>(null)
   const [voiceDiagnosticOpen, setVoiceDiagnosticOpen] = useState(false)
   const [keepOneBotProcess, setKeepOneBotProcess] = useState(false)
-  const [composerStarted, setComposerStarted] = useState(Boolean(initialImage))
   const requestIdRef = useRef(0)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
   const closingRef = useRef(false)
   const displayName = contact.m_nsNickName || contact.m_nsUsrName || '未命名会话'
   const targetId = contact.m_nsUsrName
   const isBusy = binding || runtimeBusy || sendBusy
-  const setupReady = Boolean(
-    sessionBound &&
-    detectionAttempted &&
-    senderStatus?.canSendText &&
-    (senderStatus?.canSendImage || senderStatus?.canSendVoice)
-  )
+  const setupReady = Boolean(initialImage ? senderStatus?.canSendImage : senderStatus?.canSendVoice)
 
   const refreshStatus = useCallback(async (): Promise<void> => {
     const requestId = ++requestIdRef.current
@@ -246,19 +236,62 @@ function PersonalWechatMacSendDialog({
   }
 
   const handleSend = async (
-    request: PersonalWechatSendRequest
+    filePath: string
   ): Promise<{ success: boolean; error?: string }> => {
     setSendBusy(true)
     setSendError(null)
     try {
-      const response = await window.api.sendPersonalWechatMessage({ ...request, to: targetId })
+      const response = await window.api.sendGeneratedTtsVoice({
+        to: targetId,
+        isGroup: isGroupChat,
+        filePath
+      })
       setSenderStatus(response.status)
-      if (!response.success) setSendError(response.error || '发送失败')
-      return { success: response.success, error: response.error }
+      const success = response.action.status === 'sent'
+      const error = success
+        ? undefined
+        : response.action.errorCode === 'SEND_CAPABILITY_UNAVAILABLE'
+          ? '当前微信发送能力不可用'
+          : response.action.reason || '发送失败，请重试'
+      if (error) setSendError(error)
+      return { success, error }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setSendError(message)
       return { success: false, error: message }
+    } finally {
+      setSendBusy(false)
+    }
+  }
+
+  const handleSendReportImage = async (): Promise<void> => {
+    if (!initialImage || !senderStatus?.canSendImage || sendBusy) return
+    setSendBusy(true)
+    setSendError(null)
+    try {
+      const response = await window.api.sendPersonalWechatMessage({
+        type: 'image',
+        to: targetId,
+        isGroup: isGroupChat,
+        filePath: initialImage.path
+      } satisfies PersonalWechatSendRequest)
+      setSenderStatus(response.status)
+      if (!response.success) {
+        setSendError(response.error || '日报图片发送失败')
+        return
+      }
+      setMessages((current) => [
+        ...current,
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          type: 'system',
+          text: initialImage.name,
+          fileName: initialImage.name,
+          outgoing: true
+        }
+      ])
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error))
     } finally {
       setSendBusy(false)
     }
@@ -288,9 +321,9 @@ function PersonalWechatMacSendDialog({
               {displayName.slice(0, 1)}
             </div>
             <div className="personal-wechat-chat-heading">
-              <DialogTitle>{displayName}</DialogTitle>
+              <DialogTitle>文字转语音</DialogTitle>
               <DialogDescription>
-                {isGroupChat ? '群聊' : '联系人'} · {setupReady ? '微信已连接' : '配置微信消息发送'}
+                发送给 {displayName} · {setupReady ? '微信已连接' : '配置微信发送能力'}
               </DialogDescription>
             </div>
             <span
@@ -300,7 +333,7 @@ function PersonalWechatMacSendDialog({
           </DialogHeader>
 
           <div className="personal-wechat-chat-body">
-            {setupReady && composerStarted && (
+            {setupReady && !initialImage && (
               <div className="personal-wechat-message-list" aria-label="消息列表">
                 {messages.length === 0 ? (
                   <div className="personal-wechat-empty-message">还没有发送消息。</div>
@@ -310,13 +343,7 @@ function PersonalWechatMacSendDialog({
                       key={message.id}
                       className={`personal-wechat-message-bubble ${message.outgoing ? 'is-outgoing' : ''}`}
                     >
-                      <span className="personal-wechat-message-kind">
-                        {message.type === 'text'
-                          ? '文字'
-                          : message.type === 'image'
-                            ? '图片'
-                            : '语音'}
-                      </span>
+                      <span className="personal-wechat-message-kind">语音</span>
                       <span>{message.text || message.fileName}</span>
                     </div>
                   ))
@@ -324,7 +351,7 @@ function PersonalWechatMacSendDialog({
               </div>
             )}
 
-            {(!setupReady || !composerStarted) && senderStatus && (
+            {!setupReady && senderStatus && (
               <PersonalWechatSetupGuide
                 runtimeStatus={runtimeStatus}
                 senderStatus={senderStatus}
@@ -337,18 +364,24 @@ function PersonalWechatMacSendDialog({
                 onBind={() => void handleBind()}
                 detectionAttempted={detectionAttempted}
                 onDetect={() => void handleDetect()}
-                onStartSending={() => setComposerStarted(true)}
+                onStartSending={() => undefined}
                 onOpenTextToSpeechSettings={handleOpenSettings}
               />
             )}
 
-            {setupReady && composerStarted && (
+            {setupReady && initialImage && (
+              <section className="personal-wechat-composer" aria-label="日报图片发送">
+                <p>已准备日报图片：{initialImage.name}</p>
+                <Button size="sm" onClick={() => void handleSendReportImage()} disabled={sendBusy}>
+                  {sendBusy ? '发送中…' : '发送日报图片'}
+                </Button>
+              </section>
+            )}
+
+            {setupReady && !initialImage && (
               <PersonalWechatChatComposer
                 status={senderStatus!}
                 targetId={targetId}
-                isGroupChat={isGroupChat}
-                initialMode={initialMode}
-                initialImage={initialImage}
                 onOpenTextToSpeechSettings={handleOpenSettings}
                 onCancel={handleClose}
                 onSend={handleSend}
@@ -362,7 +395,7 @@ function PersonalWechatMacSendDialog({
               </div>
             )}
           </div>
-          {setupReady && composerStarted && isMac && (
+          {setupReady && isMac && (
             <div className="personal-wechat-chat-footer flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>保留 OneBot 进程</span>
@@ -377,7 +410,7 @@ function PersonalWechatMacSendDialog({
               </Button>
             </div>
           )}
-          {(!setupReady || !composerStarted) && (
+          {!setupReady && (
             <div
               className={`personal-wechat-chat-footer flex items-center ${isMac ? 'justify-between' : 'justify-end'}`}
             >

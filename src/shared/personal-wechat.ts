@@ -96,6 +96,18 @@ export type PersonalWechatSendRequest =
   | PersonalWechatSendImageRequest
   | PersonalWechatSendVoiceRequest
 
+/** Renderer 请求发送刚刚生成的 TTS 语音；Action 元数据由主进程补齐。 */
+export interface PersonalWechatGeneratedTtsVoiceRequest {
+  to: string
+  isGroup: boolean
+  filePath: string
+}
+
+export interface PersonalWechatGeneratedTtsVoiceResult {
+  action: import('./wechat-action').WechatActionResult
+  status: PersonalWechatSenderStatus
+}
+
 export interface PersonalWechatSendResult {
   success: boolean
   status: PersonalWechatSenderStatus

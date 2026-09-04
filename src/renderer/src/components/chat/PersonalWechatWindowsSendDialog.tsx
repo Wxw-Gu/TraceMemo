@@ -59,7 +59,6 @@ export function PersonalWechatWindowsSendDialog({
   onClose,
   onOpenTextToSpeechSettings,
   onOpenPersonalWechatSettings,
-  initialMode = 'text',
   initialImage = null
 }: PersonalWechatSendDialogProps): React.ReactElement {
   const [status, setStatus] = useState<PersonalWechatSenderStatus | null>(null)
@@ -105,13 +104,23 @@ export function PersonalWechatWindowsSendDialog({
   }
 
   const handleSend = async (
-    request: PersonalWechatSendRequest
+    filePath: string
   ): Promise<{ success: boolean; error?: string }> => {
     setSendBusy(true)
     try {
-      const response = await window.api.sendPersonalWechatMessage({ ...request, to: targetId })
+      const response = await window.api.sendGeneratedTtsVoice({
+        to: targetId,
+        isGroup: isGroupChat,
+        filePath
+      })
       setStatus(response.status)
-      return { success: response.success, error: response.error }
+      const success = response.action.status === 'sent'
+      const error = success
+        ? undefined
+        : response.action.errorCode === 'SEND_CAPABILITY_UNAVAILABLE'
+          ? '当前微信发送能力不可用'
+          : response.action.reason || '发送失败，请重试'
+      return { success, error }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setStatus((current) => ({
@@ -120,6 +129,33 @@ export function PersonalWechatWindowsSendDialog({
         error: message
       }))
       return { success: false, error: message }
+    } finally {
+      setSendBusy(false)
+    }
+  }
+
+  const handleSendReportImage = async (): Promise<void> => {
+    if (!initialImage || !status?.canSendImage || sendBusy) return
+    setSendBusy(true)
+    try {
+      const response = await window.api.sendPersonalWechatMessage({
+        type: 'image',
+        to: targetId,
+        isGroup: isGroupChat,
+        filePath: initialImage.path
+      } satisfies PersonalWechatSendRequest)
+      setStatus(response.status)
+      if (!response.success) return
+      setMessages((current) => [
+        ...current,
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          type: 'system',
+          text: initialImage.name,
+          fileName: initialImage.name,
+          outgoing: true
+        }
+      ])
     } finally {
       setSendBusy(false)
     }
@@ -145,12 +181,12 @@ export function PersonalWechatWindowsSendDialog({
         <DialogHeader className="flex-row items-center justify-between space-y-0 pr-10">
           <div>
             <span className="text-[11px] font-bold tracking-normal text-primary">实验性功能</span>
-            <DialogTitle className="mt-0.5 text-[19px] leading-[26px] tracking-normal">
-              个人微信发送
+              <DialogTitle className="mt-0.5 text-[19px] leading-[26px] tracking-normal">
+              文字转语音
             </DialogTitle>
           </div>
           <DialogDescription className="sr-only">
-            向当前微信联系人或群聊发送文字、图片和语音。
+            向当前微信联系人或群聊发送文字转语音。
           </DialogDescription>
         </DialogHeader>
 
@@ -158,12 +194,12 @@ export function PersonalWechatWindowsSendDialog({
           <span aria-hidden>i</span>
           <p>
             <strong>请在其他设备确认发送结果</strong>
-            语音、图片等消息请切换到手机、平板等其他设备确认是否送达。
+            语音消息请切换到手机、平板等其他设备确认是否送达。
           </p>
         </div>
 
         <div className="personal-wechat-send-target">
-          <span>{isGroupChat ? '发送到群聊' : '发送给联系人'}</span>
+            <span>{isGroupChat ? '发送到群聊' : '发送给联系人'}</span>
           <strong>{displayName}</strong>
           <code>{targetId}</code>
         </div>
@@ -208,31 +244,31 @@ export function PersonalWechatWindowsSendDialog({
                     key={message.id}
                     className={`personal-wechat-message-bubble ${message.outgoing ? 'is-outgoing' : ''}`}
                   >
-                    <span className="personal-wechat-message-kind">
-                      {message.type === 'text'
-                        ? '文字'
-                        : message.type === 'image'
-                          ? '图片'
-                          : '语音'}
-                    </span>
+                      <span className="personal-wechat-message-kind">语音</span>
                     <span>{message.text || message.fileName}</span>
                   </div>
                 ))}
               </div>
             ) : null}
-            <PersonalWechatChatComposer
-              status={status}
-              targetId={targetId}
-              isGroupChat={isGroupChat}
-              initialMode={initialMode}
-              initialImage={initialImage}
-              className="personal-wechat-windows-composer"
-              onOpenTextToSpeechSettings={onOpenTextToSpeechSettings}
-              onCancel={handleClose}
-              onSend={handleSend}
-              onMessage={(message) => setMessages((current) => [...current, message])}
-              busy={sendBusy}
-            />
+            {initialImage && status.canSendImage ? (
+              <section className="personal-wechat-composer" aria-label="日报图片发送">
+                <p>已准备日报图片：{initialImage.name}</p>
+                <Button size="sm" onClick={() => void handleSendReportImage()} disabled={sendBusy}>
+                  {sendBusy ? '发送中…' : '发送日报图片'}
+                </Button>
+              </section>
+            ) : !initialImage ? (
+              <PersonalWechatChatComposer
+                status={status}
+                targetId={targetId}
+                className="personal-wechat-windows-composer"
+                onOpenTextToSpeechSettings={onOpenTextToSpeechSettings}
+                onCancel={handleClose}
+                onSend={handleSend}
+                onMessage={(message) => setMessages((current) => [...current, message])}
+                busy={sendBusy}
+              />
+            ) : null}
           </>
         ) : null}
       </DialogContent>

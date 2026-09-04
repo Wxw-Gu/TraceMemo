@@ -472,7 +472,7 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     try {
       await fixture.setWindowContentSize(visualViewport)
       await fixture.page.getByText('产品测试群', { exact: true }).click()
-      await fixture.page.getByRole('button', { name: '发送消息' }).click()
+      await fixture.page.getByRole('button', { name: '文字转语音' }).click()
       const dialog = fixture.page.getByRole('dialog', { name: '产品测试群' })
       await expect(dialog).toBeVisible()
       await expect(fixture.page.locator('html')).toHaveAttribute('data-theme', appearanceTheme)
