@@ -941,10 +941,7 @@ async function runSingleExport(
       request.format === 'html'
         ? options.outputFolderName || safeFilePart(request.outputName)
         : `${safeFilePart(request.outputName)}_${exportStamp()}`
-    const root =
-      options.outputRoot ||
-      request.outputDirectory ||
-      (await resolveDefaultExportRoot(outputFolder))
+    const root = options.outputRoot || request.outputDirectory || (await resolveDefaultExportRoot(outputFolder))
     await fs.mkdir(root, { recursive: true })
     const outputDir = join(root, outputFolder)
     const outputPath =
@@ -1236,7 +1233,16 @@ async function runSingleExport(
                 markResourceExists(voiceUrl)
               }
               message.voiceDataUrl = voiceUrl
-              message.voiceDuration = Math.max(1, Math.round(audioBuffer.length / (24000 * 2)))
+              // 读取 WAV 头中的采样率，避免按错误采样率计算时长（Silk 解码为 16kHz）
+              const wavSampleRate =
+                audioBuffer.length >= 44 ? audioBuffer.readUInt32LE(24) : 16000
+              const wavChannels =
+                audioBuffer.length >= 44 ? audioBuffer.readUInt16LE(22) : 1
+              const pcmBytes = Math.max(0, audioBuffer.length - 44)
+              message.voiceDuration = Math.max(
+                1,
+                Math.round(pcmBytes / (wavSampleRate * wavChannels * 2))
+              )
             } catch (error) {
               keepMediaError(
                 request,
@@ -1478,10 +1484,13 @@ async function runSingleExport(
         } else if (message.contentData.type === 'sticker' && stickerService) {
           const stickerSource = message.contentData.url || message.contentData.thumbUrl
           const result = await stickerService.resolveSticker(stickerSource, message.contentData.md5)
-          const decoded = result.data ? decodeDataUrl(result.data) : null
-          const stickerExtension = decoded ? detectAssetExtension(decoded.buffer) : null
-          if (decoded && stickerExtension) {
-            const name = `sticker_${bufferHashPart(decoded.buffer)}.${stickerExtension}`
+          const decoded = result.data
+            ? decodeDataUrl(result.data)
+            : stickerSource
+              ? await readAvatarAsset(stickerSource)
+              : null
+          if (decoded) {
+            const name = `sticker_${bufferHashPart(decoded.buffer)}.${decoded.extension}`
             const mediaUrl = `media/${name}`
             if (!(await resourceExists(mediaUrl))) {
               await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
