@@ -584,6 +584,19 @@ const detectAssetExtension = (buffer: Buffer): string | null => {
     return 'webp'
   return null
 }
+const htmlArchiveStickerResourceIsValid = async (
+  outputDir: string,
+  value?: string
+): Promise<boolean> => {
+  const filePath = htmlArchiveResourcePath(outputDir, value)
+  if (!filePath) return false
+  try {
+    return detectAssetExtension(await fs.readFile(filePath)) !== null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
 async function readAvatarAsset(
   source: string
 ): Promise<{ extension: string; buffer: Buffer } | null> {
@@ -1338,12 +1351,28 @@ async function runSingleExport(
         const reusableImageQuality =
           previous?.exportMediaQuality === 'original' ||
           (request.preferOriginal === false && previous?.exportMediaQuality === 'thumbnail')
+        let reusableMediaExists = false
+        if (reusableMediaType && previous?.exportMediaUrl) {
+          reusableMediaExists = await resourceExists(previous.exportMediaUrl)
+          if (
+            reusableMediaExists &&
+            reusableMediaType === 'sticker' &&
+            !(await htmlArchiveStickerResourceIsValid(outputDir, previous.exportMediaUrl))
+          ) {
+            reusableMediaExists = false
+            resourceExistence.set(previous.exportMediaUrl, Promise.resolve(false))
+            delete previous.exportMediaUrl
+            delete previous.exportMediaType
+            delete previous.exportMediaName
+            delete previous.exportMediaQuality
+          }
+        }
         if (
           reusableMediaType &&
           previous?.exportMediaUrl &&
           (!previous.exportMediaType || previous.exportMediaType === reusableMediaType) &&
           (reusableMediaType !== 'image' || reusableImageQuality) &&
-          (await resourceExists(previous.exportMediaUrl))
+          reusableMediaExists
         ) {
           message.exportMediaUrl = previous.exportMediaUrl
           message.exportMediaType = reusableMediaType
