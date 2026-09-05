@@ -224,7 +224,7 @@ function ScheduledReportDialog({
   React.useEffect(() => {
     if (!open) return
     setKeyword('')
-    setSelectedId(task?.target || task?.group || groups[0]?.md5 || '')
+    setSelectedId(task?.target || task?.group || '')
     setName(task?.name || '')
     setScheduleTime(task?.scheduleTime || '09:00')
     const persistedRange = task?.reportRange
@@ -236,7 +236,13 @@ function ScheduledReportDialog({
     setRangeMessages([])
     setMemberCount(null)
     setMemberCountAvailable(true)
-  }, [groups, open, task])
+  }, [open, task])
+
+  React.useEffect(() => {
+    if (open && !selectedId && groups[0]) {
+      setSelectedId(groups[0].md5)
+    }
+  }, [groups, open, selectedId])
 
   React.useEffect(() => {
     if (!open || !selected) return

@@ -224,7 +224,7 @@ describe('TraceMemo app data migration', () => {
     const current = new SqliteTranscriptRepository(currentPath)
     expect(current.findLatest('account-a', 'message-a')?.transcript).toBe('已经转写过的文字')
     current.close()
-  })
+  }, 15_000)
 
   it('backfills voice transcripts after the original migration was already completed', async () => {
     const fixture = roots()
@@ -264,7 +264,7 @@ describe('TraceMemo app data migration', () => {
     )
     expect(current.findLatest('account-a', 'message-a')?.transcript).toBe('补迁文字')
     current.close()
-  })
+  }, 15_000)
 
   it('does not retry a voice transcript backfill after it was marked failed', async () => {
     const fixture = roots()

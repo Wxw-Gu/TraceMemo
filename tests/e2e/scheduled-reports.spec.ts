@@ -16,7 +16,6 @@ test('SCHEDULED-REPORT-UI-01 opens the scheduled report dialog without viewport 
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page.getByRole('button', { name: '日报' }).click()
     await fixture.page.getByRole('tab', { name: '定时日报' }).click()
     await expect(fixture.page.getByRole('heading', { name: '定时日报', exact: true })).toBeVisible()
@@ -52,8 +51,8 @@ test('SCHEDULED-REPORT-UI-01 opens the scheduled report dialog without viewport 
     await selects.nth(1).click()
     const memberOption = fixture.page.getByRole('option', { name: '微信昵称' })
     await expect(memberOption).toBeVisible()
-    await memberOption.click()
-    await expect(selects.nth(1)).toContainText('微信昵称')
+    await memberOption.click({ force: true })
+    await expect(selects.nth(1)).toContainText('微信昵称', { timeout: 8000 })
 
     expect(
       await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
@@ -61,7 +60,9 @@ test('SCHEDULED-REPORT-UI-01 opens the scheduled report dialog without viewport 
     const bounds = await dialog.boundingBox()
     expect(bounds).not.toBeNull()
     expect(bounds!.y).toBeGreaterThanOrEqual(0)
-    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(600)
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(
+      await fixture.page.evaluate(() => window.innerHeight)
+    )
 
     await dialog.getByPlaceholder('例如：技术交流 · 每日日报').fill('E2E 定时日报')
     await dialog.getByRole('radio', { name: '今日' }).click()

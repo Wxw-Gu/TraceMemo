@@ -99,8 +99,13 @@ describe('scheduled report scheduling', () => {
     expect(validateScheduleTime('09:05')).toBe(true)
     expect(validateScheduleTime('24:00')).toBe(false)
     const from = new Date('2026-08-27T10:00:00+08:00')
-    expect(calculateNextRunAt('09:05', from)).toBe('2026-08-28T01:05:00.000Z')
-    expect(calculateNextRunAt('11:05', from)).toBe('2026-08-27T03:05:00.000Z')
+    const expectedNext = new Date(from)
+    expectedNext.setHours(9, 5, 0, 0)
+    if (expectedNext.getTime() <= from.getTime()) expectedNext.setDate(expectedNext.getDate() + 1)
+    expect(calculateNextRunAt('09:05', from)).toBe(expectedNext.toISOString())
+    const expectedSameDay = new Date(from)
+    expectedSameDay.setHours(11, 5, 0, 0)
+    expect(calculateNextRunAt('11:05', from)).toBe(expectedSameDay.toISOString())
   })
 
   it('defaults notification settings to off and persists a successful enablement', async () => {

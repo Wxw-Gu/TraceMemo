@@ -308,6 +308,8 @@ function PersonalWechatMacSendDialog({
     <>
       <Dialog open onOpenChange={(open) => !open && handleClose()}>
         <DialogContent
+          aria-label={displayName}
+          aria-labelledby={undefined}
           className="personal-wechat-send-dialog max-h-[calc(100vh-2rem)] max-w-[720px] gap-0 overflow-y-auto p-0"
           onOpenAutoFocus={() => {
             restoreFocusRef.current =

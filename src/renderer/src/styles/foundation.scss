@@ -10,9 +10,16 @@
   --border-color: #dcdcdc;
 }
 
+html {
+  width: 100%;
+  height: 100%;
+}
+
 body {
   margin: 0;
   padding: 0;
+  width: 100%;
+  min-width: 0;
   font-family: var(--wxex-font);
   background-color: var(--wxex-bg-app);
   color: var(--wxex-text-primary);
@@ -21,7 +28,10 @@ body {
 }
 
 #root {
+  width: 100%;
   height: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
   display: flex;
 }
 
