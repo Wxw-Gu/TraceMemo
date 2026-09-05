@@ -290,9 +290,11 @@ describe('daily report controls', () => {
 
     const retryButton = await screen.findByRole('button', { name: '使用所选模型重新生成' })
     const retryModel = screen.getByRole('combobox', { name: '切换模型' })
+    await waitFor(() => expect(retryModel).toBeEnabled())
     await user.click(retryModel)
-    expect(screen.getByRole('option', { name: '备用服务 · 备用模型' })).toBeVisible()
-    await user.click(screen.getByRole('option', { name: '备用服务 · 备用模型' }))
+    const fallbackModel = await screen.findByRole('option', { name: '备用服务 · 备用模型' })
+    expect(fallbackModel).toBeVisible()
+    await user.click(fallbackModel)
     fireEvent.click(retryButton)
     expect(onRetry).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: 'provider-2', model: 'model-2' })
@@ -577,7 +579,7 @@ describe('daily report controls', () => {
     expect(onReveal).not.toHaveBeenCalled()
   })
 
-  it('opens the current group send dialog with the report PNG preselected', async () => {
+  it('opens the current group send dialog with the report PNG ready to send', async () => {
     const report: GeneratedReportRecord = {
       id: 'report-send',
       contactId: groupContact.md5,
@@ -611,9 +613,9 @@ describe('daily report controls', () => {
     expect(await screen.findByRole('dialog', { name: '测试群' })).toBeVisible()
     const detect = screen.queryByRole('button', { name: '重新检测' })
     if (detect) fireEvent.click(detect)
-    expect(screen.getByRole('radio', { name: '图片' })).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByText('测试群日报.png')).toBeVisible()
-    expect(screen.getByText('/Users/fixture/测试群日报.png')).toBeVisible()
+    expect(screen.getByRole('region', { name: '日报图片发送' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '发送日报图片' })).toBeEnabled()
+    expect(screen.getByRole('region', { name: '日报图片发送' })).toHaveTextContent('测试群日报.png')
   })
 
   it('disables current group sending outside macOS with a readable hover hint', () => {

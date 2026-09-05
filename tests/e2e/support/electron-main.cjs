@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, '../../..')
 const fixture = structuredClone(require(path.join(root, 'tests/fixtures/chat-data.json')))
 const userData = process.env.WXE_E2E_USER_DATA
 if (!userData) throw new Error('WXE_E2E_USER_DATA is required')
+const backgroundE2E = process.env.WXE_E2E_HEADLESS === '1'
 app.setPath('userData', userData)
 app.setPath('logs', path.join(userData, 'logs'))
 app.commandLine.appendSwitch('disable-gpu')
@@ -253,6 +254,7 @@ const groupExitEvent = {
   detectedAt: fixtureNowMs - 60 * 1000
 }
 let groupExitMonitorState = {
+  enabled: connected,
   events: [groupExitEvent],
   running: connected,
   nativeMonitorActive: connected,
@@ -1215,8 +1217,9 @@ for (const channel of [
 
 app.whenReady().then(() => {
   const window = new BrowserWindow({
-    width: 1440,
-    height: 960,
+    // Keep the E2E window aligned with createWindow() in src/main/index.ts.
+    width: 1400,
+    height: 800,
     show: false,
     backgroundColor: '#ffffff',
     webPreferences: {
@@ -1226,7 +1229,7 @@ app.whenReady().then(() => {
       sandbox: false
     }
   })
-  window.once('ready-to-show', () => window.show())
+  if (!backgroundE2E) window.once('ready-to-show', () => window.show())
   window.loadFile(path.join(root, 'out/renderer/index.html'))
 })
 

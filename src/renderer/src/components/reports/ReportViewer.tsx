@@ -65,12 +65,12 @@ export function ReportViewer({
   const viewportRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    setSendDialogOpen(false)
     const frame = window.requestAnimationFrame(() => {
       setStatus('')
       setImageError('')
       setIsSwitchingTemplate(false)
       setShareDialogOpen(false)
-      setSendDialogOpen(false)
       setZoom(1)
       setFitZoom(1)
       setNaturalSize(null)

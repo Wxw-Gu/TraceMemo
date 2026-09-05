@@ -7,8 +7,16 @@ import (
 	"testing"
 )
 
+func setTestHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return home
+}
+
 func TestSaveCredentialsKeepsOnlyLatestAccount(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	old := &Credentials{ILinkBotID: "bot-old@im.bot", BotToken: "old-token"}
 	latest := &Credentials{ILinkBotID: "bot-new@im.bot", BotToken: "new-token"}
 	if err := SaveCredentials(old); err != nil {
@@ -37,8 +45,7 @@ func TestSaveCredentialsKeepsOnlyLatestAccount(t *testing.T) {
 }
 
 func TestAccountsDirUsesTraceMemoIdentity(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := setTestHome(t)
 	dir, err := AccountsDir()
 	if err != nil {
 		t.Fatal(err)
@@ -50,8 +57,7 @@ func TestAccountsDirUsesTraceMemoIdentity(t *testing.T) {
 }
 
 func TestLoadAllCredentialsFallsBackToLegacyDirectory(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t)
 	legacyDir, err := LegacyAccountsDir()
 	if err != nil {
 		t.Fatal(err)

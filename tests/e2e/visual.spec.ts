@@ -4,7 +4,6 @@ import { resolve } from 'path'
 import { launchTestApp } from './support/electron'
 
 const baselineDirectory = resolve(`tests/e2e/__screenshots__/${process.platform}/visual.spec.ts`)
-const visualViewport = { width: 1400, height: 772 }
 const visualNow = Date.parse('2026-08-19T14:46:40+08:00')
 
 async function clearScreenshotFocus(page: import('@playwright/test').Page): Promise<void> {
@@ -21,7 +20,6 @@ test.skip(
 test('NAV-01 login page visual @visual', async () => {
   const fixture = await launchTestApp({ mode: 'disconnected' })
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await expect(fixture.page.getByRole('heading', { name: 'TraceMemo（迹忆）' })).toBeVisible()
     await clearScreenshotFocus(fixture.page)
     await expect(fixture.page).toHaveScreenshot('login-page.png', {
@@ -36,7 +34,6 @@ test('NAV-01 login page visual @visual', async () => {
 test('ARCH-01 archive page visual @visual', async () => {
   const fixture = await launchTestApp({ now: visualNow })
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByText('产品测试群', { exact: true }).click()
     await expect(fixture.page.getByText('这是一条脱敏测试消息', { exact: true })).toBeVisible()
     await clearScreenshotFocus(fixture.page)
@@ -54,7 +51,6 @@ test('CHAT-01 archive search controls visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByText('产品测试群', { exact: true }).click()
     await fixture.page.getByRole('button', { name: '搜索当前聊天' }).click()
     const searchInput = fixture.page.getByRole('textbox', { name: '搜索当前聊天内容' })
@@ -81,7 +77,6 @@ test('ASK-01 AI Search idle page visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByRole('button', { name: '问问微信' }).click()
     await expect(fixture.page.getByRole('heading', { name: '问问你的微信' })).toBeVisible()
     await expect(fixture.page.getByPlaceholder(/例如：技术交流群/)).toBeVisible()
@@ -105,7 +100,6 @@ test('ASK-03 AI Search result page visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByRole('button', { name: '问问微信' }).click()
     await fixture.page.getByPlaceholder(/例如：技术交流群/).fill('测试群讨论了什么？')
     await fixture.page.getByRole('button', { name: '开始分析' }).click()
@@ -132,7 +126,6 @@ test('ASK-04 AI Search idle page dark visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByRole('button', { name: '问问微信' }).click()
     await expect(fixture.page.getByRole('heading', { name: '问问你的微信' })).toBeVisible()
     await expect(fixture.page.locator('html')).toHaveAttribute('data-theme', 'dark')
@@ -155,7 +148,6 @@ test('ASK-05 AI Search result page dark visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByRole('button', { name: '问问微信' }).click()
     await fixture.page.getByPlaceholder(/例如：技术交流群/).fill('测试群讨论了什么？')
     await fixture.page.getByRole('button', { name: '开始分析' }).click()
@@ -182,7 +174,6 @@ test('API-00 Reader Skill page visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByRole('button', { name: 'API' }).click()
     await expect(fixture.page.getByRole('heading', { name: 'TraceMemo Reader' })).toBeVisible()
     await expect(fixture.page.getByText('API Token', { exact: true })).toBeVisible()
@@ -205,7 +196,6 @@ test('API-00 Reader Skill page dark visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByRole('button', { name: 'API' }).click()
     await expect(fixture.page.getByRole('heading', { name: 'TraceMemo Reader' })).toBeVisible()
     await expect(fixture.page.getByText('API Token', { exact: true })).toBeVisible()
@@ -229,7 +219,6 @@ test('API-01 Reader Skill preview visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByRole('button', { name: 'API' }).click()
     await fixture.page
       .locator('#api-reader-skill')
@@ -257,7 +246,6 @@ test('API-02 Agent target segmented control visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByRole('button', { name: 'API' }).click()
     const targetGroup = fixture.page.getByRole('radiogroup', { name: '选择目标 Agent' })
     await targetGroup.evaluate((element) => element.scrollIntoView({ block: 'center' }))
@@ -289,7 +277,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page.getByRole('button', { name: '退群监控' }).click()
       await expect(
         fixture.page.getByRole('heading', { name: '退群监控', exact: true })
@@ -317,7 +304,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page.getByRole('button', { name: '退群监控' }).click()
       await fixture.page.getByRole('button', { name: '管理群聊' }).click()
       await expect(
@@ -346,7 +332,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page.getByRole('button', { name: '退群监控' }).click()
       await fixture.page.getByRole('button', { name: '管理群聊' }).click()
       await fixture.page.getByRole('checkbox', { name: '监控产品测试群' }).click()
@@ -375,7 +360,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page.getByRole('button', { name: '日报' }).click()
       await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
       await fixture.page.locator('.report-source-item').filter({ hasText: '产品测试群' }).click()
@@ -436,7 +420,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page.getByRole('button', { name: '日报' }).click()
       await fixture.page.getByRole('button', { name: '开始生成日报' }).click()
       await fixture.page.locator('.report-source-item').filter({ hasText: '产品测试群' }).click()
@@ -470,7 +453,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page.getByText('产品测试群', { exact: true }).click()
       await fixture.page.getByRole('button', { name: '文字转语音' }).click()
       const dialog = fixture.page.getByRole('dialog', { name: '产品测试群' })
@@ -516,7 +498,6 @@ test('CHAT-03 image viewer visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByText('产品测试群', { exact: true }).click()
     await fixture.page.getByRole('button', { name: '查看图片' }).click()
     await expect(fixture.page.getByRole('dialog', { name: '图片查看' })).toBeVisible()
@@ -539,7 +520,6 @@ test('SETTINGS-02 basic settings controls visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page
       .getByRole('navigation', { name: '一级导航' })
       .getByRole('button', { name: '设置' })
@@ -590,7 +570,6 @@ test('UPDATE-01 startup prompt and downloaded state visual @visual', async () =>
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     const dialog = fixture.page.getByRole('alertdialog', { name: '发现新版本 v2.0.0' })
     await expect(dialog).toBeVisible()
     await clearScreenshotFocus(fixture.page)
@@ -620,7 +599,6 @@ test('UPDATE-02 unsigned macOS release prompt visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     const dialog = fixture.page.getByRole('alertdialog', { name: '发现新版本 v2.2.3' })
     await expect(dialog).toBeVisible()
     await clearScreenshotFocus(fixture.page)
@@ -656,7 +634,6 @@ test('SETTINGS-03 database key controls visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page
       .getByRole('navigation', { name: '一级导航' })
       .getByRole('button', { name: '设置' })
@@ -690,7 +667,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page
         .getByRole('navigation', { name: '一级导航' })
         .getByRole('button', { name: '设置' })
@@ -722,7 +698,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page
         .getByRole('navigation', { name: '一级导航' })
         .getByRole('button', { name: '设置' })
@@ -758,7 +733,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page
         .getByRole('navigation', { name: '一级导航' })
         .getByRole('button', { name: '设置' })
@@ -796,7 +770,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page
         .getByRole('navigation', { name: '一级导航' })
         .getByRole('button', { name: '设置' })
@@ -827,11 +800,11 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
 
 for (const appearanceTheme of ['light', 'dark'] as const) {
   test(`SETTINGS-06A voice encoding environment ${appearanceTheme} visual @visual`, async () => {
+    test.skip(process.platform !== 'darwin', 'Voice encoding environment is macOS-only')
     const fixture = await launchTestApp({ now: visualNow, appearanceTheme })
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page
         .getByRole('navigation', { name: '一级导航' })
         .getByRole('button', { name: '设置' })
@@ -867,7 +840,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page
         .getByRole('navigation', { name: '一级导航' })
         .getByRole('button', { name: '设置' })
@@ -902,7 +874,6 @@ for (const appearanceTheme of ['light', 'dark'] as const) {
     const pageErrors: Error[] = []
     fixture.page.on('pageerror', (error) => pageErrors.push(error))
     try {
-      await fixture.setWindowContentSize(visualViewport)
       await fixture.page.getByRole('button', { name: 'Agent' }).click()
       await expect(fixture.page.getByRole('heading', { name: 'Agent Hub' })).toBeVisible()
       await expect(fixture.page.getByText('Agent Hub 未运行')).toBeVisible()
@@ -927,7 +898,6 @@ test('EXPORT-01 export workspace idle visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByRole('button', { name: '导出' }).click()
     await expect(fixture.page.getByRole('heading', { name: '导出设置' })).toBeVisible()
     await expect(fixture.page.getByRole('button', { name: '开始导出' })).toBeEnabled()
@@ -950,7 +920,6 @@ test('THEME-01 archive page dark visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByText('产品测试群', { exact: true }).click()
     await expect(fixture.page.getByText('这是一条脱敏测试消息', { exact: true })).toBeVisible()
     await expect(fixture.page.locator('html')).toHaveAttribute('data-theme', 'dark')
@@ -973,7 +942,6 @@ test('THEME-02 export workspace dark visual @visual', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize(visualViewport)
     await fixture.page.getByRole('button', { name: '导出' }).click()
     await expect(fixture.page.getByRole('heading', { name: '导出设置' })).toBeVisible()
     await expect(fixture.page.locator('html')).toHaveAttribute('data-theme', 'dark')

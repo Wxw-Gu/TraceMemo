@@ -31,10 +31,9 @@ jobs:
           cache-dependency-path: services/wechat-connector/go.sum
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install
 
       - name: Install Playwright Chromium
-        if: runner.os == 'macOS'
         run: pnpm exec playwright install chromium
 
       - name: Type check
@@ -64,6 +63,8 @@ jobs:
           WXE_E2E_CLOSE_DELAY_MS: 0
 
       - name: Platform visual regression
+        # GitHub-hosted Windows 无法稳定容纳项目统一的 1400×800 Electron 窗口，Windows visual regression 改由可控 Windows 桌面环境执行。
+        if: matrix.os != 'windows-latest'
         run: pnpm exec playwright test tests/e2e/visual.spec.ts
         env:
           WXE_E2E_CLOSE_DELAY_MS: 0

@@ -16,9 +16,13 @@ test('APP-01 first launch renders a usable connection screen without uncaught er
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await expect(fixture.page.getByRole('heading', { name: 'TraceMemo（迹忆）' })).toBeVisible()
     await expect(fixture.page.getByRole('main')).not.toBeEmpty()
+    const loginLayout = await fixture.page.locator('.database-login-page').evaluate((element) => ({
+      width: Math.round(element.getBoundingClientRect().width),
+      viewportWidth: window.innerWidth
+    }))
+    expect(loginLayout.width).toBe(loginLayout.viewportWidth)
     expect(
       await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true)
@@ -63,6 +67,7 @@ test('P0-01 an invalid directory can be corrected and retried without restarting
     await fixture.page.getByRole('button', { name: '选择目录' }).click()
     await expect(fixture.page.getByLabel('微信数据目录')).toHaveValue('fixture-account')
     await fixture.page.getByRole('button', { name: '连接数据库' }).click()
+    await dismissFirstUseWelcome(fixture.page)
     await expect(fixture.page.getByRole('navigation', { name: '一级导航' })).toBeVisible()
   } finally {
     await fixture.close()
@@ -121,6 +126,13 @@ test('NAV-01 NAV-02 every top-level page is unique and switchable', async () => 
   try {
     const navigation = fixture.page.getByRole('navigation', { name: '一级导航' })
     await expect(navigation).toBeVisible()
+    const appShell = fixture.page.locator('.app-shell')
+    await expect(appShell).toBeVisible()
+    const shellLayout = await appShell.evaluate((element) => ({
+      width: Math.round(element.getBoundingClientRect().width),
+      viewportWidth: window.innerWidth
+    }))
+    expect(shellLayout.width).toBe(shellLayout.viewportWidth)
     for (const label of labels) {
       await expect(navigation.getByRole('button', { name: label })).toHaveCount(1)
       await navigation.getByRole('button', { name: label }).click()
@@ -136,7 +148,6 @@ test('NAV-03 exit monitor page shows a member departure event and stays within t
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page.getByRole('button', { name: '退群监控' }).click()
     await expect(fixture.page.getByRole('heading', { name: '退群监控', exact: true })).toBeVisible()
     await expect(fixture.page.getByText('测试成员退出了产品测试群', { exact: true })).toBeVisible()
@@ -185,7 +196,6 @@ test('CHAT-01 archive More menu is keyboard-safe and keeps the page usable', asy
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     const conversationSearch = fixture.page.getByRole('searchbox', { name: '搜索会话' })
     await conversationSearch.fill('产品')
     await expect(fixture.page.getByText('产品测试群', { exact: true })).toBeVisible()
@@ -234,7 +244,6 @@ test('CHAT-REALTIME-01 archive refreshes from a native message-shard event', asy
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page.getByText('产品测试群', { exact: true }).click()
     await expect(fixture.page.getByText('这是一条脱敏测试消息', { exact: true })).toBeVisible()
 
@@ -273,7 +282,6 @@ test('CHAT-02 personal WeChat send dialog is keyboard-safe and fits the viewport
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page.getByText('产品测试群', { exact: true }).click()
     const trigger = fixture.page.getByRole('button', { name: '文字转语音' })
     await trigger.click()
@@ -290,16 +298,14 @@ test('CHAT-02 personal WeChat send dialog is keyboard-safe and fits the viewport
     const bounds = await dialog.boundingBox()
     expect(bounds).not.toBeNull()
     expect(bounds!.y).toBeGreaterThanOrEqual(0)
-    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(600)
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(
+      await fixture.page.evaluate(() => window.innerHeight)
+    )
     expect(pageErrors).toEqual([])
 
-    const imageMode = dialog.getByRole('radio', { name: '图片' })
-    const voiceMode = dialog.getByRole('radio', { name: '语音', exact: true })
-    await imageMode.focus()
-    await fixture.page.keyboard.press('ArrowRight')
-    await expect(voiceMode).toBeFocused()
-    await fixture.page.keyboard.press('Space')
-    await expect(voiceMode).toBeChecked()
+    const voiceText = dialog.getByRole('textbox', { name: '语音文字' })
+    await voiceText.focus()
+    await expect(voiceText).toBeFocused()
     expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
       true
     )
@@ -317,7 +323,6 @@ test('GUIDE-01 first-use welcome is keyboard-safe and fits the viewport', async 
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 1000, height: 650 })
     const guideButton = fixture.page.getByRole('button', { name: '新手引导' })
     await guideButton.click()
     const dialog = fixture.page.getByRole('dialog', { name: '开始探索你的微信' })
@@ -342,7 +347,6 @@ test('SETTINGS-01 supported WeChat versions dialog is keyboard-safe and fits the
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page
       .getByRole('navigation', { name: '一级导航' })
       .getByRole('button', { name: '设置' })
@@ -382,12 +386,11 @@ test('SETTINGS-01 supported WeChat versions dialog is keyboard-safe and fits the
   }
 })
 
-test('SETTINGS-02 basic settings controls fit a narrow viewport and keep their semantics', async () => {
+test('SETTINGS-02 basic settings controls fit the default desktop window and keep their semantics', async () => {
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page
       .getByRole('navigation', { name: '一级导航' })
       .getByRole('button', { name: '设置' })
@@ -397,6 +400,9 @@ test('SETTINGS-02 basic settings controls fit a narrow viewport and keep their s
     await expect(fixture.page.getByRole('button', { name: '存储与导出' })).toHaveCount(0)
     const autoLoginSwitch = fixture.page.getByRole('switch', { name: '启动时自动连接数据库' })
     await expect(autoLoginSwitch).toBeVisible()
+    await expect(autoLoginSwitch).toBeChecked()
+    await autoLoginSwitch.click()
+    await expect(autoLoginSwitch).not.toBeChecked()
     await autoLoginSwitch.click()
     await expect(autoLoginSwitch).toBeChecked()
 
@@ -453,7 +459,9 @@ test('UPDATE-01 simulated startup update navigates to live progress and never ex
     await expect(fixture.page.getByText('v2.0.0 已准备完成')).toBeVisible({ timeout: 5_000 })
     await fixture.page.getByRole('button', { name: '立即重启更新' }).click()
     await expect(
-      fixture.page.getByText('开发模拟模式：更新安装动作已模拟，未实际退出应用。')
+      fixture.page
+        .getByRole('region', { name: 'Notifications (F8)' })
+        .getByText('开发模拟模式：更新安装动作已模拟，未实际退出应用。')
     ).toBeVisible()
     await expect(fixture.page.getByRole('heading', { name: '关于' })).toBeVisible()
     expect(pageErrors).toEqual([])
@@ -488,7 +496,6 @@ test('SETTINGS-03 database key actions keep destructive confirmation keyboard-sa
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page
       .getByRole('navigation', { name: '一级导航' })
       .getByRole('button', { name: '设置' })
@@ -519,7 +526,6 @@ test('SETTINGS-04 image decryption controls keep filtering and selection keyboar
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page
       .getByRole('navigation', { name: '一级导航' })
       .getByRole('button', { name: '设置' })
@@ -573,7 +579,6 @@ test('SETTINGS-05 AI model editor keeps provider and capability semantics', asyn
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page
       .getByRole('navigation', { name: '一级导航' })
       .getByRole('button', { name: '设置' })
@@ -628,12 +633,11 @@ test('SETTINGS-05 AI model editor keeps provider and capability semantics', asyn
   }
 })
 
-test('SETTINGS-07 voice recognition controls keep selection semantics at a narrow viewport', async () => {
+test('SETTINGS-07 voice recognition controls keep selection semantics at the default desktop size', async () => {
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page
       .getByRole('navigation', { name: '一级导航' })
       .getByRole('button', { name: '设置' })
@@ -672,12 +676,11 @@ test('SETTINGS-07 voice recognition controls keep selection semantics at a narro
   }
 })
 
-test('AGENT-01 Agent Hub controls stay usable in the offline narrow layout', async () => {
+test('AGENT-01 Agent Hub controls stay usable in the default offline layout', async () => {
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page.getByRole('button', { name: 'Agent' }).click()
     await expect(fixture.page.getByRole('heading', { name: 'Agent Hub' })).toBeVisible()
     await expect(fixture.page.getByText('Agent Hub 未运行')).toBeVisible()
@@ -711,7 +714,6 @@ test('API-01 manages the local API token and previews the Reader Skill safely', 
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 1000, height: 650 })
     await fixture.page.getByRole('button', { name: 'API' }).click()
     await expect(fixture.page.getByText('API Token', { exact: true })).toBeVisible()
     await expect(fixture.page.getByText('••••••••••••••••')).toBeVisible()
@@ -766,7 +768,6 @@ test('EXPORT-01 multi-chat selection stays local to export and forces HTML', asy
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 1000, height: 650 })
     const navigation = fixture.page.getByRole('navigation', { name: '一级导航' })
     await fixture.page.getByRole('button', { name: '联系人 (1)' }).click()
     await fixture.page.getByText('文件传输助手', { exact: true }).click()
@@ -808,7 +809,6 @@ test('EXPORT-02 large contact list stays bounded and searchable', async () => {
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 1400, height: 772 })
     await fixture.page.getByRole('button', { name: '导出' }).click()
     await expect(fixture.page.getByText('共 1,503 个')).toBeVisible()
 
@@ -861,12 +861,11 @@ test('EXPORT-02 large contact list stays bounded and searchable', async () => {
   }
 })
 
-test('LAYOUT-01 core workspaces fit a narrow desktop viewport without page errors', async () => {
+test('LAYOUT-01 core workspaces fit the default desktop window without page errors', async () => {
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     const navigation = fixture.page.getByRole('navigation', { name: '一级导航' })
     for (const pageName of ['档案', '问问微信', '日报', '导出', 'API', '设置']) {
       await navigation.getByRole('button', { name: pageName }).click()
@@ -970,7 +969,6 @@ test('ASK-01 uses the local fixed AI service and keeps evidence in the UI', asyn
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
-    await fixture.setWindowContentSize({ width: 820, height: 600 })
     await fixture.page.getByRole('button', { name: '问问微信' }).click()
     await fixture.page.getByPlaceholder(/例如：技术交流群/).fill('测试群讨论了什么？')
     await fixture.page.getByRole('button', { name: '开始分析' }).click()
@@ -1053,7 +1051,6 @@ test('REPORT-01 REPORT-02 generates a fixed report with non-empty local assets',
     await expect(shareDialog).toHaveCount(0)
     await expect(moreButton).toBeFocused()
 
-    await fixture.setWindowContentSize({ width: 1024, height: 760 })
     const reportTitle = fixture.page.getByRole('heading', { name: '产品测试群 群聊日报' })
     await expect(reportTitle).toBeVisible()
     expect((await reportTitle.boundingBox())?.width || 0).toBeGreaterThan(170)

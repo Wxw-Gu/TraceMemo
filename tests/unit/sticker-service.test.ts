@@ -19,6 +19,7 @@ describe('StickerService', () => {
   beforeEach(() => {
     homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sticker-service-'))
     vi.stubEnv('HOME', homeDir)
+    vi.stubEnv('USERPROFILE', homeDir)
   })
 
   afterEach(async () => {

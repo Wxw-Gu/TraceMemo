@@ -44,6 +44,25 @@ const zipDirectory = async (
   })
 }
 
+const extractZip = (zipPath: string, extractedDir: string): void => {
+  if (process.platform === 'win32') {
+    const escapePowerShellLiteral = (value: string): string => value.replace(/'/g, "''")
+    execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Expand-Archive -LiteralPath '${escapePowerShellLiteral(zipPath)}' -DestinationPath '${escapePowerShellLiteral(extractedDir)}'`
+      ],
+      { windowsHide: true }
+    )
+    return
+  }
+
+  execFileSync('unzip', ['-q', zipPath, '-d', extractedDir])
+}
+
 test('EXPORT-ARCHIVE-00 shows a loading state while archive data is still loading', async ({
   page
 }, testInfo) => {
@@ -149,7 +168,7 @@ test('EXPORT-ARCHIVE-01 merged v2 archive is usable offline on desktop and mobil
     const extractedDir = join(fixtureRoot, 'extracted')
     await zipDirectory(outputDir, zipPath, '合并聊天档案')
     mkdirSync(extractedDir, { recursive: true })
-    execFileSync('unzip', ['-q', zipPath, '-d', extractedDir])
+    extractZip(zipPath, extractedDir)
     const offlineIndex = join(extractedDir, '合并聊天档案', 'index.html')
 
     await page.setViewportSize({ width: 1440, height: 900 })

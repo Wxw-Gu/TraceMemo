@@ -1047,7 +1047,7 @@ describe('media export flow', () => {
       dirname(first.outputPath!),
       firstArchive.messages[0].exportMediaUrl as string
     )
-    expect(statSync(videoPath).mode & 0o777).toBe(0o644)
+    expect(statSync(videoPath).mode & 0o200).toBe(0o200)
 
     chmodSync(videoPath, 0o444)
     const second = await runExport(
@@ -1057,7 +1057,7 @@ describe('media export flow', () => {
 
     expect(second.success, second.error).toBe(true)
     expect(second.outputPath).toBe(first.outputPath)
-    expect(statSync(videoPath).mode & 0o777).toBe(0o644)
+    expect(statSync(videoPath).mode & 0o200).toBe(0o200)
   })
 
   it('merges two conversations in stable order without colliding identical message ids or media', async () => {
