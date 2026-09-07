@@ -91,6 +91,7 @@ interface UseGroupReportGenerationArgs {
 }
 
 interface PreparedReportContext {
+  sessionId: string
   input: Awaited<ReturnType<typeof buildGroupReportInput>>
   startedAt: number
   logs: ReportGenerationLog[]
@@ -503,6 +504,7 @@ export function useGroupReportGeneration({
         const result = await trackStep(`AI 生成（${selectedModel.model}）`, () =>
           withTimeout(
             window.api.aiChat(aiMessages, {
+              sessionId: context.sessionId,
               providerId: selectedModel.providerId,
               modelId: selectedModel.model,
               timeoutMs: reportTimeoutSeconds * 1000
@@ -556,6 +558,7 @@ export function useGroupReportGeneration({
           const repairResult = await trackStep(`AI 修复 JSON（${selectedModel.model}）`, () =>
             withTimeout(
               window.api.aiChat(repairMessages, {
+                sessionId: context.sessionId,
                 providerId: selectedModel.providerId,
                 modelId: selectedModel.model,
                 timeoutMs: reportTimeoutSeconds * 1000
@@ -785,7 +788,12 @@ export function useGroupReportGeneration({
         imageInsightsInjectedIntoPrompt:
           input.imageInsightSummary.succeeded > 0 && input.prompt.includes('AI 图片识别摘要：')
       })
-      const context: PreparedReportContext = { input, startedAt: startGenerateTime, logs }
+      const context: PreparedReportContext = {
+        sessionId: crypto.randomUUID(),
+        input,
+        startedAt: startGenerateTime,
+        logs
+      }
       preparedContextRef.current = context
       if (input.imageInsightSummary.failed > 0) {
         setPreparationProgress({
