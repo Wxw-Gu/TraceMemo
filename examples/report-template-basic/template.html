@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>{{REPORT_TITLE}}</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 430px; background: #f3f5f7; color: #18202a; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+      .report { padding: 18px 14px 32px; }
+      .hero, .section { margin-top: 10px; padding: 16px; border-radius: 14px; background: #fff; }
+      .hero { margin-top: 0; border-top: 4px solid #1769aa; }
+      h1 { margin: 0 0 8px; font-size: 23px; }
+      .meta, .muted { color: #64748b; font-size: 12px; line-height: 1.5; }
+      .section-title { margin: 0 0 8px; font-size: 14px; }
+      .topics-grid, .important-list { display: grid; gap: 8px; }
+      .topic-card, .important-card { padding: 10px; border: 1px solid #dbe4ee; border-radius: 10px; }
+      .empty-section { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main class="report {{REPORT_MODE_CLASS}}">
+      <section class="hero {{REPORT_MODE_CLASS}}">
+        <h1>{{REPORT_TITLE}}</h1>
+        <div class="meta">{{REPORT_DATE}} · {{DATE_RANGE}}</div>
+        <p>{{HERO_SUMMARY}}</p>
+        <div class="muted">{{HERO_STATUS_LINE}}</div>
+      </section>
+      <section class="section {{TOPICS_EMPTY_CLASS}}">
+        <h2 class="section-title">今日话题</h2>
+        <div class="topics-grid">{{TOPIC_CARDS}}</div>
+        {{TOPICS_MORE_NOTE}}
+      </section>
+      <section class="section {{MESSAGES_EMPTY_CLASS}}">
+        <h2 class="section-title">重要消息</h2>
+        <div class="important-list">{{IMPORTANT_MESSAGES}}</div>
+      </section>
+      <footer class="muted">{{FOOTER_NOTE}}</footer>
+    </main>
+  </body>
+</html>

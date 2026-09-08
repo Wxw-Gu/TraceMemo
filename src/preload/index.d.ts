@@ -5,6 +5,11 @@ import {
   GroupReportExportResult,
   GroupReportRenderSnapshotExportRequest
 } from '../shared/group-report'
+import type { InstalledReportTemplate, ReportTemplateOperationResult } from '../shared/report-template-package'
+import type {
+  ReportTemplateCatalogInstallResult,
+  ReportTemplateCatalogResult
+} from '../shared/report-template-market'
 import { LocalApiTestRequest, LocalApiTestResponse } from '../shared/local-api-test'
 import {
   DeleteGeneratedReportResult,
@@ -400,6 +405,17 @@ declare global {
       exportGroupReportSnapshot: (
         request: GroupReportRenderSnapshotExportRequest
       ) => Promise<GroupReportExportResult>
+      listReportTemplates: () => Promise<InstalledReportTemplate[]>
+      installReportTemplate: (packagePath: string) => Promise<ReportTemplateOperationResult>
+      uninstallReportTemplate: (
+        id: string,
+        version: string
+      ) => Promise<ReportTemplateOperationResult>
+      listReportTemplateCatalog: () => Promise<ReportTemplateCatalogResult>
+      installReportTemplateFromCatalog: (
+        id: string,
+        version: string
+      ) => Promise<ReportTemplateCatalogInstallResult>
       prepareGeneratedReportTemplateSwitch: (
         reportId: string
       ) => Promise<PrepareGeneratedReportTemplateSwitchResult>

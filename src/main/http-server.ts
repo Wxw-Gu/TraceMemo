@@ -334,6 +334,11 @@ const routes: Record<string, RouteHandler> = {
     if (!request?.report || !request?.metadata) {
       return sendError(res, 400, '请求体需包含 report 和 metadata 字段')
     }
+    if (request.templateRef !== undefined) {
+      return sendError(res, 400, 'HTTP API 暂不支持外部日报模板，请使用内置 templateId', {
+        code: 'external_template_unsupported'
+      })
+    }
     const result = await exportGroupReport(request)
     sendJson(res, result.success ? 200 : 500, result)
   },

@@ -105,7 +105,14 @@ describe('daily report controls', () => {
               avatar: ''
             }
           ]
-        }))
+        })),
+        listReportTemplates: vi.fn(async () => []),
+        listReportTemplateCatalog: vi.fn(async () => ({
+          success: true,
+          catalog: { schemaVersion: '1', status: 'published', templates: [] }
+        })),
+        installReportTemplateFromCatalog: vi.fn(async () => ({ success: true })),
+        uninstallReportTemplate: vi.fn(async () => ({ success: true }))
       }
     })
   })
@@ -902,5 +909,46 @@ describe('daily report controls', () => {
     await user.click(within(dialog).getByRole('button', { name: '选择此模板' }))
 
     expect(onChange).toHaveBeenCalledWith('mobile-magazine')
+  })
+
+  it('does not select a market template before it is installed', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    Object.assign(window.api, {
+      listReportTemplateCatalog: vi.fn(async () => ({
+        success: true,
+        catalog: {
+          schemaVersion: '1',
+          status: 'published',
+          templates: [
+            {
+              id: 'community.github.example.market',
+              version: '1.0.0',
+              interfaceVersion: '1',
+              name: '市场测试模板',
+              description: '只允许先安装',
+              author: 'fixture',
+              tags: [],
+              license: 'MIT',
+              minAppVersion: null,
+              download: 'https://raw.githubusercontent.com/Wxw-Gu/TraceMemo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/packages/community.github.example.market/1.0.0/template.zip',
+              sizeBytes: 1,
+              sha256: 'a'.repeat(64),
+              preview: 'https://raw.githubusercontent.com/Wxw-Gu/TraceMemo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/previews/community.github.example.market.png',
+              status: 'published'
+            }
+          ]
+        }
+      }))
+    })
+
+    render(<ReportTemplateSelector value="v1" onChange={onChange} />)
+    const marketItem = (await screen.findByText('市场测试模板')).closest('.report-template-item')
+    expect(marketItem).not.toBeNull()
+    await user.click(within(marketItem!).getByRole('button', { name: '查看版式' }))
+    const dialog = screen.getByRole('dialog', { name: '市场测试模板' })
+    expect(within(dialog).getByRole('button', { name: '请先安装' })).toBeDisabled()
+    expect(within(dialog).queryByRole('button', { name: '选择此模板' })).not.toBeInTheDocument()
+    expect(onChange).not.toHaveBeenCalled()
   })
 })

@@ -4,6 +4,11 @@ import type {
   GroupReportExportRequest,
   GroupReportRenderSnapshotExportRequest
 } from '../shared/group-report'
+import type { ReportTemplateOperationResult } from '../shared/report-template-package'
+import type {
+  ReportTemplateCatalogInstallResult,
+  ReportTemplateCatalogResult
+} from '../shared/report-template-market'
 import type {
   SaveGeneratedReportRequest,
   UpdateGeneratedReportTemplateRequest
@@ -295,6 +300,18 @@ const api = {
     ipcRenderer.invoke('report:export', request),
   exportGroupReportSnapshot: (request: GroupReportRenderSnapshotExportRequest) =>
     ipcRenderer.invoke('report:exportSnapshot', request),
+  listReportTemplates: () => ipcRenderer.invoke('report-template:list'),
+  installReportTemplate: (packagePath: string): Promise<ReportTemplateOperationResult> =>
+    ipcRenderer.invoke('report-template:install', packagePath),
+  uninstallReportTemplate: (id: string, version: string): Promise<ReportTemplateOperationResult> =>
+    ipcRenderer.invoke('report-template:uninstall', id, version),
+  listReportTemplateCatalog: (): Promise<ReportTemplateCatalogResult> =>
+    ipcRenderer.invoke('report-template-market:list'),
+  installReportTemplateFromCatalog: (
+    id: string,
+    version: string
+  ): Promise<ReportTemplateCatalogInstallResult> =>
+    ipcRenderer.invoke('report-template-market:install', id, version),
   prepareGeneratedReportTemplateSwitch: (reportId: string) =>
     ipcRenderer.invoke('report:prepareTemplateSwitch', { reportId }),
   listGeneratedReports: () => ipcRenderer.invoke('report:listGenerated'),

@@ -37,7 +37,7 @@ import {
 } from './utils/message-pages'
 import { isRelevantMessageMonitorEvent, parseWcdbMonitorEvent } from './utils/message-monitor'
 import { enrichQuotedMessages } from './utils/quoted-messages'
-import type { SelectableReportTemplateId } from '../../shared/report-templates'
+import type { ReportTemplateSelectionId } from '../../shared/report-templates'
 import { switchGeneratedReportTemplate } from './utils/report-template-switch'
 import { runtimePlatform, supportsPersonalWechatSend } from './utils/runtime-environment'
 import { useToast } from './components/ui'
@@ -1704,7 +1704,7 @@ function App(): React.ReactElement {
 
   const handleSwitchReportTemplate = async (
     report: GeneratedReportRecord,
-    templateId: SelectableReportTemplateId
+    templateId: ReportTemplateSelectionId
   ): Promise<{ success: boolean; error?: string }> => {
     try {
       const updated = await withTimeout(

@@ -7,6 +7,9 @@ export type ReportTemplateId =
 
 export type LegacyReportTemplateId = 'v1' | 'v2'
 export type SelectableReportTemplateId = 'v1' | ReportTemplateId
+export type ExternalReportTemplateId = `external:${string}@${string}`
+/** 日报即时生成/历史换版式可用的选择键；定时日报仍只接受 SelectableReportTemplateId。 */
+export type ReportTemplateSelectionId = SelectableReportTemplateId | ExternalReportTemplateId
 export type ReportTemplateRequestId = ReportTemplateId | LegacyReportTemplateId
 export type ReportTemplatePlatform = 'default' | 'mobile' | 'desktop'
 
@@ -120,6 +123,23 @@ export const isSelectableReportTemplateId = (
   value: unknown
 ): value is SelectableReportTemplateId =>
   SELECTABLE_REPORT_TEMPLATES.some((template) => template.id === value)
+
+export const encodeExternalReportTemplateId = (
+  id: string,
+  version: string
+): ExternalReportTemplateId => `external:${id}@${version}`
+
+export const decodeExternalReportTemplateId = (
+  value: unknown
+): { id: string; version: string } | null => {
+  if (typeof value !== 'string' || !value.startsWith('external:')) return null
+  const match = /^external:([^@]+)@([^@]+)$/.exec(value)
+  if (!match || !match[1] || !match[2]) return null
+  return { id: match[1], version: match[2] }
+}
+
+export const isExternalReportTemplateId = (value: unknown): value is ExternalReportTemplateId =>
+  Boolean(decodeExternalReportTemplateId(value))
 
 export const getReportTemplate = (value?: string): ReportTemplateDefinition =>
   SELECTABLE_REPORT_TEMPLATES.find((template) => template.id === value) || DEFAULT_REPORT_TEMPLATE

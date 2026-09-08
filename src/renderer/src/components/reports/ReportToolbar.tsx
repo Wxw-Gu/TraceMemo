@@ -1,8 +1,10 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   SELECTABLE_REPORT_TEMPLATES,
-  type SelectableReportTemplateId
+  encodeExternalReportTemplateId,
+  type ReportTemplateSelectionId
 } from '../../../../shared/report-templates'
+import type { InstalledReportTemplate } from '../../../../shared/report-template-package'
 import {
   Button,
   DropdownMenu,
@@ -20,9 +22,9 @@ interface ReportToolbarProps {
   canSwitchTemplate: boolean
   canSendToGroup?: boolean
   sendToGroupHint?: string
-  currentTemplateId?: SelectableReportTemplateId
+  currentTemplateId?: ReportTemplateSelectionId
   isSwitchingTemplate: boolean
-  onSwitchTemplate: (templateId: SelectableReportTemplateId) => void
+  onSwitchTemplate: (templateId: ReportTemplateSelectionId) => void
   onRegenerate: () => void
   onCopyImage: () => void
   onReveal: () => void
@@ -46,6 +48,16 @@ export function ReportToolbar({
   onShare,
   onSendToGroup
 }: ReportToolbarProps): React.ReactElement {
+  const [installedTemplates, setInstalledTemplates] = useState<InstalledReportTemplate[]>([])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.api || typeof window.api.listReportTemplates !== 'function') return
+    void window.api
+      .listReportTemplates()
+      .then((templates) => setInstalledTemplates(Array.isArray(templates) ? templates.filter((template) => template.source === 'installed') : []))
+      .catch(() => setInstalledTemplates([]))
+  }, [])
+
   return (
     <div className="report-viewer-toolbar">
       <DropdownMenu>
@@ -81,6 +93,24 @@ export function ReportToolbar({
               )}
             </DropdownMenuItem>
           ))}
+          {installedTemplates.map((template) => {
+            const templateId = encodeExternalReportTemplateId(template.id, template.version)
+            return (
+              <DropdownMenuItem
+                key={templateId}
+                className="grid min-h-11 min-w-0 grid-cols-[62px_minmax(0,1fr)_auto] gap-2"
+                onSelect={() => onSwitchTemplate(templateId)}
+              >
+                <span className="text-xs text-muted-foreground">市场</span>
+                <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-sm font-semibold">
+                  {template.name}
+                </strong>
+                {templateId === currentTemplateId && (
+                  <span className="text-xs text-primary">当前</span>
+                )}
+              </DropdownMenuItem>
+            )
+          })}
         </DropdownMenuContent>
       </DropdownMenu>
       <Button variant="outline" size="sm" onClick={onRegenerate}>

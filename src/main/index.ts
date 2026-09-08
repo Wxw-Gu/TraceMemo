@@ -32,7 +32,6 @@ import {
   type DecodedImage
 } from './image-decrypt-service'
 import {
-  exportGroupReport,
   exportGroupReportSnapshot,
   extractGroupReportRenderSnapshot
 } from './group-report-service'
@@ -43,8 +42,9 @@ import {
   saveGeneratedReport,
   updateGeneratedReportTemplate
 } from './report-history-service'
+import { reportTemplateService } from './report-template-service'
+import { registerReportTemplateIpc } from './report-template-ipc'
 import type {
-  GroupReportExportRequest,
   GroupReportRenderSnapshotExportRequest
 } from '../shared/group-report'
 import type {
@@ -667,6 +667,8 @@ app.whenReady().then(async () => {
   })
 
   // Create the renderer before native WCDB bootstrap so startup progress is visible immediately.
+  await reportTemplateService.recover()
+  registerReportTemplateIpc()
   createWindow()
   wcdbBootstrapPromise = bootstrapWcdbNativeAsync().then(() => {
     console.log('[WCDB4] async bootstrap complete')
@@ -1281,9 +1283,6 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('report:export', async (_, request: GroupReportExportRequest) => {
-    return exportGroupReport(request)
-  })
   ipcMain.handle(
     'report:exportSnapshot',
     async (_, request: GroupReportRenderSnapshotExportRequest) => exportGroupReportSnapshot(request)

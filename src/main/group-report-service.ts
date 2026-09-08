@@ -1,7 +1,10 @@
 import { app, BrowserWindow } from 'electron'
+import crypto from 'node:crypto'
+import { appendFileSync } from 'node:fs'
 import fs from 'fs-extra'
 import os from 'os'
 import path from 'path'
+import { fileURLToPath } from 'node:url'
 import {
   GroupReportExportRequest,
   GroupReportExportResult,
@@ -15,6 +18,8 @@ import {
 import { resolveMd5, getGroupSnapshot } from './services/chat-service'
 import { imageInsightService } from './services/image-insight-service'
 import { getReportTemplate } from '../shared/report-templates'
+import type { ReportTemplateRef } from '../shared/report-template-package'
+import { reportTemplateService, validateReportTemplateHtml } from './report-template-service'
 
 const LEGACY_TEMPLATE_FILES: Record<string, string> = {
   v1: 'mobile_daily_report_v1.html',
@@ -32,6 +37,40 @@ const templatePath = (templateId?: string): string => {
   if (!found) throw new Error(`日报模板不存在: ${candidates.join(' | ')}`)
   return found
 }
+
+const resolveTemplateSelection = async (templateId?: string, templateRef?: ReportTemplateRef) => {
+  if (!templateRef) {
+    const definition = getReportTemplate(templateId)
+    return {
+      definition,
+      entryPath: templatePath(templateId),
+      captureMaxHeight: 20000,
+      source: 'builtin' as const
+    }
+  }
+  const installed = await reportTemplateService.resolve(templateRef)
+  return {
+    definition: {
+      id: installed.id,
+      order: 999,
+      platform: 'default' as const,
+      label: installed.name,
+      name: installed.name,
+      tagline: `${installed.author} · ${installed.version}`,
+      fileLabel: installed.name,
+      cssClass: `template-external-${installed.id.replace(/[^a-z0-9-]/gi, '-')}`,
+      resourceFile: installed.entryPath,
+      captureWidth: installed.capture.width,
+      maxCaptureWidth: installed.capture.maxWidth
+    },
+    entryPath: installed.entryPath,
+    captureMaxHeight: installed.capture.maxHeight,
+    source: 'installed' as const
+  }
+}
+
+const resolveTemplate = async (request: GroupReportExportRequest) =>
+  resolveTemplateSelection(request.templateId, request.templateRef)
 
 const escapeHtml = (value: unknown): string =>
   String(value ?? '')
@@ -148,6 +187,52 @@ const heatClass = (heat: ReportHeat): string => {
 const replacePlaceholder = (html: string, key: string, value: string): string =>
   html.replaceAll(`{{${key}}}`, value)
 
+const addReportCsp = (html: string, allowFileImages = true): string =>
+  html.replace(
+    /<head(\s[^>]*)?>/i,
+    (head) =>
+      `${head}<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:${allowFileImages ? ' file:' : ''}; style-src 'unsafe-inline'; font-src 'none'; base-uri 'none'; form-action 'none'">`
+  )
+
+const inlineTemplateAssets = async (html: string, templateRoot: string): Promise<string> => {
+  const matches = [...html.matchAll(/\bsrc=(['"])(assets\/[A-Za-z0-9._/-]+)\1/g)]
+  let result = html
+  for (const match of matches) {
+    const relative = match[2]
+    const assetPath = path.resolve(templateRoot, relative)
+    if (!assetPath.startsWith(`${path.resolve(templateRoot)}${path.sep}`)) continue
+    const extension = path.extname(assetPath).toLowerCase()
+    const mime =
+      extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg'
+    const data = (await fs.readFile(assetPath)).toString('base64')
+    result = result.replace(match[0], `src="data:${mime};base64,${data}"`)
+  }
+  return result
+}
+
+const recordBlockedTemplateRequest = (
+  details: Electron.OnBeforeRequestListenerDetails,
+  reason: string
+): void => {
+  // 仅测试入口设置该路径，用于保留运行时拦截证据；生产默认不记录请求明细。
+  const logPath = process.env.TRACEMEMO_TEMPLATE_SECURITY_LOG
+  if (!logPath) return
+  try {
+    appendFileSync(
+      logPath,
+      `${JSON.stringify({
+        url: details.url,
+        method: details.method,
+        resourceType: details.resourceType,
+        reason
+      })}\n`,
+      'utf8'
+    )
+  } catch (error) {
+    console.warn('[GroupReport] failed to record template security block:', error)
+  }
+}
+
 const sectionMeta = (
   request: GroupReportExportRequest,
   key: keyof NonNullable<typeof request.report.sectionMeta>
@@ -170,7 +255,8 @@ const overflowNote = (
 
 const renderReportHtml = async (request: GroupReportExportRequest): Promise<string> => {
   const { report, metadata } = request
-  const template = getReportTemplate(request.templateId)
+  const resolvedTemplate = await resolveTemplate(request)
+  const template = resolvedTemplate.definition
   const avatarNames = new Set<string>(metadata.heroParticipants)
   report.topics.forEach((topic) => topic.participants.forEach((name) => avatarNames.add(name)))
   report.importantMessages.forEach((message) => avatarNames.add(message.sender))
@@ -237,7 +323,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
                   }
                 }
                 if (!imageUrl) return ''
-                return `<div class="topic-inline-image"><img src="${imageUrl}" alt="热点图片"><div>${escapeHtml(topic.image.note)}</div></div>`
+                return `<div class="topic-inline-image"><img src="${escapeHtml(imageUrl)}" alt="热点图片"><div>${escapeHtml(topic.image.note)}</div></div>`
               })()
             : ''
         }
@@ -349,7 +435,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     .filter((item) => item.imageUrl) // 只显示加载成功的图
     .map(
       (item) => `<div class="vision-card">
-        <img class="vision-image" src="${item.imageUrl}" alt="AI 识别的图片">
+        <img class="vision-image" src="${escapeHtml(item.imageUrl)}" alt="AI 识别的图片">
         <div class="vision-body">
           <div class="important-meta"><b>${escapeHtml(item.sender)}</b><span>${escapeHtml(item.time)}</span></div>
           <div class="vision-description">${escapeHtml(item.description)}</div>
@@ -441,7 +527,11 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     unresolvedCount: report.unresolved.length
   }
 
-  let html = await fs.readFile(templatePath(request.templateId), 'utf8')
+  let html = await fs.readFile(resolvedTemplate.entryPath, 'utf8')
+  if (resolvedTemplate.source === 'installed') {
+    validateReportTemplateHtml(html, path.basename(resolvedTemplate.entryPath))
+    html = await inlineTemplateAssets(html, path.dirname(resolvedTemplate.entryPath))
+  }
   const values: Record<string, string> = {
     TEMPLATE_CLASS: template.cssClass,
     TEMPLATE_LABEL: escapeHtml(template.label),
@@ -547,14 +637,19 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
   for (const [key, value] of Object.entries(values)) html = replacePlaceholder(html, key, value)
   // 清空模板中残留的未使用占位符(模板独有但 values 没提供的键)
   html = html.replace(/\{\{[A-Z_]+\}\}/g, '')
-  return html
+  return addReportCsp(html, resolvedTemplate.source === 'builtin')
 }
 
 const renderReportSnapshotHtml = async (
   request: GroupReportRenderSnapshotExportRequest
 ): Promise<string> => {
-  const template = getReportTemplate(request.templateId)
-  let html = await fs.readFile(templatePath(request.templateId), 'utf8')
+  const resolvedTemplate = await resolveTemplateSelection(request.templateId, request.templateRef)
+  const template = resolvedTemplate.definition
+  let html = await fs.readFile(resolvedTemplate.entryPath, 'utf8')
+  if (resolvedTemplate.source === 'installed') {
+    validateReportTemplateHtml(html, path.basename(resolvedTemplate.entryPath))
+    html = await inlineTemplateAssets(html, path.dirname(resolvedTemplate.entryPath))
+  }
   const values = {
     ...request.snapshot.values,
     TEMPLATE_CLASS: template.cssClass,
@@ -565,7 +660,7 @@ const renderReportSnapshotHtml = async (
     REPORT_DATE: request.snapshot.values.REPORT_DATE || escapeHtml(request.snapshot.reportDate)
   }
   for (const [key, value] of Object.entries(values)) html = replacePlaceholder(html, key, value)
-  return html.replace(/\{\{[A-Z0-9_]+\}\}/g, '')
+  return addReportCsp(html.replace(/\{\{[A-Z0-9_]+\}\}/g, ''), resolvedTemplate.source === 'builtin')
 }
 
 export const extractGroupReportRenderSnapshot = async (
@@ -777,20 +872,61 @@ export const extractGroupReportRenderSnapshot = async (
 const captureFullPage = async (
   htmlPath: string,
   pngPath: string,
-  templateId?: string
+  templateId?: string,
+  templateOverride?: {
+    captureWidth: number
+    maxCaptureWidth: number
+    maxCaptureHeight?: number
+  }
 ): Promise<string> => {
-  const template = getReportTemplate(templateId)
+  const template = templateOverride || getReportTemplate(templateId)
   const captureWidth = LEGACY_TEMPLATE_FILES[templateId || ''] ? 430 : template.captureWidth
   const maxCaptureWidth = LEGACY_TEMPLATE_FILES[templateId || ''] ? 1200 : template.maxCaptureWidth
+  const maxCaptureHeight = templateOverride?.maxCaptureHeight || 20000
   console.log(`[GroupReport] capture begin html=${htmlPath}`)
+  const reportSessionPartition = `report-template-${crypto.randomUUID()}`
   const reportWindow = new BrowserWindow({
     show: false,
     width: captureWidth,
     height: 800,
     frame: false,
     backgroundColor: '#f3f5f7',
-    webPreferences: { sandbox: true }
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      partition: reportSessionPartition
+    }
   })
+  const allowedDocumentPath = path.resolve(htmlPath)
+  const requestHandler = (
+    details: Electron.OnBeforeRequestListenerDetails,
+    callback: (response: { cancel: boolean }) => void
+  ): void => {
+    if (details.url.startsWith('file:')) {
+      try {
+        const requestedPath = path.resolve(fileURLToPath(details.url))
+        if (requestedPath === allowedDocumentPath) {
+          callback({ cancel: false })
+        } else {
+          recordBlockedTemplateRequest(details, 'file-path-not-allowed')
+          callback({ cancel: true })
+        }
+      } catch {
+        recordBlockedTemplateRequest(details, 'invalid-file-url')
+        callback({ cancel: true })
+      }
+      return
+    }
+    recordBlockedTemplateRequest(details, 'scheme-not-allowed')
+    callback({ cancel: true })
+  }
+  reportWindow.webContents.session.webRequest.onBeforeRequest(
+    { urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*', 'file://*/*'] },
+    requestHandler
+  )
+  reportWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  reportWindow.webContents.on('will-navigate', (event) => event.preventDefault())
 
   try {
     await reportWindow.loadFile(htmlPath)
@@ -808,7 +944,7 @@ const captureFullPage = async (
       height: Math.ceil(Math.max(document.documentElement.scrollHeight, document.body.scrollHeight, 800))
     })`)) as { width: number; height: number }
     const width = Math.max(captureWidth, Math.min(maxCaptureWidth, Math.ceil(metrics.width)))
-    const height = Math.max(800, Math.min(20000, Math.ceil(metrics.height)))
+    const height = Math.max(800, Math.min(maxCaptureHeight, Math.ceil(metrics.height)))
     reportWindow.setContentSize(width, height)
     await new Promise((resolve) => setTimeout(resolve, 100))
     console.log(`[GroupReport] capture native page width=${width} height=${height}`)
@@ -819,6 +955,7 @@ const captureFullPage = async (
     console.log(`[GroupReport] capture ok bytes=${png.length} png=${pngPath}`)
     return `data:image/png;base64,${png.toString('base64')}`
   } finally {
+    reportWindow.webContents.session.webRequest.onBeforeRequest(null)
     reportWindow.destroy()
   }
 }
@@ -830,10 +967,14 @@ export const exportGroupReport = async (
     // === enrich 在 render 之前:从群成员快照反推真头像 ===
     await enrichAvatarsFromGroup(request.metadata)
 
-    const outputDir = path.join(os.homedir(), 'Documents', '微信聊天记录')
+    const outputDir =
+      process.env.TRACEMEMO_REPORT_OUTPUT_DIR ||
+      path.join(os.homedir(), 'Documents', '微信聊天记录')
     await fs.ensureDir(outputDir)
-    const templateLabel =
-      request.templateId === 'v1'
+    const resolvedTemplate = await resolveTemplate(request)
+    const templateLabel = request.templateRef
+      ? resolvedTemplate.definition.fileLabel
+      : request.templateId === 'v1'
         ? '经典版'
         : request.templateId === 'v2'
           ? '丰富版'
@@ -846,7 +987,15 @@ export const exportGroupReport = async (
     await fs.writeFile(htmlPath, html, 'utf8')
     const htmlEndedAt = new Date()
     const pngStartedAt = new Date()
-    const imageDataUrl = await captureFullPage(htmlPath, pngPath, request.templateId)
+    const imageDataUrl = await captureFullPage(
+      htmlPath,
+      pngPath,
+      request.templateId,
+      {
+        ...resolvedTemplate.definition,
+        maxCaptureHeight: resolvedTemplate.captureMaxHeight
+      }
+    )
     const pngEndedAt = new Date()
     return {
       success: true,
@@ -877,9 +1026,12 @@ export const exportGroupReportSnapshot = async (
   request: GroupReportRenderSnapshotExportRequest
 ): Promise<GroupReportExportResult> => {
   try {
-    const outputDir = path.join(os.homedir(), 'Documents', '微信聊天记录')
+    const outputDir =
+      process.env.TRACEMEMO_REPORT_OUTPUT_DIR ||
+      path.join(os.homedir(), 'Documents', '微信聊天记录')
     await fs.ensureDir(outputDir)
-    const templateLabel = getReportTemplate(request.templateId).fileLabel
+    const resolvedTemplate = await resolveTemplateSelection(request.templateId, request.templateRef)
+    const templateLabel = resolvedTemplate.definition.fileLabel
     const baseName = `${sanitizeFileName(request.snapshot.groupName)}日报_${request.snapshot.reportDate}_${templateLabel}`
     const htmlPath = path.join(outputDir, `${baseName}.html`)
     const pngPath = path.join(outputDir, `${baseName}.png`)
@@ -888,7 +1040,15 @@ export const exportGroupReportSnapshot = async (
     await fs.writeFile(htmlPath, html, 'utf8')
     const htmlEndedAt = new Date()
     const pngStartedAt = new Date()
-    const imageDataUrl = await captureFullPage(htmlPath, pngPath, request.templateId)
+    const imageDataUrl = await captureFullPage(
+      htmlPath,
+      pngPath,
+      request.templateId,
+      {
+        ...resolvedTemplate.definition,
+        maxCaptureHeight: resolvedTemplate.captureMaxHeight
+      }
+    )
     const pngEndedAt = new Date()
     return {
       success: true,

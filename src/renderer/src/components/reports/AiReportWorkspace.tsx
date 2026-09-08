@@ -16,7 +16,7 @@ import { ReportRangeSelector } from './ReportRangeSelector'
 import { ReportMemberNameSelector } from './ReportMemberNameSelector'
 import { ReportGroupMemberSelector } from './ReportGroupMemberSelector'
 import { ReportSectionSelector } from './ReportSectionSelector'
-import { ReportTemplateSelector, SelectableReportTemplateId } from './ReportTemplateSelector'
+import { ReportTemplateSelector, ReportTemplateSelectionId } from './ReportTemplateSelector'
 import { Button, Input } from '../ui'
 
 interface AiReportWorkspaceProps {
@@ -47,8 +47,8 @@ interface AiReportWorkspaceProps {
   onRevealReport: () => Promise<{ success: boolean; error?: string }>
   onViewResult: () => void
   hasReportResult: boolean
-  templateId: SelectableReportTemplateId
-  onTemplateIdChange: (value: SelectableReportTemplateId) => void
+  templateId: ReportTemplateSelectionId
+  onTemplateIdChange: (value: ReportTemplateSelectionId) => void
   memberNamePreference: ReportMemberNamePreference
   onMemberNamePreferenceChange: (value: ReportMemberNamePreference) => void
   reportTimeoutSeconds: number

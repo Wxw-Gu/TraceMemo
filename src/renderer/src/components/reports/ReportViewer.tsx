@@ -3,7 +3,7 @@ import type { GeneratedReportRecord } from './types'
 import { ReportEmptyState } from './ReportEmptyState'
 import { ReportToolbar } from './ReportToolbar'
 import { ReportZoomBar } from './ReportZoomBar'
-import type { SelectableReportTemplateId } from '../../../../shared/report-templates'
+import type { ReportTemplateSelectionId } from '../../../../shared/report-templates'
 import type { Contact } from '../../../../shared/types'
 import { WechatShareCardDialog } from './WechatShareCardDialog'
 import { PersonalWechatSendDialog } from '../chat/PersonalWechatSendDialog'
@@ -18,7 +18,7 @@ interface ReportViewerProps {
   onReveal: (report: GeneratedReportRecord) => Promise<{ success: boolean; error?: string }>
   onSwitchTemplate: (
     report: GeneratedReportRecord,
-    templateId: SelectableReportTemplateId
+    templateId: ReportTemplateSelectionId
   ) => Promise<{ success: boolean; error?: string }>
   sendTarget?: Contact | null
   personalWechatSendSupported?: boolean
@@ -141,7 +141,7 @@ export function ReportViewer({
     setStatus(result.success ? '已打开报告所在文件夹' : result.error || '打开文件夹失败')
   }
 
-  const handleSwitchTemplate = async (templateId: SelectableReportTemplateId): Promise<void> => {
+  const handleSwitchTemplate = async (templateId: ReportTemplateSelectionId): Promise<void> => {
     if (!report || isSwitchingTemplate) return
     if (report.templateId === templateId) {
       setStatus('当前已是所选模板')

@@ -1,0 +1,14 @@
+{
+  "protocolVersion": "1.0",
+  "kind": "daily-report",
+  "id": "community.github.example.basic-feed",
+  "name": "基础信息流",
+  "author": { "name": "example" },
+  "templateVersion": "1.0.0",
+  "interfaceVersion": "1",
+  "entry": "template.html",
+  "preview": "preview.png",
+  "capture": { "width": 430, "maxWidth": 430, "maxHeight": 20000 },
+  "license": { "spdx": "MIT" },
+  "platform": "mobile"
+}

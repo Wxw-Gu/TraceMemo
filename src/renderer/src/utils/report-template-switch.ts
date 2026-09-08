@@ -9,7 +9,11 @@ import type {
   UpdateGeneratedReportTemplateRequest,
   UpdateGeneratedReportTemplateResult
 } from '../../../shared/report-history'
-import type { SelectableReportTemplateId } from '../../../shared/report-templates'
+import {
+  decodeExternalReportTemplateId,
+  type ReportTemplateRequestId,
+  type ReportTemplateSelectionId
+} from '../../../shared/report-templates'
 
 interface ReportTemplateSwitchApi {
   exportGroupReport: (request: GroupReportExportRequest) => Promise<GroupReportExportResult>
@@ -26,15 +30,19 @@ interface ReportTemplateSwitchApi {
 
 export async function switchGeneratedReportTemplate(
   report: GeneratedReportRecord,
-  templateId: SelectableReportTemplateId,
+  templateId: ReportTemplateSelectionId,
   api: ReportTemplateSwitchApi
 ): Promise<UpdateGeneratedReportTemplateResult> {
+  const externalRef = decodeExternalReportTemplateId(templateId)
+  const exportSelection = externalRef
+    ? { templateRef: externalRef }
+    : { templateId: templateId as ReportTemplateRequestId }
   let exported: GroupReportExportResult
   if (report.reportSnapshot && report.reportMetadata) {
     exported = await api.exportGroupReport({
       report: report.reportSnapshot,
       metadata: report.reportMetadata,
-      templateId
+      ...exportSelection
     })
   } else {
     const prepared = await api.prepareGeneratedReportTemplateSwitch(report.id)
@@ -46,7 +54,7 @@ export async function switchGeneratedReportTemplate(
     }
     exported = await api.exportGroupReportSnapshot({
       snapshot: prepared.snapshot,
-      templateId
+      ...exportSelection
     })
   }
   if (!exported.success || !exported.imageDataUrl || !exported.htmlPath || !exported.pngPath) {
@@ -56,6 +64,7 @@ export async function switchGeneratedReportTemplate(
   return api.updateGeneratedReportTemplate({
     reportId: report.id,
     templateId,
+    ...(externalRef ? { templateRef: externalRef } : {}),
     generatedImage: exported.imageDataUrl,
     htmlPath: exported.htmlPath,
     pngPath: exported.pngPath

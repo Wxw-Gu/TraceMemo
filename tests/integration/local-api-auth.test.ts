@@ -245,6 +245,28 @@ describe('Local API authentication', () => {
     expect(fixture.testSend).toHaveBeenCalledOnce()
   })
 
+  it('rejects external template refs on the legacy report HTTP API', async () => {
+    const handle = await startFixtureServer()
+    const response = await fetch(`${baseUrl(handle)}/api/v1/report`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${VALID_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        report: {},
+        metadata: {},
+        templateRef: { id: 'community.github.example.template', version: '1.0.0' }
+      })
+    })
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      status: 400,
+      error: 'HTTP API 暂不支持外部日报模板，请使用内置 templateId',
+      details: { code: 'external_template_unsupported' }
+    })
+  })
+
   it.each([
     'http://localhost',
     'http://localhost:5173',

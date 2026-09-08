@@ -16,7 +16,11 @@ import type {
   ReportImageInsightSummary,
   ReportPreparationProgress
 } from '../utils/group-report-facts'
-import { SelectableReportTemplateId } from '../components/reports/ReportTemplateSelector'
+import {
+  decodeExternalReportTemplateId,
+  type ReportTemplateRequestId,
+  type ReportTemplateSelectionId
+} from '../../../shared/report-templates'
 import {
   transcribeVoiceMessages as transcribeReportVoiceMessages,
   type VoiceTranscriptionProgress
@@ -291,8 +295,8 @@ export function useGroupReportGeneration({
   closeResult: () => void
   copyImage: () => Promise<{ success: boolean; error?: string }>
   revealReport: () => Promise<{ success: boolean; error?: string }>
-  templateId: SelectableReportTemplateId
-  setTemplateId: (value: SelectableReportTemplateId) => void
+  templateId: ReportTemplateSelectionId
+  setTemplateId: (value: ReportTemplateSelectionId) => void
   memberNamePreference: ReportMemberNamePreference
   setMemberNamePreference: (value: ReportMemberNamePreference) => void
   reportTimeoutSeconds: number
@@ -315,7 +319,7 @@ export function useGroupReportGeneration({
   const [reportPaths, setReportPaths] = useState<ReportPaths | null>(null)
   const [reportSnapshot, setReportSnapshot] = useState<GroupDailyReport | null>(null)
   const [reportMetadata, setReportMetadata] = useState<GroupReportMetadata | null>(null)
-  const [templateId, setTemplateIdState] = useState<SelectableReportTemplateId>('v1')
+  const [templateId, setTemplateIdState] = useState<ReportTemplateSelectionId>('v1')
   const [memberNamePreference, setMemberNamePreferenceState] = useState<ReportMemberNamePreference>(
     () => {
       const saved = localStorage.getItem('group_report_member_name_preference')
@@ -336,7 +340,7 @@ export function useGroupReportGeneration({
     localStorage.setItem('group_report_member_name_preference', value)
     setMemberNamePreferenceState(value)
   }, [])
-  const setTemplateId = useCallback((value: SelectableReportTemplateId): void => {
+  const setTemplateId = useCallback((value: ReportTemplateSelectionId): void => {
     setTemplateIdState(value)
   }, [])
   const setReportTimeoutSeconds = useCallback((value: number): void => {
@@ -614,11 +618,14 @@ export function useGroupReportGeneration({
 
         setPhase('exportingReport')
         currentFailedAt = '导出 HTML 与 PNG'
+        const externalTemplateRef = decodeExternalReportTemplateId(templateId)
         const exported = await withTimeout(
           window.api.exportGroupReport({
             report,
             metadata: context.input.metadata,
-            templateId
+            ...(externalTemplateRef
+              ? { templateRef: externalTemplateRef }
+              : { templateId: templateId as ReportTemplateRequestId })
           }),
           '日报图片导出'
         )

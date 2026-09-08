@@ -8,6 +8,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/main/index.ts'),
+          reportTemplateTest: resolve('src/main/report-template-test-entry.ts'),
           voiceRecognitionWorker: resolve('src/main/voice-pipeline/voice-recognition-worker.ts'),
           knowledgeWorker: resolve('src/main/knowledge/knowledge-worker.ts')
         },

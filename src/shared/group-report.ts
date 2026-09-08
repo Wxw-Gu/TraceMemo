@@ -2,6 +2,7 @@ export type ReportHeat = '高' | '中' | '低'
 export type ReportMode = 'compact' | 'full'
 
 import type { ReportTemplateRequestId } from './report-templates'
+import type { ReportTemplateRef } from './report-template-package'
 
 export const selectHeroParticipantNames = (names: string[]): string[] =>
   Array.from(new Set(names.map((name) => name.trim()).filter(Boolean))).slice(0, 4)
@@ -287,6 +288,8 @@ export interface GroupReportExportRequest {
   metadata: GroupReportMetadata
   /** v1 是默认经典模板，v2 仅保留旧调用兼容；另有五套新版产品模板。 */
   templateId?: ReportTemplateRequestId
+  /** 外部模板只允许传 ID + 可选版本，由主进程 registry 解析入口路径。 */
+  templateRef?: ReportTemplateRef
 }
 
 export interface GroupReportExportResult {
@@ -322,5 +325,6 @@ export interface GroupReportRenderSnapshot {
 
 export interface GroupReportRenderSnapshotExportRequest {
   snapshot: GroupReportRenderSnapshot
-  templateId: ReportTemplateRequestId
+  templateId?: ReportTemplateRequestId
+  templateRef?: ReportTemplateRef
 }

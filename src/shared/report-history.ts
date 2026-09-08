@@ -3,7 +3,8 @@ import type {
   GroupReportMetadata,
   GroupReportRenderSnapshot
 } from './group-report'
-import type { SelectableReportTemplateId } from './report-templates'
+import type { ReportTemplateSelectionId } from './report-templates'
+import type { ReportTemplateRef } from './report-template-package'
 
 export type ReportAssetStatus = 'ready' | 'missing'
 export type GeneratedReportSource = 'manual' | 'scheduled'
@@ -54,7 +55,7 @@ export interface GeneratedReportRecord {
   reportSnapshot?: GroupDailyReport
   reportMetadata?: GroupReportMetadata
   reportRenderSnapshot?: GroupReportRenderSnapshot
-  templateId?: SelectableReportTemplateId
+  templateId?: ReportTemplateSelectionId
 }
 
 export interface SaveGeneratedReportRequest {
@@ -88,12 +89,13 @@ export interface SaveGeneratedReportRequest {
   }[]
   reportSnapshot?: GroupDailyReport
   reportMetadata?: GroupReportMetadata
-  templateId?: SelectableReportTemplateId
+  templateId?: ReportTemplateSelectionId
 }
 
 export interface UpdateGeneratedReportTemplateRequest {
   reportId: string
-  templateId: SelectableReportTemplateId
+  templateId: ReportTemplateSelectionId
+  templateRef?: ReportTemplateRef
   generatedImage?: string
   htmlPath?: string
   pngPath?: string
