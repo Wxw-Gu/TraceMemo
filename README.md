@@ -33,6 +33,27 @@
 </p>
 
 ---
+## 🎨 社区日报模板
+
+TraceMemo 日报除了内置版式，也支持从社区模板市场安装更多样式。社区模板与默认日报读取同一份真实日报数据，只改变展示方式，适合手机长图分享、桌面归档、团队复盘等不同场景。
+
+<p align="center">
+  <a href="https://github.com/Wxw-Gu/TraceMemo-Templates"><b>浏览 TraceMemo 模板社区</b></a>
+  ·
+  <a href="https://github.com/Wxw-Gu/TraceMemo-Templates/tree/main/skills/tracememo-template-contributor"><b>用 AI 制作并投稿模板</b></a>
+</p>
+
+在 TraceMemo 中打开：
+
+**日报 → 今日日报 → 日报模板 → 模板市场**
+
+即可查看、预览、安装和切换已发布的社区模板。
+
+如果你有一张喜欢的日报长图、网页或前端项目，也可以把它交给 Codex、ChatGPT 或其他能够读取 GitHub 仓库的 AI，并让它读取 [TraceMemo Template Contributor Skill](https://github.com/Wxw-Gu/TraceMemo-Templates/tree/main/skills/tracememo-template-contributor)。AI 可以帮助你完成模板转换、真实预览，并在你确认满意后向 [TraceMemo-Templates](https://github.com/Wxw-Gu/TraceMemo-Templates) 提交 Pull Request。
+
+模板通过审核并正式发布后，其他 TraceMemo 用户即可在模板市场中安装使用。
+
+---
 ## TraceMemo 是什么
 
 TraceMemo（迹忆）原名 **WechatExplorer** 是一款本地优先的微信数据、AI 分析与自动化工作台，把聊天变成可浏览、可搜索、可理解、可追溯的信息。
