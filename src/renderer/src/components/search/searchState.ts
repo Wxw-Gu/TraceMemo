@@ -51,6 +51,30 @@ export const resolveSearchResultViewTransition = (
   result: AiSearchPipelineResult,
   range: SearchRange
 ): SearchResultViewTransition => {
+  if (result.status === 'understanding_failed') {
+    return {
+      stage: 'insufficient',
+      analysisError: result.error || '我没有完全理解你想怎么查，可以换一种说法。'
+    }
+  }
+  if (result.status === 'contact_not_found') {
+    return {
+      stage: 'insufficient',
+      analysisError: result.error || '我理解你在问这个联系人，但没有在当前通讯录中确认到对应联系人。'
+    }
+  }
+  if (result.status === 'ambiguous_contact') {
+    return {
+      stage: 'insufficient',
+      analysisError: result.error || '找到多个可能的联系人，暂时无法确定你指的是哪一个。'
+    }
+  }
+  if (result.status === 'no_messages') {
+    return {
+      stage: 'insufficient',
+      analysisError: result.error || '已经确认联系人，但当前可读取记录里没有对应聊天消息。'
+    }
+  }
   if (result.status === 'no_evidence') {
     return {
       stage: 'insufficient',

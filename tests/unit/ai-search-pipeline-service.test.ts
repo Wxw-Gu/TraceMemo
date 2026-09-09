@@ -10,7 +10,8 @@ vi.mock('../../src/main/services/chat-service', () => ({
   listContactsAsync
 }))
 
-import { AiSearchPipelineService } from '../../src/main/services/ai-search-pipeline-service'
+import { AiSearchPipelineService, isSuspiciousLocalPlan } from '../../src/main/services/ai-search-pipeline-service'
+import { buildLocalAiSearchPlan } from '../../src/shared/ai-search'
 import type { KnowledgeEvidence } from '../../src/shared/knowledge'
 
 const makeCandidate = (index: number): KnowledgeEvidence => ({
@@ -141,6 +142,331 @@ describe('AiSearchPipelineService', () => {
       ai: { inputTokens: 120, inputTokensEstimated: false }
     })
     expect(result.agent).toMatchObject({ mode: 'agent', toolCalls: 1 })
+  })
+
+  it('uses the AI query-understanding fallback for the real 小史 boundary expression', async () => {
+    listContactsAsync.mockResolvedValue([
+      { md5: 'xiaoshi', m_nsUsrName: 'wxid_xiaoshi', m_nsNickName: '小史', type: 'user' }
+    ])
+    aiProvider.chat.mockReset()
+    aiProvider.chat.mockResolvedValueOnce({
+      success: true,
+      data: JSON.stringify({
+        intent: 'conversation_boundary', contactQuery: '小史', topicQuery: null,
+        boundary: 'first', confidence: 0.98, requiresClarification: false
+      })
+    })
+    knowledge.search.mockResolvedValue({
+      source: 'knowledge', state: 'ready', indexedMessageCount: 2,
+      indexedChunkCount: 1, totalMessages: 2,
+      evidence: [{
+        chunkId: 'boundary', conversationId: 'xiaoshi', startTime: 1, endTime: 1,
+        messageId: 'message-1', sender: '小史', senderId: 'wxid_xiaoshi', timestamp: 1,
+        messageIds: ['message-1'], sourceKind: 'text', text: '你好'
+      }],
+      conversationRetrieval: {
+        conversationId: 'xiaoshi', totalMessages: 2, chunkCount: 1,
+        candidateMessages: 1, systemMessagesDeprioritized: 0, complete: true
+      }
+    })
+    const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
+    const localPlan = buildLocalAiSearchPlan('我和小史第一次聊天是在什么时候')
+    expect(localPlan).toMatchObject({ intent: 'global_topic_search' })
+    expect(localPlan.contactQuery).toBeUndefined()
+    expect(localPlan.boundary).toBeUndefined()
+    expect(isSuspiciousLocalPlan('我和小史第一次聊天是在什么时候', localPlan as never)).toBe(true)
+    const result = await service.run(
+      { requestId: 'ai-boundary', text: '我和小史第一次聊天是在什么时候', scope: 'global', range: 'all' },
+      () => undefined
+    )
+    expect(aiProvider.chat).toHaveBeenCalledTimes(1)
+    const parserMessages = aiProvider.chat.mock.calls[0][0] as Array<{ role: string; content: string }>
+    expect(parserMessages[1].content).toContain('我和小史第一次聊天是在什么时候')
+    expect(parserMessages[1].content).toContain('当前界面范围：global')
+    expect(parserMessages[1].content).not.toMatch(/Evidence|conversationId|wxid_|knowledge|contacts|数据库|路径/)
+    expect(knowledge.search).toHaveBeenCalledWith(expect.objectContaining({
+      conversationIds: ['xiaoshi'], conversationBoundary: 'first', terms: []
+    }))
+    expect(result).toMatchObject({ status: 'completed', plan: {
+      intent: 'conversation_boundary', contactQuery: '小史', boundary: 'first'
+    }, retrieval: { identityResolution: 'resolved', conversationId: 'xiaoshi' }, answer: expect.stringContaining('[E1]'), evidence: [expect.any(Object)] })
+    expect(result.agent).toMatchObject({ toolCalls: 0 })
+  })
+
+  it('supports content projection through the real BOBO boundary pipeline', async () => {
+    listContactsAsync.mockResolvedValue([
+      { md5: 'bobo', m_nsUsrName: 'wxid_bobo', m_nsNickName: 'BOBO', type: 'user' }
+    ])
+    aiProvider.chat.mockReset()
+    aiProvider.chat.mockResolvedValueOnce({
+      success: true,
+      data: JSON.stringify({
+        intent: 'conversation_boundary', contactQuery: 'BOBO', topicQuery: null,
+        boundary: 'first', projection: 'content', confidence: 0.98, requiresClarification: false
+      })
+    })
+    knowledge.search.mockResolvedValue({
+      source: 'knowledge', state: 'ready', indexedMessageCount: 3,
+      indexedChunkCount: 1, totalMessages: 3,
+      evidence: [{
+        chunkId: 'bobo-boundary', conversationId: 'bobo', startTime: 2, endTime: 2,
+        messageId: 'bobo-1', sender: 'BOBO', senderId: 'wxid_bobo', timestamp: 2,
+        messageIds: ['bobo-1'], sourceKind: 'voice', text: '语音转写：你好'
+      }],
+      conversationRetrieval: {
+        conversationId: 'bobo', totalMessages: 3, chunkCount: 1,
+        candidateMessages: 1, systemMessagesDeprioritized: 0, complete: true
+      }
+    })
+    const result = await new AiSearchPipelineService(knowledge as never, aiProvider as never).run(
+      { requestId: 'bobo-content', text: '我和BOBO第一次讲话说的什么', scope: 'global', range: 'all' },
+      () => undefined
+    )
+    expect(aiProvider.chat).toHaveBeenCalledTimes(1)
+    expect(knowledge.search).toHaveBeenCalledWith(expect.objectContaining({
+      conversationIds: ['bobo'], conversationBoundary: 'first', terms: []
+    }))
+    expect(result).toMatchObject({
+      status: 'completed',
+      plan: { intent: 'conversation_boundary', contactQuery: 'BOBO', boundary: 'first', projection: 'content' },
+      answer: expect.stringContaining('语音转写：你好'),
+      evidence: [expect.any(Object)]
+    })
+    expect(result.answer).not.toContain('正在生成')
+  })
+
+  it('executes a semantic retrieval plan with bounded probes and one answer AI call', async () => {
+    listContactsAsync.mockResolvedValue([
+      { md5: 'bobo', m_nsUsrName: 'wxid_bobo', m_nsNickName: 'BOBO', type: 'user' }
+    ])
+    aiProvider.chat.mockReset()
+    aiProvider.chat
+      .mockResolvedValueOnce({
+        success: true,
+        data: JSON.stringify({
+          mode: 'semantic', intent: 'general', targetQuery: 'BOBO',
+          semanticQuery: '双方关系开始明显变熟、互动增加或开始更深入交流',
+          queryVariants: ['开始熟起来', '关系变熟', '聊天明显增多', '开始聊更深入的话题'],
+          answerMode: 'synthesis', confidence: 0.97, requiresClarification: false
+        })
+      })
+      .mockResolvedValueOnce({ success: true, data: 'BOBO后来逐渐和我熟悉起来。[E1]' })
+    knowledge.search.mockImplementation(async (query: { terms: string[] }) => ({
+      source: 'knowledge', state: 'ready', indexedMessageCount: 10,
+      indexedChunkCount: 4, totalMessages: 10,
+      evidence: [{
+        chunkId: `semantic-${query.terms[0]}`, conversationId: 'bobo', startTime: 2, endTime: 2,
+        messageId: `message-${query.terms[0]}`, sender: 'BOBO', senderId: 'wxid_bobo', timestamp: 2,
+        messageIds: [`message-${query.terms[0]}`], sourceKind: 'text', text: `关于${query.terms[0]}的聊天`
+      }]
+    }))
+    const result = await new AiSearchPipelineService(knowledge as never, aiProvider as never).run(
+      { requestId: 'semantic-bobo', text: 'BOBO什么时候开始跟我熟起来的', scope: 'global', range: 'all' },
+      () => undefined
+    )
+    expect(result).toMatchObject({
+      status: 'completed',
+      plan: {
+        mode: 'semantic', targetQuery: 'BOBO', contactQuery: 'BOBO',
+        semanticQuery: '双方关系开始明显变熟、互动增加或开始更深入交流',
+        queryVariants: ['开始熟起来', '关系变熟', '聊天明显增多', '开始聊更深入的话题'],
+        answerMode: 'synthesis'
+      },
+      retrieval: { identityResolution: 'resolved', conversationId: 'bobo' },
+      answer: expect.stringContaining('BOBO后来逐渐和我熟悉起来。[E1]')
+    })
+    expect(knowledge.search).toHaveBeenCalledTimes(5)
+    expect(knowledge.search.mock.calls.map(([query]) => query.terms)).toEqual([
+      ['双方关系开始明显变熟、互动增加或开始更深入交流'], ['开始熟起来'], ['关系变熟'],
+      ['聊天明显增多'], ['开始聊更深入的话题']
+    ])
+    expect(aiProvider.chat).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps promise-like natural language in semantic retrieval instead of understanding_failed', async () => {
+    listContactsAsync.mockResolvedValue([
+      { md5: 'laowang', m_nsUsrName: 'wxid_laowang', m_nsNickName: '老王', type: 'user' }
+    ])
+    aiProvider.chat.mockReset()
+    aiProvider.chat
+      .mockResolvedValueOnce({
+        success: true,
+        data: JSON.stringify({
+          mode: 'semantic', intent: 'general', targetQuery: '老王',
+          semanticQuery: '承诺之后提供、发送或完成某件事情', queryVariants: ['我给你', '我发你', '答应'],
+          answerMode: 'synthesis', confidence: 0.94, requiresClarification: false
+        })
+      })
+      .mockResolvedValueOnce({ success: true, data: '老王答应过随后把东西发给我。[E1]' })
+    knowledge.search.mockResolvedValue({
+      source: 'knowledge', state: 'ready', indexedMessageCount: 4,
+      indexedChunkCount: 1, totalMessages: 4,
+      evidence: [{
+        chunkId: 'promise', conversationId: 'laowang', startTime: 3, endTime: 3,
+        messageId: 'promise-1', sender: '老王', senderId: 'wxid_laowang', timestamp: 3,
+        messageIds: ['promise-1'], sourceKind: 'text', text: '我发你，答应'
+      }]
+    })
+    const result = await new AiSearchPipelineService(knowledge as never, aiProvider as never).run(
+      { requestId: 'semantic-laowang', text: '老王之前答应我的东西是什么', scope: 'global', range: 'all' },
+      () => undefined
+    )
+    expect(result.status).toBe('completed')
+    expect(result.plan).toMatchObject({ mode: 'semantic', targetQuery: '老王', contactQuery: '老王' })
+    expect(result.retrieval).toMatchObject({ identityResolution: 'resolved', conversationId: 'laowang' })
+    expect(aiProvider.chat).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    ['我和张三最近聊了什么', 'conversation_recall'],
+    ['我和张三第一次聊天是什么时候', 'conversation_boundary'],
+    ['我和张三第一次聊天是在什么时候', 'conversation_boundary'],
+    ['我和张三第一次说话是哪天', 'conversation_boundary'],
+    ['我第一次跟张三聊天是什么时候', 'conversation_boundary'],
+    ['我最早什么时候和张三聊过', 'conversation_boundary'],
+    ['我和张三是从什么时候开始聊天的', 'conversation_boundary'],
+    ['我和张三什么时候开始聊天的', 'conversation_boundary'],
+    ['我和张三最后一次聊天是什么时候', 'conversation_boundary'],
+    ['我和张三最后一次聊天是在什么时候', 'conversation_boundary'],
+    ['我最近一次跟张三说话是什么时候', 'conversation_boundary'],
+    ['我上一次和张三聊天是哪天', 'conversation_boundary'],
+    ['张三最后一次和我聊天是在什么时候', 'conversation_boundary'],
+    ['我和张三最近聊得怎么样', 'not_boundary'],
+    ['我和张三聊过装修吗', 'not_boundary'],
+    ['最近张三说了什么', 'not_boundary']
+  ])('keeps the boundary synonym/negative matrix out of accidental intent: %s', (query, expected) => {
+    const plan = buildLocalAiSearchPlan(query)
+    if (expected === 'conversation_recall') expect(plan.intent).toBe('conversation_recall')
+    else if (expected === 'conversation_boundary') {
+      expect(plan.intent === 'conversation_boundary' || plan.intent === 'global_topic_search').toBe(true)
+    } else expect(plan.intent).not.toBe('conversation_boundary')
+  })
+
+  it.each([
+    'BOBO什么时候开始跟我熟起来的',
+    '我跟BOBO刚认识的时候聊了什么',
+    '老王之前答应我的东西是什么',
+    '我之前是不是跟谁提过买房'
+  ])('routes interpretive natural language to the Query Compiler: %s', (query) => {
+    const plan = buildLocalAiSearchPlan(query)
+    expect(isSuspiciousLocalPlan(query, plan as never)).toBe(true)
+  })
+
+  it.each([
+    ['我和张三第一次聊天是什么时候', 'first'],
+    ['我和张三第一次聊天是在什么时候', 'first'],
+    ['我和张三第一次说话是哪天', 'first'],
+    ['我第一次跟张三聊天是什么时候', 'first'],
+    ['我最早什么时候和张三聊过', 'first'],
+    ['我和张三是从什么时候开始聊天的', 'first'],
+    ['我和张三什么时候开始聊天的', 'first'],
+    ['我和张三最后一次聊天是什么时候', 'last'],
+    ['我和张三最后一次聊天是在什么时候', 'last'],
+    ['我最近一次跟张三说话是什么时候', 'last'],
+    ['我上一次和张三聊天是哪天', 'last'],
+    ['张三最后一次和我聊天是在什么时候', 'last']
+  ])('normalizes the full boundary synonym matrix through the Pipeline: %s', async (query, boundary) => {
+    listContactsAsync.mockResolvedValue([
+      { md5: 'zhangsan', m_nsUsrName: 'wxid_zhangsan', m_nsNickName: '张三', type: 'user' }
+    ])
+    aiProvider.getRuntimeConfig.mockReturnValue({ configured: true, providerId: 'fixture-provider', model: 'fixture-model' })
+    aiProvider.getAiSearchProviderStatus.mockReturnValue({ configured: true, requiresConsent: false, providerId: 'fixture-provider', recipient: 'fixture' })
+    aiProvider.chat.mockReset()
+    aiProvider.chat.mockResolvedValueOnce({
+      success: true,
+      data: JSON.stringify({ intent: 'conversation_boundary', contactQuery: '张三', topicQuery: null, boundary, confidence: 0.98, requiresClarification: false })
+    })
+    knowledge.search.mockResolvedValue({
+      source: 'knowledge', state: 'ready', indexedMessageCount: 1, indexedChunkCount: 1, totalMessages: 1,
+      evidence: [{ chunkId: 'boundary', conversationId: 'zhangsan', startTime: 1, endTime: 1, messageId: 'message-1', sender: '张三', senderId: 'wxid_zhangsan', timestamp: 1, messageIds: ['message-1'], sourceKind: 'text', text: '你好' }],
+      conversationRetrieval: { conversationId: 'zhangsan', totalMessages: 1, chunkCount: 1, candidateMessages: 1, systemMessagesDeprioritized: 0, complete: true }
+    })
+    const result = await new AiSearchPipelineService(knowledge as never, aiProvider as never).run(
+      { requestId: `matrix-${boundary}-${query}`, text: query, scope: 'global', range: 'all' },
+      () => undefined
+    )
+    const local = buildLocalAiSearchPlan(query)
+    const expectedParserCalls = local.intent === 'conversation_boundary' ? 0 : 1
+    expect(result).toMatchObject({ status: 'completed', plan: { intent: 'conversation_boundary', contactQuery: '张三', boundary }, retrieval: { identityResolution: 'resolved' }, evidence: [expect.any(Object)] })
+    expect(aiProvider.chat).toHaveBeenCalledTimes(expectedParserCalls)
+    expect(knowledge.search).toHaveBeenCalledWith(expect.objectContaining({ conversationIds: ['zhangsan'], terms: [], conversationBoundary: boundary }))
+  })
+
+  it('returns understanding_failed for unavailable and throwing Query Parser fallback', async () => {
+    listContactsAsync.mockResolvedValue([
+      { md5: 'zhangsan', m_nsUsrName: 'wxid_zhangsan', m_nsNickName: '张三', type: 'user' }
+    ])
+    aiProvider.getRuntimeConfig.mockReturnValue({ configured: false })
+    aiProvider.getAiSearchProviderStatus.mockReturnValue({ configured: false })
+    const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
+    const unavailable = await service.run(
+      { requestId: 'understanding-unavailable', text: '我和张三第一次聊天是在什么时候', scope: 'global', range: 'all' },
+      () => undefined
+    )
+    expect(unavailable).toMatchObject({ status: 'understanding_failed' })
+    expect(knowledge.search).not.toHaveBeenCalled()
+
+    aiProvider.getRuntimeConfig.mockReturnValue({ configured: true, providerId: 'fixture-provider', model: 'fixture-model' })
+    aiProvider.getAiSearchProviderStatus.mockReturnValue({ configured: true, requiresConsent: false, providerId: 'fixture-provider', recipient: 'fixture' })
+    aiProvider.chat.mockReset()
+    aiProvider.chat.mockRejectedValueOnce(new Error('Query Parser timeout'))
+    const throwing = await service.run(
+      { requestId: 'understanding-timeout', text: '我和张三第一次聊天是在什么时候', scope: 'global', range: 'all' },
+      () => undefined
+    )
+    expect(throwing).toMatchObject({ status: 'understanding_failed', error: expect.stringContaining('Query Parser timeout') })
+    expect(knowledge.search).not.toHaveBeenCalled()
+  })
+
+  it('keeps local recall and local boundary at zero Query Parser calls when AI is unavailable', async () => {
+    listContactsAsync.mockResolvedValue([
+      { md5: 'zhangsan', m_nsUsrName: 'wxid_zhangsan', m_nsNickName: '张三', type: 'user' }
+    ])
+    aiProvider.getRuntimeConfig.mockReturnValue({ configured: false })
+    aiProvider.getAiSearchProviderStatus.mockReturnValue({ configured: false })
+    knowledge.search.mockResolvedValue({ source: 'knowledge', state: 'ready', indexedMessageCount: 1, indexedChunkCount: 1, totalMessages: 1, evidence: [] })
+    const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
+    const recall = await service.run({ requestId: 'local-recall-no-ai', text: '我和张三最近聊了什么', scope: 'global', range: 'all' }, () => undefined)
+    expect(recall.plan.intent).toBe('conversation_recall')
+    expect(aiProvider.chat).toHaveBeenCalledTimes(0)
+    aiProvider.chat.mockReset()
+    const boundary = await service.run({ requestId: 'local-boundary-no-ai', text: '我和张三第一次聊天是什么时候', scope: 'global', range: 'all' }, () => undefined)
+    expect(boundary.plan.intent).toBe('conversation_boundary')
+    expect(aiProvider.chat).toHaveBeenCalledTimes(0)
+  })
+
+  it('stops before Knowledge when contact resolution is ambiguous or not found', async () => {
+    const parser = JSON.stringify({ intent: 'conversation_boundary', contactQuery: '张三', topicQuery: null, boundary: 'first', confidence: 0.98, requiresClarification: false })
+    aiProvider.chat.mockReset()
+    aiProvider.chat.mockResolvedValue({ success: true, data: parser })
+    aiProvider.getRuntimeConfig.mockReturnValue({ configured: true, providerId: 'fixture-provider', model: 'fixture-model' })
+    aiProvider.getAiSearchProviderStatus.mockReturnValue({ configured: true, requiresConsent: false, providerId: 'fixture-provider', recipient: 'fixture' })
+    const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
+    listContactsAsync.mockResolvedValue([
+      { md5: 'zhangsan-a', m_nsUsrName: 'wxid_a', m_nsNickName: '张三', type: 'user' },
+      { md5: 'zhangsan-b', m_nsUsrName: 'wxid_b', m_nsNickName: '张三', type: 'user' }
+    ])
+    const ambiguous = await service.run({ requestId: 'ambiguous-boundary', text: '我和张三第一次聊天是在什么时候', scope: 'global', range: 'all' }, () => undefined)
+    expect(ambiguous).toMatchObject({ status: 'ambiguous_contact' })
+    expect(knowledge.search).not.toHaveBeenCalled()
+
+    aiProvider.chat.mockReset()
+    aiProvider.chat.mockResolvedValueOnce({ success: true, data: parser.replace('张三', '不存在的人') })
+    listContactsAsync.mockResolvedValue([{ md5: 'other', m_nsUsrName: 'wxid_other', m_nsNickName: '其他人', type: 'user' }])
+    const missing = await service.run({ requestId: 'missing-boundary', text: '我和不存在的人第一次聊天是在什么时候', scope: 'global', range: 'all' }, () => undefined)
+    expect(missing).toMatchObject({ status: 'contact_not_found' })
+    expect(knowledge.search).not.toHaveBeenCalled()
+  })
+
+  it('distinguishes a confirmed contact with no readable messages', async () => {
+    listContactsAsync.mockResolvedValue([{ md5: 'zhangsan', m_nsUsrName: 'wxid_zhangsan', m_nsNickName: '张三', type: 'user' }])
+    knowledge.search.mockResolvedValue({ source: 'knowledge', state: 'ready', indexedMessageCount: 1, indexedChunkCount: 1, totalMessages: 1, evidence: [], conversationRetrieval: { conversationId: 'zhangsan', totalMessages: 1, chunkCount: 1, candidateMessages: 0, systemMessagesDeprioritized: 1, complete: true } })
+    aiProvider.getRuntimeConfig.mockReturnValue({ configured: false })
+    aiProvider.getAiSearchProviderStatus.mockReturnValue({ configured: false })
+    const service = new AiSearchPipelineService(knowledge as never, aiProvider as never)
+    const result = await service.run({ requestId: 'no-boundary-messages', text: '我和张三第一次聊天是什么时候', scope: 'global', range: 'all' }, () => undefined)
+    expect(result).toMatchObject({ status: 'no_messages' })
+    expect(knowledge.search).toHaveBeenCalledWith(expect.objectContaining({ conversationBoundary: 'first' }))
   })
 
   it('cancels an active Agent request and aborts the AI call before local retrieval continues', async () => {

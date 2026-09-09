@@ -99,6 +99,28 @@ const makeTrace = (overrides: Partial<SearchTrace> = {}): SearchTrace => ({
 })
 
 describe('AI Search request context', () => {
+  it('includes the resolved absolute range in relative-time cache keys', () => {
+    const query = '我和BOBO上个月聊了什么'
+    const first = createSearchRequestContext({
+      query, scope: 'global', range: 'all', now: new Date('2025-09-09T12:00:00+08:00')
+    })
+    const second = createSearchRequestContext({
+      query, scope: 'global', range: 'all', now: new Date('2026-09-09T12:00:00+08:00')
+    })
+    const repeat = createSearchRequestContext({
+      query, scope: 'global', range: 'all', now: new Date('2026-09-09T12:00:00+08:00')
+    })
+    const refreshed = createSearchRequestContext({
+      query, scope: 'global', range: 'all', now: new Date('2026-09-09T12:00:00+08:00'),
+      knowledgeGeneration: 'ready:200:20:200'
+    })
+    expect(first.resolvedTimeRange.label).toBe('2025年8月')
+    expect(second.resolvedTimeRange.label).toBe('2026年8月')
+    expect(second.cacheKey).not.toBe(first.cacheKey)
+    expect(second.cacheKey).toBe(repeat.cacheKey)
+    expect(refreshed.cacheKey).not.toBe(second.cacheKey)
+  })
+
   it('trims only the submitted query while keeping cache query normalization unchanged', () => {
     const context = createSearchRequestContext({
       query: '  Mixed  Case 问题  ',
@@ -107,7 +129,7 @@ describe('AI Search request context', () => {
     })
 
     expect(context.normalizedQuery).toBe('Mixed  Case 问题')
-    expect(context.cacheKey).toBe(JSON.stringify(['global', '', '30d', 'mixed  case 问题']))
+    expect(JSON.parse(context.cacheKey).slice(0, 4)).toEqual(['global', '', '30d', 'mixed  case 问题'])
   })
 
   it.each(['global', 'groups', 'contacts'] as const)(
@@ -121,7 +143,7 @@ describe('AI Search request context', () => {
       })
 
       expect(context.conversationId).toBeUndefined()
-      expect(context.cacheKey).toBe(JSON.stringify([scope, '', '7d', '范围问题']))
+      expect(JSON.parse(context.cacheKey).slice(0, 4)).toEqual([scope, '', '7d', '范围问题'])
     }
   )
 
@@ -134,8 +156,8 @@ describe('AI Search request context', () => {
     })
 
     expect(context.conversationId).toBe(aiSearchContact.md5)
-    expect(context.cacheKey).toBe(
-      JSON.stringify(['conversation', aiSearchContact.md5, 'today', '会话问题'])
+    expect(JSON.parse(context.cacheKey).slice(0, 4)).toEqual(
+      ['conversation', aiSearchContact.md5, 'today', '会话问题']
     )
   })
 
@@ -147,7 +169,7 @@ describe('AI Search request context', () => {
     })
 
     expect(context.conversationId).toBeUndefined()
-    expect(context.cacheKey).toBe(JSON.stringify(['conversation', '', 'all', '未选择会话']))
+    expect(JSON.parse(context.cacheKey).slice(0, 4)).toEqual(['conversation', '', 'all', '未选择会话'])
   })
 
   it('uses retry range and retry time override when both are provided', () => {
@@ -171,7 +193,7 @@ describe('AI Search request context', () => {
 
     expect(context.effectiveRange).toBe('all')
     expect(context.effectiveTimeRangeOverride).toBe(retryOverride)
-    expect(context.cacheKey).toBe(JSON.stringify(['global', '', 'all', '重试问题']))
+    expect(JSON.parse(context.cacheKey).slice(0, 4)).toEqual(['global', '', 'all', '重试问题'])
   })
 
   it('falls back to the current time override when retry does not provide one', () => {
@@ -386,6 +408,23 @@ describe('AI Search trace and cache mapping', () => {
     })
   })
 
+  it('reports conversation recall coverage instead of keyword-hit count', () => {
+    const result = makeSearchResult()
+    result.candidateEvidenceCount = 8
+    result.retrieval = {
+      intent: 'conversation_recall',
+      sourceMessageCount: 31,
+      sourceCoverage: 'complete',
+      isComplete: true,
+      candidateCount: 8,
+      uniqueCandidateCount: 8,
+      fallbackUsed: false,
+      suspicious: false,
+      timeRange: { label: '2026年8月', reason: 'test', source: 'query' }
+    }
+    expect(mapSearchResultToTrace(result, 8).retrievedEvidence).toBe(31)
+  })
+
   it('maps AI token, citation, and voice coverage details without transforming them', () => {
     const result: AiSearchPipelineResult = makeSearchResult()
     result.ai = {
@@ -560,6 +599,10 @@ describe('AI Search result view transition', () => {
   })
 
   it.each([
+    ['understanding_failed', 'insufficient', '我没有完全理解你想怎么查，可以换一种说法。'],
+    ['contact_not_found', 'insufficient', '我理解你在问这个联系人，但没有在当前通讯录中确认到对应联系人。'],
+    ['ambiguous_contact', 'insufficient', '找到多个可能的联系人，暂时无法确定你指的是哪一个。'],
+    ['no_messages', 'insufficient', '已经确认联系人，但当前可读取记录里没有对应聊天消息。'],
     ['retrieval_incomplete', 'partial', '当前检索未完整覆盖聊天记录，未生成总结。'],
     ['failed', 'insufficient', '本地搜索暂时无法完成'],
     ['ai_failed', 'partial', '证据已找到，但 AI 暂时无法生成回答']

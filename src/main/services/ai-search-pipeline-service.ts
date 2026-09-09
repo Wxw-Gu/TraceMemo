@@ -4,6 +4,7 @@ import {
   buildLocalAiSearchPlan,
   inferAiSearchTimeRange,
   mergeAiSearchPlans,
+  parseAiQueryUnderstanding,
   parseAiSearchPlan,
   type AiSearchAgentRun,
   type AiSearchAgentTraceItem,
@@ -26,6 +27,7 @@ import { runControlledSearchAgent, type AgentAction, type AgentToolResult } from
 import { AIProviderService } from './ai-provider-service'
 import { KnowledgeSearchService } from '../knowledge/knowledge-search-service'
 import { resolveContact, type ContactResolutionScope } from './contact-resolution-service'
+import type { ContactResolutionResult } from '../../shared/contact-resolution'
 
 const DISPLAY_EVIDENCE_LIMIT = 8
 const AGENT_MESSAGE_LIMIT = 100
@@ -55,14 +57,32 @@ const contactScopeForIntent = (intent: AiSearchPlan['intent']): ContactResolutio
     : 'person'
 
 const isIdentityIntent = (intent: AiSearchPlan['intent']): boolean =>
+  intent === 'conversation_boundary' ||
   intent === 'conversation_recall' ||
   intent === 'conversation_topic_search' ||
   intent === 'conversation_name_search'
 
+const isIdentityPlan = (plan: AiSearchPlan): boolean =>
+  isIdentityIntent(plan.intent) || (plan.mode === 'semantic' && Boolean(plan.contactQuery || plan.targetQuery))
+
+export const isSuspiciousLocalPlan = (query: string, plan: AiSearchPlan): boolean => {
+  const hasRelationalShape = /我\s*(?:和|跟|与)|(?:和|跟|与)\s*我|第一次|最早|最后一次|最近一次/.test(query)
+  const hasBoundaryShape = /第一次|最早|最后一次|最近一次|上一次|什么时候开始/.test(query)
+  const hasInterpretiveShape = /熟起来|刚认识|答应|是不是|提过|后来|那个|事情/.test(query)
+  return (
+    (plan.intent === 'global_topic_search' && hasRelationalShape) ||
+    (hasInterpretiveShape && plan.intent !== 'conversation_boundary') ||
+    (hasBoundaryShape && plan.intent !== 'conversation_boundary') ||
+    (hasRelationalShape && !plan.contactQuery)
+  )
+}
+
 const retrievalModeForIntent = (
   intent: AiSearchPlan['intent']
 ): AiSearchRetrievalContract['retrievalMode'] =>
-  intent === 'conversation_recall'
+  intent === 'conversation_boundary'
+    ? 'conversation_boundary'
+    : intent === 'conversation_recall'
     ? 'conversation_metadata'
     : intent === 'conversation_topic_search'
       ? 'conversation_topic_fts'
@@ -96,6 +116,11 @@ const conversationIdsForContacts = (contacts: Contact[]): string[] =>
 
 const messageTime = (timestamp: number): string =>
   new Date(timestamp).toLocaleString('zh-CN', { hour12: false })
+
+const queryDate = (timestamp: number): string => {
+  const date = new Date(timestamp * 1000)
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
+}
 
 const estimateTokens = (value: string): number => Math.ceil(value.length / 2)
 
@@ -259,6 +284,7 @@ export class AiSearchPipelineService {
     const localPlan = buildLocalAiSearchPlan(request.text)
     let plan: AiSearchPlan = {
       ...localPlan,
+      mode: 'structured',
       scopeLabel: aiSearchScopeLabel(
         localPlan.intent === 'global_group_topic_search' && request.scope === 'global'
           ? 'groups'
@@ -288,14 +314,106 @@ export class AiSearchPipelineService {
       const contactResolutionStartedAt = Date.now()
       const contacts = chat.isReady() ? await chat.listContactsAsync() : []
       signal.throwIfAborted()
+      const shouldUseQueryUnderstanding =
+        localPlan.intent === 'general' || isSuspiciousLocalPlan(request.text, plan)
+      let queryUnderstandingSource: 'local' | 'ai' = 'local'
+      let queryUnderstandingError: string | undefined
+      if (shouldUseQueryUnderstanding && aiSearchAvailable) {
+        let parserResult: Awaited<ReturnType<AiSearchPipelineService['chatForSearchRequest']>>
+        let parserException: string | undefined
+        try {
+          parserResult = await this.chatForSearchRequest(
+            request.requestId,
+            aiConfig.providerId,
+            aiConfig.model,
+            [
+              {
+                role: 'system',
+                content:
+                  '你是 TraceMemo Query Compiler。只输出严格 JSON，不回答问题、不搜索聊天、不编造联系人。mode 只能是 structured、semantic、clarification。structured 复用已有 intent；conversation_boundary 允许 boundary=first|last 和 projection=time|content|time_and_content。semantic 用 semanticQuery（1-200 字）、queryVariants（最多 4 个）、可选 targetQuery（联系人显示名）和 answerMode=extract|synthesis；clarification 仅用于确实缺少必要上下文且 requiresClarification=true。只允许输出 schema 中字段：mode、intent、contactQuery、topicQuery、boundary、projection、targetQuery、semanticQuery、queryVariants、answerMode、confidence、requiresClarification、clarificationReason。禁止 conversationId、wxid、messageId、SQL、路径、Evidence、时间戳、Tool、Provider。',
+              },
+              {
+                role: 'user',
+                content: `用户问题：${request.text}\n当前界面范围：${request.scope}`
+              }
+            ],
+            signal
+          )
+        } catch (error) {
+          parserException = error instanceof Error ? error.message : '查询语义解析器执行失败'
+          parserResult = {
+            success: false,
+            error: parserException
+          }
+        }
+        const understanding = parserResult.success && parserResult.data
+          ? parseAiQueryUnderstanding(parserResult.data)
+          : null
+        if (understanding && understanding.confidence >= 0.6 && !understanding.requiresClarification) {
+          queryUnderstandingSource = 'ai'
+          plan = {
+            ...plan,
+            intent: understanding.intent,
+            mode: understanding.mode || 'structured',
+            contactQuery: understanding.contactQuery || understanding.targetQuery,
+            targetQuery: understanding.targetQuery,
+            semanticQuery: understanding.semanticQuery,
+            queryVariants: understanding.queryVariants,
+            answerMode: understanding.answerMode,
+            topicQuery: understanding.topicQuery,
+            boundary: understanding.boundary,
+            projection: understanding.projection,
+            keywords: understanding.topicQuery ? [understanding.topicQuery] : [],
+            variants: understanding.topicQuery ? [understanding.topicQuery] : [],
+            source: 'hybrid'
+          }
+        } else {
+          queryUnderstandingError =
+            understanding?.clarificationReason || parserException || parserResult.error || '无法可靠理解查询意图'
+        }
+      } else if (shouldUseQueryUnderstanding) {
+        queryUnderstandingError = aiConfig.configured ? '查询语义解析器暂时不可用' : '尚未配置可用 AI 模型'
+      }
       const selectedContact =
         request.scope === 'conversation' && request.conversationId
           ? contacts.find((contact) => contact.md5 === request.conversationId)
           : undefined
       const sourceContacts = this.scopeContacts(contacts, request, selectedContact, plan.intent)
-      if (!sourceContacts.length) throw new Error('当前搜索范围没有可用会话')
-      const contactResolution = plan.contactQuery
-        ? resolveContact(plan.contactQuery, sourceContacts, contactScopeForIntent(plan.intent))
+      if (!sourceContacts.length && !queryUnderstandingError) throw new Error('当前搜索范围没有可用会话')
+      if (queryUnderstandingError) {
+        const retrieval: AiSearchRetrievalContract = {
+          intent: plan.intent,
+          timeRange: plan.timeRange,
+          retrievalMode: 'unresolved_identity',
+          candidateCount: 0,
+          uniqueCandidateCount: 0,
+          sourceCoverage: 'unknown',
+          isComplete: false,
+          fallbackUsed: false,
+          suspicious: true
+        }
+        const error = `我没有完全理解你想怎么查：${queryUnderstandingError}`
+        emit({ stage: 'query_understanding', status: 'error', message: error, plan, error })
+        return {
+          requestId: request.requestId,
+          status: 'understanding_failed',
+          plan,
+          knowledge: { source: 'knowledge', state: 'unavailable', indexedMessageCount: 0, indexedChunkCount: 0, totalMessages: 0 },
+          candidateEvidenceCount: 0,
+          retrieval,
+          evidence: [],
+          evidenceCollection: [],
+          contextEvidenceCount: 0,
+          aggregation: emptyAggregation(),
+          agent: { mode: 'fallback', toolCalls: 0, trace: [], fallbackReason: error },
+          timings: snapshotTimings(),
+          error,
+          errorStage: 'query_understanding',
+          elapsedMs: Date.now() - startedAt
+        }
+      }
+      const contactResolution = (plan.contactQuery || plan.targetQuery)
+        ? resolveContact(plan.contactQuery || plan.targetQuery || '', sourceContacts, contactScopeForIntent(plan.intent))
         : undefined
       const resolvedContact =
         selectedContact ||
@@ -313,7 +431,7 @@ export class AiSearchPipelineService {
         contactNames: resolvedContact ? [contactLabel(resolvedContact)] : []
       }
       const conversationIds =
-        isIdentityIntent(plan.intent) && resolvedContact
+        isIdentityPlan(plan) && resolvedContact
           ? [resolvedContact.md5]
           : request.scope === 'global' && plan.intent !== 'global_group_topic_search'
             ? undefined
@@ -323,7 +441,7 @@ export class AiSearchPipelineService {
       let agent: AiSearchAgentRun = { mode: 'fallback', toolCalls: 0, trace: [] }
       let candidateEvidence: AiSearchPipelineEvidence[]
       let searchResult: KnowledgeSearchIpcResult
-      const agentOutcome = aiSearchAvailable
+      const agentOutcome = aiSearchAvailable && plan.intent !== 'conversation_boundary' && plan.mode !== 'semantic'
         ? await this.runAgentSearch(
             request,
             plan,
@@ -387,8 +505,8 @@ export class AiSearchPipelineService {
         timings.rankingMs += agentOutcome.searchTimings.rankingMs
       } else {
         const deterministicIdentityRetrieval =
-          Boolean(resolvedContact) && (isIdentityIntent(plan.intent) || Boolean(selectedContact))
-        const unresolvedIdentity = isIdentityIntent(plan.intent) && !resolvedContact
+          Boolean(resolvedContact) && (isIdentityPlan(plan) || Boolean(selectedContact))
+        const unresolvedIdentity = isIdentityPlan(plan) && !resolvedContact
         const fallbackReason = confirmedConversationNeedsFallback
           ? selectedContact
             ? '已选择会话的 Agent 未产生可读取消息，已按该会话执行确定性检索'
@@ -423,7 +541,7 @@ export class AiSearchPipelineService {
           agentTrace: agent.trace[0],
           timings: snapshotTimings()
         })
-        if (aiSearchAvailable && !deterministicIdentityRetrieval && !unresolvedIdentity) {
+        if (aiSearchAvailable && plan.mode !== 'semantic' && !deterministicIdentityRetrieval && !unresolvedIdentity) {
           const planningStartedAt = Date.now()
           const planning = await this.chatForSearchRequest(
             request.requestId,
@@ -476,22 +594,46 @@ export class AiSearchPipelineService {
         } else {
           const knowledgeSearchStartedAt = Date.now()
           const deterministicTerms =
-            plan.intent === 'conversation_recall' || plan.intent === 'conversation_name_search'
-              ? []
-              : plan.intent === 'conversation_topic_search'
-                ? plan.topicQuery
-                  ? [plan.topicQuery]
-                  : []
-                : Array.from(new Set([...plan.keywords, ...plan.variants]))
-          searchResult = await this.knowledge.search({
-            text: request.text,
-            terms: deterministicTerms,
-            retrievalSessionId: request.requestId,
-            conversationIds,
-            startTime: plan.timeRange.startTime,
-            endTime: plan.timeRange.endTime,
-            limit: 240
-          })
+            plan.mode === 'semantic'
+              ? Array.from(new Set([plan.semanticQuery, ...(plan.queryVariants || [])].filter((term): term is string => Boolean(term)))).slice(0, 5)
+              : plan.intent === 'conversation_recall' || plan.intent === 'conversation_name_search'
+                ? []
+                : plan.intent === 'conversation_topic_search'
+                  ? plan.topicQuery
+                    ? [plan.topicQuery]
+                    : []
+                  : Array.from(new Set([...plan.keywords, ...plan.variants]))
+          const semanticResults: KnowledgeSearchIpcResult[] = []
+          const termsToSearch: string[][] =
+            plan.mode === 'semantic' ? deterministicTerms.map((term) => [term]) : [deterministicTerms]
+          for (const terms of termsToSearch) {
+            semanticResults.push(await this.knowledge.search({
+              text: request.text,
+              terms,
+              retrievalSessionId: request.requestId,
+              conversationIds,
+              startTime: plan.timeRange.startTime,
+              endTime: plan.timeRange.endTime,
+              conversationBoundary: plan.boundary,
+              limit: 240
+            }))
+          }
+          const firstResult = semanticResults[0]
+          const mergedEvidence = Array.from(
+            new Map(semanticResults.flatMap((result) => result.evidence).map((item) => [`${item.conversationId}\u0000${item.messageId}`, item])).values()
+          )
+          searchResult = {
+            ...(firstResult || {
+              source: 'knowledge', state: 'ready', indexedMessageCount: 0, indexedChunkCount: 0,
+              totalMessages: 0, evidence: [], timings: emptyKnowledgeSearchTimings()
+            }),
+            evidence: mergedEvidence,
+            indexedMessageCount: Math.max(...semanticResults.map((result) => result.indexedMessageCount), 0),
+            indexedChunkCount: Math.max(...semanticResults.map((result) => result.indexedChunkCount), 0),
+            totalMessages: Math.max(...semanticResults.map((result) => result.totalMessages), 0),
+            conversationRetrieval: semanticResults.find((result) => result.conversationRetrieval)?.conversationRetrieval,
+            voiceCoverage: semanticResults.find((result) => result.voiceCoverage)?.voiceCoverage
+          }
           signal.throwIfAborted()
           timings.knowledgeSearchMs += Date.now() - knowledgeSearchStartedAt
           candidateEvidence = this.toPipelineEvidence(searchResult, contacts)
@@ -516,7 +658,7 @@ export class AiSearchPipelineService {
       emit({
         stage: 'query_understanding',
         status: 'completed',
-        message: '已理解搜索条件',
+        message: queryUnderstandingSource === 'ai' ? '已通过查询语义解析器理解搜索条件' : '已理解搜索条件',
         plan,
         timings: snapshotTimings()
       })
@@ -580,7 +722,8 @@ export class AiSearchPipelineService {
         resolvedContact,
         searchResult,
         candidateEvidence,
-        agent
+        agent,
+        contactResolution
       )
       if (retrieval.suspicious && resolvedContact) {
         // An identity route that somehow yielded 0/1 records is never allowed
@@ -593,6 +736,7 @@ export class AiSearchPipelineService {
           conversationIds: [resolvedContact.md5],
           startTime: plan.timeRange.startTime,
           endTime: plan.timeRange.endTime,
+          conversationBoundary: plan.boundary,
           limit: 240
         })
         signal.throwIfAborted()
@@ -603,7 +747,8 @@ export class AiSearchPipelineService {
           resolvedContact,
           searchResult,
           candidateEvidence,
-          agent
+          agent,
+          contactResolution
         )
       }
 
@@ -717,7 +862,30 @@ export class AiSearchPipelineService {
         timings: snapshotTimings(),
         elapsedMs: Date.now() - startedAt
       }
+      if (plan.intent === 'conversation_boundary' && retrieval.identityResolution !== 'resolved') {
+        const ambiguous = retrieval.identityResolution === 'ambiguous'
+        const error = ambiguous
+          ? `联系人“${plan.contactQuery || ''}”存在多个匹配，请先确认具体联系人。`
+          : `没有确认联系人“${plan.contactQuery || ''}”，无法查询会话边界。`
+        return {
+          ...baseResult,
+          status: ambiguous ? 'ambiguous_contact' : 'contact_not_found',
+          error,
+          timings: snapshotTimings(),
+          elapsedMs: Date.now() - startedAt
+        }
+      }
       if (!evidence.length) {
+        if (plan.intent === 'conversation_boundary') {
+          const error = `已确认联系人“${plan.contactQuery || ''}”，但当前知识库没有可读取的聊天消息。`
+          return {
+            ...baseResult,
+            status: 'no_messages',
+            error,
+            timings: snapshotTimings(),
+            elapsedMs: Date.now() - startedAt
+          }
+        }
         emit({
           stage: 'completed',
           status: 'completed',
@@ -729,6 +897,51 @@ export class AiSearchPipelineService {
         return {
           ...baseResult,
           status: 'no_evidence',
+          timings: snapshotTimings(),
+          elapsedMs: Date.now() - startedAt
+        }
+      }
+
+      if (plan.intent === 'conversation_boundary') {
+        const item = evidence[0]
+        const boundaryLabel = plan.boundary === 'first' ? '最早' : '最后'
+        const coverageNote = retrieval.isComplete
+          ? '当前知识库已完成该会话的可读取记录覆盖。'
+          : '当前知识库覆盖不完整，不能据此确认历史上的第一次或最后一次交流。'
+        const projection = plan.projection || 'time'
+        const content = item.sourceKind === 'text'
+          ? item.text || '（文本消息为空）'
+          : item.sourceKind === 'voice'
+            ? item.text ? `语音转写：${item.text}` : '语音消息（没有可用转写）'
+            : item.sourceKind === 'file'
+              ? '文件消息（没有可展示文本）'
+              : item.sourceKind === 'image'
+                ? '图片消息（没有可展示文本）'
+                : item.sourceKind === 'video'
+                  ? '视频消息（没有可展示文本）'
+                  : item.sourceKind === 'sticker'
+                    ? '表情消息（没有可展示文本）'
+              : item.sourceKind === 'link'
+                ? '链接消息（没有可展示文本）'
+                : '非文本消息（没有可展示文本）'
+        const timeLine = `在 TraceMemo 当前可读取的聊天记录中，你和${plan.contactQuery || item.conversationName} ${boundaryLabel}的一条聊天记录出现在 ${messageTime(item.timestamp)}。`
+        const contentLine = `${item.sender}：${content} [E1]`
+        const answer = projection === 'content'
+          ? `在 TraceMemo 当前可读取的聊天记录中，你和${plan.contactQuery || item.conversationName} ${boundaryLabel}的一条聊天记录内容是：\n${contentLine}\n${coverageNote}`
+          : `${timeLine}\n${contentLine}\n${coverageNote}`
+        emit({
+          stage: 'completed',
+          status: 'completed',
+          message: '已确定会话边界并生成可追溯答案',
+          plan,
+          stats: { matchedMessages: 1, evidenceCount: 1 },
+          timings: snapshotTimings()
+        })
+        return {
+          ...baseResult,
+          status: 'completed',
+          answer,
+          citationValidation: { status: 'valid', invalidCitationIds: [] },
           timings: snapshotTimings(),
           elapsedMs: Date.now() - startedAt
         }
@@ -1681,6 +1894,7 @@ export class AiSearchPipelineService {
           : ''
     return `检索范围：${plan.scopeLabel}，时间：${plan.rangeLabel}
 用户问题：${query}
+当前查询实际时间范围：${plan.timeRange.startTime === undefined ? '未限定开始日期' : queryDate(plan.timeRange.startTime)} 至 ${plan.timeRange.endTime === undefined ? '当前时刻' : queryDate(plan.timeRange.endTime)}。回答只能基于这个程序确定的时间范围，不得根据“上个月”“去年”等原句自行推算其他年份。
 检索意图：${aiSearchIntentLabel(plan.intent)}
 检索关键词：${plan.keywords.join('、') || '未提取到主题关键词'}
 检索范围消息总数：${totalMessages}
@@ -1701,9 +1915,10 @@ ${context}`
     resolvedContact: Contact | undefined,
     result: KnowledgeSearchIpcResult,
     candidates: AiSearchPipelineEvidence[],
-    agent: AiSearchAgentRun
+    agent: AiSearchAgentRun,
+    contactResolution?: ContactResolutionResult
   ): AiSearchRetrievalContract {
-    const identity = isIdentityIntent(plan.intent)
+    const identity = isIdentityPlan(plan)
     const conversationRetrieval = result.conversationRetrieval
     const sourceMessageCount =
       conversationRetrieval?.totalMessages ??
@@ -1743,6 +1958,14 @@ ${context}`
       fallbackUsed: agent.mode === 'fallback' || result.source === 'fallback',
       fallbackReason: agent.fallbackReason || result.fallbackReason,
       voiceCoverage: result.voiceCoverage,
+      identityResolution: identity
+        ? resolvedContact
+          ? 'resolved'
+          : contactResolution?.ambiguous
+            ? 'ambiguous'
+            : 'not_found'
+        : 'not_required',
+      boundary: plan.boundary,
       suspicious:
         plan.intent === 'conversation_recall' &&
         Boolean(resolvedContact) &&

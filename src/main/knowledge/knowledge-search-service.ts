@@ -81,6 +81,10 @@ function sourceMessageId(message: chat.FormattedMessage): string {
 
 function sourceKind(message: chat.FormattedMessage): KnowledgeMessageKind {
   if (message.voiceTranscript || message.type === '语音') return 'voice'
+  if (message.exportMediaType === 'image' || message.exportMediaType === 'video' || message.exportMediaType === 'sticker') {
+    return message.exportMediaType
+  }
+  if (message.exportMediaType === 'file') return 'file'
   if (message.contentData?.type === 'share' || message.contentData?.type === 'miniProgram') {
     return message.contentData.type === 'share' && message.contentData.typeVal === '6'
       ? 'file'
@@ -329,6 +333,7 @@ export class KnowledgeSearchService {
         senderIds: request.senderIds,
         startTime: request.startTime === undefined ? undefined : request.startTime * 1000,
         endTime: request.endTime === undefined ? undefined : request.endTime * 1000
+        ,conversationBoundary: request.conversationBoundary
       }
       const result = await this.searchKnowledge(searchRequest)
       // An existing derived database can answer while its next incremental pass is running.
@@ -481,12 +486,14 @@ export class KnowledgeSearchService {
       .filter(({ message, score }) => {
         const senderMatches = !senderIds.size || senderIds.has(message.senderId || message.from)
         const termMatches = !terms.length || score > 0
-        return senderMatches && termMatches
+        const boundaryMatches = !request.conversationBoundary || message.contentData?.type !== 'system'
+        return senderMatches && termMatches && boundaryMatches
       })
       .sort(
         (left, right) =>
           right.score - left.score ||
-          (right.message.createTime || 0) - (left.message.createTime || 0)
+          (request.conversationBoundary === 'first' ? -1 : 1) *
+            ((right.message.createTime || 0) - (left.message.createTime || 0))
       )
       .slice(0, Math.max(1, Math.min(request.limit || FALLBACK_LIMIT, FALLBACK_LIMIT)))
     const result: KnowledgeSearchIpcResult = {

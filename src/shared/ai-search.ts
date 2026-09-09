@@ -6,12 +6,16 @@ import type {
 
 export type AiSearchScope = 'global' | 'groups' | 'contacts' | 'conversation'
 export type AiSearchRange = 'today' | '7d' | '30d' | 'all'
+export type AiSearchProjection = 'time' | 'content' | 'time_and_content'
+export type AiSearchQueryMode = 'structured' | 'semantic' | 'clarification'
+export type AiSearchAnswerMode = 'extract' | 'synthesis'
 /**
  * Retrieval semantics, not presentation labels. Each intent has a constrained
  * execution path in the main process; a model must not be able to quietly turn
  * an identity lookup into a generic message-keyword search.
  */
 export type AiSearchIntent =
+  | 'conversation_boundary'
   | 'conversation_recall'
   | 'conversation_topic_search'
   | 'global_sender_topic_search'
@@ -44,6 +48,7 @@ export type AiSearchProgressStage =
 export type AiSearchProgressStatus = 'running' | 'completed' | 'error'
 
 export interface AiSearchPlan {
+  mode?: AiSearchQueryMode
   intent: AiSearchIntent
   keywords: string[]
   variants: string[]
@@ -56,6 +61,28 @@ export interface AiSearchPlan {
   contactQuery?: string
   /** The message-content query, never a contact display name. */
   topicQuery?: string
+  boundary?: 'first' | 'last'
+  projection?: AiSearchProjection
+  targetQuery?: string
+  semanticQuery?: string
+  queryVariants?: string[]
+  answerMode?: AiSearchAnswerMode
+}
+
+export interface AiQueryUnderstanding {
+  mode?: AiSearchQueryMode
+  intent: AiSearchIntent
+  contactQuery?: string
+  topicQuery?: string
+  boundary?: 'first' | 'last'
+  projection?: AiSearchProjection
+  targetQuery?: string
+  semanticQuery?: string
+  queryVariants?: string[]
+  answerMode?: AiSearchAnswerMode
+  confidence: number
+  requiresClarification: boolean
+  clarificationReason?: string
 }
 
 export interface AiSearchPipelineRequest {
@@ -222,6 +249,7 @@ export interface AiSearchRetrievalContract {
   conversationId?: string
   timeRange: AiSearchTimeRange
   retrievalMode:
+    | 'conversation_boundary'
     | 'conversation_metadata'
     | 'conversation_topic_fts'
     | 'global_fts'
@@ -236,12 +264,18 @@ export interface AiSearchRetrievalContract {
   fallbackReason?: string
   suspicious: boolean
   voiceCoverage?: KnowledgeVoiceCoverage
+  identityResolution?: 'not_required' | 'resolved' | 'not_found' | 'ambiguous'
+  boundary?: 'first' | 'last'
 }
 
 export interface AiSearchPipelineResult {
   requestId: string
   status:
     | 'completed'
+    | 'understanding_failed'
+    | 'contact_not_found'
+    | 'ambiguous_contact'
+    | 'no_messages'
     | 'no_evidence'
     | 'retrieval_incomplete'
     | 'ai_failed'
@@ -434,13 +468,36 @@ export const inferAiSearchTimeRange = (
   }
   if (/这个月|本月/.test(query)) return fromQuery(currentMonthStart(now), '本月', '用户说“这个月”')
   if (/上个月/.test(query)) {
-    const start = Math.floor(new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime() / 1000)
+    const startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1)
     const end = Math.floor(new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000) - 1
+    const start = Math.floor(startDate.getTime() / 1000)
     return {
       startTime: start,
       endTime: end,
-      label: '上个月',
+      label: `${startDate.getFullYear()}年${startDate.getMonth() + 1}月`,
       reason: '用户说“上个月”',
+      source: 'query'
+    }
+  }
+  if (/今天/.test(query)) return fromQuery(dayStart(now), '今天', '用户说“今天”')
+  if (/昨天|前天/.test(query)) {
+    const daysAgo = query.includes('前天') ? 2 : 1
+    const start = dayStart(now) - daysAgo * 86400
+    return {
+      startTime: start,
+      endTime: dayStart(now) - (daysAgo - 1) * 86400 - 1,
+      label: daysAgo === 1 ? '昨天' : '前天',
+      reason: `用户说“${daysAgo === 1 ? '昨天' : '前天'}”`,
+      source: 'query'
+    }
+  }
+  if (/去年/.test(query)) {
+    const startDate = new Date(now.getFullYear() - 1, 0, 1)
+    return {
+      startTime: Math.floor(startDate.getTime() / 1000),
+      endTime: Math.floor(new Date(now.getFullYear(), 0, 1).getTime() / 1000) - 1,
+      label: `${startDate.getFullYear()}年`,
+      reason: '用户说“去年”',
       source: 'query'
     }
   }
@@ -456,6 +513,7 @@ export const inferAiSearchTimeRange = (
 }
 
 export const aiSearchIntentLabel = (intent: AiSearchIntent): string => {
+  if (intent === 'conversation_boundary') return '查询会话边界'
   if (intent === 'conversation_recall') return '回顾最近聊天'
   if (intent === 'conversation_topic_search') return '在指定聊天中查找话题'
   if (intent === 'global_sender_topic_search') return '按人物查找'
@@ -516,10 +574,27 @@ export const buildLocalAiSearchPlan = (
   query: string
 ): Pick<
   AiSearchPlan,
-  'intent' | 'keywords' | 'variants' | 'source' | 'contactQuery' | 'topicQuery'
+  'intent' | 'keywords' | 'variants' | 'source' | 'contactQuery' | 'topicQuery' | 'boundary' | 'projection'
 > => {
   const keywords = extractKeywords(query)
   const normalized = query.replace(/[“”"'‘’「」『』]/g, '').trim()
+  const boundary =
+    normalized.match(/^(?:我和|我跟|我与)\s*【?(.+?)】?\s*(第一次聊天|第一次说话|最早(?:一次)?(?:聊天|说话|聊过)?|最后一次聊天|最后一次说话|最近一次(?:聊天|说话))是什么时候[？?。！!]*$/) ||
+    normalized.match(/^我(最早|最后|最近一次)\s*什么时候\s*(?:和|跟|与)\s*【?(.+?)】?\s*(?:聊过|聊天|说话)[？?。！!]*$/) ||
+    normalized.match(/^我(最早|最后|最近一次)\s*(?:和|跟|与)\s*【?(.+?)】?\s*(?:聊过|聊天|说话)是什么时候[？?。！!]*$/)
+  if (boundary) {
+    const relationalFirst = /^(?:我和|我跟|我与)/.test(normalized)
+    const phrase = relationalFirst ? boundary[2] : boundary[1]
+    const first = /第一次|最早/.test(phrase)
+    const contact = (relationalFirst ? boundary[1] : boundary[2]).replace(/[【】]/g, '').trim()
+    const asksContent = /说了什么|说的什么|聊了什么|聊的什么/.test(normalized)
+    const asksTime = /什么时候|哪天/.test(normalized)
+    return {
+      intent: 'conversation_boundary', keywords: [], variants: [], source: 'local',
+      contactQuery: contact, boundary: first ? 'first' : 'last', topicQuery: undefined,
+      projection: asksContent && asksTime ? 'time_and_content' : asksContent ? 'content' : 'time'
+    }
+  }
   const recall = normalized.match(
     new RegExp(
       `(?:我和|我跟|我与)\\s*(.+?)\\s*(?:最近|这几天|本周|这个月|本月|今年|上个月|刚刚|刚才)?\\s*(?:${RECALL_QUESTION})`
@@ -603,7 +678,7 @@ export const parseAiSearchPlan = (
     const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>
     const intent = [
       'general',
-      'conversation_recall',
+      'conversation_recall', 'conversation_boundary',
       'conversation_topic_search',
       'global_sender_topic_search',
       'global_group_topic_search',
@@ -626,15 +701,125 @@ export const parseAiSearchPlan = (
   }
 }
 
+const QUERY_UNDERSTANDING_INTENTS: AiSearchIntent[] = [
+  'conversation_recall',
+  'conversation_boundary',
+  'conversation_topic_search',
+  'global_sender_topic_search',
+  'global_group_topic_search',
+  'global_topic_search',
+  'conversation_name_search',
+  'general'
+]
+
+/** Strict host-side validation for the small semantic parser contract. */
+export const parseAiQueryUnderstanding = (value: string): AiQueryUnderstanding | null => {
+  const raw = value.trim()
+  if (!raw.startsWith('{') || !raw.endsWith('}')) return null
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    return null
+  }
+  const allowed = new Set([
+    'mode',
+    'intent',
+    'contactQuery',
+    'topicQuery',
+    'boundary',
+    'projection',
+    'targetQuery',
+    'semanticQuery',
+    'queryVariants',
+    'answerMode',
+    'confidence',
+    'requiresClarification',
+    'clarificationReason'
+  ])
+  if (Object.keys(parsed).some((key) => !allowed.has(key))) return null
+  const intent = String(parsed.intent) as AiSearchIntent
+  if (!QUERY_UNDERSTANDING_INTENTS.includes(intent)) return null
+  const mode = parsed.mode === null || parsed.mode === undefined ? 'structured' : parsed.mode
+  if (mode !== 'structured' && mode !== 'semantic' && mode !== 'clarification') return null
+  if (typeof parsed.confidence !== 'number' || !Number.isFinite(parsed.confidence)) return null
+  const confidence = Math.max(0, Math.min(1, parsed.confidence))
+  if (typeof parsed.requiresClarification !== 'boolean') return null
+  const textField = (key: 'contactQuery' | 'topicQuery'): string | undefined | null => {
+    const candidate = parsed[key]
+    if (candidate === null || candidate === undefined) return undefined
+    if (typeof candidate !== 'string') return null
+    const normalized = candidate.replace(/[【】]/g, '').trim()
+    if (!normalized || normalized.length > 64 || /conversationId|messageId|wxid_|SELECT\s|INSERT\s/i.test(normalized)) return null
+    return normalized
+  }
+  const contactQuery = textField('contactQuery')
+  const topicQuery = textField('topicQuery')
+  if (contactQuery === null || topicQuery === null) return null
+  const boundedField = (key: 'targetQuery' | 'semanticQuery', max: number): string | undefined | null => {
+    const candidate = parsed[key]
+    if (candidate === null || candidate === undefined) return undefined
+    if (typeof candidate !== 'string') return null
+    const normalized = candidate.trim()
+    if (!normalized || normalized.length > max || /conversationId|messageId|wxid_|SELECT\s|INSERT\s/i.test(normalized)) return null
+    return normalized
+  }
+  const targetQuery = boundedField('targetQuery', 64)
+  const semanticQuery = boundedField('semanticQuery', 200)
+  if (targetQuery === null || semanticQuery === null) return null
+  const queryVariants = parsed.queryVariants === null || parsed.queryVariants === undefined ? [] : parsed.queryVariants
+  if (!Array.isArray(queryVariants) || queryVariants.length > 4) return null
+  const normalizedVariants: string[] = []
+  for (const variant of queryVariants) {
+    if (typeof variant !== 'string') return null
+    const normalized = variant.trim()
+    if (!normalized || normalized.length > 80 || /conversationId|messageId|wxid_|SELECT\s|INSERT\s/i.test(normalized)) return null
+    normalizedVariants.push(normalized)
+  }
+  const answerMode = parsed.answerMode === null || parsed.answerMode === undefined ? undefined : parsed.answerMode
+  if (answerMode !== undefined && answerMode !== 'extract' && answerMode !== 'synthesis') return null
+  const boundary = parsed.boundary === null || parsed.boundary === undefined ? undefined : parsed.boundary
+  if (boundary !== undefined && boundary !== 'first' && boundary !== 'last') return null
+  const projection = parsed.projection === null || parsed.projection === undefined ? undefined : parsed.projection
+  if (projection !== undefined && projection !== 'time' && projection !== 'content' && projection !== 'time_and_content') return null
+  if (intent === 'conversation_boundary' && !boundary) return null
+  if (intent === 'conversation_boundary' && topicQuery !== undefined) return null
+  if (intent !== 'conversation_boundary' && boundary !== undefined) return null
+  if (intent !== 'conversation_boundary' && projection !== undefined) return null
+  if (intent === 'conversation_boundary' && !contactQuery) return null
+  if (mode === 'structured' && (targetQuery !== undefined || semanticQuery !== undefined || normalizedVariants.length || answerMode !== undefined)) return null
+  if (mode === 'semantic' && !semanticQuery) return null
+  if (mode === 'clarification' && !parsed.requiresClarification) return null
+  if (mode === 'semantic' && parsed.requiresClarification) return null
+  return {
+    mode,
+    intent,
+    contactQuery,
+    topicQuery,
+    boundary,
+    projection: intent === 'conversation_boundary' ? projection || 'time' : undefined,
+    targetQuery,
+    semanticQuery,
+    queryVariants: normalizedVariants,
+    answerMode: mode === 'semantic' ? answerMode || 'synthesis' : undefined,
+    confidence,
+    requiresClarification: parsed.requiresClarification,
+    clarificationReason:
+      typeof parsed.clarificationReason === 'string'
+        ? parsed.clarificationReason.slice(0, 160)
+        : undefined
+  }
+}
+
 export const mergeAiSearchPlans = (
   local: Pick<
     AiSearchPlan,
-    'intent' | 'keywords' | 'variants' | 'source' | 'contactQuery' | 'topicQuery'
+    'intent' | 'keywords' | 'variants' | 'source' | 'contactQuery' | 'topicQuery' | 'boundary' | 'projection'
   >,
-  ai: Partial<Pick<AiSearchPlan, 'intent' | 'keywords' | 'variants' | 'topicQuery'>> | null
+  ai: Partial<Pick<AiSearchPlan, 'intent' | 'keywords' | 'variants' | 'topicQuery' | 'projection'>> | null
 ): Pick<
   AiSearchPlan,
-  'intent' | 'keywords' | 'variants' | 'source' | 'contactQuery' | 'topicQuery'
+  'intent' | 'keywords' | 'variants' | 'source' | 'contactQuery' | 'topicQuery' | 'boundary' | 'projection'
 > => {
   if (!ai) return local
   const keywords = normalizeTerms([...local.keywords, ...(ai.keywords || [])])
@@ -657,7 +842,9 @@ export const mergeAiSearchPlans = (
     variants,
     source: 'hybrid',
     contactQuery: local.contactQuery,
-    topicQuery: local.topicQuery || ai.topicQuery
+    topicQuery: local.topicQuery || ai.topicQuery,
+    boundary: local.boundary,
+    projection: local.projection || ai.projection
   }
 }
 

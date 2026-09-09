@@ -58,7 +58,10 @@ export const mapSearchResultToTrace = (
   finalEvidenceCount: number
 ): SearchTrace => ({
   knowledgeMessages: result.knowledge.indexedMessageCount,
-  retrievedEvidence: result.candidateEvidenceCount,
+  retrievedEvidence:
+    result.retrieval.intent === 'conversation_recall'
+      ? result.retrieval.sourceMessageCount ?? result.candidateEvidenceCount
+      : result.candidateEvidenceCount,
   finalEvidence: finalEvidenceCount,
   timings: result.timings,
   contextEvidence: result.contextEvidenceCount,

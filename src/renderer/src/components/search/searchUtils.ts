@@ -1,5 +1,5 @@
 import type { Contact, Message } from '../../../../shared/types'
-import type { AiSearchTimeRange } from '../../../../shared/ai-search'
+import { inferAiSearchTimeRange, type AiSearchTimeRange } from '../../../../shared/ai-search'
 import type {
   AISearchCacheRecord,
   EvidenceItem,
@@ -315,8 +315,23 @@ export const buildSearchCacheKey = (
   scope: SearchScope,
   contactMd5: string,
   range: SearchRange,
-  query: string
-): string => JSON.stringify([scope, contactMd5, range, query.trim().toLowerCase()])
+  query: string,
+  resolvedTimeRange?: Pick<AiSearchTimeRange, 'startTime' | 'endTime'>,
+  knowledgeGeneration?: string
+): string => {
+  const base = [scope, contactMd5, range, query.trim().toLowerCase()]
+  const hasResolvedTime = Boolean(
+    resolvedTimeRange &&
+      (resolvedTimeRange.startTime !== undefined || resolvedTimeRange.endTime !== undefined)
+  )
+  if (!hasResolvedTime && !knowledgeGeneration) return JSON.stringify(base)
+  return JSON.stringify([
+    ...base,
+    hasResolvedTime ? resolvedTimeRange?.startTime ?? null : null,
+    hasResolvedTime ? resolvedTimeRange?.endTime ?? null : null,
+    knowledgeGeneration || null
+  ])
+}
 
 export type CreateSearchRequestContextInput = {
   query: string
@@ -324,6 +339,8 @@ export type CreateSearchRequestContextInput = {
   range: SearchRange
   timeRangeOverride?: AiSearchTimeRange
   activeContactMd5?: string
+  now?: Date
+  knowledgeGeneration?: string
   retry?: {
     range: SearchRange
     timeRangeOverride?: AiSearchTimeRange
@@ -335,6 +352,7 @@ export type SearchRequestContext = {
   effectiveRange: SearchRange
   effectiveTimeRangeOverride?: AiSearchTimeRange
   conversationId?: string
+  resolvedTimeRange: AiSearchTimeRange
   cacheKey: string
 }
 
@@ -344,25 +362,41 @@ export const createSearchRequestContext = ({
   range,
   timeRangeOverride,
   activeContactMd5,
+  now,
+  knowledgeGeneration,
   retry
 }: CreateSearchRequestContextInput): SearchRequestContext => {
   const normalizedQuery = query.trim()
   const effectiveRange = retry?.range || range
   const effectiveTimeRangeOverride = retry?.timeRangeOverride || timeRangeOverride
   const conversationId = scope === 'conversation' ? activeContactMd5 : undefined
+  const resolvedTimeRange = inferAiSearchTimeRange(
+    normalizedQuery,
+    effectiveRange,
+    now || new Date(),
+    effectiveTimeRangeOverride
+  )
 
   return {
     normalizedQuery,
     effectiveRange,
     effectiveTimeRangeOverride,
     conversationId,
-    cacheKey: buildSearchCacheKey(scope, conversationId || '', effectiveRange, normalizedQuery)
+    resolvedTimeRange,
+    cacheKey: buildSearchCacheKey(
+      scope,
+      conversationId || '',
+      effectiveRange,
+      normalizedQuery,
+      resolvedTimeRange,
+      knowledgeGeneration
+    )
   }
 }
 
 export const parseSearchCacheKey = (
   key: string
-): { scope: SearchScope; contactMd5: string; range: SearchRange; query: string } | null => {
+): { scope: SearchScope; contactMd5: string; range: SearchRange; query: string; startTime?: number; endTime?: number } | null => {
   try {
     const parts = JSON.parse(key) as unknown
     if (
@@ -377,7 +411,9 @@ export const parseSearchCacheKey = (
       scope: parts[0] as SearchScope,
       contactMd5: typeof parts[1] === 'string' ? parts[1] : '',
       range: parts[2] as SearchRange,
-      query: parts[3]
+      query: parts[3],
+      startTime: typeof parts[4] === 'number' ? parts[4] : undefined,
+      endTime: typeof parts[5] === 'number' ? parts[5] : undefined
     }
   } catch {
     return null

@@ -27,6 +27,27 @@ describe('AI search natural-language time ranges', () => {
     })
   })
 
+  it.each([
+    ['我和BOBO上个月聊了什么', '2026-08-01T00:00:00+08:00', '2026-08-31T23:59:59+08:00'],
+    ['我和BOBO这个月聊了什么', '2026-09-01T00:00:00+08:00', undefined],
+    ['我和BOBO昨天聊了什么', '2026-09-08T00:00:00+08:00', '2026-09-08T23:59:59+08:00'],
+    ['我和BOBO前天聊了什么', '2026-09-07T00:00:00+08:00', '2026-09-07T23:59:59+08:00'],
+    ['我和BOBO去年聊了什么', '2025-01-01T00:00:00+08:00', '2025-12-31T23:59:59+08:00']
+  ])('%s resolves against the injected clock', (query, start, end) => {
+    const range = inferAiSearchTimeRange(query, 'all', new Date('2026-09-09T15:00:00+08:00'))
+    expect(range.startTime).toBe(Math.floor(new Date(start).getTime() / 1000))
+    expect(range.endTime).toBe(end ? Math.floor(new Date(end).getTime() / 1000) : Math.floor(new Date('2026-09-09T15:00:00+08:00').getTime() / 1000))
+  })
+
+  it.each([
+    ['2026-01-10T12:00:00+08:00', '2025-12-01T00:00:00+08:00', '2025-12-31T23:59:59+08:00'],
+    ['2026-03-01T12:00:00+08:00', '2026-02-01T00:00:00+08:00', '2026-02-28T23:59:59+08:00']
+  ])('handles previous-month year and month boundaries from %s', (now, start, end) => {
+    const range = inferAiSearchTimeRange('我和BOBO上个月聊了什么', 'all', new Date(now))
+    expect(range.startTime).toBe(Math.floor(new Date(start).getTime() / 1000))
+    expect(range.endTime).toBe(Math.floor(new Date(end).getTime() / 1000))
+  })
+
   it('keeps an explicit user retry override above the word 最近 in the original question', () => {
     expect(
       inferAiSearchTimeRange('我和张三最近聊了什么？', 'all', NOW, {

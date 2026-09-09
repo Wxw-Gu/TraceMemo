@@ -7,7 +7,7 @@
 export const KNOWLEDGE_SCHEMA_VERSION = 1
 export const DEFAULT_CHUNKER_VERSION = 'conversation-v1'
 
-export type KnowledgeMessageKind = 'text' | 'voice' | 'file' | 'link' | 'system' | 'other'
+export type KnowledgeMessageKind = 'text' | 'voice' | 'file' | 'link' | 'image' | 'video' | 'sticker' | 'system' | 'other'
 export type KnowledgeIndexPhase =
   | 'idle'
   | 'preflight'
@@ -210,6 +210,7 @@ export interface KnowledgeQuery {
   /** Unix epoch milliseconds. */
   endTime?: number
   temporalIntent?: KnowledgeTemporalIntent
+  conversationBoundary?: 'first' | 'last'
 }
 
 export interface KnowledgeSearchRequest extends KnowledgeQuery {
@@ -299,6 +300,7 @@ export interface KnowledgeSearchIpcRequest {
   senderIds?: string[]
   startTime?: number
   endTime?: number
+  conversationBoundary?: 'first' | 'last'
   limit?: number
 }
 

@@ -358,6 +358,36 @@ export class KnowledgeStore {
       ])
     ).filter(Boolean)
     const senderIds = new Set(query.senderIds || [])
+    if (query.conversationBoundary && conversationIds.length === 1) {
+      const direction = query.conversationBoundary === 'first' ? 'ASC' : 'DESC'
+      const row = this.database
+        .prepare(
+          `SELECT conversation_id, message_id, create_time, searchable_text, kind, sender_id, sender_name
+           FROM knowledge_messages
+           WHERE conversation_id = ? AND kind <> 'system'
+           ORDER BY create_time ${direction}, message_id ${direction}
+           LIMIT 1`
+        )
+        .get(conversationIds[0]) as DbRow | undefined
+      const count = this.database
+        .prepare('SELECT COUNT(*) AS total FROM knowledge_messages WHERE conversation_id = ?')
+        .get(conversationIds[0]) as DbRow | undefined
+      const indexState = this.database
+        .prepare('SELECT state, complete_snapshot FROM knowledge_index_state WHERE conversation_id = ?')
+        .get(conversationIds[0]) as DbRow | undefined
+      return {
+        evidence: row ? [this.metadataEvidence(row)] : [],
+        conversationRetrieval: {
+          conversationId: conversationIds[0],
+          totalMessages: Number(count?.total || 0),
+          chunkCount: 0,
+          candidateMessages: row ? 1 : 0,
+          systemMessagesDeprioritized: 0,
+          complete: String(indexState?.state || '') === 'ready' && Number(indexState?.complete_snapshot || 0) === 1
+        },
+        timings: { ...emptyKnowledgeSearchTimings(), messageLoadMs: Date.now() - startedAt, totalMs: Date.now() - startedAt }
+      }
+    }
     if (!terms.length) {
       const messageLoadStartedAt = Date.now()
       const metadata = this.searchByMetadata(query, conversationIds, senderIds)
@@ -832,10 +862,15 @@ export class KnowledgeStore {
         state TEXT NOT NULL,
         high_water_time INTEGER,
         indexed_message_count INTEGER NOT NULL DEFAULT 0,
+        complete_snapshot INTEGER NOT NULL DEFAULT 0,
         last_error TEXT,
         updated_at INTEGER NOT NULL
       ) STRICT;
     `)
+    const stateColumns = new Set(asRows(this.database.prepare('PRAGMA table_info(knowledge_index_state)').all()).map((row) => String(row.name)))
+    if (!stateColumns.has('complete_snapshot')) {
+      this.database.exec('ALTER TABLE knowledge_index_state ADD COLUMN complete_snapshot INTEGER NOT NULL DEFAULT 0')
+    }
     const messageColumns = new Set(
       asRows(this.database.prepare('PRAGMA table_info(knowledge_messages)').all()).map((row) =>
         String(row.name)
@@ -935,7 +970,9 @@ export class KnowledgeStore {
         chunker.version,
         'indexing',
         null,
-        normalized.length
+        normalized.length,
+        null,
+        conversation.completeSnapshot
       )
       await this.writeMessageLedger(
         conversation.conversationId,
@@ -982,7 +1019,9 @@ export class KnowledgeStore {
         chunker.version,
         'ready',
         highWater,
-        normalized.length
+        normalized.length,
+        null,
+        conversation.completeSnapshot
       )
       this.database.exec('COMMIT')
       return { chunkCount: chunks.length, updatedChunks: chunks.length }
@@ -1122,20 +1161,22 @@ export class KnowledgeStore {
     state: string,
     highWater: number | null,
     messageCount: number,
-    error: string | null = null
+    error: string | null = null,
+    completeSnapshot = false
   ): void {
     this.database
       .prepare(
         `INSERT INTO knowledge_index_state (
           conversation_id, account_id, chunker_version, state, high_water_time,
-          indexed_message_count, last_error, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          indexed_message_count, complete_snapshot, last_error, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
           account_id = excluded.account_id,
           chunker_version = excluded.chunker_version,
           state = excluded.state,
           high_water_time = excluded.high_water_time,
           indexed_message_count = excluded.indexed_message_count,
+          complete_snapshot = excluded.complete_snapshot,
           last_error = excluded.last_error,
           updated_at = excluded.updated_at`
       )
@@ -1146,6 +1187,7 @@ export class KnowledgeStore {
         state,
         highWater,
         messageCount,
+        completeSnapshot ? 1 : 0,
         error,
         Date.now()
       )

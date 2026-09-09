@@ -236,6 +236,9 @@ export function AISearchWorkspace({
       range,
       timeRangeOverride,
       activeContactMd5: activeContact?.md5,
+      knowledgeGeneration: knowledgeStatus
+        ? `${knowledgeStatus.state}:${knowledgeStatus.indexedMessageCount}:${knowledgeStatus.indexedChunkCount}:${knowledgeStatus.processedMessages}`
+        : undefined,
       retry
     })
     if (!normalizedQuery) {
@@ -672,8 +675,12 @@ export function AISearchWorkspace({
           <span className="ai-search-kicker">✓ 已完成</span>
           <h2>{resultQuery || query}</h2>
           <p>
-            知识库已收录 {messageCount.toLocaleString()} 条消息 → 找到{' '}
-            {searchTrace?.retrievedEvidence || 0} 条相关消息 → {evidence.length} 条 Evidence →
+            知识库已收录 {messageCount.toLocaleString()} 条消息 →{' '}
+            {cachedAt
+              ? `缓存中保留 ${evidenceCollection.length} 条 Evidence`
+              : searchTrace?.retrievedEvidence !== undefined
+                ? `读取 ${searchTrace.retrievedEvidence} 条范围消息`
+                : `读取 ${evidence.length} 条消息`}{' '}→ {evidence.length} 条 Evidence →
             已生成回答{cachedAt ? ' · 已使用缓存' : ''}
           </p>
           {searchTrace &&

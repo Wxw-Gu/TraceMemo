@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { aiSearchRangeStart } from '../../../../../shared/ai-search'
+import { aiSearchRangeStart, inferAiSearchTimeRange } from '../../../../../shared/ai-search'
 import type { AiSearchTimeRange } from '../../../../../shared/ai-search'
 import {
   RANGE_LABELS,
@@ -9,7 +9,6 @@ import {
   buildSearchCacheKey,
   parseSearchCacheKey,
   readSearchCache,
-  readSearchCacheByQuery,
   writeSearchCache
 } from '../searchUtils'
 import { createSearchCacheRecord, mapCacheRecordToResult } from '../searchMappers'
@@ -178,13 +177,15 @@ export function useSearchHistory({
     setQuery(historyQuery)
     setSelectedEvidence(0)
     setHistoryOpen(false)
+    const resolvedTimeRange = inferAiSearchTimeRange(historyQuery, range, new Date())
     const cacheKey = buildSearchCacheKey(
       scope,
       scope === 'conversation' ? conversationContactMd5 : '',
       range,
-      historyQuery
+      historyQuery,
+      resolvedTimeRange
     )
-    const cached = readSearchCache(cacheKey) || readSearchCacheByQuery(historyQuery)?.record || null
+    const cached = readSearchCache(cacheKey)
     if (!cached) {
       setAnswer('')
       setEvidence([])
