@@ -1,0 +1,134 @@
+{
+  "metadata": {
+    "groupName": "Production Fragment 验收组",
+    "reportDate": "2026-09-09",
+    "dateRange": "09:00-18:30",
+    "messageCount": 128,
+    "activeUsers": 9,
+    "timeSpan": "9 h 30 min",
+    "generatedAt": "2026-09-09 18:35",
+    "recordNote": "虚构数据：仅用于生产 fragment UI contract 验收。",
+    "footerNote": "不对应真实聊天记录。",
+    "heroParticipants": ["真实图片用户", "无头像", "王小明"],
+    "avatars": {
+      "真实图片用户": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
+    },
+    "reportMode": "full"
+  },
+  "report": {
+    "overview": "真实 renderer 生成的 fragment 压力 fixture，覆盖头像、fallback、长昵称、长正文与空模块。",
+    "hero": {
+      "headline": "生产 Fragment 压力验收",
+      "summary": "头像必须保持受保护的几何尺寸，文本必须在桌面和移动宽度下可读。",
+      "keyTakeaway": "模板主题可以变化，但不能把生产 fragment 挤坏。",
+      "pendingNote": "",
+      "statusLine": "使用真实与 fallback 头像混合场景。"
+    },
+    "topics": [
+      {
+        "title": "超长话题标题：接口回归、缓存排查与多端发布窗口协调需要持续跟踪",
+        "timeRange": "09:10-11:40",
+        "heat": "高",
+        "participants": ["真实图片用户", "无头像", "王小明", "赵小红", "陈晨", "李雷", "韩梅梅", "超长昵称示例用户（含 &<> 特殊字符）以及更多文字"],
+        "summary": "多个参与者同时讨论时，参与者头像与昵称应换行而不突破 topic 容器。",
+        "conclusions": [{ "text": "保留最小可读正文宽度，并保证 fallback 与真实图片头像的几何一致。" }],
+        "keywords": ["头像", "长昵称", "移动端", "contract"]
+      },
+      {
+        "title": "第二个话题",
+        "timeRange": "14:00-15:30",
+        "heat": "中",
+        "participants": ["无头像"],
+        "summary": "单参与者与空 optional 模块不应留下异常空白。",
+        "conclusions": [],
+        "keywords": ["空模块"]
+      }
+    ],
+    "resources": [],
+    "importantMessages": [
+      {
+        "sender": "真实图片用户",
+        "time": "10:01",
+        "content": "普通图片头像与普通正文。",
+        "note": "图片头像"
+      },
+      {
+        "sender": "超长昵称示例用户（含 &<> 特殊字符）以及更多文字",
+        "time": "10:02",
+        "content": "这是一段包含中文、English、emoji 🙂、URL-like https://example.invalid/path?long=query 与超长连续字符串abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 的多行正文。\n第二行仍应自然换行，且不能被头像、昵称或时间挤压。",
+        "note": "长昵称与长正文"
+      },
+      {
+        "sender": "无头像",
+        "time": "10:03",
+        "content": "fallback avatar 使用单字名称。",
+        "note": "单字 fallback"
+      },
+      {
+        "sender": "王小明",
+        "time": "10:04",
+        "content": "fallback avatar 使用多字名称。",
+        "note": "多字 fallback"
+      }
+    ],
+    "quotes": [
+      {
+        "messages": [
+          { "sender": "真实图片用户", "content": "普通金句与真实图片头像。" },
+          { "sender": "无头像", "content": "fallback 头像也必须保持与消息头像相同的安全几何。" }
+        ],
+        "note": "带作者的普通金句。"
+      },
+      {
+        "messages": [
+          { "sender": "超长昵称示例用户（含 &<> 特殊字符）以及更多文字", "content": "没有额外作者字段的长金句：当内容足够长时，消息容器的正文宽度仍必须大于零，并能在 430px 视口中换行。" }
+        ],
+        "note": ""
+      }
+    ],
+    "qa": [
+      { "question": "长正文会不会压住头像？", "answer": "不会，正文容器具有最小可用宽度与换行保护。", "answerer": "无头像" }
+    ],
+    "todos": [
+      { "task": "完成 Production Fragment UI Contract 验收记录", "owner": "真实图片用户", "deadline": "今晚", "topic": "模板", "note": "正常 TODO" }
+    ],
+    "unresolved": [
+      { "question": "超长连续字符串在窄屏是否溢出？", "owner": "王小明", "status": "待验证", "note": "使用 guardrail 自动检查。", "lastDiscussedAt": "18:20" }
+    ],
+    "storylines": [],
+    "reversals": [],
+    "participantChains": [],
+    "analytics": {
+      "topicHeat": [],
+      "activeTimeline": "09:00-18:30",
+      "topSpeakers": [
+        { "name": "真实图片用户", "count": 34 },
+        { "name": "无头像", "count": 21 },
+        { "name": "王小明", "count": 15 }
+      ],
+      "voiceLeaderboard": []
+    },
+    "keywords": ["production", "avatar", "fallback", "长昵称", "长正文"],
+    "media": { "gallery": [], "voiceHighlights": [], "funBadges": [] },
+    "sectionMeta": {
+      "topics": { "enabled": true, "importance": 1, "confidence": 1, "totalCount": 2, "displayedCount": 2 },
+      "importantMessages": { "enabled": true, "importance": 1, "confidence": 1, "totalCount": 4, "displayedCount": 4 },
+      "moments": { "enabled": true, "importance": 1, "confidence": 1, "totalCount": 2, "displayedCount": 2 },
+      "actions": { "enabled": true, "importance": 1, "confidence": 1, "totalCount": 2, "displayedCount": 2 },
+      "qa": { "enabled": true, "importance": 1, "confidence": 1, "totalCount": 1, "displayedCount": 1 },
+      "resources": { "enabled": false, "importance": 0, "confidence": 1, "totalCount": 0, "displayedCount": 0 }
+    },
+    "summaryStats": {
+      "messageCount": 128,
+      "activeUsers": 9,
+      "topicCount": 2,
+      "mediaCount": 0,
+      "imageCount": 0,
+      "voiceCount": 0,
+      "stickerCount": 0,
+      "conclusionCount": 1,
+      "todoCount": 1,
+      "unresolvedCount": 1
+    }
+  }
+}

@@ -19,6 +19,7 @@ import { resolveMd5, getGroupSnapshot } from './services/chat-service'
 import { imageInsightService } from './services/image-insight-service'
 import { getReportTemplate } from '../shared/report-templates'
 import type { ReportTemplateRef } from '../shared/report-template-package'
+import { injectReportTemplateFragmentContract } from '../shared/report-template-fragment-contract'
 import { reportTemplateService, validateReportTemplateHtml } from './report-template-service'
 
 const LEGACY_TEMPLATE_FILES: Record<string, string> = {
@@ -92,11 +93,13 @@ const hashName = (name: string): number => {
   return hash
 }
 
-const fallbackAvatar = (name: string): string => {
+type RenderedAvatar = { source: string; fallback: boolean }
+
+const fallbackAvatar = (name: string): RenderedAvatar => {
   const hue = hashName(name) % 360
   const initial = escapeHtml(Array.from(name.trim())[0] || '?')
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><rect width="96" height="96" rx="18" fill="hsl(${hue} 45% 82%)"/><text x="48" y="58" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,PingFang SC,sans-serif" font-size="38" fill="hsl(${hue} 35% 28%)">${initial}</text></svg>`
-  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`
+  return { source: `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`, fallback: true }
 }
 
 const imageMimeType = (contentType: string | null, source: string): string => {
@@ -108,9 +111,9 @@ const imageMimeType = (contentType: string | null, source: string): string => {
   return 'image/jpeg'
 }
 
-const embedAvatar = async (source: string | undefined, name: string): Promise<string> => {
+const embedAvatar = async (source: string | undefined, name: string): Promise<RenderedAvatar> => {
   if (!source) return fallbackAvatar(name)
-  if (/^data:image\/[a-z0-9.+/-]+;base64,[a-z0-9+/=]+$/i.test(source)) return source
+  if (/^data:image\/[a-z0-9.+/-]+;base64,[a-z0-9+/=]+$/i.test(source)) return { source, fallback: false }
 
   try {
     if (/^https?:\/\//i.test(source)) {
@@ -123,12 +126,12 @@ const embedAvatar = async (source: string | undefined, name: string): Promise<st
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const mime = imageMimeType(response.headers.get('content-type'), source)
-      return `data:${mime};base64,${Buffer.from(await response.arrayBuffer()).toString('base64')}`
+      return { source: `data:${mime};base64,${Buffer.from(await response.arrayBuffer()).toString('base64')}`, fallback: false }
     }
 
     const localPath = source.startsWith('file://') ? new URL(source) : source
     const buffer = await fs.readFile(localPath)
-    return `data:${imageMimeType(null, source)};base64,${buffer.toString('base64')}`
+    return { source: `data:${imageMimeType(null, source)};base64,${buffer.toString('base64')}`, fallback: false }
   } catch (error) {
     console.warn(`[GroupReport] avatar fallback for ${name}:`, error)
     return fallbackAvatar(name)
@@ -195,17 +198,23 @@ const addReportCsp = (html: string, allowFileImages = true): string =>
   )
 
 const inlineTemplateAssets = async (html: string, templateRoot: string): Promise<string> => {
-  const matches = [...html.matchAll(/\bsrc=(['"])(assets\/[A-Za-z0-9._/-]+)\1/g)]
-  let result = html
-  for (const match of matches) {
-    const relative = match[2]
+  const assetDataUrl = async (relative: string): Promise<string | null> => {
     const assetPath = path.resolve(templateRoot, relative)
-    if (!assetPath.startsWith(`${path.resolve(templateRoot)}${path.sep}`)) continue
+    if (!assetPath.startsWith(`${path.resolve(templateRoot)}${path.sep}`)) return null
     const extension = path.extname(assetPath).toLowerCase()
     const mime =
       extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg'
     const data = (await fs.readFile(assetPath)).toString('base64')
-    result = result.replace(match[0], `src="data:${mime};base64,${data}"`)
+    return `data:${mime};base64,${data}`
+  }
+  let result = html
+  for (const match of html.matchAll(/\bsrc=(['"])(assets\/[A-Za-z0-9._/-]+)\1/g)) {
+    const dataUrl = await assetDataUrl(match[2])
+    if (dataUrl) result = result.replace(match[0], `src="${dataUrl}"`)
+  }
+  for (const match of html.matchAll(/\burl\(\s*(['"]?)(assets\/[A-Za-z0-9._/-]+)\1\s*\)/g)) {
+    const dataUrl = await assetDataUrl(match[2])
+    if (dataUrl) result = result.replace(match[0], `url("${dataUrl}")`)
   }
   return result
 }
@@ -267,24 +276,34 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
   report.media?.voiceHighlights?.forEach((item) => avatarNames.add(item.sender))
   report.media?.funBadges?.forEach((item) => avatarNames.add(item.owner))
 
-  const avatars = new Map<string, string>()
+  const avatars = new Map<string, RenderedAvatar>()
   await Promise.all(
     Array.from(avatarNames).map(async (name) => {
       avatars.set(name, await embedAvatar(metadata.avatars[name], name))
     })
   )
-  const avatar = (name: string): string => avatars.get(name) || fallbackAvatar(name)
+  const avatar = (name: string): RenderedAvatar => avatars.get(name) || fallbackAvatar(name)
+  const renderAvatar = (
+    name: string,
+    role: 'hero' | 'message' | 'participant' | 'ranking',
+    legacyClass = '',
+    alt = ''
+  ): string => {
+    const rendered = avatar(name)
+    const fallbackClass = rendered.fallback ? ' tm-avatar--fallback' : ''
+    return `<img class="${legacyClass ? `${legacyClass} ` : ''}tm-avatar tm-avatar--${role}${fallbackClass}" src="${escapeHtml(rendered.source)}" alt="${escapeHtml(alt)}">`
+  }
 
   const heroNames = selectHeroParticipantNames(metadata.heroParticipants)
   const heroAvatars = heroNames
-    .map((name) => `<img src="${avatar(name)}" alt="${escapeHtml(name)}">`)
+    .map((name) => renderAvatar(name, 'hero', '', name))
     .join('')
   const heroAvatarClass = heroNames.length ? `avatar-count-${heroNames.length}` : 'empty-section'
 
   const topicCards = report.topics
     .map(
-      (topic) => `<div class="card topic-card">
-        <div class="topic-title-row"><h3>${escapeHtml(topic.title)}</h3><span class="heat ${heatClass(topic.heat)}">${escapeHtml(topic.heat)}热</span></div>
+      (topic) => `<div class="card topic-card tm-fragment tm-topic-card">
+        <div class="topic-title-row tm-topic-card__title-row"><h3>${escapeHtml(topic.title)}</h3><span class="heat ${heatClass(topic.heat)}">${escapeHtml(topic.heat)}热</span></div>
         <div class="topic-meta">${escapeHtml(topic.timeRange)}</div>
         <p>${escapeHtml(topic.summary)}</p>
         ${
@@ -327,11 +346,11 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
               })()
             : ''
         }
-        <div class="participants">${topic.participants
+        <div class="participants tm-topic-card__participants">${topic.participants
           .slice(0, 5)
           .map(
             (name) =>
-              `<span class="person-chip"><img src="${avatar(name)}" alt=""><b>${escapeHtml(name)}</b></span>`
+              `<span class="person-chip tm-participant">${renderAvatar(name, 'participant')}<b class="tm-participant__name">${escapeHtml(name)}</b></span>`
           )
           .join('')}</div>
         <div class="keywords">${topic.keywords.map((word) => `<span>${escapeHtml(word)}</span>`).join('')}</div>
@@ -348,10 +367,10 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
 
   const importantMessages = report.importantMessages
     .map(
-      (message) => `<div class="important-card">
-        <img class="avatar" src="${avatar(message.sender)}" alt="">
-        <div class="important-body"><div class="important-meta"><b>${escapeHtml(message.sender)}</b><span>${escapeHtml(message.time)}</span></div>
-        <div class="important-text">${escapeHtml(message.content)}</div><div class="important-note">${escapeHtml(message.note)}</div></div>
+      (message) => `<div class="important-card tm-fragment tm-message tm-message--important">
+        ${renderAvatar(message.sender, 'message', 'avatar')}
+        <div class="important-body tm-message__body"><div class="important-meta tm-message__meta"><b class="tm-message__author">${escapeHtml(message.sender)}</b><span class="tm-message__time">${escapeHtml(message.time)}</span></div>
+        <div class="important-text tm-message__text">${escapeHtml(message.content)}</div><div class="important-note tm-message__note">${escapeHtml(message.note)}</div></div>
       </div>`
     )
     .join('')
@@ -359,12 +378,12 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
   const quoteBlocks = report.quotes
     .map(
       (quote) =>
-        `<div class="chat-block">${quote.messages
+        `<div class="chat-block tm-fragment tm-quote">${quote.messages
           .map(
             (
               message
-            ) => `<div class="chat-msg"><img class="chat-avatar" src="${avatar(message.sender)}" alt=""><div>
-            <div class="chat-name">${escapeHtml(message.sender)}</div><div class="chat-bubble">${escapeHtml(message.content)}</div>
+            ) => `<div class="chat-msg tm-message tm-message--quote">${renderAvatar(message.sender, 'message', 'chat-avatar')}<div class="tm-message__body">
+            <div class="chat-name tm-message__author">${escapeHtml(message.sender)}</div><div class="chat-bubble tm-message__text">${escapeHtml(message.content)}</div>
           </div></div>`
           )
           .join('')}<div class="quote-note">${escapeHtml(quote.note)}</div></div>`
@@ -373,7 +392,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
 
   const todoCards = (report.todos || [])
     .map(
-      (item) => `<div class="action-card todo-card">
+      (item) => `<div class="action-card todo-card tm-fragment tm-todo-card">
         <b>${escapeHtml(item.task)}</b>
         <div>${[item.owner || '', item.deadline || '', item.topic || ''].filter(Boolean).map(escapeHtml).join(' · ')}</div>
         ${item.note ? `<div class="action-note">${escapeHtml(item.note)}</div>` : ''}
@@ -383,7 +402,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
 
   const unresolvedCards = (report.unresolved || [])
     .map(
-      (item) => `<div class="action-card unresolved-card">
+      (item) => `<div class="action-card unresolved-card tm-fragment tm-unresolved-card">
         <b>${escapeHtml(item.question)}</b>
         <div>${[item.owner || '', item.lastDiscussedAt || '', item.status].filter(Boolean).map(escapeHtml).join(' · ')}</div>
         <div class="action-note">${escapeHtml(item.note)}</div>
@@ -410,7 +429,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
 
   const reversalCards = (report.reversals || [])
     .map(
-      (item) => `<div class="qa-card">
+      (item) => `<div class="qa-card tm-fragment tm-reversal-card">
         <b>${escapeHtml(item.topic)}</b>
         <div>最初：${escapeHtml(item.initialView)}</div>
         <div>后来：${escapeHtml(item.finalView)}</div>
@@ -449,7 +468,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
 
   const voiceCards = (report.media?.voiceHighlights || [])
     .map(
-      (item) => `<div class="qa-card">
+      (item) => `<div class="qa-card tm-fragment tm-voice-card">
         <b>${escapeHtml(item.title)} · ${escapeHtml(item.sender)}</b>
         <div>${escapeHtml(item.note)}</div>
       </div>`
@@ -458,8 +477,8 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
 
   const voiceRankCards = (report.analytics.voiceLeaderboard || [])
     .map(
-      (item, index) => `<div class="rank">
-        <img src="${avatar(item.sender)}" alt="">
+      (item, index) => `<div class="rank tm-fragment tm-ranking-item">
+        ${renderAvatar(item.sender, 'ranking')}
         <b>${index + 1}. ${escapeHtml(item.sender)}</b>
         <span>${item.count} 条 · ${item.durationSec} 秒</span>
       </div>`
@@ -480,7 +499,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
     .slice(0, 5)
     .map(
       (speaker, index) =>
-        `<div class="rank"><img src="${avatar(speaker.name)}" alt=""><b>${index + 1}. ${escapeHtml(speaker.name)}</b><span>${Math.max(0, speaker.count)} 条</span></div>`
+        `<div class="rank tm-fragment tm-ranking-item">${renderAvatar(speaker.name, 'ranking')}<b>${index + 1}. ${escapeHtml(speaker.name)}</b><span>${Math.max(0, speaker.count)} 条</span></div>`
     )
     .join('')
 
@@ -510,7 +529,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
   const qaCards = report.qa
     .map(
       (item) =>
-        `<div class="qa-card"><b>Q：${escapeHtml(item.question)}</b><div>A：${escapeHtml(item.answer)}${item.answerer ? ` — ${escapeHtml(item.answerer)}` : ''}</div></div>`
+        `<div class="qa-card tm-fragment tm-qa-card"><b>Q：${escapeHtml(item.question)}</b><div>A：${escapeHtml(item.answer)}${item.answerer ? ` — ${escapeHtml(item.answerer)}` : ''}</div></div>`
     )
     .join('')
 
@@ -637,7 +656,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
   for (const [key, value] of Object.entries(values)) html = replacePlaceholder(html, key, value)
   // 清空模板中残留的未使用占位符(模板独有但 values 没提供的键)
   html = html.replace(/\{\{[A-Z_]+\}\}/g, '')
-  return addReportCsp(html, resolvedTemplate.source === 'builtin')
+  return addReportCsp(injectReportTemplateFragmentContract(html), resolvedTemplate.source === 'builtin')
 }
 
 const renderReportSnapshotHtml = async (
