@@ -26,6 +26,7 @@ import { agentHubService } from './services/agent-hub-service'
 import { safeError, safeLog, safeWarn } from './safe-log'
 import { apiTokenStore } from './api-token-store'
 import { HttpMediaError, readImageMedia, type HttpImageResult } from './http-media-service'
+import { LocalQueryApiService } from './services/local-query-api-service'
 
 export const DEFAULT_HTTP_HOST = '127.0.0.1'
 export const DEFAULT_HTTP_PORT = 6131
@@ -51,6 +52,12 @@ export interface HttpServerOptions {
   scheduledReportContactsProvider?: ScheduledReportApiDependencies['listContacts']
   scheduledReportDatabaseReadyProvider?: ScheduledReportApiDependencies['isDatabaseReady']
   scheduledReportPlatform?: NodeJS.Platform
+  queryApiService?: LocalQueryApiService
+}
+
+let configuredQueryApiService: LocalQueryApiService | undefined
+export function setLocalQueryApiService(service: LocalQueryApiService | undefined): void {
+  configuredQueryApiService = service
 }
 
 type RouteHandler = (ctx: RouteContext) => void | Promise<void>
@@ -542,6 +549,45 @@ function createScheduledReportRoute(
 }
 
 const MEDIA_ROUTE_PREFIX = '/api/v1/media/'
+const QUERY_ROUTE_PREFIX = '/api/v1/query/'
+
+function queryStatusCode(status: string): number {
+  if (status === 'completed') return 200
+  if (status === 'contact_not_found') return 404
+  if (status === 'ambiguous_contact') return 409
+  if (status === 'knowledge_unavailable') return 503
+  if (status === 'retrieval_incomplete') return 206
+  return 400
+}
+
+function createQueryRoute(api: LocalQueryApiService): RouteHandler | undefined {
+  return async ({ req, res, body }) => {
+    const pathname = new URL(req.url || '/', 'http://localhost').pathname
+    if (pathname === '/api/v1/query/capabilities') {
+      if (req.method !== 'GET') return sendError(res, 405, '需要 GET 请求')
+      return sendJson(res, 200, api.capabilities())
+    }
+    if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
+    let payload: any
+    try { payload = JSON.parse(typeof body === 'string' ? body : '') } catch { return sendError(res, 400, 'invalid_request') }
+    if (!payload || typeof payload !== 'object') return sendError(res, 400, 'invalid_request')
+    try {
+      const result = pathname === '/api/v1/query/messages'
+        ? await api.messages(payload)
+        : pathname === '/api/v1/query/search'
+          ? await api.search(payload)
+          : pathname === '/api/v1/query/message-context'
+            ? await api.context(payload)
+            : pathname === '/api/v1/query/conversation-overview'
+              ? await api.overview(payload)
+              : undefined
+      if (!result) return sendError(res, 404, `端点不存在: ${pathname}`)
+      return sendJson(res, queryStatusCode(result.status), result)
+    } catch (error) {
+      return sendError(res, 400, error instanceof Error ? error.message : 'invalid_request')
+    }
+  }
+}
 
 function createMediaRoute(
   mediaProvider: (messageId: string) => Promise<HttpImageResult>
@@ -599,6 +645,7 @@ export function startHttpServer(
   const tokenProvider = options.tokenProvider || (() => apiTokenStore.getTokenForAuthentication())
   const mediaProvider = options.mediaProvider || readImageMedia
   const scheduledReportApi = createScheduledReportApi(options)
+  const queryApi = options.queryApiService || configuredQueryApiService || new LocalQueryApiService()
   return new Promise((resolve, reject) => {
     const server: Server = http.createServer(async (req, res) => {
       try {
@@ -613,6 +660,7 @@ export function startHttpServer(
         const handler =
           routes[url.pathname] ||
           createScheduledReportRoute(url.pathname, scheduledReportApi) ||
+          (url.pathname.startsWith(QUERY_ROUTE_PREFIX) ? createQueryRoute(queryApi) : undefined) ||
           (url.pathname.startsWith(MEDIA_ROUTE_PREFIX)
             ? createMediaRoute(mediaProvider)
             : undefined)

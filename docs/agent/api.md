@@ -112,3 +112,37 @@ curl -H "$AUTH" "$BASE/chatlog?talker=技术交流群&time=2026-08-07"
 ## 与 MCP 的关系
 
 当前实现没有把 `6131` 暴露为 MCP Server。需要在 Agent 中使用时，请安装随应用提供的 Reader Skill，并让 Skill 通过普通 HTTP 请求调用本 API。
+
+## LLM-friendly Query Tool API
+
+这些端点提供稳定的结构化 Query primitive，不接收自然语言问题，也不会调用 AI。它们与现有 API 共用端口、Bearer Token、loopback 和 CORS 安全策略。
+
+```bash
+BASE="http://127.0.0.1:6131/api/v1"
+AUTH="Authorization: Bearer ${TRACEMEMO_API_TOKEN:-$WECHATEXPLORER_API_TOKEN}"
+
+# 能力目录
+curl -H "$AUTH" "$BASE/query/capabilities"
+
+# BOBO 的第一条真实互动
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/messages" \
+  -d '{"target":{"query":"BOBO"},"timeRange":{"kind":"all"},"direction":"any","order":"asc","limit":1,"excludeSystem":true}'
+
+# 上个月 BOBO 发来的文件
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/messages" \
+  -d '{"target":{"query":"BOBO"},"timeRange":{"kind":"previous_month"},"direction":"from_target","messageTypes":["file"],"order":"desc","limit":1}'
+
+# 受限语义关键词检索（最多 4 个 variants）
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/search" \
+  -d '{"target":{"query":"BOBO"},"timeRange":{"kind":"all"},"query":"答应之后给我或者帮我完成某件事情","variants":["我给你","我发你","弄好给你"],"limit":20}'
+
+# 按会话和时间范围提取可供总结的证据
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/conversation-overview" \
+  -d '{"target":{"query":"BOBO"},"timeRange":{"kind":"previous_month"}}'
+```
+
+`query/messages` 的 `messageRef` 是服务端生成的不透明引用，可直接传给 `query/message-context` 获取前后文；不要自行构造 wxid、md5 或数据库路径。
+
+每条消息都会返回 `messageType`（`text`、`image`、`voice`、`video`、`file`、`link`、`sticker`、`system` 或 `other`）。非文本消息不会伪造 `text`；可识别的图片、视频、贴纸和文件会返回不含密钥或本地路径的 `attachment` 元数据。
+
+`conversation-overview` 同时返回 `sourceCoverage` 与 `selection`：前者描述时间范围内源消息是否完整及 `sourceMessageCount`，后者描述从源消息中选出的 Evidence 数量及是否抽样。`evidence` 最终按 `timestamp` 升序返回，`messageRef` 是唯一推荐的消息引用。

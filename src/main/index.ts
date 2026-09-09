@@ -74,7 +74,7 @@ import type {
 import { KeyServiceMac } from './key-service-mac'
 import { KeyService as KeyServiceWin } from './key-service-win'
 import * as chat from './services/chat-service'
-import { apiServer } from './http-server'
+import { apiServer, setLocalQueryApiService } from './http-server'
 import { skillResourceService } from './services/skill-resource-service'
 import { buildLocalApiCurlCommand, testLocalApiRequest } from './services/local-api-test-service'
 import { isWechatRunning } from './services/wechat-process-status'
@@ -163,6 +163,7 @@ import {
   WINDOWS_VC_RUNTIME_ERROR_MESSAGE
 } from '../shared/windows-runtime'
 import { KnowledgeSearchService } from './knowledge/knowledge-search-service'
+import { LocalQueryApiService } from './services/local-query-api-service'
 import { AiSearchPipelineService } from './services/ai-search-pipeline-service'
 import { runLegacySafeStorageHelper } from './legacy-safe-storage-helper'
 import { runFirstLaunchMigration } from './app-data-migration'
@@ -182,6 +183,7 @@ let voiceService: VoiceService | null = null
 let voiceRecognition: VoiceRecognitionUseCase | null = null
 let voiceBatchService: VoiceBatchService | null = null
 let knowledgeSearchService: KnowledgeSearchService | null = null
+let localQueryApiService: LocalQueryApiService | null = null
 let aiSearchPipelineService: AiSearchPipelineService | null = null
 let imageDecryptService: ImageDecryptService | null = null
 let stickerService: StickerService | null = null
@@ -614,6 +616,8 @@ app.whenReady().then(async () => {
     knowledgeSearchService?.indexVoiceTranscript(update)
   )
   aiSearchPipelineService = new AiSearchPipelineService(knowledgeSearchService, aiProviderService)
+  localQueryApiService = new LocalQueryApiService(knowledgeSearchService)
+  setLocalQueryApiService(localQueryApiService)
   knowledgeSearchService.onStatusChange((status) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send('knowledge:status', status)

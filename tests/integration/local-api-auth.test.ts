@@ -127,6 +127,15 @@ describe('Local API authentication', () => {
     await expect(response.json()).resolves.toMatchObject({ count: 1 })
   })
 
+  it('exposes the query capability catalog only with the existing bearer token', async () => {
+    const handle = await startFixtureServer()
+    const path = `${baseUrl(handle)}/api/v1/query/capabilities`
+    expect((await fetch(path)).status).toBe(401)
+    const response = await fetch(path, { headers: { Authorization: `Bearer ${VALID_TOKEN}` } })
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ version: 1, tools: { query_messages: { limitMax: 200 } } })
+  })
+
   it.each([
     ['GET', '/api/v1/current_time'],
     ['GET', '/api/v1/contact'],
@@ -139,7 +148,9 @@ describe('Local API authentication', () => {
     ['POST', '/api/v1/report'],
     ['GET', '/api/v1/agent/status'],
     ['POST', '/api/v1/agent/group-report'],
-    ['POST', '/api/v1/agent/send']
+    ['POST', '/api/v1/agent/send'],
+    ['GET', '/api/v1/query/capabilities'],
+    ['POST', '/api/v1/query/messages']
   ])('protects every non-health route: %s %s', async (method, pathname) => {
     const handle = await startFixtureServer()
     const response = await fetch(`${baseUrl(handle)}${pathname}`, {
