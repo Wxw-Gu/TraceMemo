@@ -155,6 +155,8 @@ const api = {
     ipcRenderer.invoke('group-exit-monitor:checkNow'),
   clearGroupExitMonitorEvents: (): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:clearEvents'),
+  resendGroupExitMonitorEvent: (eventId: string): Promise<GroupExitMonitorState> =>
+    ipcRenderer.invoke('group-exit-monitor:resendEvent', eventId),
   markGroupExitMonitorRead: (readAt?: number): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:markRead', readAt),
   listWechatActionLogs: (): Promise<ActionLogEntry[]> =>

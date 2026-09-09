@@ -1175,6 +1175,9 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('group-exit-monitor:checkNow', () => groupExitMonitorService.checkNow())
   ipcMain.handle('group-exit-monitor:clearEvents', () => groupExitMonitorService.clearEvents())
+  ipcMain.handle('group-exit-monitor:resendEvent', (_, eventId: string) =>
+    groupExitMonitorService.resendEvent(eventId)
+  )
   ipcMain.handle('group-exit-monitor:markRead', (_, readAt?: number) =>
     groupExitMonitorService.markRead(readAt)
   )

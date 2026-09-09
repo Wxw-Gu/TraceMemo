@@ -602,7 +602,8 @@ class GroupExitMonitorService {
 
   private async notifyGroup(
     group: GroupSnapshotRecord,
-    event: GroupExitMonitorEvent
+    event: GroupExitMonitorEvent,
+    idempotencyKey = `member_left_notification:${event.id}`
   ): Promise<void> {
     event.notificationStatus = 'pending'
     event.notification = { status: 'pending' }
@@ -610,7 +611,7 @@ class GroupExitMonitorService {
     this.broadcast()
     try {
       const result = await this.actionGateway.execute({
-        idempotencyKey: `member_left_notification:${event.id}`,
+        idempotencyKey,
         origin: 'member_monitor',
         purpose: 'member_left_notification',
         triggerType: 'automation',
@@ -663,6 +664,17 @@ class GroupExitMonitorService {
       this.save()
       this.broadcast()
     }
+  }
+
+  async resendEvent(eventId: string): Promise<GroupExitMonitorState> {
+    const event = this.events.find((item) => item.id === eventId)
+    if (!event) throw new Error('退群动态不存在')
+    await this.notifyGroup(
+      { roomId: event.roomId, groupName: event.groupName } as GroupSnapshotRecord,
+      event,
+      `member_left_notification:${event.id}:retry:${Date.now()}`
+    )
+    return this.getState()
   }
 
   private filePath(): string {

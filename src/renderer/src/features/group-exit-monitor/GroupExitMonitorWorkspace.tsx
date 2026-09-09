@@ -85,10 +85,14 @@ const sendCapabilityTone = (capability: PersonalWechatSendCapability | null): st
 
 function EventNotificationStatus({
   event,
-  onOpenSendSettings
+  onOpenSendSettings,
+  onResend,
+  resending
 }: {
   event: GroupExitMonitorState['events'][number]
   onOpenSendSettings?: () => void
+  onResend?: () => void
+  resending?: boolean
 }): React.ReactElement {
   const status = event.notificationStatus || event.notification?.status || 'not_requested'
   const details =
@@ -118,6 +122,11 @@ function EventNotificationStatus({
       onOpenSendSettings ? (
         <Button variant="link" size="sm" onClick={onOpenSendSettings}>
           去设置
+        </Button>
+      ) : null}
+      {status !== 'sent' && status !== 'pending' && onResend ? (
+        <Button variant="link" size="sm" onClick={onResend} disabled={resending}>
+          {resending ? '发送中...' : '重新发送'}
         </Button>
       ) : null}
     </div>
@@ -455,6 +464,7 @@ export function GroupExitMonitorWorkspace({
   const [templateError, setTemplateError] = React.useState('')
   const [selectedRoomId, setSelectedRoomId] = React.useState('all')
   const [view, setView] = React.useState<'events' | 'manage'>('events')
+  const [resendingEventId, setResendingEventId] = React.useState<string | null>(null)
   const [manageKeyword, setManageKeyword] = React.useState('')
   const [manageFilter, setManageFilter] = React.useState<GroupSelectionFilter>('all')
   const [selectedManageRoomIds, setSelectedManageRoomIds] = React.useState<Set<string>>(
@@ -591,6 +601,19 @@ export function GroupExitMonitorWorkspace({
       setState(await api.clearGroupExitMonitorEvents())
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }
+
+  const resendEvent = async (eventId: string): Promise<void> => {
+    if (resendingEventId || typeof window.api.resendGroupExitMonitorEvent !== 'function') return
+    setResendingEventId(eventId)
+    setError('')
+    try {
+      setState(await window.api.resendGroupExitMonitorEvent(eventId))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setResendingEventId(null)
     }
   }
 
@@ -857,6 +880,8 @@ export function GroupExitMonitorWorkspace({
                       <EventNotificationStatus
                         event={event}
                         onOpenSendSettings={onOpenSendSettings}
+                        onResend={() => void resendEvent(event.id)}
+                        resending={resendingEventId === event.id}
                       />
                       <dl className="exit-monitor-event-details">
                         <div>

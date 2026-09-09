@@ -275,6 +275,7 @@ declare global {
       setGroupExitMonitorNotificationTemplate: (template: string) => Promise<GroupExitMonitorState>
       checkGroupExitMonitorNow: () => Promise<GroupExitMonitorState>
       clearGroupExitMonitorEvents: () => Promise<GroupExitMonitorState>
+      resendGroupExitMonitorEvent: (eventId: string) => Promise<GroupExitMonitorState>
       markGroupExitMonitorRead: (readAt?: number) => Promise<GroupExitMonitorState>
       listWechatActionLogs: () => Promise<ActionLogEntry[]>
       onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => () => void
