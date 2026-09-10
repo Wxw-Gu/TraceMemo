@@ -48,6 +48,7 @@ Agent Hub 让微信机器人调用本机 TraceMemo；Reader Skill / Local HTTP A
 ## 开发文档
 
 - [开发、测试与构建](./development/overview.md)
+- [Query Agent POC（开发测试入口）](./development/query-agent-poc.md)
 - [本地启动排障](./development/local-startup-troubleshooting.md)
 - [macOS 数据访问说明](./platform/macos.md)
 - [关闭 SIP 教程](./mac-disable-sip.md)

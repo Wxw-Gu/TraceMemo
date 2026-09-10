@@ -3,9 +3,11 @@ import { app } from 'electron'
 import { apiTokenStore } from './api-token-store'
 import { AIProviderService } from './services/ai-provider-service'
 import { QueryAgentPocService, type QueryAgentToolResult } from './services/query-agent-poc-service'
+import { parsePocQuestion } from './query-agent-poc-cli'
+import { formatProviderDiagnostics, formatTiming } from './query-agent-poc-report'
 
 const baseUrl = (process.env.TRACEMEMO_QUERY_API_BASE || 'http://127.0.0.1:6131/api/v1').replace(/\/+$/, '')
-const question = process.argv.slice(2).join(' ').trim()
+const question = parsePocQuestion(process.argv.slice(2))
 
 async function callQueryApi(name: string, input: Record<string, unknown>): Promise<QueryAgentToolResult> {
   const paths: Record<string, string> = {
@@ -26,9 +28,13 @@ async function callQueryApi(name: string, input: Record<string, unknown>): Promi
 
 async function main(): Promise<void> {
   await app.whenReady()
-  const service = new QueryAgentPocService(new AIProviderService(), callQueryApi)
+  const provider = new AIProviderService()
+  const service = new QueryAgentPocService(provider, callQueryApi)
   const result = await service.run(question)
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+  // 诊断摘要写 stderr，保持 stdout 仍是纯 JSON，方便管道与脚本消费。
+  process.stderr.write(formatTiming(result))
+  process.stderr.write(formatProviderDiagnostics(result, provider.getRuntimeEndpointHost()))
   app.quit()
 }
 

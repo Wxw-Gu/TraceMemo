@@ -52,7 +52,7 @@ pnpm test:e2e:build
 
 ```bash
 git diff --check
-rg -n "v2\.1\.7|TraceMemo|迹忆|mcpServers|无鉴权" README.md docs --glob '*.md' --glob '!DOCUMENTATION_AUDIT.md' --glob '!development/overview.md'
+rg -n "v2\.1\.7|TraceMemo|迹忆|mcpServers|无鉴权" README.md docs --glob '*.md' --glob '!development/overview.md'
 ```
 
 历史迁移说明可以出现旧版本号；正式使用指南不要把过时版本写成当前版本。负向澄清“6131 不是 MCP Server”可以保留，以防用户照抄错误配置。

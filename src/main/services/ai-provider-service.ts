@@ -86,10 +86,16 @@ export class AIProviderRequestError extends Error {
   readonly code?: string
   readonly type?: string
   readonly responseBody?: unknown
+  /** 诊断字段：上游响应 content-type（例如 502 返回的 text/html） */
+  readonly contentType?: string
+  /** 诊断字段：本次请求从发出到响应处理结束的耗时 */
+  readonly elapsedMs?: number
+  /** 诊断字段：上游返回网页而不是 JSON */
+  readonly htmlInsteadOfJson?: boolean
 
   constructor(
     message: string,
-    details: { status?: number; code?: unknown; type?: unknown; responseBody?: unknown } = {}
+    details: { status?: number; code?: unknown; type?: unknown; responseBody?: unknown; contentType?: string; elapsedMs?: number; htmlInsteadOfJson?: boolean } = {}
   ) {
     super(message)
     this.name = 'AIProviderRequestError'
@@ -97,6 +103,9 @@ export class AIProviderRequestError extends Error {
     this.code = typeof details.code === 'string' ? details.code : undefined
     this.type = typeof details.type === 'string' ? details.type : undefined
     this.responseBody = details.responseBody
+    this.contentType = details.contentType
+    this.elapsedMs = details.elapsedMs
+    this.htmlInsteadOfJson = details.htmlInsteadOfJson
   }
 }
 
@@ -133,6 +142,19 @@ export class AIProviderService {
       ),
       status: provider?.status || 'untested',
       timeoutMs: provider?.advanced.timeoutMs
+    }
+  }
+
+  /**
+   * 诊断用：当前默认 Provider 的 endpoint host。
+   * 只返回 hostname（不含路径与 query），避免把凭据或敏感 query 带进日志/终端。
+   */
+  getRuntimeEndpointHost(): string | undefined {
+    try {
+      const resolved = this.resolveProvider(undefined)
+      return endpointHost(resolved.provider.baseUrl)
+    } catch {
+      return undefined
     }
   }
 
@@ -324,6 +346,13 @@ export class AIProviderService {
     toolCalls?: AIChatToolCall[]
     usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
     error?: string
+    errorStatus?: number
+    errorCode?: string
+    errorType?: string
+    errorContentType?: string
+    elapsedMs?: number
+    timedOut?: boolean
+    htmlInsteadOfJson?: boolean
   }> {
     try {
       if (options?.apiKey) throw new Error('Tool Calling 不支持 legacy provider 配置')
@@ -342,7 +371,22 @@ export class AIProviderService {
       return { success: true, ...result }
     } catch (error) {
       if (signal?.aborted) throw error
-      return { success: false, error: safeAIError(error) }
+      const timedOut = error instanceof DOMException && error.name === 'TimeoutError'
+      return {
+        success: false,
+        error: safeAIError(error),
+        timedOut,
+        htmlInsteadOfJson: error instanceof AIProviderRequestError ? Boolean(error.htmlInsteadOfJson) : false,
+        ...(error instanceof AIProviderRequestError
+          ? {
+              ...(error.status !== undefined ? { errorStatus: error.status } : {}),
+              ...(error.code ? { errorCode: error.code } : {}),
+              ...(error.type ? { errorType: error.type } : {}),
+              ...(error.contentType ? { errorContentType: error.contentType } : {}),
+              ...(error.elapsedMs !== undefined ? { elapsedMs: error.elapsedMs } : {})
+            }
+          : {})
+      }
     }
   }
 
@@ -595,6 +639,15 @@ function deepSeekProvider(baseUrl?: string, model?: string): AIProviderSummary {
     hasApiKey: false,
     isDefault: true,
     status: 'untested'
+  }
+}
+
+/** 诊断用：只取 endpoint 的 hostname，不保留路径与 query。 */
+function endpointHost(baseUrl: string): string | undefined {
+  try {
+    return new URL(baseUrl).hostname || undefined
+  } catch {
+    return undefined
   }
 }
 
@@ -912,7 +965,7 @@ async function requestOpenAICompatibleWithTools(
   messages: Array<Record<string, unknown>>,
   tools: AIChatToolDefinition[],
   signal?: AbortSignal
-): Promise<{ data: string; toolCalls: AIChatToolCall[]; usage?: AIRequestResult['usage'] }> {
+): Promise<{ data: string; toolCalls: AIChatToolCall[]; usage?: AIRequestResult['usage']; elapsedMs?: number }> {
   const endpoint = provider.baseUrl.endsWith('/chat/completions')
     ? provider.baseUrl
     : `${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`
@@ -932,16 +985,33 @@ async function requestOpenAICompatibleWithTools(
     },
     provider.advanced.timeoutMs,
     signal,
-    async (response) => {
-      const payload = await parseJsonResponse<OpenAIResponsePayload>(response)
-      if (!response.ok) {
-        throw new AIProviderRequestError(payload.error?.message || `AI 请求失败 (${response.status})`, {
-          status: response.status,
-          code: payload.error?.code,
-          type: payload.error?.type,
-          responseBody: payload.error
-        })
+    async (response, timing) => {
+      // 先尝试解析 body：非 2xx 时上游可能返回 JSON 错误体，也可能是 HTML 错误页。
+      // 无论哪种，都要把 status / content-type / elapsed 带进错误，避免丢失上下文。
+      let payload: OpenAIResponsePayload | undefined
+      let parseError: unknown
+      try {
+        payload = await parseJsonResponse<OpenAIResponsePayload>(response)
+      } catch (error) {
+        parseError = error
       }
+      if (!response.ok) {
+        throw new AIProviderRequestError(
+          payload?.error?.message || (parseError ? safeAIError(parseError) : `AI 请求失败 (${response.status})`),
+          {
+            status: timing.status,
+            contentType: timing.contentType,
+            elapsedMs: timing.elapsedMs,
+            htmlInsteadOfJson: isHtmlParseError(parseError),
+            code: payload?.error?.code,
+            type: payload?.error?.type,
+            responseBody: payload?.error
+          }
+        )
+      }
+      // 2xx 但 body 无法解析：抛出原始解析错误（含清晰的中文提示）。
+      if (!payload) throw parseError ?? new Error('AI 响应格式异常')
+      if (parseError) throw parseError
       const message = payload.choices?.[0]?.message
       return {
         data: openAIMessageText(message?.content),
@@ -950,7 +1020,8 @@ async function requestOpenAICompatibleWithTools(
           if (!name) return []
           return [{ id: call.id || `tool-call-${index + 1}`, name, arguments: call.function?.arguments || '{}' }]
         }),
-        usage: toOpenAIUsage(payload.usage)
+        usage: toOpenAIUsage(payload.usage),
+        elapsedMs: timing.elapsedMs
       }
     }
   )
@@ -1029,12 +1100,19 @@ async function requestAnthropic(
   )
 }
 
+/** 请求级诊断：不包含任何凭据，仅用于区分「上游慢 / 上游错误 / 本地解析」。 */
+interface AIRequestTiming {
+  elapsedMs: number
+  status: number
+  contentType: string
+}
+
 async function fetchWithTimeout<T>(
   url: string,
   init: RequestInit,
   timeoutMs: number,
   signal: AbortSignal | undefined,
-  consume: (response: Response) => Promise<T>
+  consume: (response: Response, timing: AIRequestTiming) => Promise<T>
 ): Promise<T> {
   const controller = new AbortController()
   let timedOut = false
@@ -1049,9 +1127,16 @@ async function fetchWithTimeout<T>(
     },
     Math.max(1_000, timeoutMs || 120_000)
   )
+  const startedAt = Date.now()
+  let responseReceivedAt = startedAt
   try {
     const response = await fetch(url, { ...init, signal: controller.signal })
-    return await consume(response)
+    responseReceivedAt = Date.now()
+    return await consume(response, {
+      elapsedMs: responseReceivedAt - startedAt,
+      status: response.status,
+      contentType: response.headers.get('content-type') || ''
+    })
   } catch (error) {
     if (signal?.aborted) throw new DOMException('AI request cancelled', 'AbortError')
     if (timedOut) throw new DOMException('AI request timed out', 'TimeoutError')
@@ -1293,6 +1378,11 @@ function safeAIError(error: unknown): string {
   if (error instanceof DOMException && error.name === 'AbortError') return 'AI 请求已取消'
   const message = error instanceof Error ? error.message : String(error)
   return message.replace(/sk-[a-z0-9_-]+/gi, '***').slice(0, 300)
+}
+
+/** 判断解析失败是否因为上游返回了 HTML（例如网关 502 错误页）。 */
+function isHtmlParseError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('网页而不是 JSON')
 }
 
 function aiProviderErrorDetails(error: unknown): {
