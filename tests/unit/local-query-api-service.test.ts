@@ -47,6 +47,29 @@ describe('LocalQueryApiService', () => {
     expect(result.messages?.[0]).not.toHaveProperty('text')
   })
 
+  it('round-trips opaque refs from messages, search, and overview through context', async () => {
+    fixture.contacts.splice(1)
+    const queried = await service.messages({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, order: 'asc', limit: 1 })
+    const queriedRef = queried.messages?.[0]?.messageRef
+    expect(queriedRef).toEqual(expect.any(String))
+    await expect(service.context({ messageRef: queriedRef!, before: 0, after: 0 })).resolves.toMatchObject({
+      status: 'completed',
+      anchor: { messageRef: queriedRef }
+    })
+
+    knowledge.search.mockResolvedValueOnce({ state: 'ready', evidence: [{ conversationId: 'md5-bobo', messageId: 'local:m1', timestamp: 1, sender: 'BOBO', sourceKind: 'text', text: '你好' }], conversationRetrieval: { totalMessages: 2, chunkCount: 1, complete: true }, voiceCoverage: undefined })
+    const searched = await service.search({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, query: '你好' })
+    const searchedRef = searched.evidence?.[0]?.messageRef
+    expect(searchedRef).toBe(queriedRef)
+    await expect(service.context({ messageRef: searchedRef!, before: 0, after: 0 })).resolves.toMatchObject({ status: 'completed' })
+
+    knowledge.search.mockResolvedValueOnce({ state: 'ready', evidence: [{ conversationId: 'md5-bobo', messageId: 'local:m1', timestamp: 1, sender: 'BOBO', sourceKind: 'text', text: '你好' }], conversationRetrieval: { totalMessages: 2, chunkCount: 1, complete: true }, voiceCoverage: undefined })
+    const overview = await service.overview({ target: { query: 'BOBO' }, timeRange: { kind: 'all' } })
+    const overviewRef = overview.evidence?.[0]?.messageRef
+    expect(overviewRef).toBe(queriedRef)
+    await expect(service.context({ messageRef: overviewRef!, before: 0, after: 0 })).resolves.toMatchObject({ status: 'completed' })
+  })
+
   it('sorts overview evidence while preserving the selected set and exposes sampling', async () => {
     fixture.contacts.splice(1)
     knowledge.search.mockResolvedValueOnce({ state: 'ready', evidence: [

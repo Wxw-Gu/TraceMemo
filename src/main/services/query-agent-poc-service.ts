@@ -4,6 +4,29 @@ import { LOCAL_QUERY_TOOL_DEFINITIONS } from '../../shared/local-query-api'
 const MAX_TOOL_CALLS = 5
 const FORBIDDEN_INPUT_KEYS = new Set(['apiKey', 'authorization', 'token', 'databasePath', 'sql', 'wxid', 'md5'])
 
+interface ToolSchema {
+  type?: string
+  required?: string[]
+  additionalProperties?: boolean
+  properties?: Record<string, ToolSchema>
+  items?: ToolSchema
+  enum?: unknown[]
+  minLength?: number
+  minimum?: number
+  maximum?: number
+  minItems?: number
+  maxItems?: number
+}
+
+export interface ToolArgumentValidationError {
+  status: 'invalid_tool_arguments'
+  field: string
+  constraint: string
+  expected?: unknown
+  actual?: unknown
+  [key: string]: unknown
+}
+
 export interface QueryAgentProvider {
   getRuntimeConfig(): { configured: boolean; providerName: string; model: string; modelName: string }
   chatWithTools(
@@ -79,12 +102,89 @@ function containsForbiddenKey(value: unknown): boolean {
   return Object.entries(value as Record<string, unknown>).some(([key, child]) => FORBIDDEN_INPUT_KEYS.has(key) || containsForbiddenKey(child))
 }
 
-function validateToolInput(name: string, value: unknown): Record<string, unknown> {
-  if (!LOCAL_QUERY_TOOL_DEFINITIONS.some((tool) => tool.name === name)) throw new Error(`不允许的工具: ${name}`)
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('工具参数必须是 JSON 对象')
-  const input = value as Record<string, unknown>
-  if (containsForbiddenKey(input)) throw new Error('工具参数包含受限字段')
-  return input
+function actualType(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  return typeof value
+}
+
+function schemaTypeMatches(value: unknown, type: string): boolean {
+  if (type === 'object') return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+  if (type === 'integer') return typeof value === 'number' && Number.isInteger(value)
+  if (type === 'number') return typeof value === 'number' && Number.isFinite(value)
+  return actualType(value) === type
+}
+
+function validateSchema(value: unknown, schema: ToolSchema, field = '$'): ToolArgumentValidationError | undefined {
+  if (schema.type && !schemaTypeMatches(value, schema.type)) {
+    return { status: 'invalid_tool_arguments', field, constraint: 'type', expected: schema.type, actual: actualType(value) }
+  }
+  if (schema.enum && !schema.enum.some((allowed) => Object.is(allowed, value))) {
+    return { status: 'invalid_tool_arguments', field, constraint: 'enum', expected: schema.enum, actual: value }
+  }
+  if (typeof value === 'string') {
+    if (schema.minLength !== undefined && value.length < schema.minLength) {
+      return { status: 'invalid_tool_arguments', field, constraint: 'minLength', expected: schema.minLength, actual: value.length }
+    }
+  }
+  if (typeof value === 'number') {
+    if (schema.minimum !== undefined && value < schema.minimum) {
+      return { status: 'invalid_tool_arguments', field, constraint: 'minimum', expected: schema.minimum, actual: value }
+    }
+    if (schema.maximum !== undefined && value > schema.maximum) {
+      return { status: 'invalid_tool_arguments', field, constraint: 'maximum', expected: schema.maximum, actual: value }
+    }
+  }
+  if (Array.isArray(value)) {
+    if (schema.minItems !== undefined && value.length < schema.minItems) {
+      return { status: 'invalid_tool_arguments', field, constraint: 'minItems', expected: schema.minItems, actual: value.length }
+    }
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+      return { status: 'invalid_tool_arguments', field, constraint: 'maxItems', expected: schema.maxItems, actual: value.length }
+    }
+    if (schema.items) {
+      for (let index = 0; index < value.length; index += 1) {
+        const error = validateSchema(value[index], schema.items, `${field}[${index}]`)
+        if (error) return error
+      }
+    }
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const objectValue = value as Record<string, unknown>
+    for (const required of schema.required || []) {
+      if (!(required in objectValue)) {
+        return { status: 'invalid_tool_arguments', field: field === '$' ? required : `${field}.${required}`, constraint: 'required', expected: true, actual: false }
+      }
+    }
+    const properties = schema.properties || {}
+    if (schema.additionalProperties === false) {
+      for (const key of Object.keys(objectValue)) {
+        if (!(key in properties)) {
+          return { status: 'invalid_tool_arguments', field: field === '$' ? key : `${field}.${key}`, constraint: 'additionalProperties', expected: false, actual: true }
+        }
+      }
+    }
+    for (const [key, childSchema] of Object.entries(properties)) {
+      if (key in objectValue) {
+        const error = validateSchema(objectValue[key], childSchema, field === '$' ? key : `${field}.${key}`)
+        if (error) return error
+      }
+    }
+  }
+  return undefined
+}
+
+export function validateToolArguments(name: string, value: unknown): { input?: Record<string, unknown>; error?: ToolArgumentValidationError } {
+  const definition = LOCAL_QUERY_TOOL_DEFINITIONS.find((tool) => tool.name === name)
+  if (!definition) return { error: { status: 'invalid_tool_arguments', field: '$', constraint: 'tool', expected: 'supported tool', actual: name } }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { error: { status: 'invalid_tool_arguments', field: '$', constraint: 'type', expected: 'object', actual: actualType(value) } }
+  }
+  if (containsForbiddenKey(value)) {
+    return { error: { status: 'invalid_tool_arguments', field: '$', constraint: 'forbidden_field' } }
+  }
+  const error = validateSchema(value, definition.parameters as ToolSchema)
+  return error ? { error } : { input: value as Record<string, unknown> }
 }
 
 function resultCount(result: QueryAgentToolResult): { resultCount?: number; evidenceCount?: number } {
@@ -134,23 +234,32 @@ export class QueryAgentPocService {
       messages.push({ role: 'assistant', content: model.data || '', tool_calls: calls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) })
       for (const call of calls) {
         const inputStartedAt = Date.now()
-        let toolResult: QueryAgentToolResult
+        let toolResult: QueryAgentToolResult | undefined
         let traceInput: Record<string, unknown> = {}
         try {
           let parsed: unknown
-          try { parsed = JSON.parse(call.arguments || '{}') } catch { throw new Error('工具参数 JSON 无效') }
-          const input = validateToolInput(call.name, parsed)
-          traceInput = input
-          toolResult = await this.executeTool(call.name, input)
+          try { parsed = JSON.parse(call.arguments || '{}') } catch {
+            toolResult = { status: 'invalid_tool_arguments', field: '$', constraint: 'json' }
+          }
+          if (!toolResult) {
+            const validated = validateToolArguments(call.name, parsed)
+            if (validated.error) {
+              toolResult = validated.error
+            } else {
+              traceInput = validated.input || {}
+              toolResult = await this.executeTool(call.name, traceInput)
+            }
+          }
         } catch (error) {
-          toolResult = { status: 'invalid_request', error: error instanceof Error ? error.message : '工具调用失败' }
+          if (!toolResult) toolResult = { status: 'invalid_request', error: error instanceof Error ? error.message : '工具调用失败' }
         }
+        const completedToolResult = toolResult || { status: 'invalid_request', error: '工具调用失败' }
         const durationMs = Date.now() - inputStartedAt
         result.toolCallCount += 1
         result.toolTotalMs += durationMs
-        const counts = resultCount(toolResult)
-        result.traces.push({ toolName: call.name, input: sanitizeInput(traceInput), durationMs, status: toolResult.status, ...counts })
-        messages.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: JSON.stringify(toolResult) })
+        const counts = resultCount(completedToolResult)
+        result.traces.push({ toolName: call.name, input: sanitizeInput(traceInput), durationMs, status: completedToolResult.status, ...counts })
+        messages.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: JSON.stringify(completedToolResult) })
       }
     }
     result.firstModelMs = firstModelAt ? firstModelAt - startedAt : undefined

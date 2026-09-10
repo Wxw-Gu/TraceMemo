@@ -21,13 +21,30 @@ function kindOf(message: FormattedMessage): QueryMessageType {
   if (message.content?.trim()) return 'text'
   return 'other'
 }
-function toRef(conversationId: string, messageId: string): string {
-  return Buffer.from(JSON.stringify({ c: conversationId, m: messageId }), 'utf8').toString('base64url')
+interface CanonicalMessageIdentity {
+  conversationId: string
+  messageId: string
 }
-function fromRef(value: string): { c: string; m: string } | null {
+
+function normalizeMessageIdentity(conversationId: string, messageId: string): CanonicalMessageIdentity | null {
+  const normalizedConversationId = conversationId.trim()
+  const normalizedMessageId = messageId.trim().replace(/^local:/, '')
+  if (!normalizedConversationId || !normalizedMessageId) return null
+  return { conversationId: normalizedConversationId, messageId: normalizedMessageId }
+}
+
+function toRef(conversationId: string, messageId: string): string {
+  const identity = normalizeMessageIdentity(conversationId, messageId)
+  if (!identity) throw new Error('消息引用无效')
+  return Buffer.from(JSON.stringify({ c: identity.conversationId, m: identity.messageId }), 'utf8').toString('base64url')
+}
+
+function fromRef(value: string): CanonicalMessageIdentity | null {
   try {
     const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'))
-    return typeof parsed?.c === 'string' && typeof parsed?.m === 'string' ? parsed : null
+    return typeof parsed?.c === 'string' && typeof parsed?.m === 'string'
+      ? normalizeMessageIdentity(parsed.c, parsed.m)
+      : null
   } catch { return null }
 }
 function contactView(contact: FormattedContact) { return { displayName: contact.m_nsNickName || contact.m_nsUsrName, type: contact.type } as const }
@@ -93,8 +110,8 @@ export class LocalQueryApiService {
   }
   async context(request: MessageContextRequest) {
     const ref = fromRef(request.messageRef); if (!ref) return { status: 'invalid_request' as const }
-    const before = Math.min(CONTEXT_MAX, Math.max(0, request.before ?? 10)); const after = Math.min(CONTEXT_MAX, Math.max(0, request.after ?? 10)); const messages = await listMessagesAsync(ref.c); const index = messages.findIndex((message) => message.id === ref.m); if (index < 0) return { status: 'contact_not_found' as const }
-    const contact = (await listContactsAsync()).find((item) => item.md5 === ref.c); if (!contact) return { status: 'contact_not_found' as const }; const map = (message: FormattedMessage) => toQueryMessage(ref.c, message, contact)
+    const before = Math.min(CONTEXT_MAX, Math.max(0, request.before ?? 10)); const after = Math.min(CONTEXT_MAX, Math.max(0, request.after ?? 10)); const messages = await listMessagesAsync(ref.conversationId); const index = messages.findIndex((message) => normalizeMessageIdentity(ref.conversationId, message.id)?.messageId === ref.messageId); if (index < 0) return { status: 'contact_not_found' as const }
+    const contact = (await listContactsAsync()).find((item) => item.md5 === ref.conversationId); if (!contact) return { status: 'contact_not_found' as const }; const map = (message: FormattedMessage) => toQueryMessage(ref.conversationId, message, contact)
     return { status: 'completed' as const, anchor: map(messages[index]), before: messages.slice(Math.max(0, index - before), index).map(map), after: messages.slice(index + 1, index + 1 + after).map(map) }
   }
   async overview(request: ConversationOverviewRequest) {
