@@ -9,6 +9,7 @@ export default defineConfig({
         input: {
           index: resolve('src/main/index.ts'),
           reportTemplateTest: resolve('src/main/report-template-test-entry.ts'),
+          queryAgentPoc: resolve('src/main/query-agent-poc-entry.ts'),
           voiceRecognitionWorker: resolve('src/main/voice-pipeline/voice-recognition-worker.ts'),
           knowledgeWorker: resolve('src/main/knowledge/knowledge-worker.ts')
         },

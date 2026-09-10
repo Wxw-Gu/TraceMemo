@@ -98,6 +98,30 @@ describe('AI Search provider identity', () => {
     vi.unstubAllGlobals()
   })
 
+  it('serializes bounded tool definitions and parses tool calls through the selected provider', async () => {
+    const service = new AIProviderService()
+    service.save({ ...provider('https://tools.example.test/v1'), type: 'openai-compatible' })
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'call-1', function: { name: 'query_messages', arguments: '{"limit":1}' } }] } }], usage: {} }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const result = await service.chatWithTools(
+        [{ role: 'user', content: 'find the first message' }],
+        [{ type: 'function', function: { name: 'query_messages', description: 'read messages', parameters: { type: 'object' } } }]
+      )
+      expect(result).toMatchObject({ success: true, toolCalls: [{ id: 'call-1', name: 'query_messages', arguments: '{"limit":1}' }] })
+      const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { model: string; tools: unknown[]; tool_choice: string }
+      expect(request).toMatchObject({ model: 'fixture-model', tool_choice: 'auto' })
+      expect(request.tools).toHaveLength(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('aborts the provider fetch when the caller cancels an AI request', async () => {
     const service = new AIProviderService()
     service.save(provider('http://127.0.0.1:11434'))

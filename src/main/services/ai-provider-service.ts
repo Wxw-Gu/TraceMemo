@@ -25,6 +25,15 @@ interface AIProviderMetadataFile {
 type AIMessagePart = { type: 'text'; text: string } | { type: 'image'; dataUrl: string }
 type AIMessage = { role: string; content: string | AIMessagePart[] }
 type AIChatDeltaHandler = (delta: string) => void
+export interface AIChatToolCall {
+  id: string
+  name: string
+  arguments: string
+}
+export interface AIChatToolDefinition {
+  type: 'function'
+  function: { name: string; description: string; parameters: Record<string, unknown> }
+}
 type AIRequestResult = {
   data: string
   finishReason?: string
@@ -36,6 +45,7 @@ interface OpenAIResponsePayload {
     message?: {
       content?: string | Array<{ type?: string; text?: string }> | null
       reasoning_content?: string
+      tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
     }
     finish_reason?: string
   }>
@@ -300,6 +310,39 @@ export class AIProviderService {
     } catch (error) {
       if (signal?.aborted) throw error
       return { success: false, error: safeAIError(error), ...aiProviderErrorDetails(error) }
+    }
+  }
+
+  async chatWithTools(
+    messages: Array<Record<string, unknown>>,
+    tools: AIChatToolDefinition[],
+    options?: AIChatRequestOptions,
+    signal?: AbortSignal
+  ): Promise<{
+    success: boolean
+    data?: string
+    toolCalls?: AIChatToolCall[]
+    usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
+    error?: string
+  }> {
+    try {
+      if (options?.apiKey) throw new Error('Tool Calling 不支持 legacy provider 配置')
+      const resolved = this.resolveProvider(options)
+      if (resolved.provider.type !== 'openai-compatible' || resolved.provider.advanced.apiProtocol === 'responses') {
+        throw new Error('当前 Provider 协议暂不支持 Tool Calling POC')
+      }
+      const result = await requestOpenAICompatibleWithTools(
+        resolved.provider,
+        resolved.key,
+        resolved.model,
+        messages,
+        tools,
+        signal
+      )
+      return { success: true, ...result }
+    } catch (error) {
+      if (signal?.aborted) throw error
+      return { success: false, error: safeAIError(error) }
     }
   }
 
@@ -857,6 +900,58 @@ async function requestOpenAIResponses(
         data: extractOpenAIResponsesText(payload),
         finishReason: openAIResponsesFinishReason(payload) || 'unknown',
         usage: toOpenAIResponsesUsage(payload.usage)
+      }
+    }
+  )
+}
+
+async function requestOpenAICompatibleWithTools(
+  provider: AIProviderSummary,
+  apiKey: string,
+  model: string,
+  messages: Array<Record<string, unknown>>,
+  tools: AIChatToolDefinition[],
+  signal?: AbortSignal
+): Promise<{ data: string; toolCalls: AIChatToolCall[]; usage?: AIRequestResult['usage'] }> {
+  const endpoint = provider.baseUrl.endsWith('/chat/completions')
+    ? provider.baseUrl
+    : `${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`
+  return fetchWithTimeout(
+    endpoint,
+    {
+      method: 'POST',
+      headers: buildHeaders(provider, apiKey),
+      body: JSON.stringify({
+        model,
+        messages,
+        tools,
+        tool_choice: 'auto',
+        temperature: provider.advanced.temperature,
+        max_tokens: modelMaxTokens(provider, model),
+        ...(provider.advanced.thinking === 'disabled' ? { thinking: { type: 'disabled' } } : {})
+      })
+    },
+    provider.advanced.timeoutMs,
+    signal,
+    async (response) => {
+      const payload = await parseJsonResponse<OpenAIResponsePayload>(response)
+      if (!response.ok) {
+        throw new AIProviderRequestError(payload.error?.message || `AI 请求失败 (${response.status})`, {
+          status: response.status,
+          code: payload.error?.code,
+          type: payload.error?.type,
+          responseBody: payload.error
+        })
+      }
+      const message = payload.choices?.[0]?.message
+      return {
+        data: openAIMessageText(message?.content),
+        toolCalls: (message?.tool_calls || []).flatMap((call, index) => {
+          const name = call.function?.name
+          if (!name) return []
+          return [{ id: call.id || `tool-call-${index + 1}`, name, arguments: call.function?.arguments || '{}' }]
+        }),
+        usage: toOpenAIUsage(payload.usage)
       }
     }
   )
