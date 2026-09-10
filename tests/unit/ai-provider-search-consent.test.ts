@@ -122,6 +122,27 @@ describe('AI Search provider identity', () => {
     }
   })
 
+  it('explicitly disables tool calls when orchestration provides no tools', async () => {
+    const service = new AIProviderService()
+    service.save({ ...provider('https://tools.example.test/v1'), type: 'openai-compatible' })
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }], usage: {} }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const result = await service.chatWithTools([{ role: 'user', content: 'answer now' }], [])
+      expect(result).toMatchObject({ success: true, data: 'done', toolCalls: [] })
+      const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { tools?: unknown[]; tool_choice: string }
+      expect(request.tool_choice).toBe('none')
+      expect(request).not.toHaveProperty('tools')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('aborts the provider fetch when the caller cancels an AI request', async () => {
     const service = new AIProviderService()
     service.save(provider('http://127.0.0.1:11434'))

@@ -23,6 +23,54 @@ describe('QueryAgentPocService', () => {
     expect(JSON.stringify(result)).not.toContain('secret-ref')
   })
 
+  it('presents planning boundaries and remaining budget with tool results', async () => {
+    const execute = vi.fn(async () => ({
+      status: 'completed',
+      evidenceCount: 1,
+      sourceCoverage: { state: 'complete', sourceMessageCount: 10 },
+      selection: { mode: 'temporal_coverage', selectedEvidenceCount: 1, sampled: true },
+      evidence: [{ messageRef: 'opaque', timestamp: 1, sender: 'BOBO', sourceKind: 'image', text: 'caption' }]
+    }))
+    const configuredProvider = provider([
+      { success: true, toolCalls: [{ id: 'call-1', name: 'search_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, query: 'topic' }) }] },
+      { success: true, data: '根据这条证据可以回答。' }
+    ])
+    await new QueryAgentPocService(configuredProvider, execute).run('查找相关记录')
+    const calls = vi.mocked(configuredProvider.chatWithTools).mock.calls
+    const firstMessages = calls[0]?.[0] || []
+    expect(String(firstMessages[0]?.content)).toContain('Evidence 是否已经足以')
+    const toolMessage = calls[1]?.[0].find((message) => message.role === 'tool')
+    const presented = JSON.parse(String(toolMessage?.content)) as Record<string, any>
+    expect(presented._agent).toMatchObject({ toolName: 'search_messages', toolCallsUsed: 1, toolCallsRemaining: 4, availableNextTools: ['message_context'] })
+    expect(presented.evidence[0]).toMatchObject({ sourceKind: 'image', messageType: 'image', text: 'caption' })
+    expect(presented.sourceCoverage).toEqual({ state: 'complete', sourceMessageCount: 10 })
+    expect(calls[1]?.[1].map((tool) => tool.function.name)).toEqual(['message_context'])
+  })
+
+  it('removes tools after a sufficient exact result', async () => {
+    const configuredProvider = provider([
+      { success: true, toolCalls: [{ id: 'call-1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, limit: 1 }) }] },
+      { success: true, data: '完成' }
+    ])
+    await new QueryAgentPocService(configuredProvider, vi.fn(async () => ({ status: 'completed', returnedCount: 1 }))).run('第一条消息')
+    expect(vi.mocked(configuredProvider.chatWithTools).mock.calls[1]?.[1]).toEqual([])
+  })
+
+  it('does not execute a tool that is unavailable after the stopping boundary', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 1 }))
+    const configuredProvider = provider([
+      { success: true, toolCalls: [{ id: 'call-1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, limit: 1 }) }] },
+      { success: true, toolCalls: [{ id: 'call-2', name: 'conversation_overview', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' } }) }] },
+      { success: true, data: '完成' }
+    ])
+    const result = await new QueryAgentPocService(configuredProvider, execute).run('第一条消息')
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(result.traces[1]).toMatchObject({ toolName: 'conversation_overview', status: 'invalid_tool_arguments' })
+    const thirdCallMessages = vi.mocked(configuredProvider.chatWithTools).mock.calls[2]?.[0] || []
+    const unavailableResult = thirdCallMessages.findLast((message) => message.role === 'tool')
+    expect(String(unavailableResult?.content)).toContain('tool_availability')
+  })
+
   it('rejects unknown tools and stops after five calls', async () => {
     const execute = vi.fn(async () => ({ status: 'completed' }))
     const responses = Array.from({ length: 6 }, () => ({ success: true, toolCalls: [{ id: 'x', name: 'unknown', arguments: '{}' }] }))

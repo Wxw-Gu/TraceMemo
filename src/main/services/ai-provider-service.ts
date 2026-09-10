@@ -924,8 +924,7 @@ async function requestOpenAICompatibleWithTools(
       body: JSON.stringify({
         model,
         messages,
-        tools,
-        tool_choice: 'auto',
+        ...(tools.length ? { tools, tool_choice: 'auto' } : { tool_choice: 'none' }),
         temperature: provider.advanced.temperature,
         max_tokens: modelMaxTokens(provider, model),
         ...(provider.advanced.thinking === 'disabled' ? { thinking: { type: 'disabled' } } : {})
