@@ -30,8 +30,33 @@ const timeRangeSchema = {
   required: ['kind'],
   additionalProperties: false
 }
+/**
+ * LLM-facing 时间来源语义。只由 Query Agent orchestration 消费：
+ * Host 在执行 Local Query API 之前会剥离它 —— 它不进入公共 Query API contract。
+ * kind 的分类由 LLM 决定；Host 只读取分类结果并执行确定性 policy，
+ * 不做中文关键词 / 正则 / 时间短语映射。
+ */
+export type QueryTemporalBasisKind = 'constraint' | 'recall_hint' | 'none'
+const temporalBasisSchema = {
+  type: 'object',
+  required: ['kind'],
+  additionalProperties: false,
+  properties: {
+    kind: {
+      enum: ['constraint', 'recall_hint', 'none'],
+      description:
+        '用户问题中的时间表达扮演什么角色，必填。constraint：问题里存在能够归一化成具体时间范围的表达（具体日期、具体年月、月份、上个月、今年、过去 N 天、某日到某日等）。判断看“这个表达本身能不能确定查询边界”，与用户是否确信事情发生过无关——例如“我记得他上个月好像发过文件，是不是”里的“上个月”仍是 constraint；没写年份但按当前时间能正常归一化的月份（如“八月份”）同样是 constraint。recall_hint：用户确实提到时间感觉，但该表达无法确定唯一的查询边界，只能当回忆线索（模糊的近情感、“以前某阵子”）。此时你可以自己挑一个合理的有界范围做首次查询，但它是搜索启发式，不是用户约束。none：问题里没有任何时间信息，此时必须用 timeRange.kind=all，不要凭空造时间范围。'
+    },
+    sourceText: {
+      type: 'string',
+      minLength: 1,
+      description:
+        'kind 为 constraint 或 recall_hint 时必填：用户原问题中实际出现的时间相关原文片段，必须逐字摘录（不要改写、翻译、补全或加标点）。kind 为 none 时不要提供该字段。'
+    }
+  }
+}
 export const LOCAL_QUERY_TOOL_DEFINITIONS: LocalQueryToolDefinition[] = [
-  { name: 'query_messages', description: '精确读取符合联系人、时间、方向、消息类型、顺序等结构条件的消息；适合具体事实和 earliest/latest 等时间边界查询，边界查询使用 order 与 limit。若结果为 0 且条件明显不合适，可再查一次并合理扩大或更换条件，但条件必须与上一次实质不同。', parameters: { type: 'object', required: ['target', 'timeRange'], additionalProperties: false, properties: { target: targetSchema, timeRange: timeRangeSchema, direction: { enum: ['any', 'from_target', 'to_target'] }, messageTypes: { type: 'array', items: { enum: ['text', 'image', 'voice', 'video', 'file', 'link', 'sticker', 'system', 'other'] } }, order: { enum: ['asc', 'desc'] }, limit: { type: 'integer', minimum: 1, maximum: 200 }, excludeSystem: { type: 'boolean' } } } },
+  { name: 'query_messages', description: '精确读取符合联系人、时间、方向、消息类型、顺序等结构条件的消息；适合具体事实和 earliest/latest 等时间边界查询，边界查询使用 order 与 limit。每次调用都必须声明 temporalBasis，说明这个时间范围来自用户的明确约束、模糊回忆线索，还是用户根本没给时间信息。', parameters: { type: 'object', required: ['target', 'timeRange', 'temporalBasis'], additionalProperties: false, properties: { target: targetSchema, timeRange: timeRangeSchema, temporalBasis: temporalBasisSchema, direction: { enum: ['any', 'from_target', 'to_target'] }, messageTypes: { type: 'array', items: { enum: ['text', 'image', 'voice', 'video', 'file', 'link', 'sticker', 'system', 'other'] } }, order: { enum: ['asc', 'desc'] }, limit: { type: 'integer', minimum: 1, maximum: 200 }, excludeSystem: { type: 'boolean' } } } },
   { name: 'search_messages', description: '在指定联系人和时间范围内做关键词检索并返回相关 Evidence。queries 的每一项都是一次独立的字面检索：一项只放一个简短关键词，不要把多个近义词或整句话放进同一项，也不要指望一项内部被拆词理解。首次最多 4 项；只有在本次检索完全没有 Evidence 时，才允许再检索一次，且每一项都必须与上一次实质不同。', parameters: { type: 'object', required: ['target', 'timeRange', 'queries'], additionalProperties: false, properties: { target: targetSchema, timeRange: timeRangeSchema, queries: { type: 'array', description: '独立检索项列表，每项一个简短关键词，最多 4 项；每一项单独检索，不会组合成一句话理解。', minItems: 1, maxItems: 4, items: { type: 'string', minLength: 1 } }, limit: { type: 'integer', minimum: 1, maximum: 200 } } } },
   { name: 'message_context', description: '补充已找到的单条有价值 Evidence 的前后消息；仅在该 Evidence 缺少语境、无法判断含义时使用，不是默认确认步骤。', parameters: { type: 'object', required: ['messageRef'], additionalProperties: false, properties: { messageRef: { type: 'string', minLength: 1 }, before: { type: 'integer', minimum: 0, maximum: 50 }, after: { type: 'integer', minimum: 0, maximum: 50 } } } },
   { name: 'conversation_overview', description: '提取指定联系人和时间范围的整体聊天覆盖样本；只用于 broad summary，不是语义搜索 fallback，也不能确定 earliest/latest 等精确时间边界。', parameters: { type: 'object', required: ['target', 'timeRange'], additionalProperties: false, properties: { target: targetSchema, timeRange: timeRangeSchema } } }

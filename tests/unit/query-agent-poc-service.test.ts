@@ -8,11 +8,15 @@ function provider(responses: Array<Awaited<ReturnType<QueryAgentProvider['chatWi
   }
 }
 
+/** 凡是构造 query_messages 调用的用例，问题里都带这个时间表达，保证 sourceText grounding 成立。 */
+const MONTH_TEXT = '上个月'
+const MONTH_QUESTION = '上个月 BOBO 有没有给我发过文件'
+
 describe('QueryAgentPocService', () => {
   it('runs a bounded model -> tool -> model loop and records sanitized trace', async () => {
     const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 1, messages: [{ messageRef: 'secret-ref' }] }))
     const service = new QueryAgentPocService(provider([
-      { success: true, toolCalls: [{ id: 'call-1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, limit: 1 }) }] },
+      { success: true, toolCalls: [{ id: 'call-1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, temporalBasis: { kind: 'none' }, limit: 1 }) }] },
       { success: true, data: '第一条消息是图片。' }
     ]), execute)
     const result = await service.run('我和 BOBO 最开始聊了什么')
@@ -49,7 +53,7 @@ describe('QueryAgentPocService', () => {
 
   it('removes tools after a sufficient exact result', async () => {
     const configuredProvider = provider([
-      { success: true, toolCalls: [{ id: 'call-1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, limit: 1 }) }] },
+      { success: true, toolCalls: [{ id: 'call-1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, temporalBasis: { kind: 'none' }, limit: 1 }) }] },
       { success: true, data: '完成' }
     ])
     await new QueryAgentPocService(configuredProvider, vi.fn(async () => ({ status: 'completed', returnedCount: 1 }))).run('第一条消息')
@@ -59,7 +63,7 @@ describe('QueryAgentPocService', () => {
   it('does not execute a tool that is unavailable after the stopping boundary', async () => {
     const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 1 }))
     const configuredProvider = provider([
-      { success: true, toolCalls: [{ id: 'call-1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, limit: 1 }) }] },
+      { success: true, toolCalls: [{ id: 'call-1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, temporalBasis: { kind: 'none' }, limit: 1 }) }] },
       { success: true, toolCalls: [{ id: 'call-2', name: 'conversation_overview', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' } }) }] },
       { success: true, data: '完成' }
     ])
@@ -120,9 +124,14 @@ describe('QueryAgentPocService', () => {
     expect(validateToolArguments('search_messages', { ...base, query: 'x' }).error).toMatchObject({ field: 'query', constraint: 'additionalProperties' })
     // 漏掉 queries 时按 required 拒绝。
     expect(validateToolArguments('search_messages', { target: { query: 'BOBO' }, timeRange: { kind: 'all' } }).error).toMatchObject({ field: 'queries', constraint: 'required' })
-    expect(validateToolArguments('query_messages', { target: { query: 'BOBO' }, timeRange: { kind: 'all' }, direction: 'sideways' }).error).toMatchObject({ field: 'direction', constraint: 'enum' })
-    expect(validateToolArguments('query_messages', { target: { query: '' }, timeRange: { kind: 'all' } }).error).toMatchObject({ field: 'target.query', constraint: 'minLength' })
-    expect(validateToolArguments('query_messages', { target: { query: 'BOBO' }, timeRange: { kind: 'all' }, limit: 0 }).error).toMatchObject({ field: 'limit', constraint: 'minimum' })
+    const q = '上个月 BOBO 有没有给我发过文件'
+    const basis = { kind: 'constraint', sourceText: '上个月' }
+    expect(validateToolArguments('query_messages', { target: { query: 'BOBO' }, timeRange: { kind: 'all' }, temporalBasis: basis, direction: 'sideways' }, undefined, q).error).toMatchObject({ field: 'direction', constraint: 'enum' })
+    expect(validateToolArguments('query_messages', { target: { query: '' }, timeRange: { kind: 'all' }, temporalBasis: basis }, undefined, q).error).toMatchObject({ field: 'target.query', constraint: 'minLength' })
+    expect(validateToolArguments('query_messages', { target: { query: 'BOBO' }, timeRange: { kind: 'all' }, temporalBasis: basis, limit: 0 }, undefined, q).error).toMatchObject({ field: 'limit', constraint: 'minimum' })
+    // temporalBasis 是 query_messages 的必填字段，kind 只接受 constraint / recall_hint / none。
+    expect(validateToolArguments('query_messages', { target: { query: 'BOBO' }, timeRange: { kind: 'all' } }, undefined, q).error).toMatchObject({ field: 'temporalBasis', constraint: 'required' })
+    expect(validateToolArguments('query_messages', { target: { query: 'BOBO' }, timeRange: { kind: 'all' }, temporalBasis: { kind: 'maybe' } }, undefined, q).error).toMatchObject({ field: 'temporalBasis.kind', constraint: 'enum' })
     expect(validateToolArguments('message_context', { messageRef: 'opaque', before: 51 }).error).toMatchObject({ field: 'before', constraint: 'maximum' })
   })
 
@@ -136,8 +145,8 @@ describe('QueryAgent absolute time contract', () => {
   const now = new Date('2026-09-10T00:00:00Z')
   const target = { query: 'BOBO' }
 
-  function canonical(timeRange: Record<string, unknown>) {
-    return validateToolArguments('query_messages', { target, timeRange }, now)
+  function canonical(timeRange: Record<string, unknown>, basis: { kind: string; sourceText?: string } = { kind: 'constraint', sourceText: '8 月' }) {
+    return validateToolArguments('query_messages', { target, timeRange, temporalBasis: basis }, now, '8 月 BOBO 有没有给我发过文件')
   }
 
   it('canonicalizes an ISO-8601 absolute range with offset into Local Query API epoch seconds', () => {
@@ -210,8 +219,13 @@ describe('QueryAgent zero-result limited retry', () => {
   function searchCall(id: string, queries: string[], timeRange: Record<string, unknown> = { kind: 'all' }) {
     return { success: true as const, toolCalls: [{ id, name: 'search_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange, queries }) }] }
   }
-  function queryCall(id: string, timeRange: Record<string, unknown> = { kind: 'all' }) {
-    return { success: true as const, toolCalls: [{ id, name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange }) }] }
+  function queryCall(
+    id: string,
+    timeRange: Record<string, unknown> = { kind: 'all' },
+    basis: { kind: string; sourceText?: string } = { kind: 'constraint', sourceText: MONTH_TEXT },
+    extra: Record<string, unknown> = {}
+  ) {
+    return { success: true as const, toolCalls: [{ id, name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange, temporalBasis: basis, ...extra }) }] }
   }
   const emptySearch = async () => ({ status: 'completed', evidenceCount: 0, evidence: [] })
   const emptyQuery = async () => ({ status: 'completed', returnedCount: 0, messages: [] })
@@ -263,21 +277,10 @@ describe('QueryAgent zero-result limited retry', () => {
     expect(vi.mocked(configured.chatWithTools).mock.calls[1]?.[1].map((tool) => tool.function.name)).toEqual(['message_context'])
   })
 
-  it('allows one query_messages retry after a zero-result exact query', async () => {
-    const execute = vi.fn()
-      .mockResolvedValueOnce({ status: 'completed', returnedCount: 0, messages: [] })
-      .mockResolvedValueOnce({ status: 'completed', returnedCount: 1, messages: [{ messageRef: 'ref' }] })
-    const configured = provider([queryCall('c1', { kind: 'last_7_days' }), queryCall('c2', { kind: 'all' }), { success: true, data: '找到。' }])
-    const result = await new QueryAgentPocService(configured, execute).run('找文件')
-    expect(execute).toHaveBeenCalledTimes(2)
-    expect(execute.mock.calls[1][1]).toMatchObject({ timeRange: { kind: 'all' } })
-    expect(result.traces[1].status).toBe('completed')
-  })
-
   it('rejects an identical query_messages retry', async () => {
     const execute = vi.fn(emptyQuery)
     const configured = provider([queryCall('c1', { kind: 'previous_month' }), queryCall('c2', { kind: 'previous_month' }), { success: true, data: 'x' }])
-    const result = await new QueryAgentPocService(configured, execute).run('找文件')
+    const result = await new QueryAgentPocService(configured, execute).run(MONTH_QUESTION)
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces[1].status).toBe('invalid_tool_arguments')
   })
@@ -285,7 +288,7 @@ describe('QueryAgent zero-result limited retry', () => {
   it('keeps the efficient stop when the exact query already returned messages', async () => {
     const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 3, messages: [] }))
     const configured = provider([queryCall('c1'), { success: true, data: 'ok' }])
-    await new QueryAgentPocService(configured, execute).run('找')
+    await new QueryAgentPocService(configured, execute).run(MONTH_QUESTION)
     expect(vi.mocked(configured.chatWithTools).mock.calls[1]?.[1]).toEqual([])
   })
 
@@ -299,15 +302,229 @@ describe('QueryAgent zero-result limited retry', () => {
       queryCall('c5', { kind: 'this_year' }),
       queryCall('c6', { kind: 'this_month' })
     ]
-    const result = await new QueryAgentPocService(provider(responses), execute).run('找')
+    const result = await new QueryAgentPocService(provider(responses), execute).run(MONTH_QUESTION)
     expect(result.toolCallCount).toBe(5)
     expect(result.error).toContain('最大工具调用次数')
+  })
+
+  it('allows a corrective retry that keeps an explicit absolute range and only relaxes other conditions', async () => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce({ status: 'completed', returnedCount: 0, messages: [] })
+      .mockResolvedValueOnce({ status: 'completed', returnedCount: 2, messages: [{ messageRef: 'ref' }] })
+    const range = { kind: 'absolute', startTime: '2026-08-01T00:00:00+08:00', endTime: '2026-08-31T23:59:59+08:00' }
+    const call = (id: string, messageTypes: string[]) => ({
+      success: true as const,
+      toolCalls: [{ id, name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: range, temporalBasis: { kind: 'constraint', sourceText: '8 月' }, messageTypes }) }]
+    })
+    const configured = provider([call('c1', ['file']), call('c2', ['text']), { success: true, data: '找到。' }])
+    const result = await new QueryAgentPocService(configured, execute).run('今年 8 月有没有给我发过文件')
+    expect(execute).toHaveBeenCalledTimes(2)
+    expect(result.traces.map((trace) => trace.status)).toEqual(['completed', 'completed'])
+    // the explicit range is preserved on the retry — only the non-temporal condition changed
+    const firstRange = (execute.mock.calls[0][1] as Record<string, any>).timeRange
+    const secondRange = (execute.mock.calls[1][1] as Record<string, any>).timeRange
+    expect(secondRange).toEqual(firstRange)
+    expect(secondRange.kind).toBe('absolute')
+  })
+})
+
+describe('QueryAgent temporal basis policy', () => {
+  const emptyQuery = async () => ({ status: 'completed', returnedCount: 0, messages: [] })
+  const CONSTRAINT_Q = '上个月 BOBO 有没有给我发过文件'
+  const HINT_Q = 'BOBO 前阵子发我的文件在哪'
+  const CONSTRAINT = { kind: 'constraint', sourceText: '上个月' }
+  const HINT = { kind: 'recall_hint', sourceText: '前阵子' }
+  const NONE = { kind: 'none' }
+  function queryCall(id: string, timeRange: Record<string, unknown>, temporalBasis: { kind: string; sourceText?: string }, extra: Record<string, unknown> = {}) {
+    return { success: true as const, toolCalls: [{ id, name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange, temporalBasis, ...extra }) }] }
+  }
+  function toolMessageAt(configured: QueryAgentProvider, callIndex: number): Record<string, any> {
+    const message = vi.mocked(configured.chatWithTools).mock.calls[callIndex]?.[0].findLast((item) => item.role === 'tool')
+    return JSON.parse(String(message?.content)) as Record<string, any>
+  }
+
+  it('requires temporalBasis on query_messages', async () => {
+    const execute = vi.fn(emptyQuery)
+    const call = { success: true as const, toolCalls: [{ id: 'c1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' } }) }] }
+    const result = await new QueryAgentPocService(provider([call, { success: true, data: 'x' }]), execute).run(CONSTRAINT_Q)
+    expect(execute).not.toHaveBeenCalled()
+    expect(result.traces[0]).toMatchObject({ status: 'invalid_tool_arguments' })
+  })
+
+  it('exposes the declared temporalBasis on the trace and never forwards it to the Local Query API', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 1, messages: [] }))
+    const configured = provider([queryCall('c1', { kind: 'last_7_days' }, HINT), { success: true, data: 'ok' }])
+    const result = await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    expect(result.traces[0].temporalBasis).toEqual({ kind: 'recall_hint', sourceText: '前阵子' })
+    expect(result.traces[0].input).not.toHaveProperty('temporalBasis')
+    expect(execute.mock.calls[0][1]).not.toHaveProperty('temporalBasis')
+  })
+
+  it('rejects a sourceText that is not literally in the user question', async () => {
+    const execute = vi.fn(emptyQuery)
+    const configured = provider([queryCall('c1', { kind: 'previous_month' }, { kind: 'constraint', sourceText: '去年冬天' }), { success: true, data: 'x' }])
+    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    expect(execute).not.toHaveBeenCalled()
+    expect(result.traces[0]).toMatchObject({ status: 'invalid_tool_arguments' })
+    expect(JSON.stringify(toolMessageAt(configured, 1))).toContain('source_not_in_question')
+  })
+
+  it('requires sourceText for constraint and recall_hint', async () => {
+    const execute = vi.fn(emptyQuery)
+    const configured = provider([queryCall('c1', { kind: 'previous_month' }, { kind: 'constraint' }), { success: true, data: 'x' }])
+    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    expect(execute).not.toHaveBeenCalled()
+    expect(result.traces[0]).toMatchObject({ status: 'invalid_tool_arguments' })
+  })
+
+  it('rejects sourceText when kind is none', async () => {
+    const execute = vi.fn(emptyQuery)
+    const configured = provider([queryCall('c1', { kind: 'all' }, { kind: 'none', sourceText: '上个月' }), { success: true, data: 'x' }])
+    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    expect(execute).not.toHaveBeenCalled()
+    expect(result.traces[0]).toMatchObject({ status: 'invalid_tool_arguments' })
+    expect(JSON.stringify(toolMessageAt(configured, 1))).toContain('forbidden_for_none')
+  })
+
+  it('accepts a Unicode sourceText verbatim without parsing it', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 1, messages: [] }))
+    const question = '8 月 1 日到 9 月 1 日之间 BOBO 有没有发过文件？'
+    const sourceText = '8 月 1 日到 9 月 1 日'
+    const range = { kind: 'absolute', startTime: '2026-08-01T00:00:00+08:00', endTime: '2026-09-01T00:00:00+08:00' }
+    const configured = provider([queryCall('c1', range, { kind: 'constraint', sourceText }), { success: true, data: 'ok' }])
+    const result = await new QueryAgentPocService(configured, execute).run(question)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(result.traces[0].temporalBasis).toEqual({ kind: 'constraint', sourceText })
+  })
+
+  it('never broadens a constraint relative range to all when it returns zero', async () => {
+    const execute = vi.fn(emptyQuery)
+    const configured = provider([queryCall('c1', { kind: 'previous_month' }, CONSTRAINT), { success: true, data: '上个月没有。' }])
+    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(execute.mock.calls[0][1]).toMatchObject({ timeRange: { kind: 'previous_month' } })
+    expect(result.traces[0].autoFallback).toBeUndefined()
+  })
+
+  it('never broadens a constraint absolute range to all when it returns zero', async () => {
+    const execute = vi.fn(emptyQuery)
+    const range = { kind: 'absolute', startTime: '2026-08-01T00:00:00+08:00', endTime: '2026-08-31T23:59:59+08:00' }
+    const configured = provider([queryCall('c1', range, { kind: 'constraint', sourceText: '8 月' }), { success: true, data: '没有。' }])
+    const result = await new QueryAgentPocService(configured, execute).run('2026 年 8 月有没有给我发过文件')
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(result.traces[0].autoFallback).toBeUndefined()
+    expect(result.traces[0].input.timeRange).toMatchObject({ kind: 'absolute' })
+  })
+
+  it('rejects a constraint retry that replaces the user time range', async () => {
+    const execute = vi.fn(emptyQuery)
+    const configured = provider([queryCall('c1', { kind: 'previous_month' }, CONSTRAINT), queryCall('c2', { kind: 'all' }, CONSTRAINT), { success: true, data: 'x' }])
+    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(result.traces[1]).toMatchObject({ status: 'invalid_tool_arguments' })
+    expect(JSON.stringify(toolMessageAt(configured, 2))).toContain('constraint_time_range_immutable')
+  })
+
+  it('locks a constraint range so later retries cannot spend the budget on another range', async () => {
+    const execute = vi.fn(emptyQuery)
+    const responses = [
+      queryCall('c1', { kind: 'previous_month' }, CONSTRAINT),
+      queryCall('c2', { kind: 'this_month' }, CONSTRAINT),
+      queryCall('c3', { kind: 'all' }, CONSTRAINT),
+      { success: true, data: 'x' }
+    ]
+    const result = await new QueryAgentPocService(provider(responses), execute).run(CONSTRAINT_Q)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(result.traces.map((trace) => trace.status)).toEqual(['completed', 'invalid_tool_arguments', 'invalid_tool_arguments'])
+  })
+
+  it('allows a constraint retry that keeps the range and only relaxes messageTypes', async () => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce({ status: 'completed', returnedCount: 0, messages: [] })
+      .mockResolvedValueOnce({ status: 'completed', returnedCount: 2, messages: [{ messageRef: 'ref' }] })
+    const configured = provider([
+      queryCall('c1', { kind: 'previous_month' }, CONSTRAINT, { messageTypes: ['file'] }),
+      queryCall('c2', { kind: 'previous_month' }, CONSTRAINT, { messageTypes: ['text'] }),
+      { success: true, data: '找到。' }
+    ])
+    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    expect(execute).toHaveBeenCalledTimes(2)
+    expect(result.traces.map((trace) => trace.status)).toEqual(['completed', 'completed'])
+  })
+
+  it('does not broaden when a recall_hint range already returned messages', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 3, messages: [] }))
+    const configured = provider([queryCall('c1', { kind: 'last_7_days' }, HINT), { success: true, data: 'ok' }])
+    const result = await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(result.traces[0].autoFallback).toBeUndefined()
+    expect(vi.mocked(configured.chatWithTools).mock.calls[1]?.[1]).toEqual([])
+  })
+
+  it('automatically runs one all-history corrective lookup for a zero-result recall_hint range', async () => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce({ status: 'completed', returnedCount: 0, messages: [] })
+      .mockResolvedValueOnce({ status: 'completed', returnedCount: 1, messages: [{ messageRef: 'ref', sourceKind: 'file' }], resolvedTimeRange: { kind: 'all', label: '全部历史' } })
+    const configured = provider([queryCall('c1', { kind: 'last_7_days' }, HINT), { success: true, data: '找到了。' }])
+    const result = await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    expect(execute).toHaveBeenCalledTimes(2)
+    expect(execute.mock.calls[1][1]).toMatchObject({ timeRange: { kind: 'all' } })
+    // the corrective lookup is Host orchestration, not a model tool call
+    expect(result.toolCallCount).toBe(1)
+    expect(result.traces[0].autoFallback).toMatchObject({ reason: 'soft_temporal_hint_zero_result', resultCount: 1 })
+  })
+
+  it('does not repeat an all-history lookup when a recall_hint query already used all', async () => {
+    const execute = vi.fn(emptyQuery)
+    const configured = provider([queryCall('c1', { kind: 'all' }, HINT), queryCall('c2', { kind: 'all' }, HINT), { success: true, data: 'x' }])
+    const result = await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(result.traces[0].autoFallback).toBeUndefined()
+    expect(result.traces[1]).toMatchObject({ status: 'invalid_tool_arguments' })
+  })
+
+  it('presents primary and fallback scopes separately to the model', async () => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce({ status: 'completed', returnedCount: 0, messages: [], query: { resolvedTimeRange: { kind: 'last_7_days', label: '近 7 天' } } })
+      .mockResolvedValueOnce({ status: 'completed', returnedCount: 1, messages: [{ messageRef: 'ref', text: 'x' }], resolvedTimeRange: { kind: 'all', label: '全部历史' } })
+    const configured = provider([queryCall('c1', { kind: 'last_7_days' }, HINT), { success: true, data: 'ok' }])
+    await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    const presented = toolMessageAt(configured, 1)
+    expect(presented.returnedCount).toBe(0)
+    expect(presented.fallbackLookup).toMatchObject({ reason: 'soft_temporal_hint_zero_result', timeRange: { kind: 'all' }, returnedCount: 1 })
+    expect(String(presented._agent.instruction)).toContain('fallbackLookup')
+  })
+
+  it('stops after a corrective lookup that also finds nothing', async () => {
+    const execute = vi.fn(emptyQuery)
+    const configured = provider([queryCall('c1', { kind: 'last_7_days' }, HINT), queryCall('c2', { kind: 'this_month' }, HINT), { success: true, data: '都没找到。' }])
+    const result = await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    // primary + one corrective lookup only; the third attempt is refused because tools are closed
+    expect(execute).toHaveBeenCalledTimes(2)
+    expect(result.traces[1]).toMatchObject({ status: 'invalid_tool_arguments' })
+  })
+
+  it('accepts none with timeRange all', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 2, messages: [] }))
+    const configured = provider([queryCall('c1', { kind: 'all' }, NONE), { success: true, data: 'ok' }])
+    const result = await new QueryAgentPocService(configured, execute).run('BOBO 给我发过文件吗')
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(result.traces[0].temporalBasis).toEqual({ kind: 'none' })
+  })
+
+  it('rejects none combined with a bounded time range', async () => {
+    const execute = vi.fn(emptyQuery)
+    const configured = provider([queryCall('c1', { kind: 'last_7_days' }, NONE), { success: true, data: 'x' }])
+    const result = await new QueryAgentPocService(configured, execute).run('BOBO 给我发过文件吗')
+    expect(execute).not.toHaveBeenCalled()
+    expect(result.traces[0]).toMatchObject({ status: 'invalid_tool_arguments' })
+    expect(JSON.stringify(toolMessageAt(configured, 1))).toContain('temporal_basis_mismatch')
   })
 })
 
 describe('QueryAgent 耗时与请求级诊断记录', () => {
   function queryCall(id: string) {
-    return { success: true as const, toolCalls: [{ id, name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, limit: 1 }) }] }
+    return { success: true as const, toolCalls: [{ id, name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, temporalBasis: { kind: 'none' }, limit: 1 }) }] }
   }
 
   it('记录每次模型调用耗时，包括失败的那次（首次调用失败）', async () => {

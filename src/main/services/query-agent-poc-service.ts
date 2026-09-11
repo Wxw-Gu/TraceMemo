@@ -1,5 +1,5 @@
 import type { AIChatToolCall, AIChatToolDefinition } from './ai-provider-service'
-import { LOCAL_QUERY_TOOL_DEFINITIONS } from '../../shared/local-query-api'
+import { LOCAL_QUERY_TOOL_DEFINITIONS, type QueryTemporalBasisKind } from '../../shared/local-query-api'
 
 const MAX_TOOL_CALLS = 5
 const FORBIDDEN_INPUT_KEYS = new Set(['apiKey', 'authorization', 'token', 'databasePath', 'sql', 'wxid', 'md5'])
@@ -70,6 +70,17 @@ export interface QueryAgentTraceItem {
   status: string
   resultCount?: number
   evidenceCount?: number
+  /** LLM 声明的 temporalBasis。Host 消费它决定 policy，但不会传给 Local Query API。 */
+  temporalBasis?: { kind: QueryTemporalBasisKind; sourceText?: string }
+  /** Host 自动执行的扩大查询（当前仅 temporalBasis.kind=recall_hint + 有界范围 + 0 结果）。 */
+  autoFallback?: {
+    reason: 'soft_temporal_hint_zero_result'
+    timeRange: Record<string, unknown>
+    status: string
+    durationMs: number
+    resultCount?: number
+    evidenceCount?: number
+  }
 }
 
 export interface QueryAgentModelCallDiagnostic {
@@ -112,7 +123,7 @@ const SYSTEM_PROMPT = `你是 TraceMemo 的本地聊天查询助手，只能使�
 
 规划原则：
 - 先判断问题需要哪种证据，再调用最少的 Tool。每次收到 Tool Result 后都判断“当前 Evidence 是否已经足以给出有边界的回答”；足够就立即回答，不为追求绝对完整继续调查。
-- query_messages 是精确事实查询，适用于能用联系人、时间、方向、消息类型、顺序等结构条件表达的问题。earliest/latest 等时间边界也是结构条件，必须使用 order 与 limit 精确查询，不能使用抽样 overview。结果已经回答问题时，不要追加 conversation_overview。若返回 0 条且你判断是时间范围或结构条件不合适，允许再查一次并合理扩大或更换条件，但必须与上一次实质不同。
+- query_messages 是精确事实查询，适用于能用联系人、时间、方向、消息类型、顺序等结构条件表达的问题。earliest/latest 等时间边界也是结构条件，必须使用 order 与 limit 精确查询，不能使用抽样 overview。每次调用都必须如实声明 temporalBasis。结果已经回答问题时，不要追加 conversation_overview。
 - 需要绝对时间范围时，startTime/endTime 必须使用带时区偏移的 ISO-8601 字符串（例如 2026-08-01T00:00:00+08:00 或 2026-07-31T16:00:00Z）。不要传 epoch 数字，也不要传没有时区的裸本地时间。
 - search_messages 是关键词检索，适用于结构条件无法确定答案的问题。queries 的每一项都是一次独立的字面检索：一项只放一个简短关键词，不要把多个近义词或整句话塞进同一项。首次最多 4 项。检索到 Evidence 后直接判断；只有本次完全没有 Evidence 时，才允许再检索一次，且每一项都必须与上一次实质不同。
 - conversation_overview 只用于真正需要理解一个时间范围内整体聊了什么、主要话题或整体互动的 broad summary。它返回 temporal coverage sample，不代表完整聊天，也不是检索不足时的默认 fallback。
@@ -281,18 +292,64 @@ function canonicalizeTimeRange(timeRange: Record<string, unknown>, now: Date): {
   return { value: { kind: 'absolute', startTime: Math.floor(startMs / 1000), endTime: Math.floor(endMs / 1000) } }
 }
 
+/** canonical（已剥离、已校验）的 temporalBasis。 */
+interface CanonicalTemporalBasis {
+  kind: QueryTemporalBasisKind
+  sourceText?: string
+}
+
 /**
  * LLM Tool Adapter 的 canonicalization：
+ * - temporalBasis 是 LLM-facing 元数据：Host 用它决定 policy，但**剥离**后不传给 Local Query API
  * - absolute 的 ISO-8601 → Local Query API 的 epoch seconds
  * - search_messages 的 queries[] → Local Query API 的 query + variants
+ *
+ * 这里只做**纯 lexical** 校验（sourceText 是否为用户问题子串 + kind 与 timeRange 是否自洽），
+ * 不解释时间短语的意思。
  */
-function canonicalizeToolInput(name: string, input: Record<string, unknown>, now: Date): { input?: Record<string, unknown>; error?: ToolArgumentValidationError } {
+function canonicalizeToolInput(
+  name: string,
+  input: Record<string, unknown>,
+  now: Date,
+  question: string
+): { input?: Record<string, unknown>; temporalBasis?: CanonicalTemporalBasis; error?: ToolArgumentValidationError } {
   const output: Record<string, unknown> = { ...input }
+  const rawBasis = output.temporalBasis
+  delete output.temporalBasis
+
+  let temporalBasis: CanonicalTemporalBasis | undefined
+  if (rawBasis && typeof rawBasis === 'object' && !Array.isArray(rawBasis)) {
+    const record = rawBasis as Record<string, unknown>
+    const kind = record.kind
+    if (kind === 'constraint' || kind === 'recall_hint' || kind === 'none') {
+      const sourceText = typeof record.sourceText === 'string' ? record.sourceText.trim() : undefined
+      if (kind === 'none') {
+        if (sourceText) {
+          return { error: argError('temporalBasis.sourceText', 'forbidden_for_none', null, sourceText, 'kind=none 表示问题里没有任何时间表达，此时不要提供 sourceText。') }
+        }
+      } else if (!sourceText) {
+        return { error: argError('temporalBasis.sourceText', 'required', '用户原问题中的时间原文片段', undefined, `kind=${kind} 时必须给出用户原问题中实际出现的时间片段。`) }
+      } else if (!question.includes(sourceText)) {
+        return { error: argError('temporalBasis.sourceText', 'source_not_in_question', question, sourceText, 'sourceText 必须是用户原问题中逐字出现的片段，不要改写、翻译或补全。') }
+      }
+      temporalBasis = { kind, ...(sourceText ? { sourceText } : {}) }
+    }
+  }
+
   if (output.timeRange && typeof output.timeRange === 'object' && !Array.isArray(output.timeRange)) {
     const canonical = canonicalizeTimeRange(output.timeRange as Record<string, unknown>, now)
     if (canonical.error) return { error: canonical.error }
     output.timeRange = canonical.value
   }
+
+  // 用户没给任何时间表达时，不得凭空造一个有界范围（earliest/latest 用 order/limit 表达）。
+  if (temporalBasis?.kind === 'none') {
+    const kind = rangeKind(output)
+    if (kind && kind !== 'all') {
+      return { error: argError('timeRange', 'temporal_basis_mismatch', 'timeRange.kind=all', output.timeRange, '用户没有给出任何时间表达（temporalBasis.kind=none）。请改用 timeRange.kind=all；如果需要 earliest/latest 这类边界，用 order 与 limit 表达。') }
+    }
+  }
+
   if (name === 'search_messages') {
     const raw = Array.isArray(output.queries) ? (output.queries as unknown[]) : []
     const probes = raw.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter(Boolean)
@@ -302,7 +359,7 @@ function canonicalizeToolInput(name: string, input: Record<string, unknown>, now
     output.query = first
     if (rest.length) output.variants = rest
   }
-  return { input: output }
+  return { input: output, temporalBasis }
 }
 
 interface ZeroResultRetryState {
@@ -310,10 +367,61 @@ interface ZeroResultRetryState {
   searchSignatures: string[]
   queryAttempts: number
   querySignatures: string[]
+  /**
+   * temporalBasis.kind=constraint 的 query_messages 一旦执行，就锁定其 canonical timeRange。
+   * 后续 retry 若替换时间范围会被拒绝 —— 用户明确给出的时间边界不得扩大。
+   */
+  lockedConstraintRange?: { signature: string; timeRange: Record<string, unknown> }
 }
 
 function newRetryState(): ZeroResultRetryState {
   return { searchAttempts: 0, searchSignatures: [], queryAttempts: 0, querySignatures: [] }
+}
+
+/** Host 自动执行的扩大查询原因（当前只有一种）。 */
+const AUTO_FALLBACK_REASON = 'soft_temporal_hint_zero_result' as const
+
+function rangeKind(input: Record<string, unknown>): string | undefined {
+  const range = input.timeRange
+  if (!range || typeof range !== 'object' || Array.isArray(range)) return undefined
+  const kind = (range as Record<string, unknown>).kind
+  return typeof kind === 'string' ? kind : undefined
+}
+
+/**
+ * constraint 时间边界锁定：时间来源由 LLM 判断（temporalBasis），
+ * 但"不得扩大"由 Host 结构性保证，不依赖 prompt。
+ */
+function lockConstraintTimeRange(
+  name: string,
+  temporalBasis: CanonicalTemporalBasis | undefined,
+  input: Record<string, unknown>,
+  state: ZeroResultRetryState
+): ToolArgumentValidationError | undefined {
+  if (name !== 'query_messages' || temporalBasis?.kind !== 'constraint') return undefined
+  const signature = JSON.stringify(input.timeRange ?? null)
+  if (!state.lockedConstraintRange) {
+    state.lockedConstraintRange = { signature, timeRange: (input.timeRange as Record<string, unknown>) ?? {} }
+    return undefined
+  }
+  if (state.lockedConstraintRange.signature === signature) return undefined
+  return argError('timeRange', 'constraint_time_range_immutable', state.lockedConstraintRange.timeRange, input.timeRange, '用户明确给出的时间范围不得改变；只能放宽 direction / messageTypes 等非时间条件。')
+}
+
+/**
+ * 只有"LLM 自己推断的近似时间范围（recall_hint）+ 有界范围 + 首次 0 结果"才自动扩大。
+ * 已经是 all 时无需扩大；constraint 一律不扩大（由 lockConstraintTimeRange 保证）。
+ */
+function shouldAutoBroaden(
+  name: string,
+  temporalBasis: CanonicalTemporalBasis | undefined,
+  input: Record<string, unknown>,
+  result: QueryAgentToolResult
+): boolean {
+  if (name !== 'query_messages') return false
+  if (temporalBasis?.kind !== 'recall_hint') return false
+  if (resultCount(result).resultCount !== 0) return false
+  return rangeKind(input) !== 'all'
 }
 
 function normalizedTarget(input: Record<string, unknown>): string {
@@ -351,11 +459,16 @@ function retryNote(name: string, result: QueryAgentToolResult, state: ZeroResult
   if (result.status !== 'completed') return undefined
   const counts = resultCount(result)
   if (name === 'search_messages' && !counts.evidenceCount && state.searchAttempts <= ZERO_RESULT_RETRY_LIMIT) return '本次检索没有任何 Evidence。允许再执行一次 search_messages，但每一项都必须与上一次实质不同；完全相同的检索会被拒绝。'
-  if (name === 'query_messages' && counts.resultCount === 0 && state.queryAttempts <= ZERO_RESULT_RETRY_LIMIT) return '本次精确查询返回 0 条。允许再执行一次 query_messages，用于合理扩大或更换时间范围、方向或消息类型；完全相同的条件会被拒绝。'
+  if (name === 'query_messages' && counts.resultCount === 0 && !result.fallbackLookup && state.queryAttempts <= ZERO_RESULT_RETRY_LIMIT) return '本次精确查询返回 0 条。允许再执行一次 query_messages，用于放宽 direction 或 messageTypes 等非时间条件；改变时间范围会被拒绝。'
   return undefined
 }
 
-export function validateToolArguments(name: string, value: unknown, now: Date = new Date()): { input?: Record<string, unknown>; error?: ToolArgumentValidationError } {
+export function validateToolArguments(
+  name: string,
+  value: unknown,
+  now: Date = new Date(),
+  question = ''
+): { input?: Record<string, unknown>; temporalBasis?: CanonicalTemporalBasis; error?: ToolArgumentValidationError } {
   const definition = LOCAL_QUERY_TOOL_DEFINITIONS.find((tool) => tool.name === name)
   if (!definition) return { error: argError('$', 'tool', 'supported tool', name) }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -366,7 +479,7 @@ export function validateToolArguments(name: string, value: unknown, now: Date = 
   }
   const error = validateSchema(value, definition.parameters as ToolSchema)
   if (error) return { error }
-  return canonicalizeToolInput(name, value as Record<string, unknown>, now)
+  return canonicalizeToolInput(name, value as Record<string, unknown>, now, question)
 }
 
 function resultCount(result: QueryAgentToolResult): { resultCount?: number; evidenceCount?: number } {
@@ -389,6 +502,13 @@ function toolResultForModel(name: string, result: QueryAgentToolResult, callsUse
   if (result.anchor) visible.anchor = messageRecordForModel(result.anchor)
   if (Array.isArray(result.before)) visible.before = result.before.map(messageRecordForModel)
   if (Array.isArray(result.after)) visible.after = result.after.map(messageRecordForModel)
+  if (result.fallbackLookup && typeof result.fallbackLookup === 'object') {
+    const fallback = result.fallbackLookup as Record<string, unknown>
+    visible.fallbackLookup = {
+      ...fallback,
+      ...(Array.isArray(fallback.messages) ? { messages: fallback.messages.map(messageRecordForModel) } : {})
+    }
+  }
   visible._agent = {
     toolName: name,
     toolCallsUsed: callsUsed,
@@ -399,13 +519,16 @@ function toolResultForModel(name: string, result: QueryAgentToolResult, callsUse
       nextTools.length
         ? '先判断当前 Evidence 是否足以回答；足够就立即回答，只在含义仍有明确歧义时使用当前可用 Tool。'
         : '工具阶段已经结束。必须直接给出有边界的最终回答，不得再调用 Tool。',
+      result.fallbackLookup
+        ? '本次结果有两个 scope：顶层是原查询，fallbackLookup 是系统自动扩大到全部历史后的结果。回答时必须分别说明这两个范围，不要让用户以为原问题就是按“全部历史”提出的。'
+        : undefined,
       note
     ].filter(Boolean).join(' ')
   }
   return visible
 }
 
-function nextToolDefinitions(name: string, result: QueryAgentToolResult, state: ZeroResultRetryState): AIChatToolDefinition[] {
+function nextToolDefinitions(name: string, result: QueryAgentToolResult, state: ZeroResultRetryState, rangeWasAll = false): AIChatToolDefinition[] {
   // 重复重试已被拒绝，不再开放工具，避免用有限的 tool budget 反复试同一条件。
   if (result.constraint === 'duplicate_retry') return []
   if (result.status === 'invalid_tool_arguments') return toolDefinition(name)
@@ -418,6 +541,10 @@ function nextToolDefinitions(name: string, result: QueryAgentToolResult, state: 
     return state.searchAttempts <= ZERO_RESULT_RETRY_LIMIT ? toolDefinition('search_messages') : []
   }
   if (name === 'query_messages') {
+    // Host 已经自动执行过一次扩大查询：不再开放 retry，避免出现第三次查询。
+    if (result.fallbackLookup) return []
+    // 已经查了全部历史且 0 结果：再换时间范围毫无意义（更窄只会更少）。
+    if (rangeWasAll && counts.resultCount === 0) return []
     // 只有 0 结果才开放一次重试；有结果时保持原有 stopping。
     return counts.resultCount === 0 && state.queryAttempts <= ZERO_RESULT_RETRY_LIMIT ? toolDefinition('query_messages') : []
   }
@@ -485,6 +612,8 @@ export class QueryAgentPocService {
         const inputStartedAt = Date.now()
         let toolResult: QueryAgentToolResult | undefined
         let traceInput: Record<string, unknown> = {}
+        let temporalBasis: CanonicalTemporalBasis | undefined
+        let autoFallback: QueryAgentTraceItem['autoFallback']
         try {
           if (!tools.some((tool) => tool.function.name === call.name)) {
             toolResult = { status: 'invalid_tool_arguments', field: '$', constraint: 'tool_availability', expected: tools.map((tool) => tool.function.name), actual: call.name }
@@ -495,17 +624,44 @@ export class QueryAgentPocService {
               toolResult = { status: 'invalid_tool_arguments', field: '$', constraint: 'json' }
             }
             if (!toolResult) {
-              const validated = validateToolArguments(call.name, parsed, now)
+              const validated = validateToolArguments(call.name, parsed, now, trimmed)
               if (validated.error) {
                 toolResult = validated.error
               } else {
                 traceInput = validated.input || {}
-                if (duplicateRetry(call.name, traceInput, retry)) {
+                temporalBasis = validated.temporalBasis
+                // constraint 时间边界由 Host 结构性锁定：不依赖 prompt，也不静默改写用户问题。
+                const constraintViolation = lockConstraintTimeRange(call.name, temporalBasis, traceInput, retry)
+                if (constraintViolation) {
+                  toolResult = constraintViolation
+                } else if (duplicateRetry(call.name, traceInput, retry)) {
                   // 明确拒绝“换关键词重搜”里的 identical retry，让模型改用实质不同的条件。
                   toolResult = { status: 'invalid_tool_arguments', field: '$', constraint: 'duplicate_retry', expected: '与上一次实质不同的条件', actual: '与上一次完全相同的条件' }
                 } else {
                   recordAttempt(call.name, traceInput, retry)
-                  toolResult = await this.executeTool(call.name, traceInput)
+                  const primary = await this.executeTool(call.name, traceInput)
+                  toolResult = primary
+                  // recall_hint + 有界范围 + 0 结果 → Host 自动做一次“全部历史”corrective lookup。
+                  // 这是一次本地 Query API 调用：不增加 LLM 往返，也不占用 MAX_TOOL_CALLS。
+                  if (shouldAutoBroaden(call.name, temporalBasis, traceInput, primary)) {
+                    const fallbackStartedAt = Date.now()
+                    const fallbackResult = await this.executeTool('query_messages', { ...traceInput, timeRange: { kind: 'all' } })
+                    const fallbackCounts = resultCount(fallbackResult)
+                    autoFallback = { reason: AUTO_FALLBACK_REASON, timeRange: { kind: 'all' }, status: fallbackResult.status, durationMs: Date.now() - fallbackStartedAt, ...fallbackCounts }
+                    toolResult = {
+                      ...primary,
+                      fallbackLookup: {
+                        reason: AUTO_FALLBACK_REASON,
+                        explanation: '你的 temporalBasis.kind=recall_hint 表示该时间范围只是你推断的回忆线索，并非用户给出的硬边界；首次查询为 0 条，系统已自动在全部历史中再查一次。请分别说明这两个范围的结果。',
+                        timeRange: { kind: 'all' },
+                        status: fallbackResult.status,
+                        resolvedTimeRange: fallbackResult.resolvedTimeRange,
+                        coverage: fallbackResult.coverage,
+                        returnedCount: fallbackResult.returnedCount,
+                        messages: fallbackResult.messages
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -518,10 +674,10 @@ export class QueryAgentPocService {
         result.toolCallCount += 1
         result.toolTotalMs += durationMs
         const counts = resultCount(completedToolResult)
-        result.traces.push({ toolName: call.name, input: sanitizeInput(traceInput), durationMs, status: completedToolResult.status, ...counts })
+        result.traces.push({ toolName: call.name, input: sanitizeInput(traceInput), durationMs, status: completedToolResult.status, ...counts, ...(temporalBasis ? { temporalBasis } : {}), ...(autoFallback ? { autoFallback } : {}) })
         const nextTools = completedToolResult.constraint === 'tool_availability'
           ? tools
-          : nextToolDefinitions(call.name, completedToolResult, retry)
+          : nextToolDefinitions(call.name, completedToolResult, retry, rangeKind(traceInput) === 'all')
         const note = retryNote(call.name, completedToolResult, retry)
         messages.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: JSON.stringify(toolResultForModel(call.name, completedToolResult, result.toolCallCount, nextTools, note)) })
         tools = nextTools
