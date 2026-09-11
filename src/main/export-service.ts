@@ -671,6 +671,8 @@ interface SingleExportOptions {
   outputRoot?: string
   outputFolderName?: string
   manageJob?: boolean
+  skipIfEmpty?: boolean
+  replaceExisting?: boolean
   sendProgress?: (progress: ExportJobProgress) => void
   selfInfo?: CachedSelfInfo | null
 }
@@ -766,6 +768,38 @@ const preserveLegacyCombinedArchive = async (outputDir: string): Promise<void> =
   }
 }
 
+const pruneAllExportConversationDirectories = async (
+  outputDir: string,
+  conversations: AllExportManifestEntry[]
+): Promise<void> => {
+  const expectedByCategory = new Map<string, Set<string>>([
+    ['群聊', new Set<string>()],
+    ['联系人', new Set<string>()]
+  ])
+  for (const conversation of conversations) {
+    const categoryName = conversation.type === 'group' ? '群聊' : '联系人'
+    expectedByCategory.get(categoryName)!.add(conversation.folder.slice(categoryName.length + 1))
+  }
+  for (const [categoryName, expectedFolders] of expectedByCategory) {
+    const categoryDir = join(outputDir, categoryName)
+    let entries: string[]
+    try {
+      entries = await fs.readdir(categoryDir)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      throw error
+    }
+    for (const entry of entries) {
+      if (!expectedFolders.has(entry)) {
+        await fs.rm(join(categoryDir, entry), { recursive: true, force: true })
+      }
+    }
+    if (expectedFolders.size === 0) {
+      await fs.rm(categoryDir, { recursive: true, force: true })
+    }
+  }
+}
+
 async function runSingleExport(
   request: ExportRequest,
   win: BrowserWindow,
@@ -808,7 +842,11 @@ async function runSingleExport(
         send({ jobId: request.jobId, phase: 'cancelled', processed: 0, percent: 5 })
         return { success: false, error: '已取消' }
       }
+      const targetMessages = (
+        await chat.listMessagesForExport(target.userMd5, request.startTime, request.endTime)
+      ).filter((message) => request.kinds.includes(kindOf(message)))
       if (
+        targetMessages.length > 0 &&
         target.type === 'group' &&
         (request.scope === 'all' || !Object.keys(target.nameMap || {}).length)
       ) {
@@ -827,9 +865,6 @@ async function runSingleExport(
           if (member.avatar) target.avatarUrls![member.wxid] = member.avatar
         }
       }
-      const targetMessages = (
-        await chat.listMessagesForExport(target.userMd5, request.startTime, request.endTime)
-      ).filter((message) => request.kinds.includes(kindOf(message)))
       for (const [messageOrder, message] of targetMessages.entries()) {
         messageEntries.push({
           message: {
@@ -857,6 +892,13 @@ async function runSingleExport(
         return left.messageOrder - right.messageOrder
       })
       .map((entry) => entry.message)
+    if (options.skipIfEmpty && messages.length === 0) {
+      if (!jobs.has(request.jobId)) {
+        send({ jobId: request.jobId, phase: 'cancelled', processed: 0, percent: 10 })
+        return { success: false, error: '已取消' }
+      }
+      return { success: true, messageCount: 0 }
+    }
     const selfInfo =
       options.selfInfo !== undefined
         ? options.selfInfo
@@ -941,9 +983,15 @@ async function runSingleExport(
       request.format === 'html'
         ? options.outputFolderName || safeFilePart(request.outputName)
         : `${safeFilePart(request.outputName)}_${exportStamp()}`
-    const root = options.outputRoot || request.outputDirectory || (await resolveDefaultExportRoot(outputFolder))
-    await fs.mkdir(root, { recursive: true })
+    const root =
+      options.outputRoot ||
+      request.outputDirectory ||
+      (await resolveDefaultExportRoot(outputFolder))
     const outputDir = join(root, outputFolder)
+    if (options.replaceExisting) {
+      await fs.rm(request.format === 'html' ? outputDir : root, { recursive: true, force: true })
+    }
+    await fs.mkdir(root, { recursive: true })
     const outputPath =
       request.format === 'html'
         ? join(outputDir, 'index.html')
@@ -1234,10 +1282,8 @@ async function runSingleExport(
               }
               message.voiceDataUrl = voiceUrl
               // 读取 WAV 头中的采样率，避免按错误采样率计算时长（Silk 解码为 16kHz）
-              const wavSampleRate =
-                audioBuffer.length >= 44 ? audioBuffer.readUInt32LE(24) : 16000
-              const wavChannels =
-                audioBuffer.length >= 44 ? audioBuffer.readUInt16LE(22) : 1
+              const wavSampleRate = audioBuffer.length >= 44 ? audioBuffer.readUInt32LE(24) : 16000
+              const wavChannels = audioBuffer.length >= 44 ? audioBuffer.readUInt16LE(22) : 1
               const pcmBytes = Math.max(0, audioBuffer.length - 44)
               message.voiceDuration = Math.max(
                 1,
@@ -1695,6 +1741,8 @@ async function runAllExport(
           outputRoot: conversationOutputRoot,
           outputFolderName: request.format === 'html' ? folderName : undefined,
           manageJob: false,
+          skipIfEmpty: true,
+          replaceExisting: true,
           selfInfo,
           sendProgress: (childProgress) => {
             const childPercent = Math.max(0, Math.min(100, childProgress.percent || 0))
@@ -1729,6 +1777,10 @@ async function runAllExport(
       }
 
       const messageCount = result.messageCount || 0
+      if (messageCount === 0) {
+        await fs.rm(join(categoryDir, folderName), { recursive: true, force: true })
+        continue
+      }
       totalMessages += messageCount
       manifest.push({
         id: target.userMd5,
@@ -1740,6 +1792,7 @@ async function runAllExport(
       await writeAllExportManifest(outputDir, manifest, totalMessages, 'running')
     }
 
+    await pruneAllExportConversationDirectories(outputDir, manifest)
     await writeAllExportManifest(outputDir, manifest, totalMessages, 'completed')
 
     let completedPath = outputDir

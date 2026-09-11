@@ -145,7 +145,7 @@ describe('ExportWorkspace multi-chat selection', () => {
     expect(window.api.getGroupSnapshot).not.toHaveBeenCalled()
   })
 
-  it('allows all export to include only groups and replaces the single-chat avatars', async () => {
+  it('exports only groups from today by default and replaces the single-chat avatars', async () => {
     const onStartExport = vi.fn(async () => ({ success: false }))
     renderWorkspace(onStartExport)
     await userEvent.click(screen.getByRole('button', { name: /全部导出/ }))
@@ -156,18 +156,61 @@ describe('ExportWorkspace multi-chat selection', () => {
     expect(document.querySelector('.export-all-chat-avatar.user')).not.toBeInTheDocument()
     expect(screen.getAllByText(/全部群聊 1 个/)).toHaveLength(2)
     expect(screen.getByRole('button', { name: /聊天 A/ })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('radio', { name: '今天' })).toBeChecked()
+
+    const now = new Date()
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+    await userEvent.click(screen.getByRole('button', { name: '开始导出' }))
+    await waitFor(() => expect(onStartExport).toHaveBeenCalledOnce())
+    expect(onStartExport.mock.calls[0][0]).toMatchObject({
+      scope: 'all',
+      allContactTypes: ['group'],
+      startTime: Math.floor(startOfToday.getTime() / 1000),
+      endTime: Math.floor(endOfToday.getTime() / 1000)
+    })
+    expect(onStartExport.mock.calls[0][0].targets).toEqual([
+      expect.objectContaining({ userMd5: 'contact-3', type: 'group' })
+    ])
+  })
+
+  it('uses the recent seven-day range when exporting all groups', async () => {
+    const onStartExport = vi.fn(async () => ({ success: false }))
+    renderWorkspace(onStartExport)
+    await userEvent.click(screen.getByRole('button', { name: /全部导出/ }))
+    await userEvent.click(screen.getByRole('checkbox', { name: '导出全部联系人' }))
+    await userEvent.click(screen.getByRole('radio', { name: '最近 7 天' }))
+
+    const now = new Date()
+    const startOfRange = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+    await userEvent.click(screen.getByRole('button', { name: '开始导出' }))
+    await waitFor(() => expect(onStartExport).toHaveBeenCalledOnce())
+    expect(onStartExport.mock.calls[0][0]).toMatchObject({
+      scope: 'all',
+      allContactTypes: ['group'],
+      startTime: Math.floor(startOfRange.getTime() / 1000),
+      endTime: Math.floor(endOfToday.getTime() / 1000)
+    })
+  })
+
+  it('keeps custom dates when exporting all groups', async () => {
+    const onStartExport = vi.fn(async () => ({ success: false }))
+    renderWorkspace(onStartExport)
+    await userEvent.click(screen.getByRole('button', { name: /全部导出/ }))
+    await userEvent.click(screen.getByRole('checkbox', { name: '导出全部联系人' }))
+    await userEvent.click(screen.getByRole('radio', { name: '自定义时间' }))
+    await userEvent.type(screen.getByLabelText('开始时间'), '2026-08-01T09:30')
+    await userEvent.type(screen.getByLabelText('结束时间'), '2026-08-02T18:45')
 
     await userEvent.click(screen.getByRole('button', { name: '开始导出' }))
     await waitFor(() => expect(onStartExport).toHaveBeenCalledOnce())
     expect(onStartExport.mock.calls[0][0]).toMatchObject({
       scope: 'all',
       allContactTypes: ['group'],
-      startTime: undefined,
-      endTime: undefined
+      startTime: Math.floor(new Date('2026-08-01T09:30').getTime() / 1000),
+      endTime: Math.floor(new Date('2026-08-02T18:45').getTime() / 1000)
     })
-    expect(onStartExport.mock.calls[0][0].targets).toEqual([
-      expect.objectContaining({ userMd5: 'contact-3', type: 'group' })
-    ])
   })
 
   it('restores a running all-export task after returning to the page', async () => {

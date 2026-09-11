@@ -236,7 +236,7 @@ export function ExportWorkspace({
     setExportAll(true)
     setAllContactTypes([...ALL_CONTACT_TYPES])
     setSelectionMode(false)
-    setRange('all')
+    setRange('today')
     setStatus('idle')
   }
 
@@ -335,20 +335,16 @@ export function ExportWorkspace({
       format: exportFormat,
       outputName,
       outputDirectory: outputDirectory || undefined,
-      startTime: exportAll
-        ? undefined
-        : startOfRange
-          ? Math.floor(startOfRange.getTime() / 1000)
-          : range === 'custom' && startDate
-            ? Math.floor(new Date(startDate).getTime() / 1000)
-            : undefined,
-      endTime: exportAll
-        ? undefined
-        : startOfRange
-          ? Math.floor(endOfToday.getTime() / 1000)
-          : range === 'custom' && endDate
-            ? Math.floor(new Date(endDate).getTime() / 1000)
-            : undefined,
+      startTime: startOfRange
+        ? Math.floor(startOfRange.getTime() / 1000)
+        : range === 'custom' && startDate
+          ? Math.floor(new Date(startDate).getTime() / 1000)
+          : undefined,
+      endTime: startOfRange
+        ? Math.floor(endOfToday.getTime() / 1000)
+        : range === 'custom' && endDate
+          ? Math.floor(new Date(endDate).getTime() / 1000)
+          : undefined,
       kinds: Array.from(selectedKinds) as ExportMessageKind[],
       includeMedia,
       includeVoiceTranscripts: shouldIncludeVoiceTranscripts,

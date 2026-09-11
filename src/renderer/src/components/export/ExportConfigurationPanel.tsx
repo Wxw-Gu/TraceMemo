@@ -201,7 +201,7 @@ export function ExportConfigurationPanel({
           </SegmentedControl>
           <p className={helperClassName}>
             {exportAll
-              ? '全部导出固定使用全部时间；每个群聊或联系人都会在自己的目录中生成所选格式的独立档案。'
+              ? '全部导出会按所选范围生成快照；仅为范围内有匹配消息的聊天生成独立档案。'
               : selectedContacts.length > 1
                 ? '多聊天合并仅支持 HTML，会保留每条消息所属的聊天。'
                 : 'CSV 默认最快；HTML 会包含图片、引用和其他媒体，导出时间可能较长。'}
@@ -243,22 +243,19 @@ export function ExportConfigurationPanel({
             onValueChange={(value) => onRangeChange(value as ExportRange)}
             aria-label="时间范围"
           >
-            {(exportAll
-              ? [['all', '全部时间']]
-              : [
-                  ['all', '全部时间'],
-                  ['today', '今天'],
-                  ['threeDays', '最近 3 天'],
-                  ['sevenDays', '最近 7 天'],
-                  ['custom', '自定义时间']
-                ]
-            ).map(([value, label]) => (
+            {[
+              ['all', '全部时间'],
+              ['today', '今天'],
+              ['threeDays', '最近 3 天'],
+              ['sevenDays', '最近 7 天'],
+              ['custom', '自定义时间']
+            ].map(([value, label]) => (
               <SegmentedControlItem key={value} value={value} className="w-full">
                 {label}
               </SegmentedControlItem>
             ))}
           </SegmentedControl>
-          {!exportAll && range === 'custom' && (
+          {range === 'custom' && (
             <div className="mt-2.5 grid grid-cols-2 gap-2.5 rounded-lg bg-muted p-3">
               <label className="grid gap-1.5 text-[11px] text-muted-foreground">
                 开始时间

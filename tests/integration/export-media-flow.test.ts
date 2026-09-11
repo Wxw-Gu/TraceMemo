@@ -27,6 +27,7 @@ const state = vi.hoisted(() => ({
   messages: [] as Message[],
   messagesByUser: {} as Record<string, Message[]>,
   exportReads: [] as string[],
+  exportRanges: [] as Array<{ userMd5: string; startTime?: number; endTime?: number }>,
   selfInfoReads: 0,
   groupSnapshotReads: [] as string[],
   groupSnapshots: {} as Record<
@@ -95,8 +96,9 @@ vi.mock('../../src/main/services/chat-service', () => ({
   listMessages: () => structuredClone(state.messages),
   listMessagesAsync: async (userMd5: string) =>
     structuredClone(state.messagesByUser[userMd5] || state.messages),
-  listMessagesForExport: async (userMd5: string) => {
+  listMessagesForExport: async (userMd5: string, startTime?: number, endTime?: number) => {
     state.exportReads.push(userMd5)
+    state.exportRanges.push({ userMd5, startTime, endTime })
     return structuredClone(state.messagesByUser[userMd5] || state.messages)
   },
   getChatDb: () => ({
@@ -280,6 +282,7 @@ describe('media export flow', () => {
     state.videoLookups = []
     state.messagesByUser = {}
     state.exportReads = []
+    state.exportRanges = []
     state.selfInfoReads = 0
     state.groupSnapshotReads = []
     state.groupSnapshots = {}
@@ -1264,6 +1267,77 @@ describe('media export flow', () => {
     expect(readFileSync(join(groupDir, groupFiles[0]), 'utf8')).toContain('群聊消息')
     expect(readFileSync(join(userDir, userFiles[0]), 'utf8')).toContain('联系人消息')
     expect(existsSync(join(outputDir, 'index.html'))).toBe(false)
+  })
+
+  it('keeps only conversations with matching messages in a ranged all export', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const win = {
+      isDestroyed: () => false,
+      webContents: { send: vi.fn() }
+    }
+    const targets: ExportTarget[] = [
+      { ...target('active-group', '活跃群聊'), type: 'group' },
+      { ...target('empty-group', '空群聊'), type: 'group' }
+    ]
+    const request = {
+      scope: 'all' as const,
+      allContactTypes: ['group'] as const,
+      targets,
+      format: 'html' as const,
+      outputName: '范围内群聊',
+      kinds: ['text'] as const,
+      includeMedia: false
+    }
+
+    state.messagesByUser = {
+      'active-group': [message({ id: 'old-active', content: '旧范围消息' })],
+      'empty-group': [message({ id: 'old-empty', content: '旧范围空群消息' })]
+    }
+    const first = await runExport(
+      { ...request, jobId: 'ranged-all-first', kinds: [...request.kinds] },
+      win as never
+    )
+    expect(first.success, first.error).toBe(true)
+    const outputDir = first.outputPath!
+    mkdirSync(join(outputDir, '联系人', '旧联系人'), { recursive: true })
+    writeFileSync(join(outputDir, '联系人', '旧联系人', '旧档案.txt'), 'stale')
+
+    state.messagesByUser = {
+      'active-group': [message({ id: 'current-active', content: '限定范围消息' })],
+      'empty-group': []
+    }
+    state.exportRanges = []
+    state.groupSnapshotReads = []
+    const second = await runExport(
+      {
+        ...request,
+        jobId: 'ranged-all-second',
+        kinds: [...request.kinds],
+        startTime: 1_800_000_000,
+        endTime: 1_800_086_400
+      },
+      win as never
+    )
+
+    expect(second.success, second.error).toBe(true)
+    expect(second.messageCount).toBe(1)
+    expect(state.exportRanges).toEqual([
+      { userMd5: 'active-group', startTime: 1_800_000_000, endTime: 1_800_086_400 },
+      { userMd5: 'empty-group', startTime: 1_800_000_000, endTime: 1_800_086_400 }
+    ])
+    expect(state.groupSnapshotReads).toEqual(['active-group'])
+    expect(existsSync(join(outputDir, '群聊', '空群聊'))).toBe(false)
+    expect(existsSync(join(outputDir, '联系人'))).toBe(false)
+    const archive = readArchive(join(outputDir, '群聊', '活跃群聊', 'index.html'))
+    expect(archive.messages.map((item) => item.id)).toEqual(['current-active'])
+    const manifest = JSON.parse(readFileSync(join(outputDir, '导出清单.json'), 'utf8')) as {
+      messageCount: number
+      conversations: Array<{ id: string; messageCount: number }>
+    }
+    expect(manifest.messageCount).toBe(1)
+    expect(manifest.conversations).toEqual([
+      expect.objectContaining({ id: 'active-group', messageCount: 1 })
+    ])
   })
 
   it('cancels an all-export task between conversations without starting the next database read', async () => {
