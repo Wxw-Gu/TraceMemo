@@ -42,6 +42,12 @@ export interface AppSettings {
   /** Keep a running personal-WeChat OneBot process across app restarts. */
   keepPersonalWechatProcess?: boolean
   windowsWechatPort: string
+  /**
+   * Query Agent 是否为桌面「问问微信」与 Agent Hub 查询类问题的主路径。
+   * 默认开启；关闭后回退到 Legacy AI Search Pipeline（仅作 runtime regression 时的回退开关，
+   * 不在用户界面暴露实验性名称）。
+   */
+  queryAgentEnabled: boolean
 }
 
 function getDefaultDbRoot(): string {
@@ -125,7 +131,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   ttsSelectedVoiceId: '',
   ttsModel: 's2.1-pro-free',
   keepPersonalWechatProcess: false,
-  windowsWechatPort: ''
+  windowsWechatPort: '',
+  queryAgentEnabled: true
 }
 
 const SETTINGS_FILE = path.join(

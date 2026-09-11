@@ -5,6 +5,7 @@ import type {
   GroupReportRenderSnapshotExportRequest
 } from '../shared/group-report'
 import type { ReportTemplateOperationResult } from '../shared/report-template-package'
+import type { MessagesAroundResult } from '../shared/types'
 import type {
   ReportTemplateCatalogInstallResult,
   ReportTemplateCatalogResult
@@ -84,6 +85,12 @@ import type {
   AiSearchProgressEvent
 } from '../shared/ai-search'
 import type {
+  AskWechatConfig,
+  AskWechatQueryRequest,
+  AskWechatQueryResult,
+  QueryAgentProgressEvent
+} from '../shared/query-agent'
+import type {
   KnowledgeRuntimeStatus,
   KnowledgeSearchIpcRequest,
   KnowledgeSearchIpcResult
@@ -137,6 +144,17 @@ const api = {
     endTime?: number,
     options?: { limit?: number }
   ) => ipcRenderer.invoke('db:getMessages', userMd5, startTime, endTime, options),
+  /**
+   * 跳转到证据的锚点读取：按稳定消息 id 在有界时间窗口内精确定位，
+   * 返回 `found` 让 UI 能诚实降级（而不是假装跳成功）。
+   */
+  getMessagesAround: (
+    userMd5: string,
+    messageId: string,
+    anchorSeconds?: number,
+    radiusSeconds?: number
+  ): Promise<MessagesAroundResult> =>
+    ipcRenderer.invoke('db:getMessagesAround', userMd5, messageId, anchorSeconds, radiusSeconds),
   getGroupSnapshot: (userMd5: string) => ipcRenderer.invoke('db:getGroupSnapshot', userMd5),
   getGroupExitMonitorState: (): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:getState'),
@@ -180,10 +198,37 @@ const api = {
     ipcRenderer.on('ai-search:progress', listener)
     return () => ipcRenderer.removeListener('ai-search:progress', listener)
   },
+  getAskWechatConfig: (): Promise<AskWechatConfig> => ipcRenderer.invoke('ask-wechat:getConfig'),
+  runAskWechatQuery: (request: AskWechatQueryRequest): Promise<AskWechatQueryResult> =>
+    ipcRenderer.invoke('ask-wechat:query', request),
+  /**
+   * 订阅「问问微信」的真实进度事件。
+   *
+   * 事件带 requestId：UI 必须只认自己那一次请求，否则用户连问两次时阶段文案会串台。
+   */
+  onAskWechatProgress: (
+    callback: (requestId: string, event: QueryAgentProgressEvent) => void
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      requestId: string,
+      progress: QueryAgentProgressEvent
+    ): void => callback(requestId, progress)
+    ipcRenderer.on('ask-wechat:progress', listener)
+    return () => ipcRenderer.removeListener('ask-wechat:progress', listener)
+  },
+  forgetAskWechatConversation: (): Promise<void> =>
+    ipcRenderer.invoke('ask-wechat:forgetConversation'),
   getKnowledgeStatus: (): Promise<KnowledgeRuntimeStatus> =>
     ipcRenderer.invoke('knowledge:getStatus'),
   startKnowledgeIndex: (): Promise<KnowledgeRuntimeStatus> =>
     ipcRenderer.invoke('knowledge:startIndex'),
+  /**
+   * 取消正在跑的索引 pass。返回 `cancelled: false` 表示请求时已经没有可取消的任务
+   * （例如刚好自己跑完了）——UI 必须如实反映，而不是无条件显示"已取消"。
+   */
+  cancelKnowledgeIndex: (): Promise<{ cancellable: boolean; cancelled: boolean }> =>
+    ipcRenderer.invoke('knowledge:cancelIndex'),
   onKnowledgeStatus: (callback: (status: KnowledgeRuntimeStatus) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, status: KnowledgeRuntimeStatus): void =>
       callback(status)

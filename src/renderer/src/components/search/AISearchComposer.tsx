@@ -139,13 +139,10 @@ export function AISearchComposer({
             </span>
           </Button>
         ) : (
-          <Button
-            type="submit"
-            className="px-3 text-[11px]"
-            disabled={knowledgeSyncing}
-            title={knowledgeSyncing ? '知识库同步完成后才能开始分析' : undefined}
-          >
-            {knowledgeSyncing ? '同步中，暂不可分析' : '开始分析'}
+          // 同步中**不允许**禁用提问。后台同步是可取消 / 可断点续传的；索引没追平时按
+          // partial + freshness warning 如实作答（覆盖范围由主进程的 coverage/freshness 契约给出）。
+          <Button type="submit" className="px-3 text-[11px]">
+            开始分析
             <span aria-hidden className="text-base leading-3">
               →
             </span>
@@ -153,7 +150,11 @@ export function AISearchComposer({
         )}
       </div>
       <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] leading-[15px] text-muted-foreground">
-        <span>Enter 发送 · Shift + Enter 换行</span>
+        <span>
+          {knowledgeSyncing
+            ? '知识库后台同步中 · 仍可提问，答案会标注覆盖范围'
+            : 'Enter 发送 · Shift + Enter 换行'}
+        </span>
         <span>AI 仅使用当前搜索所需的受控证据</span>
       </div>
     </form>

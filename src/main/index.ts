@@ -157,14 +157,31 @@ import { VoiceRecognitionUseCase } from './voice-pipeline/voice-recognition-use-
 import { VoiceBatchService } from './voice-pipeline/voice-batch-service'
 import type { VoiceBatchRequest, VoiceMessageReference } from '../shared/voice-recognition'
 import type { AiSearchPipelineRequest } from '../shared/ai-search'
+import type {
+  AskWechatConfig,
+  AskWechatQueryRequest,
+  AskWechatQueryResult
+} from '../shared/query-agent'
 import type { KnowledgeSearchIpcRequest, KnowledgeSearchIpcResult } from '../shared/knowledge'
+// 消息身份的规范化在 main / renderer 之间必须一致，所以只从 shared 取一份实现。
+import { normalizeMessageIdentity } from '../shared/local-query-api'
 import {
   isWindowsVcRuntimeMissingError,
   WINDOWS_VC_RUNTIME_ERROR_MESSAGE
 } from '../shared/windows-runtime'
 import { KnowledgeSearchService } from './knowledge/knowledge-search-service'
+import {
+  MESSAGES_AROUND_MAX_WINDOW,
+  messagesAroundRadii,
+  normalizeRadiusSeconds,
+  sliceMessagesAroundWindow,
+  widenRadiusSeconds
+} from './services/messages-around'
 import { LocalQueryApiService } from './services/local-query-api-service'
 import { AiSearchPipelineService } from './services/ai-search-pipeline-service'
+import { QueryAgentService } from './services/query-agent-service'
+import { AskWechatService } from './services/ask-wechat-service'
+import { createLocalQueryToolExecutor } from './services/local-query-tool-executor'
 import { runLegacySafeStorageHelper } from './legacy-safe-storage-helper'
 import { runFirstLaunchMigration } from './app-data-migration'
 import { WechatShareConfigStore } from './wechat-share-config-store'
@@ -185,6 +202,8 @@ let voiceBatchService: VoiceBatchService | null = null
 let knowledgeSearchService: KnowledgeSearchService | null = null
 let localQueryApiService: LocalQueryApiService | null = null
 let aiSearchPipelineService: AiSearchPipelineService | null = null
+let queryAgentService: QueryAgentService | null = null
+let askWechatService: AskWechatService | null = null
 let imageDecryptService: ImageDecryptService | null = null
 let stickerService: StickerService | null = null
 let videoAssetService: VideoAssetService | null = null
@@ -618,6 +637,21 @@ app.whenReady().then(async () => {
   aiSearchPipelineService = new AiSearchPipelineService(knowledgeSearchService, aiProviderService)
   localQueryApiService = new LocalQueryApiService(knowledgeSearchService)
   setLocalQueryApiService(localQueryApiService)
+  // Query Agent：生产 Runtime 只在这里实例化一次，桌面问问微信与 Agent Hub 共用同一个实例。
+  queryAgentService = new QueryAgentService(
+    aiProviderService,
+    createLocalQueryToolExecutor(localQueryApiService)
+  )
+  askWechatService = new AskWechatService(queryAgentService, {
+    entry: 'desktop',
+    // Legacy 仅在 Runtime 不可恢复错误时使用（见 AskWechatService 的 fallback 规则）。
+    runLegacy: (request) => {
+      if (!aiSearchPipelineService) throw new Error('本地搜索服务尚未初始化')
+      return aiSearchPipelineService.run(request, () => undefined)
+    },
+    log: (record) => appLogger.write({ level: record.level, scope: 'query-agent', message: record.message, details: record.details })
+  })
+  agentHubService.setQueryAgentService(queryAgentService)
   knowledgeSearchService.onStatusChange((status) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send('knowledge:status', status)
@@ -1150,6 +1184,83 @@ app.whenReady().then(async () => {
     }
   )
 
+  /**
+   * 「跳转到原聊天」的锚点读取。
+   *
+   * 与 `db:getMessages` 的区别：目标是**某一条消息**，不是"某个时间段"。
+   * 以 `anchorSeconds` 为中心读一个**有界**窗口（默认 ±6h，找不到再放宽到 ±3d），
+   * 在窗口内按规范化消息 id 精确匹配。
+   *
+   * 不整段加载会话历史：最大会话可达数十万条消息，整段读既慢又会挤爆 IPC；
+   * 而时间窗口在真实数据上是稀疏的，±6h 的量级很小。
+   *
+   * `found: false` 表示"已打开会话但无法定位原消息"，调用方必须走降级文案，
+   * 不能假装跳转成功。
+   */
+  ipcMain.handle(
+    'db:getMessagesAround',
+    async (
+      _,
+      userMd5: string,
+      messageId: string,
+      anchorSeconds?: number,
+      radiusSeconds?: number
+    ) => {
+      const requestId = nextGetMessagesRequestId()
+      const startedAt = Date.now()
+      const target = normalizeMessageIdentity(userMd5, messageId)
+      if (!target) return { messages: [], found: false, radiusSeconds: 0, truncated: false }
+      const baseRadius = normalizeRadiusSeconds(radiusSeconds)
+      const widenRadius = widenRadiusSeconds(baseRadius)
+      const maxWindowMessages = MESSAGES_AROUND_MAX_WINDOW
+      const radii = messagesAroundRadii(anchorSeconds, baseRadius, widenRadius)
+      if (!radii.length) {
+        // 没有时间锚点时**不能**退化成整段加载会话历史（最大会话可达数十万条，
+        // 整段读既慢又会挤爆 IPC）。诚实返回"未定位到"，由调用方给出降级文案。
+        wcdbDebugLog(`[${requestId}] IPC db:getMessagesAround skipped reason=no-anchor`)
+        return { messages: [], found: false, radiusSeconds: 0, truncated: false }
+      }
+      wcdbDebugLog(
+        `[${requestId}] IPC db:getMessagesAround start userMd5=${userMd5} messageId=${target.messageId} anchor=${anchorSeconds || 0}`
+      )
+      for (const radius of radii) {
+        const start = Math.max(0, (anchorSeconds as number) - radius)
+        const end = (anchorSeconds as number) + radius
+        let messages: Awaited<ReturnType<typeof chat.listMessagesAsync>>
+        try {
+          messages = await chat.listMessagesAsync(userMd5, start, end, undefined, requestId)
+        } catch (error) {
+          wcdbDebugLog(`[${requestId}] IPC db:getMessagesAround error radius=${radius}`)
+          throw error
+        }
+        const { window, index, truncated } = sliceMessagesAroundWindow(
+          messages,
+          userMd5,
+          target.messageId,
+          maxWindowMessages
+        )
+        if (index >= 0) {
+          if (chat.isReady()) {
+            saveCachedMessages(chat.getCurrentAccountRoot(), userMd5, start, end, window)
+          }
+          wcdbDebugLog(
+            `[${requestId}] IPC db:getMessagesAround found radius=${radius} rows=${window.length} cost=${Date.now() - startedAt}ms`
+          )
+          return { messages: window, found: true, radiusSeconds: radius, truncated }
+        }
+        // 窗口内没有这条消息：可能是时间戳口径漂移，也可能是它已经被删除/清理。
+        // 只有还值得放宽时才继续，避免把一次点击变成全库扫描。
+        if (radius === radii[radii.length - 1]) {
+          wcdbDebugLog(
+            `[${requestId}] IPC db:getMessagesAround not-found rows=${window.length} cost=${Date.now() - startedAt}ms`
+          )
+          return { messages: window, found: false, radiusSeconds: radius, truncated }
+        }
+      }
+      return { messages: [], found: false, radiusSeconds: 0, truncated: false }
+    }
+  )
+
   ipcMain.handle('db:getGroupSnapshot', async (_, userMd5: string) => {
     const snapshot = await chat.getGroupSnapshotAsync(userMd5)
     if (snapshot && chat.isReady()) {
@@ -1201,6 +1312,18 @@ app.whenReady().then(async () => {
     if (!knowledgeSearchService) throw new Error('本地知识库服务尚未初始化')
     return knowledgeSearchService.startCurrentAccountIndex()
   })
+  /**
+   * 取消正在跑的索引 pass。
+   *
+   * - 只中止**索引**：并发的交互查询用另一套 Abort scope，不会被连带取消；
+   * - 当前 batch 安全收尾：已提交的会话保留，**不回滚**；
+   * - `run_state` 落到 `cancelled`，不残留 `indexing`；
+   * - 取消 ≠ 清空：下一次同步从 per-conversation checkpoint 继续，不从头全量重扫。
+   */
+  ipcMain.handle('knowledge:cancelIndex', () => {
+    if (!knowledgeSearchService) throw new Error('本地知识库服务尚未初始化')
+    return knowledgeSearchService.cancelCurrentAccountIndex()
+  })
   ipcMain.handle('ai-search:run', (event, request: AiSearchPipelineRequest) => {
     if (!aiSearchPipelineService) throw new Error('本地搜索服务尚未初始化')
     return aiSearchPipelineService.run(request, (progress) => {
@@ -1218,6 +1341,27 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.handle('ai-search:getProviderStatus', () => aiProviderService.getAiSearchProviderStatus())
+  // 问问微信主路径：查询大脑走 Query Agent Runtime（与 Agent Hub 同一实现）。
+  ipcMain.handle(
+    'ask-wechat:getConfig',
+    (): AskWechatConfig => ({ queryAgentEnabled: loadSettings().queryAgentEnabled !== false })
+  )
+  ipcMain.handle(
+    'ask-wechat:query',
+    (event, request: AskWechatQueryRequest): Promise<AskWechatQueryResult> => {
+      if (!askWechatService) throw new Error('本地查询服务尚未初始化')
+      // 进度事件只在真实 Runtime 边界产生，并且**带 requestId** 回传：
+      // UI 可以据此忽略过期请求的进度（用户连问两次时不会串台）。
+      return askWechatService.ask(request, 'default', (progress) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('ask-wechat:progress', request.requestId, progress)
+        }
+      })
+    }
+  )
+  ipcMain.handle('ask-wechat:forgetConversation', () => {
+    askWechatService?.forgetConversation()
+  })
   ipcMain.handle(
     'ai-search:authorizeExternalProvider',
     (_, request: AiSearchExternalAuthorizationRequest) => {

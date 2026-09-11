@@ -1,5 +1,21 @@
+/**
+ * Shared Query Agent runtime used by Ask WeChat, Agent Hub, and the CLI harness.
+ * Query semantics and tool orchestration are centralized here — prompt, tool mapping,
+ * validation, temporal policy, retry/stopping, and the bounded model loop — so every
+ * entry point behaves consistently; they differ only by injected tool executor and adapter.
+ */
 import type { AIChatToolCall, AIChatToolDefinition } from './ai-provider-service'
-import { LOCAL_QUERY_TOOL_DEFINITIONS, type QueryTemporalBasisKind } from '../../shared/local-query-api'
+import {
+  LOCAL_QUERY_TOOL_DEFINITIONS,
+  type QueryCorpusScope,
+  type QuerySearchTimings,
+  type QueryTemporalBasisKind
+} from '../../shared/local-query-api'
+// 进度事件定义在 shared（renderer 也要用），这里只是把它带进本文件作用域。
+import type {
+  QueryAgentProgressEvent,
+  QueryAgentProgressStage
+} from '../../shared/query-agent'
 
 const MAX_TOOL_CALLS = 5
 const FORBIDDEN_INPUT_KEYS = new Set(['apiKey', 'authorization', 'token', 'databasePath', 'sql', 'wxid', 'md5'])
@@ -70,6 +86,8 @@ export interface QueryAgentTraceItem {
   status: string
   resultCount?: number
   evidenceCount?: number
+  /** 会话概览覆盖的源消息条数（additive，用于 UI 顶部真实统计）。 */
+  sourceMessageCount?: number
   /** LLM 声明的 temporalBasis。Host 消费它决定 policy，但不会传给 Local Query API。 */
   temporalBasis?: { kind: QueryTemporalBasisKind; sourceText?: string }
   /** Host 自动执行的扩大查询（当前仅 temporalBasis.kind=recall_hint + 有界范围 + 0 结果）。 */
@@ -81,6 +99,13 @@ export interface QueryAgentTraceItem {
     resultCount?: number
     evidenceCount?: number
   }
+  /**
+   * Engine 侧的真实耗时分解（ADDITIVE 诊断）。
+   *
+   * 由 `search_messages` 的 Tool Result 携带，**不会进入模型上下文**（`toolResultForModel`
+   * 会剥离）。用途：把不透明的 Tool 总耗时拆成 scope / freshness / 每个 probe / 合并 / 证据补全。
+   */
+  searchTimings?: QuerySearchTimings
 }
 
 export interface QueryAgentModelCallDiagnostic {
@@ -95,7 +120,24 @@ export interface QueryAgentModelCallDiagnostic {
   error?: string
 }
 
-export interface QueryAgentPocResult {
+/**
+ * 失败分类（additive 诊断字段，供 Adapter 决定展示与是否允许 Legacy fallback）。
+ *
+ * 'provider_unavailable' = Provider 未配置；'provider_failure' = 模型请求本身失败
+ * （网络 / 上游 / 超时）。未分类的异常由 Adapter 归类为 runtime_error。
+ */
+export type QueryAgentErrorKind = 'invalid_question' | 'provider_unavailable' | 'provider_failure' | 'tool_limit'
+
+/**
+ * 多轮澄清所需的最小历史。**由 Adapter 提供**，Runtime 只负责按顺序放进 messages。
+ * Runtime 自身仍然是无状态单轮执行器；历史长度 / 保留时间的边界由调用方负责。
+ */
+export interface QueryAgentHistoryTurn {
+  question: string
+  answer: string
+}
+
+export interface QueryAgentResult {
   question: string
   provider: string
   model: string
@@ -112,12 +154,53 @@ export interface QueryAgentPocResult {
   traces: QueryAgentTraceItem[]
   answer?: string
   error?: string
+  /** 失败分类；additive 诊断字段，成功时为 undefined */
+  errorKind?: QueryAgentErrorKind
+  /** 本次回答实际依据的证据（additive）；按首次命中顺序去重。 */
+  evidence?: QueryAgentEvidenceItem[]
+}
+
+/**
+ * 语料边界（conversation scope）：由 UI / Adapter 传入，**不是** LLM 的输入。
+ * `label` 只用于给模型描述"当前范围是什么"，强制逻辑完全在 Engine（target 越界会被拒绝）。
+ */
+export interface QueryAgentConversationScope {
+  scope: QueryCorpusScope
+  label?: string
+}
+
+/** 单次 Tool 执行的上下文（由 Runtime 注入，LLM 无法提供）。 */
+export interface QueryAgentToolContext {
+  conversationScope?: QueryCorpusScope
 }
 
 export type QueryAgentToolExecutor = (
   name: string,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  context?: QueryAgentToolContext
 ) => Promise<QueryAgentToolResult>
+
+/**
+ * 本次回答实际依据的证据（ADDITIVE，供 Adapter 展示）。
+ * 只保留可展示字段；messageRef 仍是 opaque 引用。
+ */
+export interface QueryAgentEvidenceItem {
+  messageRef: string
+  conversationName?: string
+  conversationType?: 'user' | 'group'
+  sender?: string
+  /** epoch ms */
+  timestamp?: number
+  messageType?: string
+  text?: string
+  attachment?: { kind?: string; name?: string; url?: string; sizeBytes?: number }
+  /** 产生这条证据的 Tool 名（诊断 / UI 分组用）。 */
+  source: string
+}
+
+/** 一次回答最多带出多少条证据（IPC 体积与 UI 噪声控制）。 */
+const MAX_EVIDENCE_ITEMS = 40
+
 
 const SYSTEM_PROMPT = `你是 TraceMemo 的本地聊天查询助手，只能使用提供的四个 Query Tool 获取事实，最终回答只基于 Tool Result。
 
@@ -131,6 +214,11 @@ const SYSTEM_PROMPT = `你是 TraceMemo 的本地聊天查询助手，只能使�
 - 普通聊天查询不是 exhaustive investigation。经过合理的检索或可选 context 仍不足以形成强结论时，直接说明证据范围和不确定性，不要循环调用 search、overview、context。
 
 事实边界：不得编造未返回的消息、猜测联系人、修改 resolvedTimeRange，或把 partial/unknown 当作 complete。coverage complete 且结果为 0 时，可以说明当前可读取的完整范围没有找到；coverage partial/unknown 且结果为 0 时，必须说明无法确认绝对不存在。不要把 sampled Evidence 当作完整聊天，也不要把 source message count 和 selected evidence count 混为一谈。
+索引新鲜度：search_messages 的 indexLatestAt / sourceLatestAt 是**结构化事实**，indexCoverage 是 Engine 给出的结论句。规则：
+- 覆盖边界只能引用 indexCoverage（含本地时间与结论），**不要自己换算时间，也不要把 epoch 数字写进回答**。
+- indexCoverage.covered 为 false 时，说明这段时间还没进索引：此时即使结果为 0 也只能说"索引尚未覆盖这段时间，暂时无法确认"，**绝不能**说成"没有"。必须如实引用结论里的索引更新时间。
+- 已经检索到 Evidence 时，只有当这个覆盖边界真的会影响结论时才补一句说明，不要机械附加警告。
+- 只有 coverage.state 为 complete（indexCoverage.covered 为 true）且结果为 0，才可以下"没有找到"的结论。不要自己把 partial 说成 complete。
 缺少必要信息时用自然语言澄清；超出工具能力时说明不能可靠完成，并给出当前工具可以执行的替代方向。`
 
 function toolDefinitions(): AIChatToolDefinition[] {
@@ -299,12 +387,10 @@ interface CanonicalTemporalBasis {
 }
 
 /**
- * LLM Tool Adapter 的 canonicalization：
- * - temporalBasis 是 LLM-facing 元数据：Host 用它决定 policy，但**剥离**后不传给 Local Query API
- * - absolute 的 ISO-8601 → Local Query API 的 epoch seconds
- * - search_messages 的 queries[] → Local Query API 的 query + variants
+ * LLM Tool Adapter 的 canonicalization：剥离 LLM-facing 元数据（temporalBasis）、把 absolute 的
+ * ISO-8601 换成 Local Query API 的 epoch seconds、把 `queries[]` 摊平成 query + variants。
  *
- * 这里只做**纯 lexical** 校验（sourceText 是否为用户问题子串 + kind 与 timeRange 是否自洽），
+ * 这里只做**纯 lexical** 校验（sourceText 是否为用户问题子串、kind 与 timeRange 是否自洽），
  * 不解释时间短语的意思。
  */
 function canonicalizeToolInput(
@@ -482,10 +568,12 @@ export function validateToolArguments(
   return canonicalizeToolInput(name, value as Record<string, unknown>, now, question)
 }
 
-function resultCount(result: QueryAgentToolResult): { resultCount?: number; evidenceCount?: number } {
+function resultCount(result: QueryAgentToolResult): { resultCount?: number; evidenceCount?: number; sourceMessageCount?: number } {
   return {
     resultCount: typeof result.returnedCount === 'number' ? result.returnedCount : undefined,
-    evidenceCount: typeof result.evidenceCount === 'number' ? result.evidenceCount : Array.isArray(result.evidence) ? result.evidence.length : undefined
+    evidenceCount: typeof result.evidenceCount === 'number' ? result.evidenceCount : Array.isArray(result.evidence) ? result.evidence.length : undefined,
+    // 会话概览用它说明"覆盖了多少条源消息"，UI 顶部统计需要真实数字。
+    sourceMessageCount: typeof result.sourceMessageCount === 'number' ? result.sourceMessageCount : undefined
   }
 }
 
@@ -551,31 +639,220 @@ function nextToolDefinitions(name: string, result: QueryAgentToolResult, state: 
   return []
 }
 
-export class QueryAgentPocService {
+/** 进度阶段的类型定义在 `src/shared/query-agent.ts`（renderer 也要消费它，放这里会让 renderer 反向依赖 main）。 */
+export type { QueryAgentProgressEvent, QueryAgentProgressStage } from '../../shared/query-agent'
+
+export interface QueryAgentRunOptions {
+  /**
+   * 最小多轮澄清支持：前几轮（问 + 答）的问答对，由 Adapter 负责长度 / 时间 / 隐私边界。
+   * 不传时 messages = [system, user]。
+   */
+  history?: QueryAgentHistoryTurn[]
+  /**
+   * 语料边界（搜索范围）。由 UI 决定；Runtime 负责把它传给 Engine 并在 prompt 里说明，
+   * 但**强制**发生在 Engine（target 越界 → 可修正的 invalid_tool_arguments）。
+   * 不传则不限制范围、不加范围说明。
+   */
+  conversationScope?: QueryAgentConversationScope
+  /**
+   * 真实进度回调（ADDITIVE）。由 Adapter 转发给 UI；不传则零额外开销。
+   * 回调抛出的异常不会影响查询本身。
+   */
+  onProgress?: (event: QueryAgentProgressEvent) => void
+}
+
+/** 给模型的范围说明：只描述边界，不做"请遵守"的祈祷式约束（约束由 Engine 强制）。 */
+function conversationScopeNote(input: QueryAgentConversationScope): string {
+  const { scope } = input
+  const label = input.label?.trim()
+  const header = label ? `当前搜索范围（由应用界面决定）：${label}。` : '当前搜索范围由应用界面决定。'
+  const rules = [
+    '所有工具调用都会被强制限制在这个范围内；target 若不在范围内会被拒绝，被拒绝时请如实说明范围限制，不要试图绕过。',
+    '范围之外还有别的会话，但你**看不到**它们，也不要在回答里声称它们的情况。'
+  ]
+  if (scope.kind === 'groups') {
+    rules.push(
+      '范围是群聊专属：包含全部群会话以及群成员实际发送的消息。问"谁聊过某话题"时应省略 search_messages 的 target 做跨群检索，并在回答里保留群名与发送者。'
+    )
+  } else if (scope.kind === 'contact' || scope.kind === 'current') {
+    rules.push(
+      '范围只有一个会话：所有工具都可以省略 target（query_messages 也可以），省略即在该会话内检索；不要猜会话名，也不要指定其他会话。'
+    )
+  }
+  return `${header}\n${rules.map((rule) => `- ${rule}`).join('\n')}`
+}
+
+/**
+ * 证据收集器（Host 侧）。
+ *
+ * 从 Tool Result 中提取**真实**证据供 UI 展示 —— UI 不允许从回答文本里反解析证据。
+ * - 按 `messageRef` 去重（search 与 context 命中同一条消息只显示一次）；
+ * - 顺序 = 首次命中顺序；上限 MAX_EVIDENCE_ITEMS；
+ * - 只保留展示字段，不携带 wxid / md5 / DB id / raw Tool JSON。
+ */
+class EvidenceCollector {
+  private readonly items = new Map<string, QueryAgentEvidenceItem>()
+
+  addFromToolResult(toolName: string, result: QueryAgentToolResult): void {
+    const target = result.target && typeof result.target === 'object' ? (result.target as Record<string, unknown>) : undefined
+    const defaults: { conversationName?: string; conversationType?: 'user' | 'group' } = {
+      conversationName: typeof target?.displayName === 'string' ? target.displayName : undefined,
+      conversationType: target?.type === 'user' || target?.type === 'group' ? target.type : undefined
+    }
+    const push = (value: unknown): void => {
+      const item = this.normalize(value, toolName, defaults)
+      if (item) this.merge(item)
+    }
+    if (Array.isArray(result.messages)) result.messages.forEach(push)
+    if (Array.isArray(result.evidence)) result.evidence.forEach(push)
+    // message_context：只收 anchor（被补充语境的那条证据），前后文不是本次结论的依据。
+    if (result.anchor) push(result.anchor)
+    // recall_hint 自动扩大的那次查询也是真实证据。
+    const fallback = result.fallbackLookup && typeof result.fallbackLookup === 'object' ? (result.fallbackLookup as Record<string, unknown>) : undefined
+    if (Array.isArray(fallback?.messages)) fallback.messages.forEach(push)
+  }
+
+  list(): QueryAgentEvidenceItem[] {
+    return Array.from(this.items.values()).slice(0, MAX_EVIDENCE_ITEMS)
+  }
+
+  private merge(item: QueryAgentEvidenceItem): void {
+    const existing = this.items.get(item.messageRef)
+    if (!existing) {
+      this.items.set(item.messageRef, item)
+      return
+    }
+    // 同一消息被不同 Tool 命中：补齐缺失字段，保留首次的 source。
+    const merged = existing as unknown as Record<string, unknown>
+    for (const key of Object.keys(item)) {
+      if (key === 'source') continue
+      const value = (item as unknown as Record<string, unknown>)[key]
+      if (value !== undefined && merged[key] === undefined) merged[key] = value
+    }
+  }
+
+  private normalize(
+    value: unknown,
+    source: string,
+    defaults: { conversationName?: string; conversationType?: 'user' | 'group' }
+  ): QueryAgentEvidenceItem | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+    const record = value as Record<string, unknown>
+    const messageRef = typeof record.messageRef === 'string' ? record.messageRef : undefined
+    if (!messageRef) return undefined
+    const attachment =
+      record.attachment && typeof record.attachment === 'object' && !Array.isArray(record.attachment)
+        ? (record.attachment as Record<string, unknown>)
+        : undefined
+    const attachmentView = attachment
+      ? {
+          ...(typeof attachment.kind === 'string' ? { kind: attachment.kind } : {}),
+          ...(typeof attachment.name === 'string' ? { name: attachment.name } : {}),
+          ...(typeof attachment.url === 'string' ? { url: attachment.url } : {}),
+          ...(typeof attachment.sizeBytes === 'number' ? { sizeBytes: attachment.sizeBytes } : {})
+        }
+      : undefined
+    return {
+      messageRef,
+      ...(typeof record.conversationName === 'string'
+        ? { conversationName: record.conversationName }
+        : defaults.conversationName
+          ? { conversationName: defaults.conversationName }
+          : {}),
+      ...(record.conversationType === 'user' || record.conversationType === 'group'
+        ? { conversationType: record.conversationType }
+        : defaults.conversationType
+          ? { conversationType: defaults.conversationType }
+          : {}),
+      ...(typeof record.sender === 'string' ? { sender: record.sender } : {}),
+      ...(typeof record.timestamp === 'number' ? { timestamp: record.timestamp } : {}),
+      ...(typeof record.messageType === 'string'
+        ? { messageType: record.messageType }
+        : typeof record.sourceKind === 'string'
+          ? { messageType: record.sourceKind }
+          : {}),
+      ...(typeof record.text === 'string' && record.text ? { text: record.text } : {}),
+      ...(attachmentView && Object.keys(attachmentView).length ? { attachment: attachmentView } : {}),
+      source
+    }
+  }
+}
+
+export class QueryAgentService {
   constructor(
     private readonly provider: QueryAgentProvider,
     private readonly executeTool: QueryAgentToolExecutor,
     private readonly nowProvider: () => Date = () => new Date()
   ) {}
 
-  async run(question: string): Promise<QueryAgentPocResult> {
+  async run(question: string, options: QueryAgentRunOptions = {}): Promise<QueryAgentResult> {
+    const startedAt = Date.now()
+    // 计数用可变持有者：`completed` 由 finally 发出，那时 result 已经离开作用域。
+    const counters = { modelCallCount: 0, toolCallCount: 0 }
+    const emit = (stage: QueryAgentProgressStage, extra: { toolName?: string } = {}): void => {
+      const onProgress = options.onProgress
+      if (!onProgress) return
+      const at = Date.now()
+      try {
+        onProgress({
+          stage,
+          elapsedMs: at - startedAt,
+          at,
+          ...(extra.toolName ? { toolName: extra.toolName } : {}),
+          modelCallCount: counters.modelCallCount,
+          toolCallCount: counters.toolCallCount
+        })
+      } catch {
+        // 进度上报失败绝不能影响查询本身。
+      }
+    }
+    try {
+      return await this.runLoop(question, options, emit, counters)
+    } finally {
+      // 成功、Provider 失败、tool_limit、异常 —— 一律以 completed 收尾，
+      // 避免 UI 永远停在某个中间阶段。
+      emit('completed')
+    }
+  }
+
+  private async runLoop(
+    question: string,
+    options: QueryAgentRunOptions,
+    emit: (stage: QueryAgentProgressStage, extra?: { toolName?: string }) => void,
+    counters: { modelCallCount: number; toolCallCount: number }
+  ): Promise<QueryAgentResult> {
     const trimmed = question.trim()
     const startedAt = Date.now()
     const runtime = this.provider.getRuntimeConfig()
-    const result: QueryAgentPocResult = { question: trimmed, provider: runtime.providerName, model: runtime.modelName || runtime.model, modelCallCount: 0, toolCallCount: 0, toolTotalMs: 0, totalMs: 0, traces: [], modelDurationsMs: [], modelDiagnostics: [] }
-    if (!trimmed) return { ...result, error: '请输入查询问题', totalMs: Date.now() - startedAt }
-    if (!runtime.configured) return { ...result, error: '当前 AI Provider 尚未配置', totalMs: Date.now() - startedAt }
+    const result: QueryAgentResult = { question: trimmed, provider: runtime.providerName, model: runtime.modelName || runtime.model, modelCallCount: 0, toolCallCount: 0, toolTotalMs: 0, totalMs: 0, traces: [], modelDurationsMs: [], modelDiagnostics: [] }
+    if (!trimmed) return { ...result, error: '请输入查询问题', errorKind: 'invalid_question', totalMs: Date.now() - startedAt }
+    if (!runtime.configured) return { ...result, error: '当前 AI Provider 尚未配置', errorKind: 'provider_unavailable', totalMs: Date.now() - startedAt }
 
+    const history = options.history || []
+    const scopeNote = options.conversationScope ? conversationScopeNote(options.conversationScope) : undefined
     const messages: Array<Record<string, unknown>> = [
       { role: 'system', content: SYSTEM_PROMPT },
+      // 范围说明是**上下文**，不是强制执行手段：真正的边界由 Engine 拒绝越界 target 来保证。
+      ...(scopeNote ? [{ role: 'system', content: scopeNote }] : []),
+      ...history.flatMap((turn) => [
+        { role: 'user', content: turn.question },
+        { role: 'assistant', content: turn.answer }
+      ]),
       { role: 'user', content: trimmed }
     ]
+    const toolContext: QueryAgentToolContext = options.conversationScope
+      ? { conversationScope: options.conversationScope.scope }
+      : {}
+    const evidence = new EvidenceCollector()
     let tools = toolDefinitions()
     const retry = newRetryState()
     const now = this.nowProvider()
     let firstModelAt: number | undefined
     let finalModelDuration: number | undefined
     while (result.toolCallCount < MAX_TOOL_CALLS) {
+      // 真实生命周期边界：还没有任何 Tool 结果 → 这次模型调用是"理解问题"；
+      // 已经有结果 → 这次是在消化证据并**生成回答**。不用定时器、不猜进度。
+      emit(result.toolCallCount === 0 ? 'understanding' : 'generating_answer')
       const modelStartedAt = Date.now()
       const model = await this.provider.chatWithTools(messages, tools)
       result.modelCallCount += 1
@@ -594,7 +871,7 @@ export class QueryAgentPocService {
         ...(model.success ? {} : { error: model.error || '模型调用失败' })
       })
       if (firstModelAt === undefined) firstModelAt = Date.now()
-      if (!model.success) return { ...result, error: model.error || '模型调用失败', firstModelMs: firstModelAt - startedAt, totalMs: Date.now() - startedAt }
+      if (!model.success) return { ...result, error: model.error || '模型调用失败', errorKind: 'provider_failure', firstModelMs: firstModelAt - startedAt, totalMs: Date.now() - startedAt }
       const calls = model.toolCalls || []
       if (calls.length === 0) {
         finalModelDuration = modelDuration
@@ -605,7 +882,7 @@ export class QueryAgentPocService {
         return result
       }
       if (result.toolCallCount + calls.length > MAX_TOOL_CALLS) {
-        return { ...result, error: `超过最大工具调用次数（${MAX_TOOL_CALLS}）`, firstModelMs: firstModelAt - startedAt, totalMs: Date.now() - startedAt }
+        return { ...result, error: `超过最大工具调用次数（${MAX_TOOL_CALLS}）`, errorKind: 'tool_limit', firstModelMs: firstModelAt - startedAt, totalMs: Date.now() - startedAt }
       }
       messages.push({ role: 'assistant', content: model.data || '', tool_calls: calls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) })
       for (const call of calls) {
@@ -639,13 +916,17 @@ export class QueryAgentPocService {
                   toolResult = { status: 'invalid_tool_arguments', field: '$', constraint: 'duplicate_retry', expected: '与上一次实质不同的条件', actual: '与上一次完全相同的条件' }
                 } else {
                   recordAttempt(call.name, traceInput, retry)
-                  const primary = await this.executeTool(call.name, traceInput)
+                  // Tool 真正开始执行 = "在搜索聊天记录"。跨会话范围会明显更慢，
+                  // UI 用范围（不是调用次数）决定副提示文案。
+                  emit('searching', { toolName: call.name })
+                  const primary = await this.executeTool(call.name, traceInput, toolContext)
                   toolResult = primary
                   // recall_hint + 有界范围 + 0 结果 → Host 自动做一次“全部历史”corrective lookup。
                   // 这是一次本地 Query API 调用：不增加 LLM 往返，也不占用 MAX_TOOL_CALLS。
+                  // 注意：自动补查必须沿用同一个语料边界，不能借它逃出当前搜索范围。
                   if (shouldAutoBroaden(call.name, temporalBasis, traceInput, primary)) {
                     const fallbackStartedAt = Date.now()
-                    const fallbackResult = await this.executeTool('query_messages', { ...traceInput, timeRange: { kind: 'all' } })
+                    const fallbackResult = await this.executeTool('query_messages', { ...traceInput, timeRange: { kind: 'all' } }, toolContext)
                     const fallbackCounts = resultCount(fallbackResult)
                     autoFallback = { reason: AUTO_FALLBACK_REASON, timeRange: { kind: 'all' }, status: fallbackResult.status, durationMs: Date.now() - fallbackStartedAt, ...fallbackCounts }
                     toolResult = {
@@ -672,9 +953,21 @@ export class QueryAgentPocService {
         const completedToolResult = toolResult || { status: 'invalid_request', error: '工具调用失败' }
         const durationMs = Date.now() - inputStartedAt
         result.toolCallCount += 1
+        counters.toolCallCount = result.toolCallCount
         result.toolTotalMs += durationMs
+        // Tool Result 已经拿到 → 真实进入"整理证据"阶段。
+        emit('organizing_evidence', { toolName: call.name })
+        // 收集真实证据（去重、限量），供 UI 展示；不进入模型上下文。
+        evidence.addFromToolResult(call.name, completedToolResult)
+        result.evidence = evidence.list()
         const counts = resultCount(completedToolResult)
-        result.traces.push({ toolName: call.name, input: sanitizeInput(traceInput), durationMs, status: completedToolResult.status, ...counts, ...(temporalBasis ? { temporalBasis } : {}), ...(autoFallback ? { autoFallback } : {}) })
+        // 引擎耗时分解留在 Host 侧（诊断 / UI），不进入模型上下文。
+        const rawTimings = completedToolResult.timings
+        const searchTimings: QuerySearchTimings | undefined =
+          rawTimings && typeof rawTimings === 'object' && !Array.isArray(rawTimings)
+            ? (rawTimings as QuerySearchTimings)
+            : undefined
+        result.traces.push({ toolName: call.name, input: sanitizeInput(traceInput), durationMs, status: completedToolResult.status, ...counts, ...(temporalBasis ? { temporalBasis } : {}), ...(autoFallback ? { autoFallback } : {}), ...(searchTimings ? { searchTimings } : {}) })
         const nextTools = completedToolResult.constraint === 'tool_availability'
           ? tools
           : nextToolDefinitions(call.name, completedToolResult, retry, rangeKind(traceInput) === 'all')
@@ -685,6 +978,6 @@ export class QueryAgentPocService {
     }
     result.firstModelMs = firstModelAt ? firstModelAt - startedAt : undefined
     result.totalMs = Date.now() - startedAt
-    return { ...result, error: `超过最大工具调用次数（${MAX_TOOL_CALLS}）` }
+    return { ...result, error: `超过最大工具调用次数（${MAX_TOOL_CALLS}）`, errorKind: 'tool_limit' }
   }
 }

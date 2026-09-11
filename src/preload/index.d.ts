@@ -1,5 +1,5 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
-import { Contact, Message } from '../shared/types'
+import { Contact, Message, MessagesAroundResult } from '../shared/types'
 import {
   GroupReportExportRequest,
   GroupReportExportResult,
@@ -114,6 +114,12 @@ import type {
   AiSearchPipelineResult,
   AiSearchProgressEvent
 } from '../shared/ai-search'
+import type {
+  AskWechatConfig,
+  AskWechatQueryRequest,
+  AskWechatQueryResult,
+  QueryAgentProgressEvent
+} from '../shared/query-agent'
 import type {
   KnowledgeRuntimeStatus,
   KnowledgeSearchIpcRequest,
@@ -254,6 +260,12 @@ declare global {
         endTime?: number,
         options?: { limit?: number }
       ) => Promise<Message[]>
+      getMessagesAround: (
+        userMd5: string,
+        messageId: string,
+        anchorSeconds?: number,
+        radiusSeconds?: number
+      ) => Promise<MessagesAroundResult>
       getGroupSnapshot: (userMd5: string) => Promise<{
         roomId: string
         memberCount: number
@@ -284,8 +296,15 @@ declare global {
       runAiSearch: (request: AiSearchPipelineRequest) => Promise<AiSearchPipelineResult>
       cancelAiSearch: (requestId: string) => Promise<AiSearchCancelResult>
       onAiSearchProgress: (callback: (progress: AiSearchProgressEvent) => void) => () => void
+      getAskWechatConfig: () => Promise<AskWechatConfig>
+      runAskWechatQuery: (request: AskWechatQueryRequest) => Promise<AskWechatQueryResult>
+      onAskWechatProgress: (
+        callback: (requestId: string, event: QueryAgentProgressEvent) => void
+      ) => () => void
+      forgetAskWechatConversation: () => Promise<void>
       getKnowledgeStatus: () => Promise<KnowledgeRuntimeStatus>
       startKnowledgeIndex: () => Promise<KnowledgeRuntimeStatus>
+      cancelKnowledgeIndex: () => Promise<{ cancellable: boolean; cancelled: boolean }>
       onKnowledgeStatus: (callback: (status: KnowledgeRuntimeStatus) => void) => () => void
       aiChat: (
         messages: { role: string; content: string }[],

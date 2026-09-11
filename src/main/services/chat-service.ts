@@ -192,6 +192,61 @@ export function isReady(): boolean {
   return dbRef !== null
 }
 
+/** Session 行的时间字段可能是秒，也可能是毫秒；1e11 以下按秒换算。 */
+function sessionTimeToEpochMs(value: unknown): number | null {
+  const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  if (!Number.isFinite(numeric) || numeric <= 0) return null
+  return Math.round(numeric < 1e11 ? numeric * 1000 : numeric)
+}
+
+/**
+ * 源数据（WCDB Session）里最新的活跃时间（epoch ms）。
+ *
+ * Session 列表本来就带着 `last_timestamp`，所以这是**零额外 WCDB 调用**的 freshness 信号：
+ * 有了它才能区分「源数据本来就没有新消息」和「有新消息但派生索引还没追到」。
+ * 只读取会话级的活跃时间戳，不读取任何消息内容。
+ */
+export function getSourceLatestActivityMs(): number | null {
+  if (!dbRef) return null
+  try {
+    let latest = 0
+    for (const session of dbRef.getWcdb4Client().getSessions()) {
+      const value = sessionTimeToEpochMs(session.raw?.['last_timestamp'])
+      if (value !== null && value > latest) latest = value
+    }
+    return latest > 0 ? latest : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 每个会话在源数据里最后的活跃时间（epoch ms），按会话 md5 索引。
+ *
+ * 与 `getSourceLatestActivityMs` 同源（Session 行的 `last_timestamp`），同样是**零额外
+ * WCDB 调用**。增量索引 pass 用它判断「这个会话自上次索引以来有没有新消息」，
+ * 从而整段跳过没有变化的会话 —— 这是增量同步名副其实的前提。
+ */
+export function getConversationActivityMs(): Map<string, number> {
+  const result = new Map<string, number>()
+  if (!dbRef) return result
+  try {
+    for (const session of dbRef.getWcdb4Client().getSessions()) {
+      const username = typeof session.username === 'string' ? session.username : ''
+      if (!username) continue
+      const value = sessionTimeToEpochMs(session.raw?.['last_timestamp'])
+      if (value === null) continue
+      const md5 = dbRef.md5(username)
+      if (!md5) continue
+      const existing = result.get(md5)
+      if (existing === undefined || value > existing) result.set(md5, value)
+    }
+  } catch {
+    return result
+  }
+  return result
+}
+
 export function listContacts(filter?: string): FormattedContact[] {
   if (!dbRef) return []
 
@@ -698,6 +753,35 @@ export async function getGroupMemberIdsAsync(
   if (!dbRef || !roomId.endsWith('@chatroom')) return null
   const memberIds = await dbRef.getWcdb4Client().getGroupMemberIdsAsync(roomId)
   return memberIds ? { roomId, memberIds } : null
+}
+
+/**
+ * Evidence sender enrichment 专用：只解析**请求到的** wxid 的显示名。
+ *
+ * **不**走 `getGroupSnapshotAsync` —— 后者会 materialize 整群成员并 hydrate 头像，
+ * 为拿 1~N 个名字付整群成本。返回结构故意与 `GroupSnapshot['members']` 一致，
+ * 这样调用方可以复用同一套显示名优先级规则，不会把「张三」退化成「wxid_xxx」。
+ * `avatar` 恒为 `''`：头像若将来需要，走 lazy UI 路径，不进入 Query Tool 成本。
+ */
+export async function getGroupMemberNamesAsync(
+  userMd5: string,
+  wxids: string[]
+): Promise<GroupSnapshot['members']> {
+  if (!dbRef) return []
+  const requested = Array.from(new Set((wxids || []).filter(Boolean)))
+  if (requested.length === 0) return []
+  const wcdb4Client = dbRef.getWcdb4Client()
+  const roomId = wcdb4Client.getUsernameByMd5(userMd5)
+  if (!roomId || !roomId.endsWith('@chatroom')) return []
+  const members = await wcdb4Client.getGroupMemberNamesAsync(roomId, requested)
+  return members.map((member) => ({
+    wxid: member.m_nsUsrName,
+    nickname: member.nickname || '',
+    groupNickname: member.groupNickname || '',
+    wechatNickname: member.wechatNickname || '',
+    remark: member.remark || '',
+    avatar: member.m_nsHeadImgUrl || ''
+  }))
 }
 
 export function isGroupMemberIdsBatchAvailable(): boolean {

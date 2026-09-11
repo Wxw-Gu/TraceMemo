@@ -48,6 +48,16 @@ export class KnowledgeService {
     return this.worker.status({ ...request, databaseRoot: this.databaseRoot })
   }
 
+  /** 每个会话已经索引到的源侧时刻（epoch ms）；增量 pass 用它跳过没有变化的会话。 */
+  highWaterMarks(request: Omit<KnowledgeStatusRequest, 'databaseRoot'>): Promise<Record<string, number>> {
+    return this.worker.highWaterMarks({ ...request, databaseRoot: this.databaseRoot })
+  }
+
+  /** 只中止正在跑的索引任务；查询请求不受影响。 */
+  cancelIndex(): Promise<boolean> {
+    return this.worker.cancelActiveIndex()
+  }
+
   dispose(): Promise<void> {
     return this.worker.dispose()
   }

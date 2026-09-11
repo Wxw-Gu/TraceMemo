@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import type { Contact } from '../../../../../shared/types'
 import type { EvidenceItem } from '../searchTypes'
 
 export const EVIDENCE_PAGE_SIZE = 8
 
 type UseEvidenceCollectionOptions = {
-  onOpenEvidence: (contact: Contact, createTime?: number) => void
+  /** 传整条证据：跳转需要它的稳定引用（messageRef），不只是会话与时间。 */
+  onOpenEvidence: (evidence: EvidenceItem) => void
 }
 
 export function useEvidenceCollection({ onOpenEvidence }: UseEvidenceCollectionOptions): {
@@ -70,7 +70,7 @@ export function useEvidenceCollection({ onOpenEvidence }: UseEvidenceCollectionO
   const jumpToEvidence = (index: number): void => {
     const item = evidenceCollection[index]
     if (!item) return
-    onOpenEvidence(item.contact, item.message.createTime)
+    onOpenEvidence(item)
   }
 
   const setEvidenceCardRef = (index: number, node: HTMLElement | null): void => {

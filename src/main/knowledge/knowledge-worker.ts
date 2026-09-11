@@ -114,6 +114,7 @@ async function handleSearch(
         evidence: [],
         indexedMessageCount: 0,
         indexedChunkCount: 0,
+        indexLatestAt: null,
         timings: emptyKnowledgeSearchTimings()
       },
       workerReceivedAt,
@@ -153,7 +154,9 @@ async function handleStatus(
       estimatedRemainingMs: null,
       databaseBytes: 0,
       walBytes: 0,
-      shmBytes: 0
+      shmBytes: 0,
+      indexLatestAt: null,
+      sourceLatestAt: null
     }
     send({ version: 1, type: 'result', requestId: request.requestId, payload: unavailable })
     return
@@ -163,6 +166,24 @@ async function handleStatus(
     type: 'result',
     requestId: request.requestId,
     payload: getStore(payload).getRuntimeStatus()
+  })
+}
+
+/**
+ * 每个会话「已经索引到源数据的哪个时刻」。
+ * 增量 pass 靠它决定哪些会话可以整段跳过（见 `KnowledgeStore.readSourceHighWaterMarks`）。
+ */
+async function handleHighWater(
+  request: KnowledgeWorkerRequest,
+  payload: KnowledgeStatusRequest
+): Promise<void> {
+  const path = getKnowledgeDatabasePath(payload.databaseRoot, payload.accountId)
+  const marks = existsSync(path) ? getStore(payload).readSourceHighWaterMarks() : {}
+  send({
+    version: 1,
+    type: 'result',
+    requestId: request.requestId,
+    payload: { marks } as unknown as KnowledgeWorkerResponse['payload']
   })
 }
 
@@ -199,6 +220,10 @@ async function handle(request: KnowledgeWorkerRequest, messageReceivedAt: number
     }
     if (request.type === 'status') {
       await handleStatus(request, request.payload as KnowledgeStatusRequest)
+      return
+    }
+    if (request.type === 'highWater') {
+      await handleHighWater(request, request.payload as KnowledgeStatusRequest)
       return
     }
     if (request.type === 'index') {

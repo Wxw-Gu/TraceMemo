@@ -71,8 +71,15 @@ describe('AISearchComposer', () => {
     expect(props.onHistoryOpenChange).toHaveBeenCalledWith(false)
   })
 
-  it('disables submission while Knowledge is syncing', () => {
+  it('keeps submission available while Knowledge is syncing and only warns about coverage', () => {
+    // 知识库同步是后台 / 可取消 / 可断点续传的，**不允许**因此禁止提问。
+    // 索引没追平时应由 coverage/freshness 契约如实标注覆盖范围。
     renderComposer({ knowledgeSyncing: true })
-    expect(screen.getByRole('button', { name: /同步中，暂不可分析/ })).toBeDisabled()
+    const submit = screen.getByRole('button', { name: /开始分析/ })
+    expect(submit).toBeEnabled()
+    expect(screen.queryByRole('button', { name: /暂不可分析/ })).not.toBeInTheDocument()
+    expect(
+      screen.getByText('知识库后台同步中 · 仍可提问，答案会标注覆盖范围')
+    ).toBeInTheDocument()
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { QueryAgentPocService, type QueryAgentProvider, validateToolArguments } from '../../src/main/services/query-agent-poc-service'
+import { QueryAgentService, type QueryAgentProvider, validateToolArguments } from '../../src/main/services/query-agent-service'
 
 function provider(responses: Array<Awaited<ReturnType<QueryAgentProvider['chatWithTools']>>>, configured = true): QueryAgentProvider {
   return {
@@ -12,10 +12,10 @@ function provider(responses: Array<Awaited<ReturnType<QueryAgentProvider['chatWi
 const MONTH_TEXT = '上个月'
 const MONTH_QUESTION = '上个月 BOBO 有没有给我发过文件'
 
-describe('QueryAgentPocService', () => {
+describe('QueryAgentService', () => {
   it('runs a bounded model -> tool -> model loop and records sanitized trace', async () => {
     const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 1, messages: [{ messageRef: 'secret-ref' }] }))
-    const service = new QueryAgentPocService(provider([
+    const service = new QueryAgentService(provider([
       { success: true, toolCalls: [{ id: 'call-1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, temporalBasis: { kind: 'none' }, limit: 1 }) }] },
       { success: true, data: '第一条消息是图片。' }
     ]), execute)
@@ -24,7 +24,13 @@ describe('QueryAgentPocService', () => {
     expect(result.modelCallCount).toBe(2)
     expect(result.toolCallCount).toBe(1)
     expect(result.traces[0]).toMatchObject({ toolName: 'query_messages', status: 'completed', resultCount: 1 })
-    expect(JSON.stringify(result)).not.toContain('secret-ref')
+    // trace / input 必须保持脱敏（opaque messageRef 不出现在 trace 里）。
+    expect(JSON.stringify(result.traces)).not.toContain('secret-ref')
+    // 证据是 ADDITIVE 的展示契约：只有 evidence[] 携带 opaque messageRef，且不含会话身份。
+    expect(result.evidence).toEqual([
+      expect.objectContaining({ messageRef: 'secret-ref', source: 'query_messages' })
+    ])
+    expect(JSON.stringify(result.evidence)).not.toMatch(/wxid|md5|conversationId/)
   })
 
   it('presents planning boundaries and remaining budget with tool results', async () => {
@@ -39,7 +45,7 @@ describe('QueryAgentPocService', () => {
       { success: true, toolCalls: [{ id: 'call-1', name: 'search_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, queries: ['topic'] }) }] },
       { success: true, data: '根据这条证据可以回答。' }
     ])
-    await new QueryAgentPocService(configuredProvider, execute).run('查找相关记录')
+    await new QueryAgentService(configuredProvider, execute).run('查找相关记录')
     const calls = vi.mocked(configuredProvider.chatWithTools).mock.calls
     const firstMessages = calls[0]?.[0] || []
     expect(String(firstMessages[0]?.content)).toContain('Evidence 是否已经足以')
@@ -56,7 +62,7 @@ describe('QueryAgentPocService', () => {
       { success: true, toolCalls: [{ id: 'call-1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, temporalBasis: { kind: 'none' }, limit: 1 }) }] },
       { success: true, data: '完成' }
     ])
-    await new QueryAgentPocService(configuredProvider, vi.fn(async () => ({ status: 'completed', returnedCount: 1 }))).run('第一条消息')
+    await new QueryAgentService(configuredProvider, vi.fn(async () => ({ status: 'completed', returnedCount: 1 }))).run('第一条消息')
     expect(vi.mocked(configuredProvider.chatWithTools).mock.calls[1]?.[1]).toEqual([])
   })
 
@@ -67,7 +73,7 @@ describe('QueryAgentPocService', () => {
       { success: true, toolCalls: [{ id: 'call-2', name: 'conversation_overview', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' } }) }] },
       { success: true, data: '完成' }
     ])
-    const result = await new QueryAgentPocService(configuredProvider, execute).run('第一条消息')
+    const result = await new QueryAgentService(configuredProvider, execute).run('第一条消息')
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces[1]).toMatchObject({ toolName: 'conversation_overview', status: 'invalid_tool_arguments' })
     const thirdCallMessages = vi.mocked(configuredProvider.chatWithTools).mock.calls[2]?.[0] || []
@@ -78,7 +84,7 @@ describe('QueryAgentPocService', () => {
   it('rejects unknown tools and stops after five calls', async () => {
     const execute = vi.fn(async () => ({ status: 'completed' }))
     const responses = Array.from({ length: 6 }, () => ({ success: true, toolCalls: [{ id: 'x', name: 'unknown', arguments: '{}' }] }))
-    const result = await new QueryAgentPocService(provider(responses), execute).run('test')
+    const result = await new QueryAgentService(provider(responses), execute).run('test')
     expect(result.toolCallCount).toBe(5)
     expect(result.traces.every((trace) => trace.status === 'invalid_tool_arguments')).toBe(true)
     expect(result.error).toContain('最大工具调用次数')
@@ -87,14 +93,14 @@ describe('QueryAgentPocService', () => {
 
   it('clarifies unavailable configuration without making a model call', async () => {
     const configuredProvider = provider([], false)
-    const result = await new QueryAgentPocService(configuredProvider, vi.fn()).run('test')
+    const result = await new QueryAgentService(configuredProvider, vi.fn()).run('test')
     expect(result.error).toContain('尚未配置')
     expect(configuredProvider.chatWithTools).not.toHaveBeenCalled()
   })
 
   it('maps LLM queries[] to the Local Query API query + variants contract', async () => {
     const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 0 }))
-    const valid = await new QueryAgentPocService(provider([
+    const valid = await new QueryAgentService(provider([
       { success: true, toolCalls: [{ id: 'valid', name: 'search_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, queries: ['答应', '承诺', '保证', '说好'] }) }] },
       { success: true, data: 'done' }
     ]), execute).run('test')
@@ -105,7 +111,7 @@ describe('QueryAgentPocService', () => {
     expect(execute.mock.calls[0][1]).not.toHaveProperty('queries')
 
     execute.mockClear()
-    const invalid = await new QueryAgentPocService(provider([
+    const invalid = await new QueryAgentService(provider([
       { success: true, toolCalls: [{ id: 'invalid', name: 'search_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, queries: ['1', '2', '3', '4', '5'] }) }] },
       { success: true, data: '修正后完成' }
     ]), execute).run('test')
@@ -233,7 +239,7 @@ describe('QueryAgent zero-result limited retry', () => {
   it('keeps search_messages available once after a zero-evidence search', async () => {
     const execute = vi.fn(emptySearch)
     const configured = provider([searchCall('c1', ['答应']), { success: true, data: '没有找到相关证据。' }])
-    await new QueryAgentPocService(configured, execute).run('找承诺')
+    await new QueryAgentService(configured, execute).run('找承诺')
     expect(vi.mocked(configured.chatWithTools).mock.calls[1]?.[1].map((tool) => tool.function.name)).toEqual(['search_messages'])
     const toolMessage = vi.mocked(configured.chatWithTools).mock.calls[1]?.[0].find((message) => message.role === 'tool')
     const presented = JSON.parse(String(toolMessage?.content)) as Record<string, any>
@@ -244,7 +250,7 @@ describe('QueryAgent zero-result limited retry', () => {
   it('allows exactly one substantively different second search and then closes tools', async () => {
     const execute = vi.fn(emptySearch)
     const configured = provider([searchCall('c1', ['答应']), searchCall('c2', ['公积金']), { success: true, data: '仍然没有。' }])
-    const result = await new QueryAgentPocService(configured, execute).run('找承诺')
+    const result = await new QueryAgentService(configured, execute).run('找承诺')
     expect(execute).toHaveBeenCalledTimes(2)
     expect(result.traces.map((trace) => trace.status)).toEqual(['completed', 'completed'])
     expect(vi.mocked(configured.chatWithTools).mock.calls[2]?.[1]).toEqual([])
@@ -254,7 +260,7 @@ describe('QueryAgent zero-result limited retry', () => {
   it('rejects an identical search retry instead of spending the budget again', async () => {
     const execute = vi.fn(emptySearch)
     const configured = provider([searchCall('c1', ['答应']), searchCall('c2', ['答应']), { success: true, data: '没有找到。' }])
-    const result = await new QueryAgentPocService(configured, execute).run('找承诺')
+    const result = await new QueryAgentService(configured, execute).run('找承诺')
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces[1]).toMatchObject({ status: 'invalid_tool_arguments' })
     expect(vi.mocked(configured.chatWithTools).mock.calls[2]?.[1]).toEqual([])
@@ -265,7 +271,7 @@ describe('QueryAgent zero-result limited retry', () => {
   it('treats a reordered identical probe set as an identical retry', async () => {
     const execute = vi.fn(emptySearch)
     const configured = provider([searchCall('c1', ['答应', '承诺']), searchCall('c2', ['承诺', '答应']), { success: true, data: 'x' }])
-    const result = await new QueryAgentPocService(configured, execute).run('找承诺')
+    const result = await new QueryAgentService(configured, execute).run('找承诺')
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces[1].status).toBe('invalid_tool_arguments')
   })
@@ -273,14 +279,14 @@ describe('QueryAgent zero-result limited retry', () => {
   it('keeps the efficient path when the first search already returned evidence', async () => {
     const execute = vi.fn(async () => ({ status: 'completed', evidenceCount: 2, evidence: [{ messageRef: 'ref', text: 't' }] }))
     const configured = provider([searchCall('c1', ['答应']), { success: true, data: 'ok' }])
-    await new QueryAgentPocService(configured, execute).run('找承诺')
+    await new QueryAgentService(configured, execute).run('找承诺')
     expect(vi.mocked(configured.chatWithTools).mock.calls[1]?.[1].map((tool) => tool.function.name)).toEqual(['message_context'])
   })
 
   it('rejects an identical query_messages retry', async () => {
     const execute = vi.fn(emptyQuery)
     const configured = provider([queryCall('c1', { kind: 'previous_month' }), queryCall('c2', { kind: 'previous_month' }), { success: true, data: 'x' }])
-    const result = await new QueryAgentPocService(configured, execute).run(MONTH_QUESTION)
+    const result = await new QueryAgentService(configured, execute).run(MONTH_QUESTION)
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces[1].status).toBe('invalid_tool_arguments')
   })
@@ -288,7 +294,7 @@ describe('QueryAgent zero-result limited retry', () => {
   it('keeps the efficient stop when the exact query already returned messages', async () => {
     const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 3, messages: [] }))
     const configured = provider([queryCall('c1'), { success: true, data: 'ok' }])
-    await new QueryAgentPocService(configured, execute).run(MONTH_QUESTION)
+    await new QueryAgentService(configured, execute).run(MONTH_QUESTION)
     expect(vi.mocked(configured.chatWithTools).mock.calls[1]?.[1]).toEqual([])
   })
 
@@ -302,7 +308,7 @@ describe('QueryAgent zero-result limited retry', () => {
       queryCall('c5', { kind: 'this_year' }),
       queryCall('c6', { kind: 'this_month' })
     ]
-    const result = await new QueryAgentPocService(provider(responses), execute).run(MONTH_QUESTION)
+    const result = await new QueryAgentService(provider(responses), execute).run(MONTH_QUESTION)
     expect(result.toolCallCount).toBe(5)
     expect(result.error).toContain('最大工具调用次数')
   })
@@ -317,7 +323,7 @@ describe('QueryAgent zero-result limited retry', () => {
       toolCalls: [{ id, name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: range, temporalBasis: { kind: 'constraint', sourceText: '8 月' }, messageTypes }) }]
     })
     const configured = provider([call('c1', ['file']), call('c2', ['text']), { success: true, data: '找到。' }])
-    const result = await new QueryAgentPocService(configured, execute).run('今年 8 月有没有给我发过文件')
+    const result = await new QueryAgentService(configured, execute).run('今年 8 月有没有给我发过文件')
     expect(execute).toHaveBeenCalledTimes(2)
     expect(result.traces.map((trace) => trace.status)).toEqual(['completed', 'completed'])
     // the explicit range is preserved on the retry — only the non-temporal condition changed
@@ -346,7 +352,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('requires temporalBasis on query_messages', async () => {
     const execute = vi.fn(emptyQuery)
     const call = { success: true as const, toolCalls: [{ id: 'c1', name: 'query_messages', arguments: JSON.stringify({ target: { query: 'BOBO' }, timeRange: { kind: 'all' } }) }] }
-    const result = await new QueryAgentPocService(provider([call, { success: true, data: 'x' }]), execute).run(CONSTRAINT_Q)
+    const result = await new QueryAgentService(provider([call, { success: true, data: 'x' }]), execute).run(CONSTRAINT_Q)
     expect(execute).not.toHaveBeenCalled()
     expect(result.traces[0]).toMatchObject({ status: 'invalid_tool_arguments' })
   })
@@ -354,7 +360,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('exposes the declared temporalBasis on the trace and never forwards it to the Local Query API', async () => {
     const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 1, messages: [] }))
     const configured = provider([queryCall('c1', { kind: 'last_7_days' }, HINT), { success: true, data: 'ok' }])
-    const result = await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    const result = await new QueryAgentService(configured, execute).run(HINT_Q)
     expect(result.traces[0].temporalBasis).toEqual({ kind: 'recall_hint', sourceText: '前阵子' })
     expect(result.traces[0].input).not.toHaveProperty('temporalBasis')
     expect(execute.mock.calls[0][1]).not.toHaveProperty('temporalBasis')
@@ -363,7 +369,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('rejects a sourceText that is not literally in the user question', async () => {
     const execute = vi.fn(emptyQuery)
     const configured = provider([queryCall('c1', { kind: 'previous_month' }, { kind: 'constraint', sourceText: '去年冬天' }), { success: true, data: 'x' }])
-    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    const result = await new QueryAgentService(configured, execute).run(CONSTRAINT_Q)
     expect(execute).not.toHaveBeenCalled()
     expect(result.traces[0]).toMatchObject({ status: 'invalid_tool_arguments' })
     expect(JSON.stringify(toolMessageAt(configured, 1))).toContain('source_not_in_question')
@@ -372,7 +378,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('requires sourceText for constraint and recall_hint', async () => {
     const execute = vi.fn(emptyQuery)
     const configured = provider([queryCall('c1', { kind: 'previous_month' }, { kind: 'constraint' }), { success: true, data: 'x' }])
-    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    const result = await new QueryAgentService(configured, execute).run(CONSTRAINT_Q)
     expect(execute).not.toHaveBeenCalled()
     expect(result.traces[0]).toMatchObject({ status: 'invalid_tool_arguments' })
   })
@@ -380,7 +386,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('rejects sourceText when kind is none', async () => {
     const execute = vi.fn(emptyQuery)
     const configured = provider([queryCall('c1', { kind: 'all' }, { kind: 'none', sourceText: '上个月' }), { success: true, data: 'x' }])
-    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    const result = await new QueryAgentService(configured, execute).run(CONSTRAINT_Q)
     expect(execute).not.toHaveBeenCalled()
     expect(result.traces[0]).toMatchObject({ status: 'invalid_tool_arguments' })
     expect(JSON.stringify(toolMessageAt(configured, 1))).toContain('forbidden_for_none')
@@ -392,7 +398,7 @@ describe('QueryAgent temporal basis policy', () => {
     const sourceText = '8 月 1 日到 9 月 1 日'
     const range = { kind: 'absolute', startTime: '2026-08-01T00:00:00+08:00', endTime: '2026-09-01T00:00:00+08:00' }
     const configured = provider([queryCall('c1', range, { kind: 'constraint', sourceText }), { success: true, data: 'ok' }])
-    const result = await new QueryAgentPocService(configured, execute).run(question)
+    const result = await new QueryAgentService(configured, execute).run(question)
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces[0].temporalBasis).toEqual({ kind: 'constraint', sourceText })
   })
@@ -400,7 +406,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('never broadens a constraint relative range to all when it returns zero', async () => {
     const execute = vi.fn(emptyQuery)
     const configured = provider([queryCall('c1', { kind: 'previous_month' }, CONSTRAINT), { success: true, data: '上个月没有。' }])
-    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    const result = await new QueryAgentService(configured, execute).run(CONSTRAINT_Q)
     expect(execute).toHaveBeenCalledTimes(1)
     expect(execute.mock.calls[0][1]).toMatchObject({ timeRange: { kind: 'previous_month' } })
     expect(result.traces[0].autoFallback).toBeUndefined()
@@ -410,7 +416,7 @@ describe('QueryAgent temporal basis policy', () => {
     const execute = vi.fn(emptyQuery)
     const range = { kind: 'absolute', startTime: '2026-08-01T00:00:00+08:00', endTime: '2026-08-31T23:59:59+08:00' }
     const configured = provider([queryCall('c1', range, { kind: 'constraint', sourceText: '8 月' }), { success: true, data: '没有。' }])
-    const result = await new QueryAgentPocService(configured, execute).run('2026 年 8 月有没有给我发过文件')
+    const result = await new QueryAgentService(configured, execute).run('2026 年 8 月有没有给我发过文件')
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces[0].autoFallback).toBeUndefined()
     expect(result.traces[0].input.timeRange).toMatchObject({ kind: 'absolute' })
@@ -419,7 +425,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('rejects a constraint retry that replaces the user time range', async () => {
     const execute = vi.fn(emptyQuery)
     const configured = provider([queryCall('c1', { kind: 'previous_month' }, CONSTRAINT), queryCall('c2', { kind: 'all' }, CONSTRAINT), { success: true, data: 'x' }])
-    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    const result = await new QueryAgentService(configured, execute).run(CONSTRAINT_Q)
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces[1]).toMatchObject({ status: 'invalid_tool_arguments' })
     expect(JSON.stringify(toolMessageAt(configured, 2))).toContain('constraint_time_range_immutable')
@@ -433,7 +439,7 @@ describe('QueryAgent temporal basis policy', () => {
       queryCall('c3', { kind: 'all' }, CONSTRAINT),
       { success: true, data: 'x' }
     ]
-    const result = await new QueryAgentPocService(provider(responses), execute).run(CONSTRAINT_Q)
+    const result = await new QueryAgentService(provider(responses), execute).run(CONSTRAINT_Q)
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces.map((trace) => trace.status)).toEqual(['completed', 'invalid_tool_arguments', 'invalid_tool_arguments'])
   })
@@ -447,7 +453,7 @@ describe('QueryAgent temporal basis policy', () => {
       queryCall('c2', { kind: 'previous_month' }, CONSTRAINT, { messageTypes: ['text'] }),
       { success: true, data: '找到。' }
     ])
-    const result = await new QueryAgentPocService(configured, execute).run(CONSTRAINT_Q)
+    const result = await new QueryAgentService(configured, execute).run(CONSTRAINT_Q)
     expect(execute).toHaveBeenCalledTimes(2)
     expect(result.traces.map((trace) => trace.status)).toEqual(['completed', 'completed'])
   })
@@ -455,7 +461,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('does not broaden when a recall_hint range already returned messages', async () => {
     const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 3, messages: [] }))
     const configured = provider([queryCall('c1', { kind: 'last_7_days' }, HINT), { success: true, data: 'ok' }])
-    const result = await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    const result = await new QueryAgentService(configured, execute).run(HINT_Q)
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces[0].autoFallback).toBeUndefined()
     expect(vi.mocked(configured.chatWithTools).mock.calls[1]?.[1]).toEqual([])
@@ -466,7 +472,7 @@ describe('QueryAgent temporal basis policy', () => {
       .mockResolvedValueOnce({ status: 'completed', returnedCount: 0, messages: [] })
       .mockResolvedValueOnce({ status: 'completed', returnedCount: 1, messages: [{ messageRef: 'ref', sourceKind: 'file' }], resolvedTimeRange: { kind: 'all', label: '全部历史' } })
     const configured = provider([queryCall('c1', { kind: 'last_7_days' }, HINT), { success: true, data: '找到了。' }])
-    const result = await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    const result = await new QueryAgentService(configured, execute).run(HINT_Q)
     expect(execute).toHaveBeenCalledTimes(2)
     expect(execute.mock.calls[1][1]).toMatchObject({ timeRange: { kind: 'all' } })
     // the corrective lookup is Host orchestration, not a model tool call
@@ -477,7 +483,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('does not repeat an all-history lookup when a recall_hint query already used all', async () => {
     const execute = vi.fn(emptyQuery)
     const configured = provider([queryCall('c1', { kind: 'all' }, HINT), queryCall('c2', { kind: 'all' }, HINT), { success: true, data: 'x' }])
-    const result = await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    const result = await new QueryAgentService(configured, execute).run(HINT_Q)
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces[0].autoFallback).toBeUndefined()
     expect(result.traces[1]).toMatchObject({ status: 'invalid_tool_arguments' })
@@ -488,7 +494,7 @@ describe('QueryAgent temporal basis policy', () => {
       .mockResolvedValueOnce({ status: 'completed', returnedCount: 0, messages: [], query: { resolvedTimeRange: { kind: 'last_7_days', label: '近 7 天' } } })
       .mockResolvedValueOnce({ status: 'completed', returnedCount: 1, messages: [{ messageRef: 'ref', text: 'x' }], resolvedTimeRange: { kind: 'all', label: '全部历史' } })
     const configured = provider([queryCall('c1', { kind: 'last_7_days' }, HINT), { success: true, data: 'ok' }])
-    await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    await new QueryAgentService(configured, execute).run(HINT_Q)
     const presented = toolMessageAt(configured, 1)
     expect(presented.returnedCount).toBe(0)
     expect(presented.fallbackLookup).toMatchObject({ reason: 'soft_temporal_hint_zero_result', timeRange: { kind: 'all' }, returnedCount: 1 })
@@ -498,7 +504,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('stops after a corrective lookup that also finds nothing', async () => {
     const execute = vi.fn(emptyQuery)
     const configured = provider([queryCall('c1', { kind: 'last_7_days' }, HINT), queryCall('c2', { kind: 'this_month' }, HINT), { success: true, data: '都没找到。' }])
-    const result = await new QueryAgentPocService(configured, execute).run(HINT_Q)
+    const result = await new QueryAgentService(configured, execute).run(HINT_Q)
     // primary + one corrective lookup only; the third attempt is refused because tools are closed
     expect(execute).toHaveBeenCalledTimes(2)
     expect(result.traces[1]).toMatchObject({ status: 'invalid_tool_arguments' })
@@ -507,7 +513,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('accepts none with timeRange all', async () => {
     const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 2, messages: [] }))
     const configured = provider([queryCall('c1', { kind: 'all' }, NONE), { success: true, data: 'ok' }])
-    const result = await new QueryAgentPocService(configured, execute).run('BOBO 给我发过文件吗')
+    const result = await new QueryAgentService(configured, execute).run('BOBO 给我发过文件吗')
     expect(execute).toHaveBeenCalledTimes(1)
     expect(result.traces[0].temporalBasis).toEqual({ kind: 'none' })
   })
@@ -515,7 +521,7 @@ describe('QueryAgent temporal basis policy', () => {
   it('rejects none combined with a bounded time range', async () => {
     const execute = vi.fn(emptyQuery)
     const configured = provider([queryCall('c1', { kind: 'last_7_days' }, NONE), { success: true, data: 'x' }])
-    const result = await new QueryAgentPocService(configured, execute).run('BOBO 给我发过文件吗')
+    const result = await new QueryAgentService(configured, execute).run('BOBO 给我发过文件吗')
     expect(execute).not.toHaveBeenCalled()
     expect(result.traces[0]).toMatchObject({ status: 'invalid_tool_arguments' })
     expect(JSON.stringify(toolMessageAt(configured, 1))).toContain('temporal_basis_mismatch')
@@ -531,7 +537,7 @@ describe('QueryAgent 耗时与请求级诊断记录', () => {
     const configured = provider([
       { success: false, error: '模型服务返回了网页而不是 JSON（HTTP 502 Bad Gateway）', errorStatus: 502, errorContentType: 'text/html', htmlInsteadOfJson: true, elapsedMs: 99419 }
     ])
-    const result = await new QueryAgentPocService(configured, vi.fn()).run('测试')
+    const result = await new QueryAgentService(configured, vi.fn()).run('测试')
     expect(result.modelCallCount).toBe(1)
     expect(result.modelDurationsMs).toHaveLength(1)
     expect(result.modelDiagnostics).toEqual([
@@ -545,7 +551,7 @@ describe('QueryAgent 耗时与请求级诊断记录', () => {
 
   it('2 次模型调用 + 1 次工具：耗时数组与调用次数一致', async () => {
     const configured = provider([queryCall('c1'), { success: true, data: '完成' }])
-    const result = await new QueryAgentPocService(configured, vi.fn(async () => ({ status: 'completed', returnedCount: 1 }))).run('测试')
+    const result = await new QueryAgentService(configured, vi.fn(async () => ({ status: 'completed', returnedCount: 1 }))).run('测试')
     expect(result.modelCallCount).toBe(2)
     expect(result.modelDurationsMs).toHaveLength(2)
     expect(result.modelDurationsMs.every((value) => typeof value === 'number' && value >= 0)).toBe(true)
@@ -555,7 +561,7 @@ describe('QueryAgent 耗时与请求级诊断记录', () => {
 
   it('1 次模型调用 + 0 次工具：无工具诊断噪声', async () => {
     const configured = provider([{ success: true, data: '直接回答' }])
-    const result = await new QueryAgentPocService(configured, vi.fn()).run('测试')
+    const result = await new QueryAgentService(configured, vi.fn()).run('测试')
     expect(result.modelCallCount).toBe(1)
     expect(result.toolCallCount).toBe(0)
     expect(result.modelDurationsMs).toHaveLength(1)
@@ -567,10 +573,101 @@ describe('QueryAgent 耗时与请求级诊断记录', () => {
       queryCall('c1'),
       { success: false, error: 'AI 请求超时', timedOut: true }
     ])
-    const result = await new QueryAgentPocService(configured, vi.fn(async () => ({ status: 'completed', returnedCount: 1 }))).run('测试')
+    const result = await new QueryAgentService(configured, vi.fn(async () => ({ status: 'completed', returnedCount: 1 }))).run('测试')
     expect(result.modelDurationsMs).toHaveLength(2)
     expect(result.modelDiagnostics[1]).toMatchObject({ index: 2, timedOut: true })
     expect(result.error).toBe('AI 请求超时')
     expect(result.answer).toBeUndefined()
+  })
+})
+
+/**
+ * 生产查询进度。
+ *
+ * 进度必须来自**真实 Runtime 生命周期边界**，不允许定时器伪进度 ——
+ * 只有一个静态步骤界面加一个计时器时，用户看不到是在等模型、等本地检索，还是等知识库追新。
+ */
+describe('QueryAgentService progress lifecycle', () => {
+  it('emits the real understanding -> searching -> organizing -> generating lifecycle', async () => {
+    const stages: Array<{ stage: string; toolName?: string }> = []
+    const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 1, messages: [{ messageRef: 'r1' }] }))
+    const service = new QueryAgentService(
+      provider([
+        {
+          success: true,
+          toolCalls: [
+            {
+              id: 'call-1',
+              name: 'query_messages',
+              arguments: JSON.stringify({
+                target: { query: 'BOBO' },
+                timeRange: { kind: 'all' },
+                temporalBasis: { kind: 'none' },
+                limit: 1
+              })
+            }
+          ]
+        },
+        { success: true, data: '第一条消息是图片。' }
+      ]),
+      execute
+    )
+    await service.run('我和 BOBO 最开始聊了什么', {
+      onProgress: (event) => stages.push({ stage: event.stage, toolName: event.toolName })
+    })
+
+    expect(stages.map((item) => item.stage)).toEqual([
+      'understanding',
+      'searching',
+      'organizing_evidence',
+      'generating_answer',
+      'completed'
+    ])
+    // toolName 只在 Host 侧用于诊断片段，UI 文案不会把它暴露给用户。
+    expect(stages[1].toolName).toBe('query_messages')
+  })
+
+  it('reports understanding again when the model re-plans after a bad call', async () => {
+    const stages: string[] = []
+    const execute = vi.fn(async () => ({ status: 'completed', returnedCount: 0, messages: [] }))
+    await new QueryAgentService(
+      provider([
+        { success: true, toolCalls: [{ id: 'c1', name: 'not_a_tool', arguments: '{}' }] },
+        { success: true, data: '无法完成。' }
+      ]),
+      execute
+    ).run('测试', { onProgress: (event) => stages.push(event.stage) })
+
+    // 第一个 tool call 被拒绝（没有真正执行工具）→ 仍然算"还没有 Tool 结果"，
+    // 所以第二次模型调用依然是理解阶段，而不是凭空跳到"生成回答"。
+    expect(stages[0]).toBe('understanding')
+    expect(stages).toContain('generating_answer')
+    expect(stages[stages.length - 1]).toBe('completed')
+  })
+
+  it('always finishes the stream even when the provider fails', async () => {
+    const stages: string[] = []
+    const result = await new QueryAgentService(
+      provider([{ success: false, error: 'AI 请求超时' }]),
+      vi.fn()
+    ).run('测试', { onProgress: (event) => stages.push(event.stage) })
+
+    expect(result.errorKind).toBe('provider_failure')
+    // 不允许把 UI 永久停在某个中间阶段。
+    expect(stages[0]).toBe('understanding')
+    expect(stages[stages.length - 1]).toBe('completed')
+  })
+
+  it('never lets a throwing progress listener break the query', async () => {
+    const result = await new QueryAgentService(
+      provider([{ success: true, data: '直接回答' }]),
+      vi.fn()
+    ).run('测试', {
+      onProgress: () => {
+        throw new Error('listener 崩了')
+      }
+    })
+
+    expect(result.answer).toBe('直接回答')
   })
 })

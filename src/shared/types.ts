@@ -56,6 +56,23 @@ export interface Message {
   exportConversationAvatarUrl?: string
 }
 
+/**
+ * 「跳转到原聊天」的锚点读取结果。
+ *
+ * `found: false` 是**有意义**的返回值，不是错误：它表示会话已经打开、窗口也加载了，
+ * 但目标消息不在窗口里（被清理 / 时间戳口径漂移）。UI 必须据此诚实提示，
+ * 而不是把"跳到了会话"说成"定位到了消息"。
+ */
+export interface MessagesAroundResult {
+  messages: Message[]
+  /** 窗口内精确匹配到目标消息（按规范化消息 id，不是按时间）。 */
+  found: boolean
+  /** 实际使用的窗口半径（秒）；0 表示没有可用锚点时间、只做了兜底读取。 */
+  radiusSeconds: number
+  /** 窗口消息数超过单次上限被截断。 */
+  truncated: boolean
+}
+
 type TextContent = { type: 'text'; content: string }
 type VoiceContent = { type: 'voice'; duration?: number }
 type LocationContent = {

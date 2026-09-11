@@ -6,6 +6,7 @@ import {
   SEARCH_CACHE_KEY,
   buildSearchCacheKey
 } from '../../src/renderer/src/components/search/searchUtils'
+import { makeSearchResult } from './support/ai-search-fixtures'
 
 const api = {
   getSettings: vi.fn(),
@@ -352,12 +353,18 @@ describe('AISearchWorkspace cache privacy boundary', () => {
     expect(input).toHaveValue('')
   })
 
-  it('disables and guards analysis while the knowledge base is synchronizing', async () => {
+  it('keeps analysis available while the knowledge base is synchronizing (partial result + freshness warning)', async () => {
     api.getKnowledgeStatus.mockResolvedValue({
       state: 'syncing',
+      indexedMessageCount: 20,
+      indexedChunkCount: 4,
       processedMessages: 20,
       totalMessages: 100
     })
+    api.runAiSearch.mockResolvedValue(makeSearchResult())
+    // 本地 Provider：本用例测的是"同步中能否提问"，不是远程授权边界
+    // （远程授权边界由本文件另外的用例覆盖）。
+    api.getAiSearchProviderStatus.mockResolvedValue({ configured: true, requiresConsent: false })
     const onNotice = vi.fn()
     render(
       <AISearchWorkspace
@@ -378,18 +385,24 @@ describe('AISearchWorkspace cache privacy boundary', () => {
       />
     )
 
-    await userEvent.type(screen.getByRole('textbox'), '同步时不能分析')
-    const button = await screen.findByRole('button', { name: /同步中，暂不可分析/ })
-    expect(button).toBeDisabled()
-    const form = screen.getByRole('textbox').closest('form')
-    expect(form).not.toBeNull()
-    fireEvent.submit(form as HTMLFormElement)
+    await userEvent.type(screen.getByRole('textbox'), '同步时也要能分析')
+    // 等状态真的落地（同步中）再点，否则测的是"状态还没到"的竞态而不是产品行为。
+    await screen.findByText('Knowledge 可用 · 正在追新')
+    // 同步中**不允许**禁用提问：按钮必须可用，文案也不能变成"暂不可分析"。
+    const button = screen.getByRole('button', { name: /开始分析/ })
+    expect(button).toBeEnabled()
+    expect(screen.queryByRole('button', { name: /暂不可分析/ })).not.toBeInTheDocument()
 
+    await userEvent.click(button)
+
+    // 查询真的走到了检索（走完 consent 才会到这里），而不是被"请等待同步完成"挡回。
+    await waitFor(() => expect(api.getAiSearchProviderStatus).toHaveBeenCalled())
     await waitFor(() =>
-      expect(onNotice).toHaveBeenCalledWith('知识库正在同步，请等待同步完成后再开始分析')
+      expect(onNotice).toHaveBeenCalledWith('知识库正在后台同步，本次结果可能未覆盖最新消息')
     )
-    expect(api.getAiSearchProviderStatus).not.toHaveBeenCalled()
-    expect(api.runAiSearch).not.toHaveBeenCalled()
+    expect(onNotice).not.toHaveBeenCalledWith('知识库正在同步，请等待同步完成后再开始分析')
+    await waitFor(() => expect(api.runAiSearch).toHaveBeenCalledOnce())
+    expect(await screen.findByText('测试搜索答案')).toBeInTheDocument()
   })
 
   it('submits with Enter and keeps Shift+Enter available for a new line', async () => {

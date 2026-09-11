@@ -1,4 +1,4 @@
-import type { QueryAgentPocResult } from './services/query-agent-poc-service'
+import type { QueryAgentResult } from './services/query-agent-service'
 
 const WIDTH = 24
 
@@ -16,7 +16,7 @@ function row(label: string, value: string): string {
  * - 3 次以上（无法逐段归属工具耗时时，明确标注为聚合）
  * - 首次模型调用失败 / 末尾模型调用失败
  */
-export function formatTiming(result: QueryAgentPocResult): string {
+export function formatTiming(result: QueryAgentResult): string {
   const durations = result.modelDurationsMs || []
   const toolTotalMs = result.toolTotalMs || 0
   const toolCount = result.toolCallCount || 0
@@ -52,7 +52,7 @@ export function formatTiming(result: QueryAgentPocResult): string {
  * 请求级诊断。
  * 只输出 host 与状态字段；绝不输出 API key / Authorization / 完整 URL / 响应正文。
  */
-export function formatProviderDiagnostics(result: QueryAgentPocResult, host?: string): string {
+export function formatProviderDiagnostics(result: QueryAgentResult, host?: string): string {
   const lines = [
     '',
     '[Provider]',

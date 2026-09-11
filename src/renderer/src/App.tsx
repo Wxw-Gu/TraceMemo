@@ -28,6 +28,8 @@ import { DatabaseConnectionMode, DatabaseConnectionPage } from './components/Dat
 import { FirstUseWelcome } from './components/FirstUseWelcome'
 import { ExportWorkspace } from './components/export/ExportWorkspace'
 import { AISearchWorkspace } from './components/search/AISearchWorkspace'
+import type { EvidenceItem } from './components/search/searchTypes'
+import { decodeMessageRef } from '../../shared/local-query-api'
 import type { ExportJobProgress, ExportRequest, ExportTaskRecord } from '../../shared/export'
 import type { DatabaseKeyEnvironment, WechatAccountCandidate } from '../../shared/database-key'
 import {
@@ -249,6 +251,13 @@ function App(): React.ReactElement {
   const connectionOperationRef = React.useRef(0)
   const [activePage, setActivePage] = useState<AppPage>('archive')
   const [archiveJumpTime, setArchiveJumpTime] = useState<number | null>(null)
+  /**
+   * 精确跳转目标（规范化后的消息 id）。
+   *
+   * 与 `archiveJumpTime` 并存而不是替代：时间只能定位到"附近"，秒级时间戳在群聊里
+   * 经常对应多条消息。有 messageRef 时用 id 精确定位，没有时才退回按时间找。
+   */
+  const [archiveJumpMessageId, setArchiveJumpMessageId] = useState<string | null>(null)
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>('account-database')
   const [reportSourceContact, setReportSourceContact] = useState<Contact | null>(null)
   const [reportWorkspaceView, setReportWorkspaceView] = useState<ReportWorkspaceView>('result')
@@ -1191,6 +1200,7 @@ function App(): React.ReactElement {
 
   const handleSelectContact = async (contact: Contact, forceLive = false): Promise<void> => {
     setArchiveJumpTime(null)
+    setArchiveJumpMessageId(null)
     setSelectedContact(contact)
     selectedContactMd5Ref.current = contact.md5
     currentGroupSnapshotRef.current = null
@@ -1265,23 +1275,49 @@ function App(): React.ReactElement {
     }
   }
 
-  const handleOpenSearchEvidence = async (contact: Contact, createTime?: number): Promise<void> => {
+  /**
+   * 跳转到证据的原聊天。
+   *
+   * 只靠「真实会话 id + 秒级时间戳」定位不可靠：会话 id 若是展示层合成的 key 就选不中任何
+   * 真实会话，而时间戳在同一秒有多条消息时会挑错。这里从 `messageRef` 还原真实会话 id →
+   * 选中会话 → 用 `getMessagesAround` 按稳定消息 id 在有界窗口内精确锚定 → 高亮那一条。
+   *
+   * 窗口内找不到时**不静默失败**，明确提示"已打开对应会话，但暂时无法定位原消息"。
+   */
+  const handleOpenSearchEvidence = async (evidence: EvidenceItem): Promise<void> => {
+    const anchor = decodeMessageRef(evidence.messageRef)
+    if (!anchor) {
+      setReportNotice('这条证据缺少可定位的消息引用，已为你打开对应会话')
+      setActivePage('archive')
+      await handleSelectContact(evidence.contact)
+      return
+    }
+    // 优先用联系人列表里的真实联系人（头像 / 备注等元数据完整），兜底用证据自带的最小信息。
+    const contact = contacts.find((item) => item.md5 === anchor.conversationId) || evidence.contact
     setActivePage('archive')
     await handleSelectContact(contact)
-    if (!createTime || selectedContactMd5Ref.current !== contact.md5) return
+    if (selectedContactMd5Ref.current !== contact.md5) return
 
+    const anchorSeconds = evidence.message.createTime || undefined
     try {
-      const windowStart = Math.max(0, createTime - 12 * 3600)
-      const windowEnd = createTime + 12 * 3600
-      const nearbyMessages = await window.api.getMessages(contact.md5, windowStart, windowEnd)
+      const around = await window.api.getMessagesAround(
+        contact.md5,
+        anchor.messageId,
+        anchorSeconds
+      )
       if (selectedContactMd5Ref.current !== contact.md5) return
-      const focusedMessages = sortMessagesChronologically(nearbyMessages)
+      const focusedMessages = sortMessagesChronologically(around.messages)
       messageHistoryRef.current = focusedMessages
       setMessages(applyGroupMemberMeta(contact, mergeSyntheticMessages(contact, focusedMessages)))
-      setArchiveJumpTime(createTime)
+      if (around.found) {
+        setArchiveJumpMessageId(anchor.messageId)
+        setArchiveJumpTime(anchorSeconds ?? null)
+      } else {
+        setReportNotice('已打开对应会话，但暂时无法定位原消息。')
+      }
     } catch (error) {
       console.warn('[Search] evidence context load failed:', error)
-      setReportNotice('证据所在时间段加载失败，请在档案中手动查看')
+      setReportNotice('已打开对应会话，但暂时无法定位原消息。')
     }
   }
 
@@ -1773,6 +1809,7 @@ function App(): React.ReactElement {
         onOpenPersonalWechatSettings={openWechatSendSettings}
         isAiLoading={reportGeneration.isGenerating}
         jumpToTime={archiveJumpTime}
+        jumpToMessageId={archiveJumpMessageId}
       />
     </div>
   )
@@ -2007,9 +2044,7 @@ function App(): React.ReactElement {
             dbReady={isDatabaseConnected}
             aiModelConfig={aiModelConfig}
             onSelectContact={(contact) => void handleSelectContact(contact)}
-            onOpenEvidence={(contact, createTime) =>
-              void handleOpenSearchEvidence(contact, createTime)
-            }
+            onOpenEvidence={(evidence) => void handleOpenSearchEvidence(evidence)}
             onOpenAISettings={openModelSettings}
             onNotice={setReportNotice}
           />

@@ -6,6 +6,7 @@ import {
   SEARCH_CACHE_KEY,
   SEARCH_HISTORY_KEY
 } from '../../src/renderer/src/components/search/searchUtils'
+import { decodeMessageRef } from '../../src/shared/local-query-api'
 import {
   aiSearchContact,
   aiSearchGroup,
@@ -321,7 +322,7 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
     expect(api.runAiSearch).toHaveBeenCalledOnce()
   })
 
-  it('passes the selected Evidence contact and timestamp to the conversation jump callback', async () => {
+  it('passes the whole Evidence item with a decodable stable reference to the conversation jump callback', async () => {
     const onOpenEvidence = vi.fn()
     const item = makePipelineEvidence(1, aiSearchContact)
     api.runAiSearch.mockResolvedValue(makeSearchResult({ evidence: [item] }))
@@ -330,7 +331,19 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
     await screen.findByText('E1 · 发送者 1')
 
     await userEvent.click(screen.getByRole('button', { name: '跳转到原聊天 ↗' }))
-    expect(onOpenEvidence).toHaveBeenCalledWith(aiSearchContact, Math.floor(item.timestamp / 1000))
+
+    // 跳转必须拿到**稳定身份**（messageRef），而不是只靠"会话 + 秒级时间戳"猜位置：
+    // 秒级时间无法定位同秒多条消息，也会因为 contact.md5 是合成 key 而跳错会话。
+    expect(onOpenEvidence).toHaveBeenCalledTimes(1)
+    const passed = onOpenEvidence.mock.calls[0][0] as {
+      messageRef?: string
+      contact: { md5: string }
+    }
+    expect(passed.contact.md5).toBe(aiSearchContact.md5)
+    expect(decodeMessageRef(passed.messageRef)).toEqual({
+      conversationId: aiSearchContact.md5,
+      messageId: item.messageId
+    })
   })
 
   it('clears the previous request Evidence before a refreshed request completes', async () => {
@@ -579,15 +592,52 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
     expect(api.runAiSearch).toHaveBeenCalledTimes(2)
   })
 
+  /**
+   * Knowledge 状态语义矩阵。
+   *
+   * 必须把 FRESHNESS（追到源数据最新）与 COMPLETENESS（这一遍 pass 的进度）分开表达，
+   * **不得**在落后时出现「已同步」。
+   */
+  const STALE_INDEX_AT = new Date('2026-08-26T11:37:24+08:00').getTime()
+  const SOURCE_LATEST_AT = new Date('2026-09-11T11:57:24+08:00').getTime()
+  const makePass = (phase: 'full' | 'catchup' | 'backfill' | 'idle') => ({
+    phase,
+    cancellable: phase !== 'idle',
+    startedAt: SOURCE_LATEST_AT,
+    scannedMessages: 120,
+    indexedMessages: 20,
+    processedConversations: 3,
+    totalConversations: 10,
+    skippedConversations: 1,
+    catchupConversations: 4,
+    backfillConversations: 6,
+    backfillCompletedConversations: 2,
+    mainLoopLagMs: 4
+  })
+
   it.each([
-    ['unavailable', '未建立'],
-    ['building', '建立中'],
-    ['syncing', '增量同步'],
-    ['ready', '已同步'],
-    ['error', '异常']
-  ] as const)('renders Knowledge state %s as %s', async (state, label) => {
+    ['unavailable', '未建立', {}],
+    ['building', '可用 · 正在补齐历史', {}],
+    ['syncing', '可用 · 正在追新', { pass: makePass('catchup') }],
+    ['syncing', '可用 · 正在补齐历史', { pass: makePass('full') }],
+    // backfill（补历史缺口）与 full（首次建库）对用户是同一件事：都不是"追最新"。
+    ['syncing', '可用 · 正在补齐历史', { pass: makePass('backfill') }],
+    [
+      'ready',
+      '可用 · 待追新',
+      { indexLatestAt: STALE_INDEX_AT, sourceLatestAt: SOURCE_LATEST_AT }
+    ],
+    [
+      'ready',
+      '可用 · 已追至最新',
+      { indexLatestAt: SOURCE_LATEST_AT, sourceLatestAt: SOURCE_LATEST_AT }
+    ],
+    ['cancelled', '可用 · 同步已取消', {}],
+    ['error', '可用 · 更新失败', {}]
+  ] as const)('renders Knowledge state %s as %s', async (state, label, overrides) => {
     api.getKnowledgeStatus.mockResolvedValue({
       ...readyKnowledgeStatus,
+      ...overrides,
       state,
       lastError: state === 'error' ? 'Worker 异常' : undefined
     })
@@ -595,11 +645,51 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
 
     expect(await screen.findAllByText(new RegExp(`Knowledge ${label}`))).not.toHaveLength(0)
     if (state === 'error') expect(screen.getByText('Worker 异常')).toBeInTheDocument()
+    // 无论哪种状态，「已同步」这种把两件事混为一谈的笼统说法都不允许出现。
+    expect(screen.queryByText('已同步')).toBeNull()
+  })
+
+  it('never claims the index is up to date when freshness cannot be confirmed', async () => {
+    // 两个边界时间缺失（老库 / 运行态未上报）时无法判断是否追平。
+    // 安全侧是「待追新」——**不能**把"无法确认"说成「已追至最新」。
+    api.getKnowledgeStatus.mockResolvedValue({
+      ...readyKnowledgeStatus,
+      indexLatestAt: null,
+      sourceLatestAt: null
+    })
+    renderWorkspace()
+
+    expect(await screen.findByText('Knowledge 可用 · 待追新')).toBeInTheDocument()
+    expect(screen.queryByText(/可用 · 已追至最新/)).toBeNull()
+    expect(screen.queryByText('已同步')).toBeNull()
+  })
+
+  it('does not claim usability when the derived index is unavailable', async () => {
+    // 没有分片却残留了历史计数时，不能说「可用 · …」——那是两句真话拼成的假话。
+    api.getKnowledgeStatus.mockResolvedValue({
+      ...readyKnowledgeStatus,
+      state: 'unavailable',
+      indexedMessageCount: 0,
+      indexedChunkCount: 0
+    })
+    renderWorkspace()
+
+    expect(await screen.findByText('Knowledge 未建立')).toBeInTheDocument()
+    expect(screen.queryByText(/可用 · /)).toBeNull()
   })
 
   it('starts Knowledge indexing and reflects the returned status', async () => {
-    api.getKnowledgeStatus.mockResolvedValue({ ...readyKnowledgeStatus, state: 'unavailable' })
-    api.startKnowledgeIndex.mockResolvedValue({ ...readyKnowledgeStatus, state: 'syncing' })
+    api.getKnowledgeStatus.mockResolvedValue({
+      ...readyKnowledgeStatus,
+      state: 'unavailable',
+      indexedMessageCount: 0,
+      indexedChunkCount: 0
+    })
+    api.startKnowledgeIndex.mockResolvedValue({
+      ...readyKnowledgeStatus,
+      state: 'syncing',
+      pass: makePass('full')
+    })
     const onNotice = vi.fn()
     renderWorkspace({ onNotice })
     await screen.findByText('Knowledge 未建立')
@@ -607,7 +697,7 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
 
     expect(api.startKnowledgeIndex).toHaveBeenCalledOnce()
     expect(onNotice).toHaveBeenCalledWith(expect.stringContaining('开始同步'))
-    expect(await screen.findByText('Knowledge 增量同步')).toBeInTheDocument()
+    expect(await screen.findByText('Knowledge 可用 · 正在补齐历史')).toBeInTheDocument()
   })
 
   it('unsubscribes Knowledge and Progress listeners on unmount', () => {
@@ -615,5 +705,215 @@ describe('AISearchWorkspace regression coverage before decomposition', () => {
     view.unmount()
     expect(knowledgeUnsubscribe).toHaveBeenCalledOnce()
     expect(progressUnsubscribe).toHaveBeenCalledOnce()
+  })
+})
+
+/**
+ * Knowledge 卡片的布局契约（侧栏宽度不变，靠栅格而不是靠缩字号解决拥挤）。
+ *
+ * jsdom 不做布局计算，拿不到真实宽度，所以这里锁的是**布局所依赖的 DOM 契约**：
+ * - 五段结构（HEADER / CURRENT PASS / DATABASE STATUS / CURRENT / ACTION）各自的可见性；
+ * - 状态文案保持**单一文本节点**，换行只可能发生在「 · 」之后；
+ * - 数值行是「label + value」成对结构，nowrap 挂在 value 上；
+ * - 「取消同步」只在这一遍真的在跑时出现，且带不会被压扁的类。
+ *
+ * 刻意不写整份 CSS 快照：那种断言在调样式时全是噪声，也证明不了布局真的对。
+ */
+describe('Knowledge card layout contract', () => {
+  const STALE_INDEX_AT = new Date('2026-08-26T11:37:24+08:00').getTime()
+  const SOURCE_LATEST_AT = new Date('2026-09-11T11:57:24+08:00').getTime()
+
+  const makePass = (phase: 'full' | 'catchup' | 'backfill' | 'idle') => ({
+    phase,
+    cancellable: phase !== 'idle',
+    startedAt: SOURCE_LATEST_AT,
+    scannedMessages: 2_400,
+    indexedMessages: 1_200,
+    processedConversations: 400,
+    totalConversations: 4_800,
+    skippedConversations: 200,
+    catchupConversations: 4,
+    backfillConversations: 6,
+    backfillCompletedConversations: 2,
+    mainLoopLagMs: 0
+  })
+
+  const status = (state: string, extra: Record<string, unknown> = {}): unknown => ({
+    ...readyKnowledgeStatus,
+    state,
+    ...extra
+  })
+
+  const findStateLabel = async (): Promise<HTMLElement> =>
+    await screen.findByTestId('knowledge-state-label')
+  const queryPassSection = (): HTMLElement | null => screen.queryByTestId('knowledge-pass-progress')
+
+  it('keeps the state label a single string that only wraps at 「 · 」', async () => {
+    api.getKnowledgeStatus.mockResolvedValue(
+      status('ready', { indexLatestAt: STALE_INDEX_AT, sourceLatestAt: SOURCE_LATEST_AT })
+    )
+    renderWorkspace()
+
+    const label = await findStateLabel()
+    // 卡片上的字符串必须与 label 函数逐字一致（侧栏外的详情行也用同一个函数）。
+    // 折行位置由 CSS 的 word-break: keep-all 决定，DOM 里不做切分 —— 一旦被拆成
+    // 多个元素，页面上就会出现「可用 · 正在」/「补齐历史」这种碎句。
+    expect(label.textContent).toBe('可用 · 待追新')
+    expect(label.childNodes).toHaveLength(1)
+    expect(label).toHaveClass('ai-search-knowledge-state')
+  })
+
+  it('keeps the header as one grid row with kicker, state and status dot', async () => {
+    api.getKnowledgeStatus.mockResolvedValue(
+      status('ready', { indexLatestAt: SOURCE_LATEST_AT, sourceLatestAt: SOURCE_LATEST_AT })
+    )
+    renderWorkspace()
+
+    const label = await findStateLabel()
+    const heading = label.closest('.ai-search-knowledge-heading')
+    expect(heading).not.toBeNull()
+    expect(heading!.querySelector('.ai-search-knowledge-kicker')?.textContent).toBe('KNOWLEDGE BASE')
+    expect(heading!.querySelector('.ai-search-knowledge-dot')).not.toBeNull()
+  })
+
+  it('shows the CURRENT PASS section only while a pass is really running', async () => {
+    api.getKnowledgeStatus.mockResolvedValue(
+      status('unavailable', { indexedMessageCount: 0, indexedChunkCount: 0 })
+    )
+    const view = renderWorkspace()
+    await screen.findByText('Knowledge 未建立')
+    expect(queryPassSection()).toBeNull()
+    view.unmount()
+
+    api.getKnowledgeStatus.mockResolvedValue(status('syncing', { pass: makePass('catchup') }))
+    renderWorkspace()
+    expect(await screen.findByTestId('knowledge-pass-progress')).toBeInTheDocument()
+  })
+
+  it('renders the real two counters instead of a denominator-less fake progress', async () => {
+    api.getKnowledgeStatus.mockResolvedValue(status('syncing', { pass: makePass('catchup') }))
+    renderWorkspace()
+
+    const progress = await screen.findByTestId('knowledge-pass-progress')
+    expect(progress.textContent).toBe(
+      `本轮新增索引 ${(1_200).toLocaleString()} 条 · 本轮已扫描 ${(2_400).toLocaleString()} 条`
+    )
+    // 同样是一个文本节点 + CSS 折行：不能被拆成多个元素（否则「 · 」会甩到行首）。
+    expect(progress.childNodes).toHaveLength(1)
+  })
+
+  it.each([
+    ['catchup', '正在追最新消息：4 个会话有新内容'],
+    ['backfill', '后台补齐历史：2 / 6 个久未更新的会话'],
+    ['full', '正在建立索引：4,800 个会话']
+  ] as const)('describes the %s pass inside CURRENT PASS', async (phase, expected) => {
+    api.getKnowledgeStatus.mockResolvedValue(status('syncing', { pass: makePass(phase) }))
+    renderWorkspace()
+
+    expect(await screen.findByTestId('knowledge-pass-scope')).toHaveTextContent(expected)
+  })
+
+  it('keeps every database status row a label/value pair with a non-wrapping value', async () => {
+    api.getKnowledgeStatus.mockResolvedValue(
+      status('ready', { indexLatestAt: SOURCE_LATEST_AT, sourceLatestAt: SOURCE_LATEST_AT })
+    )
+    renderWorkspace()
+    await findStateLabel()
+
+    for (const text of ['已索引消息', '知识片段', '最新索引', '磁盘占用']) {
+      const label = screen.getByText(text)
+      expect(label).toHaveClass('ai-search-knowledge-label')
+      const row = label.closest('.ai-search-knowledge-row')
+      expect(row).not.toBeNull()
+      // value 是 nowrap 的载体：数字一旦折行，这一行就不可读了。
+      expect(row!.querySelector('.ai-search-knowledge-value')).not.toBeNull()
+    }
+  })
+
+  it('gives the current conversation its own row and truncates the long name', async () => {
+    api.getKnowledgeStatus.mockResolvedValue(
+      status('syncing', { pass: makePass('catchup'), currentConversationId: aiSearchGroup.md5 })
+    )
+    renderWorkspace()
+    await findStateLabel()
+
+    const row = screen.getByText('当前会话').closest('.ai-search-knowledge-row')
+    expect(row).not.toBeNull()
+    // 群名 / 备注可以很长：必须省略而不是撑破侧栏。
+    expect(row!.querySelector('.ai-search-knowledge-value')).toHaveClass(
+      'ai-search-knowledge-value--truncate'
+    )
+  })
+
+  it('drops the current-conversation row once nothing is running', async () => {
+    api.getKnowledgeStatus.mockResolvedValue(
+      status('ready', {
+        indexLatestAt: SOURCE_LATEST_AT,
+        sourceLatestAt: SOURCE_LATEST_AT,
+        currentConversationId: aiSearchGroup.md5
+      })
+    )
+    renderWorkspace()
+    await findStateLabel()
+
+    expect(screen.queryByText('当前会话')).toBeNull()
+  })
+
+  it('keeps the main-loop lag in its own labelled row when it is measured', async () => {
+    api.getKnowledgeStatus.mockResolvedValue(
+      status('syncing', { pass: { ...makePass('catchup'), mainLoopLagMs: 42 } })
+    )
+    renderWorkspace()
+    await findStateLabel()
+
+    const row = screen.getByText('界面卡顿峰值').closest('.ai-search-knowledge-row')
+    expect(row).not.toBeNull()
+    expect(row!.querySelector('.ai-search-knowledge-value')?.textContent).toBe('42ms')
+  })
+
+  it('keeps the cancel action on one line and only while running', async () => {
+    api.getKnowledgeStatus.mockResolvedValue(
+      status('ready', { indexLatestAt: SOURCE_LATEST_AT, sourceLatestAt: SOURCE_LATEST_AT })
+    )
+    const view = renderWorkspace()
+    await findStateLabel()
+    expect(screen.queryByTestId('knowledge-cancel-sync')).toBeNull()
+    view.unmount()
+
+    api.getKnowledgeStatus.mockResolvedValue(status('syncing', { pass: makePass('catchup') }))
+    renderWorkspace()
+
+    const cancel = await screen.findByTestId('knowledge-cancel-sync')
+    expect(cancel).toHaveTextContent('取消同步')
+    // 带 min-width 的类：按钮不会被主按钮挤到换行成「取消同」/「步」。
+    expect(cancel).toHaveClass('ai-search-knowledge-cancel')
+    expect(cancel.closest('.ai-search-knowledge-actions')).not.toBeNull()
+  })
+
+  it('keeps the cancelled state honest and free of a stale progress block', async () => {
+    api.getKnowledgeStatus.mockResolvedValue(status('cancelled', { pass: makePass('idle') }))
+    renderWorkspace()
+
+    expect(await screen.findByText('Knowledge 可用 · 同步已取消')).toBeInTheDocument()
+    expect(
+      screen.getByText('上一遍同步被取消，已建立的索引仍然可用；下次同步会从断点继续。')
+    ).toBeInTheDocument()
+    // 取消之后不能残留一个假的"正在同步"。
+    expect(queryPassSection()).toBeNull()
+    expect(screen.queryByTestId('knowledge-cancel-sync')).toBeNull()
+  })
+
+  it('keeps the FRESH state free of the stale warning and the progress block', async () => {
+    api.getKnowledgeStatus.mockResolvedValue(
+      status('ready', { indexLatestAt: SOURCE_LATEST_AT, sourceLatestAt: SOURCE_LATEST_AT })
+    )
+    renderWorkspace()
+
+    expect(await screen.findByText('Knowledge 可用 · 已追至最新')).toBeInTheDocument()
+    expect(
+      screen.getByText('后台增量同步不会影响原始微信聊天记录，也不会阻塞提问。')
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/索引还没追上最新聊天/)).toBeNull()
+    expect(queryPassSection()).toBeNull()
   })
 })

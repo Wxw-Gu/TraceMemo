@@ -4,8 +4,9 @@ import type {
   AiSearchPipelineResult,
   AiSearchTimeRange
 } from '../../src/shared/ai-search'
-import type { KnowledgeRuntimeStatus } from '../../src/shared/knowledge'
+import type { KnowledgePassProgress, KnowledgeRuntimeStatus } from '../../src/shared/knowledge'
 import type { Contact } from '../../src/shared/types'
+import { decodeMessageRef, encodeMessageRef } from '../../src/shared/local-query-api'
 import {
   contactLabel,
   formatBytes,
@@ -249,13 +250,54 @@ describe('AI Search workspace pure formatters', () => {
     )
   })
 
-  it('keeps every knowledge runtime state label unchanged', () => {
+  it('labels Knowledge states with the mandated freshness vocabulary', () => {
+    const usable = (
+      state: KnowledgeRuntimeStatus['state'],
+      extra: Partial<KnowledgeRuntimeStatus> = {}
+    ): KnowledgeRuntimeStatus => ({
+      ...makeKnowledgeStatus(state),
+      indexedMessageCount: 20,
+      indexedChunkCount: 4,
+      ...extra
+    })
+    const pass = (phase: 'full' | 'catchup' | 'idle'): KnowledgePassProgress => ({
+      phase,
+      cancellable: phase !== 'idle',
+      startedAt: 1_700_000_000_000,
+      scannedMessages: 120,
+      indexedMessages: 20,
+      processedConversations: 3,
+      totalConversations: 10,
+      skippedConversations: 1,
+      mainLoopLagMs: 4
+    })
+
     expect(knowledgeStateLabel(null)).toBe('读取中')
+    // 一个分片都没有：这不是"落后"，是"还没建立"。
     expect(knowledgeStateLabel(makeKnowledgeStatus('unavailable'))).toBe('未建立')
-    expect(knowledgeStateLabel(makeKnowledgeStatus('building'))).toBe('建立中')
-    expect(knowledgeStateLabel(makeKnowledgeStatus('syncing'))).toBe('增量同步')
-    expect(knowledgeStateLabel(makeKnowledgeStatus('ready'))).toBe('已同步')
-    expect(knowledgeStateLabel(makeKnowledgeStatus('error'))).toBe('异常')
+    expect(knowledgeStateLabel(makeKnowledgeStatus('building'))).toBe('正在建立')
+    // ready ≠ fresh：这两件事必须在文案里分开。
+    expect(knowledgeStateLabel(usable('building'))).toBe('可用 · 正在补齐历史')
+    expect(knowledgeStateLabel(usable('syncing', { pass: pass('catchup') }))).toBe(
+      '可用 · 正在追新'
+    )
+    expect(knowledgeStateLabel(usable('syncing', { pass: pass('full') }))).toBe(
+      '可用 · 正在补齐历史'
+    )
+    expect(
+      knowledgeStateLabel(usable('ready', { indexLatestAt: 1_700_000_000_000, sourceLatestAt: 1_700_000_999_000 }))
+    ).toBe('可用 · 待追新')
+    expect(
+      knowledgeStateLabel(usable('ready', { indexLatestAt: 1_700_000_999_000, sourceLatestAt: 1_700_000_999_000 }))
+    ).toBe('可用 · 已追至最新')
+    expect(knowledgeStateLabel(usable('cancelled'))).toBe('可用 · 同步已取消')
+    expect(knowledgeStateLabel(usable('error'))).toBe('可用 · 更新失败')
+    // 笼统的「已同步」把"能查"和"追平"混成一句话，已被彻底移除。
+    for (const state of ['unavailable', 'building', 'syncing', 'ready', 'cancelled', 'error'] as const) {
+      expect(knowledgeStateLabel(usable(state))).not.toBe('已同步')
+    }
+    // 派生库不可查询时不允许冒充"可用"（残留的历史计数不算数）。
+    expect(knowledgeStateLabel(usable('unavailable'))).toBe('未建立')
   })
 
   it('keeps the existing contact label fallback order', () => {
@@ -287,6 +329,8 @@ describe('AI Search pipeline evidence mapping', () => {
       evidenceId: 'E1',
       sourceKind: 'text',
       contact: aiSearchContact,
+      // Legacy 路径同样要带稳定引用：否则跳转只能靠"会话 + 秒级时间戳"猜。
+      messageRef: encodeMessageRef(aiSearchContact.md5, item.messageId),
       message: {
         id: 'message-1',
         from: 'sender-1',
@@ -298,6 +342,10 @@ describe('AI Search pipeline evidence mapping', () => {
         senderId: 'sender-1',
         createTime: Math.floor(item.timestamp / 1_000)
       }
+    })
+    expect(decodeMessageRef(mapped.messageRef)).toEqual({
+      conversationId: aiSearchContact.md5,
+      messageId: item.messageId
     })
   })
 

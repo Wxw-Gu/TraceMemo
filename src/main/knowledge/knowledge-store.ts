@@ -191,6 +191,7 @@ export class KnowledgeStore {
   async index(
     request: Pick<KnowledgeIndexRequest, 'conversations' | 'chunker'> & {
       sourceMessageCount?: number
+      sourceLatestAt?: number
     },
     signal?: AbortSignal,
     onProgress?: (progress: KnowledgeIndexProgress) => void
@@ -241,6 +242,9 @@ export class KnowledgeStore {
       if (request.sourceMessageCount !== undefined) {
         this.writeMeta('source_message_count', String(request.sourceMessageCount))
         this.refreshStatsSnapshot()
+      }
+      if (request.sourceLatestAt !== undefined) {
+        this.writeMeta('source_latest_at', String(request.sourceLatestAt))
       }
       this.setRunState('ready')
       return {
@@ -293,20 +297,61 @@ export class KnowledgeStore {
   }
 
   getSearchStatus(): Omit<KnowledgeSearchResult, 'evidence'> {
-    this.ensureStatsSnapshot()
+    this.ensureStatsSnapshotForQuery()
     const indexedMessageCount = this.readStatNumber('stats_message_count')
     const indexedChunkCount = this.readStatNumber('stats_chunk_count')
     const runState = this.readMeta('run_state')
     return {
-      state:
-        runState === 'indexing'
-          ? 'indexing'
-          : runState === 'ready' && indexedChunkCount > 0
-            ? 'ready'
-            : 'unavailable',
+      // READY 的含义是「这个派生库可以被查询」。一次被中断的 pass 会把 run_state 留在
+      // 'indexing'，但已落盘的分片仍然可用 —— 用它当 state 会让可查询的库看起来不可用。
+      // 「正在同步」由 KnowledgeSearchService 依据真实索引任务表达，不靠这里的残留状态。
+      state: runState === 'error' ? 'unavailable' : indexedChunkCount > 0 ? 'ready' : 'unavailable',
       indexedMessageCount,
       indexedChunkCount,
+      indexLatestAt: this.readIndexLatestAt(),
       timings: emptyKnowledgeSearchTimings()
+    }
+  }
+
+  /**
+   * 索引已经覆盖到的源数据时间（epoch ms）——「索引更新到哪」的权威口径。
+   *
+   * 优先用 per-conversation 的 `source_high_water_time` 聚合（`MAX(...)`）：每个**成功处理**
+   * 的会话都会立刻推进并持久化它（不是等整遍 pass 结束才写），所以增量 pass 同样能让
+   * freshness 前进。
+   *
+   * 为什么这是源侧口径：它是会话最后活跃时间与原始消息 create_time 的最大值，对不可建模的
+   * 图片/空正文也照算，不是"索引里最新一条可建模消息的时间"，所以不会被不可建模消息带偏；
+   * 并且它在 delta 空读可疑时**不推进**（安全阀在 KnowledgeSearchService 侧），
+   * 不会把"没读到"谎报成"已覆盖"。
+   *
+   * 不用 `source_latest_at` meta 优先：它的写入条件要求「这一遍没有任何跳过」，
+   * 而增量世界里"有跳过"是常态，于是它会冻结在最后一次全量 pass 的值上，
+   * 导致 `isKnowledgeFresh()` 恒为 false。
+   *
+   * 回退顺序：老库没有该列（或整列为 NULL）→ `source_latest_at` meta →
+   * `MAX(high_water_time)`（被建模消息的最新时间，只会偏旧，作下限是安全的）。
+   */
+  private readIndexLatestAt(): number | null {
+    try {
+      const covered = this.database
+        .prepare('SELECT MAX(source_high_water_time) AS latest FROM knowledge_index_state')
+        .get() as DbRow | undefined
+      const value = Number(covered?.latest)
+      if (Number.isFinite(value) && value > 0) return value
+    } catch {
+      // 老库可能还没有 source_high_water_time 这一列（migration 之前）→ 走回退。
+    }
+    const recorded = Number(this.readMeta('source_latest_at'))
+    if (Number.isFinite(recorded) && recorded > 0) return recorded
+    try {
+      const row = this.database
+        .prepare('SELECT MAX(high_water_time) AS latest FROM knowledge_index_state')
+        .get() as DbRow | undefined
+      const value = Number(row?.latest)
+      return Number.isFinite(value) && value > 0 ? value : null
+    } catch {
+      return null
     }
   }
 
@@ -320,7 +365,20 @@ export class KnowledgeStore {
     const error = this.readMeta('run_error') || undefined
     return {
       accountId: this.accountId,
-      state: runState === 'error' ? 'error' : search.state === 'ready' ? 'ready' : 'unavailable',
+      // 注意区分三种「不是 ready」：
+      // - 'error'     ：这一遍真的失败了；
+      // - 'cancelled' ：用户主动取消（已提交的会话保留、可继续，绝不留一个假的 indexing）；
+      // - 'unavailable'：还没有任何可用分片。
+      // 这里**不**用 `search.state`（那是「能不能查」）：取消后派生库仍然可查，
+      // 但 UI 需要区分「可用 · 已追至最新」与「可用 · 同步已取消」。
+      state:
+        runState === 'error'
+          ? 'error'
+          : runState === 'cancelled'
+            ? 'cancelled'
+            : search.state === 'ready'
+              ? 'ready'
+              : 'unavailable',
       indexedMessageCount: search.indexedMessageCount,
       indexedChunkCount: search.indexedChunkCount,
       sourceMessageCount,
@@ -330,7 +388,10 @@ export class KnowledgeStore {
       databaseBytes: storage.databaseBytes,
       walBytes: storage.walBytes,
       shmBytes: storage.shmBytes,
-      lastError: error
+      lastError: error,
+      // sourceLatestAt 属于源数据（WCDB），派生库本身看不到，由 KnowledgeSearchService 补齐。
+      indexLatestAt: search.indexLatestAt,
+      sourceLatestAt: null
     }
   }
 
@@ -345,6 +406,7 @@ export class KnowledgeStore {
   } {
     const startedAt = Date.now()
     let ftsMs = 0
+    let shortTermSearchMs = 0
     let messageLoadMs = 0
     let chunkExpandMs = 0
     let rankingMs = 0
@@ -505,6 +567,7 @@ export class KnowledgeStore {
       timings: {
         ...emptyKnowledgeSearchTimings(),
         ftsMs,
+        shortTermSearchMs,
         messageLoadMs,
         chunkExpandMs,
         rankingMs,
@@ -733,7 +796,9 @@ export class KnowledgeStore {
 
   searchWithStatus(query: KnowledgeQuery): KnowledgeSearchResult {
     const startedAt = Date.now()
+    const statusStartedAt = Date.now()
     const status = this.getSearchStatus()
+    const statusMs = Date.now() - statusStartedAt
     const measured = status.indexedChunkCount > 0 ? this.searchMeasured(query) : null
     const voiceStartedAt = Date.now()
     const voiceCoverage = this.getVoiceCoverage(query)
@@ -750,6 +815,7 @@ export class KnowledgeStore {
         totalMs: workerExecutionMs,
         globalCountMs: statsRefreshMs,
         voiceCoverageMs,
+        statusMs,
         workerExecutionMs
       },
       conversationRetrieval: measured?.conversationRetrieval,
@@ -837,6 +903,15 @@ export class KnowledgeStore {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS knowledge_messages_conversation_time
         ON knowledge_messages (conversation_id, create_time);
+      -- 跨会话 lexical probe 的短词回退路径是「全表 LIKE + ORDER BY create_time DESC LIMIT k」。
+      -- 没有这个索引时 SQLite 只能 SCAN + TEMP B-TREE，代价随表增长线性上升；
+      -- 有了它就能按时间倒序走索引并提前终止（同一 ORDER BY / 同一 LIMIT，结果集完全一致），
+      -- 降到毫秒级。它不改变任何检索语义，只是让同一条 SQL 有可用的访问路径。
+      CREATE INDEX IF NOT EXISTS knowledge_messages_time
+        ON knowledge_messages (create_time);
+      -- 语音覆盖聚合按 (kind, conversation_id[, create_time]) 过滤；没有它就只能全表扫。
+      CREATE INDEX IF NOT EXISTS knowledge_messages_kind_conversation
+        ON knowledge_messages (kind, conversation_id);
       CREATE TABLE IF NOT EXISTS knowledge_chunks (
         rowid INTEGER PRIMARY KEY,
         chunk_id TEXT NOT NULL UNIQUE,
@@ -870,6 +945,9 @@ export class KnowledgeStore {
     const stateColumns = new Set(asRows(this.database.prepare('PRAGMA table_info(knowledge_index_state)').all()).map((row) => String(row.name)))
     if (!stateColumns.has('complete_snapshot')) {
       this.database.exec('ALTER TABLE knowledge_index_state ADD COLUMN complete_snapshot INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!stateColumns.has('source_high_water_time')) {
+      this.database.exec('ALTER TABLE knowledge_index_state ADD COLUMN source_high_water_time INTEGER')
     }
     const messageColumns = new Set(
       asRows(this.database.prepare('PRAGMA table_info(knowledge_messages)').all()).map((row) =>
@@ -959,7 +1037,24 @@ export class KnowledgeStore {
         }
       }
     }
-    if (changedAt < 0) return { chunkCount: 0, updatedChunks: 0 }
+    if (changedAt < 0) {
+      // 内容没有变化 → 不必重建分片。但仍然要记下这一遍扫到的**源侧**边界，
+      // 否则下一次增量 pass 又会因为缺少标记而重读这个会话（永远无法跳过）。
+      //
+      // 单调推进：checkpoint 只应该前进。让一个"看起来更旧"的值覆盖它，会把已经追到最新的
+      // 会话重新打回"有新消息"，于是每一遍都白读一次，还会让 freshness 误判回退。
+      if (conversation.sourceHighWaterTime !== undefined) {
+        this.database
+          .prepare(
+            `UPDATE knowledge_index_state
+                SET source_high_water_time = MAX(COALESCE(source_high_water_time, 0), ?),
+                    updated_at = ?
+              WHERE conversation_id = ?`
+          )
+          .run(conversation.sourceHighWaterTime, Date.now(), conversation.conversationId)
+      }
+      return { chunkCount: 0, updatedChunks: 0 }
+    }
 
     const rebuildStart = Math.max(0, changedAt - chunker.overlapMessages)
     const boundaryTime = normalized[rebuildStart]?.createTime ?? 0
@@ -1021,7 +1116,8 @@ export class KnowledgeStore {
         highWater,
         normalized.length,
         null,
-        conversation.completeSnapshot
+        conversation.completeSnapshot,
+        conversation.sourceHighWaterTime ?? null
       )
       this.database.exec('COMMIT')
       return { chunkCount: chunks.length, updatedChunks: chunks.length }
@@ -1162,14 +1258,20 @@ export class KnowledgeStore {
     highWater: number | null,
     messageCount: number,
     error: string | null = null,
-    completeSnapshot = false
+    completeSnapshot = false,
+    /**
+     * 这一遍从 WCDB 读到的**原始**最新 create_time（epoch ms，未经过滤）。
+     * 与 `highWater`（索引里最后一条可建模消息的时间）不同：图片等不可建模消息会被后者漏掉，
+     * 于是「最后一条恰好是图片」的会话每次都会被认为是"有新消息"。源侧边界没有这个问题。
+     */
+    sourceHighWater: number | null = null
   ): void {
     this.database
       .prepare(
         `INSERT INTO knowledge_index_state (
           conversation_id, account_id, chunker_version, state, high_water_time,
-          indexed_message_count, complete_snapshot, last_error, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          indexed_message_count, complete_snapshot, last_error, updated_at, source_high_water_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
           account_id = excluded.account_id,
           chunker_version = excluded.chunker_version,
@@ -1178,7 +1280,14 @@ export class KnowledgeStore {
           indexed_message_count = excluded.indexed_message_count,
           complete_snapshot = excluded.complete_snapshot,
           last_error = excluded.last_error,
-          updated_at = excluded.updated_at`
+          updated_at = excluded.updated_at,
+          -- 单调推进 + 保留 NULL 语义：新值为 NULL 时保持旧值；否则取两者较大者。
+          -- 若退化成写 0，readSourceHighWaterMarks() 的 IS NOT NULL 就会把该会话
+          -- 当成"有 checkpoint 但等于 0"，从而每遍都误走 backfill 全量读。
+          source_high_water_time = CASE
+            WHEN excluded.source_high_water_time IS NULL THEN knowledge_index_state.source_high_water_time
+            ELSE MAX(COALESCE(knowledge_index_state.source_high_water_time, 0), excluded.source_high_water_time)
+          END`
       )
       .run(
         conversationId,
@@ -1189,8 +1298,29 @@ export class KnowledgeStore {
         messageCount,
         completeSnapshot ? 1 : 0,
         error,
-        Date.now()
+        Date.now(),
+        sourceHighWater
       )
+  }
+
+  /**
+   * 每个会话「已经索引到源数据的哪个时刻」（epoch ms）。
+   *
+   * 增量 pass 用它判断哪些会话真的需要重新读取：Session 行的 `last_timestamp` 不晚于这个值
+   * 就说明没有新消息，可以直接跳过（不读 WCDB、不写索引）。
+   */
+  readSourceHighWaterMarks(): Record<string, number> {
+    const marks: Record<string, number> = {}
+    for (const row of asRows(
+      this.database
+        .prepare(
+          'SELECT conversation_id, source_high_water_time FROM knowledge_index_state WHERE source_high_water_time IS NOT NULL'
+        )
+        .all()
+    )) {
+      marks[String(row.conversation_id)] = Number(row.source_high_water_time)
+    }
+    return marks
   }
 
   private readMeta(key: string): string | null {
@@ -1224,6 +1354,43 @@ export class KnowledgeStore {
   private ensureStatsSnapshot(): void {
     if (this.readMeta('stats_state') === 'fresh') return
     this.refreshStatsSnapshot()
+  }
+
+  /**
+   * 搜索热路径专用的快照读取（**不做全表聚合**）。
+   *
+   * 分开的原因：`markStatsStale()` 在**每次** `index()` 调用时都会执行，而
+   * `KnowledgeSearchService.indexAccount` 是**逐会话**调用 `index()` 的，所以一遍后台 pass
+   * 进行中 `stats_state` 几乎永远是 `'stale'`，pass 被中断后更是会一直留在 `'stale'`。
+   * 如果每次搜索都因此重做三次全表聚合（messages / chunks / voice），单个 probe 的代价就是
+   * 数十秒级，交互查询会被卡住。
+   *
+   * 规则：只有在快照**从未建立**（首库）或**明显与真实数据不符**（快照说 0 个分片、
+   * 但库里确实有分片 → 会把可查询的库误报成 unavailable）时才刷新。其余情况沿用上一次完整
+   * pass 写下的结论：数字可能略旧，但不会把可查询的库说成不可用，也不会把交互查询卡在
+   * 全表聚合上。
+   */
+  private ensureStatsSnapshotForQuery(): void {
+    const state = this.readMeta('stats_state')
+    if (state === 'fresh') return
+    if (state === null) {
+      this.refreshStatsSnapshot()
+      return
+    }
+    if (this.readStatNumber('stats_chunk_count') === 0 && this.hasAnyChunk()) {
+      this.refreshStatsSnapshot()
+    }
+  }
+
+  /** 只探一行，用于避免把"有分片但快照过期"的库报成不可用。 */
+  private hasAnyChunk(): boolean {
+    try {
+      return Boolean(
+        this.database.prepare('SELECT 1 AS present FROM knowledge_chunks LIMIT 1').get()
+      )
+    } catch {
+      return false
+    }
   }
 
   private markStatsStale(): void {

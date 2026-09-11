@@ -15,6 +15,15 @@ import type {
 import type { AppSettings } from './settings-store'
 import { generateAgentGroupReport } from './agent-group-report-service'
 import { AIProviderService } from './ai-provider-service'
+import { QueryAgentService } from './query-agent-service'
+import { AskWechatService } from './ask-wechat-service'
+import {
+  QUERY_AGENT_UNAVAILABLE_TEXT,
+  queryAgentReplyText,
+  resolveInboundRoute,
+  type GroupMemberChatIntent,
+  type GroupReportIntent
+} from './agent-hub-routing'
 import { isPackagedRuntime } from '../runtime-mode'
 import {
   getGroupSnapshot,
@@ -51,30 +60,6 @@ export interface AgentHubNotificationResult {
   status: 'sent' | 'recipient_unavailable' | 'connector_offline' | 'token_expired' | 'send_failed'
   recipient?: string
   error?: string
-}
-
-interface GroupReportIntent {
-  group: string
-  range: 'today' | 'yesterday' | '7days'
-}
-
-interface ContactChatIntent {
-  contact: string
-  limit: number
-  summarize: boolean
-}
-
-interface GroupMemberChatIntent {
-  group: string
-  member: string
-  range: 'today' | 'yesterday' | '7days'
-  days: number
-  goal: string
-}
-
-interface NaturalLanguageResult {
-  command?: string
-  reply?: string
 }
 
 const agentAIProvider = new AIProviderService()
@@ -125,6 +110,24 @@ export class AgentHubService {
     connector: 'checking',
     dataApi: 'checking',
     updatedAt: Date.now()
+  }
+
+  /**
+   * 查询大脑。由主进程注入**同一个** QueryAgentRuntime 实例（桌面问问微信也用它），
+   * Agent Hub 只负责把微信问题送进去、把回答发回去。
+   */
+  private queryAgent: AskWechatService | null = null
+
+  /**
+   * 注入生产 Query Agent Runtime（桌面与微信机器人共用同一实现，避免第二套 Query 语义）。
+   */
+  setQueryAgentService(runtime: QueryAgentService): void {
+    this.queryAgent = new AskWechatService(runtime, {
+      entry: 'agent-hub',
+      // Agent Hub 没有 Legacy AI Search 通道：查询失败时给出明确文案，绝不误触 Report Action。
+      log: (record) =>
+        this.addLog('agent-hub', record.level === 'info' ? 'info' : record.level, record.message)
+    })
   }
 
   async start(settings: AppSettings): Promise<boolean> {
@@ -397,301 +400,82 @@ export class AgentHubService {
       .join(' ')
     this.addLog('agent-hub', 'info', `收到微信消息 message_id=${messageId || 'unknown'}`)
 
-    const reportIntent = this.matchGroupReportIntent(text)
+    // 三路边界：明确产物 → Report / 成员分析 Action；会话列表 → 确定性能力；其余 → Query Agent。
+    // 注意：这里**不再**先跑意图分类 LLM，查询类问题直接进入 Query Agent（避免双重 LLM 语义系统）。
+    const route = resolveInboundRoute(text)
 
-    if (reportIntent) {
+    if (route.kind === 'report_action') {
       if (messageId) this.processedMessages.set(messageId, Date.now())
       this.addLog(
         'agent-hub',
         'info',
-        `匹配群聊总结：${reportIntent.group}（${reportIntent.range}）`
+        `匹配群聊总结：${route.intent.group}（${route.intent.range}）`
       )
       await this.sendConnector(inbound, '收到！正在生成群聊总结，请等待…').catch((error) => {
         this.addLog('agent-hub', 'warn', `等待提示发送失败：${this.errorMessage(error)}`)
       })
-      void this.generateAndSendReport(inbound, reportIntent)
+      void this.generateAndSendReport(inbound, route.intent)
       return this.sendHubJson(response, 202, { status: 'generating' })
     }
 
-    const groupMemberIntent = this.matchGroupMemberChatIntent(text)
-    if (groupMemberIntent) {
+    if (route.kind === 'group_member_action') {
       if (messageId) this.processedMessages.set(messageId, Date.now())
-      void this.summarizeGroupMemberChat(inbound, groupMemberIntent)
+      void this.summarizeGroupMemberChat(inbound, route.intent)
       return this.sendHubJson(response, 202, { status: 'generating', mode: 'group-member-summary' })
     }
 
-    const contactChatIntent = this.matchContactChatIntent(text)
-    if (contactChatIntent) {
-      if (messageId) this.processedMessages.set(messageId, Date.now())
-      if (contactChatIntent.summarize) {
-        void this.summarizeContactChat(inbound, contactChatIntent)
-        return this.sendHubJson(response, 202, { status: 'generating', mode: 'contact-summary' })
+    if (route.kind === 'recent_list') {
+      if (!isReady()) return this.sendHubJson(response, 502, { error: 'upstream query failed' })
+      const items = listRecentChat(route.limit)
+      const lines = items.map((item, index) => {
+        const name = item.m_nsNickName.trim() || item.m_nsUsrName.trim()
+        return `${index + 1}. ${name}（${item.type === 'group' ? '群聊' : '联系人'}）`
+      })
+      const reply = lines.length
+        ? `最近 ${items.length} 个会话：\n${lines.join('\n')}`
+        : '暂时没有找到最近会话。'
+      try {
+        await this.sendConnector(inbound, reply)
+      } catch (error) {
+        this.addLog('agent-hub', 'error', `回复发送失败：${this.errorMessage(error)}`)
+        return this.sendHubJson(response, 502, { error: 'reply delivery failed' })
       }
-      await this.replyContactChat(inbound, contactChatIntent)
+      if (messageId) this.processedMessages.set(messageId, Date.now())
+      this.addLog('agent-hub', 'info', `最近会话回复已发送（${items.length} 条）`)
       return this.sendHubJson(response, 200, { status: 'ok' })
     }
 
-    const recentChatLimit = this.matchRecentChatIntent(text)
-    if (recentChatLimit === null && text.trim()) {
-      if (messageId) this.processedMessages.set(messageId, Date.now())
-      void this.handleNaturalLanguage(inbound, text)
-      return this.sendHubJson(response, 202, {
-        status: 'processing',
-        mode: 'natural-language'
-      })
-    }
-    if (recentChatLimit === null) {
-      this.addLog('agent-hub', 'info', '消息已忽略：没有匹配到支持的意图')
-      return this.sendHubJson(response, 202, { status: 'ignored', reason: 'no matching intent' })
-    }
-    if (!isReady()) return this.sendHubJson(response, 502, { error: 'upstream query failed' })
-    const items = listRecentChat(recentChatLimit)
-    const lines = items.map((item, index) => {
-      const name = item.m_nsNickName.trim() || item.m_nsUsrName.trim()
-      return `${index + 1}. ${name}（${item.type === 'group' ? '群聊' : '联系人'}）`
-    })
-    const reply = lines.length
-      ? `最近 ${items.length} 个会话：\n${lines.join('\n')}`
-      : '暂时没有找到最近会话。'
-    try {
-      await this.sendConnector(inbound, reply)
-    } catch (error) {
-      this.addLog('agent-hub', 'error', `回复发送失败：${this.errorMessage(error)}`)
-      return this.sendHubJson(response, 502, { error: 'reply delivery failed' })
+    if (!text.trim()) {
+      this.addLog('agent-hub', 'info', '消息已忽略：内容为空')
+      return this.sendHubJson(response, 202, { status: 'ignored', reason: 'empty text' })
     }
     if (messageId) this.processedMessages.set(messageId, Date.now())
-    this.addLog('agent-hub', 'info', `最近会话回复已发送（${items.length} 条）`)
-    this.sendHubJson(response, 200, { status: 'ok' })
+    void this.handleKnowledgeQuery(inbound, text)
+    return this.sendHubJson(response, 202, { status: 'processing', mode: 'query-agent' })
   }
 
-  private async handleNaturalLanguage(inbound: InboundMessage, text: string): Promise<void> {
-    try {
-      const result = await this.resolveNaturalLanguage(text)
-      if (result.reply) {
-        await this.sendConnector(inbound, this.formatAIReply(result.reply))
-        this.addLog('agent-hub', 'info', '自然语言回复已发送')
-        return
-      }
-      if (!result.command) {
-        await this.sendConnector(inbound, '暂时没有理解你的意思，可以换一种说法再试。')
-        return
-      }
-
-      this.addLog('agent-hub', 'info', `自然语言已理解为：${result.command}`)
-      const reportIntent = this.matchGroupReportIntent(result.command)
-      if (reportIntent) {
-        await this.sendConnector(inbound, '收到！正在生成群聊总结，请等待…').catch(() => undefined)
-        await this.generateAndSendReport(inbound, reportIntent)
-        return
-      }
-
-      const groupMemberIntent = this.matchGroupMemberChatIntent(result.command)
-      if (groupMemberIntent) {
-        await this.summarizeGroupMemberChat(inbound, groupMemberIntent)
-        return
-      }
-
-      const contactIntent = this.matchContactChatIntent(result.command)
-      if (contactIntent) {
-        if (contactIntent.summarize) await this.summarizeContactChat(inbound, contactIntent)
-        else await this.replyContactChat(inbound, contactIntent)
-        return
-      }
-
-      const recentLimit = this.matchRecentChatIntent(result.command)
-      if (recentLimit !== null) {
-        await this.replyRecentChats(inbound, recentLimit)
-        return
-      }
-      await this.sendConnector(inbound, '暂时没有理解你的意思，可以换一种说法再试。')
-    } catch (error) {
-      this.addLog('agent-hub', 'error', `自然语言处理失败：${this.errorMessage(error)}`)
-      await this.sendConnector(inbound, `处理失败：${this.errorMessage(error)}`).catch(
-        () => undefined
-      )
-    }
-  }
-
-  private async replyRecentChats(inbound: InboundMessage, limit: number): Promise<void> {
-    if (!isReady()) {
-      await this.sendConnector(inbound, 'TraceMemo 本地数据库尚未连接，请连接后再试。')
+  /**
+   * 查询类问题（"微信里发生了什么"、普通闲聊）统一走 Query Agent Runtime。
+   * 失败时不回退 Report Action，只给用户明确文案。
+   */
+  private async handleKnowledgeQuery(inbound: InboundMessage, text: string): Promise<void> {
+    const service = this.queryAgent
+    if (!service) {
+      this.addLog('agent-hub', 'error', '查询大脑尚未初始化')
+      await this.sendConnector(inbound, QUERY_AGENT_UNAVAILABLE_TEXT).catch(() => undefined)
       return
     }
-    const items = listRecentChat(limit)
-    const lines = items.map((item, index) => {
-      const name = item.m_nsNickName.trim() || item.m_nsUsrName.trim()
-      return `${index + 1}. ${name}（${item.type === 'group' ? '群聊' : '联系人'}）`
-    })
-    await this.sendConnector(
-      inbound,
-      lines.length ? `最近 ${items.length} 个会话：\n${lines.join('\n')}` : '暂时没有找到最近会话。'
-    )
-    this.addLog('agent-hub', 'info', `最近会话回复已发送（${items.length} 条）`)
-  }
-
-  private async resolveNaturalLanguage(text: string): Promise<NaturalLanguageResult> {
-    const result = await agentAIProvider.chat([
-      {
-        role: 'system',
-        content: `你是 TraceMemo 微信机器人的意图理解器。只能输出一行 JSON，不要 Markdown。
-支持的工具：
-1. recent：查看最近会话，参数 limit 为 1-20。
-2. contact：查看我与某个联系人的最近聊天，参数 contact 和 limit。
-3. report：生成某个群的群聊总结图片，参数 group 和 range（today、yesterday、7days）。
-4. group_member：分析某个群里某位成员的发言，参数 group、member、range（today、yesterday、7days）、days（1-30）和 goal（保留用户希望总结、研究人物、提取观点等完整目标）。只要用户同时提到群聊和群成员，应优先使用 group_member，不能识别成 contact。
-5. chat：不需要工具的普通对话，reply 用简洁中文直接回答。
-输出格式：{"type":"recent|contact|report|group_member|chat","limit":5,"contact":"","group":"","member":"","range":"today","days":3,"goal":"","reply":""}
-不要声称已经读取未调用的聊天记录，不要执行电脑控制、文件操作、付款或发送给其他联系人。`
-      },
-      { role: 'user', content: text.slice(0, 1000) }
-    ])
-    if (!result.success || !result.data) {
-      this.addLog('agent-hub', 'warn', `自然语言理解不可用：${result.error || 'AI 未返回内容'}`)
-      return {}
-    }
-
     try {
-      const json = result.data.match(/\{[\s\S]*\}/)?.[0]
-      if (!json) return {}
-      const parsed = JSON.parse(json) as Record<string, unknown>
-      const limit = Math.max(1, Math.min(20, Number(parsed['limit']) || 5))
-      if (parsed['type'] === 'recent') return { command: `最近${limit}条消息` }
-      if (parsed['type'] === 'contact' && String(parsed['contact'] || '').trim()) {
-        return { command: `我和${String(parsed['contact']).trim()}最近${limit}条聊了什么` }
-      }
-      if (parsed['type'] === 'report' && String(parsed['group'] || '').trim()) {
-        const range =
-          parsed['range'] === '7days'
-            ? '最近7天'
-            : parsed['range'] === 'yesterday'
-              ? '昨天'
-              : '今天'
-        return { command: `生成${String(parsed['group']).trim()}${range}的群聊总结图片` }
-      }
-      if (
-        parsed['type'] === 'group_member' &&
-        String(parsed['group'] || '').trim() &&
-        String(parsed['member'] || '').trim()
-      ) {
-        const range =
-          parsed['range'] === 'yesterday'
-            ? '昨天'
-            : parsed['range'] === 'today'
-              ? '今天'
-              : '最近7天'
-        const group = String(parsed['group'] || '')
-          .trim()
-          .replace(/(?:群聊|群)+$/g, '')
-        const days = Math.max(1, Math.min(30, Number(parsed['days']) || 7))
-        const goal = String(parsed['goal'] || '总结发言').trim()
-        return {
-          command: `看看${group}群里${String(parsed['member']).trim()}${range === '最近7天' ? `最近${days}天` : range}说了什么，${goal}`
-        }
-      }
-      if (parsed['type'] === 'chat') {
-        const reply = String(parsed['reply'] || '').trim()
-        return reply ? { reply: reply.slice(0, 1500) } : {}
-      }
+      const conversationKey = `${String(inbound.account_id || '')}::${String(inbound.from_user_id || '')}`
+      const result = await service.ask(
+        { requestId: `agent-hub-${Date.now()}-${this.nextLogId}`, text },
+        conversationKey
+      )
+      await this.sendConnector(inbound, this.formatAIReply(queryAgentReplyText(result)))
+      this.addLog('agent-hub', 'info', `查询回答已发送（${result.status}）`)
     } catch (error) {
-      this.addLog('agent-hub', 'warn', `自然语言结果解析失败：${this.errorMessage(error)}`)
-    }
-    return {}
-  }
-
-  private async replyContactChat(
-    inbound: InboundMessage,
-    intent: ContactChatIntent
-  ): Promise<void> {
-    if (!isReady()) {
-      await this.sendConnector(inbound, 'TraceMemo 本地数据库尚未连接，请连接后再试。')
-      return
-    }
-
-    const contact = resolveMd5(intent.contact)
-    if (!contact || contact.type !== 'user') {
-      this.addLog('agent-hub', 'info', `没有匹配到联系人：${intent.contact}`)
-      await this.sendConnector(inbound, `没有找到联系人“${intent.contact}”。`)
-      return
-    }
-
-    this.addLog(
-      'agent-hub',
-      'info',
-      `匹配联系人聊天查询：${contact.m_nsNickName}（最近 ${intent.limit} 条）`
-    )
-    const messages = listMessages(contact.md5, undefined, undefined, { limit: intent.limit })
-    const recent = messages.slice(-intent.limit)
-    const lines = recent.map((message) => {
-      const speaker = message.isSender ? '我' : contact.m_nsNickName
-      const content = this.describeChatMessage(message.content, message.type)
-      return `${speaker}：${content}`
-    })
-    const reply = lines.length
-      ? `我和${contact.m_nsNickName}最近聊了这些：\n${lines.join('\n')}`
-      : `暂时没有找到和${contact.m_nsNickName}的聊天记录。`
-    await this.sendConnector(inbound, reply)
-    this.addLog('agent-hub', 'info', `联系人聊天回复已发送（${recent.length} 条）`)
-  }
-
-  private async summarizeContactChat(
-    inbound: InboundMessage,
-    intent: ContactChatIntent
-  ): Promise<void> {
-    try {
-      if (!isReady()) {
-        await this.sendConnector(inbound, 'TraceMemo 本地数据库尚未连接，请连接后再试。')
-        return
-      }
-      const contact = resolveMd5(intent.contact)
-      if (!contact || contact.type !== 'user') {
-        await this.sendConnector(inbound, `没有找到联系人“${intent.contact}”。`)
-        return
-      }
-
-      await this.sendConnector(
-        inbound,
-        `收到！正在整理和${contact.m_nsNickName}的近期聊天，请等待…`
-      )
-      const endTime = Math.floor(Date.now() / 1000)
-      const startTime = endTime - 7 * 24 * 60 * 60
-      const messages = listMessages(contact.md5, startTime, endTime, { limit: 300 }).slice(-300)
-      if (!messages.length) {
-        await this.sendConnector(inbound, `最近 7 天没有找到和${contact.m_nsNickName}的聊天记录。`)
-        return
-      }
-
-      const transcript = messages
-        .map((message) => {
-          const speaker = message.isSender ? '我' : contact.m_nsNickName
-          return `[${message.datetime}] ${speaker}：${this.describeChatMessage(message.content, message.type)}`
-        })
-        .join('\n')
-      const summary = await agentAIProvider.chat([
-        {
-          role: 'system',
-          content:
-            '你是私人聊天记录总结助手。仅根据提供的记录总结，不编造。按日期或主题整理关键进展、双方观点、决定、待办和未解决问题；忽略无意义表情，保留重要数字与事实。使用适合微信阅读的简洁中文。'
-        },
-        {
-          role: 'user',
-          content: `请总结我和“${contact.m_nsNickName}”最近 7 天聊了什么。\n\n聊天记录：\n${transcript}`
-        }
-      ])
-      if (!summary.success || !summary.data?.trim()) {
-        throw new Error(summary.error || 'AI 未返回总结')
-      }
-      await this.sendConnector(
-        inbound,
-        this.formatAIReply(
-          `和${contact.m_nsNickName}最近聊天总结（近 7 天，共 ${messages.length} 条）：\n\n${summary.data.trim().slice(0, 3500)}`
-        )
-      )
-      this.addLog('agent-hub', 'info', `联系人聊天总结已发送（${messages.length} 条）`)
-    } catch (error) {
-      this.addLog('agent-hub', 'error', `联系人聊天总结失败：${this.errorMessage(error)}`)
-      await this.sendConnector(inbound, `聊天总结失败：${this.errorMessage(error)}`).catch(
-        () => undefined
-      )
+      this.addLog('agent-hub', 'error', `查询处理失败：${this.errorMessage(error)}`)
+      await this.sendConnector(inbound, QUERY_AGENT_UNAVAILABLE_TEXT).catch(() => undefined)
     }
   }
 
@@ -881,65 +665,6 @@ export class AgentHubService {
     return { ok: response.ok, status: response.status, body: await response.text() }
   }
 
-  private matchRecentChatIntent(text: string): number | null {
-    const normalized = text.replace(/\s+/g, '')
-    if (!normalized.includes('最近') || !/(消息|会话|聊天)/.test(normalized)) return null
-    const limit = Number(normalized.match(/\d{1,2}/)?.[0] || 5)
-    return Math.max(1, Math.min(20, limit))
-  }
-
-  private matchContactChatIntent(text: string): ContactChatIntent | null {
-    const normalized = text.replace(/\s+/g, '').replace(/[，。！？?：:]/g, '')
-    if (!normalized.includes('最近') || !/(聊|消息|会话)/.test(normalized)) return null
-
-    const patterns = [
-      /(?:看一下|看看|查一下|查询)?我和(.+?)最近(?:\d{1,2}条)?(?:聊了什么|聊什么|的聊天|的消息|聊天|消息)/,
-      /(?:看一下|看看|查一下|查询)?(?:我)?最近(?:\d{1,2}条)?和(.+?)(?:聊了什么|聊什么|的聊天|的消息|聊天|消息)/,
-      /(?:看一下|看看|查一下|查询)?和(.+?)最近(?:\d{1,2}条)?(?:聊了什么|聊什么|的聊天|的消息|聊天|消息)/
-    ]
-    const contact = patterns
-      .map((pattern) => normalized.match(pattern)?.[1]?.trim())
-      .find((value): value is string => Boolean(value))
-    if (!contact) return null
-
-    const limit = Number(normalized.match(/最近(\d{1,2})条/)?.[1] || 10)
-    const summarize = /(聊了什么|聊什么|说了什么|谈了什么|总结)/.test(normalized)
-    return { contact, limit: Math.max(1, Math.min(20, limit)), summarize }
-  }
-
-  private matchGroupMemberChatIntent(text: string): GroupMemberChatIntent | null {
-    const normalized = text.trim().replace(/[，。！？?：:]/g, '')
-    const timePattern = '(今天|今日|昨天|昨日|最近\\d{1,2}天|近\\d{1,2}天|最近|近来|这几天)'
-    const actionPattern = '(?:说了什么|聊了什么|发言|说过什么|都聊什么|都说什么|干了什么)'
-    const patterns = [
-      new RegExp(
-        `(?:看一下|看看|看下|查一下|总结一下)?(.+?群(?:聊)?)[\\s，,]+(.+?)${timePattern}${actionPattern}`
-      ),
-      new RegExp(
-        `(?:看一下|看看|看下|查一下|总结一下)?(.+?群(?:聊)?)(?:里|中的)(.+?)${timePattern}${actionPattern}`
-      )
-    ]
-    for (const pattern of patterns) {
-      const match = normalized.match(pattern)
-      if (match?.[1]?.trim() && match[2]?.trim()) {
-        const range = /昨天|昨日/.test(match[3] || '')
-          ? 'yesterday'
-          : /今天|今日/.test(match[3] || '')
-            ? 'today'
-            : '7days'
-        const days = Math.max(1, Math.min(30, Number((match[3] || '').match(/\d{1,2}/)?.[0]) || 7))
-        return {
-          group: match[1].trim(),
-          member: match[2].trim(),
-          range,
-          days,
-          goal: normalized
-        }
-      }
-    }
-    return null
-  }
-
   private resolveGroup(query: string): ReturnType<typeof resolveMd5> {
     const normalize = (value: string): string =>
       value
@@ -959,27 +684,6 @@ export class AgentHubService {
       }) ||
       null
     )
-  }
-
-  private matchGroupReportIntent(text: string): GroupReportIntent | null {
-    const normalized = text.trim()
-    if (!normalized.includes('群') || !/(总结|日报|报告)/.test(normalized)) return null
-    const range = /(7天|七天|一周)/.test(normalized)
-      ? '7days'
-      : /(昨天|昨日)/.test(normalized)
-        ? 'yesterday'
-        : 'today'
-    const group = normalized
-      .replace(
-        /请|帮我|生成|做一份|做个|今天的|今日的|今天|今日|昨天的|昨日的|昨天|昨日|最近7天的|最近七天的|最近7天|最近七天|近7天的|近七天的|近7天|近七天|消息|聊天记录|聊天|群聊总结|群总结|群日报|群报告|总结|日报|报告|图片|长图/g,
-        ''
-      )
-      .replace(/[，。！？?：:]/g, '')
-      .trim()
-      .replace(/成$/, '')
-      .replace(/群$/, '')
-      .trim()
-    return group ? { group, range } : null
   }
 
   private authorized(header: string | undefined): boolean {

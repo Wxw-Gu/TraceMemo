@@ -24,6 +24,8 @@ interface ChatWindowProps {
   onOpenPersonalWechatSettings?: () => void
   isAiLoading?: boolean
   jumpToTime?: number | null
+  /** 精确跳转目标（消息 id）。与 jumpToTime 取或：任一存在就说明"这是一次跳转"。 */
+  jumpToMessageId?: string | null
 }
 
 const ChatWindow: React.FC<ChatWindowProps> = ({
@@ -41,7 +43,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   onOpenTextToSpeechSettings,
   onOpenPersonalWechatSettings,
   isAiLoading = false,
-  jumpToTime
+  jumpToTime,
+  jumpToMessageId
 }) => {
   const isGroupChat = Boolean(
     contact?.type === 'group' || contact?.m_nsUsrName?.endsWith('@chatroom')
@@ -76,24 +79,30 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     setIsAtLatest(true)
   }, [contact?.md5])
 
-  useEffect(() => {
-    if (jumpToTime !== undefined && jumpToTime !== null) setIsAtLatest(false)
-  }, [jumpToTime])
+  // 一次跳转 = 有精确目标或有时间目标。用统一判据，避免"只带了 messageId 但没带时间"
+  // 时自动滚到底把跳转结果顶掉（那会让用户看到"跳过去了但又被弹回最新"）。
+  const hasJumpTarget =
+    (jumpToTime !== undefined && jumpToTime !== null) ||
+    (jumpToMessageId !== undefined && jumpToMessageId !== null)
 
   useEffect(() => {
-    if (!isAtLatest || (jumpToTime !== undefined && jumpToTime !== null)) return
+    if (hasJumpTarget) setIsAtLatest(false)
+  }, [hasJumpTarget])
+
+  useEffect(() => {
+    if (!isAtLatest || hasJumpTarget) return
     const frame = window.requestAnimationFrame(() => scrollToBottom())
     return () => window.cancelAnimationFrame(frame)
-  }, [isAtLatest, jumpToTime, messages, scrollToBottom])
+  }, [isAtLatest, hasJumpTarget, messages, scrollToBottom])
 
   useEffect(() => {
-    if (!isAtLatest || (jumpToTime !== undefined && jumpToTime !== null)) return
+    if (!isAtLatest || hasJumpTarget) return
     const content = messageListRef.current?.querySelector('.virtual-message-list')
     if (!content) return
     const observer = new ResizeObserver(() => scrollToBottom())
     observer.observe(content)
     return () => observer.disconnect()
-  }, [contact?.md5, isAtLatest, jumpToTime, scrollToBottom])
+  }, [contact?.md5, isAtLatest, hasJumpTarget, scrollToBottom])
 
   const openImagePreview = (imageUrl: string): void => {
     setPreviewImage(imageUrl)
@@ -175,6 +184,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         onReachTop={onLoadOlderMessages}
         onImageClick={openImagePreview}
         jumpToTime={jumpToTime}
+        jumpToMessageId={jumpToMessageId}
       />
       <ChatStatusBar
         count={filteredMessages.length}

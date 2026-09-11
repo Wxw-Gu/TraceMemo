@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { formatProviderDiagnostics, formatTiming } from '../../src/main/query-agent-poc-report'
-import type { QueryAgentPocResult } from '../../src/main/services/query-agent-poc-service'
+import type { QueryAgentResult } from '../../src/main/services/query-agent-service'
 
-function result(patch: Partial<QueryAgentPocResult> = {}): QueryAgentPocResult {
+function result(patch: Partial<QueryAgentResult> = {}): QueryAgentResult {
   return {
     question: 'q',
     provider: 'Fixture Provider',

@@ -586,6 +586,9 @@ export class AiSearchPipelineService {
             state: 'ready',
             indexedMessageCount: 0,
             indexedChunkCount: 0,
+            // Legacy 路径不消费 freshness 口径；显式写 null，避免与 Query Agent 的覆盖语义混淆。
+            indexLatestAt: null,
+            sourceLatestAt: null,
             totalMessages: 0,
             evidence: [],
             timings: emptyKnowledgeSearchTimings()
@@ -1379,6 +1382,8 @@ export class AiSearchPipelineService {
       state: 'unavailable',
       indexedMessageCount: 0,
       indexedChunkCount: 0,
+      indexLatestAt: null,
+      sourceLatestAt: null,
       totalMessages: 0,
       evidence: [],
       timings: emptyKnowledgeSearchTimings()

@@ -1,4 +1,5 @@
 import type { AiSearchFinalEvidence, AiSearchPipelineResult } from '../../../../shared/ai-search'
+import { encodeMessageRef } from '../../../../shared/local-query-api'
 import type { Contact } from '../../../../shared/types'
 import { compactCacheItem } from './searchUtils'
 import type { AISearchCacheRecord, EvidenceItem, SearchTrace } from './searchTypes'
@@ -24,6 +25,9 @@ export const mapPipelineEvidenceItem = (
     evidenceId: item.id,
     sourceKind: item.sourceKind,
     contact,
+    // 这条路径本来就同时知道真实会话 id 与消息 id，顺手补上稳定引用，
+    // 让 Legacy / ai-search 证据也能被精确定位（而不是只有 Query Agent 路径能跳准）。
+    ...(safeRef(item.conversationId, item.messageId) || {}),
     message: {
       id: item.messageId,
       from: item.senderId || 'user',
@@ -35,6 +39,15 @@ export const mapPipelineEvidenceItem = (
       senderId: item.senderId,
       createTime: Math.floor(item.timestamp / 1000)
     }
+  }
+}
+
+/** 引用构造失败（缺 id）时返回 null，调用方退化到按时间定位 —— 不允许抛异常打断结果渲染。 */
+function safeRef(conversationId: string, messageId: string): { messageRef: string } | null {
+  try {
+    return { messageRef: encodeMessageRef(conversationId, messageId) }
+  } catch {
+    return null
   }
 }
 

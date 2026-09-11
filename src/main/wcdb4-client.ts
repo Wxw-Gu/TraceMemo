@@ -2011,6 +2011,50 @@ export class Wcdb4Client {
     }
   }
 
+  /**
+   * 只取「成员显示名」的轻量路径（Evidence sender enrichment 专用）。
+   *
+   * 与 `getGroupMembersAsync` 的关键差别是它**不做**重活：不 materialize 整群成员行、
+   * 不 hydrate 任何头像、contact 表只查**请求到的** wxid。只做两件必要的事 ——
+   * 群昵称表（native 没有"按成员过滤"的接口，但有 client 级缓存）+ 少量 contact 名称。
+   *
+   * 名称字段与 `normalizeGroupMembers` 同源同优先级
+   * （`nickname = wechatNickname || groupNickname || username`），所以调用方复用同一套
+   * 显示名规则时，语义不会比完整快照差。
+   */
+  async getGroupMemberNamesAsync(
+    chatroomId: string,
+    usernames: string[]
+  ): Promise<Wcdb4GroupMember[]> {
+    if (!chatroomId || !chatroomId.endsWith('@chatroom')) return []
+    const requested = this.uniq(usernames.filter(Boolean))
+    if (requested.length === 0) return []
+
+    try {
+      const groupNicknames = await this.getGroupNicknamesAsync(chatroomId)
+      const contactNames = await this.readContactMemberNamesAsync(requested)
+      return requested.map((username) => {
+        const groupNickname = groupNicknames.get(username) || ''
+        const contact = contactNames.get(username)
+        const wechatNickname = contact?.wechatNickname || ''
+        const remark = contact?.remark || ''
+        return {
+          m_nsUsrName: username,
+          nickname: wechatNickname || groupNickname || username,
+          groupNickname,
+          wechatNickname,
+          remark,
+          // 刻意留空：Evidence 只需要 displayName。头像若将来需要，另走 lazy UI 路径，
+          // 绝不让 Query Tool 为"可能显示头像"付整群 hydration 的成本。
+          m_nsHeadImgUrl: ''
+        }
+      })
+    } catch (error) {
+      console.warn(`[WCDB4] async group member names failed chatroom=${chatroomId}:`, error)
+      return []
+    }
+  }
+
   isGroupMemberIdsBatchAvailable(): boolean {
     return Boolean(this.wcdbGetGroupMembersBatch)
   }

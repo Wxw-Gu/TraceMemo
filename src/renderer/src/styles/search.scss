@@ -211,6 +211,11 @@
   border: 1px solid hsl(var(--tm-border-subtle));
   border-radius: var(--wxex-radius-md);
   background: var(--wxex-bg-elevated);
+  /* 侧栏最窄时卡片正文只有 ~145px。这里保持默认的 word-break / overflow-wrap：
+     中文长句交给「行栅格 + 显式换行点」处理，不能在词中间乱断，也绝不允许撑破侧栏。 */
+  min-width: 0;
+  word-break: normal;
+  overflow-wrap: normal;
 }
 
 .ai-search-knowledge-card.building,
@@ -226,31 +231,42 @@
   border-color: color-mix(in srgb, var(--wxex-warning) 70%, var(--wxex-border));
 }
 
-.ai-search-knowledge-card-heading,
-.ai-search-sync-progress-top,
-.ai-search-knowledge-details > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+/* HEADER：左列（品牌 + 状态）可收缩，右侧状态点取自然宽。 */
+.ai-search-knowledge-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 8px;
+  min-width: 0;
 }
 
-.ai-search-knowledge-card-heading > div {
+.ai-search-knowledge-heading-text {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
-.ai-search-knowledge-card-heading span:first-child {
+.ai-search-knowledge-kicker {
   color: var(--wxex-text-muted);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
+  white-space: nowrap;
 }
 
-.ai-search-knowledge-card-heading strong {
+/* 状态文案允许折成两行，但只断在「 · 」之后。
+   `keep-all` 禁止在中文的字与字之间断行，「 · 」两侧的空格仍然是断点，
+   于是窄侧栏下只会变成「可用 · 」/「待追新」，不会碎成「可用 · 正在」/「补齐历史」。
+   `break-word` 只作兜底：万一某一段本身超过可用宽度，允许溢出时在词内断开。 */
+.ai-search-knowledge-state {
+  min-width: 0;
   color: var(--wxex-text-primary);
   font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .ai-search-knowledge-description,
@@ -266,14 +282,22 @@
   color: var(--wxex-warning);
 }
 
-.ai-search-sync-progress {
+/* CURRENT PASS */
+.ai-search-knowledge-pass {
   display: grid;
   gap: 5px;
+  min-width: 0;
 }
 
-.ai-search-sync-progress-top {
+.ai-search-knowledge-pass-line {
+  margin: 0;
+  min-width: 0;
   color: var(--wxex-text-secondary);
   font-size: 10px;
+  line-height: 15px;
+  /* 与状态标题同一条折行规则：只在「 · 」之后断句。 */
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .ai-search-sync-progress-track {
@@ -288,6 +312,7 @@
   height: 100%;
   border-radius: inherit;
   background: var(--wxex-brand);
+  transform-origin: left center;
   transition: width 250ms ease;
 }
 
@@ -306,21 +331,75 @@
   }
 }
 
-.ai-search-knowledge-details {
+/* 没有真实分母时进度条改为不确定态（JSX 内联 style 挂着这个动画名）。
+   没有这段 keyframes 时那条 100% 宽的进度条是静止的，看起来像"已经跑完了"。 */
+@keyframes ai-search-indeterminate {
+  0% {
+    transform: translateX(-100%) scaleX(0.35);
+  }
+  100% {
+    transform: translateX(285%) scaleX(0.35);
+  }
+}
+
+/* DATABASE STATUS / CURRENT：一套行栅格。
+   标签列 minmax(0, 1fr) 可收缩；数值列 minmax(0, auto) 取自然宽，
+   空间不足时收缩的是数值列（配合 --truncate 省略），数字永远不被折断。 */
+.ai-search-knowledge-rows {
   display: grid;
   gap: 5px;
-  padding-top: 2px;
+  min-width: 0;
 }
 
-.ai-search-knowledge-details span {
+.ai-search-knowledge-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  align-items: baseline;
+  column-gap: 8px;
+  min-width: 0;
+}
+
+.ai-search-knowledge-label {
+  min-width: 0;
+  overflow: hidden;
   color: var(--wxex-text-muted);
   font-size: 10px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.ai-search-knowledge-details strong {
+.ai-search-knowledge-value {
+  min-width: 0;
   color: var(--wxex-text-secondary);
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
   font-weight: 600;
+  line-height: 15px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ai-search-knowledge-value--truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ACTION：主按钮吃满剩余宽度，取消按钮取自然宽且永不换行。 */
+.ai-search-knowledge-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ai-search-knowledge-primary {
+  min-width: 0;
+}
+
+.ai-search-knowledge-cancel {
+  min-width: 68px;
+  white-space: nowrap;
 }
 
 .ai-search-knowledge-more {

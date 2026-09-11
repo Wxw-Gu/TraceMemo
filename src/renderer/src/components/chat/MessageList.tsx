@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { Contact, Message } from '../../../../shared/types'
 import { MessageGroup } from './MessageGroup'
 import { buildMessageGroups } from './messageGrouping'
+import { resolveMessageJumpTarget } from './messageJump'
 
 interface MessageListProps {
   contact: Contact
@@ -18,6 +19,13 @@ interface MessageListProps {
   onReachTop?: () => Promise<void>
   onImageClick: (imageUrl: string) => void
   jumpToTime?: number | null
+  /**
+   * 精确跳转目标（规范化消息 id，即去掉 `local:` 前缀后的 WCDB 本地 id）。
+   *
+   * 优先于 `jumpToTime`：时间只能找到"附近的第一条"，秒级时间戳在群聊里经常
+   * 对应多条消息，于是会定位并高亮错一条。有 id 时必须按 id 找。
+   */
+  jumpToMessageId?: string | null
 }
 
 export function MessageList({
@@ -33,7 +41,8 @@ export function MessageList({
   onScroll,
   onReachTop,
   onImageClick,
-  jumpToTime
+  jumpToTime,
+  jumpToMessageId
 }: MessageListProps): React.ReactElement {
   const groups = React.useMemo(() => buildMessageGroups(messages), [messages])
   const groupsRef = React.useRef(groups)
@@ -47,15 +56,10 @@ export function MessageList({
     overscan: 8
   })
   const virtualItems = virtualizer.getVirtualItems()
-  const jumpTarget = React.useMemo(() => {
-    if (jumpToTime === undefined || jumpToTime === null) return null
-    const groupIndex = groups.findIndex((group) =>
-      group.messages.some((message) => (message.createTime || 0) >= jumpToTime)
-    )
-    if (groupIndex < 0) return null
-    const message = groups[groupIndex].messages.find((item) => (item.createTime || 0) >= jumpToTime)
-    return { groupIndex, messageId: message?.id }
-  }, [groups, jumpToTime])
+  const jumpTarget = React.useMemo(
+    () => resolveMessageJumpTarget(groups, jumpToTime, jumpToMessageId),
+    [groups, jumpToTime, jumpToMessageId]
+  )
 
   React.useEffect(() => {
     if (!jumpTarget) return
@@ -70,6 +74,7 @@ export function MessageList({
     const scrollElement = event.currentTarget
     if (
       (jumpToTime !== undefined && jumpToTime !== null) ||
+      (jumpToMessageId !== undefined && jumpToMessageId !== null) ||
       scrollElement.scrollTop >= 48 ||
       loadingOlderRef.current ||
       isLoadingMessages ||

@@ -136,6 +136,82 @@ describe('knowledge sqlite', () => {
     expect(existsSync(databasePath)).toBe(false)
   })
 
+  /**
+   * 取消之后 `run_state` 不允许留下一个假的 `indexing`，而且已提交的分片必须保留
+   * （取消 ≠ 回滚），下一次索引从断点继续。
+   */
+  it('records a cancelled pass as cancelled and keeps the committed chunks queryable', async () => {
+    const root = makeRoot()
+    // 两个会话：取消发生在第二个会话内部，于是第一个会话必须已经提交。
+    // （生产里索引是 per-conversation 事务，取消 ≠ 回滚。）
+    const committed = createSyntheticConversation(
+      FIXTURE_ACCOUNT_A,
+      'conversation-a',
+      0,
+      300,
+      'mixed'
+    )
+    const interrupted = createSyntheticConversation(
+      FIXTURE_ACCOUNT_A,
+      'conversation-b',
+      10_000,
+      2_000,
+      'mixed'
+    )
+    const controller = new AbortController()
+    const store = new KnowledgeStore(root, FIXTURE_ACCOUNT_A, fts)
+    const cancelled = await store.index(
+      { conversations: [committed, interrupted], chunker: DEFAULT_KNOWLEDGE_CHUNKER },
+      controller.signal,
+      (progress) => {
+        if (progress.conversationId === 'conversation-b' && progress.processedMessages >= 900) {
+          controller.abort()
+        }
+      }
+    )
+    expect(cancelled.cancelled).toBe(true)
+
+    // 取消是真实的终态，不能被当成"还在跑"。
+    const status = store.getRuntimeStatus()
+    expect(status.state).toBe('cancelled')
+    expect(status.state).not.toBe('indexing')
+    // 已经提交的会话仍然可查 —— 取消不等于回滚。
+    const evidence = store.search({ accountId: FIXTURE_ACCOUNT_A, text: '本地知识库', limit: 5 })
+    expect(evidence.length).toBeGreaterThan(0)
+    expect(new Set(evidence.map((item) => item.conversationId))).toEqual(
+      new Set(['conversation-a'])
+    )
+    store.close()
+  })
+
+  it('does not report an interrupted pass as an unusable index', async () => {
+    const root = makeRoot()
+    const source = createSyntheticConversation(
+      FIXTURE_ACCOUNT_A,
+      'conversation-a',
+      0,
+      200,
+      'mixed'
+    )
+    const store = new KnowledgeStore(root, FIXTURE_ACCOUNT_A, fts)
+    await store.index({ conversations: [source], chunker: DEFAULT_KNOWLEDGE_CHUNKER })
+    expect(store.getRuntimeStatus().state).toBe('ready')
+    store.close()
+
+    // 模拟进程被杀：派生库里分片齐全，但 run_state 残留 'indexing'。
+    const databasePath = getKnowledgeDatabasePath(root, FIXTURE_ACCOUNT_A)
+    const raw = new DatabaseSync(databasePath)
+    raw
+      .prepare(`UPDATE knowledge_meta SET value = 'indexing' WHERE key = 'run_state'`)
+      .run()
+    raw.close()
+
+    const reopened = new KnowledgeStore(root, FIXTURE_ACCOUNT_A, fts)
+    // 「可查询」不能因为一次中断残留就变成「不可用」。
+    expect(reopened.getRuntimeStatus().state).toBe('ready')
+    reopened.close()
+  })
+
   it('uses a bounded exact fallback for two-character Chinese queries with the trigram profile', async () => {
     const root = makeRoot()
     const store = new KnowledgeStore(root, FIXTURE_ACCOUNT_A, fts)
@@ -349,6 +425,49 @@ describe('knowledge sqlite', () => {
     expect(readMeta('stats_state')).toBe('fresh')
     expect(readMeta('stats_message_count')).toBe('7')
     inspect.close()
+    store.close()
+  })
+
+  it('把 per-conversation 的源侧覆盖边界当作索引覆盖口径（meta / high_water_time 只作回退）', async () => {
+    const root = makeRoot()
+    const store = new KnowledgeStore(root, FIXTURE_ACCOUNT_A, fts)
+    const conversation = createSyntheticConversation(FIXTURE_ACCOUNT_A, 'coverage', 0, 4, 'mixed')
+    const lastCreateTime = Math.max(...conversation.messages.map((message) => message.createTime))
+
+    await store.index({ conversations: [conversation], chunker: DEFAULT_KNOWLEDGE_CHUNKER })
+    // 既没有 per-conversation 源侧边界、也没有完整 pass 口径时，退化为
+    // "最新被索引的消息时间"（只会偏旧、不会冒充更新）。
+    expect(store.getRuntimeStatus().indexLatestAt).toBe(lastCreateTime)
+
+    await store.index({
+      conversations: [conversation],
+      chunker: DEFAULT_KNOWLEDGE_CHUNKER,
+      sourceMessageCount: conversation.messages.length,
+      // 源数据边界可以比"被索引建模的最新消息"更新（例如最新一条是不可建模的图片）。
+      sourceLatestAt: lastCreateTime + 60_000
+    })
+    const status = store.getRuntimeStatus()
+    expect(status.indexLatestAt).toBe(lastCreateTime + 60_000)
+    // 派生库自己看不到源数据，sourceLatestAt 由 KnowledgeSearchService 填。
+    expect(status.sourceLatestAt).toBeNull()
+
+    // per-conversation 的源侧边界一旦存在就是**权威口径**：它是每个成功处理的会话
+    // 立刻持久化的聚合值，增量 pass 也能推进它。而 `source_latest_at` meta 只在
+    // 「整遍零跳过」时才写 —— 增量世界里这让它永久冻结（冻结值落后真实 checkpoint，
+    // 导致 isKnowledgeFresh() 恒为 false）。
+    await store.index({
+      conversations: [{ ...conversation, sourceHighWaterTime: lastCreateTime + 180_000 }],
+      chunker: DEFAULT_KNOWLEDGE_CHUNKER
+    })
+    expect(store.getRuntimeStatus().indexLatestAt).toBe(lastCreateTime + 180_000)
+
+    // checkpoint 单调：一个"看起来更旧"的源侧边界不得让覆盖率回退，
+    // 否则已经追到最新的会话会被重新打回"有新消息"，每遍都白读。
+    await store.index({
+      conversations: [{ ...conversation, sourceHighWaterTime: lastCreateTime + 1_000 }],
+      chunker: DEFAULT_KNOWLEDGE_CHUNKER
+    })
+    expect(store.getRuntimeStatus().indexLatestAt).toBe(lastCreateTime + 180_000)
     store.close()
   })
 

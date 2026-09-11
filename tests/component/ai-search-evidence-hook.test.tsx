@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useEvidenceCollection } from '../../src/renderer/src/components/search/hooks/useEvidenceCollection'
 import type { EvidenceItem } from '../../src/renderer/src/components/search/searchTypes'
+import { decodeMessageRef, encodeMessageRef } from '../../src/shared/local-query-api'
 import {
   aiSearchContact,
   makeCacheRecord,
@@ -16,6 +17,9 @@ const makeEvidence = (count: number, offset = 0): EvidenceItem[] =>
     return {
       evidenceId: item.id,
       contact: aiSearchContact,
+      // 稳定引用是"跳转到这一条"的唯一可靠身份：只给会话 + 秒级时间戳，
+      // 同一秒多条消息时根本定位不到目标。
+      messageRef: encodeMessageRef(aiSearchContact.md5, item.messageId),
       message: {
         id: item.messageId,
         from: item.senderId,
@@ -168,14 +172,22 @@ describe('useEvidenceCollection', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' })
   })
 
-  it('passes the selected Evidence contact and timestamp to the jump callback', () => {
+  it('passes the whole Evidence item — including its stable messageRef — to the jump callback', () => {
     const { result } = renderHook(() => useEvidenceHarness())
     const collection = makeEvidence(1)
     act(() => result.current.setEvidenceResult(collection, collection))
 
     act(() => result.current.jumpToEvidence(0))
 
-    expect(onOpenEvidence).toHaveBeenCalledWith(aiSearchContact, collection[0].message.createTime)
+    // 传整条证据而不是 `(contact, createTime)`：后者丢掉了稳定身份，跳转只能靠
+    // "会话 + 秒级时间戳"猜。引用必须能被还原成真实的 conversationId / messageId。
+    expect(onOpenEvidence).toHaveBeenCalledTimes(1)
+    const passed = onOpenEvidence.mock.calls[0][0] as EvidenceItem
+    expect(passed).toBe(collection[0])
+    expect(decodeMessageRef(passed.messageRef)).toEqual({
+      conversationId: aiSearchContact.md5,
+      messageId: collection[0].message.id
+    })
   })
 
   it('clears the previous request Evidence and selection before the next result is applied', () => {

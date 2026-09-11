@@ -287,8 +287,11 @@ export const senderName = (
   return contact.type === 'user' ? contact.m_nsNickName || '联系人' : '群成员'
 }
 
-export const compactCacheItem = ({ evidenceId, contact, message }: EvidenceItem): EvidenceItem => ({
+export const compactCacheItem = ({ evidenceId, contact, message, messageRef }: EvidenceItem): EvidenceItem => ({
   evidenceId,
+  // 稳定引用必须一起进缓存：否则命中缓存后「跳转到原聊天」会退化成按时间戳猜
+  // （缓存写入是最容易漏掉新字段的地方，这里显式列出而不是展开对象）。
+  ...(messageRef ? { messageRef } : {}),
   contact: {
     md5: contact.md5,
     m_nsUsrName: contact.m_nsUsrName,

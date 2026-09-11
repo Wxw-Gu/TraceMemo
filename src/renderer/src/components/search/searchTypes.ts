@@ -36,6 +36,14 @@ export interface EvidenceItem {
   sourceKind?: KnowledgeMessageKind
   contact: Contact
   message: Message
+  /**
+   * 稳定消息引用（opaque，可还原成 `{conversationId, messageId}`）。
+   *
+   * 只靠「会话 + 秒级时间戳」无法定位到**这一条**消息 —— 同一秒可能有多条，
+   * 而且时间戳只能定位到"附近"。Archive 的跳转优先用它。
+   * 老缓存记录 / Legacy 路径可能没有它，所以必须是可选的。
+   */
+  messageRef?: string
 }
 
 export interface AISearchCacheRecord {
@@ -82,7 +90,13 @@ export interface AISearchWorkspaceProps {
   dbReady: boolean
   aiModelConfig: AIRuntimeModelConfig
   onSelectContact: (contact: Contact) => void
-  onOpenEvidence: (contact: Contact, createTime?: number) => void
+  /**
+   * 跳转到证据的原聊天。
+   *
+   * 传整条 EvidenceItem 而不是 `(contact, createTime)`：后者丢掉了稳定身份（messageRef），
+   * 跳转只能靠"会话 + 秒级时间戳"猜，而会话 id 若来自展示层合成的 key 则完全跳不过去。
+   */
+  onOpenEvidence: (evidence: EvidenceItem) => void
   onOpenAISettings: () => void
   onNotice: (message: string) => void
 }

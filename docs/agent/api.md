@@ -146,3 +146,51 @@ curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/convers
 每条消息都会返回 `messageType`（`text`、`image`、`voice`、`video`、`file`、`link`、`sticker`、`system` 或 `other`）。非文本消息不会伪造 `text`；可识别的图片、视频、贴纸和文件会返回不含密钥或本地路径的 `attachment` 元数据。
 
 `conversation-overview` 同时返回 `sourceCoverage` 与 `selection`：前者描述时间范围内源消息是否完整及 `sourceMessageCount`，后者描述从源消息中选出的 Evidence 数量及是否抽样。`evidence` 最终按 `timestamp` 升序返回，`messageRef` 是唯一推荐的消息引用。
+`conversation-overview` 另有一个 `origin` 字段：`wcdb` 表示这次证据直接来自本机聊天数据库（会话概览的事实来源），`knowledge` 表示来自本地索引。
+
+### 搜索范围（scope）
+
+`query/messages`、`query/search`、`query/message-context` 和 `query/conversation-overview` 都接受一个可选的 `scope`，用来把检索限制在一个确定的语料边界内：
+
+| scope | 含义 |
+| ----- | ---- |
+| `{"kind":"all"}` | 所有可读会话（默认；省略 `scope` 等价于此） |
+| `{"kind":"groups"}` | 只搜群聊语料，**且包含群成员实际发送的消息**（不是群名称或群元数据） |
+| `{"kind":"contact","conversationId":"…"}` | 只搜该一对一会话 |
+| `{"kind":"current","conversationId":"…"}` | 只搜指定的那个会话（单聊或群聊） |
+
+`conversationId` 是会话标识，可用 `/api/v1/resolve` 或 `/api/v1/contact` 得到。`scope` 一旦给出就是**权威边界**：`target` 落在范围之外会被拒绝（`status: "invalid_tool_arguments"`、`constraint: "target_outside_scope"`），不会静默扩大范围；范围里包含多个会话时，`query/messages` 与 `query/conversation-overview` 必须显式指定 `target`（`constraint: "target_required_for_scope"`）。
+
+响应会回显实际生效的边界：
+
+```json
+{ "scope": { "kind": "groups", "conversationCount": 243 } }
+```
+
+跨会话检索时，`evidence` 的每一项都会带上它所属的会话，便于把结果归属到具体群 / 联系人与具体成员：
+
+```json
+{
+  "messageRef": "…",
+  "conversationName": "某个群",
+  "conversationType": "group",
+  "sender": "某成员",
+  "timestamp": 1789099069000,
+  "text": "…"
+}
+```
+
+### 索引新鲜度（freshness）
+
+`query/search` 依赖本地索引，而本地索引是异步建立的派生数据，可能落后于聊天数据库。因此它的响应会显式给出覆盖口径：
+
+| 字段 | 含义 |
+| ---- | ---- |
+| `indexLatestAt` | 索引目前覆盖到的源数据时间（epoch ms），`null` 表示无法判定 |
+| `sourceLatestAt` | 聊天数据库里最新的活跃时间（epoch ms），`null` 表示无法判定 |
+| `coverage.state` | `complete` 只在索引确实覆盖了所请求的时间范围时出现 |
+| `freshness.catchUp` | 本次为追赶索引做了什么：`none` / `reused` / `completed` / `pending` |
+
+调用方**必须**把 `coverage` 当真：`coverage.state` 不是 `complete` 且 `evidence` 为空时，只能说明"这段范围暂时无法确认"，**不能**下"没有找到"的结论。索引落后时服务端会自动请求一次追赶同步，但不会让请求无限等待；`freshness.catchUp` 为 `pending` 表示追赶仍在后台进行，稍后重试即可拿到更新的覆盖。
+
+`query/messages` 与 `query/conversation-overview` 直读聊天数据库，不受索引新鲜度影响。

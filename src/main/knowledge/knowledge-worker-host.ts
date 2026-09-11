@@ -19,6 +19,7 @@ type WorkerResult =
   | KnowledgeCapacityPreflight
   | KnowledgeSearchResult
   | KnowledgeRuntimeStatus
+  | { marks: Record<string, number> }
   | { removed: true }
 type PendingRequest = {
   resolve: (result: WorkerResult) => void
@@ -36,6 +37,14 @@ export class KnowledgeWorkerHost {
   private child: ChildProcess | null = null
   private childStartedAt = 0
   private readonly pending = new Map<string, PendingRequest>()
+  /**
+   * 当前在跑的索引请求 id。
+   *
+   * 之前没有它，所以「取消同步」在 UI 上不存在、在主进程里也无法表达 ——
+   * 唯一能停下来的方式就是退出应用。这里显式跟踪，`cancelActiveIndex()` 才能
+   * 精确地只中止索引，而**不会**影响任何并发进行的查询请求。
+   */
+  private activeIndexRequestId: string | null = null
 
   constructor(private readonly workerPath: string) {}
 
@@ -43,7 +52,9 @@ export class KnowledgeWorkerHost {
     payload: KnowledgeIndexRequest,
     onProgress?: (progress: KnowledgeIndexProgress) => void
   ): Promise<KnowledgeIndexResult> {
-    return this.request('index', payload, onProgress) as Promise<KnowledgeIndexResult>
+    return this.request('index', payload, onProgress, (requestId) => {
+      this.activeIndexRequestId = requestId
+    }) as Promise<KnowledgeIndexResult>
   }
 
   preflight(payload: KnowledgeCapacityPreflightRequest): Promise<KnowledgeCapacityPreflight> {
@@ -56,6 +67,21 @@ export class KnowledgeWorkerHost {
 
   status(payload: KnowledgeStatusRequest): Promise<KnowledgeRuntimeStatus> {
     return this.request('status', payload) as Promise<KnowledgeRuntimeStatus>
+  }
+
+  /** 每个会话已经索引到的源侧时刻；用于增量 pass 跳过没有变化的会话。 */
+  highWaterMarks(payload: KnowledgeStatusRequest): Promise<Record<string, number>> {
+    return this.request('highWater', payload as unknown as KnowledgeWorkerRequest['payload']).then(
+      (result) => ('marks' in result ? result.marks : {})
+    )
+  }
+
+  /** 只中止正在跑的索引任务，返回是否真的有任务被中止。 */
+  async cancelActiveIndex(): Promise<boolean> {
+    const target = this.activeIndexRequestId
+    if (!target) return false
+    await this.cancel(target)
+    return true
   }
 
   remove(accountId: string, databaseRoot: string): Promise<{ removed: true }> {
@@ -81,13 +107,15 @@ export class KnowledgeWorkerHost {
   private request(
     type: KnowledgeWorkerRequest['type'],
     payload: KnowledgeWorkerRequest['payload'],
-    onProgress?: (progress: KnowledgeIndexProgress) => void
+    onProgress?: (progress: KnowledgeIndexProgress) => void,
+    onRequestId?: (requestId: string) => void
   ): Promise<WorkerResult> {
     const hadWorker = Boolean(this.child?.connected)
     const child = this.ensureChild()
     const requestId = randomUUID()
     const sentAt = Date.now()
     const request: KnowledgeWorkerRequest = { version: 1, type, requestId, sentAt, payload }
+    onRequestId?.(requestId)
     return new Promise((resolve, reject) => {
       this.pending.set(requestId, {
         resolve,
@@ -145,6 +173,7 @@ export class KnowledgeWorkerHost {
     const pending = this.pending.get(requestId)
     if (!pending) return
     this.pending.delete(requestId)
+    if (this.activeIndexRequestId === requestId) this.activeIndexRequestId = null
     if (error) pending.reject(error)
     else if (result) pending.resolve(this.applyTransportTimings(result, pending, transport))
     else pending.reject(new Error('Knowledge worker returned no result'))

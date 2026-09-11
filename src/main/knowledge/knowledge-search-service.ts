@@ -1,8 +1,11 @@
+import { monitorEventLoopDelay } from 'perf_hooks'
 import * as chat from '../services/chat-service'
 import type {
   KnowledgeAttachmentMetadata,
   KnowledgeEvidence,
   KnowledgeMessageKind,
+  KnowledgePassProgress,
+  KnowledgeRuntimeState,
   KnowledgeRuntimeStatus,
   KnowledgeSearchRequest,
   KnowledgeSearchIpcRequest,
@@ -32,6 +35,42 @@ const MAX_CONVERSATION_FILTERS_PER_WORKER_SEARCH = 700
 const MAX_SENDER_ENRICHMENT_SESSIONS = 32
 const SENDER_ENRICHMENT_SESSION_TTL_MS = 5 * 60 * 1000
 
+/**
+ * 增量读取时向前回看的 overlap（epoch ms）。
+ *
+ * delta 下界 = `checkpoint - DELTA_OVERLAP_MS`，用来吸收 timestamp 边界碰撞。
+ * 它必须远大于 chunker 的 `maxGapMs`，否则跨越下界的 chunk 会缺前半段消息、重建时丢前文。
+ *
+ * ⚠️ 单位：这里是**毫秒**（checkpoint 本身是毫秒）。传给 WCDB 读取层之前必须换成
+ * epoch **秒**（`chat.listMessagesAsync` 的 start/end 是秒）。混用会让 delta 读恒为空，
+ * 且**不会报错**。
+ */
+const DELTA_OVERLAP_MS = 24 * 60 * 60 * 1000
+
+/**
+ * event-loop 滞后采样的分辨率（ms）。
+ *
+ * 用 `monitorEventLoopDelay` 的 histogram 而不是手写 setInterval：后者只能以 interval
+ * 为粒度发现 stall，给不出分位数。
+ */
+const LAG_PROBE_RESOLUTION_MS = 10
+
+/** histogram 的纳秒读数转毫秒。 */
+function roundMs(nanoseconds: number): number {
+  if (!Number.isFinite(nanoseconds) || nanoseconds <= 0) return 0
+  return Math.round(nanoseconds / 1e6)
+}
+
+/** WCDB 读取通道：`interactive` = 交互查询，`background` = 后台索引 pass。 */
+type WcdbReadLane = 'interactive' | 'background'
+
+type PendingWcdbRead = {
+  high: boolean
+  run: () => Promise<unknown>
+  resolve: (value: unknown) => void
+  reject: (error: unknown) => void
+}
+
 type PendingVoiceTranscriptIndex = {
   update: VoiceTranscriptUpdate
   waiters: Array<{
@@ -43,7 +82,13 @@ type PendingVoiceTranscriptIndex = {
 type SenderEnrichmentSession = {
   lastUsedAt: number
   contacts?: Awaited<ReturnType<typeof chat.listContactsAsync>>
-  groupSnapshots: Map<string, Awaited<ReturnType<typeof chat.getGroupSnapshotAsync>> | undefined>
+  /**
+   * conversationId → (wxid → displayName)。
+   *
+   * 只缓存"这个群里这些 wxid 解析出来是什么名字"，不再缓存整群快照。
+   * 空串表示「查过、确实没有可用名字」，用于避免同一 session 内重复查询。
+   */
+  groupMemberNames: Map<string, Map<string, string>>
 }
 
 function looksLikeOpaqueSenderId(value: string | undefined): boolean {
@@ -203,7 +248,12 @@ export class KnowledgeSearchService {
   private readonly statusByAccount = new Map<string, KnowledgeRuntimeStatus>()
   private readonly statusListeners = new Set<(status: KnowledgeRuntimeStatus) => void>()
   private readonly senderEnrichmentSessions = new Map<string, SenderEnrichmentSession>()
-  private wcdbReadTail: Promise<void> = Promise.resolve()
+  /** WCDB 读取的两条通道：交互（查询）优先于后台（索引 pass）。 */
+  private readonly wcdbPending: PendingWcdbRead[] = []
+  private wcdbReadBusy = false
+  private interactiveQueryDepth = 0
+  private interactiveIdle: Promise<void> = Promise.resolve()
+  private interactiveIdleResolve: (() => void) | null = null
   private wcdbQueueMsTotal = 0
   private wcdbExecutionMsTotal = 0
   private voiceTranscriptResolver:
@@ -212,6 +262,17 @@ export class KnowledgeSearchService {
   private voiceIndexTail: Promise<void> = Promise.resolve()
   private voiceIndexFlushScheduled = false
   private readonly pendingVoiceIndexes = new Map<string, PendingVoiceTranscriptIndex>()
+  /** 上次由查询触发的追赶同步时间，用于节流（避免每个 Query 都重跑一次索引）。 */
+  private lastCatchUpRequestedAt = 0
+  /** 上一遍完整索引 pass 的实际耗时；用于让"是否值得再追一遍"的门槛自我校准。 */
+  private lastIndexPassMs = 0
+  /** 当前/最近一次 pass 的真实进度（供 UI 区分"追新"与"补历史"）。 */
+  private passProgress: KnowledgePassProgress | null = null
+  /** 用户是否已经请求取消当前 pass。取消后主循环在下一个安全点退出。 */
+  private cancelRequested = false
+  private lagHistogram: ReturnType<typeof monitorEventLoopDelay> | null = null
+  private lagMaxMs = 0
+  private lagStats: { p50: number; p95: number; p99: number; max: number } | null = null
 
   constructor(userDataPath: string, workerPath: string) {
     this.service = new KnowledgeService(userDataPath, workerPath)
@@ -222,13 +283,32 @@ export class KnowledgeSearchService {
     if (!accountId) return this.emptyStatus('')
     const current = this.statusByAccount.get(accountId) || this.emptyStatus(accountId)
     if (this.indexing.has(accountId)) return current
+    this.cancelRequested = false
+    const startedAt = Date.now()
+    this.startLagProbe()
+    this.passProgress = {
+      // 已经有分片 = 增量追新；完全没有 = 首次全量建立。
+      phase: current.indexedChunkCount > 0 || current.indexedMessageCount > 0 ? 'catchup' : 'full',
+      cancellable: true,
+      startedAt,
+      scannedMessages: 0,
+      indexedMessages: 0,
+      processedConversations: 0,
+      totalConversations: 0,
+      skippedConversations: 0,
+      catchupConversations: 0,
+      backfillConversations: 0,
+      backfillCompletedConversations: 0,
+      mainLoopLagMs: 0
+    }
     const started: KnowledgeRuntimeStatus = {
       ...current,
       state: current.indexedMessageCount ? 'syncing' : 'building',
       processedMessages: 0,
       totalMessages: current.sourceMessageCount,
       estimatedRemainingMs: null,
-      lastError: undefined
+      lastError: undefined,
+      pass: { ...this.passProgress }
     }
     this.publishStatus(started)
     const task = this.indexAccount(accountId)
@@ -243,6 +323,16 @@ export class KnowledgeSearchService {
       })
       .finally(() => {
         this.indexing.delete(accountId)
+        this.stopLagProbe()
+        const finishedPass = this.passProgress
+        if (finishedPass) {
+          // 真实结束状态：取消就是取消，绝不留一个假的 indexing。
+          finishedPass.cancellable = false
+          finishedPass.mainLoopLagMs = this.lagMaxMs
+          if (finishedPass.phase !== 'cancelled' && finishedPass.phase !== 'error') {
+            finishedPass.phase = 'idle'
+          }
+        }
         void this.refreshStatus(accountId).catch(() => undefined)
       })
     this.indexing.set(accountId, task)
@@ -250,6 +340,26 @@ export class KnowledgeSearchService {
       console.warn('[Knowledge] background index failed:', error)
     })
     return started
+  }
+
+  /**
+   * 取消当前正在跑的索引 pass。
+   *
+   * 只中止**索引**（与并发查询是两套独立 Abort scope）；当前 batch 安全收尾、
+   * 已提交会话保留不回滚；`run_state` 落到 `cancelled`，不残留 `indexing`；
+   * 下一次 catch-up / 手动同步从 per-conversation checkpoint 继续，不从头全量重扫。
+   */
+  async cancelCurrentAccountIndex(): Promise<{ cancellable: boolean; cancelled: boolean }> {
+    if (!this.indexing.size) return { cancellable: false, cancelled: false }
+    this.cancelRequested = true
+    if (this.passProgress) this.passProgress.cancellable = false
+    const accountId = this.currentAccountId()
+    if (accountId) {
+      const current = this.statusByAccount.get(accountId)
+      if (current) this.publishStatus({ ...current, pass: this.passSnapshot() })
+    }
+    const cancelled = await this.service.cancelIndex().catch(() => false)
+    return { cancellable: true, cancelled }
   }
 
   /**
@@ -320,8 +430,10 @@ export class KnowledgeSearchService {
   }
 
   async search(request: KnowledgeSearchIpcRequest): Promise<KnowledgeSearchIpcResult> {
+    // 源数据最新活跃时间与索引状态无关，先取一次（零额外 WCDB 调用：读的是已缓存的 Session 列表）。
+    const sourceLatestAt = this.sourceLatestAt()
     const accountId = this.currentAccountId()
-    if (!accountId) return this.searchFallback(request, 'unavailable')
+    if (!accountId) return { ...(await this.searchFallback(request, 'unavailable')), sourceLatestAt }
     try {
       const searchRequest: Omit<KnowledgeSearchRequest, 'databaseRoot'> = {
         accountId,
@@ -339,19 +451,81 @@ export class KnowledgeSearchService {
       // An existing derived database can answer while its next incremental pass is running.
       // Never turn an interactive global search into another full WCDB scan during that pass.
       if (result.state === 'ready' || result.evidence.length) {
-        return this.toKnowledgeResult(result, request.retrievalSessionId)
+        return { ...(await this.toKnowledgeResult(result, request.retrievalSessionId)), sourceLatestAt }
       }
       if (this.indexing.has(accountId)) {
         return {
           ...result,
           source: 'knowledge',
-          totalMessages: result.indexedMessageCount
+          totalMessages: result.indexedMessageCount,
+          sourceLatestAt
         }
       }
-      return this.searchFallback(request, 'unavailable')
+      return { ...(await this.searchFallback(request, 'unavailable')), sourceLatestAt }
     } catch (error) {
       console.warn('[Knowledge] search failed, using legacy fallback:', error)
-      return this.searchFallback(request, 'error')
+      return { ...(await this.searchFallback(request, 'error')), sourceLatestAt }
+    }
+  }
+
+  /**
+   * 源数据最新活跃时间（epoch ms）。派生索引看到不源数据，freshness 判定由它 + `indexLatestAt` 组成。
+   */
+  sourceLatestAt(): number | null {
+    return chat.getSourceLatestActivityMs()
+  }
+
+  /**
+   * 上一遍完整索引 pass 的耗时（ms）。0 表示本进程还没有跑完过一遍。
+   * 调用方用它作为"落后多少才值得再追一遍"的门槛下限，避免在活跃源数据上无限连续索引。
+   */
+  lastPassDurationMs(): number {
+    return this.lastIndexPassMs
+  }
+
+  /** 当前是否有索引任务在跑（用于「复用当前任务」而不是再启动一个）。 */
+  isIndexing(): boolean {
+    // 用 Map 是否为空判断，而不是用当前 accountId 去查：
+    // `currentAccountId()` 会在 `getSelfAccountInfo()` 就绪前后返回不同的值，
+    // 只按单键查会漏掉"其实已经有 pass 在跑"，于是又启动一个（两个 pass 抢同一个派生库）。
+    return this.indexing.size > 0
+  }
+
+  /**
+   * 主动请求一次追赶同步。
+   *
+   * 复用现有增量通道（`startCurrentAccountIndex` 内部是增量的：未变化的会话不会重建分片）；
+   * 如果已经在跑就**不**再启动第二个，并把 `triggered` 标为 false，让调用方知道这是复用。
+   */
+  requestCatchUp(minIntervalMs: number): { triggered: boolean; inProgress: boolean } {
+    const accountId = this.currentAccountId()
+    if (!accountId) return { triggered: false, inProgress: false }
+    if (this.isIndexing()) return { triggered: false, inProgress: true }
+    const now = Date.now()
+    if (now - this.lastCatchUpRequestedAt < minIntervalMs) {
+      return { triggered: false, inProgress: false }
+    }
+    this.lastCatchUpRequestedAt = now
+    this.startCurrentAccountIndex()
+    return { triggered: true, inProgress: this.isIndexing() }
+  }
+
+  /**
+   * 等当前索引任务结束，最多等 `budgetMs`。返回是否已经结束。
+   * 全量追赶可能远超查询预算，所以这里必须是**有界**等待，不能无限阻塞交互查询。
+   */
+  async waitForIndexingComplete(budgetMs: number): Promise<boolean> {
+    const task = this.indexing.values().next().value as Promise<void> | undefined
+    if (!task) return true
+    if (budgetMs <= 0) return false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), budgetMs)
+    })
+    try {
+      return await Promise.race([task.then(() => true, () => true), timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
 
@@ -387,66 +561,244 @@ export class KnowledgeSearchService {
   }
 
   private async indexAccount(accountId: string): Promise<void> {
-    const contacts = await this.listContacts()
-    let processedMessages = 0
+    // 整遍后台索引走 background 通道：交互查询可以插到它前面，不至于被 pass 拖慢。
+    const contacts = await this.listContacts('background')
     const startedAt = Date.now()
+    // 源侧每会话最后活跃时间（零额外 WCDB 调用：直接来自 Session 列表）。
+    const activity = chat.getConversationActivityMs()
+    // 每个会话已经索引到哪（per-conversation checkpoint）。
+    const marks = await this.service
+      .highWaterMarks({ accountId, fts: DEFAULT_KNOWLEDGE_FTS_CONFIG })
+      .catch(() => ({}) as Record<string, number>)
+    // 上一遍记录的源侧边界：被跳过的会话已覆盖到它，不能因为"这一遍没读"而回退。
+    const previouslyCoveredLatestAt =
+      this.statusByAccount.get(accountId)?.indexLatestAt ?? 0
+
+    let scannedMessages = 0
+    let indexedMessages = 0
+    let sourceLatestAt = previouslyCoveredLatestAt
+    let skippedConversations = 0
+    let backfillCompletedConversations = 0
+
+    // 「追最新」与「补历史」是两个工作概念，顺序不能反：
+    // catch-up：已建立 checkpoint、源侧出现新消息 → 用户最关心，排在最前；
+    // backfill：从来没有 checkpoint（历史缺口）→ 必须整段读，排在后面慢慢补。
+    // 这个顺序保证今天的新消息不会被历史缺口堵住。
+    const catchUpContacts: typeof contacts = []
+    const backfillContacts: typeof contacts = []
+    for (const contact of contacts) {
+      const mark = marks[contact.md5]
+      if (mark !== undefined && mark > 0) {
+        const previousActivity = activity.get(contact.md5)
+        // 源侧最后活跃时间不晚于"已经索引到的位置"→ 这个会话没有任何新消息。
+        // 直接跳过：**不读 WCDB、不传 IPC、不写索引**。
+        // 这正是把「一次 pass 处理百万级消息」变成「只处理真正变过的会话」的地方。
+        if (previousActivity !== undefined && previousActivity <= mark) {
+          skippedConversations += 1
+          continue
+        }
+        catchUpContacts.push(contact)
+        continue
+      }
+      // 没有 checkpoint → 没有"已经覆盖到哪"的证据，只能整段读（历史 backfill）。
+      //
+      // 这里**不**用「源侧活动（Session 表）里没有它」推断「它不可能有消息」。
+      // 那确实能省掉读一批空联系人的开销，但只要 Session 表在某次读取里不完整
+      // （或用户删过会话），这个推断就会把一个真有消息的会话变成**永久静默不索引**。
+      // 省下来的时间换不来这个风险。
+      backfillContacts.push(contact)
+    }
+    const orderedContacts = [...catchUpContacts, ...backfillContacts]
+
+    if (this.passProgress) {
+      this.passProgress.totalConversations = contacts.length
+      this.passProgress.startedAt = startedAt
+      this.passProgress.skippedConversations = skippedConversations
+      this.passProgress.catchupConversations = catchUpContacts.length
+      this.passProgress.backfillConversations = backfillContacts.length
+      this.passProgress.backfillCompletedConversations = 0
+      this.passProgress.processedConversations = skippedConversations
+    }
     this.publishStatus({
       ...(this.statusByAccount.get(accountId) || this.emptyStatus(accountId)),
       state: this.statusByAccount.get(accountId)?.indexedMessageCount ? 'syncing' : 'building',
       processedMessages: 0,
       totalMessages: null,
-      estimatedRemainingMs: null
+      estimatedRemainingMs: null,
+      pass: this.passSnapshot()
     })
-    for (const [index, contact] of contacts.entries()) {
+    let cancelled = false
+    for (const [index, contact] of orderedContacts.entries()) {
+      if (this.cancelRequested) {
+        cancelled = true
+        break
+      }
+      // 交互查询进行中就让路：背景索引绝不能把用户查询拖慢（见 beginInteractiveQuery）。
+      await this.interactiveIdle
+      const isBackfill = index >= catchUpContacts.length
+      if (this.passProgress) {
+        this.passProgress.phase = isBackfill ? 'backfill' : 'catchup'
+        this.passProgress.processedConversations = skippedConversations + index
+      }
+      const previousActivity = activity.get(contact.md5)
+      const mark = marks[contact.md5]
       // WCDB rejects overlapping async pagination. Queue every archive read so
       // background indexing and an interactive fallback search can interleave safely.
-      const messages = await this.listMessages(contact.md5)
+      //
+      // delta 读取：已建立 checkpoint 时只读 checkpoint 之后的源消息（外加有界 overlap），
+      // 而不是"从历史开头全扫一遍、再判断哪些已经索引过"。
+      //
+      // ⚠️ 单位契约见 `DELTA_OVERLAP_MS`：checkpoint 是**毫秒**，传给 WCDB 读取层
+      // 必须是**秒**，否则 delta 读会被静默过滤成空。
+      const isDelta = mark !== undefined && mark > 0
+      const sinceTime = isDelta
+        ? Math.max(0, Math.floor((mark - DELTA_OVERLAP_MS) / 1000))
+        : undefined
+      const messages = await this.listMessages(contact.md5, sinceTime, undefined, 'background')
+      scannedMessages += messages.length
+      // 这一遍扫到的源数据最新时间：用**未过滤**的原始消息计算，
+      // 这样「不可建模」的消息（图片/空正文）不会让 freshness 口径偏旧。
+      let conversationLatest = 0
+      for (const message of messages) {
+        const createTime = (message.createTime || 0) * 1000
+        if (createTime > conversationLatest) conversationLatest = createTime
+      }
+      if (conversationLatest > sourceLatestAt) sourceLatestAt = conversationLatest
       const sourceMessages = messages
         .map((message) => this.toSourceMessage(accountId, contact.md5, message))
         .filter((message): message is KnowledgeSourceMessage => Boolean(message))
-      await this.service.index(
+      // 记录**源侧**边界（而不是索引里最后一条可建模消息的时间）：
+      // 否则"最后一条恰好落在图片上"的会话会永远被判成有新消息，增量永远跳不过它。
+      //
+      // 安全阀：delta 范围读**空**、但源侧声称有新消息 → **不推进** checkpoint。
+      // 宁可下一遍重试，也不让"一次可疑的空读"升级成"谎报已覆盖"（那会静默丢消息）。
+      const suspiciousEmptyDelta =
+        isDelta && messages.length === 0 && (previousActivity ?? 0) > (mark ?? 0)
+      const sourceHighWaterTime = suspiciousEmptyDelta
+        ? undefined
+        : Math.max(previousActivity ?? 0, conversationLatest)
+      const result = await this.service.index(
         {
           accountId,
           conversations: [
             {
               conversationId: contact.md5,
-              completeSnapshot: true,
-              messages: sourceMessages
+              // delta 模式下绝不能声明"完整快照"：否则 store 会把"不在 delta 里的历史消息"
+              // 误判为被删除，从而整段重建这个会话，增量就白做了。
+              completeSnapshot: !isDelta,
+              messages: sourceMessages,
+              ...(sourceHighWaterTime && sourceHighWaterTime > 0 ? { sourceHighWaterTime } : {})
             }
           ],
           chunker: DEFAULT_KNOWLEDGE_CHUNKER,
           fts: DEFAULT_KNOWLEDGE_FTS_CONFIG,
+          // 只有「这一遍真的读完了全部会话」（没有任何跳过、没有取消）才写入总量口径，
+          // 否则会把增量 pass 的部分计数冒充成全量。
+          //
+          // 这里数的是真正被建模进索引的源消息，不是"扫到的原始条数"；后者（含不可建模的
+          // 图片/空正文）另走 pass 进度里的 scannedMessages。两个数字回答不同问题。
           sourceMessageCount:
-            index === contacts.length - 1 ? processedMessages + sourceMessages.length : undefined
+            index === orderedContacts.length - 1 && skippedConversations === 0
+              ? indexedMessages + sourceMessages.length
+              : undefined,
+          sourceLatestAt:
+            index === orderedContacts.length - 1 && sourceLatestAt > 0 ? sourceLatestAt : undefined
         },
         (progress) => {
           const current = this.statusByAccount.get(accountId) || this.emptyStatus(accountId)
           this.publishStatus({
             ...current,
             state: current.indexedMessageCount ? 'syncing' : 'building',
-            processedMessages: processedMessages + progress.processedMessages,
+            processedMessages: indexedMessages + progress.processedMessages,
             totalMessages: null,
             currentConversationId: progress.conversationId,
-            estimatedRemainingMs: null
+            estimatedRemainingMs: null,
+            pass: this.passSnapshot()
           })
         }
       )
-      processedMessages += sourceMessages.length
+      if (result.cancelled) {
+        cancelled = true
+        indexedMessages += result.processedMessages
+        break
+      }
+      indexedMessages += sourceMessages.length
+      if (isBackfill) backfillCompletedConversations += 1
+      if (this.passProgress) {
+        this.passProgress.scannedMessages = scannedMessages
+        this.passProgress.indexedMessages = indexedMessages
+        this.passProgress.processedConversations = skippedConversations + index + 1
+        this.passProgress.backfillCompletedConversations = backfillCompletedConversations
+      }
       const current = this.statusByAccount.get(accountId) || this.emptyStatus(accountId)
       this.publishStatus({
         ...current,
         state: current.indexedMessageCount ? 'syncing' : 'building',
-        processedMessages,
+        processedMessages: indexedMessages,
         totalMessages: null,
         currentConversationId: contact.md5,
-        estimatedRemainingMs: null
+        estimatedRemainingMs: null,
+        pass: this.passSnapshot()
       })
     }
+    if (cancelled && this.passProgress) this.passProgress.phase = 'cancelled'
+    // 一遍 pass 一行汇总（低频、只在结束时输出一次）。这些数字同时喂给 UI 的 pass 进度；
+    // lag 输出分位数而不是单点，因为"最大值看着还行"不能说明没有 stall。
+    console.info(
+      `[Knowledge] pass ${cancelled ? 'cancelled' : 'done'} conversations=${contacts.length} ` +
+        `skipped=${skippedConversations} scanned=${scannedMessages} indexed=${indexedMessages} ` +
+        `catchup=${catchUpContacts.length} backfill=${backfillContacts.length}/${backfillCompletedConversations} ` +
+        `elapsedMs=${Date.now() - startedAt} ` +
+        `lagP50=${this.lagStats?.p50 ?? 0} lagP95=${this.lagStats?.p95 ?? 0} ` +
+        `lagP99=${this.lagStats?.p99 ?? 0} lagMax=${this.lagStats?.max ?? this.lagMaxMs} ` +
+        `activityEntries=${activity.size} checkpointMarks=${Object.keys(marks).length}`
+    )
     await this.refreshStatus(accountId, {
-      processedMessages,
-      totalMessages: processedMessages,
+      processedMessages: indexedMessages,
+      totalMessages: null,
       startedAt
     })
+    // 取消的一遍不计入"上一遍耗时"，否则查询侧的门槛会被一次提前结束的 pass 带偏。
+    if (!cancelled) this.lastIndexPassMs = Date.now() - startedAt
+  }
+
+  /** 当前 pass 进度的不可变快照（含实时采样到的主线程滞后）。 */
+  private passSnapshot(): KnowledgePassProgress | undefined {
+    if (!this.passProgress) return undefined
+    // 运行期间也要能读到"此刻为止"的最大滞后，而不是等 pass 结束才有数字。
+    const liveMax = this.lagHistogram ? roundMs(this.lagHistogram.max) : this.lagMaxMs
+    return { ...this.passProgress, mainLoopLagMs: Math.max(liveMax, 0) }
+  }
+
+  /**
+   * 在 pass 开始时启动主线程滞后采样。这是"重活没有压在主线程上"的直接证据。
+   */
+  private startLagProbe(): void {
+    if (this.lagHistogram) return
+    this.lagMaxMs = 0
+    this.lagStats = null
+    try {
+      const histogram = monitorEventLoopDelay({ resolution: LAG_PROBE_RESOLUTION_MS })
+      histogram.enable()
+      this.lagHistogram = histogram
+    } catch {
+      // 采样失败不应该影响索引本身；退化为"没有 lag 数据"。
+      this.lagHistogram = null
+    }
+  }
+
+  private stopLagProbe(): void {
+    const histogram = this.lagHistogram
+    if (!histogram) return
+    histogram.disable()
+    this.lagStats = {
+      p50: roundMs(histogram.percentile(50)),
+      p95: roundMs(histogram.percentile(95)),
+      p99: roundMs(histogram.percentile(99)),
+      max: roundMs(histogram.max)
+    }
+    this.lagMaxMs = Math.max(this.lagMaxMs, this.lagStats.max)
+    this.lagHistogram = null
   }
 
   private async searchFallback(
@@ -502,6 +854,9 @@ export class KnowledgeSearchService {
       state: fallbackReason === 'indexing' ? 'indexing' : 'unavailable',
       indexedMessageCount: 0,
       indexedChunkCount: 0,
+      // fallback 是直接扫源数据，不走派生索引，因此没有索引覆盖口径可言。
+      indexLatestAt: null,
+      sourceLatestAt: this.sourceLatestAt(),
       totalMessages,
       timings: {
         ...emptyKnowledgeSearchTimings(),
@@ -639,6 +994,9 @@ export class KnowledgeSearchService {
       voiceCoverage.voiceCoverageComplete =
         voiceCoverage.voiceMessageCount === voiceCoverage.transcribedVoiceCount
     }
+    const indexLatestParts = partialResults
+      .map((result) => result.indexLatestAt)
+      .filter((value): value is number => typeof value === 'number' && value > 0)
     return {
       state: partialResults.some((result) => result.state === 'ready')
         ? 'ready'
@@ -647,6 +1005,8 @@ export class KnowledgeSearchService {
           : 'unavailable',
       indexedMessageCount: Math.max(...partialResults.map((result) => result.indexedMessageCount)),
       indexedChunkCount: Math.max(...partialResults.map((result) => result.indexedChunkCount)),
+      // 多个分片取最新的那个：只要有一部分索引更新，整体覆盖口径就按它算。
+      indexLatestAt: indexLatestParts.length ? Math.max(...indexLatestParts) : null,
       evidence: mergedEvidence,
       timings,
       voiceCoverage
@@ -680,16 +1040,20 @@ export class KnowledgeSearchService {
     }
   }
 
-  private listContacts(): ReturnType<typeof chat.listContactsAsync> {
-    return this.enqueueWcdbRead(() => chat.listContactsAsync())
+  private listContacts(lane: WcdbReadLane = 'interactive'): ReturnType<typeof chat.listContactsAsync> {
+    return this.enqueueWcdbRead(() => chat.listContactsAsync(), lane)
   }
 
   private listMessages(
     conversationId: string,
     startTime?: number,
-    endTime?: number
+    endTime?: number,
+    lane: WcdbReadLane = 'interactive'
   ): ReturnType<typeof chat.listMessagesAsync> {
-    return this.enqueueWcdbRead(() => chat.listMessagesAsync(conversationId, startTime, endTime))
+    return this.enqueueWcdbRead(
+      () => chat.listMessagesAsync(conversationId, startTime, endTime),
+      lane
+    )
   }
 
   private withVoiceTranscript(message: chat.FormattedMessage): chat.FormattedMessage {
@@ -811,22 +1175,36 @@ export class KnowledgeSearchService {
         wcdbExecutionMs: this.wcdbExecutionMsTotal - beforeExecutionMs
       },
       source: 'knowledge',
-      totalMessages: result.indexedMessageCount
+      totalMessages: result.indexedMessageCount,
+      sourceLatestAt: this.sourceLatestAt()
     }
   }
 
+  /**
+   * Evidence 的 sender 显示名 enrichment。
+   *
+   * 只做「取名字」这一件事：按 conversation 聚合 evidence 真正需要的 wxid（不是整群成员），
+   * 每群一次批量 name lookup（`getGroupMemberNamesAsync`），**不**构造完整 GroupSnapshot、
+   * **不** hydrate 头像 —— 后者会把整群成员的头像一起读出来，为拿几个名字付整群成本。
+   *
+   * 头像不属于 Query Tool 的成本；若 Evidence UI 将来要头像，走 lazy 路径。
+   */
   private async enrichEvidenceSenders(
     evidence: KnowledgeEvidence[],
     retrievalSessionId?: string
   ): Promise<KnowledgeEvidence[]> {
-    const candidateConversationIds = Array.from(
-      new Set(
-        evidence
-          .filter((item) => item.senderId && looksLikeOpaqueSenderId(item.sender))
-          .map((item) => item.conversationId)
-      )
-    ).slice(0, MAX_SENDER_NAME_CONVERSATIONS)
-    if (!candidateConversationIds.length) return evidence
+    // 先按会话聚合需要的 sender，避免"每条 evidence 一次调用"。
+    const wxidsByConversation = new Map<string, Set<string>>()
+    for (const item of evidence) {
+      if (!item.senderId || !looksLikeOpaqueSenderId(item.sender)) continue
+      let bucket = wxidsByConversation.get(item.conversationId)
+      if (!bucket) {
+        bucket = new Set<string>()
+        wxidsByConversation.set(item.conversationId, bucket)
+      }
+      bucket.add(item.senderId)
+    }
+    if (!wxidsByConversation.size) return evidence
 
     const session = retrievalSessionId
       ? this.senderEnrichmentSession(retrievalSessionId)
@@ -836,20 +1214,35 @@ export class KnowledgeSearchService {
     const groupConversationIds = new Set(
       contacts.filter((contact) => contact.type === 'group').map((contact) => contact.md5)
     )
+
+    const candidateConversationIds = Array.from(wxidsByConversation.keys())
+      .filter((conversationId) => groupConversationIds.has(conversationId))
+      .slice(0, MAX_SENDER_NAME_CONVERSATIONS)
+
     const memberNamesByConversation = new Map<string, Map<string, string>>()
     for (const conversationId of candidateConversationIds) {
-      if (!groupConversationIds.has(conversationId)) continue
-      let snapshot = session?.groupSnapshots.get(conversationId)
-      if (!snapshot) {
-        snapshot = await this.enqueueWcdbRead(() => chat.getGroupSnapshotAsync(conversationId))
-        session?.groupSnapshots.set(conversationId, snapshot)
+      const requested = Array.from(wxidsByConversation.get(conversationId) || [])
+      if (!requested.length) continue
+      let memberNames = session?.groupMemberNames.get(conversationId)
+      // 只查缓存里还没有的 wxid —— 同一 session 的后续 probe 因此不会重复读 WCDB。
+      const missing = requested.filter((wxid) => !memberNames?.has(wxid))
+      if (missing.length) {
+        const members = await this.enqueueWcdbRead(() =>
+          chat.getGroupMemberNamesAsync(conversationId, missing)
+        )
+        if (!memberNames) {
+          memberNames = new Map<string, string>()
+          session?.groupMemberNames.set(conversationId, memberNames)
+        }
+        for (const member of members) {
+          memberNames.set(member.wxid, groupMemberDisplayName(member))
+        }
+        // 请求了但没有返回名字的 wxid 也标记为"查过"，避免后续 probe 反复重查。
+        for (const wxid of missing) {
+          if (!memberNames.has(wxid)) memberNames.set(wxid, '')
+        }
       }
-      const memberNames = new Map(
-        (snapshot?.members || [])
-          .map((member) => [member.wxid, groupMemberDisplayName(member)] as const)
-          .filter(([, name]) => Boolean(name))
-      )
-      if (memberNames.size) memberNamesByConversation.set(conversationId, memberNames)
+      if (memberNames?.size) memberNamesByConversation.set(conversationId, memberNames)
     }
 
     return evidence.map((item) => {
@@ -867,7 +1260,7 @@ export class KnowledgeSearchService {
     }
     let session = this.senderEnrichmentSessions.get(retrievalSessionId)
     if (!session) {
-      session = { lastUsedAt: now, groupSnapshots: new Map() }
+      session = { lastUsedAt: now, groupMemberNames: new Map() }
       this.senderEnrichmentSessions.set(retrievalSessionId, session)
     }
     session.lastUsedAt = now
@@ -879,24 +1272,76 @@ export class KnowledgeSearchService {
     return session
   }
 
-  private enqueueWcdbRead<T>(operation: () => Promise<T>): Promise<T> {
-    const enqueuedAt = Date.now()
-    const run = async (): Promise<T> => {
-      const startedAt = Date.now()
-      this.wcdbQueueMsTotal += Math.max(0, startedAt - enqueuedAt)
-      try {
-        return await operation()
-      } finally {
-        this.wcdbExecutionMsTotal += Date.now() - startedAt
-      }
+  /**
+   * 交互查询进行中：后台索引会让路。
+   *
+   * 追赶同步会自动遍历上千个会话；如果不让路，一次用户查询会和后台 pass 抢同一个
+   * Worker 与 WCDB 读取通道，被拖到几十秒 —— 查询不能因为索引 backlog 卡住。
+   */
+  beginInteractiveQuery(): void {
+    if (this.interactiveQueryDepth === 0) {
+      this.interactiveIdle = new Promise<void>((resolve) => {
+        this.interactiveIdleResolve = resolve
+      })
     }
-    const result = this.wcdbReadTail.then(run, run)
-    // Keep the queue usable after a read failure while returning that failure to its caller.
-    this.wcdbReadTail = result.then(
-      () => undefined,
-      () => undefined
-    )
-    return result
+    this.interactiveQueryDepth += 1
+  }
+
+  endInteractiveQuery(): void {
+    this.interactiveQueryDepth = Math.max(0, this.interactiveQueryDepth - 1)
+    if (this.interactiveQueryDepth === 0) {
+      this.interactiveIdleResolve?.()
+      this.interactiveIdleResolve = null
+    }
+  }
+
+  /**
+   * WCDB 异步分页不允许重叠，所有会话读取都必须串行。
+   *
+   * 但**后台索引**与**交互查询**不能同权排队：追赶同步会在后台遍历上千个会话，
+   * 交互读取排在它后面就会被拖成几十秒。因此分两条通道，交互读取优先于尚未开始的后台读取；
+   * 交互查询最多只等"一个正在执行的读"（WCDB 不允许重叠，这点无法避免）。
+   */
+  private enqueueWcdbRead<T>(operation: () => Promise<T>, lane: WcdbReadLane = 'interactive'): Promise<T> {
+    const enqueuedAt = Date.now()
+    return new Promise<T>((resolve, reject) => {
+      const pending: PendingWcdbRead = {
+        high: lane === 'interactive',
+        run: async () => {
+          const startedAt = Date.now()
+          this.wcdbQueueMsTotal += Math.max(0, startedAt - enqueuedAt)
+          try {
+            return await operation()
+          } finally {
+            this.wcdbExecutionMsTotal += Date.now() - startedAt
+          }
+        },
+        resolve: resolve as (value: unknown) => void,
+        reject
+      }
+      if (pending.high) {
+        const firstBackground = this.wcdbPending.findIndex((item) => !item.high)
+        if (firstBackground < 0) this.wcdbPending.push(pending)
+        else this.wcdbPending.splice(firstBackground, 0, pending)
+      } else {
+        this.wcdbPending.push(pending)
+      }
+      this.drainWcdbReads()
+    })
+  }
+
+  private drainWcdbReads(): void {
+    if (this.wcdbReadBusy) return
+    const next = this.wcdbPending.shift()
+    if (!next) return
+    this.wcdbReadBusy = true
+    void next
+      .run()
+      .then(next.resolve, next.reject)
+      .finally(() => {
+        this.wcdbReadBusy = false
+        this.drainWcdbReads()
+      })
   }
 
   private emptyStatus(accountId: string): KnowledgeRuntimeStatus {
@@ -911,7 +1356,10 @@ export class KnowledgeSearchService {
       estimatedRemainingMs: null,
       databaseBytes: 0,
       walBytes: 0,
-      shmBytes: 0
+      shmBytes: 0,
+      indexLatestAt: null,
+      sourceLatestAt: null,
+      pass: this.passSnapshot()
     }
   }
 
@@ -924,20 +1372,29 @@ export class KnowledgeSearchService {
     const remote = await this.service.status({ accountId, fts: DEFAULT_KNOWLEDGE_FTS_CONFIG })
     const current = this.statusByAccount.get(accountId)
     const indexing = this.indexing.has(accountId)
+    const pass = this.passProgress
     const processedMessages =
       progress?.processedMessages ?? current?.processedMessages ?? remote.processedMessages
     const totalMessages = progress?.totalMessages ?? remote.sourceMessageCount
-    const state = indexing
+    // 一遍 pass 结束后，worker 只知道「派生库能不能查」，不知道这一遍是**被取消**还是**出错**。
+    // 这两个语义只在这里有（worker 侧的 run_state 已经落库），所以由本地 pass 覆盖，
+    // 避免取消之后又冒充成一个干净的 ready。
+    const state: KnowledgeRuntimeState = indexing
       ? remote.indexedMessageCount > 0
         ? 'syncing'
         : 'building'
-      : remote.state
+      : pass && (pass.phase === 'cancelled' || pass.phase === 'error')
+        ? pass.phase
+        : remote.state
     const status: KnowledgeRuntimeStatus = {
       ...remote,
       state,
       processedMessages,
       totalMessages,
-      estimatedRemainingMs: null
+      estimatedRemainingMs: null,
+      // 派生库自己看不到源数据；这里补上源侧最新活跃时间，UI 才能区分 READY 与 FRESH。
+      sourceLatestAt: this.sourceLatestAt(),
+      pass: this.passSnapshot()
     }
     this.publishStatus(status)
     return status
