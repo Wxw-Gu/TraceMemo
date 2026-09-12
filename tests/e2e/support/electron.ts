@@ -22,6 +22,7 @@ export async function launchTestApp(
     aiFailure?: string
     updateSimulation?: boolean
     unsignedMacUpdate?: boolean
+    realtimeReorder?: boolean
     now?: number
     appearanceTheme?: 'light' | 'dark'
     stableUserData?: string
@@ -52,6 +53,7 @@ export async function launchTestApp(
       WXE_E2E_AI_FAILURE: options.aiFailure || '',
       WXE_E2E_UPDATE_SIMULATION: options.updateSimulation ? '1' : '0',
       WXE_E2E_UNSIGNED_MAC_UPDATE: options.unsignedMacUpdate ? '1' : '0',
+      WXE_E2E_REALTIME_REORDER: options.realtimeReorder ? '1' : '0',
       WXE_E2E_NOW_MS: options.now ? String(options.now) : '',
       WXE_E2E_APPEARANCE_THEME: options.appearanceTheme || 'light'
     }

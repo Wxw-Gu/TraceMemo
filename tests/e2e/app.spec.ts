@@ -276,6 +276,69 @@ test('CHAT-REALTIME-01 archive refreshes from a native message-shard event', asy
   }
 })
 
+test('CHAT-REALTIME-02 refreshes and reorders conversations without losing selection or filter', async () => {
+  const fixture = await launchTestApp({ realtimeReorder: true })
+  try {
+    const names = fixture.page.locator('.conversation-item-name')
+    await expect(names).toHaveText(['产品测试群', '自动刷新 B', '自动刷新 A'])
+
+    await fixture.page.getByRole('button', { name: /自动刷新 A/ }).click()
+    await fixture.page.getByRole('searchbox', { name: '搜索会话' }).fill('自动刷新')
+    await expect(fixture.page.getByRole('searchbox', { name: '搜索会话' })).toHaveValue('自动刷新')
+    await expect(fixture.page.locator('.conversation-item-name')).toHaveText([
+      '自动刷新 B',
+      '自动刷新 A',
+      '自动刷新 D',
+      '自动刷新 C'
+    ])
+
+    const readsBeforeMessage = await fixture.page.evaluate(() =>
+      window.electron.ipcRenderer.invoke('test:getContactReadCount')
+    )
+    await fixture.page.evaluate(() =>
+      window.electron.ipcRenderer.invoke('test:messageChange', {
+        reorderContactMd5: 'realtime-group-a-md5',
+        event: { db: 'message_0.db', table: 'message', action: 'insert' }
+      })
+    )
+    await expect
+      .poll(async () => fixture.page.locator('.conversation-item-name').allTextContents())
+      .toEqual(['自动刷新 A', '自动刷新 B', '自动刷新 D', '自动刷新 C'])
+    expect(await fixture.page.getByRole('searchbox', { name: '搜索会话' }).inputValue()).toBe(
+      '自动刷新'
+    )
+    await expect(
+      fixture.page.locator('.conversation-item.active .conversation-item-name')
+    ).toHaveText('自动刷新 A')
+
+    const readsAfterSingleMessage = await fixture.page.evaluate(() =>
+      window.electron.ipcRenderer.invoke('test:getContactReadCount')
+    )
+    expect(readsAfterSingleMessage - readsBeforeMessage).toBe(1)
+
+    await Promise.all(
+      Array.from({ length: 50 }, () =>
+        fixture.page.evaluate(() =>
+          window.electron.ipcRenderer.invoke('test:messageChange', {
+            reorderContactMd5: 'realtime-direct-c-md5',
+            event: { db: 'message_0.db', table: 'message', action: 'insert' }
+          })
+        )
+      )
+    )
+    await expect
+      .poll(async () => fixture.page.locator('.conversation-item-name').allTextContents())
+      .toEqual(['自动刷新 A', '自动刷新 B', '自动刷新 C', '自动刷新 D'])
+    const readsAfterBurst = await fixture.page.evaluate(() =>
+      window.electron.ipcRenderer.invoke('test:getContactReadCount')
+    )
+    expect(readsAfterBurst - readsAfterSingleMessage).toBe(1)
+    await expect(fixture.page.locator('.conversation-item-name')).toHaveCount(4)
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('CHAT-02 personal WeChat send dialog is keyboard-safe and fits the viewport', async () => {
   test.skip(process.platform !== 'darwin', 'Personal WeChat sending is currently macOS-only')
   const fixture = await launchTestApp()

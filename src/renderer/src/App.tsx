@@ -85,6 +85,13 @@ interface SelfInfo {
   accountRoot: string
 }
 
+interface ContactLoadOptions {
+  waitForAvatars?: boolean
+  onProgress?: (message: string, percent?: number) => void
+  filterKeyword?: string
+  skipAvatarHydration?: boolean
+}
+
 const MAC_KEY_FAQ_URL = 'https://github.com/Wxw-Gu/TraceMemo/blob/main/docs/mac-disable-sip.md'
 const FIRST_USE_WELCOME_SEEN_KEY = 'wxe_first_use_welcome_seen'
 const MESSAGE_MONITOR_DEBOUNCE_MS = 350
@@ -440,6 +447,11 @@ function App(): React.ReactElement {
   }, [])
   const selectedContactMd5Ref = React.useRef<string>('')
   const contactAvatarHydrationRunRef = React.useRef(0)
+  const contactLoadRequestRef = React.useRef(0)
+  const contactSearchTermRef = React.useRef('')
+  const loadContactsRef = React.useRef<((options?: ContactLoadOptions) => Promise<void>) | null>(
+    null
+  )
   const reportGeneration = useGroupReportGeneration({
     sourceContact: reportSourceContact,
     summaryDateRange,
@@ -600,18 +612,21 @@ function App(): React.ReactElement {
     }
   }
 
-  const loadContacts = async (options?: {
-    waitForAvatars?: boolean
-    onProgress?: (message: string, percent?: number) => void
-    filterKeyword?: string
-  }): Promise<void> => {
+  const loadContacts = async (options?: ContactLoadOptions): Promise<void> => {
+    const requestId = ++contactLoadRequestRef.current
     options?.onProgress?.('正在加载联系人...', 35)
     const list = await window.api.getContacts()
+    if (requestId !== contactLoadRequestRef.current) return
     setContacts(list)
     setFilteredContacts(
       filterContactSearchIndex(buildContactSearchIndex(list), options?.filterKeyword || '')
     )
+    setSelectedContact((current) => {
+      if (!current) return current
+      return list.find((contact) => contact.md5 === current.md5) || current
+    })
     const runId = ++contactAvatarHydrationRunRef.current
+    if (options?.skipAvatarHydration) return
     const hydrate = (): Promise<void> => hydrateContactAvatars(list, runId, options?.onProgress)
     if (options?.waitForAvatars) {
       await hydrate()
@@ -621,6 +636,8 @@ function App(): React.ReactElement {
       }, 1500)
     }
   }
+
+  loadContactsRef.current = loadContacts
 
   const hydrateContactAvatars = async (
     list: Contact[],
@@ -1137,6 +1154,9 @@ function App(): React.ReactElement {
   }
 
   const handleReturnToLogin = (): void => {
+    contactLoadRequestRef.current += 1
+    contactAvatarHydrationRunRef.current += 1
+    contactSearchTermRef.current = ''
     setIsAuthenticated(false)
     setIsDatabaseConnected(false)
     setIsDatabaseConnecting(false)
@@ -1159,6 +1179,9 @@ function App(): React.ReactElement {
 
   const handleSwitchAccount = async (account: WechatAccountCandidate): Promise<void> => {
     connectionOperationRef.current += 1
+    contactLoadRequestRef.current += 1
+    contactAvatarHydrationRunRef.current += 1
+    contactSearchTermRef.current = ''
     await window.api.disconnectDb({ closeNative: true })
     setIsAuthenticated(false)
     setIsDatabaseConnected(false)
@@ -1483,11 +1506,69 @@ function App(): React.ReactElement {
     mergeSyntheticMessages
   ])
 
+  React.useEffect(() => {
+    if (!isAuthenticated || !isNativeMonitorActive) return
+
+    let disposed = false
+    let refreshTimer: number | null = null
+    let refreshInFlight = false
+    let refreshQueued = false
+
+    const refreshContactList = async (): Promise<void> => {
+      if (disposed) return
+      if (refreshInFlight) {
+        refreshQueued = true
+        return
+      }
+      refreshInFlight = true
+      try {
+        await loadContactsRef.current?.({
+          filterKeyword: contactSearchTermRef.current,
+          skipAvatarHydration: true
+        })
+      } catch (error) {
+        if (!disposed) console.warn('[ContactMonitor] 刷新会话列表失败:', error)
+      } finally {
+        refreshInFlight = false
+        if (refreshQueued && !disposed) {
+          refreshQueued = false
+          if (refreshTimer) window.clearTimeout(refreshTimer)
+          refreshTimer = window.setTimeout(() => {
+            refreshTimer = null
+            void refreshContactList()
+          }, MESSAGE_MONITOR_DEBOUNCE_MS)
+        }
+      }
+    }
+
+    const scheduleContactRefresh = (): void => {
+      if (disposed) return
+      if (refreshTimer) window.clearTimeout(refreshTimer)
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null
+        void refreshContactList()
+      }, MESSAGE_MONITOR_DEBOUNCE_MS)
+    }
+
+    const unsubscribe = window.api.onWcdbChange(({ json }) => {
+      if (!isRelevantMessageMonitorEvent(json)) return
+      scheduleContactRefresh()
+    })
+
+    return () => {
+      disposed = true
+      if (refreshTimer) window.clearTimeout(refreshTimer)
+      unsubscribe()
+    }
+  }, [isAuthenticated, isNativeMonitorActive])
+
   const handleSearchContacts = (keyword: string): void => {
+    contactSearchTermRef.current = keyword
     setFilteredContacts(filterContactList(contactSearchIndex, keyword))
   }
 
   const handleRefreshContacts = async (filterKeyword: string): Promise<void> => {
+    contactSearchTermRef.current = filterKeyword
     try {
       await loadContacts({ waitForAvatars: false, filterKeyword })
       setReportNotice('会话列表已刷新')

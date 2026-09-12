@@ -230,12 +230,41 @@ for (let index = 0; index < extraContacts; index += 1) {
     type: index % 5 === 0 ? 'group' : 'user'
   })
 }
+if (process.env.WXE_E2E_REALTIME_REORDER === '1') {
+  contacts.push(
+    {
+      m_nsUsrName: 'realtime_group_b@chatroom',
+      m_nsNickName: '自动刷新 B',
+      md5: 'realtime-group-b-md5',
+      type: 'group'
+    },
+    {
+      m_nsUsrName: 'realtime_group_a@chatroom',
+      m_nsNickName: '自动刷新 A',
+      md5: 'realtime-group-a-md5',
+      type: 'group'
+    },
+    {
+      m_nsUsrName: 'realtime_direct_d',
+      m_nsNickName: '自动刷新 D',
+      md5: 'realtime-direct-d-md5',
+      type: 'user'
+    },
+    {
+      m_nsUsrName: 'realtime_direct_c',
+      m_nsNickName: '自动刷新 C',
+      md5: 'realtime-direct-c-md5',
+      type: 'user'
+    }
+  )
+}
 
 const handlers = new Map()
 const handle = (channel, fn) => {
   handlers.set(channel, fn)
   ipcMain.handle(channel, async (event, ...args) => fn(...args))
 }
+let contactReadCount = 0
 
 const groupExitEvent = {
   id: 'fixture-exit-event',
@@ -658,11 +687,13 @@ handle('db:getBootstrapCache', () =>
   process.env.WXE_E2E_CORRUPT_CACHE === '1' ? null : startupCache()
 )
 handle('db:getContacts', (filter) => {
+  contactReadCount += 1
   const query = String(filter || '').toLowerCase()
   return query
     ? contacts.filter((contact) => contact.m_nsNickName.toLowerCase().includes(query))
     : contacts
 })
+handle('test:getContactReadCount', () => contactReadCount)
 handle('db:getContactAvatars', (usernames) =>
   Object.fromEntries(
     contacts
@@ -689,6 +720,14 @@ handle('test:messageChange', (payload = {}) => {
   const message = payload.message
   if (md5 && message && Array.isArray(fixture.messages[md5])) {
     fixture.messages[md5].push(message)
+  }
+  const reorderContactMd5 = String(payload.reorderContactMd5 || '')
+  if (reorderContactMd5) {
+    const index = contacts.findIndex((contact) => contact.md5 === reorderContactMd5)
+    if (index >= 0) {
+      const [contact] = contacts.splice(index, 1)
+      contacts.unshift(contact)
+    }
   }
   const event = payload.event || { db: 'message_0.db', table: 'message', action: 'update' }
   const json = typeof event === 'string' ? event : JSON.stringify(event)
