@@ -1,6 +1,7 @@
 import type { Contact, Message } from '../../../../shared/types'
 import type { ExportFormat, GroupMemberName } from './exportTypes'
 import { resolveMemberName } from '../../../../shared/member-names'
+import { displayContactName } from '../../../../shared/contact-name'
 
 export const messageKinds = [
   ['text', '文字'],
@@ -24,7 +25,7 @@ export const formatLabels: Record<ExportFormat, { label: string; hint?: string }
 export const formatOrder: ExportFormat[] = ['csv', 'html', 'json', 'markdown']
 
 export function displayName(contact: Contact | null): string {
-  return contact?.m_nsNickName || contact?.m_nsUsrName || '未选择会话'
+  return displayContactName(contact, '未选择会话')
 }
 
 export function formatPreviewTime(message: Message): string {

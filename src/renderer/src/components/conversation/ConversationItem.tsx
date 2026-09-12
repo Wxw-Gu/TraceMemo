@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { Contact } from '../../../../shared/types'
+import { displayContactName } from '../../../../shared/contact-name'
 
 interface ConversationItemProps {
   contact: Contact
@@ -12,10 +13,9 @@ export function ConversationItem({
   active,
   onSelect
 }: ConversationItemProps): React.ReactElement {
-  const nickname = contact.m_nsNickName?.trim()
   const avatarUsername = contact.m_nsUsrName
   const internalWxid = contact.wxid || avatarUsername
-  const displayName = nickname || internalWxid || '未命名会话'
+  const displayName = displayContactName(contact, '未命名会话')
   const initial = (displayName || internalWxid || '?').charAt(0)
   const [repairedAvatar, setRepairedAvatar] = useState<{
     username: string

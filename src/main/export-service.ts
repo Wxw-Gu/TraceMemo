@@ -25,11 +25,12 @@ import { mergeCachedSelfInfo, type CachedSelfInfo } from './services/bootstrap-c
 import type { VoiceRecognitionUseCase } from './voice-pipeline/voice-recognition-use-case'
 import { imageFileQuality } from '../shared/image-quality'
 import { resolveMemberName } from '../shared/member-names'
+import { filesystemSafeName } from '../shared/contact-name'
 
 const jobs = new Set<string>()
 const activeArchives = new Map<string, Archiver>()
-const safeFilePart = (value: string): string =>
-  value.replace(/[\\/:*?"<>|]/g, '_').trim() || '聊天档案'
+const safeFilePart = (value: string, fallback = '聊天档案'): string =>
+  filesystemSafeName(value, fallback)
 const copyWritableExportFile = async (source: string, destination: string): Promise<void> => {
   try {
     await fs.chmod(destination, 0o644)
@@ -643,6 +644,7 @@ const kindOf = (message: Message): ExportMessageKind => {
   return 'text'
 }
 const csv = (value: unknown): string => `"${String(value ?? '').replace(/"/g, '""')}"`
+const csvBom = '\uFEFF'
 
 function render(format: ExportRequest['format'], messages: Message[], name: string): string {
   if (format === 'html') return renderExportPage(name)
@@ -650,7 +652,7 @@ function render(format: ExportRequest['format'], messages: Message[], name: stri
     return JSON.stringify({ name, exportedAt: new Date().toISOString(), messages }, null, 2)
   if (format === 'markdown')
     return `# ${name}\n\n${messages.map((m) => `**${m.name || (m.isSender ? '我' : '联系人')}** · ${m.datetime}\n\n${m.content || `[${m.type}]`}${m.exportMediaUrl || m.voiceDataUrl || m.exportMediaError ? `\n\n媒体：${m.exportMediaUrl || m.voiceDataUrl || m.exportMediaError}` : ''}\n`).join('\n')}`
-  return [
+  return csvBom + [
     '时间,发送者,类型,内容,媒体路径,媒体状态',
     ...messages.map((m) =>
       [
@@ -664,7 +666,7 @@ function render(format: ExportRequest['format'], messages: Message[], name: stri
         .map(csv)
         .join(',')
     )
-  ].join('\n')
+  ].join('\r\n')
 }
 
 interface SingleExportOptions {
@@ -681,6 +683,8 @@ interface AllExportManifestEntry {
   type: ExportTarget['type']
   folder: string
   messageCount: number
+  status: 'completed' | 'failed'
+  error?: string
 }
 
 const writeAllExportManifest = async (
@@ -1086,7 +1090,10 @@ async function runSingleExport(
       }
       const voiceService =
         request.includeMedia && chat.getChatDb()
-          ? new VoiceService(chat.getChatDb()!.getWcdb4Client())
+          ? new VoiceService(
+              chat.getChatDb()!.getWcdb4Client(),
+              chat.getChatDb()!.getWcdb4Client().getAccountRoot()
+            )
           : null
       const voiceMessages = messages.filter((message) => kindOf(message) === 'voice')
       const voicePhase = request.includeVoiceTranscripts ? 'transcribing' : 'media'
@@ -1635,6 +1642,8 @@ async function runAllExport(
   let outputDir = ''
   const manifest: AllExportManifestEntry[] = []
   let totalMessages = 0
+  let failedCount = 0
+  const failureMessages: string[] = []
   try {
     const targets = [...(request.targets || [])].sort((left, right) =>
       left.type === right.type ? 0 : left.type === 'group' ? -1 : 1
@@ -1667,80 +1676,121 @@ async function runAllExport(
       const categoryName = target.type === 'group' ? '群聊' : '联系人'
       const categoryDir = join(outputDir, categoryName)
       const folderName = folderNames.get(target.userMd5) || safeFilePart(target.name)
-      await fs.mkdir(categoryDir, { recursive: true })
-      const conversationOutputRoot =
-        request.format === 'html' ? categoryDir : join(categoryDir, folderName)
-      const basePercent = Math.floor((targetIndex / targets.length) * 100)
-      send({
-        jobId: request.jobId,
-        phase: 'reading',
-        processed: 0,
-        percent: basePercent,
-        currentTargetIndex: targetIndex + 1,
-        currentTargetCount: targets.length,
-        currentTargetName: target.name,
-        currentTargetType: target.type
-      })
+      const folder = `${categoryName}/${folderName}`
+      let result: ExportResult
+      try {
+        await fs.mkdir(categoryDir, { recursive: true })
+        const conversationOutputRoot =
+          request.format === 'html' ? categoryDir : join(categoryDir, folderName)
+        const basePercent = Math.floor((targetIndex / targets.length) * 100)
+        send({
+          jobId: request.jobId,
+          phase: 'reading',
+          processed: 0,
+          percent: basePercent,
+          currentTargetIndex: targetIndex + 1,
+          currentTargetCount: targets.length,
+          currentTargetName: target.name,
+          currentTargetType: target.type
+        })
 
-      const result = await runSingleExport(
-        {
-          ...request,
-          targets: [target],
-          outputName: target.name,
-          zip: false
-        },
-        win,
-        voiceRecognition,
-        {
-          outputRoot: conversationOutputRoot,
-          outputFolderName: request.format === 'html' ? folderName : undefined,
-          manageJob: false,
-          selfInfo,
-          sendProgress: (childProgress) => {
-            const childPercent = Math.max(0, Math.min(100, childProgress.percent || 0))
-            const percent = Math.min(
-              99,
-              Math.floor(((targetIndex + childPercent / 100) / targets.length) * 100)
-            )
-            const phase = childProgress.phase === 'completed' ? 'writing' : childProgress.phase
-            const now = Date.now()
-            const progressKey = `${targetIndex}:${phase}:${percent}`
-            const terminal = phase === 'failed' || phase === 'cancelled'
-            if (!terminal && progressKey === lastProgressKey && now - lastProgressAt < 500) return
-            lastProgressKey = progressKey
-            lastProgressAt = now
-            send({
-              ...childProgress,
-              jobId: request.jobId,
-              phase,
-              percent,
-              outputPath: undefined,
-              currentTargetIndex: targetIndex + 1,
-              currentTargetCount: targets.length,
-              currentTargetName: target.name,
-              currentTargetType: target.type
-            })
+        result = await runSingleExport(
+          {
+            ...request,
+            targets: [target],
+            outputName: target.name,
+            zip: false
+          },
+          win,
+          voiceRecognition,
+          {
+            outputRoot: conversationOutputRoot,
+            outputFolderName: request.format === 'html' ? folderName : undefined,
+            manageJob: false,
+            selfInfo,
+            sendProgress: (childProgress) => {
+              const childPercent = Math.max(0, Math.min(100, childProgress.percent || 0))
+              const percent = Math.min(
+                99,
+                Math.floor(((targetIndex + childPercent / 100) / targets.length) * 100)
+              )
+              const phase = childProgress.phase === 'completed' ? 'writing' : childProgress.phase
+              const now = Date.now()
+              const progressKey = `${targetIndex}:${phase}:${percent}`
+              const terminal = phase === 'failed' || phase === 'cancelled'
+              if (!terminal && progressKey === lastProgressKey && now - lastProgressAt < 500) return
+              lastProgressKey = progressKey
+              lastProgressAt = now
+              send({
+                ...childProgress,
+                jobId: request.jobId,
+                phase,
+                percent,
+                outputPath: undefined,
+                currentTargetIndex: targetIndex + 1,
+                currentTargetCount: targets.length,
+                currentTargetName: target.name,
+                currentTargetType: target.type
+              })
+            }
           }
-        }
-      )
-      if (!result.success) {
-        if (result.error === '已取消') throw new Error('已取消')
-        throw new Error(`${target.name}：${result.error || '导出失败'}`)
+        )
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (message === '已取消' || !jobs.has(request.jobId)) throw new Error('已取消')
+        result = { success: false, error: message }
       }
 
-      const messageCount = result.messageCount || 0
-      totalMessages += messageCount
-      manifest.push({
-        id: target.userMd5,
-        name: target.name,
-        type: target.type,
-        folder: `${categoryName}/${folderName}`,
-        messageCount
-      })
+      if (!result.success) {
+        if (result.error === '已取消' || !jobs.has(request.jobId)) throw new Error('已取消')
+        const error = `${target.name}：${result.error || '导出失败'}`
+        failedCount += 1
+        failureMessages.push(error)
+        manifest.push({
+          id: target.userMd5,
+          name: target.name,
+          type: target.type,
+          folder,
+          messageCount: 0,
+          status: 'failed',
+          error: result.error || '导出失败'
+        })
+        const failedPercent = Math.min(
+          99,
+          Math.floor(((targetIndex + 1) / targets.length) * 100)
+        )
+        send({
+          jobId: request.jobId,
+          phase: 'failed',
+          processed: totalMessages,
+          total: totalMessages,
+          percent: failedPercent,
+          error,
+          currentTargetIndex: targetIndex + 1,
+          currentTargetCount: targets.length,
+          currentTargetName: target.name,
+          currentTargetType: target.type
+        })
+      } else {
+        const messageCount = result.messageCount || 0
+        totalMessages += messageCount
+        manifest.push({
+          id: target.userMd5,
+          name: target.name,
+          type: target.type,
+          folder,
+          messageCount,
+          status: 'completed'
+        })
+      }
       await writeAllExportManifest(outputDir, manifest, totalMessages, 'running')
     }
 
-    await writeAllExportManifest(outputDir, manifest, totalMessages, 'completed')
+    const finalStatus = failedCount ? 'failed' : 'completed'
+    const finalError = failedCount
+      ? `全部导出完成：成功 ${targets.length - failedCount} 个，失败 ${failedCount} 个。${failureMessages.join('；')}`
+      : undefined
+    await writeAllExportManifest(outputDir, manifest, totalMessages, finalStatus, finalError)
 
     let completedPath = outputDir
     if (request.zip) {
@@ -1759,17 +1809,23 @@ async function runAllExport(
 
     send({
       jobId: request.jobId,
-      phase: 'completed',
+      phase: failedCount ? 'failed' : 'completed',
       processed: totalMessages,
       total: totalMessages,
       percent: 100,
+      error: finalError,
       outputPath: completedPath,
       currentTargetIndex: targets.length,
       currentTargetCount: targets.length,
       currentTargetName: targets.at(-1)?.name,
       currentTargetType: targets.at(-1)?.type
     })
-    return { success: true, outputPath: completedPath, messageCount: totalMessages }
+    return {
+      success: failedCount === 0,
+      outputPath: completedPath,
+      messageCount: totalMessages,
+      ...(finalError ? { error: finalError } : {})
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const cancelled = !jobs.has(request.jobId) || message === '已取消'

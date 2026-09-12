@@ -329,6 +329,32 @@ body {
   color: var(--accent);
 }
 .timeline-month small { color: inherit; }
+.timeline-month-entry { display: grid; gap: 2px; }
+.timeline-days {
+  display: grid;
+  gap: 1px;
+  margin: 0 0 4px 11px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.timeline-days[hidden] { display: none; }
+.timeline-day {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 7px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+}
+.timeline-day:hover, .timeline-day.active { background: var(--accent-soft); color: var(--accent); }
+.timeline-day small { color: inherit; }
 .scroll { width: 100%; max-width: 100%; overflow: auto; min-width: 0; padding: 10px 8px 36px; }
 .lazy-hint {
   width: min(100%, 820px);
@@ -787,6 +813,23 @@ body {
   }
   .timeline-months { display: flex; gap: 6px; }
   .timeline-months[hidden] { display: none; }
+  .timeline-month-entry { display: grid; gap: 2px; }
+  .timeline-days {
+    display: flex;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    border-left: 0;
+  }
+  .timeline-days[hidden] { display: none; }
+  .timeline-day {
+    width: auto;
+    flex: 0 0 auto;
+    border-bottom: 2px solid transparent;
+    padding: 5px 6px;
+    white-space: nowrap;
+  }
+  .timeline-day:hover, .timeline-day.active { border-bottom-color: var(--accent); }
   .timeline-month {
     flex: 0 0 auto;
     width: auto;
@@ -879,6 +922,9 @@ const renderExportScript = (name: string): string => `
   let scrollLoadSuppressed = false
   let activeMonthUpdatePending = false
   let expandedTimelineYear = ''
+  let expandedTimelineMonth = ''
+  let selectedTimelineMonth = ''
+  let selectedTimelineDate = ''
   const tabPositions = new Map()
   let lastScrollTop = 0
   let zoom = 1
@@ -940,6 +986,13 @@ const renderExportScript = (name: string): string => `
     if (!timestamp) return 'unknown'
     const date = new Date(timestamp * 1000)
     return date.getFullYear() + '-' + pad(date.getMonth() + 1)
+  }
+  const dateKey = (message) => {
+    const timestamp = Number(message.createTime || 0)
+    if (!timestamp) return 'unknown'
+    const date = new Date(timestamp * 1000)
+    if (Number.isNaN(date.getTime())) return 'unknown'
+    return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate())
   }
   const kindOf = (message) => {
     const data = message.contentData || {}
@@ -1317,6 +1370,15 @@ const renderExportScript = (name: string): string => `
       if (months) months.hidden = !expanded
     })
   }
+  const setExpandedTimelineMonth = (month) => {
+    expandedTimelineMonth = month || ''
+    timeline.querySelectorAll('.timeline-month').forEach((button) => {
+      const expanded = button.dataset.month === expandedTimelineMonth
+      button.setAttribute('aria-expanded', String(expanded))
+      const days = button.nextElementSibling
+      if (days) days.hidden = !expanded
+    })
+  }
   const renderTimeline = () => {
     if (filtered.length === 0) {
       expandedTimelineYear = ''
@@ -1327,17 +1389,35 @@ const renderExportScript = (name: string): string => `
     for (const message of filtered) {
       const key = monthKey(message)
       if (key === 'unknown') continue
-      groups.set(key, (groups.get(key) || 0) + 1)
+      const date = dateKey(message)
+      const group = groups.get(key) || { total: 0, days: new Map() }
+      group.total += 1
+      if (date !== 'unknown') group.days.set(date, (group.days.get(date) || 0) + 1)
+      groups.set(key, group)
     }
     const yearGroups = new Map()
-    for (const [key, total] of groups) {
+    for (const [key, group] of groups) {
       const parts = key.split('-')
       if (!yearGroups.has(parts[0])) yearGroups.set(parts[0], [])
-      yearGroups.get(parts[0]).push({ key, month: Number(parts[1]), total })
+      yearGroups.get(parts[0]).push({
+        key,
+        month: Number(parts[1]),
+        total: group.total,
+        days: Array.from(group.days.entries())
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([date, total]) => ({ date, day: Number(date.slice(-2)), total }))
+      })
     }
-    const years = Array.from(yearGroups.keys())
+    const years = Array.from(yearGroups.keys()).sort((left, right) => left.localeCompare(right))
     if (!years.includes(expandedTimelineYear)) {
       expandedTimelineYear = years[years.length - 1] || ''
+    }
+    for (const entries of yearGroups.values()) {
+      entries.sort((left, right) => left.key.localeCompare(right.key))
+    }
+    const allMonthKeys = Array.from(groups.keys()).sort((left, right) => left.localeCompare(right))
+    if (!allMonthKeys.includes(expandedTimelineMonth)) {
+      expandedTimelineMonth = allMonthKeys[allMonthKeys.length - 1] || ''
     }
     let html = ''
     for (const year of years) {
@@ -1348,10 +1428,18 @@ const renderExportScript = (name: string): string => `
         '" aria-expanded="' + String(expanded) + '" aria-controls="' + esc(monthsId) + '">' +
         esc(year) + ' 年</button>' +
         '<div class="timeline-months" id="' + esc(monthsId) + '"' + (expanded ? '' : ' hidden') + '>' +
-        yearGroups.get(year).map((entry) =>
-          '<button class="timeline-month" type="button" data-month="' + esc(entry.key) + '">' +
-          '<span>' + entry.month + ' 月</span><small>' + entry.total + '</small></button>'
-        ).join('') + '</div></section>'
+        yearGroups.get(year).map((entry) => {
+          const monthExpanded = entry.key === expandedTimelineMonth
+          return '<div class="timeline-month-entry">' +
+            '<button class="timeline-month" type="button" data-month="' + esc(entry.key) +
+            '" aria-expanded="' + String(monthExpanded) + '">' +
+            '<span>' + entry.month + ' 月</span><small>' + entry.total + '</small></button>' +
+            '<div class="timeline-days" data-days-for-month="' + esc(entry.key) + '"' +
+            (monthExpanded ? '' : ' hidden') + '>' + entry.days.map((day) =>
+              '<button class="timeline-day" type="button" data-date="' + esc(day.date) + '">' +
+              '<span>' + esc(day.date.slice(5)) + '</span><small>' + day.total + '</small></button>'
+            ).join('') + '</div></div>'
+        }).join('') + '</div></section>'
     }
     timeline.innerHTML = html || '<div class="timeline-empty">时间信息不可用</div>'
   }
@@ -1377,16 +1465,27 @@ const renderExportScript = (name: string): string => `
     const activeMessage = atBottom
       ? visible[visible.length - 1] || messages[messages.length - 1]
       : anchoredMessage || visible[0] || messages[0]
-    const key = activeMessage && activeMessage.dataset.month
+    const key = selectedTimelineMonth || (selectedTimelineDate
+      ? selectedTimelineDate.slice(0, 7)
+      : '') ||
+      (activeMessage && activeMessage.dataset.month)
+    const activeIndex = activeMessage ? Number(activeMessage.dataset.index) : -1
+    const activeDate =
+      selectedTimelineDate ||
+      (activeIndex >= 0 && filtered[activeIndex] ? dateKey(filtered[activeIndex]) : '')
     let activeButton
     timeline.querySelectorAll('.timeline-month').forEach((button) => {
       const active = button.dataset.month === key
       button.classList.toggle('active', active)
       if (active) activeButton = button
     })
+    timeline.querySelectorAll('.timeline-day').forEach((button) => {
+      button.classList.toggle('active', button.dataset.date === activeDate)
+    })
     if (!activeButton) return
     const activeYear = key.split('-')[0]
     if (activeYear !== expandedTimelineYear) setExpandedTimelineYear(activeYear)
+    if (key !== expandedTimelineMonth) setExpandedTimelineMonth(key)
     const timelineBounds = timeline.getBoundingClientRect()
     const buttonBounds = activeButton.getBoundingClientRect()
     if (buttonBounds.top < timelineBounds.top) {
@@ -1535,6 +1634,8 @@ const renderExportScript = (name: string): string => `
     )
   }
   const applyFilters = (restorePosition = false) => {
+    selectedTimelineMonth = ''
+    selectedTimelineDate = ''
     filtered = matchingMessages()
     renderTimeline()
     if (!restorePosition || !restoreTabPosition()) resetWindow(true)
@@ -1572,18 +1673,32 @@ const renderExportScript = (name: string): string => `
     target.classList.add('located')
     window.setTimeout(() => target.classList.remove('located'), 1600)
   }
-  const jumpToMonth = (key) => {
-    const index = filtered.findIndex((message) => monthKey(message) === key)
+  const selectTimelineMonth = (key) => {
+    if (!filtered.some((message) => monthKey(message) === key)) return
+    selectedTimelineMonth = key
+    selectedTimelineDate = ''
+    setExpandedTimelineYear(key.split('-')[0])
+    setExpandedTimelineMonth(key)
+    timeline.querySelectorAll('.timeline-month').forEach((button) => {
+      button.classList.toggle('active', button.dataset.month === key)
+    })
+  }
+  const jumpToDate = (key) => {
+    const index = filtered.findIndex((message) => dateKey(message) === key)
     if (index < 0) return
+    selectedTimelineMonth = ''
+    selectedTimelineDate = key
     windowStart = Math.max(0, index - Math.floor(PAGE_SIZE / 4))
     windowEnd = Math.min(filtered.length, windowStart + PAGE_SIZE)
     windowStart = Math.max(0, windowEnd - PAGE_SIZE)
     renderWindow()
     const target = list.querySelector('.message[data-index="' + index + '"]')
     setScrollTop(target ? Math.max(0, scrollTopForTarget(target, 24)) : 0)
-    setExpandedTimelineYear(key.split('-')[0])
-    timeline.querySelectorAll('.timeline-month').forEach((button) => {
-      button.classList.toggle('active', button.dataset.month === key)
+    const month = key.slice(0, 7)
+    setExpandedTimelineYear(month.slice(0, 4))
+    setExpandedTimelineMonth(month)
+    timeline.querySelectorAll('.timeline-day').forEach((button) => {
+      button.classList.toggle('active', button.dataset.date === key)
     })
   }
   const slideWindow = (direction) => {
@@ -1620,6 +1735,10 @@ const renderExportScript = (name: string): string => `
     const nearTop = currentTop < 180
     const nearBottom = list.scrollHeight - currentTop - list.clientHeight < 240
     lastScrollTop = currentTop
+    if (!scrollLoadSuppressed) {
+      selectedTimelineMonth = ''
+      selectedTimelineDate = ''
+    }
     scheduleActiveMonthUpdate()
     if (scrollLoadSuppressed) return
     if (movingUp && nearTop) scheduleWindowSlide(-1)
@@ -1676,7 +1795,12 @@ const renderExportScript = (name: string): string => `
       return
     }
     const button = event.target.closest('[data-month]')
-    if (button) jumpToMonth(button.dataset.month)
+    if (button) {
+      selectTimelineMonth(button.dataset.month)
+      return
+    }
+    const dayButton = event.target.closest('[data-date]')
+    if (dayButton) jumpToDate(dayButton.dataset.date)
   })
 
   const updateZoom = () => preview.style.setProperty('--zoom', zoom)

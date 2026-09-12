@@ -1,3 +1,5 @@
+import { visibleNamePart } from './contact-name'
+
 export type MemberNameMode = 'groupNickname' | 'wechatNickname' | 'remark'
 
 export interface MemberNameFields {
@@ -9,7 +11,7 @@ export interface MemberNameFields {
 }
 
 const firstName = (...values: Array<string | undefined>): string =>
-  values.map((value) => String(value || '').trim()).find(Boolean) || ''
+  values.map((value) => visibleNamePart(value)).find(Boolean) || ''
 
 export function resolveMemberName(member: MemberNameFields, mode: MemberNameMode): string {
   if (mode === 'groupNickname') {

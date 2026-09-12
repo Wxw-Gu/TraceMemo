@@ -1,6 +1,7 @@
 import type { KnowledgeRuntimeStatus } from '../../../../shared/knowledge'
 import { isKnowledgeFresh } from '../../../../shared/knowledge'
 import type { Contact } from '../../../../shared/types'
+import { displayContactName } from '../../../../shared/contact-name'
 import type { SearchTrace } from './searchTypes'
 
 export const formatBytes = (bytes: number): string => {
@@ -83,11 +84,7 @@ export const formatKnowledgeProcessed = (status: KnowledgeRuntimeStatus): string
 }
 
 export const contactLabel = (contact: Contact | null | undefined): string =>
-  contact?.m_nsNickName ||
-  contact?.remark ||
-  contact?.wechatNickname ||
-  contact?.m_nsUsrName ||
-  '未选择会话'
+  displayContactName(contact, '未选择会话')
 
 export const formatSearchTraceOverview = (
   trace: SearchTrace

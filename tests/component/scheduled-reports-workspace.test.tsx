@@ -58,6 +58,10 @@ describe('ScheduledReportsWorkspace', () => {
         deleteScheduledReport: vi.fn(async () => ({ success: true, data: { deletedId: task.id } })),
         setScheduledReportEnabled: vi.fn(async () => ({ success: true, data: task })),
         runScheduledReportNow: vi.fn(async () => ({ success: true, data: { status: 'success' } })),
+        retryScheduledReportSend: vi.fn(async () => ({
+          success: true,
+          data: { status: 'success' }
+        })),
         testScheduledReportErrorNotification: vi.fn(async () => ({
           success: true,
           data: { status: 'failed', notificationStatus: 'sent' }
@@ -213,5 +217,43 @@ describe('ScheduledReportsWorkspace', () => {
       '测试错误信息已发送到 Agent Hub 微信通知接收者',
       'success'
     )
+  })
+
+  it('confirms a manual resend and does not retry when the dialog is cancelled', async () => {
+    const execution = {
+      id: 'execution-1',
+      taskId: task.id,
+      startedAt: '2026-08-27T01:00:00.000Z',
+      finishedAt: '2026-08-27T01:01:00.000Z',
+      status: 'waiting_to_send' as const,
+      sendTarget: group.m_nsUsrName,
+      userMessage: '日报已生成，但微信暂不可用'
+    }
+    vi.mocked(window.api.listScheduledReportExecutions).mockResolvedValue([execution])
+    render(
+      <ScheduledReportsWorkspace
+        contacts={[group]}
+        onNotice={onNotice}
+        onOpenWechatSettings={onOpenWechatSettings}
+        onOpenAgentHub={onOpenAgentHub}
+      />
+    )
+
+    await waitFor(() => expect(screen.getByText('日报已生成，但微信暂不可用')).toBeVisible())
+    fireEvent.click(screen.getByRole('button', { name: '重新发送' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText('目标：' + group.m_nsUsrName)).toBeVisible()
+    expect(within(dialog).getByText('日报：技术交流 · 每日日报')).toBeVisible()
+    expect(within(dialog).getByText(/日期：/)).toBeVisible()
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    expect(window.api.retryScheduledReportSend).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '重新发送' }))
+    const secondDialog = await screen.findByRole('alertdialog')
+    fireEvent.click(within(secondDialog).getByRole('button', { name: '确认重新发送' }))
+    await waitFor(() =>
+      expect(window.api.retryScheduledReportSend).toHaveBeenCalledWith(execution.id)
+    )
+    expect(window.api.retryScheduledReportSend).toHaveBeenCalledTimes(1)
   })
 })

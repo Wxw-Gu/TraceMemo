@@ -1000,37 +1000,43 @@ export function AISearchWorkspace({
       <div className="ai-search-insufficient-icon">!</div>
       <span className="ai-search-kicker">检索反馈</span>
       <h2>{analysisError || '当前范围没有足够证据'}</h2>
-      <p>可以扩大时间范围、切换群聊，或换一个更具体的问题。</p>
-      <Button
-        size="sm"
-        className="mt-5"
-        onClick={() => {
-          const expandToAll = range === '30d' || range === 'all'
-          setRange(expandToAll ? 'all' : '30d')
-          setTimeRangeOverride(
-            expandToAll
-              ? {
-                  label: '全部历史',
-                  reason: '用户主动扩大到全部历史',
-                  source: 'user_retry'
-                }
-              : undefined
-          )
-          skipNextCache()
-          void runAnalysis(undefined, {
-            range: expandToAll ? 'all' : '30d',
-            timeRangeOverride: expandToAll
-              ? {
-                  label: '全部历史',
-                  reason: '用户主动扩大到全部历史',
-                  source: 'user_retry'
-                }
-              : undefined
-          })
-        }}
-      >
-        {range === '30d' || range === 'all' ? '搜索全部历史' : '扩大到近 30 天'}
-      </Button>
+      {queryAgentEnabled ? (
+        <p>可以切换聊天范围，或换一个更具体的问题。</p>
+      ) : (
+        <>
+          <p>可以扩大时间范围、切换群聊，或换一个更具体的问题。</p>
+          <Button
+            size="sm"
+            className="mt-5"
+            onClick={() => {
+              const expandToAll = range === '30d' || range === 'all'
+              setRange(expandToAll ? 'all' : '30d')
+              setTimeRangeOverride(
+                expandToAll
+                  ? {
+                      label: '全部历史',
+                      reason: '用户主动扩大到全部历史',
+                      source: 'user_retry'
+                    }
+                  : undefined
+              )
+              skipNextCache()
+              void runAnalysis(undefined, {
+                range: expandToAll ? 'all' : '30d',
+                timeRangeOverride: expandToAll
+                  ? {
+                      label: '全部历史',
+                      reason: '用户主动扩大到全部历史',
+                      source: 'user_retry'
+                    }
+                  : undefined
+              })
+            }}
+          >
+            {range === '30d' || range === 'all' ? '搜索全部历史' : '扩大到近 30 天'}
+          </Button>
+        </>
+      )}
     </div>
   )
 
@@ -1400,7 +1406,7 @@ export function AISearchWorkspace({
           <AISearchComposer
             query={query}
             sourceLabel={sourceLabel}
-            rangeLabel={RANGE_LABELS[range]}
+            rangeLabel={queryAgentEnabled ? '时间由问题决定' : RANGE_LABELS[range]}
             history={history}
             historyOpen={historyOpen}
             loading={stage === 'loading'}

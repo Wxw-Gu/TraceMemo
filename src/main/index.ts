@@ -818,7 +818,7 @@ app.whenReady().then(async () => {
         const wcdb4Client = nextWechatDb.getWcdb4Client()
         const sessions = await wcdb4Client.getSessionsAsync({ hydrateDisplayNames: false })
         configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
-        voiceService = new VoiceService(wcdb4Client)
+        voiceService = new VoiceService(wcdb4Client, resolvedRoot)
         voiceRecognition?.connect(voiceService, resolvedRoot)
         stickerService = new StickerService(wcdb4Client)
         videoAssetService = new VideoAssetService(wcdb4Client)
@@ -1958,7 +1958,7 @@ app.whenReady().then(async () => {
     if (!ok) return { success: false, error: '数据库未初始化或重新打开失败' }
     const client = chat.getChatDb()?.getWcdb4Client()
     if (client) {
-      voiceService = new VoiceService(client)
+      voiceService = new VoiceService(client, client.getAccountRoot())
       voiceRecognition?.connect(voiceService, client.getAccountRoot())
       const monitoring = await client.startMonitor((type, json) => {
         client.invalidateSessionCache()

@@ -4,6 +4,7 @@ import {
   createDefaultAudioDecoderRegistry,
   type EncodedVoiceSource
 } from './voice-pipeline/audio-decoder'
+import { voiceAccountIdentity, voiceMessageIdentity } from './voice-pipeline/voice-message-identity'
 
 export {
   findSilkWasmRuntimeLocation,
@@ -36,12 +37,16 @@ export interface VoiceReference {
 
 export class VoiceService {
   private wcdb4Client: Wcdb4Client
+  private readonly accountIdentity: string
   private voiceCache = new Map<string, string>()
   private pcmCache = new Map<string, ResolvedPcmAudio>()
   private readonly decoderRegistry = createDefaultAudioDecoderRegistry()
 
-  constructor(wcdb4Client: Wcdb4Client) {
+  constructor(wcdb4Client: Wcdb4Client, accountRoot?: string) {
     this.wcdb4Client = wcdb4Client
+    const clientWithRoot = wcdb4Client as unknown as { getAccountRoot?: () => string }
+    const resolvedRoot = accountRoot || clientWithRoot.getAccountRoot?.() || 'unbound-account'
+    this.accountIdentity = voiceAccountIdentity(resolvedRoot)
   }
 
   async resolveVoice(
@@ -50,7 +55,8 @@ export class VoiceService {
     createTime: number,
     svrId?: string | number
   ): Promise<{ success: boolean; data?: string; error?: string }> {
-    const cacheKey = this.buildCacheKey(sessionId, localId, createTime)
+    const reference = { sessionId, localId, createTime, svrId }
+    const cacheKey = this.buildCacheKey(reference)
 
     const cached = this.voiceCache.get(cacheKey)
     if (cached) {
@@ -89,7 +95,7 @@ export class VoiceService {
     const missing: Array<{ index: number; reference: VoiceReference }> = []
     references.forEach((reference, index) => {
       const cached = this.voiceCache.get(
-        this.buildCacheKey(reference.sessionId, reference.localId, reference.createTime)
+        this.buildCacheKey(reference)
       )
       if (cached) results[index] = { success: true, data: cached }
       else missing.push({ index, reference })
@@ -131,11 +137,7 @@ export class VoiceService {
           decoded.channels
         )
         const data = wavData.toString('base64')
-        const cacheKey = this.buildCacheKey(
-          reference.sessionId,
-          reference.localId,
-          reference.createTime
-        )
+        const cacheKey = this.buildCacheKey(reference)
         this.voiceCache.set(cacheKey, data)
         this.pcmCache.set(cacheKey, { ...decoded, codec: 'silk' })
         results[index] = { success: true, data }
@@ -168,7 +170,7 @@ export class VoiceService {
     createTime: number,
     svrId?: string | number
   ): Promise<ResolvePcmResult> {
-    const cacheKey = this.buildCacheKey(sessionId, localId, createTime)
+    const cacheKey = this.buildCacheKey({ sessionId, localId, createTime, svrId })
     const cached = this.pcmCache.get(cacheKey)
     if (cached) return { success: true, audio: cached }
 
@@ -217,8 +219,8 @@ export class VoiceService {
     }
   }
 
-  private buildCacheKey(sessionId: string, localId: number, createTime: number): string {
-    return `${sessionId}-${localId}-${createTime}`
+  private buildCacheKey(reference: VoiceReference): string {
+    return `voice-cache-v2:${this.accountIdentity}:${voiceMessageIdentity(reference)}`
   }
 
   private buildCandidates(sessionId: string): string[] {

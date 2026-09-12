@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Contact } from '../../../../../shared/types'
+import { displayContactName } from '../../../../../shared/contact-name'
 import type {
   VoiceBatchConversationSummary,
   VoiceBatchProgress,
@@ -68,7 +69,7 @@ const hasBatchApi = (): boolean =>
 const BATCH_PAGE_SIZE = 12
 
 function contactName(contact: Contact): string {
-  return contact.m_nsNickName || contact.remark || contact.wechatNickname || contact.m_nsUsrName
+  return displayContactName(contact)
 }
 
 export function VoiceRecognitionPage({
@@ -640,7 +641,7 @@ export function VoiceRecognitionPage({
                     {' · '}剩余 {formatTaskDuration(batchProgress.estimatedRemainingMs)}
                   </small>
                   {currentBatchConversation && (
-                    <small>当前会话：{currentBatchConversation.m_nsNickName}</small>
+                    <small>当前会话：{contactName(currentBatchConversation)}</small>
                   )}
                 </div>
                 <progress value={batchProgress.processed} max={Math.max(1, batchProgress.total)} />

@@ -222,6 +222,8 @@ describe('AISearchWorkspace — 搜索范围 / 时间 UI / 真实统计与证据
     // 时间范围控件在 Query Agent 主路径下移除
     expect(screen.queryByText('时间范围')).toBeNull()
     expect(screen.queryByText('不限时间')).toBeNull()
+    expect(screen.queryByText('近 30 天')).toBeNull()
+    expect(screen.getByText('时间由问题决定')).toBeTruthy()
   })
 
   it('Query Agent 关闭时恢复 Legacy 的时间范围控件', async () => {

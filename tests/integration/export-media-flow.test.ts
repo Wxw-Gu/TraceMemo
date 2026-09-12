@@ -26,6 +26,7 @@ const state = vi.hoisted(() => ({
   avatarMap: {} as Record<string, string>,
   messages: [] as Message[],
   messagesByUser: {} as Record<string, Message[]>,
+  exportErrors: {} as Record<string, string>,
   exportReads: [] as string[],
   selfInfoReads: 0,
   groupSnapshotReads: [] as string[],
@@ -97,6 +98,7 @@ vi.mock('../../src/main/services/chat-service', () => ({
     structuredClone(state.messagesByUser[userMd5] || state.messages),
   listMessagesForExport: async (userMd5: string) => {
     state.exportReads.push(userMd5)
+    if (state.exportErrors[userMd5]) throw new Error(state.exportErrors[userMd5])
     return structuredClone(state.messagesByUser[userMd5] || state.messages)
   },
   getChatDb: () => ({
@@ -279,6 +281,7 @@ describe('media export flow', () => {
       'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII='
     state.videoLookups = []
     state.messagesByUser = {}
+    state.exportErrors = {}
     state.exportReads = []
     state.selfInfoReads = 0
     state.groupSnapshotReads = []
@@ -1233,7 +1236,9 @@ describe('media export flow', () => {
       target('csv-user', '测试联系人')
     ]
     state.messagesByUser = {
-      'csv-group': [message({ id: 'group-text', content: '群聊消息' })],
+      'csv-group': [
+        message({ id: 'group-text', content: '群聊消息, 引号 \" 和换行\\n😀' })
+      ],
       'csv-user': [message({ id: 'user-text', content: '联系人消息' })]
     }
 
@@ -1261,9 +1266,69 @@ describe('media export flow', () => {
     expect(userFiles).toHaveLength(1)
     expect(groupFiles[0]).toMatch(/^测试群聊_\d{8}_\d{6}\.csv$/)
     expect(userFiles[0]).toMatch(/^测试联系人_\d{8}_\d{6}\.csv$/)
-    expect(readFileSync(join(groupDir, groupFiles[0]), 'utf8')).toContain('群聊消息')
+    const groupCsv = readFileSync(join(groupDir, groupFiles[0]))
+    expect(groupCsv.subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]))
+    expect(groupCsv.toString('utf8')).toContain('\"群聊消息, 引号 \"\" 和换行\\n😀\"')
+    expect(groupCsv.toString('utf8')).toContain('\r\n')
     expect(readFileSync(join(userDir, userFiles[0]), 'utf8')).toContain('联系人消息')
     expect(existsSync(join(outputDir, 'index.html'))).toBe(false)
+  })
+
+  it('continues all-export after one conversation fails and records a truthful manifest', async () => {
+    const { runExport } = await import('../../src/main/export-service')
+    const targets: ExportTarget[] = [
+      target('all-fail-1', '成功会话一'),
+      target('all-fail-2', '失败会话'),
+      target('all-fail-3', '成功会话三')
+    ]
+    state.messagesByUser = Object.fromEntries(
+      targets.map((item) => [item.userMd5, [message({ id: item.userMd5, content: item.name })]])
+    )
+    state.exportErrors = { 'all-fail-2': '模拟单会话读取失败' }
+    const progress: Array<{ phase: string; percent?: number; error?: string }> = []
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        send: (_channel: string, item: (typeof progress)[number]) => progress.push(item)
+      }
+    }
+
+    const result = await runExport(
+      {
+        jobId: 'all-export-continue-after-failure',
+        scope: 'all',
+        targets,
+        format: 'html',
+        outputName: 'all-export-continue-after-failure',
+        kinds: ['text'],
+        includeMedia: false
+      },
+      win as never
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('失败会话')
+    expect(result.outputPath).toBeTruthy()
+    expect(state.exportReads).toEqual(['all-fail-1', 'all-fail-2', 'all-fail-3'])
+    expect(existsSync(join(result.outputPath!, '联系人', '成功会话一', 'index.html'))).toBe(true)
+    expect(existsSync(join(result.outputPath!, '联系人', '成功会话三', 'index.html'))).toBe(true)
+    const manifest = JSON.parse(
+      readFileSync(join(result.outputPath!, '导出清单.json'), 'utf8')
+    ) as {
+      status: string
+      conversations: Array<{ id: string; status: string; error?: string }>
+    }
+    expect(manifest.status).toBe('failed')
+    expect(manifest.conversations).toEqual([
+      expect.objectContaining({ id: 'all-fail-1', status: 'completed' }),
+      expect.objectContaining({
+        id: 'all-fail-2',
+        status: 'failed',
+        error: '模拟单会话读取失败'
+      }),
+      expect.objectContaining({ id: 'all-fail-3', status: 'completed' })
+    ])
+    expect(progress.at(-1)).toMatchObject({ phase: 'failed', percent: 100 })
   })
 
   it('cancels an all-export task between conversations without starting the next database read', async () => {

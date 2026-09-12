@@ -567,7 +567,51 @@ test('EXPORT-ARCHIVE-04 timeline follows the latest visible month after changing
   }
 })
 
-test('EXPORT-ARCHIVE-05 each message tab restores its previous scroll anchor', async ({ page }) => {
+test('EXPORT-ARCHIVE-05 date navigation jumps across days and years', async ({ page }) => {
+  const outputDir = mkdtempSync(join(tmpdir(), 'wxe-date-timeline-e2e-'))
+  try {
+    const dataPath = join(outputDir, 'data', 'messages.js')
+    mkdirSync(dirname(dataPath), { recursive: true })
+    writeFileSync(join(outputDir, 'index.html'), renderExportPage('日期时间轴档案'), 'utf8')
+    const timestamp = (value: string): number => Math.floor(new Date(value).getTime() / 1000)
+    const messages = [
+      archiveMessage('date-3', 'timeline', '日期时间轴档案', '十二月三十一日', timestamp('2025-12-31T12:00:00+08:00')),
+      archiveMessage('date-1', 'timeline', '日期时间轴档案', '九月一日', timestamp('2026-09-01T12:00:00+08:00')),
+      archiveMessage('date-2', 'timeline', '日期时间轴档案', '九月三日', timestamp('2026-09-03T12:00:00+08:00'))
+    ]
+    writeFileSync(
+      dataPath,
+      'window.__WECHAT_EXPORT__ = ' + JSON.stringify({
+        version: 1,
+        sourceId: 'timeline',
+        name: '日期时间轴档案',
+        exportedAt: '2026-09-04T00:00:00.000Z',
+        messages
+      }) + ';\n',
+      'utf8'
+    )
+
+    await page.goto(pathToFileURL(join(outputDir, 'index.html')).href)
+    const september = page.locator('.timeline-month[data-month="2026-09"]')
+    await expect(september).toBeVisible()
+    await september.click()
+    await expect(page.locator('.timeline-day[data-date="2026-09-01"]')).toBeVisible()
+    await expect(page.locator('.timeline-day[data-date="2026-09-03"]')).toBeVisible()
+    await page.locator('.timeline-day[data-date="2026-09-01"]').click()
+    await expect(page.locator('.timeline-day.active')).toHaveAttribute('data-date', '2026-09-01')
+    await expect(page.locator('.message').filter({ hasText: '九月一日' })).toBeVisible()
+
+    await page.locator('.timeline-year[data-year="2025"]').click()
+    await page.locator('.timeline-month[data-month="2025-12"]').click()
+    await page.locator('.timeline-day[data-date="2025-12-31"]').click()
+    await expect(page.locator('.timeline-day.active')).toHaveAttribute('data-date', '2025-12-31')
+    await expect(page.locator('.message').filter({ hasText: '十二月三十一日' })).toBeVisible()
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true })
+  }
+})
+
+test('EXPORT-ARCHIVE-06 each message tab restores its previous scroll anchor', async ({ page }) => {
   const outputDir = mkdtempSync(join(tmpdir(), 'wxe-tab-position-e2e-'))
   try {
     const dataPath = join(outputDir, 'data', 'messages.js')

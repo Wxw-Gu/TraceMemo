@@ -598,6 +598,8 @@ export function ScheduledReportsWorkspace({
   const [editingTask, setEditingTask] = React.useState<ScheduledReportTask | null>(null)
   const [saving, setSaving] = React.useState(false)
   const [deletingTask, setDeletingTask] = React.useState<ScheduledReportTask | null>(null)
+  const [retryingExecution, setRetryingExecution] =
+    React.useState<ScheduledReportExecution | null>(null)
   const [busyTaskId, setBusyTaskId] = React.useState<string | null>(null)
 
   const load = React.useCallback(async (): Promise<void> => {
@@ -782,6 +784,13 @@ export function ScheduledReportsWorkspace({
     } finally {
       setBusyTaskId(null)
     }
+  }
+
+  const confirmRetrySend = async (): Promise<void> => {
+    if (!retryingExecution || busyTaskId) return
+    const execution = retryingExecution
+    setRetryingExecution(null)
+    await retrySend(execution)
   }
 
   const testErrorNotification = async (task: ScheduledReportTask): Promise<void> => {
@@ -1090,7 +1099,7 @@ export function ScheduledReportsWorkspace({
                           size="sm"
                           variant="outline"
                           disabled={busy}
-                          onClick={() => void retrySend(execution)}
+                          onClick={() => setRetryingExecution(execution)}
                         >
                           {busy ? '发送中…' : '重新发送'}
                         </Button>
@@ -1173,6 +1182,44 @@ export function ScheduledReportsWorkspace({
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={Boolean(retryingExecution)}
+        onOpenChange={(open) => !open && setRetryingExecution(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>将重新发送这份日报？</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="grid gap-1">
+                <span>
+                  目标：
+                  {retryingExecution?.sendTarget ||
+                    tasks.find((item) => item.id === retryingExecution?.taskId)?.target ||
+                    tasks.find((item) => item.id === retryingExecution?.taskId)?.group ||
+                    '未指定'}
+                </span>
+                <span>
+                  日报：
+                  {tasks.find((item) => item.id === retryingExecution?.taskId)?.name || '定时日报'}
+                </span>
+                <span>日期：{formatDateTime(retryingExecution?.startedAt)}</span>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(busyTaskId)}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault()
+                void confirmRetrySend()
+              }}
+              disabled={Boolean(busyTaskId)}
+            >
+              {busyTaskId ? '发送中…' : '确认重新发送'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
