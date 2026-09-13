@@ -701,6 +701,24 @@ handle('db:getContactAvatars', (usernames) =>
       .map((contact) => [contact.m_nsUsrName, contact.avatar])
   )
 )
+handle('wechat-action-log:list', () => [
+  {
+    id: 'fixture-action-log',
+    category: 'wechat_send',
+    source: 'scheduled_report',
+    purpose: 'scheduled_report',
+    triggerType: 'automation',
+    timestamp: new Date(fixtureNowMs - 60_000).toISOString(),
+    recipientType: 'group',
+    recipientId: 'group_regular@chatroom',
+    recipientName: '产品测试群',
+    contentType: 'image',
+    contentPreview: 'fixture-report.png',
+    status: 'sent',
+    executionId: 'fixture-execution',
+    idempotencyKey: 'scheduled_report:fixture-execution'
+  }
+])
 handle('settings:getSelf', () => ({ ready: true, info: fixture.self }))
 handle('db:getCachedMessages', (md5) => fixture.messages[md5] || [])
 handle('db:getCachedMessagePage', (md5) => ({

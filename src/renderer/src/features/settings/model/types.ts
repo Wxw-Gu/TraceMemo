@@ -4,6 +4,7 @@ export type SettingsCategoryId =
   | 'image-key'
   | 'voice-recognition'
   | 'wechat-send'
+  | 'wechat-action-logs'
   | 'text-to-speech'
   | 'personal-wechat-send'
   | 'ai-model'

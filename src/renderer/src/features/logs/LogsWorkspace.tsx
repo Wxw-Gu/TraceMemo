@@ -15,9 +15,21 @@ import {
 type StatusFilter = 'all' | WechatActionStatus
 type PurposeFilter = 'all' | 'member_left_notification' | 'scheduled_report' | 'other'
 
+const sourceLabel = (source: ActionLogEntry['source']): string => {
+  if (source === 'member_monitor') return '退群监控'
+  if (source === 'scheduled_report') return '定时日报'
+  if (source === 'user_tts') return '文字转语音'
+  if (source === 'unknown') return '未知来源'
+  return source || '未知来源'
+}
+
+const triggerLabel = (triggerType: ActionLogEntry['triggerType']): string =>
+  triggerType === 'user' ? '用户触发' : '自动化'
+
 const purposeLabel = (purpose: WechatActionPurpose): string => {
   if (purpose === 'member_left_notification') return '退群通知'
   if (purpose === 'scheduled_report') return '定时日报'
+  if (purpose === 'tts_voice') return '文字转语音'
   return purpose || '其它动作'
 }
 
@@ -27,15 +39,10 @@ const contentTypeLabel = (type: ActionLogEntry['contentType']): string => {
   return '文字'
 }
 
-const statusDetails = (
-  entry: ActionLogEntry
-): { label: string; className: string } => {
+const statusDetails = (entry: ActionLogEntry): { label: string; className: string } => {
   if (entry.status === 'sent') return { label: '已发送', className: 'text-success' }
   if (entry.status === 'blocked') return { label: '被阻止', className: 'text-warning' }
-  if (
-    entry.errorCode === 'SEND_CAPABILITY_UNAVAILABLE' ||
-    entry.errorCode === 'SEND_NOT_READY'
-  ) {
+  if (entry.errorCode === 'SEND_CAPABILITY_UNAVAILABLE' || entry.errorCode === 'SEND_NOT_READY') {
     return { label: '发送能力不可用', className: 'text-warning' }
   }
   return { label: '失败', className: 'text-destructive' }
@@ -49,6 +56,9 @@ const matchesPurpose = (entry: ActionLogEntry, filter: PurposeFilter): boolean =
   return entry.purpose === filter
 }
 
+const dateBoundary = (value: string, endOfDay: boolean): number =>
+  new Date(`${value}T${endOfDay ? '23:59:59.999' : '00:00:00'}`).getTime()
+
 export function LogsWorkspace(): React.ReactElement {
   const [entries, setEntries] = React.useState<ActionLogEntry[]>([])
   const [loading, setLoading] = React.useState(true)
@@ -56,6 +66,8 @@ export function LogsWorkspace(): React.ReactElement {
   const [keyword, setKeyword] = React.useState('')
   const [status, setStatus] = React.useState<StatusFilter>('all')
   const [purpose, setPurpose] = React.useState<PurposeFilter>('all')
+  const [startDate, setStartDate] = React.useState('')
+  const [endDate, setEndDate] = React.useState('')
 
   React.useEffect(() => {
     let disposed = false
@@ -77,15 +89,28 @@ export function LogsWorkspace(): React.ReactElement {
 
   const visibleEntries = React.useMemo(() => {
     const query = keyword.trim().toLocaleLowerCase()
+    const startTime = startDate ? dateBoundary(startDate, false) : Number.NEGATIVE_INFINITY
+    const endTime = endDate ? dateBoundary(endDate, true) : Number.POSITIVE_INFINITY
     return entries.filter((entry) => {
       if (status !== 'all' && entry.status !== status) return false
       if (!matchesPurpose(entry, purpose)) return false
+      const timestamp = Date.parse(entry.timestamp)
+      if (timestamp < startTime || timestamp > endTime) return false
       if (!query) return true
-      return [entry.recipientName, entry.recipientId, entry.contentPreview]
+      return [
+        entry.id,
+        entry.source,
+        entry.purpose,
+        entry.executionId,
+        entry.idempotencyKey,
+        entry.recipientName,
+        entry.recipientId,
+        entry.contentPreview
+      ]
         .filter(Boolean)
         .some((value) => value!.toLocaleLowerCase().includes(query))
     })
-  }, [entries, keyword, purpose, status])
+  }, [endDate, entries, keyword, purpose, startDate, status])
 
   return (
     <div className="h-full min-w-0 overflow-y-auto bg-canvas">
@@ -94,7 +119,7 @@ export function LogsWorkspace(): React.ReactElement {
           <h1 className="text-xl font-semibold text-foreground">日志</h1>
         </header>
 
-        <div className="grid gap-3 sm:grid-cols-[minmax(220px,1fr)_180px_180px]">
+        <div className="grid gap-3 sm:grid-cols-[minmax(220px,1fr)_180px_180px] lg:grid-cols-[minmax(220px,1fr)_180px_180px_150px_150px]">
           <Input
             type="search"
             aria-label="搜索日志"
@@ -124,6 +149,18 @@ export function LogsWorkspace(): React.ReactElement {
               <SelectItem value="blocked">被阻止</SelectItem>
             </SelectContent>
           </Select>
+          <Input
+            type="date"
+            aria-label="开始日期"
+            value={startDate}
+            onChange={(event) => setStartDate(event.target.value)}
+          />
+          <Input
+            type="date"
+            aria-label="结束日期"
+            value={endDate}
+            onChange={(event) => setEndDate(event.target.value)}
+          />
         </div>
 
         {loading ? (
@@ -140,12 +177,22 @@ export function LogsWorkspace(): React.ReactElement {
               return (
                 <article
                   key={entry.id}
-                  className="grid gap-3 rounded-md border border-border-subtle bg-surface px-4 py-3 shadow-surface"
+                  className="grid min-w-0 gap-3 rounded-md border border-border-subtle bg-surface px-4 py-3 shadow-surface"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <strong className="text-sm text-foreground">{purposeLabel(entry.purpose)}</strong>
-                      <p className="mt-1 break-words text-sm text-foreground">发送给 {recipient}</p>
+                      <strong className="text-sm text-foreground">
+                        {purposeLabel(entry.purpose)}
+                      </strong>
+                      <p className="mt-1 min-w-0 text-sm text-foreground">
+                        发送给{' '}
+                        <span
+                          className="inline-block max-w-[min(65vw,28rem)] truncate whitespace-nowrap align-bottom"
+                          title={recipient}
+                        >
+                          {recipient}
+                        </span>
+                      </p>
                     </div>
                     <div className="text-right text-xs">
                       <strong className={result.className}>{result.label}</strong>
@@ -154,17 +201,64 @@ export function LogsWorkspace(): React.ReactElement {
                       </time>
                     </div>
                   </div>
-                  <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-[140px_1fr]">
-                    <span>
-                      {entry.recipientType === 'group' ? '群聊' : '联系人'} · {entry.recipientId}
-                    </span>
-                    <span className="break-words">
+                  <div className="grid min-w-0 gap-1 text-sm text-foreground">
+                    <p className="whitespace-normal break-words">
                       {contentTypeLabel(entry.contentType)} · {entry.contentPreview || '无内容预览'}
-                    </span>
+                    </p>
+                    {entry.reason ? (
+                      <p className="whitespace-normal break-words text-xs text-muted-foreground">
+                        {entry.reason}
+                      </p>
+                    ) : null}
+                    <p className="text-xs text-muted-foreground">
+                      {triggerLabel(entry.triggerType)} · {sourceLabel(entry.source)}
+                    </p>
                   </div>
-                  {entry.reason ? (
-                    <p className="break-words text-xs text-muted-foreground">{entry.reason}</p>
-                  ) : null}
+                  <details className="min-w-0 border-t border-border-subtle pt-2 text-xs text-muted-foreground">
+                    <summary className="cursor-pointer select-none">查看详情</summary>
+                    <dl className="mt-2 grid min-w-0 gap-1 sm:grid-cols-[140px_minmax(0,1fr)]">
+                      <dt>接收对象 ID</dt>
+                      <dd className="min-w-0 truncate whitespace-nowrap" title={entry.recipientId}>
+                        {entry.recipientId}
+                      </dd>
+                      <dt>操作 ID</dt>
+                      <dd className="min-w-0 truncate whitespace-nowrap" title={entry.id}>
+                        {entry.id}
+                      </dd>
+                      {entry.executionId ? (
+                        <>
+                          <dt>执行 ID</dt>
+                          <dd
+                            className="min-w-0 truncate whitespace-nowrap"
+                            title={entry.executionId}
+                          >
+                            {entry.executionId}
+                          </dd>
+                        </>
+                      ) : null}
+                      {entry.idempotencyKey ? (
+                        <>
+                          <dt>幂等键</dt>
+                          <dd
+                            className="min-w-0 truncate whitespace-nowrap font-mono"
+                            title={entry.idempotencyKey}
+                          >
+                            {entry.idempotencyKey}
+                          </dd>
+                        </>
+                      ) : null}
+                      <dt>来源</dt>
+                      <dd className="min-w-0 truncate whitespace-nowrap" title={entry.source}>
+                        {entry.source}
+                      </dd>
+                      <dt>用途</dt>
+                      <dd className="min-w-0 truncate whitespace-nowrap" title={entry.purpose}>
+                        {entry.purpose}
+                      </dd>
+                      <dt>触发方式</dt>
+                      <dd>{entry.triggerType || 'automation'}</dd>
+                    </dl>
+                  </details>
                 </article>
               )
             })}

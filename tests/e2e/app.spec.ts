@@ -143,6 +143,26 @@ test('NAV-01 NAV-02 every top-level page is unique and switchable', async () => 
   }
 })
 
+test('LOGS-01 shows Action Gateway audit details and filters by date', async () => {
+  const fixture = await launchTestApp({ now: Date.parse('2026-09-12T10:00:00+08:00') })
+  try {
+    await fixture.page.getByRole('navigation', { name: '一级导航' }).getByRole('button', { name: '设置' }).click()
+    await fixture.page.getByRole('button', { name: '发送日志' }).click()
+    await expect(fixture.page.getByRole('heading', { name: '日志', exact: true })).toBeVisible()
+    await expect(
+      fixture.page.locator('article').filter({ hasText: '产品测试群' })
+    ).toBeVisible()
+    await fixture.page.getByText('查看详情').first().click()
+    await expect(fixture.page.getByText('fixture-execution', { exact: true })).toBeVisible()
+    await expect(fixture.page.getByText(/自动化 · 定时日报/)).toBeVisible()
+
+    await fixture.page.getByLabel('开始日期').fill('2026-09-13')
+    await expect(fixture.page.getByText('没有匹配的日志')).toBeVisible()
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('NAV-03 exit monitor page shows a member departure event and stays within the viewport', async () => {
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []

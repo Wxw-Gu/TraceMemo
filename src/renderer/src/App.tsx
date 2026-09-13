@@ -45,7 +45,6 @@ import { runtimePlatform, supportsPersonalWechatSend } from './utils/runtime-env
 import { useToast } from './components/ui'
 import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
 import { GroupExitMonitorWorkspace } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
-import { LogsWorkspace } from './features/logs/LogsWorkspace'
 import { selectContactAvatarRefreshUsernames } from './utils/contact-avatar'
 import {
   buildContactSearchIndex,
@@ -2053,8 +2052,6 @@ function App(): React.ReactElement {
             onOpenSendSettings={openWechatSendSettings}
           />
         )
-      case 'logs':
-        return <LogsWorkspace />
       case 'agent-hub':
         return <AgentHubWorkspace />
       case 'api':

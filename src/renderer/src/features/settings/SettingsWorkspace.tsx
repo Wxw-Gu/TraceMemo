@@ -14,6 +14,7 @@ import { AboutPage } from './pages/AboutPage'
 import { VoiceRecognitionPage } from './pages/VoiceRecognitionPage'
 import { TextToSpeechPage } from './pages/TextToSpeechPage'
 import { PersonalWechatSendPage } from './pages/PersonalWechatSendPage'
+import { LogsWorkspace } from '../logs/LogsWorkspace'
 import type { Contact } from '../../../../shared/types'
 import type { AIRuntimeModelConfig } from '../../../../shared/ai-provider'
 
@@ -102,6 +103,8 @@ export function SettingsWorkspace({
             onOpenTextToSpeechSettings={onOpenTextToSpeechSettings}
           />
         )
+      case 'wechat-action-logs':
+        return <LogsWorkspace />
       case 'text-to-speech':
         return <TextToSpeechPage onNotice={onNotice} />
       case 'personal-wechat-send':

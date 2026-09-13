@@ -4,7 +4,8 @@ import type {
   WechatActionOrigin,
   WechatActionPurpose,
   WechatActionRecipient,
-  WechatActionStatus
+  WechatActionStatus,
+  WechatActionTriggerType
 } from './wechat-action'
 
 export interface ActionLogEntry {
@@ -12,6 +13,7 @@ export interface ActionLogEntry {
   category: 'wechat_send'
   source: WechatActionOrigin
   purpose: WechatActionPurpose
+  triggerType?: WechatActionTriggerType
   timestamp: string
   recipientType: WechatActionRecipient['type']
   recipientId: string
@@ -21,4 +23,6 @@ export interface ActionLogEntry {
   status: WechatActionStatus
   errorCode?: WechatActionErrorCode
   reason?: string
+  executionId?: string
+  idempotencyKey?: string
 }

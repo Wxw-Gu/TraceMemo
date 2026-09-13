@@ -38,6 +38,7 @@ export class WechatActionLogService {
         category: 'wechat_send' as const,
         source: record.origin,
         purpose: record.purpose,
+        ...(record.triggerType ? { triggerType: record.triggerType } : {}),
         timestamp: record.finishedAt || record.startedAt || record.createdAt,
         recipientType: record.recipientType,
         recipientId: record.recipientId,
@@ -46,7 +47,9 @@ export class WechatActionLogService {
         contentPreview: record.contentPreview,
         status: record.sendStatus,
         errorCode: record.errorCode,
-        reason: record.decisionReason
+        reason: record.decisionReason,
+        ...(record.executionId ? { executionId: record.executionId } : {}),
+        ...(record.idempotencyKey ? { idempotencyKey: record.idempotencyKey } : {})
       }))
       .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
   }
