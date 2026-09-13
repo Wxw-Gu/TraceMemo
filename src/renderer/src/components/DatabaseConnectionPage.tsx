@@ -134,6 +134,7 @@ export function DatabaseConnectionPage({
   onClearKey
 }: DatabaseConnectionPageProps): React.ReactElement {
   const isMac = platform === 'darwin'
+  const isIntelMac = isMac && environment?.architecture === 'x64'
   const defaultPath = isMac
     ? '~/Library/Containers/com.tencent.xinWeChat/Data/Library/Application Support/com.tencent.xinWeChat/'
     : 'C:\\Users\\...\\WeChat Files\\Msg'
@@ -186,14 +187,18 @@ export function DatabaseConnectionPage({
               <li>
                 <span>2</span>
                 <div>
-                  <strong>准备连接组件</strong>
-                  <small>页面会按当前系统给出对应步骤</small>
+                  <strong>{isIntelMac ? '登录微信并打开聊天' : '准备连接组件'}</strong>
+                  <small>
+                    {isIntelMac
+                      ? '让微信打开聊天数据库，方便获取密钥'
+                      : '页面会按当前系统给出对应步骤'}
+                  </small>
                 </div>
               </li>
               <li>
                 <span>3</span>
                 <div>
-                  <strong>登录并验证连接</strong>
+                  <strong>{isIntelMac ? '获取密钥并验证连接' : '登录并验证连接'}</strong>
                   <small>验证通过后进入主界面</small>
                 </div>
               </li>
@@ -240,10 +245,14 @@ export function DatabaseConnectionPage({
                           ? '当前步骤未完成'
                           : [
                               '检查本机环境',
-                              '让微信停在登录页面',
-                              '确认开始准备',
-                              `正在完成 ${isMac ? 'macOS' : 'Windows'} 授权`,
-                              '获取成功, 现在可以重新登录微信了',
+                              isIntelMac ? '登录微信并打开聊天窗口' : '让微信停在登录页面',
+                              isIntelMac ? '确认开始获取密钥' : '确认开始准备',
+                              isIntelMac
+                                ? '正在获取 Intel Mac 密钥'
+                                : `正在完成 ${isMac ? 'macOS' : 'Windows'} 授权`,
+                              isIntelMac
+                                ? '获取成功，验证数据库连接'
+                                : '获取成功, 现在可以重新登录微信了',
                               '验证数据库连接'
                             ][guideStep - 1]}
                       </strong>
@@ -253,10 +262,18 @@ export function DatabaseConnectionPage({
                           : status ||
                             [
                               '确认下方检测结果；没有找到目录时可以手动选择。',
-                              '请退出当前微信账号，让微信停留在登录页面，然后点击“我已准备好”。',
-                              '开始后请按页面提示完成系统授权。',
-                              '正在准备连接组件，请不要关闭微信或 TraceMemo。',
-                              '请回到微信完成登录，登录成功后再回来验证。',
+                              isIntelMac
+                                ? '请登录微信并打开几个聊天窗口，然后点击“我已准备好”。'
+                                : '请退出当前微信账号，让微信停留在登录页面，然后点击“我已准备好”。',
+                              isIntelMac
+                                ? '确认开始获取密钥。'
+                                : '开始后请按页面提示完成系统授权。',
+                              isIntelMac
+                                ? '正在等待微信打开数据库，请不要关闭微信或 TraceMemo。'
+                                : '正在准备连接组件，请不要关闭微信或 TraceMemo。',
+                              isIntelMac
+                                ? '密钥已获取，请继续验证数据库。'
+                                : '请回到微信完成登录，登录成功后再回来验证。',
                               '正在验证密钥和本地数据库，请稍候。'
                             ][guideStep - 1]}
                       </p>
@@ -406,7 +423,7 @@ export function DatabaseConnectionPage({
                 )}
                 {guideStep === 3 && (
                   <Button className="database-login-primary" onClick={onAutoGetKey}>
-                    开始准备连接组件
+                    {isIntelMac ? '开始获取密钥' : '开始准备连接组件'}
                   </Button>
                 )}
                 {guideStep === 4 && (
@@ -450,7 +467,7 @@ export function DatabaseConnectionPage({
                 <p className="database-login-platform-note">
                   {isMac ? (
                     <>
-                      macOS 首次获取密钥需要关闭 SIP。{' '}
+                      macOS 首次获取密钥会在后台准备连接组件。{' '}
                       <a href={macKeyFaqUrl} target="_blank" rel="noreferrer">
                         查看说明
                       </a>

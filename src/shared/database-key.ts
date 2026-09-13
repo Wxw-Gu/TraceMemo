@@ -58,6 +58,7 @@ export interface AccountDiscoveryResult {
 
 export interface DatabaseKeyEnvironment {
   platform: NodeJS.Platform
+  architecture?: string
   osVersion: string
   appVersion: string
   wechatVersion: string

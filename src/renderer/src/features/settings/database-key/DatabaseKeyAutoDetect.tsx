@@ -17,7 +17,8 @@ export function DatabaseKeyAutoDetect({
 }): React.ReactElement {
   const environment = state.environment
   const platform = environment?.platform || runtimePlatform
-  if (platform !== 'win32') {
+  const isIntelMac = platform === 'darwin' && environment?.architecture === 'x64'
+  if (platform !== 'win32' && !isIntelMac) {
     return (
       <section className="settings-card database-key-auto database-key-auto-manual">
         <div>
@@ -31,8 +32,12 @@ export function DatabaseKeyAutoDetect({
     <section className="settings-card database-key-auto">
       <div className="database-key-auto-heading">
         <div>
-          <strong>Windows 自动获取</strong>
-          <p>TraceMemo 可在微信桌面端正在运行时，通过本机内存扫描尝试获取数据库密钥。</p>
+          <strong>{isIntelMac ? 'Intel Mac 自动获取' : 'Windows 自动获取'}</strong>
+          <p>
+            {isIntelMac
+              ? '请先登录微信并打开聊天，TraceMemo 会在后台准备连接并获取主密钥。'
+              : 'TraceMemo 可在微信桌面端正在运行时，通过本机内存扫描尝试获取数据库密钥。'}
+          </p>
         </div>
         <Button variant="outline" onClick={onDetect} disabled={disabled}>
           {state.status === 'auto-detecting' ? '正在获取…' : '自动获取密钥'}
@@ -45,8 +50,8 @@ export function DatabaseKeyAutoDetect({
         <li className={environment?.accountIdentified ? 'ok' : ''}>
           当前账号：{environment?.accountIdentified ? '已识别' : '尚未识别'}
         </li>
-        <li className={platform === 'win32' ? 'ok' : ''}>
-          当前平台：{platform === 'win32' ? '支持' : '不支持'}
+        <li className={platform === 'win32' || isIntelMac ? 'ok' : ''}>
+          当前平台：{platform === 'win32' || isIntelMac ? '支持' : '不支持'}
         </li>
       </ul>
       {state.status === 'auto-detecting' && (

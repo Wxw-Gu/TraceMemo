@@ -15,12 +15,18 @@ const {
   validateAsarRuntimeDependencies,
   validateFfmpegRuntime,
   validateReaderSkillRuntime,
+  validateMacIntelHelper,
   validateSherpaRuntime,
   validateSilkWasmRuntime
 } = nodeRequire('../../scripts/after-pack.cjs') as {
   validateAsarRuntimeDependencies: (runtimeResources: string) => void
   validateFfmpegRuntime: (runtimeResources: string, platform?: NodeJS.Platform) => void
   validateReaderSkillRuntime: (runtimeResources: string) => string
+  validateMacIntelHelper: (
+    runtimeResources: string,
+    platform: NodeJS.Platform,
+    arch: string
+  ) => string | null
   validateSherpaRuntime: (runtimeResources: string, platform: NodeJS.Platform, arch: string) => void
   validateSilkWasmRuntime: (runtimeResources: string) => void
 }
@@ -54,6 +60,20 @@ describe('production runtime packaging', () => {
     mkdirSync(dirname(skillPath), { recursive: true })
     writeFileSync(skillPath, '# TraceMemo Reader\n')
     expect(validateReaderSkillRuntime(resources)).toBe(skillPath)
+  })
+
+  it('requires the private helper only for Intel Mac packages', () => {
+    const resources = join(root, 'intel-mac-resources')
+    const helperPath = join(resources, 'resources', 'macos', 'mac-key-helper', 'mac_key_helper')
+
+    expect(validateMacIntelHelper(resources, 'darwin', 'arm64')).toBeNull()
+    expect(() => validateMacIntelHelper(resources, 'darwin', 'x64')).toThrow(
+      /Missing packaged Intel Mac helper/
+    )
+
+    mkdirSync(dirname(helperPath), { recursive: true })
+    writeFileSync(helperPath, 'fixture')
+    expect(validateMacIntelHelper(resources, 'darwin', 'x64')).toBe(helperPath)
   })
 
   it('keeps silk-wasm in electron-builder asarUnpack', () => {

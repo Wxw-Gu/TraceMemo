@@ -6,6 +6,7 @@ export function buildSafeDiagnosticSummary(
   return [
     `TraceMemo: ${environment.appVersion}`,
     `操作系统: ${environment.osVersion}`,
+    ...(environment.architecture ? [`处理器架构: ${environment.architecture}`] : []),
     `微信客户端: ${environment.wechatVersion}`,
     `数据结构: ${environment.dataStructureVersion}`,
     `数据目录: ${environment.dataDirectoryDetected ? '已检测到' : '未检测到'}`,

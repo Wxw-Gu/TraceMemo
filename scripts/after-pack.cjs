@@ -107,17 +107,31 @@ function validateReaderSkillRuntime(runtimeResources) {
   return skillPath
 }
 
+function validateMacIntelHelper(runtimeResources, platform, arch) {
+  if (platform !== 'darwin' || arch !== 'x64') return null
+  const helperPath = path.join(
+    runtimeResources,
+    'resources',
+    'macos',
+    'mac-key-helper',
+    'mac_key_helper'
+  )
+  if (!existsSync(helperPath)) {
+    throw new Error(`Missing packaged Intel Mac helper: ${helperPath}`)
+  }
+  chmodSync(helperPath, 0o755)
+  return helperPath
+}
+
 exports.default = async function afterPack(context) {
   const runtimeResources = getRuntimeResources(context)
+  const builderArch = normalizeBuilderArch(context.arch)
   validateAsarRuntimeDependencies(runtimeResources)
   validateReaderSkillRuntime(runtimeResources)
   validateSilkWasmRuntime(runtimeResources)
   const ffmpegPath = validateFfmpegRuntime(runtimeResources, context.electronPlatformName)
-  validateSherpaRuntime(
-    runtimeResources,
-    context.electronPlatformName,
-    normalizeBuilderArch(context.arch)
-  )
+  validateSherpaRuntime(runtimeResources, context.electronPlatformName, builderArch)
+  validateMacIntelHelper(runtimeResources, context.electronPlatformName, builderArch)
 
   if (context.electronPlatformName === 'darwin') {
     execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', ffmpegPath], {
@@ -141,7 +155,6 @@ exports.default = async function afterPack(context) {
     }
     return
   }
-
 }
 
 exports.getRuntimeResources = getRuntimeResources
@@ -150,3 +163,4 @@ exports.validateReaderSkillRuntime = validateReaderSkillRuntime
 exports.validateFfmpegRuntime = validateFfmpegRuntime
 exports.validateSilkWasmRuntime = validateSilkWasmRuntime
 exports.validateSherpaRuntime = validateSherpaRuntime
+exports.validateMacIntelHelper = validateMacIntelHelper

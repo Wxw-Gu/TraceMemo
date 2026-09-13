@@ -31,6 +31,29 @@ const state: DatabaseKeyState = {
 }
 
 describe('database key controls', () => {
+  it('shows the Intel Mac entry without exposing internal runtime details', () => {
+    render(
+      <DatabaseKeyAutoDetect
+        state={{
+          ...state,
+          environment: {
+            ...state.environment!,
+            platform: 'darwin',
+            architecture: 'x64',
+            osVersion: 'macOS fixture'
+          }
+        }}
+        disabled={false}
+        onDetect={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText('Intel Mac 自动获取')).toBeVisible()
+    expect(screen.getByRole('button', { name: '自动获取密钥' })).toBeEnabled()
+    expect(screen.queryByText(/Python|Frida|SIP/i)).not.toBeInTheDocument()
+  })
+
   it('keeps auto-detect and refresh callbacks separate', async () => {
     const user = userEvent.setup()
     const onDetect = vi.fn()

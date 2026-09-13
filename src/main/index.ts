@@ -31,10 +31,7 @@ import {
   inspectImageDecoderStatus,
   type DecodedImage
 } from './image-decrypt-service'
-import {
-  exportGroupReportSnapshot,
-  extractGroupReportRenderSnapshot
-} from './group-report-service'
+import { exportGroupReportSnapshot, extractGroupReportRenderSnapshot } from './group-report-service'
 import {
   deleteGeneratedReport,
   listGeneratedReports,
@@ -44,9 +41,7 @@ import {
 } from './report-history-service'
 import { reportTemplateService } from './report-template-service'
 import { registerReportTemplateIpc } from './report-template-ipc'
-import type {
-  GroupReportRenderSnapshotExportRequest
-} from '../shared/group-report'
+import type { GroupReportRenderSnapshotExportRequest } from '../shared/group-report'
 import type {
   SaveGeneratedReportRequest,
   PrepareGeneratedReportTemplateSwitchRequest,
@@ -649,7 +644,13 @@ app.whenReady().then(async () => {
       if (!aiSearchPipelineService) throw new Error('本地搜索服务尚未初始化')
       return aiSearchPipelineService.run(request, () => undefined)
     },
-    log: (record) => appLogger.write({ level: record.level, scope: 'query-agent', message: record.message, details: record.details })
+    log: (record) =>
+      appLogger.write({
+        level: record.level,
+        scope: 'query-agent',
+        message: record.message,
+        details: record.details
+      })
   })
   agentHubService.setQueryAgentService(queryAgentService)
   knowledgeSearchService.onStatusChange((status) => {
@@ -818,7 +819,7 @@ app.whenReady().then(async () => {
         const wcdb4Client = nextWechatDb.getWcdb4Client()
         const sessions = await wcdb4Client.getSessionsAsync({ hydrateDisplayNames: false })
         configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
-        voiceService = new VoiceService(wcdb4Client, resolvedRoot)
+        voiceService = new VoiceService(wcdb4Client)
         voiceRecognition?.connect(voiceService, resolvedRoot)
         stickerService = new StickerService(wcdb4Client)
         videoAssetService = new VideoAssetService(wcdb4Client)
@@ -885,14 +886,16 @@ app.whenReady().then(async () => {
     )
     const self = chat.getSelfAccountInfo()
     const settings = loadSettings()
+    const intelMac = process.platform === 'darwin' && process.arch === 'x64'
     const environment = {
       platform: process.platform,
+      architecture: process.arch,
       osVersion: getOsVersionLabel(),
       appVersion: `v${app.getVersion()}`,
       wechatVersion: await detectWechatVersion(),
       dataStructureVersion: detectDataStructureVersion(settings.dbRoot),
       dataDirectoryDetected: validateDbRoot(settings.dbRoot).valid,
-      autoDetectSupported: process.platform === 'win32',
+      autoDetectSupported: process.platform === 'win32' || intelMac,
       wechatRunning: await isWechatRunning(),
       accountIdentified: Boolean(self?.wxid),
       dbConnected: chat.isReady(),
@@ -931,7 +934,7 @@ app.whenReady().then(async () => {
       const result =
         process.platform === 'win32'
           ? await keyServiceWin.autoGetDbKey(60_000, onStatus)
-          : await keyServiceMac.autoGetDbKey(onStatus)
+          : await keyServiceMac.autoGetDbKey(onStatus, 60_000, accountRoot)
       if (!result.success || !result.key) return result
 
       const selectedRoot = String(accountRoot || '').trim()
@@ -1958,7 +1961,7 @@ app.whenReady().then(async () => {
     if (!ok) return { success: false, error: '数据库未初始化或重新打开失败' }
     const client = chat.getChatDb()?.getWcdb4Client()
     if (client) {
-      voiceService = new VoiceService(client, client.getAccountRoot())
+      voiceService = new VoiceService(client)
       voiceRecognition?.connect(voiceService, client.getAccountRoot())
       const monitoring = await client.startMonitor((type, json) => {
         client.invalidateSessionCache()

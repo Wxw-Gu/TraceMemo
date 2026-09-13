@@ -5,7 +5,7 @@ import path from 'path'
 import { promisify } from 'util'
 import { isValidDatabaseKey } from './database-key-store'
 import crypto from 'crypto'
-import { findResource, getResourceCandidates } from './resource-paths'
+import { findResource } from './resource-paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -24,142 +24,89 @@ export interface ImageKeyResult {
   error?: string
 }
 
+export const MAC_INTEL_HELPER_RESOURCE_PATH = 'macos/mac-key-helper/mac_key_helper'
+
+const MAC_INTEL_HELPER_ERRORS: Record<string, string> = {
+  WECHAT_NOT_RUNNING: '请先启动并登录微信，然后重试',
+  NO_DATABASE_SALTS: '未找到可用的数据文件，请重新选择账号目录',
+  CONNECTION_TIMEOUT: '等待本地连接超时，请打开聊天窗口后重试'
+}
+
+export function parseMacKeyHelperOutput(output: string): DatabaseKeyResult {
+  const payloads: Record<string, unknown>[] = []
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const payload = JSON.parse(trimmed) as unknown
+      if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        payloads.push(payload as Record<string, unknown>)
+      }
+    } catch {
+      // Ignore non-JSON diagnostics written to stdout by older helpers.
+    }
+  }
+
+  const payload = payloads.find(
+    (item) => item.type === 'result' && item.success === true && typeof item.key === 'string'
+  )
+  const rawKey = typeof payload?.key === 'string' ? payload.key.trim().replace(/^0x/i, '') : ''
+  if (!isValidDatabaseKey(rawKey)) {
+    const errorPayload = payloads.find(
+      (item) =>
+        item.type === 'error' || typeof item.code === 'string' || typeof item.error === 'string'
+    )
+    const rawError = typeof errorPayload?.error === 'string' ? errorPayload.error.trim() : ''
+    const code = typeof errorPayload?.code === 'string' ? errorPayload.code : undefined
+    return {
+      success: false,
+      code,
+      error:
+        rawError || (code ? MAC_INTEL_HELPER_ERRORS[code] : undefined) || '连接组件未返回有效结果'
+    }
+  }
+  return { success: true, key: rawKey }
+}
+
 export class KeyServiceMac {
   private getHelperPath(): string {
-    const helperPath = findResource('xkey_helper')
-    if (!helperPath) {
-      throw new Error(
-        `找不到 xkey_helper（已检查：${getResourceCandidates('xkey_helper').join('；')}）`
-      )
-    }
+    const helperPath = findResource(MAC_INTEL_HELPER_RESOURCE_PATH)
+    if (!helperPath) throw new Error('自动获取组件尚未安装')
     return helperPath
   }
 
-  private async isSipEnabled(): Promise<boolean> {
-    try {
-      const { stdout } = await execFileAsync('/usr/bin/csrutil', ['status'])
-      return stdout.toLowerCase().includes('enabled')
-    } catch {
-      return false
-    }
-  }
-
-  private async getWeChatPid(): Promise<number> {
-    const commands: [string, string[]][] = [
-      ['/usr/bin/pgrep', ['-x', 'WeChat']],
-      ['/usr/bin/pgrep', ['-f', 'WeChat.app/Contents/MacOS/WeChat']]
-    ]
-    for (const [command, args] of commands) {
-      try {
-        const { stdout } = await execFileAsync(command, args)
-        const pids = stdout
-          .split(/\r?\n/)
-          .map((value) => Number.parseInt(value.trim(), 10))
-          .filter((value) => Number.isFinite(value) && value > 0)
-        if (pids.length) return Math.max(...pids)
-      } catch {
-        // Try the next process lookup strategy.
-      }
-    }
-    throw new Error('未找到微信主进程，请先启动并登录微信')
-  }
-
   private parseHelperOutput(output: string): DatabaseKeyResult {
-    const payloads: Record<string, unknown>[] = []
-    for (const match of output.matchAll(/\{[^{}]*\}/g)) {
-      try {
-        payloads.push(JSON.parse(match[0]) as Record<string, unknown>)
-      } catch {
-        // Ignore helper progress that is not JSON.
-      }
-    }
-    const payload = payloads.find((item) => item.success === true && typeof item.key === 'string')
-    const rawKey = typeof payload?.key === 'string' ? payload.key.trim().replace(/^0x/i, '') : ''
-    if (!isValidDatabaseKey(rawKey)) {
-      const errorPayload = payloads.find((item) => typeof item.result === 'string')
-      const rawError = typeof errorPayload?.result === 'string' ? errorPayload.result.trim() : ''
-      const parsedError = rawError.match(/^ERROR:([^:]+):?(.*)$/i)
-      const code = parsedError?.[1]?.toUpperCase()
-      const detail = parsedError?.[2]?.trim() || ''
-      if (code === 'SCAN_FAILED' && detail.toLowerCase().includes('sink pattern not found')) {
-        return {
-          success: false,
-          code,
-          error:
-            '内存扫描失败：未匹配到目标函数特征（Sink pattern not found），当前微信版本可能暂未适配。\n' +
-            '建议步骤：降级微信到 4.1.8 (点击顶部"上手教程"获取下载链接) -> 重启电脑（冷启动） -> 自动获取密钥 -> 成功后再升级微信。\n' +
-            '请不要连续重试，以免触发微信安全模式或系统内存保护。'
-        }
-      }
-      if (code === 'SCAN_FAILED') {
-        return {
-          success: false,
-          code,
-          error: `内存扫描失败：${detail || '未匹配到可用特征，当前微信版本可能暂未适配。'}`
-        }
-      }
-      return {
-        success: false,
-        code,
-        error: rawError || '密钥工具未返回有效的 64 位密钥'
-      }
-    }
-    return { success: true, key: rawKey }
+    return parseMacKeyHelperOutput(output)
   }
 
   async autoGetDbKey(
     onStatus?: (message: string) => void,
-    timeoutMs = 60_000
+    timeoutMs = 60_000,
+    accountRoot?: string
   ): Promise<DatabaseKeyResult> {
     if (process.platform !== 'darwin') {
       return { success: false, error: '自动获取密钥目前仅支持 macOS' }
     }
-    if (await this.isSipEnabled()) {
-      return {
-        success: false,
-        error: 'macOS 系统完整性保护（SIP）已开启，自动获取不可用，请使用手动粘贴。'
-      }
-    }
-
     try {
-      onStatus?.('正在查找微信进程...')
-      const pid = await this.getWeChatPid()
       const helperPath = this.getHelperPath()
       const waitMs = Math.max(30_000, timeoutMs)
-      const timeoutSeconds = Math.ceil(waitMs / 1000) + 30
-      onStatus?.('正在请求管理员授权...')
-      const scriptLines = [
-        `set helperPath to ${JSON.stringify(helperPath)}`,
-        `set cmd to quoted form of helperPath & " ${pid} ${waitMs}"`,
-        `set timeoutSec to ${timeoutSeconds}`,
-        'try',
-        'with timeout of timeoutSec seconds',
-        'set outText to do shell script cmd with administrator privileges',
-        'end timeout',
-        'return "OK::" & outText',
-        'on error errMsg number errNum',
-        'return "ERR::" & errNum & "::" & errMsg',
-        'end try'
-      ]
-      onStatus?.('授权后 需要在微信登录界面 点击登录微信')
+      onStatus?.('正在准备连接组件...')
       const { stdout } = await execFileAsync(
-        '/usr/bin/osascript',
-        scriptLines.flatMap((line) => ['-e', line]),
-        { timeout: waitMs + 20_000 }
+        helperPath,
+        ['capture', '--account-root', String(accountRoot || ''), '--timeout-ms', String(waitMs)],
+        { timeout: waitMs + 20_000, maxBuffer: 2 * 1024 * 1024 }
       )
-      const output = String(stdout).trim()
-      if (output.startsWith('ERR::-128')) return { success: false, error: '已取消管理员授权' }
-      if (output.startsWith('ERR::')) {
-        return {
-          success: false,
-          error: output.split('::').slice(2).join('::') || '密钥工具执行失败'
-        }
-      }
-      const result = this.parseHelperOutput(output.startsWith('OK::') ? output.slice(4) : output)
+      const result = this.parseHelperOutput(String(stdout))
       onStatus?.(result.success ? '密钥获取成功' : '密钥获取失败')
       return result
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) }
+      const detail = error instanceof Error ? error.message : String(error)
+      const output =
+        typeof error === 'object' && error !== null && 'stdout' in error
+          ? String((error as { stdout?: unknown }).stdout || '')
+          : ''
+      const parsed = output ? this.parseHelperOutput(output) : undefined
+      return parsed?.code ? parsed : { success: false, code: 'HELPER_FAILED', error: detail }
     }
   }
 
