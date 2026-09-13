@@ -462,6 +462,11 @@ declare global {
         value?: string
         error?: string
       }>
+      installIntelMacKeyRuntime: () => Promise<{
+        success: boolean
+        error?: string
+        code?: string
+      }>
       autoGetDbKey: (
         accountRoot: string,
         options?: { save?: boolean }

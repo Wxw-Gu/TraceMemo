@@ -377,6 +377,7 @@ const api = {
   getSavedDbKey: (accountRoot: string) => ipcRenderer.invoke('key:getSavedDbKey', accountRoot),
   getDatabaseKeyEnvironment: () => ipcRenderer.invoke('key:getEnvironment'),
   readDatabaseKeyClipboard: () => ipcRenderer.invoke('key:readClipboardDbKey'),
+  installIntelMacKeyRuntime: () => ipcRenderer.invoke('key:installIntelMacRuntime'),
   autoGetDbKey: (accountRoot: string, options?: { save?: boolean }) =>
     ipcRenderer.invoke('key:autoGetDbKey', accountRoot, options),
   autoGetImageKey: (options?: { save?: boolean }) =>

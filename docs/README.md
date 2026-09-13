@@ -5,6 +5,7 @@
 ## 档案与搜索
 
 - [第一次使用](./user-guide/getting-started.md)：安装、连接微信并完成第一次搜索。
+- [Intel Mac 获取微信密钥](./user-guide/intel-mac-key.md)：按页面检查结果准备环境并获取密钥。
 - [聊天档案与搜索](./user-guide/chat-archive.md)：浏览联系人和群聊，按关键词、备注、昵称、微信号或 wxid 查找消息；也包含档案中的文字转语音入口。
 
 ## AI 与知识库

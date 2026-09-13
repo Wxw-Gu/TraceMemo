@@ -58,6 +58,7 @@ export interface AccountDiscoveryResult {
 
 export interface DatabaseKeyEnvironment {
   platform: NodeJS.Platform
+  architecture?: string
   osVersion: string
   appVersion: string
   wechatVersion: string
@@ -69,4 +70,8 @@ export interface DatabaseKeyEnvironment {
   accountIdentified: boolean
   dbConnected: boolean
   encryptionAvailable: boolean
+  sipDisabled?: boolean
+  pythonAvailable?: boolean
+  fridaAvailable?: boolean
+  wechatAdhocSigned?: boolean
 }

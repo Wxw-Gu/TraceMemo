@@ -885,18 +885,22 @@ app.whenReady().then(async () => {
     )
     const self = chat.getSelfAccountInfo()
     const settings = loadSettings()
+    const intelMac = process.platform === 'darwin' && process.arch === 'x64'
+    const intelEnvironment = intelMac ? await keyServiceMac.getIntelEnvironmentStatus() : undefined
     const environment = {
       platform: process.platform,
+      architecture: process.arch,
       osVersion: getOsVersionLabel(),
       appVersion: `v${app.getVersion()}`,
       wechatVersion: await detectWechatVersion(),
       dataStructureVersion: detectDataStructureVersion(settings.dbRoot),
       dataDirectoryDetected: validateDbRoot(settings.dbRoot).valid,
-      autoDetectSupported: process.platform === 'win32',
+      autoDetectSupported: process.platform === 'win32' || intelMac,
       wechatRunning: await isWechatRunning(),
       accountIdentified: Boolean(self?.wxid),
       dbConnected: chat.isReady(),
-      encryptionAvailable: storage.encryptionAvailable
+      encryptionAvailable: storage.encryptionAvailable,
+      ...(intelEnvironment || {})
     }
     return { ...environment, diagnosticSummary: buildSafeDiagnosticSummary(environment) }
   })
@@ -907,6 +911,13 @@ app.whenReady().then(async () => {
     } catch {
       return { success: false, error: '无法读取剪贴板' }
     }
+  })
+
+  ipcMain.handle('key:installIntelMacRuntime', async (event) => {
+    const onStatus = (message: string): void => {
+      if (!event.sender.isDestroyed()) event.sender.send('key:dbKeyStatus', { message })
+    }
+    return keyServiceMac.installIntelKeyRuntime(onStatus)
   })
 
   ipcMain.handle('key:pasteAndSaveDbKey', async (_, accountRoot: string) => {
@@ -931,7 +942,7 @@ app.whenReady().then(async () => {
       const result =
         process.platform === 'win32'
           ? await keyServiceWin.autoGetDbKey(60_000, onStatus)
-          : await keyServiceMac.autoGetDbKey(onStatus)
+          : await keyServiceMac.autoGetDbKey(onStatus, 60_000, accountRoot)
       if (!result.success || !result.key) return result
 
       const selectedRoot = String(accountRoot || '').trim()

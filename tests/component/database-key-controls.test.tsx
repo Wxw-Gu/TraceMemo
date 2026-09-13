@@ -31,6 +31,36 @@ const state: DatabaseKeyState = {
 }
 
 describe('database key controls', () => {
+  it('offers automatic key detection on Intel Mac without exposing implementation details', async () => {
+    const user = userEvent.setup()
+    const onDetect = vi.fn()
+    render(
+      <DatabaseKeyAutoDetect
+        state={{
+          ...state,
+          environment: {
+            ...state.environment!,
+            platform: 'darwin',
+            architecture: 'x64',
+            pythonAvailable: true,
+            fridaAvailable: true,
+            wechatAdhocSigned: true,
+            sipDisabled: true
+          }
+        }}
+        disabled={false}
+        onDetect={onDetect}
+        onRefresh={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText('Intel Mac 自动获取')).toBeVisible()
+    expect(screen.getByText(/按页面提示操作即可/)).toBeVisible()
+    expect(screen.queryByText(/Frida|Python|SIP|签名/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '自动获取密钥' }))
+    expect(onDetect).toHaveBeenCalledOnce()
+  })
+
   it('keeps auto-detect and refresh callbacks separate', async () => {
     const user = userEvent.setup()
     const onDetect = vi.fn()

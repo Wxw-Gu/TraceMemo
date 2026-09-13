@@ -1118,6 +1118,25 @@ function App(): React.ReactElement {
     }
   }
 
+  const handleInstallIntelKeyRuntime = async (): Promise<void> => {
+    if (isFetchingDbKey) return
+    setIsFetchingDbKey(true)
+    setDbKeyStatus('正在准备连接环境，请保持网络连接…')
+    setDbKeyStatusKind('normal')
+    try {
+      const result = await window.api.installIntelMacKeyRuntime()
+      if (!result.success) throw new Error(result.error || '连接环境准备失败')
+      await refreshConnectionEnvironment()
+      setDbKeyStatus('连接环境已准备，请继续按页面步骤获取密钥')
+      setDbKeyStatusKind('success')
+    } catch (error) {
+      setDbKeyStatus(error instanceof Error ? error.message : String(error))
+      setDbKeyStatusKind('error')
+    } finally {
+      setIsFetchingDbKey(false)
+    }
+  }
+
   const handlePasteAndSaveDbKey = async (): Promise<void> => {
     setShowMacKeyFaq(false)
     if (!selectedAccount) {
@@ -2266,6 +2285,7 @@ function App(): React.ReactElement {
         }}
         onToggleDbKey={() => setShowDbKey((visible) => !visible)}
         onAutoGetKey={handleAutoGetDbKey}
+        onInstallIntelKeyRuntime={handleInstallIntelKeyRuntime}
         onRefreshEnvironment={() => void refreshConnectionEnvironment()}
         onGuideNext={() =>
           setConnectionGuideStep((current) => (current === 1 ? 2 : current === 2 ? 3 : current))

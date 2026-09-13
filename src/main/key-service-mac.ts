@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import fs from 'fs-extra'
 import path from 'path'
 import { promisify } from 'util'
@@ -25,6 +25,164 @@ export interface ImageKeyResult {
 }
 
 export class KeyServiceMac {
+  private getMacKeyRuntimeDir(): string {
+    return path.join(app.getPath('userData'), 'key-runtime')
+  }
+
+  private async runMacKeyTool(
+    args: string[],
+    timeoutMs: number,
+    onStatus?: (message: string) => void
+  ): Promise<Record<string, unknown>> {
+    const helperPath = findResource('macos-key-tool/intel_mac_key_helper')
+    if (!helperPath) {
+      return {
+        type: 'result',
+        success: false,
+        code: 'KEY_TOOL_UNAVAILABLE',
+        error: '缺少 Intel Mac 工具'
+      }
+    }
+
+    return await new Promise<Record<string, unknown>>((resolve) => {
+      const child = spawn(helperPath, args, {
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+      let settled = false
+      let pending = ''
+      let lastError = ''
+      let finalPayload: Record<string, unknown> | null = null
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (payload: Record<string, unknown>): void => {
+        if (settled) return
+        settled = true
+        if (timer) clearTimeout(timer)
+        resolve(payload)
+      }
+      const consume = (chunk: Buffer): void => {
+        pending += chunk.toString()
+        const lines = pending.split(/\r?\n/)
+        pending = lines.pop() || ''
+        for (const line of lines) {
+          try {
+            const payload = JSON.parse(line) as Record<string, unknown>
+            if (payload.type === 'progress' && typeof payload.message === 'string') {
+              onStatus?.(payload.message)
+            }
+            if (payload.type === 'result' || payload.type === 'status') finalPayload = payload
+          } catch {
+            // The helper contract is JSONL; ignore interpreter diagnostics.
+          }
+        }
+      }
+      child.stdout.on('data', consume)
+      child.stderr.on('data', (chunk: Buffer) => {
+        lastError = `${lastError}\n${chunk.toString()}`.trim().slice(-1000)
+      })
+      child.on('error', (error) =>
+        finish({
+          type: 'result',
+          success: false,
+          code: 'KEY_TOOL_FAILED',
+          error: `无法启动 Intel Mac 密钥工具：${error.message}`
+        })
+      )
+      child.on('close', () => {
+        if (pending) consume(Buffer.from('\n'))
+        finish(
+          finalPayload || {
+            type: 'result',
+            success: false,
+            code: 'KEY_TOOL_FAILED',
+            error: lastError || 'Intel Mac 密钥工具未返回结果'
+          }
+        )
+      })
+      timer = setTimeout(() => {
+        try {
+          child.kill('SIGTERM')
+        } catch {
+          // The child may already have exited.
+        }
+        finish({
+          type: 'result',
+          success: false,
+          code: 'KEY_TOOL_TIMEOUT',
+          error: 'Intel Mac 密钥获取超时，请让微信回到未登录界面后重试'
+        })
+      }, timeoutMs)
+    })
+  }
+
+  async getIntelEnvironmentStatus(): Promise<{
+    sipDisabled: boolean
+    pythonAvailable: boolean
+    fridaAvailable: boolean
+    wechatAdhocSigned: boolean
+  }> {
+    const payload = await this.runMacKeyTool(
+      ['status', '--runtime-dir', this.getMacKeyRuntimeDir()],
+      15_000
+    )
+    return {
+      sipDisabled: payload.sipDisabled === true,
+      pythonAvailable: payload.pythonAvailable === true,
+      fridaAvailable: payload.fridaAvailable === true,
+      wechatAdhocSigned: payload.wechatAdhocSigned === true
+    }
+  }
+
+  async installIntelKeyRuntime(
+    onStatus?: (message: string) => void
+  ): Promise<{ success: boolean; error?: string; code?: string }> {
+    if (process.platform !== 'darwin' || process.arch !== 'x64') {
+      return { success: false, code: 'UNSUPPORTED_PLATFORM', error: '仅 Intel Mac 需要安装此运行环境' }
+    }
+    onStatus?.('正在准备连接环境，请保持网络连接…')
+    const payload = await this.runMacKeyTool(
+      ['install', this.getMacKeyRuntimeDir()],
+      5 * 60_000,
+      onStatus
+    )
+    return {
+      success: payload.success === true,
+      code: typeof payload.code === 'string' ? payload.code : undefined,
+      error: typeof payload.error === 'string' ? payload.error : undefined
+    }
+  }
+
+  private async captureIntelDbKey(
+    accountRoot: string | undefined,
+    timeoutMs: number,
+    onStatus?: (message: string) => void
+  ): Promise<DatabaseKeyResult> {
+    const selectedRoot = String(accountRoot || '').trim()
+    if (!selectedRoot) return { success: false, code: 'ACCOUNT_REQUIRED', error: '请先选择微信账号' }
+    const waitMs = Math.max(30_000, timeoutMs)
+    const payload = await this.runMacKeyTool(
+      [
+        'capture',
+        '--account-root',
+        selectedRoot,
+        '--runtime-dir',
+        this.getMacKeyRuntimeDir(),
+        '--diagnostic-log',
+        path.join(app.getPath('logs'), 'mac-key-diagnostic.log'),
+        '--timeout-ms',
+        String(waitMs)
+      ],
+      waitMs + 15_000,
+      onStatus
+    )
+    const key = typeof payload.key === 'string' ? payload.key.trim().toLowerCase() : ''
+    if (payload.success === true && isValidDatabaseKey(key)) return { success: true, key }
+    return {
+      success: false,
+      code: typeof payload.code === 'string' ? payload.code : 'KEY_TOOL_FAILED',
+      error: typeof payload.error === 'string' ? payload.error : '未捕获到微信数据库密钥'
+    }
+  }
+
   private getHelperPath(): string {
     const helperPath = findResource('xkey_helper')
     if (!helperPath) {
@@ -109,19 +267,31 @@ export class KeyServiceMac {
 
   async autoGetDbKey(
     onStatus?: (message: string) => void,
-    timeoutMs = 60_000
+    timeoutMs = 60_000,
+    accountRoot?: string
   ): Promise<DatabaseKeyResult> {
+    if (onStatus) {
+      const emitStatus = onStatus
+      onStatus = (message: string): void =>
+        emitStatus(message.replace(/Frida/gi, '连接组件'))
+    }
     if (process.platform !== 'darwin') {
       return { success: false, error: '自动获取密钥目前仅支持 macOS' }
     }
     if (await this.isSipEnabled()) {
       return {
         success: false,
-        error: 'macOS 系统完整性保护（SIP）已开启，自动获取不可用，请使用手动粘贴。'
+        error: '当前系统还未完成连接环境准备，请按页面提示完成设置。'
       }
     }
 
     try {
+      if (process.arch === 'x64') {
+        onStatus?.('Intel Mac 将通过 Frida 获取微信主密钥，请让微信停留在未登录界面')
+        const result = await this.captureIntelDbKey(accountRoot, timeoutMs, onStatus)
+        onStatus?.(result.success ? '密钥获取成功' : '密钥获取失败')
+        return result
+      }
       onStatus?.('正在查找微信进程...')
       const pid = await this.getWeChatPid()
       const helperPath = this.getHelperPath()

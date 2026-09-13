@@ -17,7 +17,8 @@ export function DatabaseKeyAutoDetect({
 }): React.ReactElement {
   const environment = state.environment
   const platform = environment?.platform || runtimePlatform
-  if (platform !== 'win32') {
+  const isIntelMac = platform === 'darwin' && environment?.architecture === 'x64'
+  if (platform !== 'win32' && !isIntelMac) {
     return (
       <section className="settings-card database-key-auto database-key-auto-manual">
         <div>
@@ -31,8 +32,12 @@ export function DatabaseKeyAutoDetect({
     <section className="settings-card database-key-auto">
       <div className="database-key-auto-heading">
         <div>
-          <strong>Windows 自动获取</strong>
-          <p>TraceMemo 可在微信桌面端正在运行时，通过本机内存扫描尝试获取数据库密钥。</p>
+          <strong>{isIntelMac ? 'Intel Mac 自动获取' : 'Windows 自动获取'}</strong>
+          <p>
+            {isIntelMac
+              ? '请让微信停在未登录界面，按页面提示操作即可。'
+              : 'TraceMemo 可在微信桌面端正在运行时，通过本机内存扫描尝试获取数据库密钥。'}
+          </p>
         </div>
         <Button variant="outline" onClick={onDetect} disabled={disabled}>
           {state.status === 'auto-detecting' ? '正在获取…' : '自动获取密钥'}
@@ -45,9 +50,19 @@ export function DatabaseKeyAutoDetect({
         <li className={environment?.accountIdentified ? 'ok' : ''}>
           当前账号：{environment?.accountIdentified ? '已识别' : '尚未识别'}
         </li>
-        <li className={platform === 'win32' ? 'ok' : ''}>
-          当前平台：{platform === 'win32' ? '支持' : '不支持'}
+        <li className={platform === 'win32' || isIntelMac ? 'ok' : ''}>
+          当前平台：{platform === 'win32' || isIntelMac ? '支持' : '不支持'}
         </li>
+        {isIntelMac && (
+          <>
+            <li className={environment?.pythonAvailable && environment?.fridaAvailable ? 'ok' : ''}>
+              连接环境：
+              {environment?.pythonAvailable && environment?.fridaAvailable
+                ? '已准备好'
+                : '需要准备'}
+            </li>
+          </>
+        )}
       </ul>
       {state.status === 'auto-detecting' && (
         <ol className="database-key-phases">
@@ -62,7 +77,11 @@ export function DatabaseKeyAutoDetect({
         <div className="database-key-auto-error">
           <strong>暂未找到有效密钥</strong>
           <span>{state.error}</span>
-          <p>请保持微信正在运行，登录目标账号并打开几个聊天窗口后重试。</p>
+          <p>
+            {isIntelMac
+              ? '请让微信回到未登录界面，重新开始后按页面提示操作。'
+              : '请保持微信正在运行，登录目标账号并打开几个聊天窗口后重试。'}
+          </p>
           <Button
             variant="link"
             size="sm"

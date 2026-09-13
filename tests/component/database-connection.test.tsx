@@ -55,6 +55,7 @@ function renderPage(
     onSelectDbRoot: vi.fn(),
     onToggleDbKey: vi.fn(),
     onAutoGetKey: vi.fn(),
+    onInstallIntelKeyRuntime: vi.fn(),
     onRefreshEnvironment: vi.fn(),
     onGuideNext: vi.fn(),
     onGuideBack: vi.fn(),
@@ -77,6 +78,37 @@ function renderPage(
 }
 
 describe('DatabaseConnectionPage', () => {
+  it('uses the automatic Intel Mac flow without exposing implementation details', () => {
+    renderPage({
+      platform: 'darwin',
+      mode: 'automatic',
+      guideStep: 3,
+      environment: {
+        platform: 'darwin',
+        architecture: 'x64',
+        osVersion: 'macOS fixture',
+        appVersion: 'v2.1.6',
+        wechatVersion: '4.1.10',
+        dataStructureVersion: '微信 4.x（WCDB）',
+        dataDirectoryDetected: true,
+        diagnosticSummary: 'fixture',
+        autoDetectSupported: true,
+        wechatRunning: true,
+        accountIdentified: true,
+        dbConnected: false,
+        encryptionAvailable: true,
+        pythonAvailable: true,
+        fridaAvailable: true,
+        wechatAdhocSigned: true,
+        sipDisabled: true
+      }
+    })
+
+    expect(screen.getByRole('button', { name: '开始获取密钥' })).toBeVisible()
+    expect(screen.queryByText(/管理员授权|电脑密码/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Frida|Python|SIP|重新签名/)).not.toBeInTheDocument()
+  })
+
   it('renders a discovered nickname and avatar before connection', () => {
     const { container } = renderPage({
       mode: 'automatic',
