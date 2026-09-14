@@ -7,9 +7,11 @@ vi.mock('electron', () => ({
 }))
 
 import {
+  buildAppleSiliconXkeyInvocation,
   buildXkeyHelperArguments,
   mapXkeyHelperFailure,
-  parseXkeyHelperOutput
+  parseXkeyHelperOutput,
+  resolveXkeyHelperMode
 } from '../../src/main/key-service-mac'
 
 describe('parseXkeyHelperOutput', () => {
@@ -71,7 +73,19 @@ describe('parseXkeyHelperOutput', () => {
     })
   })
 
-  it('uses the verified 4.1.13 account-key capture contract', () => {
+  it.each([
+    ['4.1.8', 'legacy'],
+    ['4.1.9.57', 'legacy'],
+    ['4.1.10', 'legacy'],
+    ['4.1.13', 'wechat-4.1.13'],
+    ['4.1.13.91', 'wechat-4.1.13'],
+    ['4.1.130', 'legacy'],
+    ['未检测到', 'legacy']
+  ])('selects the helper mode for WeChat %s', (version, mode) => {
+    expect(resolveXkeyHelperMode(version)).toBe(mode)
+  })
+
+  it('builds the verified 4.1.13 account-key capture contract', () => {
     expect(buildXkeyHelperArguments(60037, 120_000)).toEqual([
       '60037',
       '120000',
@@ -80,6 +94,31 @@ describe('parseXkeyHelperOutput', () => {
       '--account'
     ])
   })
+
+  it('uses the new helper only for WeChat 4.1.13', () => {
+    expect(buildAppleSiliconXkeyInvocation('4.1.13.91', 60037, 60_000)).toEqual({
+      mode: 'wechat-4.1.13',
+      resourceName: 'xkey_helper_4_1_13',
+      args: ['60037', '120000', '--profile', 'wechat-4.1.13', '--account'],
+      waitMs: 120_000,
+      timeoutSeconds: 130,
+      execTimeoutMs: 135_000
+    })
+  })
+
+  it.each(['4.1.8', '4.1.9.57', '4.1.10', '未检测到'])(
+    'preserves the legacy helper invocation for WeChat %s',
+    (version) => {
+      expect(buildAppleSiliconXkeyInvocation(version, 60037, 60_000)).toEqual({
+        mode: 'legacy',
+        resourceName: 'xkey_helper',
+        args: ['60037', '60000'],
+        waitMs: 60_000,
+        timeoutSeconds: 90,
+        execTimeoutMs: 80_000
+      })
+    }
+  )
 
   it('extracts a helper error embedded in AppleScript diagnostics', () => {
     expect(

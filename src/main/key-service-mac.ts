@@ -6,6 +6,7 @@ import { promisify } from 'util'
 import { isValidDatabaseKey } from './database-key-store'
 import crypto from 'crypto'
 import { findResource, getResourceCandidates } from './resource-paths'
+import { detectWechatVersion } from './services/connection-diagnostics'
 
 const execFileAsync = promisify(execFile)
 
@@ -24,8 +25,40 @@ export interface ImageKeyResult {
   error?: string
 }
 
+export type XkeyHelperMode = 'legacy' | 'wechat-4.1.13'
+
+export function resolveXkeyHelperMode(wechatVersion: string): XkeyHelperMode {
+  return /^4\.1\.13(?:\.|$)/.test(wechatVersion.trim()) ? 'wechat-4.1.13' : 'legacy'
+}
+
 export function buildXkeyHelperArguments(pid: number, timeoutMs: number): string[] {
   return [String(pid), String(timeoutMs), '--profile', 'wechat-4.1.13', '--account']
+}
+
+export function buildAppleSiliconXkeyInvocation(
+  wechatVersion: string,
+  pid: number,
+  timeoutMs: number
+): {
+  mode: XkeyHelperMode
+  resourceName: string
+  args: string[]
+  waitMs: number
+  timeoutSeconds: number
+  execTimeoutMs: number
+} {
+  const mode = resolveXkeyHelperMode(wechatVersion)
+  const isWechat413 = mode === 'wechat-4.1.13'
+  const waitMs = Math.max(isWechat413 ? 120_000 : 30_000, timeoutMs)
+  const timeoutSeconds = Math.ceil(waitMs / 1000) + (isWechat413 ? 10 : 30)
+  return {
+    mode,
+    resourceName: isWechat413 ? 'xkey_helper_4_1_13' : 'xkey_helper',
+    args: isWechat413 ? buildXkeyHelperArguments(pid, waitMs) : [String(pid), String(waitMs)],
+    waitMs,
+    timeoutSeconds,
+    execTimeoutMs: isWechat413 ? timeoutSeconds * 1000 + 5_000 : waitMs + 20_000
+  }
 }
 
 export function mapXkeyHelperFailure(
@@ -260,11 +293,11 @@ export class KeyServiceMac {
     }
   }
 
-  private getHelperPath(): string {
-    const helperPath = findResource('xkey_helper')
+  private getHelperPath(resourceName = 'xkey_helper'): string {
+    const helperPath = findResource(resourceName)
     if (!helperPath) {
       throw new Error(
-        `找不到 xkey_helper（已检查：${getResourceCandidates('xkey_helper').join('；')}）`
+        `找不到 ${resourceName}（已检查：${getResourceCandidates(resourceName).join('；')}）`
       )
     }
     return helperPath
@@ -326,17 +359,17 @@ export class KeyServiceMac {
         onStatus?.(result.success ? '密钥获取成功' : '密钥获取失败')
         return result
       }
+      const wechatVersion = await detectWechatVersion()
       onStatus?.('正在查找微信进程...')
       const pid = await this.getWeChatPid()
-      const helperPath = this.getHelperPath()
-      const waitMs = Math.max(120_000, timeoutMs)
-      const timeoutSeconds = Math.ceil(waitMs / 1000) + 10
-      const helperArguments = buildXkeyHelperArguments(pid, waitMs)
+      const invocation = buildAppleSiliconXkeyInvocation(wechatVersion, pid, timeoutMs)
+      const isWechat413 = invocation.mode === 'wechat-4.1.13'
+      const helperPath = this.getHelperPath(invocation.resourceName)
       onStatus?.('正在请求管理员授权...')
       const scriptLines = [
         `set helperPath to ${JSON.stringify(helperPath)}`,
-        `set cmd to quoted form of helperPath & " ${helperArguments.join(' ')}"`,
-        `set timeoutSec to ${timeoutSeconds}`,
+        `set cmd to quoted form of helperPath & " ${invocation.args.join(' ')}"`,
+        `set timeoutSec to ${invocation.timeoutSeconds}`,
         'try',
         'with timeout of timeoutSec seconds',
         'set outText to do shell script cmd with administrator privileges',
@@ -346,11 +379,15 @@ export class KeyServiceMac {
         'return "ERR::" & errNum & "::" & errMsg',
         'end try'
       ]
-      onStatus?.('授权后请在微信登录界面点击“登录”，已有登录凭据时通常不需要扫码')
+      onStatus?.(
+        isWechat413
+          ? '授权后请在微信登录界面点击“登录”，已有登录凭据时通常不需要扫码'
+          : '授权后 需要在微信登录界面 点击登录微信'
+      )
       const { stdout } = await execFileAsync(
         '/usr/bin/osascript',
         scriptLines.flatMap((line) => ['-e', line]),
-        { timeout: timeoutSeconds * 1000 + 5_000 }
+        { timeout: invocation.execTimeoutMs }
       )
       const output = String(stdout).trim()
       if (output.startsWith('ERR::-128')) {
