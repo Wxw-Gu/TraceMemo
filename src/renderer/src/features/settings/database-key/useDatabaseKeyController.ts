@@ -155,15 +155,22 @@ export function useDatabaseKeyController({
 
   const autoDetectKey = useCallback(async (): Promise<void> => {
     dispatch({ type: 'AUTO_START' })
-    await refreshEnvironment()
-    const result = await window.api.autoGetDbKey(selfInfo?.accountRoot || '', { save: false })
-    if (!result.success || !result.key) {
-      dispatch({ type: 'AUTO_ERROR', error: result.error || '暂未找到有效密钥' })
-      return
+    try {
+      await refreshEnvironment()
+      const result = await window.api.autoGetDbKey(selfInfo?.accountRoot || '', { save: false })
+      if (!result.success || !result.key) {
+        dispatch({ type: 'AUTO_ERROR', error: result.error || '暂未找到有效密钥' })
+        return
+      }
+      onDbKeyChange(result.key)
+      dispatch({ type: 'AUTO_SUCCESS' })
+      await runValidation(result.key)
+    } catch {
+      dispatch({
+        type: 'AUTO_ERROR',
+        error: '自动获取密钥未完成，请确认微信仍在运行后重试。'
+      })
     }
-    onDbKeyChange(result.key)
-    dispatch({ type: 'AUTO_SUCCESS' })
-    await runValidation(result.key)
   }, [onDbKeyChange, refreshEnvironment, runValidation, selfInfo?.accountRoot])
 
   const clearSavedKey = useCallback(async (): Promise<void> => {

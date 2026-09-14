@@ -25,6 +25,8 @@ describe('database key validation', () => {
 
   it('maps automatic detection progress into stable phases', () => {
     expect(mapAutoDetectPhase('正在查找微信进程')).toBeGreaterThan(0)
+    expect(mapAutoDetectPhase('正在请求管理员授权')).toBe(2)
+    expect(mapAutoDetectPhase('授权后请在微信登录界面点击“登录”')).toBe(3)
     expect(mapAutoDetectPhase('已获取数据库密钥')).toBe(5)
   })
 })

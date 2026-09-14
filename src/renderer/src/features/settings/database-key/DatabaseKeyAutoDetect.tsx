@@ -2,7 +2,8 @@ import type { DatabaseKeyState } from './types'
 import { runtimePlatform } from '../../../utils/runtime-environment'
 import { Button } from '../../../components/ui'
 
-const PHASES = ['查找微信进程', '识别微信版本', '扫描候选密钥', '验证数据库', '获取完成']
+const DEFAULT_PHASES = ['查找微信进程', '识别微信版本', '扫描候选密钥', '验证数据库', '获取完成']
+const MAC_PHASES = ['查找微信进程', '等待管理员授权', '监听登录密钥', '验证数据库', '获取完成']
 
 export function DatabaseKeyAutoDetect({
   state,
@@ -30,6 +31,7 @@ export function DatabaseKeyAutoDetect({
     )
   }
   const isMac = platform === 'darwin'
+  const phases = isMac ? MAC_PHASES : DEFAULT_PHASES
   return (
     <section className="settings-card database-key-auto">
       <div className="database-key-auto-heading">
@@ -37,7 +39,9 @@ export function DatabaseKeyAutoDetect({
           <strong>{isMac ? 'macOS 自动获取' : 'Windows 自动获取'}</strong>
           <p>
             TraceMemo 可在微信桌面端运行时，通过本机内存扫描尝试获取数据库密钥。
-            {isMac ? '执行时会请求管理员授权，请按系统提示操作。' : ''}
+            {isMac
+              ? '执行时会请求管理员授权；授权后在微信登录界面点击“登录”即可，已有登录凭据时通常不需要扫码。监听最长两分钟，结束后会明确显示结果。'
+              : ''}
           </p>
         </div>
         <Button variant="outline" onClick={onDetect} disabled={disabled}>
@@ -55,7 +59,7 @@ export function DatabaseKeyAutoDetect({
       </ul>
       {state.status === 'auto-detecting' && (
         <ol className="database-key-phases">
-          {PHASES.map((phase, index) => (
+          {phases.map((phase, index) => (
             <li key={phase} className={state.autoPhase >= index + 1 ? 'active' : ''}>
               {phase}
             </li>
@@ -66,7 +70,11 @@ export function DatabaseKeyAutoDetect({
         <div className="database-key-auto-error">
           <strong>暂未找到有效密钥</strong>
           <span>{state.error}</span>
-          <p>请保持微信正在运行，登录目标账号并打开几个聊天窗口后重试。</p>
+          <p>
+            {isMac
+              ? '请先让微信停留在登录界面，点击自动获取并完成管理员授权，然后点击微信“登录”。'
+              : '请保持微信正在运行，登录目标账号并打开几个聊天窗口后重试。'}
+          </p>
           <Button
             variant="link"
             size="sm"

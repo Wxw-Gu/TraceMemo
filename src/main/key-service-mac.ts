@@ -24,35 +24,36 @@ export interface ImageKeyResult {
   error?: string
 }
 
-export function parseXkeyHelperOutput(output: string): DatabaseKeyResult {
-  const payloads: Record<string, unknown>[] = []
-  for (const match of output.matchAll(/\{[^{}]*\}/g)) {
-    try {
-      payloads.push(JSON.parse(match[0]) as Record<string, unknown>)
-    } catch {
-      // Ignore helper progress that is not JSON.
-    }
-  }
-  const payload = payloads.find((item) => item.success === true && typeof item.key === 'string')
-  const rawKey = typeof payload?.key === 'string' ? payload.key.trim().replace(/^0x/i, '') : ''
-  if (isValidDatabaseKey(rawKey)) return { success: true, key: rawKey }
+export function buildXkeyHelperArguments(pid: number, timeoutMs: number): string[] {
+  return [
+    String(pid),
+    String(timeoutMs),
+    '--profile',
+    'wechat-4.1.13',
+    '--account'
+  ]
+}
 
-  const errorPayload = payloads.find((item) => typeof item.result === 'string')
-  const rawError = typeof errorPayload?.result === 'string' ? errorPayload.result.trim() : ''
-  const normalizedError = rawError.toLowerCase()
-  const parsedError = rawError.match(/^ERROR:([^:]+):?(.*)$/is)
+export function mapXkeyHelperFailure(
+  rawError: string,
+  fallbackCode = 'HELPER_RESULT_INVALID'
+): DatabaseKeyResult {
+  const normalizedError = rawError.trim().toLowerCase()
+  const parsedError = rawError.match(/(?:^|[\s"])(?:\\?"?)ERROR:([^:\s"}]+):?([^"}\r\n]*)/i)
   const code = parsedError?.[1]?.toUpperCase()
   const detail = parsedError?.[2]?.trim() || ''
 
   if (
     code === 'CAPTURE_TIMEOUT' ||
-    normalizedError.includes('timeout waiting for breakpoint hit')
+    normalizedError.includes('timeout waiting for breakpoint hit') ||
+    normalizedError.includes('timeout waiting for sink hit') ||
+    normalizedError.includes('no_breakpoint_hit')
   ) {
     return {
       success: false,
       code: 'CAPTURE_TIMEOUT',
       error:
-        '已完成管理员授权，但监听期间微信没有触发数据库密钥写入。请先停留在微信登录界面，在 TraceMemo 点击“自动获取密钥”，授权后立即登录微信。'
+        '已完成管理员授权，但监听期间微信没有触发账号密钥派生。请先停留在微信登录界面，在 TraceMemo 点击“自动获取密钥”，授权后点击微信“登录”；已有登录凭据时通常不需要扫码。'
     }
   }
   if (code === 'SCAN_FAILED' && detail.toLowerCase().includes('sink pattern not found')) {
@@ -81,11 +82,29 @@ export function parseXkeyHelperOutput(output: string): DatabaseKeyResult {
   }
   return {
     success: false,
-    code: code || 'HELPER_RESULT_INVALID',
+    code: code || fallbackCode,
     error: code
       ? `密钥工具执行未完成（${code}），请确认微信仍在运行后重试。`
       : '密钥工具未返回有效密钥，请确认微信仍在运行后重试。'
   }
+}
+
+export function parseXkeyHelperOutput(output: string): DatabaseKeyResult {
+  const payloads: Record<string, unknown>[] = []
+  for (const match of output.matchAll(/\{[^{}]*\}/g)) {
+    try {
+      payloads.push(JSON.parse(match[0]) as Record<string, unknown>)
+    } catch {
+      // Ignore helper progress that is not JSON.
+    }
+  }
+  const payload = payloads.find((item) => item.success === true && typeof item.key === 'string')
+  const rawKey = typeof payload?.key === 'string' ? payload.key.trim().replace(/^0x/i, '') : ''
+  if (isValidDatabaseKey(rawKey)) return { success: true, key: rawKey }
+
+  const errorPayload = payloads.find((item) => typeof item.result === 'string')
+  const rawError = typeof errorPayload?.result === 'string' ? errorPayload.result.trim() : ''
+  return mapXkeyHelperFailure(rawError)
 }
 
 export class KeyServiceMac {
@@ -125,12 +144,12 @@ export class KeyServiceMac {
         // Try the next process lookup strategy.
       }
     }
-    throw new Error('未找到微信主进程，请先启动并登录微信')
+    throw new Error('未找到微信主进程，请先启动微信并停留在登录界面')
   }
 
   async autoGetDbKey(
     onStatus?: (message: string) => void,
-    timeoutMs = 60_000
+    timeoutMs = 120_000
   ): Promise<DatabaseKeyResult> {
     if (process.platform !== 'darwin') {
       return { success: false, error: '自动获取密钥目前仅支持 macOS' }
@@ -147,11 +166,12 @@ export class KeyServiceMac {
       const pid = await this.getWeChatPid()
       const helperPath = this.getHelperPath()
       const waitMs = Math.max(30_000, timeoutMs)
-      const timeoutSeconds = Math.ceil(waitMs / 1000) + 30
+      const timeoutSeconds = Math.ceil(waitMs / 1000) + 10
+      const helperArguments = buildXkeyHelperArguments(pid, waitMs)
       onStatus?.('正在请求管理员授权...')
       const scriptLines = [
         `set helperPath to ${JSON.stringify(helperPath)}`,
-        `set cmd to quoted form of helperPath & " ${pid} ${waitMs}"`,
+        `set cmd to quoted form of helperPath & " ${helperArguments.join(' ')}"`,
         `set timeoutSec to ${timeoutSeconds}`,
         'try',
         'with timeout of timeoutSec seconds',
@@ -162,19 +182,21 @@ export class KeyServiceMac {
         'return "ERR::" & errNum & "::" & errMsg',
         'end try'
       ]
-      onStatus?.('授权后 需要在微信登录界面 点击登录微信')
+      onStatus?.('授权后请在微信登录界面点击“登录”，已有登录凭据时通常不需要扫码')
       const { stdout } = await execFileAsync(
         '/usr/bin/osascript',
         scriptLines.flatMap((line) => ['-e', line]),
         { timeout: timeoutSeconds * 1000 + 5_000 }
       )
       const output = String(stdout).trim()
-      if (output.startsWith('ERR::-128')) return { success: false, error: '已取消管理员授权' }
+      if (output.startsWith('ERR::-128')) {
+        return { success: false, error: '已取消管理员授权' }
+      }
       if (output.startsWith('ERR::')) {
-        return {
-          success: false,
-          error: output.split('::').slice(2).join('::') || '密钥工具执行失败'
-        }
+        const [, errorNumber = 'UNKNOWN', ...errorParts] = output.split('::')
+        const result = mapXkeyHelperFailure(errorParts.join('::'), `OSASCRIPT_${errorNumber}`)
+        onStatus?.('密钥获取失败')
+        return result
       }
       const result = parseXkeyHelperOutput(output.startsWith('OK::') ? output.slice(4) : output)
       onStatus?.(result.success ? '密钥获取成功' : '密钥获取失败')
@@ -183,6 +205,13 @@ export class KeyServiceMac {
       const processError = error as NodeJS.ErrnoException & {
         killed?: boolean
         signal?: NodeJS.Signals | null
+      }
+      if (processError.message?.includes('未找到微信主进程')) {
+        return {
+          success: false,
+          code: 'WECHAT_NOT_RUNNING',
+          error: '未找到微信主进程，请先启动微信并停留在登录界面。'
+        }
       }
       if (
         processError.killed ||
