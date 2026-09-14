@@ -906,6 +906,8 @@ const captureFullPage = async (
   const reportSessionPartition = `report-template-${crypto.randomUUID()}`
   const reportWindow = new BrowserWindow({
     show: false,
+    opacity: 0,
+    skipTaskbar: true,
     width: captureWidth,
     height: 800,
     frame: false,
@@ -948,7 +950,9 @@ const captureFullPage = async (
   reportWindow.webContents.on('will-navigate', (event) => event.preventDefault())
 
   try {
+    const readyToShow = new Promise<void>((resolve) => reportWindow.once('ready-to-show', resolve))
     await reportWindow.loadFile(htmlPath)
+    await readyToShow
     console.log('[GroupReport] capture loaded html')
     await reportWindow.webContents.executeJavaScript(`Promise.all([
       document.fonts.ready,
@@ -964,10 +968,21 @@ const captureFullPage = async (
     })`)) as { width: number; height: number }
     const width = Math.max(captureWidth, Math.min(maxCaptureWidth, Math.ceil(metrics.width)))
     const height = Math.max(800, Math.min(maxCaptureHeight, Math.ceil(metrics.height)))
-    reportWindow.setContentSize(width, height)
+    const [currentWidth, currentHeight] = reportWindow.getContentSize()
+    if (currentWidth !== width || currentHeight !== height) {
+      const resized = new Promise<void>((resolve) => reportWindow.once('resize', resolve))
+      reportWindow.setContentSize(width, height)
+      await resized
+    }
+    await reportWindow.webContents.executeJavaScript(
+      'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
+    )
     await new Promise((resolve) => setTimeout(resolve, 100))
     console.log(`[GroupReport] capture native page width=${width} height=${height}`)
-    const image = await reportWindow.webContents.capturePage({ x: 0, y: 0, width, height })
+    const image = await reportWindow.webContents.capturePage(
+      { x: 0, y: 0, width, height },
+      { stayHidden: true }
+    )
     const png = image.toPNG()
     if (png.length < 1000) throw new Error('生成的日报图片为空')
     await fs.writeFile(pngPath, png)

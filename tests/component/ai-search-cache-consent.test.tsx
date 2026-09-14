@@ -6,7 +6,7 @@ import {
   SEARCH_CACHE_KEY,
   buildSearchCacheKey
 } from '../../src/renderer/src/components/search/searchUtils'
-import { makeSearchResult } from './support/ai-search-fixtures'
+import { makePipelineEvidence, makeSearchResult } from './support/ai-search-fixtures'
 
 const api = {
   getSettings: vi.fn(),
@@ -224,7 +224,7 @@ describe('AISearchWorkspace cache privacy boundary', () => {
       value: scrollIntoView
     })
     api.getAiSearchProviderStatus.mockResolvedValue({ configured: true, requiresConsent: false })
-    api.runAiSearch.mockResolvedValue({
+    api.runAiSearch.mockResolvedValue(makeSearchResult({
       requestId: 'evidence-navigation',
       status: 'completed',
       answer: '请查看这条证据 [E7]。',
@@ -264,7 +264,7 @@ describe('AISearchWorkspace cache privacy boundary', () => {
       agent: { mode: 'agent', toolCalls: 1, trace: [] },
       timings: {},
       elapsedMs: 1
-    } as never)
+    }) as never)
     render(
       <AISearchWorkspace
         contacts={[]}
@@ -300,7 +300,7 @@ describe('AISearchWorkspace cache privacy boundary', () => {
 
   it('keeps the submitted result title stable while drafting a new question and clears it from 新问题', async () => {
     api.getAiSearchProviderStatus.mockResolvedValue({ configured: true, requiresConsent: false })
-    api.runAiSearch.mockResolvedValue({
+    api.runAiSearch.mockResolvedValue(makeSearchResult({
       requestId: 'new-question',
       status: 'completed',
       answer: 'first answer',
@@ -319,7 +319,7 @@ describe('AISearchWorkspace cache privacy boundary', () => {
       agent: { mode: 'agent', toolCalls: 1, trace: [] },
       timings: {},
       elapsedMs: 1
-    } as never)
+    }) as never)
     render(
       <AISearchWorkspace
         contacts={[]}
