@@ -967,7 +967,10 @@ const captureFullPage = async (
     reportWindow.setContentSize(width, height)
     await new Promise((resolve) => setTimeout(resolve, 100))
     console.log(`[GroupReport] capture native page width=${width} height=${height}`)
-    const image = await reportWindow.webContents.capturePage({ x: 0, y: 0, width, height })
+    const image = await reportWindow.webContents.capturePage(
+      { x: 0, y: 0, width, height },
+      { stayHidden: true }
+    )
     const png = image.toPNG()
     if (png.length < 1000) throw new Error('生成的日报图片为空')
     await fs.writeFile(pngPath, png)
