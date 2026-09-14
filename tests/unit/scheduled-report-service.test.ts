@@ -73,19 +73,38 @@ async function enableNotifications(storageDir: string): Promise<void> {
   await writeFile(join(storageDir, 'settings.json'), JSON.stringify({ enabled: true }))
 }
 
+// tick() 为保证调度不阻塞而 fire-and-forget 启动执行，测试只能轮询执行记录来等待结束。
+// 该路径耗时几乎全部是临时目录的 JSON 落盘：本地约 16ms，Windows CI（含杀毒扫描）实测
+// 50~120ms，最慢一次耗尽旧的 200ms 预算后误报“未结束”。窗口按最坏观测值留足余量，
+// 但仍在 5s 的 vitest 用例超时之内，保留有界失败而不是无限等待。
+const EXECUTION_WAIT_TIMEOUT_MS = 4_000
+const EXECUTION_WAIT_POLL_INTERVAL_MS = 10
+
 async function runScheduled(
   service: ScheduledReportService,
   taskId: string
 ): Promise<ScheduledReportExecution> {
   const task = (await service.listTasks()).find((item) => item.id === taskId)
   if (!task) throw new Error('scheduled task not found')
-  await service.tick(new Date(Date.parse(task.nextRunAt) + 1_000))
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const execution = (await service.listExecutions(taskId))[0]
-    if (execution && execution.status !== 'running') return execution
-    await new Promise((resolve) => setTimeout(resolve, 10))
+  const scheduledSlot = task.nextRunAt
+  await service.tick(new Date(Date.parse(scheduledSlot) + 1_000))
+  const deadline = Date.now() + EXECUTION_WAIT_TIMEOUT_MS
+  let lastStatus = 'no execution recorded'
+  for (;;) {
+    // 取最新一次执行，而不是数组首项（executions.json 按追加顺序保存）。
+    const latest = (await service.listExecutions(taskId))
+      .slice()
+      .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))[0]
+    if (latest && latest.status !== 'running') return latest
+    lastStatus = latest?.status ?? 'no execution recorded'
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `scheduled execution did not finish within ${EXECUTION_WAIT_TIMEOUT_MS}ms ` +
+          `(slot ${scheduledSlot}, last status: ${lastStatus})`
+      )
+    }
+    await new Promise((resolve) => setTimeout(resolve, EXECUTION_WAIT_POLL_INTERVAL_MS))
   }
-  throw new Error('scheduled execution did not finish')
 }
 
 const onlineAgentHubStatus = (): AgentHubStatus => ({
