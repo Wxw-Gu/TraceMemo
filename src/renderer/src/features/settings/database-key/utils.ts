@@ -8,8 +8,8 @@ export const isDatabaseKeyFormatValid = (value: string): boolean =>
 export function mapAutoDetectPhase(message: string): number {
   if (/完成|成功|已获取/.test(message)) return 5
   if (/验证|校验/.test(message)) return 4
-  if (/扫描|候选|获取/.test(message)) return 3
-  if (/版本|组件|窗口/.test(message)) return 2
+  if (/登录|监听|扫描|候选|获取/.test(message)) return 3
+  if (/授权|版本|组件|窗口/.test(message)) return 2
   return 1
 }
 
