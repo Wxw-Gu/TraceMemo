@@ -117,6 +117,8 @@ export interface LegacyAIConfig {
 }
 
 export interface AIChatRequestOptions {
+  /** Stable ID shared by requests and retries belonging to one conversation or task. */
+  sessionId?: string
   providerId?: string
   modelId?: string
   timeoutMs?: number

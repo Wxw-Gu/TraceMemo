@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import type { Contact, Message } from '../../shared/types'
 import type { GroupDailyReport, GroupReportMetadata } from '../../shared/group-report'
 import { exportGroupReport } from '../group-report-service'
@@ -120,12 +121,13 @@ export async function generateAgentGroupReport(
 
   const input = await buildGroupReportInput(messages, contact as Contact, true, 'full')
   const runtime = aiProvider.getRuntimeConfig()
+  const sessionId = randomUUID()
   const ai = await aiProvider.chat(
     [
       { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
       { role: 'user', content: input.prompt }
     ],
-    { timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
+    { sessionId, timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
   )
   if (!ai.success || !ai.data) {
     return {
@@ -153,7 +155,7 @@ export async function generateAgentGroupReport(
         { role: 'system', content: GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT },
         { role: 'user', content: ai.data }
       ],
-      { timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
+      { sessionId, timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
     )
     if (!repaired.success || !repaired.data) {
       const cause = parseError instanceof Error ? parseError.message : String(parseError)

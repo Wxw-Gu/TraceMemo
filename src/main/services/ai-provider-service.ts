@@ -1,4 +1,5 @@
 import { app } from 'electron'
+import { randomUUID } from 'crypto'
 import fs from 'fs-extra'
 import path from 'path'
 import type {
@@ -486,7 +487,8 @@ export class AIProviderService {
       messages,
       testing,
       signal,
-      onDelta
+      onDelta,
+      options?.sessionId
     )
   }
 
@@ -514,14 +516,15 @@ export class AIProviderService {
     onDelta?: AIChatDeltaHandler
   ): Promise<AIRequestResult> {
     const provider = deepSeekProvider(options.baseURL, options.model)
-    return requestOpenAICompatible(
+    return requestProvider(
       provider,
       options.apiKey || '',
       options.model || provider.defaultModel,
       messages,
       false,
       signal,
-      onDelta
+      onDelta,
+      options?.sessionId
     )
   }
 
@@ -736,8 +739,21 @@ function requestProvider(
   messages: AIMessage[],
   testing = false,
   signal?: AbortSignal,
-  onDelta?: AIChatDeltaHandler
+  onDelta?: AIChatDeltaHandler,
+  sessionId?: string
 ): Promise<AIRequestResult> {
+  // Match the endpoint, not the editable provider name or model name.
+  const url = new URL(provider.baseUrl)
+  if (url.hostname === 'opencode.ai' && /^\/zen\/go(?:\/|$)/.test(url.pathname)) {
+    const extraHeaders = Object.fromEntries(
+      Object.entries(provider.advanced.extraHeaders).filter(
+        ([name]) => name.toLowerCase() !== 'x-opencode-session'
+      )
+    )
+    extraHeaders['x-opencode-session'] = sessionId?.trim() || randomUUID()
+    if (!hasHeader(extraHeaders, 'user-agent')) extraHeaders['user-agent'] = 'TraceMemo'
+    provider = { ...provider, advanced: { ...provider.advanced, extraHeaders } }
+  }
   if (provider.type === 'anthropic-messages') {
     return requestAnthropic(provider, apiKey, model, messages, testing, signal)
   }
