@@ -217,6 +217,33 @@ export function useSearchHistory({
     onNotice('已恢复这条历史问题的最近结果')
   }
 
+  const readCachedResult = (cacheKey: string): AISearchCacheRecord | null => {
+    const exact = readSearchCache(cacheKey)
+    if (exact) return exact
+    try {
+      const requested = parseSearchCacheKey(cacheKey)
+      if (!requested) return null
+      const records = JSON.parse(localStorage.getItem(SEARCH_CACHE_KEY) || '[]') as AISearchCacheRecord[]
+      return records
+        .filter((record) => {
+          try {
+            const raw = JSON.parse(record.key) as unknown[]
+            const location = parseSearchCacheKey(record.key)
+            // Only legacy four-part keys may use compatibility lookup, and
+            // all base dimensions must still match the active request.
+            return raw.length === 4 && location?.scope === requested.scope &&
+              location.contactMd5 === requested.contactMd5 && location.range === requested.range &&
+              location.query === requested.query
+          } catch {
+            return false
+          }
+        })
+        .sort((a, b) => b.createdAt - a.createdAt)[0] || null
+    } catch {
+      return null
+    }
+  }
+
   const persistSearchResult = (input: PersistSearchResultInput): AISearchCacheRecord => {
     const record = createSearchCacheRecord({
       ...input,
@@ -288,7 +315,7 @@ export function useSearchHistory({
     removeHistoryQuery,
     restoreHistoryQuery,
     applyCachedResult,
-    readCachedResult: readSearchCache,
+    readCachedResult,
     persistSearchResult,
     clearActiveResult,
     skipNextCache,
