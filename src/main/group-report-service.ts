@@ -974,7 +974,6 @@ const captureFullPage = async (
       reportWindow.setContentSize(width, height)
       await resized
     }
-    reportWindow.showInactive()
     await reportWindow.webContents.executeJavaScript(
       'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
     )
