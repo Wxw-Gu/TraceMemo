@@ -15,7 +15,8 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
-  Skeleton
+  Skeleton,
+  Switch
 } from '../../../components/ui'
 import { PersonalWechatSetupGuide } from '../../../components/chat/PersonalWechatSetupGuide'
 import { PersonalWechatSupportedVersionsContent } from '../../../components/chat/PersonalWechatSupportedVersionsContent'
@@ -88,6 +89,8 @@ export function PersonalWechatSendPage({
   const [windowsPortInput, setWindowsPortInput] = useState('')
   const [windowsDetectedPort, setWindowsDetectedPort] = useState('')
   const [windowsEndpointBusy, setWindowsEndpointBusy] = useState(false)
+  const [keepOneBotProcess, setKeepOneBotProcess] = useState(false)
+  const [keepProcessBusy, setKeepProcessBusy] = useState(false)
   const [showWechatVersions, setShowWechatVersions] = useState(false)
   const runtimeVersionsTriggerRef = useRef<HTMLButtonElement | null>(null)
   const personalWechatRuntimeSupported = isMac && Boolean(runtimeStatus?.supported)
@@ -127,6 +130,21 @@ export function PersonalWechatSendPage({
     })
     return () => unsubscribe?.()
   }, [refresh])
+
+  useEffect(() => {
+    if (!isMac) return undefined
+    let active = true
+    const readKeepProcess = window.api.getPersonalWechatKeepOneBotProcess
+    if (typeof readKeepProcess !== 'function') return undefined
+    void readKeepProcess()
+      .then((keep) => {
+        if (active && typeof keep === 'boolean') setKeepOneBotProcess(keep)
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [])
 
   useEffect(() => {
     if (isWindows || !senderStatus || senderStatus.canSend || senderStatus.state === 'error') {
@@ -216,6 +234,26 @@ export function PersonalWechatSendPage({
       setRuntimeStatus(await window.api.getPersonalWechatRuntimeStatus())
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '微信发送组件状态读取失败')
+    }
+  }
+
+  const handleKeepOneBotProcessChange = async (keep: boolean): Promise<void> => {
+    if (!isMac || keepProcessBusy) return
+    const saveKeepProcess = window.api.setPersonalWechatKeepOneBotProcess
+    if (typeof saveKeepProcess !== 'function') {
+      onNotice('请重启 TraceMemo 后再使用“保留 OneBot 进程”')
+      return
+    }
+    setKeepProcessBusy(true)
+    setKeepOneBotProcess(keep)
+    try {
+      const saved = await saveKeepProcess(keep)
+      if (typeof saved === 'boolean') setKeepOneBotProcess(saved)
+    } catch (reason) {
+      setKeepOneBotProcess(!keep)
+      onNotice(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setKeepProcessBusy(false)
     }
   }
 
@@ -578,6 +616,20 @@ export function PersonalWechatSendPage({
                           />
                         </div>
                       ) : null}
+                      <div className="col-span-full flex items-center justify-between gap-4 border-t border-border-subtle pt-4">
+                        <div>
+                          <strong className="block text-sm">保留 OneBot 进程</strong>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            退出 TraceMemo 后继续保留进程，重新打开时可以复用。
+                          </p>
+                        </div>
+                        <Switch
+                          checked={keepOneBotProcess}
+                          disabled={keepProcessBusy}
+                          onCheckedChange={(checked) => void handleKeepOneBotProcessChange(checked)}
+                          aria-label="保留 OneBot 进程"
+                        />
+                      </div>
                     </section>
 
                     <h2 className="settings-section-heading">配置状态</h2>

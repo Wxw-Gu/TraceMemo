@@ -9,15 +9,7 @@ import type {
   PersonalWechatRuntimeProgressEvent,
   PersonalWechatRuntimeStatus
 } from '../../../../shared/personal-wechat-runtime'
-import {
-  Button,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  Switch
-} from '../ui'
+import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui'
 import { isMac, isWindows } from '../../utils/runtime-environment'
 import { PersonalWechatChatComposer, type ChatMessage } from './PersonalWechatChatComposer'
 import { PersonalWechatSetupGuide } from './PersonalWechatSetupGuide'
@@ -89,7 +81,6 @@ function PersonalWechatMacSendDialog({
   const [sendError, setSendError] = useState<string | null>(null)
   const [voiceDiagnostic, setVoiceDiagnostic] = useState<PersonalWechatVoiceDiagnostic | null>(null)
   const [voiceDiagnosticOpen, setVoiceDiagnosticOpen] = useState(false)
-  const [keepOneBotProcess, setKeepOneBotProcess] = useState(false)
   const requestIdRef = useRef(0)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
   const closingRef = useRef(false)
@@ -154,36 +145,6 @@ function PersonalWechatMacSendDialog({
     const timer = window.setInterval(() => void refreshStatus(), 1_000)
     return () => window.clearInterval(timer)
   }, [refreshStatus, senderStatus])
-
-  useEffect(() => {
-    if (!isMac) return undefined
-    let active = true
-    const readKeepProcess = window.api.getPersonalWechatKeepOneBotProcess
-    if (!readKeepProcess) return undefined
-    void readKeepProcess().then((keep) => {
-      if (active && typeof keep === 'boolean') setKeepOneBotProcess(keep)
-    })
-    return () => {
-      active = false
-    }
-  }, [])
-
-  const handleKeepOneBotProcessChange = async (keep: boolean): Promise<void> => {
-    if (!isMac) return
-    const saveKeepProcess = window.api.setPersonalWechatKeepOneBotProcess
-    if (!saveKeepProcess) {
-      setSendError('请重启 TraceMemo 后再使用“保留 OneBot 进程”')
-      return
-    }
-    setKeepOneBotProcess(keep)
-    try {
-      const saved = await saveKeepProcess(keep)
-      if (typeof saved === 'boolean') setKeepOneBotProcess(saved)
-    } catch (error) {
-      setKeepOneBotProcess(!keep)
-      setSendError(error instanceof Error ? error.message : String(error))
-    }
-  }
 
   const handleDownloadRuntime = async (): Promise<void> => {
     if (runtimeBusy) return
@@ -399,34 +360,14 @@ function PersonalWechatMacSendDialog({
             )}
           </div>
           {setupReady && isMac && (
-            <div className="personal-wechat-chat-footer flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span>保留 OneBot 进程</span>
-                <Switch
-                  checked={keepOneBotProcess}
-                  onCheckedChange={(checked) => void handleKeepOneBotProcessChange(checked)}
-                  aria-label="保留 OneBot 进程"
-                />
-              </div>
+            <div className="personal-wechat-chat-footer flex items-center justify-end">
               <Button variant="link" size="sm" onClick={() => void handleOpenVoiceDiagnostic()}>
                 语音发送诊断
               </Button>
             </div>
           )}
           {!setupReady && (
-            <div
-              className={`personal-wechat-chat-footer flex items-center ${isMac ? 'justify-between' : 'justify-end'}`}
-            >
-              {isMac && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span>保留 OneBot 进程</span>
-                  <Switch
-                    checked={keepOneBotProcess}
-                    onCheckedChange={(checked) => void handleKeepOneBotProcessChange(checked)}
-                    aria-label="保留 OneBot 进程"
-                  />
-                </div>
-              )}
+            <div className="personal-wechat-chat-footer flex items-center justify-end">
               <Button variant="outline" onClick={handleClose} disabled={isBusy}>
                 关闭
               </Button>

@@ -19,6 +19,8 @@ const cancelRuntimeDownload = vi.fn()
 const removeRuntime = vi.fn()
 const openRuntimeDirectory = vi.fn()
 const rebindSender = vi.fn()
+const getKeepOneBotProcess = vi.fn()
+const setKeepOneBotProcess = vi.fn()
 
 const senderStatus = {
   state: 'online' as const,
@@ -88,6 +90,8 @@ describe('PersonalWechatSendPage on macOS', () => {
     })
     openRuntimeDirectory.mockReset().mockResolvedValue({ success: true })
     rebindSender.mockReset().mockResolvedValue(senderStatus)
+    getKeepOneBotProcess.mockReset().mockResolvedValue(false)
+    setKeepOneBotProcess.mockReset().mockImplementation(async (keep: boolean) => keep)
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     Object.defineProperty(window, 'api', {
       configurable: true,
@@ -100,7 +104,9 @@ describe('PersonalWechatSendPage on macOS', () => {
         cancelPersonalWechatRuntimeDownload: cancelRuntimeDownload,
         removePersonalWechatRuntime: removeRuntime,
         openPersonalWechatRuntimeDirectory: openRuntimeDirectory,
-        rebindPersonalWechatSender: rebindSender
+        rebindPersonalWechatSender: rebindSender,
+        getPersonalWechatKeepOneBotProcess: getKeepOneBotProcess,
+        setPersonalWechatKeepOneBotProcess: setKeepOneBotProcess
       }
     })
   })
@@ -121,6 +127,18 @@ describe('PersonalWechatSendPage on macOS', () => {
     const versionsDialog = screen.getByRole('dialog', { name: '支持的微信版本' })
     expect(versionsDialog).toBeVisible()
     expect(versionsDialog).toHaveTextContent('4.1.11.53')
+  })
+
+  it('keeps the OneBot process setting on the macOS WeChat send page', async () => {
+    const user = userEvent.setup()
+    render(<PersonalWechatSendPage onNotice={vi.fn()} />)
+
+    const keepProcess = await screen.findByRole('switch', { name: '保留 OneBot 进程' })
+    expect(keepProcess).not.toBeChecked()
+    await user.click(keepProcess)
+
+    await waitFor(() => expect(setKeepOneBotProcess).toHaveBeenCalledWith(true))
+    expect(keepProcess).toBeChecked()
   })
 
   it('downloads a missing macOS runtime from the send page', async () => {

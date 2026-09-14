@@ -191,4 +191,11 @@ describe('PersonalWechatSendPage on Windows', () => {
     expect(screen.queryByText(/OneBot/i)).not.toBeInTheDocument()
     expect(screen.queryByText('微信发送组件')).not.toBeInTheDocument()
   })
+
+  it('does not show the macOS process setting on the Windows WeChat send page', async () => {
+    render(<PersonalWechatSendPage onNotice={vi.fn()} />)
+
+    expect(await screen.findByRole('spinbutton', { name: '微信发送能力端口' })).toBeVisible()
+    expect(screen.queryByRole('switch', { name: '保留 OneBot 进程' })).not.toBeInTheDocument()
+  })
 })

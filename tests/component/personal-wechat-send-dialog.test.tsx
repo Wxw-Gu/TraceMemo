@@ -143,6 +143,7 @@ describe('PersonalWechatSendDialog', () => {
     renderDialog()
     await startComposer()
     expect(screen.getByRole('dialog')).toHaveTextContent('文字转语音')
+    expect(screen.queryByRole('switch', { name: '保留 OneBot 进程' })).not.toBeInTheDocument()
     expect(screen.queryByText('验证消息能力')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '生成语音' })).toBeDisabled()
   })
