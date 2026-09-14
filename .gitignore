@@ -1,5 +1,6 @@
 node_modules
 *.tsbuildinfo
+electron.vite.config.[0-9]*.mjs
 dist
 out
 .env

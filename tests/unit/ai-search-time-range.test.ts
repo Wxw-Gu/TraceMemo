@@ -23,7 +23,7 @@ describe('AI search natural-language time ranges', () => {
     })
     expect(inferAiSearchTimeRange('我和张三今年聊了什么？', 'all', NOW)).toMatchObject({
       label: '今年',
-      startTime: Math.floor(new Date(2026, 0, 1).getTime() / 1000)
+      startTime: Math.floor(new Date('2026-01-01T00:00:00+08:00').getTime() / 1000)
     })
   })
 
