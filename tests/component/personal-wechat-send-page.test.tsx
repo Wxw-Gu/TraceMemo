@@ -139,4 +139,91 @@ describe('PersonalWechatSendPage on macOS', () => {
     await waitFor(() => expect(downloadRuntime).toHaveBeenCalledOnce())
     expect(onNotice).toHaveBeenCalledWith('微信发送组件已准备好')
   })
+
+  it('enables 4.1.13 text sending without requiring the OneBot runtime', async () => {
+    const xsendPendingStatus = {
+      ...senderStatus,
+      state: 'runtime_missing' as const,
+      boundWechatPid: undefined,
+      oneBotPid: undefined,
+      endpointReady: false,
+      runtimeReady: false,
+      attachReady: false,
+      baseAddress: undefined,
+      baseAddressReady: false,
+      textHookInstalled: false,
+      textHookReady: false,
+      imageHookInstalled: false,
+      imageHookReady: false,
+      messageListenerReady: false,
+      canSend: false,
+      canSendText: false,
+      canSendImage: false,
+      canSendVoice: false,
+      message: '微信 4.1.13 已匹配，请启用当前登录进程的文字发送能力',
+      xsend: {
+        supported: true,
+        ready: false,
+        state: 'failed' as const,
+        platform: 'darwin',
+        arch: 'arm64',
+        installed: true,
+        wechatRunning: true,
+        wechatPid: 4668,
+        wechatBuild: '269631',
+        message: 'xsend resident 状态检查失败',
+        error: 'Command failed: xsend-v3-resident --status'
+      }
+    }
+    const xsendReadyStatus = {
+      ...xsendPendingStatus,
+      state: 'online' as const,
+      canSend: true,
+      canSendText: true,
+      message: '微信 4.1.13 文字发送已就绪',
+      xsend: {
+        ...xsendPendingStatus.xsend,
+        ready: true,
+        state: 'ready' as const,
+        message: 'xsend resident 已就绪，可发送文字'
+      }
+    }
+    const pendingCapability = {
+      supported: true,
+      ready: false,
+      status: 'needs_binding' as const,
+      capabilities: { text: false, image: false, voice: false },
+      senderStatus: xsendPendingStatus,
+      message: xsendPendingStatus.message
+    }
+    const readyXsendCapability = {
+      supported: true,
+      ready: true,
+      status: 'ready' as const,
+      capabilities: { text: true, image: false, voice: false },
+      senderStatus: xsendReadyStatus,
+      message: xsendReadyStatus.message
+    }
+    getCapability.mockResolvedValueOnce(pendingCapability).mockResolvedValue(readyXsendCapability)
+    getSenderStatus.mockResolvedValue(xsendPendingStatus)
+    getRuntimeStatus.mockResolvedValue({
+      ...readyRuntime,
+      state: 'missing',
+      downloadedBytes: 0,
+      progress: 0,
+      removable: false,
+      directory: undefined
+    })
+    rebindSender.mockResolvedValue(xsendReadyStatus)
+    render(<PersonalWechatSendPage onNotice={vi.fn()} />)
+
+    const enable = await screen.findByRole('button', { name: '启用文字发送' })
+    expect(screen.getByText('微信 4.1.13 文字发送')).toBeVisible()
+    expect(screen.getByRole('button', { name: '绑定微信' })).toBeDisabled()
+
+    await userEvent.setup().click(enable)
+
+    await waitFor(() => expect(rebindSender).toHaveBeenCalledOnce())
+    expect(await screen.findByText('微信 4.1.13 文字发送已就绪')).toBeVisible()
+  })
 })

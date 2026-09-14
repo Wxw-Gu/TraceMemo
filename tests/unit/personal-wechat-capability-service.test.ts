@@ -87,6 +87,36 @@ describe('PersonalWechatCapabilityService', () => {
     })
   })
 
+  it('offers binding when the matching 4.1.13 xsend resident needs enabling', async () => {
+    const service = new PersonalWechatCapabilityService({
+      getStatus: async () =>
+        status({
+          runtimeReady: false,
+          boundWechatPid: undefined,
+          message: '微信 4.1.13 已匹配，请启用当前登录进程的文字发送能力',
+          xsend: {
+            supported: true,
+            ready: false,
+            state: 'not_installed',
+            platform: 'darwin',
+            arch: 'arm64',
+            installed: true,
+            wechatRunning: true,
+            wechatPid: 123,
+            wechatBuild: '269631',
+            message: 'xsend resident 尚未安装'
+          }
+        })
+    })
+
+    await expect(service.getPersonalWechatSendCapability()).resolves.toMatchObject({
+      ready: false,
+      status: 'needs_binding',
+      capabilities: { text: false, image: false, voice: false },
+      message: '微信 4.1.13 已匹配，请启用当前登录进程的文字发送能力'
+    })
+  })
+
   it('keeps OneBot media capability ready when xsend integrity fails', async () => {
     const service = new PersonalWechatCapabilityService({
       getStatus: async () =>

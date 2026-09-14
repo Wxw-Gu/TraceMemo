@@ -1,5 +1,8 @@
 import { useState } from 'react'
-import type { PersonalWechatSenderStatus } from '../../../../shared/personal-wechat'
+import {
+  canActivatePersonalWechatXsend,
+  type PersonalWechatSenderStatus
+} from '../../../../shared/personal-wechat'
 import type {
   PersonalWechatRuntimeProgressEvent,
   PersonalWechatRuntimeStatus
@@ -81,6 +84,11 @@ export function PersonalWechatSetupGuide({
   const detectedVoiceReady = detectionAttempted && canSendVoice
   const verificationComplete = connected && detectedVoiceReady
   const allReady = verificationComplete
+  const xsendStatus = senderStatus?.xsend
+  const xsendCanEnable = canActivatePersonalWechatXsend(xsendStatus)
+  const showXsendStatus = Boolean(
+    isMac && xsendStatus?.supported && xsendStatus.installed && xsendStatus.wechatBuild
+  )
   const progress = runtimeProgress || runtimeStatus
   const progressPercent = Math.max(0, Math.min(100, Math.round((progress?.progress || 0) * 100)))
 
@@ -94,6 +102,33 @@ export function PersonalWechatSetupGuide({
         </div>
         {allReady && <span className="personal-wechat-setup-complete">已完成</span>}
       </div>
+
+      {showXsendStatus && (
+        <div
+          className="flex items-start justify-between gap-4 rounded-lg border border-border-subtle bg-surface-subtle px-4 py-3"
+          aria-label="微信 4.1.13 文字发送"
+        >
+          <div>
+            <strong className="block text-sm">微信 4.1.13 文字发送</strong>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {xsendCanEnable ? '组件尚未连接当前登录进程。' : xsendStatus?.message}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              该能力随当前微信进程工作；微信重新登录后需要再次启用。
+            </p>
+            {xsendStatus?.error && !xsendCanEnable ? (
+              <p className="mt-1 text-xs text-destructive">{xsendStatus.error}</p>
+            ) : null}
+          </div>
+          {xsendCanEnable ? (
+            <Button size="sm" onClick={onBind} disabled={binding}>
+              {binding ? '正在启用…' : '启用文字发送'}
+            </Button>
+          ) : xsendStatus?.ready ? (
+            <span className="personal-wechat-step-status shrink-0">✓ 已就绪</span>
+          ) : null}
+        </div>
+      )}
 
       <ol className="personal-wechat-steps">
         <li

@@ -46,6 +46,21 @@ export interface PersonalWechatXsendStatus {
   error?: string
 }
 
+export function canActivatePersonalWechatXsend(
+  status: PersonalWechatXsendStatus | undefined
+): boolean {
+  return Boolean(
+    status?.supported &&
+    status.installed &&
+    status.wechatRunning &&
+    !status.ready &&
+    (status.state === 'not_installed' ||
+      status.state === 'stopped' ||
+      status.state === 'unknown' ||
+      status.state === 'failed')
+  )
+}
+
 export interface PersonalWechatSenderStatus {
   state: PersonalWechatSenderState
   platform: string

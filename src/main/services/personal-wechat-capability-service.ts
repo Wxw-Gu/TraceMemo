@@ -1,7 +1,8 @@
-import type {
-  PersonalWechatSendCapability,
-  PersonalWechatSendCapabilityState,
-  PersonalWechatSenderStatus
+import {
+  canActivatePersonalWechatXsend,
+  type PersonalWechatSendCapability,
+  type PersonalWechatSendCapabilityState,
+  type PersonalWechatSenderStatus
 } from '../../shared/personal-wechat'
 import {
   personalWechatSendService,
@@ -64,6 +65,7 @@ export class PersonalWechatCapabilityService {
       return 'unsupported'
     }
     if (hasAnyCapability) return 'ready'
+    if (canActivatePersonalWechatXsend(senderStatus.xsend)) return 'needs_binding'
     if (senderStatus.state === 'error') return 'error'
     const hasBinding = Boolean(senderStatus.boundWechatPid)
     if (!hasBinding) {

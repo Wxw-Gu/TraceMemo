@@ -23,6 +23,7 @@ import type {
   PersonalWechatVoiceDiagnostic,
   PersonalWechatXsendStatus
 } from '../../shared/personal-wechat'
+import { canActivatePersonalWechatXsend } from '../../shared/personal-wechat'
 import { isPackagedRuntime } from '../runtime-mode'
 import { loadSettings, updateSettings } from './settings-store'
 import { SilkAudioDecoder, SilkAudioEncoder } from '../voice-pipeline/audio-decoder'
@@ -1039,9 +1040,11 @@ export class PersonalWechatSendService {
       canSendVoice,
       message: xsendStatus.ready
         ? canSendImage || canSendVoice
-          ? 'xsend resident 已就绪，文字与 OneBot 媒体能力可用'
-          : 'xsend resident 已就绪，可发送文字'
-        : oneBotMessage,
+          ? '微信 4.1.13 文字发送已就绪，OneBot 媒体能力也可用'
+          : '微信 4.1.13 文字发送已就绪'
+        : canActivatePersonalWechatXsend(xsendStatus)
+          ? '微信 4.1.13 已匹配，请启用当前登录进程的文字发送能力'
+          : oneBotMessage,
       ...(oneBotError ? { error: oneBotError } : {})
     }
   }
