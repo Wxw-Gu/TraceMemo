@@ -24,6 +24,70 @@ export interface ImageKeyResult {
   error?: string
 }
 
+export function parseXkeyHelperOutput(output: string): DatabaseKeyResult {
+  const payloads: Record<string, unknown>[] = []
+  for (const match of output.matchAll(/\{[^{}]*\}/g)) {
+    try {
+      payloads.push(JSON.parse(match[0]) as Record<string, unknown>)
+    } catch {
+      // Ignore helper progress that is not JSON.
+    }
+  }
+  const payload = payloads.find((item) => item.success === true && typeof item.key === 'string')
+  const rawKey = typeof payload?.key === 'string' ? payload.key.trim().replace(/^0x/i, '') : ''
+  if (isValidDatabaseKey(rawKey)) return { success: true, key: rawKey }
+
+  const errorPayload = payloads.find((item) => typeof item.result === 'string')
+  const rawError = typeof errorPayload?.result === 'string' ? errorPayload.result.trim() : ''
+  const normalizedError = rawError.toLowerCase()
+  const parsedError = rawError.match(/^ERROR:([^:]+):?(.*)$/is)
+  const code = parsedError?.[1]?.toUpperCase()
+  const detail = parsedError?.[2]?.trim() || ''
+
+  if (
+    code === 'CAPTURE_TIMEOUT' ||
+    normalizedError.includes('timeout waiting for breakpoint hit')
+  ) {
+    return {
+      success: false,
+      code: 'CAPTURE_TIMEOUT',
+      error:
+        '已完成管理员授权，但监听期间微信没有触发数据库密钥写入。请先停留在微信登录界面，在 TraceMemo 点击“自动获取密钥”，授权后立即登录微信。'
+    }
+  }
+  if (code === 'SCAN_FAILED' && detail.toLowerCase().includes('sink pattern not found')) {
+    return {
+      success: false,
+      code,
+      error:
+        '内存扫描失败：未匹配到目标函数特征（Sink pattern not found），当前微信版本可能暂未适配。\n' +
+        '建议步骤：降级微信到 4.1.8 (点击顶部"上手教程"获取下载链接) -> 重启电脑（冷启动） -> 自动获取密钥 -> 成功后再升级微信。\n' +
+        '请不要连续重试，以免触发微信安全模式或系统内存保护。'
+    }
+  }
+  if (code === 'SCAN_FAILED') {
+    return {
+      success: false,
+      code,
+      error: '内存扫描失败：当前微信版本或运行状态暂未适配。'
+    }
+  }
+  if (normalizedError.includes('permission denied') || code === 'PERMISSION_DENIED') {
+    return {
+      success: false,
+      code: code || 'PERMISSION_DENIED',
+      error: '管理员授权不足，无法读取微信进程内存。'
+    }
+  }
+  return {
+    success: false,
+    code: code || 'HELPER_RESULT_INVALID',
+    error: code
+      ? `密钥工具执行未完成（${code}），请确认微信仍在运行后重试。`
+      : '密钥工具未返回有效密钥，请确认微信仍在运行后重试。'
+  }
+}
+
 export class KeyServiceMac {
   private getHelperPath(): string {
     const helperPath = findResource('xkey_helper')
@@ -62,49 +126,6 @@ export class KeyServiceMac {
       }
     }
     throw new Error('未找到微信主进程，请先启动并登录微信')
-  }
-
-  private parseHelperOutput(output: string): DatabaseKeyResult {
-    const payloads: Record<string, unknown>[] = []
-    for (const match of output.matchAll(/\{[^{}]*\}/g)) {
-      try {
-        payloads.push(JSON.parse(match[0]) as Record<string, unknown>)
-      } catch {
-        // Ignore helper progress that is not JSON.
-      }
-    }
-    const payload = payloads.find((item) => item.success === true && typeof item.key === 'string')
-    const rawKey = typeof payload?.key === 'string' ? payload.key.trim().replace(/^0x/i, '') : ''
-    if (!isValidDatabaseKey(rawKey)) {
-      const errorPayload = payloads.find((item) => typeof item.result === 'string')
-      const rawError = typeof errorPayload?.result === 'string' ? errorPayload.result.trim() : ''
-      const parsedError = rawError.match(/^ERROR:([^:]+):?(.*)$/i)
-      const code = parsedError?.[1]?.toUpperCase()
-      const detail = parsedError?.[2]?.trim() || ''
-      if (code === 'SCAN_FAILED' && detail.toLowerCase().includes('sink pattern not found')) {
-        return {
-          success: false,
-          code,
-          error:
-            '内存扫描失败：未匹配到目标函数特征（Sink pattern not found），当前微信版本可能暂未适配。\n' +
-            '建议步骤：降级微信到 4.1.8 (点击顶部"上手教程"获取下载链接) -> 重启电脑（冷启动） -> 自动获取密钥 -> 成功后再升级微信。\n' +
-            '请不要连续重试，以免触发微信安全模式或系统内存保护。'
-        }
-      }
-      if (code === 'SCAN_FAILED') {
-        return {
-          success: false,
-          code,
-          error: `内存扫描失败：${detail || '未匹配到可用特征，当前微信版本可能暂未适配。'}`
-        }
-      }
-      return {
-        success: false,
-        code,
-        error: rawError || '密钥工具未返回有效的 64 位密钥'
-      }
-    }
-    return { success: true, key: rawKey }
   }
 
   async autoGetDbKey(
@@ -155,7 +176,7 @@ export class KeyServiceMac {
           error: output.split('::').slice(2).join('::') || '密钥工具执行失败'
         }
       }
-      const result = this.parseHelperOutput(output.startsWith('OK::') ? output.slice(4) : output)
+      const result = parseXkeyHelperOutput(output.startsWith('OK::') ? output.slice(4) : output)
       onStatus?.(result.success ? '密钥获取成功' : '密钥获取失败')
       return result
     } catch (error) {
