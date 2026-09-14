@@ -895,7 +895,7 @@ app.whenReady().then(async () => {
       wechatVersion: await detectWechatVersion(),
       dataStructureVersion: detectDataStructureVersion(settings.dbRoot),
       dataDirectoryDetected: validateDbRoot(settings.dbRoot).valid,
-      autoDetectSupported: process.platform === 'win32' || intelMac,
+      autoDetectSupported: process.platform === 'win32' || process.platform === 'darwin',
       wechatRunning: await isWechatRunning(),
       accountIdentified: Boolean(self?.wxid),
       dbConnected: chat.isReady(),
