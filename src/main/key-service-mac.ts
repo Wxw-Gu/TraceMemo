@@ -145,7 +145,7 @@ export class KeyServiceMac {
       const { stdout } = await execFileAsync(
         '/usr/bin/osascript',
         scriptLines.flatMap((line) => ['-e', line]),
-        { timeout: waitMs + 20_000 }
+        { timeout: timeoutSeconds * 1000 + 5_000 }
       )
       const output = String(stdout).trim()
       if (output.startsWith('ERR::-128')) return { success: false, error: '已取消管理员授权' }
@@ -159,7 +159,26 @@ export class KeyServiceMac {
       onStatus?.(result.success ? '密钥获取成功' : '密钥获取失败')
       return result
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) }
+      const processError = error as NodeJS.ErrnoException & {
+        killed?: boolean
+        signal?: NodeJS.Signals | null
+      }
+      if (
+        processError.killed ||
+        processError.code === 'ETIMEDOUT' ||
+        processError.signal === 'SIGTERM'
+      ) {
+        return {
+          success: false,
+          code: 'AUTH_TIMEOUT',
+          error: '管理员授权等待超时，请点击“自动获取密钥”后及时完成系统授权。'
+        }
+      }
+      return {
+        success: false,
+        code: typeof processError.code === 'string' ? processError.code : 'HELPER_EXEC_FAILED',
+        error: '密钥工具执行失败，请确认微信仍在运行后重试。'
+      }
     }
   }
 

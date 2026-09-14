@@ -442,7 +442,7 @@ const api = {
     request: PersonalWechatGeneratedTtsVoiceRequest
   ): Promise<PersonalWechatGeneratedTtsVoiceResult> =>
     ipcRenderer.invoke('wechat-personal:sendGeneratedTtsVoice', request),
-  // 日报图片发送仍使用现有业务发送链路；普通聊天 Composer 不暴露此入口。
+  // 普通文字和日报图片发送共用经过校验的个人微信发送服务。
   sendPersonalWechatMessage: (
     request: PersonalWechatSendRequest
   ): Promise<PersonalWechatSendResult> => ipcRenderer.invoke('wechat-personal:send', request),

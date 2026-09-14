@@ -15,6 +15,7 @@ const getStatus = vi.fn()
 const getRuntimeStatus = vi.fn()
 const onRuntimeProgress = vi.fn(() => vi.fn())
 const rebind = vi.fn()
+const sendPersonalWechatMessage = vi.fn()
 const sendGeneratedTtsVoice = vi.fn()
 const getTextToSpeechSettings = vi.fn()
 const listTextToSpeechVoices = vi.fn()
@@ -79,7 +80,7 @@ function renderDialog(
 }
 
 async function startComposer(): Promise<void> {
-  await screen.findByRole('textbox', { name: '语音文字' })
+  await screen.findByRole('textbox', { name: '消息内容' })
 }
 
 describe('PersonalWechatSendDialog', () => {
@@ -88,6 +89,10 @@ describe('PersonalWechatSendDialog', () => {
     getRuntimeStatus.mockReset().mockResolvedValue(readyRuntime)
     onRuntimeProgress.mockReset().mockReturnValue(vi.fn())
     rebind.mockReset().mockResolvedValue(readyStatus)
+    sendPersonalWechatMessage.mockReset().mockResolvedValue({
+      success: true,
+      status: readyStatus
+    })
     sendGeneratedTtsVoice.mockReset().mockResolvedValue({
       action: { status: 'sent' },
       status: readyStatus
@@ -128,6 +133,7 @@ describe('PersonalWechatSendDialog', () => {
         getPersonalWechatRuntimeStatus: getRuntimeStatus,
         onPersonalWechatRuntimeProgress: onRuntimeProgress,
         rebindPersonalWechatSender: rebind,
+        sendPersonalWechatMessage,
         sendGeneratedTtsVoice,
         getTextToSpeechSettings,
         listTextToSpeechVoices,
@@ -139,18 +145,43 @@ describe('PersonalWechatSendDialog', () => {
     })
   })
 
-  it('opens the TTS composer immediately when voice capability is ready', async () => {
+  it('opens the text composer immediately when xsend text capability is ready', async () => {
+    getStatus.mockResolvedValue({
+      ...readyStatus,
+      runtimeReady: false,
+      canSendImage: false,
+      canSendVoice: false,
+      message: 'xsend resident 已就绪，可发送文字'
+    })
     renderDialog()
     await startComposer()
-    expect(screen.getByRole('dialog')).toHaveTextContent('文字转语音')
+    expect(screen.getByRole('dialog')).toHaveTextContent('微信发送')
     expect(screen.queryByText('验证消息能力')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '生成语音' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '发送文字' })).toBeDisabled()
+  })
+
+  it('sends text through the personal WeChat sender IPC', async () => {
+    const user = userEvent.setup()
+    renderDialog()
+    await startComposer()
+    await user.type(screen.getByRole('textbox', { name: '消息内容' }), 'TraceMemo xsend E2E')
+    await user.click(screen.getByRole('button', { name: '发送文字' }))
+    await waitFor(() =>
+      expect(sendPersonalWechatMessage).toHaveBeenCalledWith({
+        type: 'text',
+        to: 'fixture-room@chatroom',
+        isGroup: true,
+        text: 'TraceMemo xsend E2E'
+      })
+    )
+    expect(screen.getByLabelText('消息列表')).toHaveTextContent('TraceMemo xsend E2E')
   })
 
   it('generates, previews and sends a voice through the semantic TTS IPC', async () => {
     const user = userEvent.setup()
     renderDialog()
     await startComposer()
+    await user.click(screen.getByRole('radio', { name: '文字转语音' }))
     await user.type(screen.getByRole('textbox', { name: '语音文字' }), '你好 TraceMemo')
     await user.click(screen.getByRole('button', { name: '生成语音' }))
     expect(await screen.findByText('语音已生成')).toBeInTheDocument()
@@ -167,7 +198,12 @@ describe('PersonalWechatSendDialog', () => {
   })
 
   it('keeps the setup guide voice-only when voice capability is unavailable', async () => {
-    getStatus.mockResolvedValue({ ...readyStatus, canSend: false, canSendVoice: false })
+    getStatus.mockResolvedValue({
+      ...readyStatus,
+      canSend: false,
+      canSendText: false,
+      canSendVoice: false
+    })
     renderDialog({ onOpenPersonalWechatSettings: vi.fn() })
     expect(await screen.findByText('验证消息能力')).toBeInTheDocument()
     expect(screen.getByText('语音消息')).toBeInTheDocument()

@@ -50,6 +50,29 @@ describe('database key controls', () => {
     expect(onRefresh).toHaveBeenCalledOnce()
   })
 
+  it('exposes automatic detection on supported macOS builds', () => {
+    render(
+      <DatabaseKeyAutoDetect
+        state={{
+          ...state,
+          environment: {
+            ...state.environment!,
+            platform: 'darwin',
+            osVersion: 'macOS fixture',
+            wechatVersion: '4.1.13',
+            autoDetectSupported: true
+          }
+        }}
+        disabled={false}
+        onDetect={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText('macOS 自动获取')).toBeVisible()
+    expect(screen.getByRole('button', { name: '自动获取密钥' })).toBeEnabled()
+  })
+
   it('keeps status validation and diagnostics copy actions available', async () => {
     const user = userEvent.setup()
     const onValidate = vi.fn()

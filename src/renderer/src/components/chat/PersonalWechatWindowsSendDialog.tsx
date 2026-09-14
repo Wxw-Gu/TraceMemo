@@ -59,6 +59,7 @@ export function PersonalWechatWindowsSendDialog({
   onClose,
   onOpenTextToSpeechSettings,
   onOpenPersonalWechatSettings,
+  initialMode = 'text',
   initialImage = null
 }: PersonalWechatSendDialogProps): React.ReactElement {
   const [status, setStatus] = useState<PersonalWechatSenderStatus | null>(null)
@@ -104,14 +105,22 @@ export function PersonalWechatWindowsSendDialog({
   }
 
   const handleSend = async (
-    filePath: string
+    request: PersonalWechatSendRequest
   ): Promise<{ success: boolean; error?: string }> => {
     setSendBusy(true)
     try {
+      if (request.type === 'text') {
+        const response = await window.api.sendPersonalWechatMessage(request)
+        setStatus(response.status)
+        return {
+          success: response.success,
+          ...(response.error ? { error: response.error } : {})
+        }
+      }
       const response = await window.api.sendGeneratedTtsVoice({
-        to: targetId,
-        isGroup: isGroupChat,
-        filePath
+        to: request.to,
+        isGroup: request.isGroup,
+        filePath: request.filePath
       })
       setStatus(response.status)
       const success = response.action.status === 'sent'
@@ -183,12 +192,12 @@ export function PersonalWechatWindowsSendDialog({
         <DialogHeader className="flex-row items-center justify-between space-y-0 pr-10">
           <div>
             <span className="text-[11px] font-bold tracking-normal text-primary">实验性功能</span>
-              <DialogTitle className="mt-0.5 text-[19px] leading-[26px] tracking-normal">
-              文字转语音
+            <DialogTitle className="mt-0.5 text-[19px] leading-[26px] tracking-normal">
+              微信发送
             </DialogTitle>
           </div>
           <DialogDescription className="sr-only">
-            向当前微信联系人或群聊发送文字转语音。
+            向当前微信联系人或群聊发送消息。
           </DialogDescription>
         </DialogHeader>
 
@@ -201,7 +210,7 @@ export function PersonalWechatWindowsSendDialog({
         </div>
 
         <div className="personal-wechat-send-target">
-            <span>{isGroupChat ? '发送到群聊' : '发送给联系人'}</span>
+          <span>{isGroupChat ? '发送到群聊' : '发送给联系人'}</span>
           <strong>{displayName}</strong>
           <code>{targetId}</code>
         </div>
@@ -246,7 +255,9 @@ export function PersonalWechatWindowsSendDialog({
                     key={message.id}
                     className={`personal-wechat-message-bubble ${message.outgoing ? 'is-outgoing' : ''}`}
                   >
-                      <span className="personal-wechat-message-kind">语音</span>
+                    <span className="personal-wechat-message-kind">
+                      {message.type === 'text' ? '文字' : '语音'}
+                    </span>
                     <span>{message.text || message.fileName}</span>
                   </div>
                 ))}
@@ -263,6 +274,12 @@ export function PersonalWechatWindowsSendDialog({
               <PersonalWechatChatComposer
                 status={status}
                 targetId={targetId}
+                isGroupChat={isGroupChat}
+                initialMode={
+                  initialMode === 'voice' || (initialMode === 'text' && !status.canSendText)
+                    ? 'voice'
+                    : 'text'
+                }
                 className="personal-wechat-windows-composer"
                 onOpenTextToSpeechSettings={onOpenTextToSpeechSettings}
                 onCancel={handleClose}

@@ -17,22 +17,28 @@ export function DatabaseKeyAutoDetect({
 }): React.ReactElement {
   const environment = state.environment
   const platform = environment?.platform || runtimePlatform
-  if (platform !== 'win32') {
+  const supported =
+    environment?.autoDetectSupported ?? (platform === 'win32' || platform === 'darwin')
+  if (!supported) {
     return (
       <section className="settings-card database-key-auto database-key-auto-manual">
         <div>
-          <strong>当前 macOS 版本需要手动输入数据库密钥。</strong>
-          <p>自动获取未在此平台开放，这不会影响手动验证与系统安全存储。</p>
+          <strong>当前平台需要手动输入数据库密钥。</strong>
+          <p>自动获取未在此平台开放，可继续使用手动验证与系统安全存储。</p>
         </div>
       </section>
     )
   }
+  const isMac = platform === 'darwin'
   return (
     <section className="settings-card database-key-auto">
       <div className="database-key-auto-heading">
         <div>
-          <strong>Windows 自动获取</strong>
-          <p>TraceMemo 可在微信桌面端正在运行时，通过本机内存扫描尝试获取数据库密钥。</p>
+          <strong>{isMac ? 'macOS 自动获取' : 'Windows 自动获取'}</strong>
+          <p>
+            TraceMemo 可在微信桌面端运行时，通过本机内存扫描尝试获取数据库密钥。
+            {isMac ? '执行时会请求管理员授权，请按系统提示操作。' : ''}
+          </p>
         </div>
         <Button variant="outline" onClick={onDetect} disabled={disabled}>
           {state.status === 'auto-detecting' ? '正在获取…' : '自动获取密钥'}
@@ -45,9 +51,7 @@ export function DatabaseKeyAutoDetect({
         <li className={environment?.accountIdentified ? 'ok' : ''}>
           当前账号：{environment?.accountIdentified ? '已识别' : '尚未识别'}
         </li>
-        <li className={platform === 'win32' ? 'ok' : ''}>
-          当前平台：{platform === 'win32' ? '支持' : '不支持'}
-        </li>
+        <li className={supported ? 'ok' : ''}>当前平台：{supported ? '支持' : '不支持'}</li>
       </ul>
       {state.status === 'auto-detecting' && (
         <ol className="database-key-phases">

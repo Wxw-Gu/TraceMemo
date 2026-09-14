@@ -128,7 +128,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const handleOpenPersonalWechatSend = useCallback(async (): Promise<void> => {
     try {
       const status = await window.api.getPersonalWechatSenderStatus()
-      if (!status.canSendVoice) {
+      if (!status.canSendText && !status.canSendVoice) {
         if (onOpenPersonalWechatSettings) {
           onOpenPersonalWechatSettings()
           return

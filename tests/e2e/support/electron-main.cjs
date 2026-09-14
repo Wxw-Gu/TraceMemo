@@ -22,6 +22,7 @@ const unsignedMacUpdate = process.env.WXE_E2E_UNSIGNED_MAC_UPDATE === '1'
 const fixtureNowMs =
   Number.isFinite(configuredNow) && configuredNow > 0 ? configuredNow : Date.now()
 let keepOneBotProcess = false
+let lastPersonalWechatSendRequest = null
 
 const formatFixtureDateTime = (timestampSeconds) => {
   const date = new Date(timestampSeconds * 1000)
@@ -409,6 +410,35 @@ handle('wechat-personal:getStatus', () => ({
   canSendVoice: true,
   message: '个人微信已绑定'
 }))
+handle('wechat-personal:send', (request) => {
+  lastPersonalWechatSendRequest = structuredClone(request)
+  return {
+    success: true,
+    status: {
+      state: 'online',
+      platform: process.platform,
+      arch: process.arch,
+      sipDisabled: true,
+      wechatRunning: true,
+      runtimeReady: true,
+      endpoint: '127.0.0.1:58080',
+      endpointReady: true,
+      attachReady: true,
+      baseAddressReady: true,
+      textHookInstalled: true,
+      textHookReady: true,
+      imageHookInstalled: true,
+      imageHookReady: true,
+      messageListenerReady: true,
+      canSend: true,
+      canSendText: true,
+      canSendImage: true,
+      canSendVoice: true,
+      message: '个人微信已绑定'
+    }
+  }
+})
+handle('test:getLastPersonalWechatSend', () => lastPersonalWechatSendRequest)
 handle('wechat-personal:getSendCapability', () => ({
   supported: personalWechatSupported,
   ready: personalWechatSupported,

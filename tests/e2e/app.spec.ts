@@ -276,19 +276,31 @@ test('CHAT-REALTIME-01 archive refreshes from a native message-shard event', asy
   }
 })
 
-test('CHAT-02 personal WeChat send dialog is keyboard-safe and fits the viewport', async () => {
+test('CHAT-02 personal WeChat text send runs through the project dialog', async () => {
   test.skip(process.platform !== 'darwin', 'Personal WeChat sending is currently macOS-only')
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
   try {
     await fixture.page.getByText('产品测试群', { exact: true }).click()
-    const trigger = fixture.page.getByRole('button', { name: '文字转语音' })
+    const trigger = fixture.page.getByRole('button', { name: '微信发送' })
     await trigger.click()
     const dialog = fixture.page.getByRole('dialog', { name: '产品测试群' })
     await expect(dialog).toBeVisible()
-    const startSending = dialog.getByRole('button', { name: '开始发送' })
-    if (await startSending.isVisible()) await startSending.click()
+    const textInput = dialog.getByRole('textbox', { name: '消息内容' })
+    await textInput.fill('TraceMemo xsend UI E2E')
+    await dialog.getByRole('button', { name: '发送文字' }).click()
+    await expect(dialog.getByText('TraceMemo xsend UI E2E')).toBeVisible()
+    expect(
+      await fixture.page.evaluate(() =>
+        window.electron.ipcRenderer.invoke('test:getLastPersonalWechatSend')
+      )
+    ).toEqual({
+      type: 'text',
+      to: 'group_regular@chatroom',
+      isGroup: true,
+      text: 'TraceMemo xsend UI E2E'
+    })
     expect(
       await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true)
@@ -303,9 +315,8 @@ test('CHAT-02 personal WeChat send dialog is keyboard-safe and fits the viewport
     )
     expect(pageErrors).toEqual([])
 
-    const voiceText = dialog.getByRole('textbox', { name: '语音文字' })
-    await voiceText.focus()
-    await expect(voiceText).toBeFocused()
+    await textInput.focus()
+    await expect(textInput).toBeFocused()
     expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
       true
     )

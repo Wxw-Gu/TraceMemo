@@ -852,7 +852,7 @@ app.whenReady().then(async () => {
       wechatVersion: await detectWechatVersion(),
       dataStructureVersion: detectDataStructureVersion(settings.dbRoot),
       dataDirectoryDetected: validateDbRoot(settings.dbRoot).valid,
-      autoDetectSupported: process.platform === 'win32',
+      autoDetectSupported: process.platform === 'win32' || process.platform === 'darwin',
       wechatRunning: await isWechatRunning(),
       accountIdentified: Boolean(self?.wxid),
       dbConnected: chat.isReady(),
@@ -916,7 +916,7 @@ app.whenReady().then(async () => {
       }
     }
   )
-  // 日报等系统动作仍复用现有发送服务；普通聊天不再暴露这个入口。
+  // 普通文字和日报等业务动作共用经过校验的个人微信发送服务。
   ipcMain.handle('wechat-personal:send', async (_, request: PersonalWechatSendRequest) => {
     if (request.type !== 'voice' || String(request.fromId || '').trim()) {
       return personalWechatSendService.send(request)
