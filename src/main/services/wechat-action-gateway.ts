@@ -171,7 +171,7 @@ export class WechatActionGateway {
         error instanceof Error ? error.message : String(error)
       )
     }
-    if (!capability || !capability.ready) {
+    if (!capability || capability.supported === false) {
       return this.finishFailed(
         actionId,
         request,
@@ -225,9 +225,10 @@ export class WechatActionGateway {
 
     const queued = this.automationSendTail.then(async () => {
       const now = this.deps.now().getTime()
-      const remaining = this.lastAutomationSendStartedAt !== undefined
-        ? Math.max(0, AUTOMATION_SEND_INTERVAL_MS - (now - this.lastAutomationSendStartedAt))
-        : 0
+      const remaining =
+        this.lastAutomationSendStartedAt !== undefined
+          ? Math.max(0, AUTOMATION_SEND_INTERVAL_MS - (now - this.lastAutomationSendStartedAt))
+          : 0
       if (remaining > 0) await this.deps.wait(remaining)
       this.lastAutomationSendStartedAt = this.deps.now().getTime()
       return this.deps.send(sendRequest)

@@ -12,6 +12,40 @@ export type PersonalWechatSenderState =
   | 'online'
   | 'error'
 
+export type PersonalWechatXsendState =
+  | 'unsupported_platform'
+  | 'unavailable'
+  | 'wechat_not_running'
+  | 'unsupported_version'
+  | 'integrity_error'
+  | 'not_installed'
+  | 'stopped'
+  | 'ready'
+  | 'accepted'
+  | 'completed'
+  | 'failed'
+  | 'unknown'
+
+export interface PersonalWechatXsendStatus {
+  supported: boolean
+  ready: boolean
+  state: PersonalWechatXsendState
+  platform: string
+  arch: string
+  installed: boolean
+  wechatRunning: boolean
+  wechatPid?: number
+  wechatBuild?: string
+  residentBinaryPath?: string
+  residentSha256?: string
+  requestId?: string
+  queue?: number
+  retained?: number
+  detail?: string
+  message: string
+  error?: string
+}
+
 export interface PersonalWechatSenderStatus {
   state: PersonalWechatSenderState
   platform: string
@@ -40,6 +74,7 @@ export interface PersonalWechatSenderStatus {
   canSendText: boolean
   canSendImage: boolean
   canSendVoice: boolean
+  xsend?: PersonalWechatXsendStatus
   message: string
   error?: string
 }

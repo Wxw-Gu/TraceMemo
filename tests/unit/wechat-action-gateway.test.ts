@@ -190,7 +190,7 @@ describe('WechatActionGateway', () => {
     expect(mocks.sender.send).not.toHaveBeenCalled()
   })
 
-  it('returns a structured capability failure without sending', async () => {
+  it('returns a structured not-ready result without sending', async () => {
     const gateway = createGateway()
     mocks.capability.getPersonalWechatSendCapability.mockResolvedValueOnce({
       ...readyCapability,
@@ -203,7 +203,65 @@ describe('WechatActionGateway', () => {
     expect(result).toMatchObject({
       status: 'failed',
       decision: 'allow',
+      errorCode: 'SEND_NOT_READY'
+    })
+    expect(mocks.sender.send).not.toHaveBeenCalled()
+  })
+
+  it('allows text when the concrete text capability is ready', async () => {
+    const gateway = createGateway()
+    mocks.capability.getPersonalWechatSendCapability.mockResolvedValueOnce({
+      ...readyCapability,
+      ready: false,
+      capabilities: { text: true, image: false, voice: false },
+      message: 'xsend resident 已就绪，可发送文字'
+    })
+
+    const result = await memberAction(gateway)
+
+    expect(result).toMatchObject({ status: 'sent', decision: 'allow' })
+    expect(mocks.sender.send).toHaveBeenCalledOnce()
+  })
+
+  it('returns SEND_CAPABILITY_UNAVAILABLE when the platform is unsupported', async () => {
+    const gateway = createGateway()
+    mocks.capability.getPersonalWechatSendCapability.mockResolvedValueOnce({
+      ...readyCapability,
+      supported: false,
+      ready: false,
+      capabilities: { text: false, image: false, voice: false },
+      status: 'unsupported',
+      message: '微信发送能力目前不受支持'
+    })
+
+    const result = await memberAction(gateway)
+
+    expect(result).toMatchObject({
+      status: 'failed',
       errorCode: 'SEND_CAPABILITY_UNAVAILABLE'
+    })
+    expect(mocks.sender.send).not.toHaveBeenCalled()
+  })
+
+  it('returns SEND_NOT_READY when the requested media capability is unavailable', async () => {
+    const gateway = createGateway()
+    mocks.capability.getPersonalWechatSendCapability.mockResolvedValueOnce({
+      ...readyCapability,
+      capabilities: { text: true, image: false, voice: true }
+    })
+
+    const result = await gateway.execute({
+      origin: 'scheduled_report',
+      purpose: 'scheduled_report',
+      triggerType: 'automation',
+      executionId: 'image-not-ready',
+      recipient: { type: 'group', id: 'room@chatroom' },
+      content: { type: 'image', path: '/tmp/report.png' }
+    })
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      errorCode: 'SEND_NOT_READY'
     })
     expect(mocks.sender.send).not.toHaveBeenCalled()
   })
@@ -244,7 +302,7 @@ describe('WechatActionGateway', () => {
       sentAt.push({ to: request.to, at: Date.now() })
       return { success: true, status: {} }
     })
-    const action = (id: string) =>
+    const action = (id: string): Promise<WechatActionResult> =>
       gateway.execute({
         idempotencyKey: `scheduled:${id}`,
         origin: 'scheduled_report',
@@ -266,11 +324,7 @@ describe('WechatActionGateway', () => {
     await vi.advanceTimersByTimeAsync(AUTOMATION_SEND_INTERVAL_MS)
     await Promise.all(pending)
 
-    expect(sentAt.map((item) => item.to)).toEqual([
-      'A@chatroom',
-      'B@chatroom',
-      'C@chatroom'
-    ])
+    expect(sentAt.map((item) => item.to)).toEqual(['A@chatroom', 'B@chatroom', 'C@chatroom'])
     expect(sentAt[1].at - sentAt[0].at).toBe(AUTOMATION_SEND_INTERVAL_MS)
     expect(sentAt[2].at - sentAt[1].at).toBe(AUTOMATION_SEND_INTERVAL_MS)
     vi.useRealTimers()
@@ -315,7 +369,7 @@ describe('WechatActionGateway', () => {
       sent.push({ to: request.to, at: Date.now() })
       return { success: true, status: {} }
     })
-    const automaticAction = (id: string) =>
+    const automaticAction = (id: string): Promise<WechatActionResult> =>
       gateway.execute({
         idempotencyKey: `scheduled:${id}`,
         origin: 'scheduled_report',
@@ -354,12 +408,16 @@ describe('WechatActionGateway', () => {
     vi.setSystemTime(new Date('2026-09-03T10:00:00.000Z'))
     const gateway = createGateway()
     mocks.capability.getPersonalWechatSendCapability
-      .mockResolvedValueOnce({ ...readyCapability, ready: false })
+      .mockResolvedValueOnce({
+        ...readyCapability,
+        ready: false,
+        capabilities: { text: false, image: false, voice: false }
+      })
       .mockResolvedValueOnce(readyCapability)
 
     await expect(memberAction(gateway)).resolves.toMatchObject({
       status: 'failed',
-      errorCode: 'SEND_CAPABILITY_UNAVAILABLE'
+      errorCode: 'SEND_NOT_READY'
     })
     const startedAt = Date.now()
     await gateway.execute({

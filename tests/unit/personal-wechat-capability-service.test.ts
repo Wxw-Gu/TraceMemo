@@ -58,4 +58,62 @@ describe('PersonalWechatCapabilityService', () => {
       supported: expected !== 'unsupported'
     })
   })
+
+  it('is ready when xsend provides text only without a OneBot binding', async () => {
+    const service = new PersonalWechatCapabilityService({
+      getStatus: async () =>
+        status({
+          runtimeReady: false,
+          boundWechatPid: undefined,
+          canSend: true,
+          canSendText: true,
+          xsend: {
+            supported: true,
+            ready: true,
+            state: 'ready',
+            platform: 'darwin',
+            arch: 'arm64',
+            installed: true,
+            wechatRunning: true,
+            message: 'xsend resident 已就绪，可发送文字'
+          }
+        })
+    })
+
+    await expect(service.getPersonalWechatSendCapability()).resolves.toMatchObject({
+      ready: true,
+      status: 'ready',
+      capabilities: { text: true, image: false, voice: false }
+    })
+  })
+
+  it('keeps OneBot media capability ready when xsend integrity fails', async () => {
+    const service = new PersonalWechatCapabilityService({
+      getStatus: async () =>
+        status({
+          state: 'online',
+          boundWechatPid: 123,
+          canSend: true,
+          canSendImage: true,
+          canSendVoice: true,
+          xsend: {
+            supported: true,
+            ready: false,
+            state: 'integrity_error',
+            platform: 'darwin',
+            arch: 'arm64',
+            installed: false,
+            wechatRunning: true,
+            message: 'xsend 资源校验失败',
+            error: 'resident_sha256 与 MANIFEST 不一致'
+          }
+        })
+    })
+
+    await expect(service.getPersonalWechatSendCapability()).resolves.toMatchObject({
+      ready: true,
+      status: 'ready',
+      capabilities: { text: false, image: true, voice: true }
+    })
+  })
 })

@@ -1,0 +1,10 @@
+format=xsend-v3-resident
+version=0.1.0
+platform=darwin-arm64
+wechat_build=269631
+wechat_dylib_sha256=964f653977f7e6d00400804eb492e230528c8e8e0653db6300e9b913e49973a9
+payload=embedded
+resident_binary=xsend-v3-resident
+resident_sha256=04ba738b27da9d07c48610226f115fc1b93359e3459427b4c7fe7fa241d12c1c
+onebot_dependency=none
+python_runtime_dependency=none

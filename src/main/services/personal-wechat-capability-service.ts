@@ -26,8 +26,9 @@ export class PersonalWechatCapabilityService {
       image: Boolean(senderStatus.canSendImage),
       voice: Boolean(senderStatus.canSendVoice)
     }
-    const status = this.mapState(senderStatus, capabilities.image)
-    const ready = status === 'ready'
+    const hasAnyCapability = capabilities.text || capabilities.image || capabilities.voice
+    const status = this.mapState(senderStatus, hasAnyCapability)
+    const ready = hasAnyCapability && status === 'ready'
     return {
       supported: status !== 'unsupported',
       ready,
@@ -51,10 +52,10 @@ export class PersonalWechatCapabilityService {
 
   private mapState(
     senderStatus: PersonalWechatSenderStatus,
-    canSendImage: boolean
+    hasAnyCapability: boolean
   ): PersonalWechatSendCapabilityState {
     if (senderStatus.platform === 'win32') {
-      if (senderStatus.canSend) return 'ready'
+      if (hasAnyCapability) return 'ready'
       if (!senderStatus.endpoint) return 'unconfigured'
       if (senderStatus.state === 'error' && senderStatus.endpointReady) return 'error'
       return 'needs_verification'
@@ -62,12 +63,12 @@ export class PersonalWechatCapabilityService {
     if (senderStatus.platform !== 'darwin' || senderStatus.state === 'unsupported_platform') {
       return 'unsupported'
     }
+    if (hasAnyCapability) return 'ready'
     if (senderStatus.state === 'error') return 'error'
     const hasBinding = Boolean(senderStatus.boundWechatPid)
     if (!hasBinding) {
       return senderStatus.runtimeReady ? 'needs_binding' : 'unconfigured'
     }
-    if (canSendImage) return 'ready'
     if (
       senderStatus.state === 'hook_not_ready' ||
       senderStatus.state === 'online' ||

@@ -784,7 +784,7 @@ describe('GroupExitMonitorService', () => {
       notificationStatus: 'failed',
       notification: {
         status: 'failed',
-        errorCode: 'SEND_CAPABILITY_UNAVAILABLE'
+        errorCode: 'SEND_NOT_READY'
       }
     })
     expect(mocks.sender.send).not.toHaveBeenCalled()

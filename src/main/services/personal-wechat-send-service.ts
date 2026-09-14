@@ -20,7 +20,8 @@ import type {
   PersonalWechatSendRequest,
   PersonalWechatSendResult,
   PersonalWechatSenderStatus,
-  PersonalWechatVoiceDiagnostic
+  PersonalWechatVoiceDiagnostic,
+  PersonalWechatXsendStatus
 } from '../../shared/personal-wechat'
 import { isPackagedRuntime } from '../runtime-mode'
 import { loadSettings, updateSettings } from './settings-store'
@@ -32,6 +33,7 @@ import {
   type VoicePcmMetadata
 } from '../voice-pipeline/voice-quality'
 import { appLogger } from '../app-logger'
+import { xsendV3Service, type XsendV3Service } from './xsend-v3-service'
 
 const execFileAsync = promisify(execFile)
 const DEFAULT_HOST = '127.0.0.1:58080'
@@ -926,7 +928,31 @@ async function requestWindowsHook(
   return parseWindowsHookResponse(responseText, method === 'POST')
 }
 
+export function mergePersonalWechatXsendStatus(
+  senderStatus: PersonalWechatSenderStatus,
+  xsendStatus: PersonalWechatXsendStatus
+): PersonalWechatSenderStatus {
+  const canSendText = Boolean(senderStatus.canSendText || xsendStatus.ready)
+  return {
+    ...senderStatus,
+    xsend: xsendStatus,
+    state:
+      canSendText || senderStatus.canSendImage || senderStatus.canSendVoice
+        ? 'online'
+        : senderStatus.state,
+    canSend: canSendText || senderStatus.canSendImage || senderStatus.canSendVoice,
+    canSendText
+  }
+}
+
 export class PersonalWechatSendService {
+  constructor(
+    private readonly xsend: Pick<
+      XsendV3Service,
+      'getStatus' | 'install' | 'sendText' | 'stop'
+    > = xsendV3Service
+  ) {}
+
   private child: ChildProcess | null = null
   private startPromise: Promise<PersonalWechatSenderStatus> | null = null
   private lastError = ''
@@ -945,7 +971,7 @@ export class PersonalWechatSendService {
 
   async getStatus(): Promise<PersonalWechatSenderStatus> {
     if (process.platform === 'win32') return this.getWindowsStatus()
-    const preflight = await this.preflight()
+    const [preflight, xsendStatus] = await Promise.all([this.preflight(), this.xsend.getStatus()])
     const [endpointReady, oneBot] = await Promise.all([
       this.isEndpointOnline(),
       readOneBotProcessInfo()
@@ -957,6 +983,7 @@ export class PersonalWechatSendService {
     )
     const common = {
       ...preflight.status,
+      xsend: xsendStatus,
       endpointReady,
       ...(oneBot?.pid ? { oneBotPid: oneBot.pid } : {}),
       ...(boundWechatPid ? { boundWechatPid } : {}),
@@ -969,47 +996,53 @@ export class PersonalWechatSendService {
       imageHookReady: hook.imageHookReady,
       messageListenerReady: hook.messageListenerReady
     }
-    if (!endpointReady) return common
-    if (!boundToCurrentWechat) {
-      return {
-        ...common,
-        state: 'hook_not_ready',
-        canSend: false,
-        canSendText: false,
-        canSendImage: false,
-        message: 'OneBot 仍绑定旧微信进程，请点击“绑定微信”'
-      }
+    let oneBotCanSendText = false
+    let oneBotCanSendImage = false
+    let oneBotCanSendVoice = false
+    let oneBotState = preflight.status.state
+    let oneBotMessage = preflight.status.message
+    let oneBotError = preflight.status.error
+    if (!endpointReady) {
+      oneBotState = preflight.status.state
+    } else if (!boundToCurrentWechat) {
+      oneBotState = 'hook_not_ready'
+      oneBotMessage = 'OneBot 仍绑定旧微信进程，请点击“绑定微信”'
+    } else if (hook.readiness === 'failed') {
+      oneBotState = 'error'
+      oneBotMessage = '微信发送能力初始化失败，请尝试重新绑定'
+      oneBotError = hook.error
+    } else {
+      const baseReady = hook.attached && Boolean(hook.baseAddress) && hook.textHookInstalled
+      oneBotCanSendText = baseReady && hook.textHookReady
+      const imagePathBound = Boolean(oneBot?.imagePath)
+      oneBotCanSendImage = baseReady && hook.imageHookReady && imagePathBound
+      oneBotCanSendVoice = baseReady && hook.imageHookReady
+      oneBotState =
+        oneBotCanSendText || oneBotCanSendImage || oneBotCanSendVoice ? 'online' : 'hook_not_ready'
+      oneBotMessage =
+        hook.imageHookReady && preflight.status.imagePath && !imagePathBound
+          ? 'OneBot 尚未绑定微信图片目录，请点击“绑定微信”'
+          : oneBotCanSendText || oneBotCanSendImage || oneBotCanSendVoice
+            ? '个人微信已绑定，可使用已初始化的消息类型'
+            : '个人微信已绑定，发送前请先在微信中手动初始化对应消息类型'
     }
-    if (hook.readiness === 'failed') {
-      return {
-        ...common,
-        state: 'error',
-        canSend: false,
-        canSendText: false,
-        canSendImage: false,
-        message: '微信发送能力初始化失败，请尝试重新绑定',
-        ...(hook.error ? { error: hook.error } : {})
-      }
-    }
-    const baseReady = hook.attached && Boolean(hook.baseAddress) && hook.textHookInstalled
-    const canSendText = baseReady && hook.textHookReady
-    const imagePathBound = Boolean(oneBot?.imagePath)
-    const canSendImage = baseReady && hook.imageHookReady && imagePathBound
-    const canSendVoice = baseReady && hook.imageHookReady
+    const canSendText = xsendStatus.ready || oneBotCanSendText
+    const canSendImage = oneBotCanSendImage
+    const canSendVoice = oneBotCanSendVoice
+    const canSend = canSendText || canSendImage || canSendVoice
     return {
       ...common,
-      state: canSendText || canSendImage || canSendVoice ? 'online' : 'hook_not_ready',
-      canSend: canSendText || canSendImage || canSendVoice,
+      state: canSend ? 'online' : oneBotState,
+      canSend,
       canSendText,
       canSendImage,
       canSendVoice,
-      message:
-        hook.imageHookReady && preflight.status.imagePath && !imagePathBound
-          ? 'OneBot 尚未绑定微信图片目录，请点击“绑定微信”'
-          : canSendText || canSendImage || canSendVoice
-            ? '个人微信已绑定，可使用已初始化的消息类型'
-            : '个人微信已绑定，发送前请先在微信中手动初始化对应消息类型',
-      ...(hook.error ? { error: hook.error } : {})
+      message: xsendStatus.ready
+        ? canSendImage || canSendVoice
+          ? 'xsend resident 已就绪，文字与 OneBot 媒体能力可用'
+          : 'xsend resident 已就绪，可发送文字'
+        : oneBotMessage,
+      ...(oneBotError ? { error: oneBotError } : {})
     }
   }
 
@@ -1076,6 +1109,32 @@ export class PersonalWechatSendService {
         return { success: false, status, error: '消息不能超过 2000 个字符' }
       }
       request = { ...request, to, text }
+      const xsendStatus = await this.xsend.getStatus()
+      if (xsendStatus.ready) {
+        try {
+          const xsendResult = await this.xsend.sendText(to, text)
+          const status = mergePersonalWechatXsendStatus(await this.getStatus(), xsendResult.status)
+          return {
+            success: xsendResult.success,
+            status,
+            ...(xsendResult.error ? { error: xsendResult.error } : {})
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          const failedXsendStatus: PersonalWechatXsendStatus = {
+            ...xsendStatus,
+            state: 'failed',
+            ready: false,
+            message: 'xsend 文字发送失败',
+            error: message
+          }
+          return {
+            success: false,
+            status: mergePersonalWechatXsendStatus(await this.getStatus(), failedXsendStatus),
+            error: message
+          }
+        }
+      }
     } else {
       const filePath = String(request.filePath || '').trim()
       if (!filePath || !existsSync(filePath)) {
@@ -1259,9 +1318,13 @@ export class PersonalWechatSendService {
 
   async rebind(): Promise<PersonalWechatSenderStatus> {
     if (process.platform === 'win32') return this.getWindowsStatus()
+    let xsendStatus = await this.xsend.getStatus()
+    if (xsendStatus.supported && xsendStatus.wechatRunning && !xsendStatus.ready) {
+      xsendStatus = await this.xsend.install()
+    }
     const preflight = await this.preflight()
     if (!preflight.runtime || !preflight.status.configPath || !preflight.status.wechatPid) {
-      return preflight.status
+      return this.getStatus()
     }
     const currentStatus = await this.getStatus()
     const oneBot = await readOneBotProcessInfo()
@@ -1289,18 +1352,23 @@ export class PersonalWechatSendService {
       /unable to intercept function|cannot find ['"]req2buf|hook 初始化失败/i.test(
         `${status.error || ''} ${status.message || ''}`
       )
-    if (!retryableHookFailure) return status
+    if (!retryableHookFailure) return this.getStatus()
     const failedOneBot = await readOneBotProcessInfo()
     if (failedOneBot) await terminateOneBot(failedOneBot)
     this.child = null
     this.lastError = ''
     await new Promise((resolve) => setTimeout(resolve, 1_500))
     status = await this.startRuntime()
-    return status
+    return this.getStatus()
   }
 
   async terminate(force = false): Promise<void> {
     if (process.platform === 'win32') return
+    try {
+      await this.xsend.stop()
+    } catch {
+      // Stopping an unavailable resident is best-effort during shutdown.
+    }
     if (this.keepOneBotProcess && !force) {
       this.child = null
       this.startPromise = null
