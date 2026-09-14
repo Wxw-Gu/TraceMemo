@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { aiSearchRangeStart, inferAiSearchTimeRange } from '../../../../../shared/ai-search'
+import { aiSearchRangeStart } from '../../../../../shared/ai-search'
 import type { AiSearchTimeRange } from '../../../../../shared/ai-search'
 import {
   RANGE_LABELS,
   SEARCH_ACTIVE_RESULT_KEY,
   SEARCH_CACHE_KEY,
   SEARCH_HISTORY_KEY,
-  buildSearchCacheKey,
   parseSearchCacheKey,
   readSearchCache,
   writeSearchCache
@@ -59,9 +58,9 @@ type PersistSearchResultInput = {
 
 export function useSearchHistory({
   query,
-  scope,
-  range,
-  conversationContactMd5,
+  scope: _scope,
+  range: _range,
+  conversationContactMd5: _conversationContactMd5,
   evidencePageSize = DEFAULT_EVIDENCE_PAGE_SIZE,
   setQuery,
   setScope,
@@ -177,15 +176,18 @@ export function useSearchHistory({
     setQuery(historyQuery)
     setSelectedEvidence(0)
     setHistoryOpen(false)
-    const resolvedTimeRange = inferAiSearchTimeRange(historyQuery, range, new Date())
-    const cacheKey = buildSearchCacheKey(
-      scope,
-      scope === 'conversation' ? conversationContactMd5 : '',
-      range,
-      historyQuery,
-      resolvedTimeRange
-    )
-    const cached = readSearchCache(cacheKey)
+    // History entries can originate from a different scope/range than the
+    // current composer state. Find by normalized query first, then restore the
+    // cache key's authoritative scope and range below.
+    let cached: AISearchCacheRecord | null = null
+    try {
+      const records = JSON.parse(localStorage.getItem(SEARCH_CACHE_KEY) || '[]') as AISearchCacheRecord[]
+      cached = records
+        .filter((record) => typeof record?.key === 'string' && parseSearchCacheKey(record.key)?.query === historyQuery.trim().toLowerCase())
+        .sort((a, b) => b.createdAt - a.createdAt)[0] || null
+    } catch {
+      cached = null
+    }
     if (!cached) {
       setAnswer('')
       setEvidence([])
