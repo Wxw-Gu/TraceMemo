@@ -1,5 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
+// Keep local-time label assertions deterministic; production follows the host timezone.
+process.env.TZ = 'Asia/Shanghai'
+
 const fixture = vi.hoisted(() => ({
   contacts: [
     { m_nsUsrName: 'wxid-bobo', m_nsNickName: 'BOBO', md5: 'md5-bobo', type: 'user' as const },
