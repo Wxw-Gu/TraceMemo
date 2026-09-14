@@ -15,18 +15,16 @@ interface PersonalWechatSetupGuideProps {
   runtimeBusy: boolean
   binding: boolean
   detecting: boolean
-  detectionAttempted: boolean
   sessionBound: boolean
   onDownloadRuntime: () => void
   onBind: () => void
-  onDetect: () => void
   onStartSending: () => void
   onOpenTextToSpeechSettings?: () => void
 }
 
-function capabilityLabel(ready: boolean, detectionAttempted: boolean): string {
+function capabilityLabel(ready: boolean, initializing: boolean): string {
   if (ready) return '已就绪'
-  return detectionAttempted ? '未检测' : '待检测'
+  return initializing ? '初始化中' : '未就绪'
 }
 
 function diagnosticValue(value: unknown): string {
@@ -47,9 +45,7 @@ function bindingHint(status: PersonalWechatSenderStatus): string {
 }
 
 function isWechatBound(status: PersonalWechatSenderStatus): boolean {
-  if (status.state === 'online') return true
   return Boolean(
-    status.state === 'hook_not_ready' &&
     status.wechatPid &&
     status.boundWechatPid === status.wechatPid &&
     status.attachReady &&
@@ -64,11 +60,9 @@ export function PersonalWechatSetupGuide({
   runtimeBusy,
   binding,
   detecting,
-  detectionAttempted,
   sessionBound,
   onDownloadRuntime,
   onBind,
-  onDetect,
   onStartSending,
   onOpenTextToSpeechSettings
 }: PersonalWechatSetupGuideProps): React.ReactElement {
@@ -78,9 +72,8 @@ export function PersonalWechatSetupGuide({
   const runtimeDownloading = runtimeBusy || runtimeStatus?.state === 'downloading'
   const connected = sessionBound && (senderStatus ? isWechatBound(senderStatus) : false)
   const canSendVoice = Boolean(senderStatus?.canSendVoice)
-  const detectedVoiceReady = detectionAttempted && canSendVoice
-  const verificationComplete = connected && detectedVoiceReady
-  const allReady = verificationComplete
+  const initializing = connected && !canSendVoice && senderStatus?.state !== 'error'
+  const allReady = connected && Boolean(senderStatus?.canSend)
   const progress = runtimeProgress || runtimeStatus
   const progressPercent = Math.max(0, Math.min(100, Math.round((progress?.progress || 0) * 100)))
 
@@ -181,44 +174,38 @@ export function PersonalWechatSetupGuide({
           </div>
         </li>
 
-        <li
-          className={verificationComplete ? 'is-complete' : connected ? 'is-current' : 'is-pending'}
-        >
-          <span className="personal-wechat-step-number">{verificationComplete ? '✓' : '3'}</span>
+        <li className={allReady ? 'is-complete' : connected ? 'is-current' : 'is-pending'}>
+          <span className="personal-wechat-step-number">{allReady ? '✓' : '3'}</span>
           <div className="personal-wechat-step-content">
-            <strong>验证消息能力</strong>
-            <p>请打开微信，可以给任意好友发送一张图片，完成一次能力初始化。</p>
-            <p className="personal-wechat-step-hint">完成后点击“重新检测”。</p>
-            {connected && !verificationComplete && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={onDetect}
-                disabled={detecting || binding}
-              >
-                {detecting ? '正在检测…' : '重新检测'}
-              </Button>
-            )}
-            {detectionAttempted && !detecting && !verificationComplete && (
+            <strong>初始化发送能力</strong>
+            <p>绑定微信后，TraceMemo 会自动完成文字、图片和语音发送所需的初始化。</p>
+            {initializing && (
               <p className="personal-wechat-step-hint" role="status">
-                暂未检测到语音发送能力，请确认微信已完成初始化后再次检测。
+                {detecting ? '正在初始化发送能力…' : '正在等待发送运行时完成初始化…'}
+              </p>
+            )}
+            {senderStatus?.state === 'error' && (
+              <p className="personal-wechat-step-hint" role="status">
+                {senderStatus.message || '发送能力初始化失败，请重新绑定。'}
               </p>
             )}
           </div>
         </li>
 
-        <li
-          className={allReady ? 'is-complete' : verificationComplete ? 'is-current' : 'is-pending'}
-        >
+        <li className={allReady ? 'is-complete' : initializing ? 'is-current' : 'is-pending'}>
           <span className="personal-wechat-step-number">{allReady ? '✓' : '4'}</span>
           <div className="personal-wechat-step-content">
             <strong>能力检测</strong>
             <div className="personal-wechat-capabilities" aria-label="微信消息能力">
-              {[['语音消息', detectedVoiceReady]].map(([label, ready]) => (
+              {[
+                ['文字消息', Boolean(senderStatus?.canSendText)],
+                ['图片消息', Boolean(senderStatus?.canSendImage)],
+                ['语音消息', canSendVoice]
+              ].map(([label, ready]) => (
                 <span key={String(label)} className={ready ? 'is-ready' : ''}>
                   <b aria-hidden>{ready ? '✓' : '−'}</b>
                   {label}
-                  <small>{capabilityLabel(Boolean(ready), detectionAttempted)}</small>
+                  <small>{capabilityLabel(Boolean(ready), initializing)}</small>
                 </span>
               ))}
             </div>
@@ -229,15 +216,10 @@ export function PersonalWechatSetupGuide({
                   开始发送
                 </Button>
               </>
-            ) : verificationComplete ? (
-              <>
-                <p className="personal-wechat-step-hint">
-                  语音能力还未就绪，请在微信中完成一次媒体消息初始化后重新检测。
-                </p>
-                <Button size="sm" variant="outline" onClick={onDetect} disabled={detecting}>
-                  {detecting ? '正在检测…' : '重新检测能力'}
-                </Button>
-              </>
+            ) : initializing ? (
+              <p className="personal-wechat-step-hint" role="status">
+                发送能力准备完成后会自动进入已就绪状态。
+              </p>
             ) : null}
           </div>
         </li>

@@ -29,7 +29,7 @@ const capability: PersonalWechatSendCapability = {
 const unavailableCapability: PersonalWechatSendCapability = {
   ...capability,
   ready: false,
-  status: 'needs_verification',
+  status: 'initializing',
   capabilities: { text: false, image: false, voice: false },
   message: '请先完成微信消息能力检测'
 }

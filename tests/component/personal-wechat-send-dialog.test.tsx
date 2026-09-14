@@ -169,9 +169,9 @@ describe('PersonalWechatSendDialog', () => {
   it('keeps the setup guide voice-only when voice capability is unavailable', async () => {
     getStatus.mockResolvedValue({ ...readyStatus, canSend: false, canSendVoice: false })
     renderDialog({ onOpenPersonalWechatSettings: vi.fn() })
-    expect(await screen.findByText('验证消息能力')).toBeInTheDocument()
+    expect(await screen.findByText('初始化发送能力')).toBeInTheDocument()
     expect(screen.getByText('语音消息')).toBeInTheDocument()
-    expect(screen.queryByText('文字消息')).not.toBeInTheDocument()
-    expect(screen.queryByText('图片和语音消息')).not.toBeInTheDocument()
+    expect(screen.getByText('文字消息')).toBeInTheDocument()
+    expect(screen.getByText('图片消息')).toBeInTheDocument()
   })
 })

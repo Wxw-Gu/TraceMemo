@@ -49,7 +49,7 @@ export type PersonalWechatSendCapabilityState =
   | 'unsupported'
   | 'unconfigured'
   | 'needs_binding'
-  | 'needs_verification'
+  | 'initializing'
   | 'ready'
   | 'error'
 

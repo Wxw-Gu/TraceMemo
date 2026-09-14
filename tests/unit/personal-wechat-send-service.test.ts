@@ -29,6 +29,7 @@ import {
   parseWindowsLoginStatus,
   parseWindowsHookResponse,
   parsePersonalWechatHookLog,
+  deriveMacSendCapabilities,
   prepareWindowsImageFile,
   WindowsHookHttpError
 } from '../../src/main/services/personal-wechat-send-service'
@@ -328,6 +329,32 @@ describe('personal WeChat runtime discovery', () => {
 })
 
 describe('personal WeChat hook diagnostics', () => {
+  it('marks media ready from initialized hooks without an upload capture event', () => {
+    expect(
+      deriveMacSendCapabilities({
+        attached: true,
+        baseAddressReady: true,
+        textHookInstalled: true,
+        textHookReady: true,
+        imageHookInstalled: true,
+        imagePathBound: true
+      })
+    ).toEqual({ canSend: true, canSendText: true, canSendImage: true, canSendVoice: true })
+  })
+
+  it('keeps sending unavailable until the native send context is captured', () => {
+    expect(
+      deriveMacSendCapabilities({
+        attached: true,
+        baseAddressReady: true,
+        textHookInstalled: true,
+        textHookReady: false,
+        imageHookInstalled: true,
+        imagePathBound: true
+      }).canSend
+    ).toBe(false)
+  })
+
   it('does not treat a listening service as hook-ready after req2buf scan failure', () => {
     expect(
       parsePersonalWechatHookLog(
@@ -350,7 +377,7 @@ describe('personal WeChat hook diagnostics', () => {
     ).toMatchObject({ readiness: 'initializing', textHookInstalled: true })
     expect(
       parsePersonalWechatHookLog(
-        JSON.stringify({ payload: '[+] 捕获到 StartTask 调用，X0：0x1, Payload: 0x2' })
+        JSON.stringify({ payload: '[+] 捕获到有效 StartTask 上下文，X0：0x1, Payload: 0x2' })
       )
     ).toMatchObject({ readiness: 'ready', textHookReady: true })
   })

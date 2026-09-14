@@ -19,10 +19,7 @@ import {
   Switch
 } from '../ui'
 import { isMac, isWindows } from '../../utils/runtime-environment'
-import {
-  PersonalWechatChatComposer,
-  type ChatMessage
-} from './PersonalWechatChatComposer'
+import { PersonalWechatChatComposer, type ChatMessage } from './PersonalWechatChatComposer'
 import { PersonalWechatSetupGuide } from './PersonalWechatSetupGuide'
 import { PersonalWechatVoiceDiagnosticDialog } from './PersonalWechatVoiceDiagnosticDialog'
 import { PersonalWechatWindowsSendDialog } from './PersonalWechatWindowsSendDialog'
@@ -86,7 +83,6 @@ function PersonalWechatMacSendDialog({
   const [binding, setBinding] = useState(false)
   const [runtimeBusy, setRuntimeBusy] = useState(false)
   const [sendBusy, setSendBusy] = useState(false)
-  const [detectionAttempted, setDetectionAttempted] = useState(false)
   // 状态可能来自之前的 OneBot 进程或日志；发送入口只信任当前语音能力状态。
   const [sessionBound, setSessionBound] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -145,6 +141,21 @@ function PersonalWechatMacSendDialog({
   }, [refreshStatus])
 
   useEffect(() => {
+    if (!senderStatus || senderStatus.canSend || senderStatus.state === 'error') return undefined
+    const bound =
+      senderStatus.state === 'online' ||
+      Boolean(
+        senderStatus.wechatPid &&
+        senderStatus.boundWechatPid === senderStatus.wechatPid &&
+        senderStatus.attachReady &&
+        senderStatus.baseAddressReady
+      )
+    if (!bound) return undefined
+    const timer = window.setInterval(() => void refreshStatus(), 1_000)
+    return () => window.clearInterval(timer)
+  }, [refreshStatus, senderStatus])
+
+  useEffect(() => {
     if (!isMac) return undefined
     let active = true
     const readKeepProcess = window.api.getPersonalWechatKeepOneBotProcess
@@ -193,7 +204,6 @@ function PersonalWechatMacSendDialog({
   const handleBind = async (): Promise<void> => {
     if (binding) return
     setBinding(true)
-    setDetectionAttempted(false)
     setSendError(null)
     try {
       const nextStatus = await window.api.rebindPersonalWechatSender()
@@ -207,17 +217,12 @@ function PersonalWechatMacSendDialog({
             nextStatus.baseAddressReady
           )
       )
-      if (nextStatus.state !== 'online' && nextStatus.message) setSendError(nextStatus.message)
+      if (nextStatus.state === 'error' && nextStatus.message) setSendError(nextStatus.message)
     } catch (error) {
       setSendError(error instanceof Error ? error.message : String(error))
     } finally {
       setBinding(false)
     }
-  }
-
-  const handleDetect = async (): Promise<void> => {
-    setDetectionAttempted(true)
-    await refreshStatus()
   }
 
   const handleClose = (): void => {
@@ -235,9 +240,7 @@ function PersonalWechatMacSendDialog({
     onOpenTextToSpeechSettings()
   }
 
-  const handleSend = async (
-    filePath: string
-  ): Promise<{ success: boolean; error?: string }> => {
+  const handleSend = async (filePath: string): Promise<{ success: boolean; error?: string }> => {
     setSendBusy(true)
     setSendError(null)
     try {
@@ -364,8 +367,6 @@ function PersonalWechatMacSendDialog({
                 sessionBound={sessionBound}
                 onDownloadRuntime={() => void handleDownloadRuntime()}
                 onBind={() => void handleBind()}
-                detectionAttempted={detectionAttempted}
-                onDetect={() => void handleDetect()}
                 onStartSending={() => undefined}
                 onOpenTextToSpeechSettings={handleOpenSettings}
               />

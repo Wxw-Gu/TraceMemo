@@ -113,8 +113,8 @@ const capabilityCopy = (capability: PersonalWechatSendCapability | null): string
     case 'needs_binding':
     case 'unconfigured':
       return '请先绑定个人微信'
-    case 'needs_verification':
-      return '请先完成微信消息能力检测'
+    case 'initializing':
+      return '微信发送能力正在初始化'
     default:
       return '微信发送能力异常'
   }
@@ -598,8 +598,9 @@ export function ScheduledReportsWorkspace({
   const [editingTask, setEditingTask] = React.useState<ScheduledReportTask | null>(null)
   const [saving, setSaving] = React.useState(false)
   const [deletingTask, setDeletingTask] = React.useState<ScheduledReportTask | null>(null)
-  const [retryingExecution, setRetryingExecution] =
-    React.useState<ScheduledReportExecution | null>(null)
+  const [retryingExecution, setRetryingExecution] = React.useState<ScheduledReportExecution | null>(
+    null
+  )
   const [busyTaskId, setBusyTaskId] = React.useState<string | null>(null)
 
   const load = React.useCallback(async (): Promise<void> => {
@@ -917,11 +918,11 @@ export function ScheduledReportsWorkspace({
         </span>
         {(capability?.status === 'needs_binding' ||
           capability?.status === 'unconfigured' ||
-          capability?.status === 'needs_verification' ||
+          capability?.status === 'initializing' ||
           capability?.status === 'error' ||
           capabilityError) && (
           <Button variant="link" size="sm" className="ml-auto" onClick={onOpenWechatSettings}>
-            {capability?.status === 'needs_verification' ? '去检测' : '去配置'}
+            去配置
           </Button>
         )}
       </div>

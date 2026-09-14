@@ -122,7 +122,7 @@ describe('ScheduledReportApiService', () => {
     )
   })
 
-  it.each(['unsupported', 'unconfigured', 'needs_binding', 'needs_verification', 'error'] as const)(
+  it.each(['unsupported', 'unconfigured', 'needs_binding', 'initializing', 'error'] as const)(
     'allows creation and leaves a send warning for capability state %s',
     async (status) => {
       const { api, service } = makeApi({ capability: capability(status) })

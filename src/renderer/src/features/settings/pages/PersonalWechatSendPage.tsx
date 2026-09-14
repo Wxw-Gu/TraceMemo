@@ -39,7 +39,7 @@ const capabilityLabel: Record<PersonalWechatSendCapability['status'], string> = 
   unsupported: '暂不支持',
   unconfigured: '尚未配置',
   needs_binding: '需要绑定',
-  needs_verification: '需要检测',
+  initializing: '初始化中',
   ready: '已就绪',
   error: '异常'
 }
@@ -81,7 +81,6 @@ export function PersonalWechatSendPage({
   const [runtimeBusy, setRuntimeBusy] = useState(false)
   const [binding, setBinding] = useState(false)
   const [detecting, setDetecting] = useState(false)
-  const [detectionAttempted, setDetectionAttempted] = useState(false)
   const [error, setError] = useState('')
   const [windowsSenderStatus, setWindowsSenderStatus] = useState<PersonalWechatSenderStatus | null>(
     null
@@ -128,6 +127,15 @@ export function PersonalWechatSendPage({
     })
     return () => unsubscribe?.()
   }, [refresh])
+
+  useEffect(() => {
+    if (isWindows || !senderStatus || senderStatus.canSend || senderStatus.state === 'error') {
+      return undefined
+    }
+    if (!boundToCurrentWechat(senderStatus)) return undefined
+    const timer = window.setInterval(() => void refresh(), 1_000)
+    return () => window.clearInterval(timer)
+  }, [refresh, senderStatus])
 
   useEffect(() => {
     if (!isWindows) return
@@ -215,13 +223,12 @@ export function PersonalWechatSendPage({
     if (binding) return
     setBinding(true)
     setError('')
-    setDetectionAttempted(false)
     try {
       const nextStatus = await window.api.rebindPersonalWechatSender()
       setSenderStatus(nextStatus)
       const nextCapability = await window.api.getPersonalWechatSendCapability()
       setCapability(nextCapability)
-      if (nextStatus.state !== 'online' && nextStatus.message) setError(nextStatus.message)
+      if (nextStatus.state === 'error' && nextStatus.message) setError(nextStatus.message)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '个人微信绑定失败')
     } finally {
@@ -236,7 +243,6 @@ export function PersonalWechatSendPage({
     }
     if (detecting) return
     setDetecting(true)
-    setDetectionAttempted(true)
     try {
       await refresh()
     } finally {
@@ -324,7 +330,7 @@ export function PersonalWechatSendPage({
       : windowsSenderStatus?.state === 'error' && windowsSenderStatus.endpointReady
         ? 'error'
         : windowsPortInput.trim()
-          ? 'needs_verification'
+          ? 'initializing'
           : 'unconfigured'
     : status
   const pageReady = isWindows ? Boolean(windowsSenderStatus?.canSend) : ready
@@ -374,7 +380,7 @@ export function PersonalWechatSendPage({
                       </p>
                     </div>
                     <Button variant="outline" size="sm" onClick={() => void detectCapability()}>
-                      {detecting ? '检测中…' : '重新检测'}
+                      {detecting ? '刷新中…' : isWindows ? '重新检测' : '刷新状态'}
                     </Button>
                   </div>
                   <div className="mt-5 grid grid-cols-3 gap-2" aria-label="微信发送能力明细">
@@ -574,7 +580,7 @@ export function PersonalWechatSendPage({
                       ) : null}
                     </section>
 
-                    <h2 className="settings-section-heading">配置与检测</h2>
+                    <h2 className="settings-section-heading">配置状态</h2>
                     <PersonalWechatSetupGuide
                       runtimeStatus={runtimeStatus}
                       senderStatus={senderStatus}
@@ -582,11 +588,9 @@ export function PersonalWechatSendPage({
                       runtimeBusy={runtimeBusy}
                       binding={binding}
                       detecting={detecting}
-                      detectionAttempted={detectionAttempted}
                       sessionBound={boundToCurrentWechat(senderStatus)}
                       onDownloadRuntime={() => void downloadRuntime()}
                       onBind={() => void bindWechat()}
-                      onDetect={() => void detectCapability()}
                       onStartSending={() =>
                         onNotice('微信消息发送能力已就绪，请在档案中选择会话开始发送。')
                       }

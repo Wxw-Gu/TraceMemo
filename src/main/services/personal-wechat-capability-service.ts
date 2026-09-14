@@ -26,7 +26,7 @@ export class PersonalWechatCapabilityService {
       image: Boolean(senderStatus.canSendImage),
       voice: Boolean(senderStatus.canSendVoice)
     }
-    const status = this.mapState(senderStatus, capabilities.image)
+    const status = this.mapState(senderStatus)
     const ready = status === 'ready'
     return {
       supported: status !== 'unsupported',
@@ -40,8 +40,8 @@ export class PersonalWechatCapabilityService {
           : senderStatus.message ||
             (status === 'needs_binding' || status === 'unconfigured'
               ? '请先绑定个人微信'
-              : status === 'needs_verification'
-                ? '请先完成微信消息能力检测'
+              : status === 'initializing'
+                ? '正在初始化微信发送能力'
                 : status === 'ready'
                   ? '个人微信已准备好发送日报'
                   : senderStatus.error || '个人微信发送能力异常'),
@@ -49,32 +49,34 @@ export class PersonalWechatCapabilityService {
     }
   }
 
-  private mapState(
-    senderStatus: PersonalWechatSenderStatus,
-    canSendImage: boolean
-  ): PersonalWechatSendCapabilityState {
+  private mapState(senderStatus: PersonalWechatSenderStatus): PersonalWechatSendCapabilityState {
     if (senderStatus.platform === 'win32') {
       if (senderStatus.canSend) return 'ready'
       if (!senderStatus.endpoint) return 'unconfigured'
       if (senderStatus.state === 'error' && senderStatus.endpointReady) return 'error'
-      return 'needs_verification'
+      return 'initializing'
     }
     if (senderStatus.platform !== 'darwin' || senderStatus.state === 'unsupported_platform') {
       return 'unsupported'
     }
     if (senderStatus.state === 'error') return 'error'
-    const hasBinding = Boolean(senderStatus.boundWechatPid)
-    if (!hasBinding) {
+    const hasCurrentBinding = Boolean(
+      senderStatus.endpointReady &&
+      senderStatus.attachReady &&
+      senderStatus.wechatPid &&
+      senderStatus.boundWechatPid === senderStatus.wechatPid
+    )
+    if (!hasCurrentBinding) {
       return senderStatus.runtimeReady ? 'needs_binding' : 'unconfigured'
     }
-    if (canSendImage) return 'ready'
+    if (senderStatus.canSend) return 'ready'
     if (
       senderStatus.state === 'hook_not_ready' ||
       senderStatus.state === 'online' ||
       senderStatus.state === 'starting' ||
       senderStatus.state === 'stopped'
     ) {
-      return 'needs_verification'
+      return 'initializing'
     }
     return 'error'
   }

@@ -11,6 +11,7 @@ const status = (
   arch: 'arm64',
   sipDisabled: true,
   wechatRunning: true,
+  wechatPid: 123,
   endpoint: '127.0.0.1:58080',
   endpointReady: true,
   runtimeReady: true,
@@ -34,10 +35,22 @@ describe('PersonalWechatCapabilityService', () => {
     ['unsupported', status({ platform: 'linux' })],
     ['unconfigured', status({ runtimeReady: false, boundWechatPid: undefined })],
     ['needs_binding', status({ runtimeReady: true, boundWechatPid: undefined })],
-    ['needs_verification', status({ boundWechatPid: 123 })],
+    ['needs_binding', status({ runtimeReady: true, boundWechatPid: 999 })],
+    ['initializing', status({ boundWechatPid: 123 })],
     ['ready', status({ state: 'online', boundWechatPid: 123, canSendImage: true, canSend: true })],
+    [
+      'ready',
+      status({
+        state: 'online',
+        boundWechatPid: 123,
+        canSend: true,
+        canSendText: true,
+        canSendImage: false,
+        canSendVoice: true
+      })
+    ],
     ['error', status({ state: 'error', boundWechatPid: 123, error: 'hook failed' })],
-    ['needs_verification', status({ platform: 'win32', endpoint: '127.0.0.1:4567' })],
+    ['initializing', status({ platform: 'win32', endpoint: '127.0.0.1:4567' })],
     [
       'ready',
       status({

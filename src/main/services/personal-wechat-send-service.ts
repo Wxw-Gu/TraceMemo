@@ -161,7 +161,10 @@ export function parsePersonalWechatHookLog(log: string): {
       } else if (text.includes('triggerX0 或 triggerX1Payload 尚未初始化')) {
         readiness = 'initializing'
         error = '微信发送能力尚未就绪，消息没有发出'
-      } else if (text.includes('捕获到 StartTask 调用')) {
+      } else if (
+        text.includes('捕获到有效 StartTask 上下文') ||
+        text.includes('捕获到 StartTask 调用')
+      ) {
         readiness = 'ready'
         textHookReady = true
         error = undefined
@@ -198,6 +201,27 @@ export function parsePersonalWechatHookLog(log: string): {
 interface PreflightResult {
   status: PersonalWechatSenderStatus
   runtime?: RuntimeLayout
+}
+
+export function deriveMacSendCapabilities(input: {
+  attached: boolean
+  baseAddressReady: boolean
+  textHookInstalled: boolean
+  textHookReady: boolean
+  imageHookInstalled: boolean
+  imagePathBound: boolean
+}): Pick<PersonalWechatSenderStatus, 'canSend' | 'canSendText' | 'canSendImage' | 'canSendVoice'> {
+  const baseReady = input.attached && input.baseAddressReady && input.textHookInstalled
+  const canSendText = baseReady && input.textHookReady
+  const mediaUploadReady = canSendText && input.imageHookInstalled
+  const canSendImage = mediaUploadReady && input.imagePathBound
+  const canSendVoice = mediaUploadReady
+  return {
+    canSend: canSendText || canSendImage || canSendVoice,
+    canSendText,
+    canSendImage,
+    canSendVoice
+  }
 }
 
 function toConfigFileName(version: string): string {
@@ -991,24 +1015,28 @@ export class PersonalWechatSendService {
         ...(hook.error ? { error: hook.error } : {})
       }
     }
-    const baseReady = hook.attached && Boolean(hook.baseAddress) && hook.textHookInstalled
-    const canSendText = baseReady && hook.textHookReady
     const imagePathBound = Boolean(oneBot?.imagePath)
-    const canSendImage = baseReady && hook.imageHookReady && imagePathBound
-    const canSendVoice = baseReady && hook.imageHookReady
+    // All send types use the captured native task context. Media no longer
+    // waits for a real image upload event because the runtime resolves the
+    // CDN manager during cold start.
+    const capabilities = deriveMacSendCapabilities({
+      attached: hook.attached,
+      baseAddressReady: Boolean(hook.baseAddress),
+      textHookInstalled: hook.textHookInstalled,
+      textHookReady: hook.textHookReady,
+      imageHookInstalled: hook.imageHookInstalled,
+      imagePathBound
+    })
     return {
       ...common,
-      state: canSendText || canSendImage || canSendVoice ? 'online' : 'hook_not_ready',
-      canSend: canSendText || canSendImage || canSendVoice,
-      canSendText,
-      canSendImage,
-      canSendVoice,
+      state: capabilities.canSend ? 'online' : 'hook_not_ready',
+      ...capabilities,
       message:
-        hook.imageHookReady && preflight.status.imagePath && !imagePathBound
+        hook.imageHookInstalled && preflight.status.imagePath && !imagePathBound
           ? 'OneBot 尚未绑定微信图片目录，请点击“绑定微信”'
-          : canSendText || canSendImage || canSendVoice
-            ? '个人微信已绑定，可使用已初始化的消息类型'
-            : '个人微信已绑定，发送前请先在微信中手动初始化对应消息类型',
+          : capabilities.canSend
+            ? '个人微信发送能力已就绪'
+            : '个人微信已绑定，正在初始化发送能力…',
       ...(hook.error ? { error: hook.error } : {})
     }
   }
@@ -1146,12 +1174,7 @@ export class PersonalWechatSendService {
           ? status.canSendVoice
           : status.canSendImage
     if (!typeReady) {
-      const guidance =
-        request.type === 'text'
-          ? '请先在微信中给任意好友手动发送一条文字，再重新检测'
-          : request.type === 'voice'
-            ? '语音复用媒体上传能力，请先在微信中手动发送一张普通图片，再重新检测'
-            : '请先在微信中给任意好友手动发送一张普通图片，再重新检测'
+      const guidance = status.message || '个人微信发送能力正在初始化，请稍后重试'
       return { success: false, status, error: status.error || guidance }
     }
 
