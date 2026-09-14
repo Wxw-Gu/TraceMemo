@@ -86,9 +86,9 @@ function rangeEndMs(range: ResolvedTimeRange, fallbackNowMs: number): number {
 
 /** 本地时间（`MM-DD HH:mm`）；只用于给模型一句可引用的人话，不参与任何判断。 */
 function formatLocalMinute(ms: number): string {
-  const date = new Date(ms + 8 * 60 * 60 * 1000)
+  const date = new Date(ms)
   const pad = (value: number): string => String(value).padStart(2, '0')
-  return `${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 /**

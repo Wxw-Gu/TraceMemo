@@ -5,6 +5,9 @@ import {
   inferAiSearchTimeRange
 } from '../../src/shared/ai-search'
 
+// Keep calendar assertions deterministic while production follows the host timezone.
+process.env.TZ = 'Asia/Shanghai'
+
 const NOW = new Date('2026-08-05T12:00:00+08:00')
 
 describe('AI search natural-language time ranges', () => {

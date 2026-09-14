@@ -399,12 +399,9 @@ export const aiSearchRangeStart = (range: AiSearchRange): number | undefined => 
   return Math.floor(Date.now() / 1000) - (range === '7d' ? 7 : 30) * 86400
 }
 
-// Natural-language dates use the app's explicit China Standard Time calendar,
-// independent of the host OS timezone (CI may run in UTC).
-const APP_TIMEZONE_OFFSET_MS = 8 * 60 * 60 * 1000
-const appCalendar = (date: Date): Date => new Date(date.getTime() + APP_TIMEZONE_OFFSET_MS)
+const appCalendar = (date: Date): Date => date
 const appDateEpochSeconds = (year: number, month: number, day: number): number =>
-  Math.floor((Date.UTC(year, month, day) - APP_TIMEZONE_OFFSET_MS) / 1000)
+  Math.floor(new Date(year, month, day).getTime() / 1000)
 
 const dayStart = (date: Date): number => {
   const local = appCalendar(date)
@@ -482,11 +479,11 @@ export const inferAiSearchTimeRange = (
   if (/这个月|本月/.test(query)) return fromQuery(currentMonthStart(now), '本月', '用户说“这个月”')
   if (/上个月/.test(query)) {
     const local = appCalendar(now)
-    const year = local.getUTCFullYear()
-    const month = local.getUTCMonth()
-    const startDate = new Date(Date.UTC(year, month - 1, 1))
+    const year = local.getFullYear()
+    const month = local.getMonth()
+    const startDate = new Date(year, month - 1, 1)
     const end = appDateEpochSeconds(year, month, 1) - 1
-    const start = appDateEpochSeconds(startDate.getUTCFullYear(), startDate.getUTCMonth(), 1)
+    const start = appDateEpochSeconds(startDate.getFullYear(), startDate.getMonth(), 1)
     return {
       startTime: start,
       endTime: end,
@@ -508,8 +505,8 @@ export const inferAiSearchTimeRange = (
     }
   }
   if (/去年/.test(query)) {
-    const year = appCalendar(now).getUTCFullYear()
-    const startDate = new Date(Date.UTC(year - 1, 0, 1))
+    const year = appCalendar(now).getFullYear()
+    const startDate = new Date(year - 1, 0, 1)
     return {
       startTime: appDateEpochSeconds(year - 1, 0, 1),
       endTime: appDateEpochSeconds(year, 0, 1) - 1,

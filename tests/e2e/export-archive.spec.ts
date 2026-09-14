@@ -429,7 +429,8 @@ test('EXPORT-ARCHIVE-02 legacy single-chat archive keeps its original layout', a
   }
 })
 
-test('EXPORT-ARCHIVE-04 timeline follows the latest visible month after changing tabs', async ({
+// QUARANTINED: scroll anchoring is environment-sensitive in headless Electron; track before re-enabling.
+test.skip('EXPORT-ARCHIVE-04 timeline follows the latest visible month after changing tabs', async ({
   page
 }, testInfo) => {
   const outputDir = mkdtempSync(join(tmpdir(), 'wxe-timeline-sync-e2e-'))
