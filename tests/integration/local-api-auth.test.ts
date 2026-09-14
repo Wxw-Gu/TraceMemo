@@ -187,6 +187,32 @@ describe('Local API authentication', () => {
     expect(body.messages[0].contentData).not.toHaveProperty('aeskey')
   })
 
+  it('serves opaque media handles while preserving the chatlog message id', async () => {
+    const mediaId = `image:${'a'.repeat(64)}`
+    const previousUrl = fixture.chatlogMessages[0].media.url
+    fixture.chatlogMessages[0].media.url = `/api/v1/media/${encodeURIComponent(mediaId)}`
+    try {
+      const provider = vi.fn(async (id: string) => {
+        expect(id).toBe(mediaId)
+        return { buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]), mimeType: 'image/jpeg' }
+      })
+      const handle = await startFixtureServer(() => VALID_TOKEN, provider)
+      const headers = { Authorization: `Bearer ${VALID_TOKEN}` }
+      const chatlog = await fetch(`${baseUrl(handle)}/api/v1/chatlog?talker=fixture`, { headers })
+      const body = await chatlog.json()
+      expect(body.messages[0].id).toBe('message:1')
+      expect(body.messages[0].media.url).not.toContain('message')
+      const response = await fetch(`${baseUrl(handle)}${body.messages[0].media.url}`, { headers })
+      expect(response.status).toBe(200)
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(
+        Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+      )
+      expect(provider).toHaveBeenCalledOnce()
+    } finally {
+      fixture.chatlogMessages[0].media.url = previousUrl
+    }
+  })
+
   it('maps media lookup failures to stable API statuses', async () => {
     const handle = await startFixtureServer(
       () => VALID_TOKEN,

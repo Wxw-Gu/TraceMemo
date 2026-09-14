@@ -36,7 +36,7 @@ curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
 | GET  | `/api/v1/chatroom`           | 群聊列表                               | `keyword`                                                       |
 | GET  | `/api/v1/recent_chat`        | 最近会话                               | `limit`，默认 50                                                |
 | GET  | `/api/v1/chatlog`            | 指定会话的聊天记录                     | 必填 `talker`；可选 `time` 或 `startTime`/`endTime`             |
-| GET  | `/api/v1/media/{messageId}`  | 获取图片消息的二进制资源               | 使用 `/chatlog` 返回的图片消息 `id`                             |
+| GET  | `/api/v1/media/{mediaId}`    | 获取图片消息的二进制资源               | 原样使用 `/chatlog` 返回的 `media.url`，不要用消息 `id` 拼接     |
 | GET  | `/api/v1/group_snapshot`     | 群成员快照                             | 必填 `md5`                                                      |
 | GET  | `/api/v1/resolve`            | 将昵称、wxid 或 md5 解析为会话         | 必填 `q`                                                        |
 | POST | `/api/v1/report`             | 将结构化日报渲染为 HTML 与 PNG         | `GroupReportExportRequest` JSON                                 |
@@ -85,7 +85,7 @@ curl -H "$AUTH" "$BASE/chatlog?talker=技术交流群&time=2026-08-07"
 - `200`：请求成功；
 - `401`：缺少、错误或已失效的 Bearer Token；
 - `400`：参数或 JSON 请求体无效；
-- `422`：媒体 `messageId` 无效，或目标消息不是可读取的图片；
+- `422`：媒体标识无效，或目标消息不是可读取的图片；
 - `403`：浏览器 Origin 不在允许的 loopback 列表；
 - `404`：端点、会话或群聊不存在；
 - `503`：数据库或 Agent Hub 尚未就绪；
@@ -102,12 +102,14 @@ curl -H "$AUTH" "$BASE/chatlog?talker=技术交流群&time=2026-08-07"
   "media": {
     "type": "image",
     "available": true,
-    "url": "/api/v1/media/msg_xxx"
+    "url": "/api/v1/media/image%3A0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 ```
 
 当用户要求查看或理解图片时，使用 `media.url` 获取 `image/jpeg`、`image/png` 等真实二进制；不要根据 `[图片]` 猜测内容，也不要向 API 传入本地路径。
+
+`media.url` 包含当前数据库连接内的独立媒体标识，不等同于消息 `id`。不同会话的消息 `id` 可能重复，调用方应原样使用返回的地址，不自行拼接或解析。重启、重连或切换账号后须重新读取 `/chatlog` 获取新地址；旧的纯消息 ID 地址仅在无歧义时兼容。`available` 只表示消息带有图片定位信息，不保证本地图片文件仍存在或可以解密。
 
 ## 与 MCP 的关系
 

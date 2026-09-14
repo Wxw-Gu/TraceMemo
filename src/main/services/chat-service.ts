@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'node:crypto'
 import { WechatDb, WechatMessage } from '../wechat-db'
 import {
   parseImageBufferDataUrlFromRow,
@@ -156,6 +157,7 @@ export interface ImageMessageReference {
 }
 
 const imageMessageReferences = new Map<string, ImageMessageReference | null>()
+let imageReferenceScope = randomUUID()
 
 export function setChatDb(db: WechatDb | null): boolean {
   if (shutdownRequested) {
@@ -166,6 +168,7 @@ export function setChatDb(db: WechatDb | null): boolean {
   dbRef = db
   contactSearchIndexCache = null
   imageMessageReferences.clear()
+  imageReferenceScope = randomUUID()
   return true
 }
 
@@ -501,11 +504,28 @@ function listSourceMessages(
         : msg.mesLocalID || Math.random().toString()
     )
     const imageContent = contentData?.type === 'image' ? contentData : undefined
+    // Local ids repeat across conversations. Scope media handles to this database
+    // connection and image without changing the message id used by other clients.
+    const mediaId = imageContent
+      ? `image:${createHash('sha256')
+          .update(
+            JSON.stringify([
+              imageReferenceScope,
+              userMd5,
+              messageId,
+              String(msg.serverId || ''),
+              createTime,
+              imageContent.md5 || '',
+              imageContent.datName || ''
+            ])
+          )
+          .digest('hex')}`
+      : ''
     const media = imageContent
       ? {
           type: 'image' as const,
           available: Boolean(imageContent.md5 || imageContent.datName),
-          url: `/api/v1/media/${encodeURIComponent(messageId)}`
+          url: `/api/v1/media/${encodeURIComponent(mediaId)}`
         }
       : undefined
     if (imageContent && media) {
@@ -516,6 +536,8 @@ function listSourceMessages(
         imageDatName: imageContent.datName,
         createTime
       }
+      imageMessageReferences.set(mediaId, reference)
+      // Keep old bare-id URLs working only while they are unambiguous.
       const previous = imageMessageReferences.get(messageId)
       if (
         previous &&
