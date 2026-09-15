@@ -414,11 +414,13 @@ export function PersonalWechatSendPage({
                       <span className="settings-card-kicker">个人微信</span>
                       <strong className="mt-1 block text-base">{pageMessage}</strong>
                       <p className="mt-2 text-sm text-muted-foreground">
-                        {pageStatus === 'unsupported' && !isWindows
-                          ? '微信消息发送目前仅支持 macOS 和 Windows。'
-                          : isWindows
-                            ? 'Windows 通过本机微信发送接口工作，请先配置并检测接口端口。'
-                            : '档案中的文字、图片和语音发送，以及定时日报发送，都会使用这项能力。'}
+                        {pageStatus === 'unsupported' && isMac
+                          ? 'Intel Mac 不支持个人微信发送。'
+                          : pageStatus === 'unsupported' && !isWindows
+                            ? '微信消息发送目前仅支持 macOS 和 Windows。'
+                            : isWindows
+                              ? 'Windows 通过本机微信发送接口工作，请先配置并检测接口端口。'
+                              : '档案中的文字、图片和语音发送，以及定时日报发送，都会使用这项能力。'}
                       </p>
                     </div>
                     <Button variant="outline" size="sm" onClick={() => void detectCapability()}>

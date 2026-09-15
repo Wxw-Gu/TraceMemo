@@ -1,8 +1,9 @@
 /* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/explicit-function-return-type */
-const { chmodSync, existsSync } = require('node:fs')
+const { chmodSync, existsSync, readdirSync, rmSync } = require('node:fs')
 const { execFileSync } = require('node:child_process')
 const path = require('node:path')
 const asar = require('@electron/asar')
+const { readBinaryArchitectures } = require('./binary-arch.cjs')
 
 const REQUIRED_RUNTIME_PACKAGES = [
   '@electron-toolkit/preload',
@@ -82,6 +83,43 @@ function normalizeBuilderArch(arch) {
   return { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' }[arch] || String(arch)
 }
 
+/**
+ * A foreign-architecture binary only fails once the user touches the feature
+ * that needs it, so verify the ones whose filename is shared across
+ * architectures (ffmpeg-static keeps a single "ffmpeg" per platform) and fail
+ * the build instead of shipping a broken bundle.
+ */
+function validateRuntimeBinaryArchitecture(filePath, platform, arch, label) {
+  if (platform !== 'darwin' && platform !== 'win32') return
+  if (arch === 'universal') return
+  const architectures = readBinaryArchitectures(filePath)
+  if (!architectures.length || architectures.includes(arch)) return
+  throw new Error(
+    `${label} is ${architectures.join('/')} but this bundle targets ${arch}: ${filePath}`
+  )
+}
+
+/**
+ * The Intel Mac key helper is an x86_64 executable that only the x64 (or
+ * universal) macOS bundle can run. Every other target — Apple Silicon macOS,
+ * Windows, Linux — would otherwise ship a ~34MB binary it can never execute,
+ * so it is dropped from those bundles. x64/universal builds fail fast instead
+ * of silently shipping an Intel Mac app that cannot read keys.
+ */
+function pruneIntelMacKeyTool(runtimeResources, platform, arch) {
+  const keyToolDirectory = path.join(runtimeResources, 'resources', 'macos-key-tool')
+  const usable = platform === 'darwin' && (arch === 'x64' || arch === 'universal')
+  if (!usable) {
+    rmSync(keyToolDirectory, { recursive: true, force: true })
+    return null
+  }
+  const helperPath = path.join(keyToolDirectory, 'intel_mac_key_helper')
+  if (!existsSync(helperPath)) {
+    throw new Error(`Missing Intel Mac key helper in a ${arch} bundle: ${helperPath}`)
+  }
+  return helperPath
+}
+
 function validateAsarRuntimeDependencies(runtimeResources) {
   const asarPath = path.join(runtimeResources, 'app.asar')
   if (!existsSync(asarPath)) throw new Error(`Missing packaged application archive: ${asarPath}`)
@@ -107,17 +145,87 @@ function validateReaderSkillRuntime(runtimeResources) {
   return skillPath
 }
 
+/**
+ * Native runtime packages are published once per platform-arch pair, and pnpm
+ * installs all of them, so every bundle ends up carrying the native libraries
+ * of every platform (measured: ~129MB of speech models plus ~16MB of koffi).
+ * The loaders pick their package from process.platform/arch, so the siblings
+ * are dead weight — drop them.
+ */
+const NATIVE_RUNTIME_PACKAGES = [
+  {
+    modules: [],
+    prefix: 'sherpa-onnx',
+    platformName: (platform) => (platform === 'win32' ? 'win' : platform)
+  },
+  {
+    modules: ['@koromix'],
+    prefix: 'koffi',
+    platformName: (platform) => platform
+  }
+]
+
+function pruneForeignArchNativeRuntimes(runtimeResources, platform, arch) {
+  if (arch === 'universal') return []
+  const unpackedRoot = path.join(runtimeResources, 'app.asar.unpacked', 'node_modules')
+  if (!existsSync(unpackedRoot)) return []
+  const removed = []
+  for (const runtime of NATIVE_RUNTIME_PACKAGES) {
+    const modulesRoot = path.join(unpackedRoot, ...runtime.modules)
+    if (!existsSync(modulesRoot)) continue
+    const expected = `${runtime.prefix}-${runtime.platformName(platform)}-${arch}`
+    const foreign = new RegExp(`^${runtime.prefix}-[a-z0-9]+-(arm64|x64|ia32|loong64|riscv64)$`)
+    for (const entry of readdirSync(modulesRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === expected || !foreign.test(entry.name)) continue
+      rmSync(path.join(modulesRoot, entry.name), { recursive: true, force: true })
+      removed.push(runtime.modules.length ? `${runtime.modules.join('/')}/${entry.name}` : entry.name)
+    }
+  }
+  return removed
+}
+
+/**
+ * Bundled native directories under resources/connectors are named
+ * "<platform>-<arch>". Cross-building both macOS architectures leaves both on
+ * disk, but a bundle can only execute its own, so drop the foreign ones
+ * instead of shipping every connector twice.
+ */
+function pruneForeignArchConnectors(runtimeResources, platform, arch) {
+  if (arch === 'universal') return []
+  const connectorsRoot = path.join(runtimeResources, 'resources', 'connectors')
+  if (!existsSync(connectorsRoot)) return []
+  const expected = `${platform}-${arch}`
+  const removed = []
+  for (const packageEntry of readdirSync(connectorsRoot, { withFileTypes: true })) {
+    if (!packageEntry.isDirectory()) continue
+    const packageRoot = path.join(connectorsRoot, packageEntry.name)
+    for (const targetEntry of readdirSync(packageRoot, { withFileTypes: true })) {
+      if (!targetEntry.isDirectory() || targetEntry.name === expected) continue
+      if (!/^[a-z0-9]+-(arm64|x64|ia32)$/.test(targetEntry.name)) continue
+      rmSync(path.join(packageRoot, targetEntry.name), { recursive: true, force: true })
+      removed.push(`${packageEntry.name}/${targetEntry.name}`)
+    }
+  }
+  return removed
+}
+
 exports.default = async function afterPack(context) {
   const runtimeResources = getRuntimeResources(context)
+  const arch = normalizeBuilderArch(context.arch)
   validateAsarRuntimeDependencies(runtimeResources)
   validateReaderSkillRuntime(runtimeResources)
   validateSilkWasmRuntime(runtimeResources)
   const ffmpegPath = validateFfmpegRuntime(runtimeResources, context.electronPlatformName)
-  validateSherpaRuntime(
-    runtimeResources,
+  validateRuntimeBinaryArchitecture(
+    ffmpegPath,
     context.electronPlatformName,
-    normalizeBuilderArch(context.arch)
+    arch,
+    'Bundled ffmpeg'
   )
+  validateSherpaRuntime(runtimeResources, context.electronPlatformName, arch)
+  pruneIntelMacKeyTool(runtimeResources, context.electronPlatformName, arch)
+  pruneForeignArchConnectors(runtimeResources, context.electronPlatformName, arch)
+  pruneForeignArchNativeRuntimes(runtimeResources, context.electronPlatformName, arch)
 
   if (context.electronPlatformName === 'darwin') {
     execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', ffmpegPath], {
@@ -150,3 +258,7 @@ exports.validateReaderSkillRuntime = validateReaderSkillRuntime
 exports.validateFfmpegRuntime = validateFfmpegRuntime
 exports.validateSilkWasmRuntime = validateSilkWasmRuntime
 exports.validateSherpaRuntime = validateSherpaRuntime
+exports.pruneIntelMacKeyTool = pruneIntelMacKeyTool
+exports.pruneForeignArchConnectors = pruneForeignArchConnectors
+exports.pruneForeignArchNativeRuntimes = pruneForeignArchNativeRuntimes
+exports.validateRuntimeBinaryArchitecture = validateRuntimeBinaryArchitecture

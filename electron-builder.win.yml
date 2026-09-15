@@ -63,4 +63,6 @@ publish:
   provider: github
   owner: Wxw-Gu
   repo: TraceMemo
-  releaseType: release
+  # 一律先上传为草稿 再到 GitHub 上手动 Publish。
+  # 需要预发布时用 `pnpm release:beta`（EP_PRE_RELEASE 会覆盖这里的 draft）。
+  releaseType: draft

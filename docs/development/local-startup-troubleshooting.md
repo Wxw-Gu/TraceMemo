@@ -38,25 +38,24 @@ go version
 
 `electron-vite dev` 报 `Electron uninstall`，或 Electron 安装器报 `fetch failed`，通常表示 `node_modules/electron/dist` 中的 Electron 二进制缺失或下载未完成。这不是应用业务代码的启动错误。
 
-项目的 [`.npmrc`](../../.npmrc) 已设置：
+**先看根因，别急着删 `node_modules` 重装。** `electron@43` 的 npm 包**不再声明 `postinstall`**（其 `package.json` 里 `scripts` 是空对象），下载改为「首次 `require('electron')` 时的懒加载」。因此：
 
-```ini
-electron_mirror=https://npmmirror.com/mirrors/electron/
-```
+- `package.json` 里的 `pnpm.onlyBuiltDependencies: ["electron"]` 对它不起作用——上游没有脚本可执行，pnpm 无从下手；
+- `pnpm install` 跑完不会有任何二进制被下载，**只重装依赖解决不了这个问题**。
 
-pnpm 会把该值传给 Electron 安装器，令其从镜像下载与 `package.json` 锁定版本匹配的二进制文件，避免默认 GitHub 下载源在受限网络中不可访问。
+项目已自动兜住这条路径：`scripts/ensure-electron-binary.cjs` 挂在 `postinstall` 与 `predev` 上，校验 `path.txt` 指向的可执行文件是否真的存在（只有 `path.txt` 而没有 `dist/` 同样算没装好），缺失时就地补下载。它读取 `.npmrc` 的 `electron_mirror`（当前为 `https://npmmirror.com/mirrors/electron/`），失败后再兜底重试一次该镜像。
 
-依赖安装被中断或 Electron 目录不完整时，删除不完整的 `node_modules` 后重新安装：
+正常情况下你不需要做任何事。只有当自动步骤没有执行时（例如安装时带了 `--ignore-scripts`），才需要手动补一次：
 
 ```bash
-pnpm install --frozen-lockfile
+node scripts/ensure-electron-binary.cjs
 ```
 
-单次安装需要使用其他镜像时，可以临时覆盖项目默认值。PowerShell 示例：
+要换用别的镜像时，显式设置环境变量（优先于 `.npmrc`）。PowerShell 示例：
 
 ```powershell
 $env:ELECTRON_MIRROR = 'https://your-electron-mirror.example/'
-pnpm install --frozen-lockfile
+node scripts/ensure-electron-binary.cjs
 ```
 
 该环境变量只影响当前终端，不会改写仓库中的 `.npmrc`。镜像地址必须保留末尾的 `/`，并提供与 Electron 版本对应的目录结构。

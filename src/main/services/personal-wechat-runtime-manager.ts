@@ -390,9 +390,11 @@ export class PersonalWechatRuntimeManager {
       return this.buildStatus(
         'unsupported',
         0,
-        process.platform === 'win32'
-          ? 'Windows 暂不支持个人微信发送组件'
-          : `当前系统暂不支持个人微信发送组件：${process.platform} ${process.arch}`
+        process.platform === 'darwin'
+          ? 'Intel Mac 不支持个人微信发送组件'
+          : process.platform === 'win32'
+            ? 'Windows 暂不支持个人微信发送组件'
+            : '当前系统不支持个人微信发送组件'
       )
     }
     if (this.downloadPromise) return this.buildStatus('downloading', this.downloadedBytes)

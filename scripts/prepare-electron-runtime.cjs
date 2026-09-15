@@ -1,6 +1,7 @@
 const fs = require('node:fs')
 const { execFileSync } = require('node:child_process')
 const path = require('node:path')
+const { readBinaryArchitectures } = require('./binary-arch.cjs')
 
 const runtimeNames = ['msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll']
 
@@ -24,6 +25,31 @@ function readOption(name, fallback) {
   return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback
 }
 
+function ffmpegExecutableName(targetPlatform) {
+  return targetPlatform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+}
+
+/**
+ * ffmpeg-static keeps a single binary per platform ("ffmpeg" everywhere except
+ * Windows), so an arm64 and an x64 macOS checkout cannot coexist in
+ * node_modules. Its installer also exits early whenever the file already
+ * exists, so a binary left over from the other architecture would be packed
+ * silently. Check the real architecture and drop the file when it differs, so
+ * the caller re-downloads the requested one.
+ */
+function ensureFfmpegArchitecture(ffmpegPath, targetPlatform, targetArch) {
+  if (!fs.existsSync(ffmpegPath)) return 'missing'
+  const architectures = readBinaryArchitectures(ffmpegPath)
+  if (architectures.includes(targetArch)) return 'match'
+  console.log(
+    `[prepare-electron-runtime] ffmpeg-static is ${
+      architectures.join('/') || 'not a native binary'
+    } but ${targetPlatform}-${targetArch} was requested; replacing it`
+  )
+  fs.rmSync(ffmpegPath, { force: true })
+  return 'replaced'
+}
+
 function prepareFfmpegRuntime(targetPlatform = process.platform, targetArch = process.arch) {
   let packageRoot = ''
   try {
@@ -31,10 +57,11 @@ function prepareFfmpegRuntime(targetPlatform = process.platform, targetArch = pr
   } catch {
     return
   }
-  const executable = targetPlatform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
+  const executable = ffmpegExecutableName(targetPlatform)
   const ffmpegPath = path.join(packageRoot, executable)
+  const architectureState = ensureFfmpegArchitecture(ffmpegPath, targetPlatform, targetArch)
 
-  if (!fs.existsSync(ffmpegPath)) {
+  if (architectureState !== 'match') {
     const installScript = path.join(packageRoot, 'install.js')
     console.log(
       `[prepare-electron-runtime] downloading ffmpeg-static for ${targetPlatform}-${targetArch}`
@@ -83,4 +110,6 @@ function main() {
   }
 }
 
-main()
+if (require.main === module) main()
+
+module.exports = { ensureFfmpegArchitecture, ffmpegExecutableName, prepareFfmpegRuntime }

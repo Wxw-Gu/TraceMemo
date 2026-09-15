@@ -1630,7 +1630,10 @@ export class PersonalWechatSendService {
         status: {
           ...base,
           state: 'unsupported_platform',
-          message: '个人微信发送当前仅支持 Apple Silicon Mac'
+          message:
+            process.platform === 'darwin'
+              ? 'Intel Mac 不支持个人微信发送'
+              : '当前系统不支持个人微信发送'
         }
       }
     }

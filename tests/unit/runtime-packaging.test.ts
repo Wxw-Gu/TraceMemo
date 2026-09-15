@@ -1,5 +1,5 @@
 import { createRequire } from 'module'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join, resolve } from 'path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -25,6 +25,48 @@ const {
   validateSilkWasmRuntime: (runtimeResources: string) => void
 }
 const root = mkdtempSync(join(tmpdir(), 'wxe-runtime-package-'))
+
+const {
+  pruneIntelMacKeyTool,
+  pruneForeignArchConnectors,
+  pruneForeignArchNativeRuntimes,
+  validateRuntimeBinaryArchitecture
+} = nodeRequire('../../scripts/after-pack.cjs') as {
+  pruneIntelMacKeyTool: (
+    runtimeResources: string,
+    platform: NodeJS.Platform,
+    arch: string
+  ) => string | null
+  pruneForeignArchConnectors: (
+    runtimeResources: string,
+    platform: NodeJS.Platform,
+    arch: string
+  ) => string[]
+  pruneForeignArchNativeRuntimes: (
+    runtimeResources: string,
+    platform: NodeJS.Platform,
+    arch: string
+  ) => string[]
+  validateRuntimeBinaryArchitecture: (
+    filePath: string,
+    platform: NodeJS.Platform,
+    arch: string,
+    label: string
+  ) => void
+}
+const { readBinaryArchitectures } = nodeRequire('../../scripts/binary-arch.cjs') as {
+  readBinaryArchitectures: (filePath: string) => string[]
+}
+
+const CPU_TYPE_X86_64 = 0x01000007
+const CPU_TYPE_ARM64 = 0x0100000c
+
+function writeThinMachO(filePath: string, cpuType: number): void {
+  const buffer = Buffer.alloc(32)
+  buffer.writeUInt32LE(0xfeedfacf, 0)
+  buffer.writeUInt32LE(cpuType, 4)
+  writeFileSync(filePath, buffer)
+}
 
 describe('production runtime packaging', () => {
   afterAll(() => rmSync(root, { recursive: true, force: true }))
@@ -175,5 +217,109 @@ describe('production runtime packaging', () => {
     const config = readFileSync(resolve(__dirname, '../../electron-builder.yml'), 'utf8')
     expect(config).toContain('node_modules/sherpa-onnx-node/**')
     expect(config).toContain('node_modules/sherpa-onnx-*/**')
+  })
+})
+
+describe('per-architecture macOS packaging', () => {
+  const archRoot = mkdtempSync(join(tmpdir(), 'wxe-runtime-arch-'))
+  afterAll(() => rmSync(archRoot, { recursive: true, force: true }))
+
+  it('reads architectures out of Mach-O and PE binaries', () => {
+    const x64 = join(archRoot, 'fixture-x64')
+    const arm64 = join(archRoot, 'fixture-arm64')
+    writeThinMachO(x64, CPU_TYPE_X86_64)
+    writeThinMachO(arm64, CPU_TYPE_ARM64)
+
+    expect(readBinaryArchitectures(x64)).toEqual(['x64'])
+    expect(readBinaryArchitectures(arm64)).toEqual(['arm64'])
+    expect(readBinaryArchitectures(resolve(__dirname, 'runtime-packaging.test.ts'))).toEqual([])
+  })
+
+  it('keeps the Intel Mac key helper only in x64 macOS bundles', () => {
+    const resources = join(archRoot, 'key-tool', 'Contents', 'Resources')
+    const keyToolDirectory = join(resources, 'resources', 'macos-key-tool')
+    const helper = join(keyToolDirectory, 'intel_mac_key_helper')
+    mkdirSync(keyToolDirectory, { recursive: true })
+    writeFileSync(helper, 'fixture')
+
+    expect(pruneIntelMacKeyTool(resources, 'darwin', 'x64')).toBe(helper)
+    expect(existsSync(helper)).toBe(true)
+
+    expect(pruneIntelMacKeyTool(resources, 'darwin', 'arm64')).toBeNull()
+    expect(existsSync(keyToolDirectory)).toBe(false)
+  })
+
+  it('fails an x64 bundle that lost the Intel Mac key helper', () => {
+    const resources = join(archRoot, 'key-tool-missing', 'Contents', 'Resources')
+    mkdirSync(resources, { recursive: true })
+
+    expect(() => pruneIntelMacKeyTool(resources, 'darwin', 'x64')).toThrow(/macos-key-tool/)
+    expect(pruneIntelMacKeyTool(resources, 'win32', 'x64')).toBeNull()
+  })
+
+  it('drops bundled connectors built for another architecture', () => {
+    const resources = join(archRoot, 'connectors', 'Contents', 'Resources')
+    const foreign = join(resources, 'resources', 'connectors', 'wechat', 'darwin-arm64')
+    const matching = join(resources, 'resources', 'connectors', 'wechat', 'darwin-x64')
+    mkdirSync(foreign, { recursive: true })
+    mkdirSync(matching, { recursive: true })
+
+    expect(pruneForeignArchConnectors(resources, 'darwin', 'x64')).toEqual(['wechat/darwin-arm64'])
+    expect(existsSync(foreign)).toBe(false)
+    expect(existsSync(matching)).toBe(true)
+
+    expect(pruneForeignArchConnectors(resources, 'darwin', 'universal')).toEqual([])
+    expect(existsSync(matching)).toBe(true)
+  })
+
+  it('drops native runtime packages built for other platforms', () => {
+    const resources = join(archRoot, 'native-runtimes', 'Contents', 'Resources')
+    const modules = join(resources, 'app.asar.unpacked', 'node_modules')
+    for (const name of [
+      'sherpa-onnx-darwin-x64',
+      'sherpa-onnx-darwin-arm64',
+      'sherpa-onnx-linux-x64',
+      'sherpa-onnx-node'
+    ]) {
+      mkdirSync(join(modules, name), { recursive: true })
+    }
+    for (const name of ['koffi-darwin-x64', 'koffi-win32-x64']) {
+      mkdirSync(join(modules, '@koromix', name), { recursive: true })
+    }
+
+    expect(pruneForeignArchNativeRuntimes(resources, 'darwin', 'x64').sort()).toEqual([
+      '@koromix/koffi-win32-x64',
+      'sherpa-onnx-darwin-arm64',
+      'sherpa-onnx-linux-x64'
+    ])
+    expect(existsSync(join(modules, 'sherpa-onnx-darwin-x64'))).toBe(true)
+    expect(existsSync(join(modules, 'sherpa-onnx-node'))).toBe(true)
+    expect(existsSync(join(modules, '@koromix', 'koffi-darwin-x64'))).toBe(true)
+    expect(existsSync(join(modules, '@koromix', 'koffi-win32-x64'))).toBe(false)
+
+    expect(pruneForeignArchNativeRuntimes(resources, 'darwin', 'universal')).toEqual([])
+    expect(existsSync(join(modules, 'sherpa-onnx-darwin-x64'))).toBe(true)
+  })
+
+  it('rejects a bundled binary built for another architecture', () => {
+    const binary = join(archRoot, 'bundled-arm64')
+    writeThinMachO(binary, CPU_TYPE_ARM64)
+
+    expect(() =>
+      validateRuntimeBinaryArchitecture(binary, 'darwin', 'x64', 'Bundled ffmpeg')
+    ).toThrow(/arm64 but this bundle targets x64/)
+    expect(() =>
+      validateRuntimeBinaryArchitecture(binary, 'darwin', 'arm64', 'Bundled ffmpeg')
+    ).not.toThrow()
+  })
+})
+
+describe('release publishing policy', () => {
+  it('uploads GitHub releases as drafts until the notes are reviewed', () => {
+    for (const configFile of ['electron-builder.yml', 'electron-builder.win.yml']) {
+      const config = readFileSync(resolve(__dirname, `../../${configFile}`), 'utf8')
+      expect(config).toContain('releaseType: draft')
+      expect(config).not.toContain('releaseType: release')
+    }
   })
 })
