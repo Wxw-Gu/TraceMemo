@@ -83,7 +83,12 @@ test('P2-01 P2-02 guided connection exposes safe diagnostics and completes all s
 
     await fixture.page.getByRole('button', { name: '检查完成，继续' }).click()
     await fixture.page.getByRole('button', { name: '我已准备好' }).click()
-    await fixture.page.getByRole('button', { name: '开始准备连接组件' }).click()
+    // macOS（含 Apple Silicon）走「获取密钥」流程，Windows 仍是「准备连接组件」。
+    await fixture.page
+      .getByRole('button', {
+        name: process.platform === 'darwin' ? '开始获取密钥' : '开始准备连接组件'
+      })
+      .click()
     const verifyConnection = fixture.page.getByRole('button', {
       name: '验证连接',
       exact: true
