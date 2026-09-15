@@ -22,4 +22,11 @@ describe('settings navigation', () => {
     )
     expect(SETTINGS_CATEGORY_LABELS['storage-export']).toBe('存储与导出')
   })
+
+  it('hides recall protection from visible navigation', () => {
+    expect(SETTINGS_NAVIGATION.flatMap((group) => group.items)).not.toEqual(
+      expect.arrayContaining([{ id: 'recall-protection', label: '防撤回' }])
+    )
+    expect(SETTINGS_CATEGORY_LABELS['recall-protection']).toBe('防撤回')
+  })
 })

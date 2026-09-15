@@ -661,36 +661,8 @@ test('SETTINGS-03 database key controls visual @visual', async () => {
   }
 })
 
-for (const appearanceTheme of ['light', 'dark'] as const) {
-  test(`SETTINGS-08 recall protection ${appearanceTheme} visual @visual`, async () => {
-    const fixture = await launchTestApp({ now: visualNow, appearanceTheme })
-    const pageErrors: Error[] = []
-    fixture.page.on('pageerror', (error) => pageErrors.push(error))
-    try {
-      await fixture.page
-        .getByRole('navigation', { name: '一级导航' })
-        .getByRole('button', { name: '设置' })
-        .click()
-      await fixture.page.getByRole('button', { name: '防撤回' }).click()
-      await expect(fixture.page.getByRole('switch', { name: '开启防撤回' })).toBeVisible()
-      await expect(fixture.page.locator('html')).toHaveAttribute('data-theme', appearanceTheme)
-      expect(
-        await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-      ).toBe(true)
-      expect(pageErrors).toEqual([])
-      await clearScreenshotFocus(fixture.page)
-      await expect(fixture.page).toHaveScreenshot(
-        `settings-recall-protection-${appearanceTheme}.png`,
-        {
-          animations: 'disabled',
-          caret: 'hide'
-        }
-      )
-    } finally {
-      await fixture.close()
-    }
-  })
-}
+// SETTINGS-08（防撤回页 light/dark 视觉）已移除：该设置入口已下线，
+// 页面不再可达，对应的 settings-recall-protection-{light,dark}.png 基线同步删除。
 
 for (const appearanceTheme of ['light', 'dark'] as const) {
   test(`SETTINGS-04 image decryption controls ${appearanceTheme} visual @visual`, async () => {

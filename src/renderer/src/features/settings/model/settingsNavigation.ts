@@ -35,7 +35,8 @@ export const SETTINGS_NAVIGATION: SettingsNavigationGroup[] = [
   {
     label: '应用',
     items: [
-      { id: 'recall-protection', label: '防撤回' },
+      // “防撤回”已下线，不再在设置里暴露；保留 category/render case 以兼容已有页面状态。
+      // { id: 'recall-protection', label: '防撤回' },
       { id: 'appearance', label: '外观与行为' },
       { id: 'advanced', label: '高级' },
       { id: 'about', label: '关于' }
@@ -48,5 +49,6 @@ export const SETTINGS_CATEGORY_LABELS = {
     SETTINGS_NAVIGATION.flatMap((group) => group.items.map((item) => [item.id, item.label]))
   ),
   'personal-wechat-send': '微信发送',
-  'storage-export': '存储与导出'
+  'storage-export': '存储与导出',
+  'recall-protection': '防撤回'
 } as Record<SettingsCategoryId, string>

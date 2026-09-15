@@ -499,11 +499,8 @@ test('SETTINGS-02 basic settings controls fit the default desktop window and kee
     await debugSwitch.click()
     await expect(debugSwitch).toBeChecked()
 
-    await fixture.page.getByRole('button', { name: '防撤回' }).click()
-    const recallSwitch = fixture.page.getByRole('switch', { name: '开启防撤回' })
-    await expect(recallSwitch).toBeVisible()
-    await recallSwitch.click()
-    await expect(recallSwitch).toBeChecked()
+    // 防撤回已下线：设置导航不再暴露该入口（与「存储与导出」同一处理方式）。
+    await expect(fixture.page.getByRole('button', { name: '防撤回' })).toHaveCount(0)
 
     await fixture.page.getByRole('button', { name: '关于' }).click()
     await expect(fixture.page.getByRole('button', { name: '检查更新' })).toBeVisible()

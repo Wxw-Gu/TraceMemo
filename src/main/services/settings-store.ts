@@ -174,6 +174,12 @@ export function loadSettings(): AppSettings {
       if (cache.dbRoot) {
         cache.dbRoot = redirectLegacyWeChatFilesToXwechat(cache.dbRoot)
       }
+      // 防撤回已下线（设置入口已隐藏）：历史版本可能把它持久化为 true。
+      // 这里强制收敛为 false 并回写磁盘，确保旧的撤回监听与撤回日志不会继续运行。
+      if (cache.recallProtectionEnabled) {
+        cache.recallProtectionEnabled = false
+        saveSettings(cache)
+      }
       return cache
     }
   } catch (error) {
@@ -184,7 +190,9 @@ export function loadSettings(): AppSettings {
 }
 
 export function saveSettings(next: AppSettings): AppSettings {
-  cache = { ...next }
+  // 防撤回已下线：所有写入路径（含 settings:set 补丁）统一收敛为 false，
+  // 避免遗留入口或旧版本把它重新打开。
+  cache = { ...next, recallProtectionEnabled: false }
   try {
     ensureDir()
     fs.writeJsonSync(SETTINGS_FILE, cache, { spaces: 2 })
