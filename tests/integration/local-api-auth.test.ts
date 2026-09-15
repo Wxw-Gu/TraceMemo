@@ -198,19 +198,63 @@ describe('Local API authentication', () => {
     expect(body.messages[0].contentData).not.toHaveProperty('aeskey')
   })
 
-  it('maps media lookup failures to stable API statuses', async () => {
+  it('serves opaque media handles while preserving the chatlog message id', async () => {
+    const mediaId = `image:${'a'.repeat(64)}`
+    const previousUrl = fixture.chatlogMessages[0].media.url
+    fixture.chatlogMessages[0].media.url = `/api/v1/media/${encodeURIComponent(mediaId)}`
+    try {
+      const provider = vi.fn(async (id: string) => {
+        expect(id).toBe(mediaId)
+        return { buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]), mimeType: 'image/jpeg' }
+      })
+      const handle = await startFixtureServer(() => VALID_TOKEN, provider)
+      const headers = { Authorization: `Bearer ${VALID_TOKEN}` }
+      const chatlog = await fetch(`${baseUrl(handle)}/api/v1/chatlog?talker=fixture`, { headers })
+      const body = await chatlog.json()
+      expect(body.messages[0].id).toBe('message:1')
+      expect(body.messages[0].media.url).not.toContain('message')
+      const response = await fetch(`${baseUrl(handle)}${body.messages[0].media.url}`, { headers })
+      expect(response.status).toBe(200)
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(
+        Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+      )
+      expect(provider).toHaveBeenCalledOnce()
+    } finally {
+      fixture.chatlogMessages[0].media.url = previousUrl
+    }
+  })
+
+  it.each([
+    ['NOT_FOUND', '未找到图片消息', 404],
+    ['NOT_FOUND', '图片文件不存在', 404],
+    ['NOT_IMAGE', '消息不是可读取的图片消息', 422]
+  ] as const)('maps %s (%s) to HTTP %s', async (code, message, status) => {
     const handle = await startFixtureServer(
       () => VALID_TOKEN,
       async () => {
-        throw new HttpMediaError('NOT_IMAGE', '消息不是可读取的图片消息')
+        throw new HttpMediaError(code, message)
       }
     )
-    const response = await fetch(`${baseUrl(handle)}/api/v1/media/message-1`, {
+    const response = await fetch(`${baseUrl(handle)}/api/v1/media/image%3Aunresolved`, {
       headers: { Authorization: `Bearer ${VALID_TOKEN}` }
     })
-    expect(response.status).toBe(422)
-    await expect(response.json()).resolves.toMatchObject({ status: 422 })
+    expect(response.status).toBe(status)
+    await expect(response.json()).resolves.toMatchObject({ status, error: message })
   })
+
+  it.each(['%ZZ', 'image%2Finvalid', 'image%5Cinvalid'])(
+    'rejects malformed media identifiers (%s) before lookup',
+    async (identifier) => {
+      const provider = vi.fn(async () => ({ buffer: Buffer.from('image'), mimeType: 'image/png' }))
+      const handle = await startFixtureServer(() => VALID_TOKEN, provider)
+      const response = await fetch(`${baseUrl(handle)}/api/v1/media/${identifier}`, {
+        headers: { Authorization: `Bearer ${VALID_TOKEN}` }
+      })
+      expect(response.status).toBe(422)
+      await expect(response.json()).resolves.toMatchObject({ status: 422 })
+      expect(provider).not.toHaveBeenCalled()
+    }
+  )
 
   it.each(['Basic xxx', 'Bearer', 'bearer xxx', 'Bearer    xxx', 'xxx'])(
     'rejects the invalid Authorization format %s',
