@@ -4,6 +4,7 @@ import type { ReactElement } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GroupExitMonitorWorkspace } from '../../src/renderer/src/features/group-exit-monitor/GroupExitMonitorWorkspace'
 import type { GroupExitMonitorState } from '../../src/shared/group-exit-monitor'
+import { formatGroupExitMonitorTime } from '../../src/shared/group-exit-monitor'
 import type { Contact } from '../../src/shared/types'
 import { TooltipProvider } from '../../src/renderer/src/components/ui'
 
@@ -325,6 +326,67 @@ describe('GroupExitMonitorWorkspace', () => {
 
     await waitFor(() => expect(setTemplate).toHaveBeenCalledWith(savedTemplate))
     expect(screen.queryByRole('heading', { name: '退群监测模板' })).not.toBeInTheDocument()
+  })
+
+  it('copies the exit notice built from the template saved on the management page', async () => {
+    const user = userEvent.setup()
+    const template = [
+      '[退群监测]',
+      '用户: {user}',
+      '群备注: {groupRemark}',
+      '微信号: {wxid}',
+      '人数: {previousCount}->{currentCount}',
+      '退群时间: {time}'
+    ].join('\n')
+    const copyText = vi.fn().mockResolvedValue({ success: true })
+    window.api = {
+      getGroupExitMonitorState: vi
+        .fn()
+        .mockResolvedValue({ ...state, notificationTemplate: template }),
+      onGroupExitMonitorState: vi.fn(() => () => undefined),
+      copyText,
+      checkGroupExitMonitorNow: vi.fn().mockResolvedValue(state),
+      clearGroupExitMonitorEvents: vi.fn().mockResolvedValue(state)
+    } as typeof window.api
+
+    renderWorkspace(<GroupExitMonitorWorkspace dbReady />)
+    await user.click(
+      await screen.findByRole('button', { name: '复制退群信息：小艾退出了研发群' })
+    )
+
+    await waitFor(() => expect(copyText).toHaveBeenCalledTimes(1))
+    expect(copyText).toHaveBeenCalledWith(
+      [
+        '[退群监测]',
+        '用户: 小艾微信名',
+        '群备注: 小艾群备注',
+        '微信号: wxid_alice',
+        '人数: 240->239',
+        `退群时间: ${formatGroupExitMonitorTime(state.events[0].detectedAt)}`
+      ].join('\n')
+    )
+    expect(await screen.findByText('已复制')).toBeVisible()
+  })
+
+  it('reports a clipboard failure and keeps the event list intact', async () => {
+    const user = userEvent.setup()
+    const copyText = vi.fn().mockResolvedValue({ success: false, error: '剪贴板不可用' })
+    window.api = {
+      getGroupExitMonitorState: vi.fn().mockResolvedValue(state),
+      onGroupExitMonitorState: vi.fn(() => () => undefined),
+      copyText,
+      checkGroupExitMonitorNow: vi.fn().mockResolvedValue(state),
+      clearGroupExitMonitorEvents: vi.fn().mockResolvedValue(state)
+    } as typeof window.api
+
+    renderWorkspace(<GroupExitMonitorWorkspace dbReady />)
+    await user.click(
+      await screen.findByRole('button', { name: '复制退群信息：小艾退出了研发群' })
+    )
+
+    expect(await screen.findByText('剪贴板不可用')).toBeVisible()
+    expect(screen.getByText('小艾退出了研发群')).toBeVisible()
+    expect(screen.queryByText('已复制')).not.toBeInTheDocument()
   })
 
   it('leaves every monitoring checkbox off for a new installation', async () => {

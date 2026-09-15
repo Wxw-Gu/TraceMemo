@@ -198,4 +198,14 @@ describe('PersonalWechatSendPage on Windows', () => {
     expect(await screen.findByRole('spinbutton', { name: '微信发送能力端口' })).toBeVisible()
     expect(screen.queryByRole('switch', { name: '保留 OneBot 进程' })).not.toBeInTheDocument()
   })
+
+  it('shows the authorization notice with a README link on the Windows WeChat send page', async () => {
+    render(<PersonalWechatSendPage onNotice={vi.fn()} />)
+
+    expect(await screen.findByText('发送能力授权')).toBeVisible()
+    expect(screen.getByText('发送能力属授权制，需要联系群主。请先加入交流群，然后在群内添加群主申请授权。')).toBeVisible()
+    const readmeLink = screen.getByRole('link', { name: '这里' })
+    expect(readmeLink).toHaveAttribute('href', 'https://github.com/Wxw-Gu/TraceMemo#-交流与反馈')
+    expect(readmeLink).toHaveAttribute('target', '_blank')
+  })
 })

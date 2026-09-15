@@ -22,7 +22,9 @@ import type { Contact } from '../../../../shared/types'
 import {
   GROUP_EXIT_NOTIFICATION_TEMPLATE,
   GROUP_EXIT_NOTIFICATION_TEMPLATE_MAX_LENGTH,
+  renderGroupExitMonitorNotification,
   validateGroupExitNotificationTemplate,
+  type GroupExitMonitorEvent,
   type GroupExitMonitorState
 } from '../../../../shared/group-exit-monitor'
 import type { PersonalWechatSendCapability } from '../../../../shared/personal-wechat'
@@ -465,6 +467,8 @@ export function GroupExitMonitorWorkspace({
   const [selectedRoomId, setSelectedRoomId] = React.useState('all')
   const [view, setView] = React.useState<'events' | 'manage'>('events')
   const [resendingEventId, setResendingEventId] = React.useState<string | null>(null)
+  const [copiedEventId, setCopiedEventId] = React.useState('')
+  const copyResetTimer = React.useRef<number | null>(null)
   const [manageKeyword, setManageKeyword] = React.useState('')
   const [manageFilter, setManageFilter] = React.useState<GroupSelectionFilter>('all')
   const [selectedManageRoomIds, setSelectedManageRoomIds] = React.useState<Set<string>>(
@@ -521,6 +525,13 @@ export function GroupExitMonitorWorkspace({
       disposed = true
     }
   }, [])
+
+  React.useEffect(
+    () => () => {
+      if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current)
+    },
+    []
+  )
 
   const groupOptions = React.useMemo(() => {
     const optionMap = new Map<string, { roomId: string; groupName: string; count: number }>()
@@ -614,6 +625,28 @@ export function GroupExitMonitorWorkspace({
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setResendingEventId(null)
+    }
+  }
+
+  /**
+   * 手动复制退群信息：按“管理群聊”里保存的模板拼接当前事件，只写系统剪贴板，
+   * 不触发任何微信发送，用户自行决定粘贴到哪里。
+   */
+  const copyEventNotification = async (event: GroupExitMonitorEvent): Promise<void> => {
+    const api = typeof window !== 'undefined' ? window.api : undefined
+    const text = renderGroupExitMonitorNotification(event, notificationTemplate)
+    setError('')
+    try {
+      const result = api && typeof api.copyText === 'function' ? await api.copyText(text) : null
+      if (!result?.success) throw new Error(result?.error || '复制失败，请重试')
+      setCopiedEventId(event.id)
+      if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current)
+      copyResetTimer.current = window.setTimeout(() => {
+        copyResetTimer.current = null
+        setCopiedEventId('')
+      }, 2_000)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
     }
   }
 
@@ -868,9 +901,20 @@ export function GroupExitMonitorWorkspace({
                     <div className="exit-monitor-event-body">
                       <div className="exit-monitor-event-heading">
                         <strong>{event.message}</strong>
-                        <time dateTime={new Date(event.detectedAt).toISOString()}>
-                          {formatDetectedAt(event.detectedAt)}
-                        </time>
+                        <div className="exit-monitor-event-side">
+                          <time dateTime={new Date(event.detectedAt).toISOString()}>
+                            {formatDetectedAt(event.detectedAt)}
+                          </time>
+                          <Button
+                            variant="link"
+                            size="sm"
+                            className="exit-monitor-event-copy"
+                            onClick={() => void copyEventNotification(event)}
+                            aria-label={`复制退群信息：${event.message}`}
+                          >
+                            {copiedEventId === event.id ? '已复制' : '复制退群信息'}
+                          </Button>
+                        </div>
                       </div>
                       {event.previousCount > event.currentCount ? (
                         <p className="exit-monitor-event-count">

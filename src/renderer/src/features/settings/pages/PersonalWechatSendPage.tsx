@@ -36,6 +36,10 @@ function formatBytes(value: number): string {
   return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
 
+const REPOSITORY_URL = 'https://github.com/Wxw-Gu/TraceMemo'
+// README 就是仓库首页，跳转后需要的正是「交流与反馈」这一节（含群二维码）。
+const GROUP_README_URL = `${REPOSITORY_URL}#-交流与反馈`
+
 const capabilityLabel: Record<PersonalWechatSendCapability['status'], string> = {
   unsupported: '暂不支持',
   unconfigured: '尚未配置',
@@ -506,6 +510,23 @@ export function PersonalWechatSendPage({
                           清除端口
                         </Button>
                       </div>
+                    </section>
+
+                    <h2 className="settings-section-heading">发送能力授权</h2>
+                    <section className="settings-card grid gap-2">
+                      <p>发送能力属授权制，需要联系群主。请先加入交流群，然后在群内添加群主申请授权。</p>
+                      <p className="settings-footnote">
+                        进群请点击{' '}
+                        <a
+                          className="text-primary hover:underline"
+                          href={GROUP_README_URL}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          这里
+                        </a>{' '}
+                        跳转。
+                      </p>
                     </section>
                   </>
                 ) : isMac ? (

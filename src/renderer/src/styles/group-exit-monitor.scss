@@ -337,6 +337,19 @@
   white-space: nowrap;
 }
 
+.exit-monitor-event-side {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.exit-monitor-event-side .exit-monitor-event-copy {
+  font-size: 11px;
+  line-height: 18px;
+}
+
 .exit-monitor-event-count {
   display: block;
   margin: 5px 0 0;
@@ -705,6 +718,13 @@
   .exit-monitor-event-heading time {
     display: block;
     margin-top: 3px;
+  }
+
+  .exit-monitor-event-side {
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: flex-start;
+    gap: 10px;
   }
 
   .exit-monitor-event-details {
