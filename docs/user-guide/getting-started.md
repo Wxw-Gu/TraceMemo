@@ -106,7 +106,6 @@
 - [生成群聊日报或总结](./report.md)
 - [转写微信语音](./voice.md)
 - [导出聊天档案](./export.md)
-- [可选开启防撤回](./recall-protection.md)
 - [在微信里向 TraceMemo 提问](../agent/agent-hub.md)
 - [让外部 Agent 查询微信历史](../agent/overview.md)
 
@@ -142,7 +141,6 @@ Agent Hub 是普通用户可以直接使用的入口，不需要安装 Reader Sk
 - 离线语音转写使用本地模型；它与在线 AI 请求是两条不同的数据路径。
 - 你主动开始并确认 AI 问答或日报后，完成任务所需的受控上下文才可能发送给你选择的 AI 服务；打开应用不会自动上传全部聊天。
 - 应用内 Local HTTP API 默认只监听 `127.0.0.1:6131`，受保护接口需要 Token。
-- 防撤回默认关闭；首次开启会为微信消息数据库增加本地撤回日志/监听结构，详细边界见[防撤回](./recall-protection.md)。
 
 完整边界见[数据、隐私与安全](./privacy.md)。
 
