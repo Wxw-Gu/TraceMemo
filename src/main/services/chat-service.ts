@@ -159,6 +159,7 @@ export interface ImageMessageReference {
 const imageMessageReferences = new Map<string, ImageMessageReference | null>()
 let imageReferenceScope = randomUUID()
 
+/** Replace the active database and invalidate connection-scoped lookup caches. */
 export function setChatDb(db: WechatDb | null): boolean {
   if (shutdownRequested) {
     db?.close()
@@ -315,6 +316,7 @@ export async function getContactAvatars(
   return client.getAvatarUrlsAsync(normalized)
 }
 
+/** Format source rows and register image handles without merging recall archives. */
 function listSourceMessages(
   userMd5: string,
   startTime?: number,
@@ -565,7 +567,10 @@ function listSourceMessages(
       senderId,
       sessionId: username,
       localId,
-      serverId: typeof msg.serverId === 'string' ? msg.serverId : undefined,
+      serverId:
+        typeof msg.serverId === 'string' || typeof msg.serverId === 'bigint'
+          ? String(msg.serverId)
+          : undefined,
       createTime,
       recoveredFromRecallJournal,
       contentData,

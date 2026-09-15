@@ -17,6 +17,7 @@ import {
 const IMAGE_A = 'a'.repeat(32)
 const IMAGE_B = 'b'.repeat(32)
 
+/** Create a synthetic image row with an intentionally reusable local message ID. */
 function image(md5: string, overrides: Partial<WechatMessage> = {}): WechatMessage {
   return {
     mesLocalID: '56',
@@ -29,6 +30,7 @@ function image(md5: string, overrides: Partial<WechatMessage> = {}): WechatMessa
   }
 }
 
+/** Attach an in-memory fixture database without reading a real account. */
 function connect(messages: Record<string, WechatMessage[]>): void {
   const client = { getUsernameByMd5: (md5: string) => `wxid_${md5}` }
   setChatDb({
@@ -39,6 +41,7 @@ function connect(messages: Record<string, WechatMessage[]>): void {
   } as unknown as WechatDb)
 }
 
+/** Extract the opaque handle after checking the formatted image metadata. */
 function mediaId(message: FormattedMessage): string {
   expect(message.media).toMatchObject({ type: 'image', available: true })
   return decodeURIComponent(message.media!.url.slice('/api/v1/media/'.length))
@@ -102,10 +105,25 @@ describe('chat service image media handles', () => {
   it('normalizes native server ids without losing integer precision', () => {
     const message = image(IMAGE_A, { serverId: 9007199254740993123n })
     connect({ first: [message] })
-    const firstId = mediaId(listMessages('first')[0])
+    const first = listMessages('first')[0]
+    const firstId = mediaId(first)
+    expect(first.serverId).toBe('9007199254740993123')
+    expect(JSON.parse(JSON.stringify(first)).serverId).toBe('9007199254740993123')
     message.serverId = '9007199254740993123'
-    expect(mediaId(listMessages('first')[0])).toBe(firstId)
+    const reread = listMessages('first')[0]
+    expect(reread.serverId).toBe('9007199254740993123')
+    expect(mediaId(reread)).toBe(firstId)
   })
+
+  it.each([9007199254740992, null, undefined, false])(
+    'omits unsupported server ID values (%s)',
+    (serverId) => {
+      connect({ first: [image(IMAGE_A, { serverId })] })
+      const message = listMessages('first')[0]
+      expect(message.serverId).toBeUndefined()
+      expect(JSON.parse(JSON.stringify(message))).not.toHaveProperty('serverId')
+    }
+  )
 
   it('scopes recovered images and supports images identified only by dat name', () => {
     connect({
