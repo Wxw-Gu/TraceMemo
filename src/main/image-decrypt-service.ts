@@ -114,7 +114,11 @@ function getFfmpegCandidates(selectedPath = loadSettings().ffmpegPath): FfmpegCa
   )
 }
 
-function resolveFfmpegExecutable(): string {
+/**
+ * 解析可用的 ffmpeg 可执行文件。除图片解密自身使用外，也供 System OCR 的
+ * 图片归一化（GIF/BMP/WebP/TIFF → PNG）复用，避免重复一套路径探测逻辑。
+ */
+export function resolveFfmpegExecutable(): string {
   for (const candidate of getFfmpegCandidates()) {
     const pathLike = candidate.executable.includes('/') || candidate.executable.includes('\\')
     if (pathLike) {

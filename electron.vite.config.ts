@@ -16,7 +16,7 @@ export default defineConfig({
         output: {
           entryFileNames: '[name].js'
         },
-        external: ['koffi', 'sherpa-onnx-node']
+        external: ['koffi', 'sherpa-onnx-node', '@napi-rs/system-ocr']
       }
     }
   },

@@ -12,6 +12,8 @@ specifiers:
   '@electron-toolkit/tsconfig': ^2.0.0
   '@electron-toolkit/utils': ^4.0.0
   '@koromix/koffi-win32-x64': 3.1.0
+  '@napi-rs/system-ocr': 1.2.0
+  '@napi-rs/system-ocr-win32-x64-msvc': 1.2.0
   '@playwright/test': ^1.62.1
   '@radix-ui/react-alert-dialog': ^1.1.23
   '@radix-ui/react-checkbox': ^1.3.11
@@ -86,6 +88,8 @@ dependencies:
   '@electron-toolkit/preload': 3.0.2_electron@43.1.0
   '@electron-toolkit/utils': 4.0.0_electron@43.1.0
   '@koromix/koffi-win32-x64': 3.1.0
+  '@napi-rs/system-ocr': 1.2.0
+  '@napi-rs/system-ocr-win32-x64-msvc': 1.2.0
   '@radix-ui/react-alert-dialog': 1.1.23_eijghdl4n2x4hz6j4cg7ctgbuu
   '@radix-ui/react-checkbox': 1.3.11_eijghdl4n2x4hz6j4cg7ctgbuu
   '@radix-ui/react-dialog': 1.1.23_eijghdl4n2x4hz6j4cg7ctgbuu
@@ -1684,6 +1688,44 @@ packages:
     transitivePeerDependencies:
       - supports-color
     dev: true
+
+  /@napi-rs/system-ocr/1.2.0:
+    resolution: {integrity: sha512-r0f2xNH6U+sth44qF+lUP+2WuHSGUBAry5KSCNuaLDGRbgslFqeROr/qJJ/fb6AjBp3Ov+CJP5MdrOWoaoM3cw==}
+    engines: {node: '>= 10'}
+    optionalDependencies:
+      '@napi-rs/system-ocr-darwin-arm64': 1.2.0
+      '@napi-rs/system-ocr-darwin-x64': 1.2.0
+      '@napi-rs/system-ocr-win32-arm64-msvc': 1.2.0
+      '@napi-rs/system-ocr-win32-x64-msvc': 1.2.0
+    dev: false
+
+  /@napi-rs/system-ocr-darwin-arm64/1.2.0:
+    resolution: {integrity: sha512-cK8dcDBEl3P4A04xmFJSHEJQxfDytaAIFyDCLqavTp92FVU5plESttWzZsqtTkS81/kzKiBfHyPQffSIndfWbQ==}
+    cpu: [arm64]
+    os: [darwin]
+    engines: {node: '>= 10'}
+    dev: false
+
+  /@napi-rs/system-ocr-darwin-x64/1.2.0:
+    resolution: {integrity: sha512-u3TBvBGrhmT5Os6AfaxbUEg6VHe8lvrFJNPgThJgshJHyRXUx/wCfTyOroJ22KdVCP5AE4GpwS5tFHMb6p6iaQ==}
+    cpu: [x64]
+    os: [darwin]
+    engines: {node: '>= 10'}
+    dev: false
+
+  /@napi-rs/system-ocr-win32-arm64-msvc/1.2.0:
+    resolution: {integrity: sha512-7ej8uMvmXomw3NXo5gZ5p2Nl6UKsHI+VRU3ELv0mhcxR0sJ6wFifYTu5bJrM1TGcz1/RsaX+TjWMmsDq8vriKQ==}
+    cpu: [arm64]
+    os: [win32]
+    engines: {node: '>= 10'}
+    dev: false
+
+  /@napi-rs/system-ocr-win32-x64-msvc/1.2.0:
+    resolution: {integrity: sha512-oOoCj3FPWDVctTxx98vMBiMI6m51U+w7SMmMefvmtpcpLelzZ/zYTqdwtWZFAjShaHO+RdaKkcpeVcQuBQiVbA==}
+    cpu: [x64]
+    os: [win32]
+    engines: {node: '>= 10'}
+    dev: false
 
   /@nodelib/fs.scandir/2.1.5:
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}

@@ -6,6 +6,7 @@ import { AIProviderCard } from '../../src/renderer/src/features/settings/ai-mode
 import { AIModelPage } from '../../src/renderer/src/features/settings/pages/AIModelPage'
 import type { AIProviderSummary, AIRuntimeModelConfig } from '../../src/shared/ai-provider'
 import type { AIVisionTestState } from '../../src/renderer/src/features/settings/ai-model/types'
+import type { SystemOcrCapability } from '../../src/shared/system-ocr'
 
 const runtime: AIRuntimeModelConfig = {
   providerName: 'Not configured',
@@ -13,6 +14,16 @@ const runtime: AIRuntimeModelConfig = {
   modelName: 'No model selected',
   configured: false,
   status: 'untested'
+}
+
+const systemOcrCapability: SystemOcrCapability = {
+  available: true,
+  engine: 'windows-system-ocr',
+  platform: 'win32',
+  arch: 'x64',
+  runtimeVersion: '1.2.0',
+  language: 'zh-Hans-CN',
+  message: '本地图片文字识别可用（Windows 系统 OCR，zh-Hans-CN）。'
 }
 
 const provider: AIProviderSummary = {
@@ -56,7 +67,8 @@ describe('AI model settings', () => {
     })
     window.api = {
       listAIProviders: vi.fn().mockResolvedValue({ success: true, providers: [] }),
-      getAIRuntimeConfig: vi.fn().mockResolvedValue(runtime)
+      getAIRuntimeConfig: vi.fn().mockResolvedValue(runtime),
+      getSystemOcrCapability: vi.fn().mockResolvedValue(systemOcrCapability)
     } as typeof window.api
   })
 
