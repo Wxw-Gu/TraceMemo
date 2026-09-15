@@ -29,6 +29,7 @@ import {
   ImageDecryptService,
   inspectImageDecoderExecutable,
   inspectImageDecoderStatus,
+  resolveFfmpegExecutable,
   type DecodedImage
 } from './image-decrypt-service'
 import {
@@ -64,6 +65,7 @@ import { apiTokenStore } from './api-token-store'
 import { ImageKeyConfigService } from './services/image-key-config-service'
 import { AIProviderService } from './services/ai-provider-service'
 import { imageInsightService } from './services/image-insight-service'
+import { systemOcrService } from './services/system-ocr-service'
 import type {
   ImageAnalysisRequest,
   ImageAnalysisResponse,
@@ -71,6 +73,7 @@ import type {
   ImageCandidateQuery,
   ImageInsight
 } from '../shared/image-insight'
+import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../shared/system-ocr'
 import { KeyServiceMac } from './key-service-mac'
 import { KeyService as KeyServiceWin } from './key-service-win'
 import * as chat from './services/chat-service'
@@ -1814,6 +1817,13 @@ app.whenReady().then(async () => {
     }
   })
 
+  // System OCR 是独立的本地 Runtime（不是 AI Provider）：只注入项目统一的 ffmpeg
+  // 解析逻辑（GIF/BMP/WebP/TIFF → PNG 归一化）和系统 locale（OCR 语言包探测）。
+  systemOcrService.bind({
+    resolveFfmpegExecutable,
+    locale: () => app.getLocale()
+  })
+
   /** 日报入口:取会话 Top N 热点图片 + 已缓存的 Insight */
   ipcMain.handle(
     'image:listCandidates',
@@ -1882,6 +1892,26 @@ app.whenReady().then(async () => {
       limit?: number
     ): Promise<{ success: boolean; insights: ImageInsight[] }> => {
       return { success: true, insights: imageInsightService.listBySession(sessionId, limit) }
+    }
+  )
+
+  // ============================================================
+  // 本地图片文字识别（System OCR / Windows System OCR Runtime）
+  // ============================================================
+  // 这是本地 Runtime，不是 AI Vision Provider：
+  //   - 不联网、不上传原图；
+  //   - 不读写 AI Provider / Vision 模型配置；
+  //   - 结果不落库（派生内容，本轮只做内存级闭环）。
+  ipcMain.handle('system-ocr:getCapability', async (): Promise<SystemOcrCapability> => {
+    return imageInsightService.getSystemOcrCapability()
+  })
+
+  ipcMain.handle(
+    'system-ocr:recognize',
+    async (_, request: SystemOcrRequest): Promise<SystemOcrResult> => {
+      // 日志只记录结构性信息，不记录 base64、不记录识别正文。
+      console.log('[IPC] system-ocr:recognize hash=%s', request?.imageHash || 'auto')
+      return imageInsightService.extractLocalText(request)
     }
   )
 

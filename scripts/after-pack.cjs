@@ -78,6 +78,44 @@ function validateSherpaRuntime(runtimeResources, platform, arch) {
   }
 }
 
+/**
+ * System OCR 用 native package（@napi-rs/system-ocr）。它是 external + asarUnpack，
+ * 打包后必须以 unpacked 形式存在，否则运行时会 MODULE_NOT_FOUND / native binding missing。
+ * 本轮只有 Windows 是 supported target，所以只在 Windows 上做硬校验。
+ */
+function systemOcrTarget(platform, arch) {
+  return platform === 'win32' ? `${platform}-${arch}-msvc` : `${platform}-${arch}`
+}
+
+function validateSystemOcrRuntime(runtimeResources, platform, arch) {
+  if (platform !== 'win32') return
+  const target = systemOcrTarget(platform, arch)
+  const basePath = path.join(
+    runtimeResources,
+    'app.asar.unpacked',
+    'node_modules',
+    '@napi-rs',
+    'system-ocr'
+  )
+  const nativePath = path.join(
+    runtimeResources,
+    'app.asar.unpacked',
+    'node_modules',
+    '@napi-rs',
+    `system-ocr-${target}`
+  )
+  const requiredFiles = [
+    path.join(basePath, 'package.json'),
+    path.join(basePath, 'index.js'),
+    path.join(nativePath, 'package.json'),
+    path.join(nativePath, `system-ocr.${target}.node`)
+  ]
+  const missingFiles = requiredFiles.filter((filePath) => !existsSync(filePath))
+  if (missingFiles.length > 0) {
+    throw new Error(`Missing unpacked System OCR runtime: ${missingFiles.join(', ')}`)
+  }
+}
+
 function normalizeBuilderArch(arch) {
   if (typeof arch === 'string') return arch
   return { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' }[arch] || String(arch)
@@ -152,16 +190,24 @@ function validateReaderSkillRuntime(runtimeResources) {
  * The loaders pick their package from process.platform/arch, so the siblings
  * are dead weight — drop them.
  */
+// 每个条目返回 platform package 的**完整后缀**（不含 package 前缀与连字符）。
 const NATIVE_RUNTIME_PACKAGES = [
   {
     modules: [],
     prefix: 'sherpa-onnx',
-    platformName: (platform) => (platform === 'win32' ? 'win' : platform)
+    platformName: (platform, arch) => `${platform === 'win32' ? 'win' : platform}-${arch}`
   },
   {
     modules: ['@koromix'],
     prefix: 'koffi',
-    platformName: (platform) => platform
+    platformName: (platform, arch) => `${platform}-${arch}`
+  },
+  {
+    // @napi-rs 的 platform package 目录名带 -msvc 后缀（win32-x64-msvc）。
+    modules: ['@napi-rs'],
+    prefix: 'system-ocr',
+    platformName: (platform, arch) => systemOcrTarget(platform, arch),
+    foreignPattern: /^system-ocr-[a-z0-9]+-(arm64|x64|ia32|loong64|riscv64)(-msvc)?$/
   }
 ]
 
@@ -173,8 +219,10 @@ function pruneForeignArchNativeRuntimes(runtimeResources, platform, arch) {
   for (const runtime of NATIVE_RUNTIME_PACKAGES) {
     const modulesRoot = path.join(unpackedRoot, ...runtime.modules)
     if (!existsSync(modulesRoot)) continue
-    const expected = `${runtime.prefix}-${runtime.platformName(platform)}-${arch}`
-    const foreign = new RegExp(`^${runtime.prefix}-[a-z0-9]+-(arm64|x64|ia32|loong64|riscv64)$`)
+    const expected = `${runtime.prefix}-${runtime.platformName(platform, arch)}`
+    const foreign =
+      runtime.foreignPattern ||
+      new RegExp(`^${runtime.prefix}-[a-z0-9]+-(arm64|x64|ia32|loong64|riscv64)$`)
     for (const entry of readdirSync(modulesRoot, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name === expected || !foreign.test(entry.name)) continue
       rmSync(path.join(modulesRoot, entry.name), { recursive: true, force: true })
@@ -223,6 +271,7 @@ exports.default = async function afterPack(context) {
     'Bundled ffmpeg'
   )
   validateSherpaRuntime(runtimeResources, context.electronPlatformName, arch)
+  validateSystemOcrRuntime(runtimeResources, context.electronPlatformName, arch)
   pruneIntelMacKeyTool(runtimeResources, context.electronPlatformName, arch)
   pruneForeignArchConnectors(runtimeResources, context.electronPlatformName, arch)
   pruneForeignArchNativeRuntimes(runtimeResources, context.electronPlatformName, arch)
@@ -258,6 +307,7 @@ exports.validateReaderSkillRuntime = validateReaderSkillRuntime
 exports.validateFfmpegRuntime = validateFfmpegRuntime
 exports.validateSilkWasmRuntime = validateSilkWasmRuntime
 exports.validateSherpaRuntime = validateSherpaRuntime
+exports.validateSystemOcrRuntime = validateSystemOcrRuntime
 exports.pruneIntelMacKeyTool = pruneIntelMacKeyTool
 exports.pruneForeignArchConnectors = pruneForeignArchConnectors
 exports.pruneForeignArchNativeRuntimes = pruneForeignArchNativeRuntimes

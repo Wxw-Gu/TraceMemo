@@ -57,6 +57,7 @@ import type {
   ImageCandidateQuery,
   ImageInsight
 } from '../shared/image-insight'
+import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../shared/system-ocr'
 import type { AgentHubActionResult, AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 import type {
   PersonalWechatGeneratedTtsVoiceRequest,
@@ -660,6 +661,9 @@ declare global {
         sessionId: string,
         limit?: number
       ) => Promise<{ success: boolean; insights: ImageInsight[] }>
+      // 本地图片文字识别（System OCR，本地 Runtime，非 AI Provider）
+      getSystemOcrCapability: () => Promise<SystemOcrCapability>
+      recognizeLocalImageText: (request: SystemOcrRequest) => Promise<SystemOcrResult>
       getPersonalWechatSenderStatus: () => Promise<PersonalWechatSenderStatus>
       getPersonalWechatSendCapability: () => Promise<PersonalWechatSendCapability>
       getPersonalWechatKeepOneBotProcess: () => Promise<boolean>

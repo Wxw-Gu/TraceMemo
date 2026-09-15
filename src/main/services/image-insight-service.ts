@@ -27,6 +27,8 @@ import {
   isFreshImageInsight,
   isHotImageCandidate
 } from '../../shared/image-insight'
+import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../../shared/system-ocr'
+import { systemOcrService } from './system-ocr-service'
 
 /**
  * 单张图片的最小信息(由 renderer 从已加载的 messages 中提取并传入 main)。
@@ -311,6 +313,35 @@ class ImageInsightService {
    */
   listBySession(sessionId: string, limit?: number): ImageInsight[] {
     return imageInsightsStore.listBySession(sessionId, limit)
+  }
+
+  // ============================================================
+  // 本地图片文字识别（System OCR）
+  // ============================================================
+  //
+  // 与 Vision 路径的关系：
+  //   ImageInsightService 是统一编排入口，下面挂两条互不干扰的运行时——
+  //     - Vision Model Runtime（AIProviderService，走 AI Provider，可能联网）
+  //     - Windows System OCR Runtime（SystemOcrService，纯本地，不联网）
+  //
+  // 边界与约束：
+  //   1. 本地 OCR 结果属于 **派生内容**，原始消息始终是权威来源；
+  //      本轮不落库、不写 Knowledge、不做历史图片 backfill。
+  //   2. 本地 OCR 结果 **不会** 写入 image-insights.json——那是 Vision 结果的缓存，
+  //      两者的缓存键空间也不同（见 buildSystemOcrCacheKey）。
+  //   3. 这里不读取也绝不修改 AI Vision Provider / 模型配置。
+
+  /** 本机是否支持本地图片文字识别（Windows System OCR）。 */
+  getSystemOcrCapability(): Promise<SystemOcrCapability> {
+    return systemOcrService.getCapability()
+  }
+
+  /**
+   * 只做「把图片里的文字读出来」。不发网络请求，不动 AI Provider 配置。
+   * 失败不抛，返回带 errorCode 的结果。
+   */
+  extractLocalText(request: SystemOcrRequest): Promise<SystemOcrResult> {
+    return systemOcrService.recognize(request)
   }
 }
 

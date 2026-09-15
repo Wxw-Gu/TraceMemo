@@ -19,6 +19,8 @@ asarUnpack:
   - node_modules/silk-wasm/**
   - node_modules/sherpa-onnx-node/**
   - node_modules/sherpa-onnx-*/**
+  - node_modules/@napi-rs/system-ocr/**
+  - node_modules/@napi-rs/system-ocr-*/**
 extraResources:
   # Keep the updater provider in every packaged Windows app. electron-builder also
   # regenerates this file during publish, using the same release configuration.

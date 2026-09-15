@@ -4,6 +4,7 @@ import { Button } from '../../../components/ui'
 import { AIProviderCard } from '../ai-model/AIProviderCard'
 import { AIProviderEditor } from '../ai-model/AIProviderEditor'
 import { AIImageUnderstandingTest } from '../ai-model/AIImageUnderstandingTest'
+import { LocalImageTextRecognition } from '../ai-model/LocalImageTextRecognition'
 import { useAIModelSettingsController } from '../ai-model/useAIModelSettingsController'
 
 export function AIModelPage({
@@ -68,6 +69,7 @@ export function AIModelPage({
             onTest={() => void controller.runVisionTest()}
             onClear={controller.clearVisionImage}
           />
+          <LocalImageTextRecognition />
           {controller.state.error ? (
             <p className="ai-model-page-error">{controller.state.error}</p>
           ) : null}
