@@ -25,14 +25,18 @@
 </p>
 
 <p align="center">
-  <img src="./public/software-1.png" alt="TraceMemo 主界面" />
+  <img src="./public/日报.png" alt="TraceMemo 主界面" />
 </p>
 
 <p align="center">
-  <img src="./public/机器人.png" alt="TraceMemo 微信机器人" />
+  <img src="./public/问问微信.png" alt="TraceMemo 问问微信" />
 </p>
 
+<p align="center">
+  <img src="./public/退群监控.png" alt="TraceMemo 退群监控" />
+</p>
 ---
+
 ## 🎨 社区日报模板
 
 TraceMemo 日报除了内置版式，也支持从社区模板市场安装更多样式。社区模板与默认日报读取同一份真实日报数据，只改变展示方式，适合手机长图分享、桌面归档、团队复盘等不同场景。
@@ -54,6 +58,7 @@ TraceMemo 日报除了内置版式，也支持从社区模板市场安装更多�
 模板通过审核并正式发布后，其他 TraceMemo 用户即可在模板市场中安装使用。
 
 ---
+
 ## TraceMemo 是什么
 
 TraceMemo（迹忆）原名 **WechatExplorer** 是一款本地优先的微信数据、AI 分析与自动化工作台，把聊天变成可浏览、可搜索、可理解、可追溯的信息。
@@ -71,6 +76,16 @@ TraceMemo（迹忆）原名 **WechatExplorer** 是一款本地优先的微信数
 - 🤖 **Agent Hub**：在微信里调用本机 TraceMemo。
 - 🔌 **外部 Agent / Local HTTP API**：让外部 Agent 查询本机微信历史。
 
+## 💻 平台支持
+
+TraceMemo 2.4.0 支持：
+
+- **Windows x64**
+- **macOS Apple Silicon（M 系列 / arm64）**
+- **macOS Intel（x64）**
+
+Windows 与 macOS 均支持微信本地数据库连接与数据库 Key 获取。
+
 ## 项目缘起
 
 <details>
@@ -85,8 +100,7 @@ TraceMemo 最早叫 **WechatExplorer**。
 
 随着项目继续发展，我逐步把这部分底层能力从原有实现中抽离，并重新实现了一套独立的数据访问兼容层。目前会继续保持与 WeFlow 历史接口和行为的兼容，以减少上层业务迁移成本。
 
-也就是说，**WeFlow 是 TraceMemo 进入微信   数据访问领域的重要起点。没有 WeFlow，就没有今天的 TraceMemo。**
-
+也就是说，**WeFlow 是 TraceMemo 进入微信 数据访问领域的重要起点。没有 WeFlow，就没有今天的 TraceMemo。**
 
 在此基础上，项目陆续加入了：
 
@@ -121,18 +135,18 @@ TraceMemo 最早叫 **WechatExplorer**。
 
 ## 从你的任务开始
 
-| 想做什么 | 使用入口 |
-| --- | --- |
-| 找记得原文或关键词的消息 | 档案搜索 |
-| 找记得大意、但不知道在哪聊过的内容 | AI Search / 问问微信 |
-| 长期跨群查询历史 | 本地知识库 |
-| 了解一个群今天或近 7 天聊了什么 | 群聊日报 |
-| 持续关注群成员退出 | 退群监控 |
-| 按计划生成并发送群聊日报 | 定时日报 |
-| 把文字生成微信语音 | 文字转语音 |
-| 在微信里向本机 TraceMemo 提问 | Agent Hub |
-| 让 Codex 等工具查询微信历史 | Reader Skill / Local HTTP API |
-| 把聊天保存成文件 | 导出 |
+| 想做什么                           | 使用入口                      |
+| ---------------------------------- | ----------------------------- |
+| 找记得原文或关键词的消息           | 档案搜索                      |
+| 找记得大意、但不知道在哪聊过的内容 | AI Search / 问问微信          |
+| 长期跨群查询历史                   | 本地知识库                    |
+| 了解一个群今天或近 7 天聊了什么    | 群聊日报                      |
+| 持续关注群成员退出                 | 退群监控                      |
+| 按计划生成并发送群聊日报           | 定时日报                      |
+| 把文字生成微信语音                 | 文字转语音                    |
+| 在微信里向本机 TraceMemo 提问      | Agent Hub                     |
+| 让 Codex 等工具查询微信历史        | Reader Skill / Local HTTP API |
+| 把聊天保存成文件                   | 导出                          |
 
 ## 快速开始
 
@@ -156,10 +170,11 @@ TraceMemo 最早叫 **WechatExplorer**。
 
 ## 支持平台
 
-| 平台 | 架构 | 安装包 |
-| --- | --- | --- |
-| Windows | x64 | `-setup.exe` |
-| macOS | Apple Silicon（M 系列、arm64） | `.dmg` |
+| 平台    | 架构                           | 微信连接                              | 安装包                          |
+| ------- | ------------------------------ | ------------------------------------- | ------------------------------- |
+| Windows | x64                            | 支持微信 4.x                          | `tracememo-<version>-setup.exe` |
+| macOS   | Apple Silicon（M 系列、arm64） | 自动获取数据库 Key，已适配微信 4.1.13 | `tracememo-<version>-arm64.dmg` |
+| macOS   | Intel（x64）                   | 自动获取数据库 Key，已适配微信 4.1.13 | `tracememo-<version>-x64.dmg`   |
 
 ## 参与贡献
 

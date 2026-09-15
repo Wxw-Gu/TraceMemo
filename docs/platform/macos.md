@@ -23,5 +23,16 @@ TraceMemo 需要读取微信本地数据。macOS 会根据系统版本、微信�
 
 ## Intel 与 Apple Silicon
 
-从 Releases 选择与 Mac 处理器匹配的构建。不同架构、微信版本和系统授权状态可能导致连接结果不同；文档不对所有组合做兼容性保证。
+TraceMemo 同时支持两种 Mac 架构：
 
+- **Apple Silicon（M 系列、`arm64`）**
+- **Intel Mac（`x64`）**
+
+从 Releases 下载与你 Mac 处理器匹配的构建：
+
+- Apple Silicon：`tracememo-<版本号>-arm64.dmg`
+- Intel：`tracememo-<版本号>-x64.dmg`
+
+两种架构都可以通过应用内的连接流程自动获取微信数据库密钥。首次连接时，TraceMemo 会根据当前机器架构进入对应的流程，按连接页面提示操作即可。
+
+Apple Silicon 和 Intel 已适配微信 macOS `4.1.13`。不同架构、微信版本和系统授权状态可能导致连接结果不同；文档不对所有组合做兼容性保证。
