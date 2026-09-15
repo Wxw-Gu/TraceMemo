@@ -31,6 +31,34 @@ const state: DatabaseKeyState = {
 }
 
 describe('database key controls', () => {
+  it('offers login-time key capture on Apple Silicon macOS', async () => {
+    const user = userEvent.setup()
+    const onDetect = vi.fn()
+    render(
+      <DatabaseKeyAutoDetect
+        state={{
+          ...state,
+          environment: {
+            ...state.environment!,
+            platform: 'darwin',
+            architecture: 'arm64',
+            osVersion: 'macOS fixture',
+            wechatVersion: '4.1.13',
+            autoDetectSupported: true
+          }
+        }}
+        disabled={false}
+        onDetect={onDetect}
+        onRefresh={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText('macOS 自动获取')).toBeVisible()
+    expect(screen.getByText(/通常不需要扫码/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '自动获取密钥' }))
+    expect(onDetect).toHaveBeenCalledOnce()
+  })
+
   it('offers automatic key detection on Intel Mac without exposing implementation details', async () => {
     const user = userEvent.setup()
     const onDetect = vi.fn()

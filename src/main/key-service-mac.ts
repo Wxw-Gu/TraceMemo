@@ -6,6 +6,7 @@ import { promisify } from 'util'
 import { isValidDatabaseKey } from './database-key-store'
 import crypto from 'crypto'
 import { findResource, getResourceCandidates } from './resource-paths'
+import { detectWechatVersion } from './services/connection-diagnostics'
 
 const execFileAsync = promisify(execFile)
 
@@ -22,6 +23,115 @@ export interface ImageKeyResult {
   aesKey?: string
   verified?: boolean
   error?: string
+}
+
+export type XkeyHelperMode = 'legacy' | 'wechat-4.1.13'
+
+export function resolveXkeyHelperMode(wechatVersion: string): XkeyHelperMode {
+  return /^4\.1\.13(?:\.|$)/.test(wechatVersion.trim()) ? 'wechat-4.1.13' : 'legacy'
+}
+
+export function buildXkeyHelperArguments(pid: number, timeoutMs: number): string[] {
+  return [String(pid), String(timeoutMs), '--profile', 'wechat-4.1.13', '--account']
+}
+
+export function buildAppleSiliconXkeyInvocation(
+  wechatVersion: string,
+  pid: number,
+  timeoutMs: number
+): {
+  mode: XkeyHelperMode
+  resourceName: string
+  args: string[]
+  waitMs: number
+  timeoutSeconds: number
+  execTimeoutMs: number
+} {
+  const mode = resolveXkeyHelperMode(wechatVersion)
+  const isWechat413 = mode === 'wechat-4.1.13'
+  const waitMs = Math.max(isWechat413 ? 120_000 : 30_000, timeoutMs)
+  const timeoutSeconds = Math.ceil(waitMs / 1000) + (isWechat413 ? 10 : 30)
+  return {
+    mode,
+    resourceName: isWechat413 ? 'xkey_helper_4_1_13' : 'xkey_helper',
+    args: isWechat413 ? buildXkeyHelperArguments(pid, waitMs) : [String(pid), String(waitMs)],
+    waitMs,
+    timeoutSeconds,
+    execTimeoutMs: isWechat413 ? timeoutSeconds * 1000 + 5_000 : waitMs + 20_000
+  }
+}
+
+export function mapXkeyHelperFailure(
+  rawError: string,
+  fallbackCode = 'HELPER_RESULT_INVALID'
+): DatabaseKeyResult {
+  const normalizedError = rawError.trim().toLowerCase()
+  const parsedError = rawError.match(/(?:^|[\s"])(?:\\?"?)ERROR:([^:\s"}]+):?([^"}\r\n]*)/i)
+  const code = parsedError?.[1]?.toUpperCase()
+  const detail = parsedError?.[2]?.trim() || ''
+
+  if (
+    code === 'CAPTURE_TIMEOUT' ||
+    normalizedError.includes('timeout waiting for breakpoint hit') ||
+    normalizedError.includes('timeout waiting for sink hit') ||
+    normalizedError.includes('no_breakpoint_hit')
+  ) {
+    return {
+      success: false,
+      code: 'CAPTURE_TIMEOUT',
+      error:
+        '已完成管理员授权，但监听期间微信没有触发账号密钥派生。请先停留在微信登录界面，在 TraceMemo 点击“自动获取密钥”，授权后点击微信“登录”；已有登录凭据时通常不需要扫码。'
+    }
+  }
+  if (code === 'SCAN_FAILED' && detail.toLowerCase().includes('sink pattern not found')) {
+    return {
+      success: false,
+      code,
+      error:
+        '内存扫描失败：未匹配到目标函数特征（Sink pattern not found），当前微信版本可能暂未适配。\n' +
+        '建议步骤：降级微信到 4.1.8 (点击顶部"上手教程"获取下载链接) -> 重启电脑（冷启动） -> 自动获取密钥 -> 成功后再升级微信。\n' +
+        '请不要连续重试，以免触发微信安全模式或系统内存保护。'
+    }
+  }
+  if (code === 'SCAN_FAILED') {
+    return {
+      success: false,
+      code,
+      error: '内存扫描失败：当前微信版本或运行状态暂未适配。'
+    }
+  }
+  if (normalizedError.includes('permission denied') || code === 'PERMISSION_DENIED') {
+    return {
+      success: false,
+      code: code || 'PERMISSION_DENIED',
+      error: '管理员授权不足，无法读取微信进程内存。'
+    }
+  }
+  return {
+    success: false,
+    code: code || fallbackCode,
+    error: code
+      ? `密钥工具执行未完成（${code}），请确认微信仍在运行后重试。`
+      : '密钥工具未返回有效密钥，请确认微信仍在运行后重试。'
+  }
+}
+
+export function parseXkeyHelperOutput(output: string): DatabaseKeyResult {
+  const payloads: Record<string, unknown>[] = []
+  for (const match of output.matchAll(/\{[^{}]*\}/g)) {
+    try {
+      payloads.push(JSON.parse(match[0]) as Record<string, unknown>)
+    } catch {
+      // Ignore helper progress that is not JSON.
+    }
+  }
+  const payload = payloads.find((item) => item.success === true && typeof item.key === 'string')
+  const rawKey = typeof payload?.key === 'string' ? payload.key.trim().replace(/^0x/i, '') : ''
+  if (isValidDatabaseKey(rawKey)) return { success: true, key: rawKey }
+
+  const errorPayload = payloads.find((item) => typeof item.result === 'string')
+  const rawError = typeof errorPayload?.result === 'string' ? errorPayload.result.trim() : ''
+  return mapXkeyHelperFailure(rawError)
 }
 
 export class KeyServiceMac {
@@ -183,11 +293,11 @@ export class KeyServiceMac {
     }
   }
 
-  private getHelperPath(): string {
-    const helperPath = findResource('xkey_helper')
+  private getHelperPath(resourceName = 'xkey_helper'): string {
+    const helperPath = findResource(resourceName)
     if (!helperPath) {
       throw new Error(
-        `找不到 xkey_helper（已检查：${getResourceCandidates('xkey_helper').join('；')}）`
+        `找不到 ${resourceName}（已检查：${getResourceCandidates(resourceName).join('；')}）`
       )
     }
     return helperPath
@@ -219,50 +329,7 @@ export class KeyServiceMac {
         // Try the next process lookup strategy.
       }
     }
-    throw new Error('未找到微信主进程，请先启动并登录微信')
-  }
-
-  private parseHelperOutput(output: string): DatabaseKeyResult {
-    const payloads: Record<string, unknown>[] = []
-    for (const match of output.matchAll(/\{[^{}]*\}/g)) {
-      try {
-        payloads.push(JSON.parse(match[0]) as Record<string, unknown>)
-      } catch {
-        // Ignore helper progress that is not JSON.
-      }
-    }
-    const payload = payloads.find((item) => item.success === true && typeof item.key === 'string')
-    const rawKey = typeof payload?.key === 'string' ? payload.key.trim().replace(/^0x/i, '') : ''
-    if (!isValidDatabaseKey(rawKey)) {
-      const errorPayload = payloads.find((item) => typeof item.result === 'string')
-      const rawError = typeof errorPayload?.result === 'string' ? errorPayload.result.trim() : ''
-      const parsedError = rawError.match(/^ERROR:([^:]+):?(.*)$/i)
-      const code = parsedError?.[1]?.toUpperCase()
-      const detail = parsedError?.[2]?.trim() || ''
-      if (code === 'SCAN_FAILED' && detail.toLowerCase().includes('sink pattern not found')) {
-        return {
-          success: false,
-          code,
-          error:
-            '内存扫描失败：未匹配到目标函数特征（Sink pattern not found），当前微信版本可能暂未适配。\n' +
-            '建议步骤：降级微信到 4.1.8 (点击顶部"上手教程"获取下载链接) -> 重启电脑（冷启动） -> 自动获取密钥 -> 成功后再升级微信。\n' +
-            '请不要连续重试，以免触发微信安全模式或系统内存保护。'
-        }
-      }
-      if (code === 'SCAN_FAILED') {
-        return {
-          success: false,
-          code,
-          error: `内存扫描失败：${detail || '未匹配到可用特征，当前微信版本可能暂未适配。'}`
-        }
-      }
-      return {
-        success: false,
-        code,
-        error: rawError || '密钥工具未返回有效的 64 位密钥'
-      }
-    }
-    return { success: true, key: rawKey }
+    throw new Error('未找到微信主进程，请先启动微信并停留在登录界面')
   }
 
   async autoGetDbKey(
@@ -292,16 +359,17 @@ export class KeyServiceMac {
         onStatus?.(result.success ? '密钥获取成功' : '密钥获取失败')
         return result
       }
+      const wechatVersion = await detectWechatVersion()
       onStatus?.('正在查找微信进程...')
       const pid = await this.getWeChatPid()
-      const helperPath = this.getHelperPath()
-      const waitMs = Math.max(30_000, timeoutMs)
-      const timeoutSeconds = Math.ceil(waitMs / 1000) + 30
+      const invocation = buildAppleSiliconXkeyInvocation(wechatVersion, pid, timeoutMs)
+      const isWechat413 = invocation.mode === 'wechat-4.1.13'
+      const helperPath = this.getHelperPath(invocation.resourceName)
       onStatus?.('正在请求管理员授权...')
       const scriptLines = [
         `set helperPath to ${JSON.stringify(helperPath)}`,
-        `set cmd to quoted form of helperPath & " ${pid} ${waitMs}"`,
-        `set timeoutSec to ${timeoutSeconds}`,
+        `set cmd to quoted form of helperPath & " ${invocation.args.join(' ')}"`,
+        `set timeoutSec to ${invocation.timeoutSeconds}`,
         'try',
         'with timeout of timeoutSec seconds',
         'set outText to do shell script cmd with administrator privileges',
@@ -311,25 +379,57 @@ export class KeyServiceMac {
         'return "ERR::" & errNum & "::" & errMsg',
         'end try'
       ]
-      onStatus?.('授权后 需要在微信登录界面 点击登录微信')
+      onStatus?.(
+        isWechat413
+          ? '授权后请在微信登录界面点击“登录”，已有登录凭据时通常不需要扫码'
+          : '授权后 需要在微信登录界面 点击登录微信'
+      )
       const { stdout } = await execFileAsync(
         '/usr/bin/osascript',
         scriptLines.flatMap((line) => ['-e', line]),
-        { timeout: waitMs + 20_000 }
+        { timeout: invocation.execTimeoutMs }
       )
       const output = String(stdout).trim()
-      if (output.startsWith('ERR::-128')) return { success: false, error: '已取消管理员授权' }
-      if (output.startsWith('ERR::')) {
-        return {
-          success: false,
-          error: output.split('::').slice(2).join('::') || '密钥工具执行失败'
-        }
+      if (output.startsWith('ERR::-128')) {
+        return { success: false, error: '已取消管理员授权' }
       }
-      const result = this.parseHelperOutput(output.startsWith('OK::') ? output.slice(4) : output)
+      if (output.startsWith('ERR::')) {
+        const [, errorNumber = 'UNKNOWN', ...errorParts] = output.split('::')
+        const result = mapXkeyHelperFailure(errorParts.join('::'), `OSASCRIPT_${errorNumber}`)
+        onStatus?.('密钥获取失败')
+        return result
+      }
+      const result = parseXkeyHelperOutput(output.startsWith('OK::') ? output.slice(4) : output)
       onStatus?.(result.success ? '密钥获取成功' : '密钥获取失败')
       return result
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) }
+      const processError = error as NodeJS.ErrnoException & {
+        killed?: boolean
+        signal?: NodeJS.Signals | null
+      }
+      if (processError.message?.includes('未找到微信主进程')) {
+        return {
+          success: false,
+          code: 'WECHAT_NOT_RUNNING',
+          error: '未找到微信主进程，请先启动微信并停留在登录界面。'
+        }
+      }
+      if (
+        processError.killed ||
+        processError.code === 'ETIMEDOUT' ||
+        processError.signal === 'SIGTERM'
+      ) {
+        return {
+          success: false,
+          code: 'AUTH_TIMEOUT',
+          error: '管理员授权等待超时，请点击“自动获取密钥”后及时完成系统授权。'
+        }
+      }
+      return {
+        success: false,
+        code: typeof processError.code === 'string' ? processError.code : 'HELPER_EXEC_FAILED',
+        error: '密钥工具执行失败，请确认微信仍在运行后重试。'
+      }
     }
   }
 

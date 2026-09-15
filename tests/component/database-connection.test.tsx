@@ -78,6 +78,43 @@ function renderPage(
 }
 
 describe('DatabaseConnectionPage', () => {
+  it('guides Apple Silicon users to log in while key capture is active', async () => {
+    const onAutoGetKey = vi.fn()
+    const { props, rerender } = renderPage({
+      platform: 'darwin',
+      mode: 'automatic',
+      guideStep: 3,
+      onAutoGetKey,
+      environment: {
+        platform: 'darwin',
+        architecture: 'arm64',
+        osVersion: 'macOS fixture',
+        appVersion: 'v2.3.0',
+        wechatVersion: '4.1.13',
+        dataStructureVersion: '微信 4.x（WCDB）',
+        dataDirectoryDetected: true,
+        diagnosticSummary: 'fixture',
+        autoDetectSupported: true,
+        wechatRunning: true,
+        accountIdentified: true,
+        dbConnected: false,
+        encryptionAvailable: true
+      }
+    })
+
+    await userEvent.click(screen.getByRole('button', { name: '开始获取密钥' }))
+    expect(onAutoGetKey).toHaveBeenCalledOnce()
+
+    rerender(
+      <TooltipProvider>
+        <DatabaseConnectionPage {...props} mode="automatic" guideStep={4} isFetching />
+      </TooltipProvider>
+    )
+    expect(screen.getByText('正在监听 macOS 登录密钥')).toBeVisible()
+    expect(screen.getByText(/立即回到微信点击登录/)).toBeVisible()
+    expect(screen.getByRole('button', { name: '正在获取密钥…' })).toBeDisabled()
+  })
+
   it('uses the automatic Intel Mac flow without exposing implementation details', () => {
     renderPage({
       platform: 'darwin',
