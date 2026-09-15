@@ -161,6 +161,14 @@ TraceMemo 最早叫 **WechatExplorer**。
 | Windows | x64 | `-setup.exe` |
 | macOS | Apple Silicon（M 系列、arm64） | `.dmg` |
 
+## 参与贡献
+
+稳定版在 `main`，只在发版时更新；所有改动都先进 `develop`，随**下一个版本**一起发布。
+
+**提 PR 请基于 `develop` 拉新分支，并把 PR 的目标分支设为 `develop`** —— 指向 `main` 的 PR 会被直接关闭。
+
+分支流程、提交信息风格、PR 前自检，以及**给 AI Agent 的硬性规则**，都在[参与贡献指南](./CONTRIBUTING.md)。
+
 ## 致谢
 
 TraceMemo 的诞生离不开开源社区中许多优秀项目的工作。
