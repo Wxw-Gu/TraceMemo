@@ -911,10 +911,23 @@ describe('daily report controls', () => {
     expect(onChange).toHaveBeenCalledWith('mobile-magazine')
   })
 
-  it('does not select a market template before it is installed', async () => {
+  it('keeps market browsing on the community page instead of the generation form', async () => {
     const user = userEvent.setup()
     const onChange = vi.fn()
     Object.assign(window.api, {
+      listReportTemplates: vi.fn(async () => [
+        {
+          id: 'community.github.tracememo.quickread',
+          version: '1.0.0',
+          interfaceVersion: '1',
+          source: 'installed' as const,
+          name: '极简速读',
+          author: 'fixture',
+          entryPath: '/tmp/entry.html',
+          capture: { width: 414, maxWidth: 414, maxHeight: 2000 },
+          license: { spdx: 'MIT' }
+        }
+      ]),
       listReportTemplateCatalog: vi.fn(async () => ({
         success: true,
         catalog: {
@@ -931,11 +944,10 @@ describe('daily report controls', () => {
               tags: [],
               license: 'MIT',
               minAppVersion: null,
-              download: 'https://raw.githubusercontent.com/Wxw-Gu/TraceMemo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/packages/community.github.example.market/1.0.0/template.zip',
+              download: 'https://example.com/template.zip',
               sizeBytes: 1,
               sha256: 'a'.repeat(64),
-              preview: 'https://raw.githubusercontent.com/Wxw-Gu/TraceMemo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/previews/community.github.example.market.png',
-              status: 'published'
+              status: 'published' as const
             }
           ]
         }
@@ -943,12 +955,18 @@ describe('daily report controls', () => {
     })
 
     render(<ReportTemplateSelector value="v1" onChange={onChange} />)
-    const marketItem = (await screen.findByText('市场测试模板')).closest('.report-template-item')
-    expect(marketItem).not.toBeNull()
-    await user.click(within(marketItem!).getByRole('button', { name: '查看版式' }))
-    const dialog = screen.getByRole('dialog', { name: '市场测试模板' })
-    expect(within(dialog).getByRole('button', { name: '请先安装' })).toBeDisabled()
-    expect(within(dialog).queryByRole('button', { name: '选择此模板' })).not.toBeInTheDocument()
-    expect(onChange).not.toHaveBeenCalled()
+
+    // 已安装的市场模板仍可在生成页选用，但不再提供卸载入口。
+    expect(await screen.findByText('极简速读')).toBeVisible()
+    expect(screen.getByText('已安装市场模板')).toBeVisible()
+    expect(screen.queryByRole('button', { name: '卸载' })).not.toBeInTheDocument()
+    // 未安装的远端模板只出现在社区模板市场页。
+    expect(screen.queryByText('市场测试模板')).not.toBeInTheDocument()
+    expect(screen.queryByText('安装')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('radio', { name: /极简速读/ }))
+    expect(onChange).toHaveBeenCalledWith(
+      'external:community.github.tracememo.quickread@1.0.0'
+    )
   })
 })

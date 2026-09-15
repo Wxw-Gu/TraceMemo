@@ -19,6 +19,7 @@ import { ReportSourceSidebar } from './components/reports/ReportSourceSidebar'
 import { ReportTaskStatusPanel } from './components/reports/ReportTaskStatusPanel'
 import { ReportViewer } from './components/reports/ReportViewer'
 import { ScheduledReportsWorkspace } from './components/reports/ScheduledReportsWorkspace'
+import { ReportTemplateMarketWorkspace } from './components/reports/ReportTemplateMarketWorkspace'
 import { contactDisplayName } from './components/reports/types'
 import type { GeneratedReportRecord, ReportWorkspaceView } from './components/reports/types'
 import { AiModelConfig, useGroupReportGeneration } from './hooks/useGroupReportGeneration'
@@ -267,7 +268,7 @@ function App(): React.ReactElement {
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>('account-database')
   const [reportSourceContact, setReportSourceContact] = useState<Contact | null>(null)
   const [reportWorkspaceView, setReportWorkspaceView] = useState<ReportWorkspaceView>('result')
-  const [reportSection, setReportSection] = useState<'today' | 'scheduled'>('today')
+  const [reportSection, setReportSection] = useState<'today' | 'scheduled' | 'market'>('today')
   const [generatedReports, setGeneratedReports] = useState<GeneratedReportRecord[]>([])
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null)
   const [latestGeneratedReportId, setLatestGeneratedReportId] = useState<string | null>(null)
@@ -1941,9 +1942,23 @@ function App(): React.ReactElement {
         >
           定时日报{!supportsPersonalWechatSend && <small>仅 macOS / Windows</small>}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={reportSection === 'market'}
+          className={reportSection === 'market' ? 'active' : ''}
+          onClick={() => setReportSection('market')}
+        >
+          社区模板市场
+        </button>
       </div>
       <div className="report-workspace-body">
-        {reportSection === 'scheduled' ? (
+        {reportSection === 'market' ? (
+          <ReportTemplateMarketWorkspace
+            value={reportGeneration.templateId}
+            onChange={reportGeneration.setTemplateId}
+          />
+        ) : reportSection === 'scheduled' ? (
           <ScheduledReportsWorkspace
             contacts={contacts}
             platformSupported={supportsPersonalWechatSend}

@@ -16,6 +16,8 @@ export interface TestApplication {
 export async function launchTestApp(
   options: {
     mode?: 'connected' | 'disconnected'
+    /** 让模板市场 IPC 返回确定性的合成目录，供社区模板市场页视觉/行为用例使用。 */
+    templateMarket?: 'off' | 'fixture'
     userData?: string
     largeContacts?: number
     corruptCache?: boolean
@@ -55,7 +57,8 @@ export async function launchTestApp(
       WXE_E2E_UNSIGNED_MAC_UPDATE: options.unsignedMacUpdate ? '1' : '0',
       WXE_E2E_REALTIME_REORDER: options.realtimeReorder ? '1' : '0',
       WXE_E2E_NOW_MS: options.now ? String(options.now) : '',
-      WXE_E2E_APPEARANCE_THEME: options.appearanceTheme || 'light'
+      WXE_E2E_APPEARANCE_THEME: options.appearanceTheme || 'light',
+      WXE_E2E_TEMPLATE_MARKET: options.templateMarket || 'off'
     }
   })
   const page = await app.firstWindow()

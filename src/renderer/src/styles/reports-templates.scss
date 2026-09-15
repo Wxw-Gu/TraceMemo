@@ -986,3 +986,102 @@
   color: var(--wxex-text-muted);
   font: 11px/17px var(--wxex-font);
 }
+
+/* ============================================================ */
+/* 社区模板市场页                                                */
+/* ============================================================ */
+.report-market-page {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding: 28px clamp(20px, 4vw, 56px) 40px;
+  color: var(--wxex-text-primary);
+}
+
+.report-market-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.report-market-header h1 {
+  margin: 0;
+  color: var(--wxex-text-primary);
+  font: 700 24px/32px var(--wxex-font);
+}
+
+.report-market-header p {
+  margin: 5px 0 0;
+  max-width: 720px;
+  color: var(--wxex-text-secondary);
+  font: 13px/20px var(--wxex-font);
+}
+
+.report-market-summary {
+  margin: 0;
+  color: var(--wxex-text-muted);
+  font: 12px/18px var(--wxex-font);
+}
+
+.report-market-body {
+  display: grid;
+  gap: 22px;
+  margin-top: 4px;
+}
+
+.report-market-footnote {
+  margin: 0;
+  color: var(--wxex-text-muted);
+  font: 11px/17px var(--wxex-font);
+}
+
+@media (max-width: 900px) {
+  .report-market-header {
+    flex-direction: column;
+  }
+}
+
+.report-market-contribute {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-lg);
+  background: var(--wxex-bg-elevated);
+}
+
+.report-market-contribute strong {
+  display: block;
+  color: var(--wxex-text-primary);
+  font: 700 13px/20px var(--wxex-font);
+}
+
+.report-market-contribute p {
+  margin: 4px 0 0;
+  max-width: 640px;
+  color: var(--wxex-text-secondary);
+  font: 12px/18px var(--wxex-font);
+}
+
+.report-market-contribute-link {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-md);
+  color: var(--wxex-text-primary);
+  cursor: pointer;
+  font: 600 12px/18px var(--wxex-font);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.report-market-contribute-link:hover {
+  border-color: var(--wxex-brand);
+  color: var(--wxex-brand);
+}

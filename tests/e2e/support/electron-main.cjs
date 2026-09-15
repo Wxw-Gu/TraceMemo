@@ -991,6 +991,72 @@ handle('report:updateGeneratedTemplate', (request) => ({
 handle('report:deleteGenerated', () => ({ success: true }))
 handle('report:reveal', () => ({ success: true }))
 handle('copy-image', () => ({ success: true }))
+// 社区模板市场：默认关闭（返回空目录），测试用例可通过 WXE_E2E_TEMPLATE_MARKET=fixture 打开合成目录。
+const templateMarketEnabled = process.env.WXE_E2E_TEMPLATE_MARKET === 'fixture'
+const templateMarketEntry = {
+  id: 'community.github.example.neonboard',
+  version: '1.0.2',
+  interfaceVersion: '1',
+  name: '霓光指挥日报',
+  description: '霓光主题的桌面指挥日报，突出实时讨论、重点消息与行动项。',
+  author: 'TraceMemo 社区',
+  platform: 'desktop',
+  tags: ['desktop'],
+  license: 'MIT',
+  minAppVersion: null,
+  download: 'https://example.com/packages/community.github.example.neonboard/1.0.2/template.zip',
+  sizeBytes: 2048,
+  sha256: 'b'.repeat(64),
+  status: 'published'
+}
+const templateMarketInstalled = []
+handle('report-template:list', () =>
+  templateMarketInstalled.map((entry) => ({
+    id: entry.id,
+    version: entry.version,
+    interfaceVersion: entry.interfaceVersion,
+    source: 'installed',
+    name: entry.name,
+    author: entry.author,
+    entryPath: path.join(userData, 'report-templates', entry.id, 'template.html'),
+    capture: { width: 1280, maxWidth: 1280, maxHeight: 4000 },
+    license: { spdx: entry.license },
+    installedAt: '2026-09-15T00:00:00.000Z'
+  }))
+)
+handle('report-template-market:list', () =>
+  templateMarketEnabled
+    ? {
+        success: true,
+        catalog: {
+          schemaVersion: '1',
+          generatedAt: '2026-09-15T00:00:00.000Z',
+          status: 'published',
+          templates: [templateMarketEntry]
+        }
+      }
+    : { success: true, catalog: { schemaVersion: '1', status: 'published', templates: [] } }
+)
+handle('report-template-market:install', (id, version) => {
+  if (
+    !templateMarketEnabled ||
+    String(id) !== templateMarketEntry.id ||
+    String(version) !== templateMarketEntry.version
+  ) {
+    return { success: false, error: '模板不存在', code: 'unknown_template' }
+  }
+  if (!templateMarketInstalled.some((entry) => entry.id === id && entry.version === version)) {
+    templateMarketInstalled.push(templateMarketEntry)
+  }
+  return { success: true, catalogEntry: templateMarketEntry }
+})
+handle('report-template:uninstall', (id, version) => {
+  const index = templateMarketInstalled.findIndex(
+    (entry) => entry.id === String(id) && entry.version === String(version)
+  )
+  if (index >= 0) templateMarketInstalled.splice(index, 1)
+  return { success: true }
+})
 handle('api:copyText', () => ({ success: true }))
 handle('app-log:write', (entry) => {
   const safe = JSON.stringify(entry)
