@@ -33,6 +33,15 @@ export interface AskWechatEvidenceItem {
   timestamp?: number
   messageType?: string
   text?: string
+  /**
+   * 命中所依赖的派生来源（与 `messageType` 正交）。
+   *
+   * `image_ocr` = 这条结果靠**图片里的文字**命中，而不是群友真的发了一条文字消息。
+   * Evidence UI 会据此显示轻量来源标记。authoritative source 仍是原始图片消息。
+   */
+  derivedSource?: 'image_ocr'
+  /** 「从图片里读出来的文字」片段，只作命中解释（普通文字消息不会有）。 */
+  imageOcrText?: string
   attachment?: { kind?: string; name?: string; url?: string; sizeBytes?: number }
   /** 产生这条证据的 Tool（诊断 / 分组）。 */
   source: string
@@ -133,6 +142,24 @@ export interface QueryAgentDiagnostics {
   tools: string[]
   totalMs: number
   outcome: AskWechatOutcome
+  /**
+   * 本次查询里**实际取到 OCR 派生文本**的图片消息/证据条数（诊断，不含正文）。
+   *
+   * `0` 配合 `tools` 就能区分两种完全不同的故障：
+   * 图片文字索引没建（索引问题），还是建好了但查询路径没接上（链路问题）。
+   */
+  imageOcrTextCount?: number
+  /** 本次查询里图片文字索引的覆盖度状态（`not_built` / `partial` / `complete` / `failed`）。 */
+  imageOcrCoverageState?: string
+  /**
+   * 用户问题原文。
+   *
+   * 这一条**刻意**包含聊天内容：排查"同一个问题为什么这次答对上次答错"必须知道问的是什么。
+   * 日志只写在用户本机的应用日志目录（设置 → 检索诊断里可查看 / 清空），不上传、不进遥测。
+   */
+  question?: string
+  /** 模型最终回答原文（同上，仅本地日志，用于排查）。 */
+  answer?: string
 }
 
 export type AskWechatOutcome =

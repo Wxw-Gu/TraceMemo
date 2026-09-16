@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { CacheSummary } from '../../../../../shared/cache'
-import { Button } from '../../../components/ui'
+import type { CacheSummary, CacheClearScope } from '../../../../../shared/cache'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Button
+} from '../../../components/ui'
 
 const SEARCH_CACHE_KEYS = [
   'wxe_ai_search_cache_v8',
@@ -25,9 +35,9 @@ export function CacheCleanupPage({
   onNotice: (message: string) => void
 }): React.ReactElement {
   const [summary, setSummary] = useState<CacheSummary | null>(null)
-  const [busyScope, setBusyScope] = useState<
-    'bootstrap' | 'electron' | 'knowledge' | 'knowledge-directory' | 'all' | 'local' | null
-  >(null)
+  const [busyScope, setBusyScope] = useState<CacheClearScope | 'knowledge-directory' | 'local' | null>(null)
+  /** 需要二次确认的清理范围（目前只有图片文字索引）。 */
+  const [confirmingScope, setConfirmingScope] = useState<CacheClearScope | null>(null)
 
   const refresh = useCallback(async (): Promise<void> => {
     setSummary(await window.api.getCacheSummary())
@@ -44,7 +54,7 @@ export function CacheCleanupPage({
     onNotice('已清理检索和导出本地缓存')
   }
 
-  const clear = async (scope: 'bootstrap' | 'electron' | 'knowledge' | 'all'): Promise<void> => {
+  const clear = async (scope: CacheClearScope): Promise<void> => {
     setBusyScope(scope)
     try {
       setSummary(await window.api.clearCache(scope))
@@ -54,12 +64,41 @@ export function CacheCleanupPage({
       onNotice(
         scope === 'knowledge'
           ? '已清理所有账号的本地知识库索引，需要时可在问问微信中重新建立'
-          : scope === 'all'
-            ? '已清理全部可恢复缓存和检索记录'
-            : '缓存已清理'
+          : scope === 'image-text-index'
+            ? '已清理图片文字索引，微信原始图片与聊天记录未受影响；需要时可在问问微信中重新建立'
+            : scope === 'all'
+              ? '已清理全部可恢复缓存和检索记录'
+              : '缓存已清理'
       )
     } catch (error) {
       onNotice(error instanceof Error ? error.message : '清理缓存失败')
+    } finally {
+      setBusyScope(null)
+    }
+  }
+
+  /**
+   * 清理图片文字索引。两步各司其职，不能省成一步：
+   *
+   * 1. `clearImageTextIndex()` —— 主进程先停任务、折叠 WAL、关连接、删三件套，
+   *    并**回验文件是否真的删掉**（Windows 上文件被占用时 rmSync 会静默失败）。
+   * 2. `clearCache('image-text-index')` —— 再扫掉整个派生目录（含其它账号的派生库），
+   *    并返回刷新后的占用摘要。
+   *
+   * 只要第 1 步回验失败，就必须如实报告，不能说"已清理"。
+   */
+  const clearImageTextIndex = async (): Promise<void> => {
+    setBusyScope('image-text-index')
+    try {
+      const result = await window.api.clearImageTextIndex()
+      setSummary(await window.api.clearCache('image-text-index'))
+      onNotice(
+        result.removed
+          ? '已清理图片文字索引；微信原始图片、聊天记录和普通文字知识库都未受影响。需要时可在「问问微信」里重新建立'
+          : '图片文字索引的数据文件仍被占用，没能完全删除。请重启 TraceMemo 后再试一次'
+      )
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : '清理图片文字索引失败')
     } finally {
       setBusyScope(null)
     }
@@ -134,9 +173,14 @@ export function CacheCleanupPage({
                   <Button
                     variant="outline"
                     size="sm"
+                    data-testid={`cache-clear-${item.id}`}
                     disabled={busyScope !== null}
                     aria-busy={busyScope === item.id}
-                    onClick={() => void clear(item.id)}
+                    onClick={() =>
+                      item.id === 'image-text-index'
+                        ? setConfirmingScope('image-text-index')
+                        : void clear(item.id)
+                    }
                   >
                     {busyScope === item.id ? '清理中...' : '清理'}
                   </Button>
@@ -169,6 +213,41 @@ export function CacheCleanupPage({
           </div>
         </div>
       </div>
+
+      {/* 图片文字索引是「重新建立成本很高」的派生数据，必须二次确认并写清不可逆的范围。 */}
+      <AlertDialog
+        open={confirmingScope === 'image-text-index'}
+        onOpenChange={(open) => setConfirmingScope(open ? 'image-text-index' : null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>清理图片文字索引？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将删除 TraceMemo 本地生成的图片 OCR 文本和对应搜索索引。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="settings-confirm-detail">
+            <p>不会删除：</p>
+            <ul>
+              <li>微信原始图片</li>
+              <li>微信聊天记录</li>
+              <li>普通文字知识库</li>
+              <li>微信数据库</li>
+            </ul>
+            <p>清理后，「问问微信」将无法搜索图片中的文字；之后可以重新建立。</p>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="cache-clear-image-text-index-confirm"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => void clearImageTextIndex()}
+            >
+              确认清理
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

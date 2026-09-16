@@ -1,6 +1,7 @@
 import { monitorEventLoopDelay } from 'perf_hooks'
 import * as chat from '../services/chat-service'
 import type {
+  KnowledgeImageOcrState,
   KnowledgeAttachmentMetadata,
   KnowledgeEvidence,
   KnowledgeMessageKind,
@@ -24,6 +25,7 @@ import {
   emptyKnowledgeSearchTimings
 } from '../../shared/knowledge'
 import { KnowledgeService } from './knowledge-service'
+import { sourceMessageId } from './message-identity'
 import {
   voiceAccountIdentity,
   voiceMessageIdentity
@@ -118,11 +120,6 @@ function groupMemberDisplayName(member: chat.GroupSnapshot['members'][number]): 
   )
 }
 
-function sourceMessageId(message: chat.FormattedMessage): string {
-  if (message.localId) return `local:${message.localId}`
-  if (message.id) return String(message.id)
-  return `${message.createTime || 0}:${message.serverId || message.content}`
-}
 
 function sourceKind(message: chat.FormattedMessage): KnowledgeMessageKind {
   if (message.voiceTranscript || message.type === '语音') return 'voice'
@@ -130,6 +127,16 @@ function sourceKind(message: chat.FormattedMessage): KnowledgeMessageKind {
     return message.exportMediaType
   }
   if (message.exportMediaType === 'file') return 'file'
+  // 索引路径上 `exportMediaType` **不会被赋值**（只有 export-service 会设它），
+  // 所以图片/视频/表情包必须从 contentData.type 判定，否则图片会静默落成 'other'，
+  // 进而让"图片文字索引"的 Evidence 丢掉真正的来源类型。
+  if (
+    message.contentData?.type === 'image' ||
+    message.contentData?.type === 'video' ||
+    message.contentData?.type === 'sticker'
+  ) {
+    return message.contentData.type
+  }
   if (message.contentData?.type === 'share' || message.contentData?.type === 'miniProgram') {
     return message.contentData.type === 'share' && message.contentData.typeVal === '6'
       ? 'file'
@@ -201,12 +208,16 @@ function toSourceMessage(
   accountId: string,
   conversationId: string,
   message: chat.FormattedMessage,
-  transcriptOverride?: string
+  transcriptOverride?: string,
+  imageOcr?: { state: KnowledgeImageOcrState; text: string }
 ): KnowledgeSourceMessage | null {
   if (!message.createTime) return null
   const extracted = sourceTextAndAttachment(message)
   const voiceTranscript = transcriptOverride?.trim() || message.voiceTranscript?.trim() || undefined
-  if (!extracted.text && !extracted.attachment && !voiceTranscript) return null
+  // 图片 OCR 文本走与语音转写完全相同的派生通道：有文本才入库，
+  // 没有文字的图片（表情包/风景）不会污染索引。
+  const imageOcrText = imageOcr?.text?.trim() || undefined
+  if (!extracted.text && !extracted.attachment && !voiceTranscript && !imageOcrText) return null
   return {
     accountId,
     conversationId,
@@ -218,7 +229,9 @@ function toSourceMessage(
     kind: sourceKind(message),
     text: extracted.text,
     attachment: extracted.attachment,
-    voiceTranscript
+    voiceTranscript,
+    ...(imageOcrText ? { imageOcrText } : {}),
+    ...(imageOcrText && imageOcr?.state ? { imageOcrState: imageOcr.state } : {})
   }
 }
 
@@ -256,6 +269,14 @@ export class KnowledgeSearchService {
   private interactiveIdleResolve: (() => void) | null = null
   private wcdbQueueMsTotal = 0
   private wcdbExecutionMsTotal = 0
+  /**
+   * 图片 OCR 文本解析器（由 main 注入）。
+   *
+   * 与语音同构：派生文本在**主进程**解析后贴到消息上，派生库不进 worker。
+   */
+  private imageOcrResolver:
+    | ((conversationId: string, messageId: string) => { state: KnowledgeImageOcrState; text: string } | undefined)
+    | undefined
   private voiceTranscriptResolver:
     | ((reference: VoiceMessageReference) => VoiceTranscriptSnapshot)
     | undefined
@@ -370,6 +391,15 @@ export class KnowledgeSearchService {
     resolver: (reference: VoiceMessageReference) => VoiceTranscriptSnapshot
   ): void {
     this.voiceTranscriptResolver = resolver
+  }
+
+  /** 注入图片 OCR 文本解析器（本地 System OCR 的派生结果）。 */
+  setImageOcrResolver(
+    resolver:
+      | ((conversationId: string, messageId: string) => { state: KnowledgeImageOcrState; text: string } | undefined)
+      | undefined
+  ): void {
+    this.imageOcrResolver = resolver
   }
 
   /**
@@ -1074,8 +1104,16 @@ export class KnowledgeSearchService {
     const reference = this.voiceReferenceFromMessage(message)
     const snapshot = reference ? this.voiceTranscriptResolver?.(reference) : undefined
     const hydrated = this.withVoiceTranscript(message)
-    const source = toSourceMessage(accountId, conversationId, hydrated, transcriptOverride)
-    if (!source || source.kind !== 'voice') return source
+    const imageOcr = this.imageOcrResolver?.(conversationId, sourceMessageId(message))
+    const source = toSourceMessage(
+      accountId,
+      conversationId,
+      hydrated,
+      transcriptOverride,
+      imageOcr
+    )
+    if (!source) return source
+    if (source.kind !== 'image' && source.kind !== 'voice') return source
     return {
       ...source,
       voiceTranscriptState:
@@ -1103,6 +1141,38 @@ export class KnowledgeSearchService {
       createTime: message.createTime,
       svrId: message.serverId
     }
+  }
+
+  /**
+   * 某个会话的图片 OCR 处理完成 → 重建该会话的索引。
+   *
+   * 与"语音转写完成后单会话重索引"完全同构：整会话重读 + completeSnapshot 重建，
+   * 让 OCR 派生文本进入 chunks/FTS，从而可被 search_messages 检索。
+   * 原图片消息仍然是 authoritative source —— 这里只是让它多了一段派生文本，
+   * 不产生任何"OCR 消息"。
+   */
+  async indexImageOcr(conversationId: string): Promise<void> {
+    if (!chat.isReady()) return
+    const accountId = this.currentAccountId()
+    if (!accountId) return
+    const activeIndex = this.indexing.get(accountId)
+    if (activeIndex) await activeIndex
+    const contacts = await this.listContacts()
+    const contact = contacts.find((item) => item.md5 === conversationId)
+    if (!contact) return
+    const messages = await this.listMessages(contact.md5, undefined, undefined, 'background')
+    const sourceMessages = messages
+      .map((message) => this.toSourceMessage(accountId, contact.md5, message))
+      .filter((message): message is KnowledgeSourceMessage => Boolean(message))
+    await this.service.index({
+      accountId,
+      conversations: [
+        { conversationId: contact.md5, completeSnapshot: true, messages: sourceMessages }
+      ],
+      chunker: DEFAULT_KNOWLEDGE_CHUNKER,
+      fts: DEFAULT_KNOWLEDGE_FTS_CONFIG
+    })
+    await this.refreshStatus(accountId)
   }
 
   private async indexVoiceTranscriptNow(update: VoiceTranscriptUpdate): Promise<void> {

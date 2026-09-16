@@ -3,6 +3,7 @@ import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AISearchWorkspace } from '../../src/renderer/src/components/search/AISearchWorkspace'
 import { aiSearchContact, aiSearchGroup, makeSearchResult } from './support/ai-search-fixtures'
+import { makeImageTextIndexApi } from './support/image-text-index-api'
 import type { AskWechatQueryResult, AskWechatStats, QueryAgentProgressEvent } from '../../src/shared/query-agent'
 
 type AnsweredResult = Extract<AskWechatQueryResult, { status: 'answered' }>
@@ -25,7 +26,9 @@ const api = {
   runAskWechatQuery: vi.fn(),
   forgetAskWechatConversation: vi.fn(),
   onAskWechatProgress: vi.fn(),
-  cancelKnowledgeIndex: vi.fn()
+  cancelKnowledgeIndex: vi.fn(),
+  // 侧栏新增的「图片文字索引」卡片会读这些桥接。
+  ...makeImageTextIndexApi()
 }
 
 const indexLatestAt = new Date('2026-09-11T11:57:24+08:00').getTime()

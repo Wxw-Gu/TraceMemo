@@ -16,6 +16,7 @@ import {
 } from '../../shared/windows-runtime'
 import { mergeRecallArchiveMessages, recordRecallArchiveMessages } from './recall-archive-service'
 import type { ExportImageQuality } from '../../shared/image-quality'
+import type { ImageMessageCountProbe } from '../../shared/image-text-index'
 import { wcdbDebugLog } from '../wcdb-debug'
 import {
   buildContactSearchIndex,
@@ -717,6 +718,34 @@ export async function listMessagesForExport(
  * batch-selection view, where loading every conversation would make opening
  * Settings noticeably slow.
  */
+/**
+ * 图片消息计数探针（SQL 统计，不解密）。
+ *
+ * 返回 `count: null` 表示**统计失败**，不是 0 张。调用方必须区分这两件事 ——
+ * 否则"数不出来"会被显示成"账号里没有图片"，用户会因此放弃建立索引。
+ */
+export async function countImageMessagesAsync(
+  userMd5: string,
+  sinceMs?: number
+): Promise<ImageMessageCountProbe> {
+  if (!dbRef) return { count: null, typeColumn: null, error: '微信数据库尚未就绪' }
+  return dbRef.getWcdb4Client().countImageMessagesAsync(userMd5, sinceMs)
+}
+
+/**
+ * 图片消息的增量水位（条数 + 最大插入序）。
+ *
+ * 增量索引**不能只比条数**：召回一张旧图的同时新增一张新图，条数不变但集合变了。
+ * 返回 null = 当前数据库不支持该统计（调用方须退化成"每轮重扫"，宁可慢也不可漏）。
+ */
+export async function imageConversationWatermarkAsync(
+  userMd5: string,
+  sinceMs?: number
+): Promise<{ count: number; maxLocalId: number } | null> {
+  if (!dbRef) return null
+  return dbRef.getWcdb4Client().imageConversationWatermarkAsync(userMd5, sinceMs)
+}
+
 export async function countVoiceMessagesAsync(
   userMd5: string,
   startTime?: number,

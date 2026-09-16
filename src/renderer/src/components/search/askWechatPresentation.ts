@@ -52,6 +52,10 @@ export function mapAskWechatEvidence(items: AskWechatEvidenceItem[]): EvidenceIt
     return {
       evidenceId: `E${index + 1}`,
       sourceKind: item.messageType as EvidenceItem['sourceKind'],
+      // 「靠图片里的文字命中」是来源语义，必须原样带到 UI；
+      // 但 authoritative source 仍然是原始图片消息（messageRef 已指向它）。
+      ...(item.derivedSource ? { derivedSource: item.derivedSource } : {}),
+      ...(item.imageOcrText ? { imageOcrText: item.imageOcrText } : {}),
       contact: evidenceContact(item, anchor),
       messageRef: item.messageRef,
       message: {

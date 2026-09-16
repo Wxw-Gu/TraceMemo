@@ -58,6 +58,12 @@ import type {
   ImageInsight
 } from '../shared/image-insight'
 import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../shared/system-ocr'
+import type {
+  ImageTextIndexCountResult,
+  ImageTextIndexRepairResult,
+  ImageTextIndexStartOptions,
+  ImageTextIndexStatus
+} from '../shared/image-text-index'
 import type { AgentHubActionResult, AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 import type {
   PersonalWechatGeneratedTtsVoiceRequest,
@@ -95,7 +101,7 @@ import type {
   AppUpdateOpenDownloadPageResult,
   AppUpdateState
 } from '../shared/app-update'
-import type { CacheSummary } from '../shared/cache'
+import type { CacheClearScope, CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress, ExportResult } from '../shared/export'
 import type {
   VoiceBatchPreflight,
@@ -211,7 +217,7 @@ declare global {
       openAppUpdateDownloadPage: () => Promise<AppUpdateOpenDownloadPageResult>
       onAppUpdateState: (callback: (state: AppUpdateState) => void) => () => void
       getCacheSummary: () => Promise<CacheSummary>
-      clearCache: (scope: 'bootstrap' | 'electron' | 'knowledge' | 'all') => Promise<CacheSummary>
+      clearCache: (scope: CacheClearScope) => Promise<CacheSummary>
       openKnowledgeDirectory: () => Promise<{ success: boolean; error?: string }>
       initDb: (key: string, accountRoot: string) => Promise<boolean | DatabaseInitResult>
       discoverAccounts: (inputPath: string) => Promise<AccountDiscoveryResult>
@@ -664,6 +670,16 @@ declare global {
       // 本地图片文字识别（System OCR，本地 Runtime，非 AI Provider）
       getSystemOcrCapability: () => Promise<SystemOcrCapability>
       recognizeLocalImageText: (request: SystemOcrRequest) => Promise<SystemOcrResult>
+      getImageTextIndexStatus: () => Promise<ImageTextIndexStatus>
+      countImageMessages: (sinceMs?: number) => Promise<ImageTextIndexCountResult>
+      startImageTextIndex: (options?: ImageTextIndexStartOptions) => Promise<{ started: boolean; state: string }>
+      pauseImageTextIndex: () => Promise<{ paused: boolean; state: string }>
+      resumeImageTextIndex: (options?: ImageTextIndexStartOptions) => Promise<{ started: boolean; state: string }>
+      cancelImageTextIndex: () => Promise<{ cancellable: boolean; cancelled: boolean }>
+      clearImageTextIndex: () => Promise<{ removed: boolean; removedBytes: number }>
+      resetImageTextIndexFailures: () => Promise<{ reset: number }>
+      repairImageTextIndex: () => Promise<ImageTextIndexRepairResult>
+      onImageTextIndexStatus: (callback: (status: ImageTextIndexStatus) => void) => () => void
       getPersonalWechatSenderStatus: () => Promise<PersonalWechatSenderStatus>
       getPersonalWechatSendCapability: () => Promise<PersonalWechatSendCapability>
       getPersonalWechatKeepOneBotProcess: () => Promise<boolean>

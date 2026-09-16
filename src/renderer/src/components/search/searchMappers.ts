@@ -24,6 +24,10 @@ export const mapPipelineEvidenceItem = (
   return {
     evidenceId: item.id,
     sourceKind: item.sourceKind,
+    // 「靠图片里的文字命中」的来源语义与 OCR 片段同样要带到 UI，
+    // 否则 Legacy 检索路径下用户看不到「图片文字」标记（两条路径表现会不一致）。
+    ...(item.derivedSource ? { derivedSource: item.derivedSource } : {}),
+    ...(item.imageOcrText ? { imageOcrText: item.imageOcrText } : {}),
     contact,
     // 这条路径本来就同时知道真实会话 id 与消息 id，顺手补上稳定引用，
     // 让 Legacy / ai-search 证据也能被精确定位（而不是只有 Query Agent 路径能跳准）。

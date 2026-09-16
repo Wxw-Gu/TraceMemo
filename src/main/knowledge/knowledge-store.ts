@@ -19,7 +19,11 @@ import type {
   KnowledgeSearchTimings,
   KnowledgeSearchResult
 } from '../../shared/knowledge'
-import { emptyKnowledgeSearchTimings, KNOWLEDGE_SCHEMA_VERSION } from '../../shared/knowledge'
+import {
+  emptyKnowledgeSearchTimings,
+  KNOWLEDGE_SCHEMA_VERSION,
+  toEvidenceDisplayText
+} from '../../shared/knowledge'
 import { chunkConversation } from './chunker'
 import { normalizeKnowledgeMessage } from './normalizer'
 
@@ -789,7 +793,11 @@ export class KnowledgeStore {
       timestamp: Number(row.create_time),
       messageIds: chunk ? chunk.map((item) => String(item.message_id)) : [messageId],
       sourceKind: String(row.kind) as KnowledgeEvidence['sourceKind'],
-      text: String(row.searchable_text),
+      // 内部前缀（`图片文字：`）绝不能进 Evidence：面向用户与模型的是可读文本，
+      // 来源信息由下面的结构化字段表达。
+      text: toEvidenceDisplayText(String(row.searchable_text)),
+      ...(row.image_ocr_text ? { imageOcrText: String(row.image_ocr_text) } : {}),
+      ...(row.image_ocr_text ? { derivedSource: 'image_ocr' as const } : {}),
       score: String(row.kind) === 'system' ? 1 : 0
     }
   }
@@ -899,6 +907,7 @@ export class KnowledgeStore {
         attachment_json TEXT,
         voice_transcript TEXT,
         voice_transcript_state TEXT,
+        image_ocr_text TEXT,
         PRIMARY KEY (conversation_id, message_id)
       ) STRICT;
       CREATE INDEX IF NOT EXISTS knowledge_messages_conversation_time
@@ -956,6 +965,14 @@ export class KnowledgeStore {
     )
     if (!messageColumns.has('voice_transcript_state')) {
       this.database.exec('ALTER TABLE knowledge_messages ADD COLUMN voice_transcript_state TEXT')
+    }
+    // 图片 OCR 派生文本单独留一列（不只是埋进 searchable_text）。
+    //
+    // 为什么必须落列而不是从 searchable_text 里截字符串：Evidence 需要回答
+    // "这条结果是不是来自图片里的文字"，并按此给出来源标记与 OCR 片段。
+    // 靠解析前缀来判来源，一旦前缀格式调整就会静默失效。
+    if (!messageColumns.has('image_ocr_text')) {
+      this.database.exec('ALTER TABLE knowledge_messages ADD COLUMN image_ocr_text TEXT')
     }
     this.writeMetaIfMissing('schema_version', String(KNOWLEDGE_SCHEMA_VERSION))
     const storedAccount = this.readMeta('account_id')
@@ -1137,8 +1154,9 @@ export class KnowledgeStore {
     const upsert = this.database.prepare(
       `INSERT INTO knowledge_messages (
         account_id, conversation_id, message_id, create_time, content_hash, searchable_text,
-        kind, sender_id, sender_name, attachment_json, voice_transcript, voice_transcript_state
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        kind, sender_id, sender_name, attachment_json, voice_transcript, voice_transcript_state,
+        image_ocr_text
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(conversation_id, message_id) DO UPDATE SET
         create_time = excluded.create_time,
         content_hash = excluded.content_hash,
@@ -1148,7 +1166,8 @@ export class KnowledgeStore {
         sender_name = excluded.sender_name,
         attachment_json = excluded.attachment_json,
         voice_transcript = excluded.voice_transcript,
-        voice_transcript_state = excluded.voice_transcript_state`
+        voice_transcript_state = excluded.voice_transcript_state,
+        image_ocr_text = excluded.image_ocr_text`
     )
     for (let index = 0; index < messages.length; index += 1) {
       this.assertNotAborted(signal)
@@ -1165,7 +1184,8 @@ export class KnowledgeStore {
         message.senderName ?? null,
         message.attachment ? encodedJson(message.attachment) : null,
         message.voiceTranscript ?? null,
-        message.voiceTranscriptState ?? null
+        message.voiceTranscriptState ?? null,
+        message.imageOcrText ?? null
       )
       if (index % YIELD_EVERY === 0) {
         onProgress(index + 1, 0)

@@ -1,5 +1,6 @@
 import { listContactsAsync, listMessagesAsync, isReady, type FormattedContact, type FormattedMessage } from './chat-service'
 import { resolveContact } from './contact-resolution-service'
+import { sourceMessageId } from '../knowledge/message-identity'
 import type { KnowledgeSearchService } from '../knowledge/knowledge-search-service'
 import { inferAiSearchTimeRange } from '../../shared/ai-search'
 import { KNOWLEDGE_FRESHNESS_TOLERANCE_MS } from '../../shared/knowledge'
@@ -13,6 +14,7 @@ import type {
   ResolvedCorpusScope,
   ResolvedTimeRange,
   QueryIndexCoverage,
+  QueryImageTextCoverage,
   QuerySearchTimings,
   QueryMessagesRequest,
   SearchMessagesRequest,
@@ -26,6 +28,12 @@ import {
   decodeMessageRef as fromRef,
   normalizeMessageIdentity
 } from '../../shared/local-query-api'
+import {
+  describeImageTextCoverage,
+  imageTextCoverageState,
+  type ImageTextIndexCoverage
+} from '../../shared/image-text-index'
+import { toEvidenceDisplayText } from '../../shared/knowledge'
 
 const LIMIT_MAX = 200
 const CONTEXT_MAX = 50
@@ -112,6 +120,47 @@ function buildIndexCoverage(
   }
 }
 
+/**
+ * 图片文字索引未完成时，必须附加的零结果诚实性约束。
+ *
+ * 图片 OCR 是**独立的**覆盖维度：它可能是"未建立"或"只做了 30%"。
+ * 此时 0 条图片证据只是**索引缺口**，不是**事实空缺**。
+ */
+const IMAGE_OCR_ZERO_RESULT_CAUTION =
+  '涉及图片、截图、海报里的文字的问题，当前不能因为没搜到就回答"没有"。'
+
+/**
+ * 图片文字索引覆盖度 → 可直接引用的结论句。
+ *
+ * 与 `buildIndexCoverage` 同思路：只给结构化数字，模型会自己换算、甚至反过来
+ * 宣称"覆盖完整"。这里由 Engine 给出结论句，模型只需引用。
+ */
+export function buildImageOcrCoverage(
+  coverage: ImageTextIndexCoverage | null
+): QueryImageTextCoverage | undefined {
+  if (!coverage) return undefined
+  const state = imageTextCoverageState(coverage)
+  const countedNote = coverage.countedAt
+    ? `（图片数量统计于 ${formatLocalMinute(coverage.countedAt)}）`
+    : ''
+  const base = describeImageTextCoverage(coverage)
+  return {
+    state,
+    totalImageMessages: coverage.totalImageMessages,
+    processed: coverage.processed,
+    indexed: coverage.indexed,
+    empty: coverage.empty,
+    missing: coverage.missing,
+    failed: coverage.failed,
+    pending: coverage.pending,
+    ...(coverage.countedAt ? { countedAtLabel: formatLocalMinute(coverage.countedAt) } : {}),
+    summary:
+      state === 'complete'
+        ? `${base}${countedNote}`
+        : `${base}${countedNote}${IMAGE_OCR_ZERO_RESULT_CAUTION}`
+  }
+}
+
 const KIND_LABELS: Record<QueryMessageType, string> = {
   text: '文本',
   image: '图片',
@@ -149,7 +198,19 @@ function resolvedTimeRange(input: QueryTimeRange, now = new Date()): ResolvedTim
   const range = inferAiSearchTimeRange(phrase[input.kind], map[input.kind], now)
   return { kind: input.kind, startTime: range.startTime, endTime: range.endTime, label: range.label }
 }
-function toQueryMessage(conversationId: string, message: FormattedMessage, target: FormattedContact): QueryMessage {
+/**
+ * 一条消息的展示形态。
+ *
+ * `imageOcr` 是可选的**派生文本**（来自本地图片文字索引，只读、不触发 OCR）。
+ * 图片消息的正文永远是空的 —— 识别出的文字必须走独立字段，
+ * 否则"图片里的文字"会被伪装成"群友发的文字消息"。
+ */
+function toQueryMessage(
+  conversationId: string,
+  message: FormattedMessage,
+  target: FormattedContact,
+  imageOcr?: { state: string; text: string }
+): QueryMessage {
   const kind = kindOf(message)
   const content = message.contentData
   const attachment =
@@ -163,7 +224,16 @@ function toQueryMessage(conversationId: string, message: FormattedMessage, targe
             ? { kind: 'file' as const, name: message.exportMediaName || (content?.type === 'share' ? content.title : undefined), url: content?.type === 'share' ? content.url : undefined }
             : undefined
   const text = message.content?.trim() || message.voiceTranscript?.trim() || undefined
-  return { messageRef: toRef(conversationId, message.id), timestamp: (message.createTime || 0) * 1000, datetime: message.datetime, sender: message.isSender ? '我' : (message.name || target.m_nsNickName), direction: message.isSender ? 'to_target' : 'from_target', messageType: kind, sourceKind: kind, ...(attachment ? { attachment } : {}), ...(text ? { text } : {}) }
+  const derived = kind === 'image' ? imageOcr : undefined
+  const ocrText = derived && derived.state === 'indexed' ? derived.text.trim() : ''
+  const imageTextState: QueryMessage['imageTextState'] = !derived
+    ? 'not_indexed'
+    : ocrText
+      ? 'indexed'
+      : derived.state === 'empty'
+        ? 'empty'
+        : 'not_indexed'
+  return { messageRef: toRef(conversationId, message.id), timestamp: (message.createTime || 0) * 1000, datetime: message.datetime, sender: message.isSender ? '我' : (message.name || target.m_nsNickName), direction: message.isSender ? 'to_target' : 'from_target', messageType: kind, sourceKind: kind, ...(attachment ? { attachment } : {}), ...(text ? { text } : {}), ...(ocrText ? { imageOcrText: ocrText, derivedSource: 'image_ocr' as const } : {}), ...(kind === 'image' ? { imageTextState } : {}) }
 }
 
 /**
@@ -216,7 +286,49 @@ function outsideScopeError(scope: ResolvedCorpusScope, actual: string): { status
 }
 
 export class LocalQueryApiService {
-  constructor(private readonly knowledge?: KnowledgeSearchService, private readonly nowProvider: () => Date = () => new Date()) {}
+  /**
+   * 图片文字索引覆盖度提供者（同步、只读）。
+   *
+   * 刻意不在 Knowledge worker 里算：OCR 派生库（`image-text-index.sqlite`）与
+   * `knowledge.sqlite` 物理分离，worker 不该为了一个覆盖度数字去开它。
+   */
+  private imageTextCoverage: () => ImageTextIndexCoverage | null = () => null
+
+  /**
+   * 单条图片消息的 OCR 派生文本提供者（同步、只读）。
+   *
+   * L4（查询层）**只读** L1（OCR artifact）—— 这里绝不允许触发 OCR、解密或读原图。
+   * 之前 `query_messages` 缺这一环，导致"图片已经识别出文字"这件事在精确读消息
+   * 这条路径上完全不可见：模型只拿到一个空的 `attachment`，于是把"索引缺口"
+   * 说成"图片里没有文字"，甚至反过来建议用户去建立已经建好的索引。
+   */
+  private imageOcrEntry:
+    | ((conversationId: string, messageId: string) => { state: string; text: string } | undefined)
+    | undefined
+
+  constructor(
+    private readonly knowledge?: KnowledgeSearchService,
+    private readonly nowProvider: () => Date = () => new Date()
+  ) {}
+
+  /**
+   * 注入图片文字索引覆盖度提供者。
+   *
+   * 用 setter 而不是构造参数：避免给第二个带默认值的参数写 `undefined` 占位，
+   * 也让测试可以直接注入假的覆盖度。
+   */
+  setImageTextCoverageProvider(provider: () => ImageTextIndexCoverage | null): void {
+    this.imageTextCoverage = provider
+  }
+
+  /** 注入单条图片消息的 OCR 派生文本解析器（只读；见 `imageOcrEntry` 的约束）。 */
+  setImageOcrEntryProvider(
+    provider:
+      | ((conversationId: string, messageId: string) => { state: string; text: string } | undefined)
+      | undefined
+  ): void {
+    this.imageOcrEntry = provider
+  }
   capabilities(): QueryCapabilitiesResponse {
     return { version: 1, tools: { query_messages: { operation: '读取指定联系人的确定性消息', directions: ['any', 'from_target', 'to_target'], messageTypes: kinds, timeRanges: ['all', 'today', 'yesterday', 'this_week', 'last_7_days', 'this_month', 'previous_month', 'this_year', 'previous_year', 'absolute'], limitMax: LIMIT_MAX }, search_messages: { operation: '受限 Knowledge 关键词检索', timeRanges: ['all', 'today', 'yesterday', 'this_week', 'last_7_days', 'this_month', 'previous_month', 'this_year', 'previous_year', 'absolute'], limitMax: LIMIT_MAX }, message_context: { operation: '读取消息前后文', timeRanges: ['all'], limitMax: CONTEXT_MAX }, conversation_overview: { operation: '按会话时间片提取概览证据', timeRanges: ['all', 'today', 'yesterday', 'this_week', 'last_7_days', 'this_month', 'previous_month', 'this_year', 'previous_year', 'absolute'], limitMax: LIMIT_MAX } } }
   }
@@ -282,7 +394,18 @@ export class LocalQueryApiService {
     const raw = await listMessagesAsync(contact.md5, range.startTime, range.endTime)
     const direction = request.direction || 'any'; const allowed = new Set(request.messageTypes || kinds)
     const filtered = raw.filter((message) => !(request.excludeSystem !== false && kindOf(message) === 'system')).filter((message) => allowed.has(kindOf(message))).filter((message) => direction === 'any' || (direction === 'to_target' ? message.isSender : !message.isSender)).sort((a, b) => ((a.createTime || 0) - (b.createTime || 0)) * ((request.order || 'asc') === 'asc' ? 1 : -1)).slice(0, Math.min(LIMIT_MAX, Math.max(1, request.limit || 20)))
-    return { status: 'completed' as const, target: contactView(contact), query: { direction, messageTypes: request.messageTypes || [], order: request.order || 'asc', limit: Math.min(LIMIT_MAX, Math.max(1, request.limit || 20)), excludeSystem: request.excludeSystem !== false, resolvedTimeRange: range }, coverage: { state: 'complete' as const }, returnedCount: filtered.length, messages: filtered.map((message) => toQueryMessage(contact.md5, message, contact)), scope: corpus.scope }
+    // 图片 OCR 派生文本：L4 只读 L1，**不触发 OCR / 解密 / 读原图**。
+    // 键必须用 `sourceMessageId(message)`（binding 主键就是它），不能用裸 `message.id`，
+    // 否则 `local:` 前缀会让查表静默失配 —— 与 Knowledge 用同一条身份规则。
+    const messages = filtered.map((message) => {
+      const ocr =
+        kindOf(message) === 'image'
+          ? this.imageOcrEntry?.(contact.md5, sourceMessageId(message))
+          : undefined
+      return toQueryMessage(contact.md5, message, contact, ocr)
+    })
+    const imageOcrCoverage = buildImageOcrCoverage(this.imageTextCoverage())
+    return { status: 'completed' as const, target: contactView(contact), query: { direction, messageTypes: request.messageTypes || [], order: request.order || 'asc', limit: Math.min(LIMIT_MAX, Math.max(1, request.limit || 20)), excludeSystem: request.excludeSystem !== false, resolvedTimeRange: range }, coverage: { state: 'complete' as const }, returnedCount: filtered.length, messages, scope: corpus.scope, ...(imageOcrCoverage ? { imageOcrCoverage } : {}) }
   }
   async search(request: SearchMessagesRequest) {
     const requestStartedAt = Date.now()
@@ -359,6 +482,8 @@ export class LocalQueryApiService {
 
     const covered = indexCovers(found.indexLatestAt, requestedEnd, found.sourceLatestAt)
     const indexCoverage = buildIndexCoverage(found.indexLatestAt, found.sourceLatestAt, covered)
+    // 图片文字索引是**独立覆盖维度**：文字索引再完整也不代表图片里的文字搜得到。
+    const imageOcrCoverage = buildImageOcrCoverage(this.imageTextCoverage())
     const timings: QuerySearchTimings = {
       totalMs: Date.now() - requestStartedAt,
       scopeMs,
@@ -381,6 +506,7 @@ export class LocalQueryApiService {
       sourceLatestAt: found.sourceLatestAt,
       freshness: { catchUp: freshness.catchUp },
       ...(indexCoverage ? { indexCoverage } : {}),
+      ...(imageOcrCoverage ? { imageOcrCoverage } : {}),
       timings
     }
   }
@@ -454,7 +580,11 @@ export class LocalQueryApiService {
               timestamp: item.timestamp,
               sender: item.sender,
               sourceKind: item.sourceKind,
-              text: item.text,
+              // 兜底再剥一次：不管 Knowledge 侧哪条检索路径产出的文本，
+              // 面向用户与模型的都不允许出现 `图片文字：` 这类引擎内部标签。
+              text: toEvidenceDisplayText(item.text),
+              ...(item.derivedSource ? { derivedSource: item.derivedSource } : {}),
+              ...(item.imageOcrText ? { imageOcrText: item.imageOcrText } : {}),
               conversationName: owner ? contactView(owner).displayName : undefined,
               conversationType: owner?.type
             } satisfies QueryEvidenceItem
@@ -592,6 +722,7 @@ export class LocalQueryApiService {
     const truncated = raw.length > OVERVIEW_SOURCE_CAP
     const evidence = selectTemporalCoverageEvidence(contact, messages, OVERVIEW_EVIDENCE_TARGET)
     const state: 'complete' | 'partial' = truncated ? 'partial' : 'complete'
+    const imageOcrCoverage = buildImageOcrCoverage(this.imageTextCoverage())
     return {
       status: 'completed' as const,
       target: contactView(contact),
@@ -603,6 +734,7 @@ export class LocalQueryApiService {
       selection: { mode: 'temporal_coverage' as const, selectedEvidenceCount: evidence.length, sampled: truncated || evidence.length < messages.length },
       evidence,
       scope: corpus.scope,
+      ...(imageOcrCoverage ? { imageOcrCoverage } : {}),
       origin: 'wcdb' as const
     }
   }

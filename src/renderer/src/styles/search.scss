@@ -278,6 +278,33 @@
   line-height: 15px;
 }
 
+/* 「建立图片文字索引」确认弹窗的正文：侧栏卡片用的 10px 在弹窗里太挤，
+   这里单独给一档更大的字号，并保持与卡片一致的次要文字色。 */
+.ai-search-knowledge-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+  line-height: 19px;
+
+  p {
+    margin: 0;
+  }
+
+  strong {
+    color: var(--wxex-text-primary);
+  }
+
+  ul {
+    margin: 0;
+    padding-left: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+}
+
 .ai-search-knowledge-error {
   color: var(--wxex-warning);
 }

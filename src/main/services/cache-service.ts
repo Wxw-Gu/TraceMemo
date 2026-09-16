@@ -8,9 +8,12 @@ export type { CacheClearScope } from '../../shared/cache'
 
 const BOOTSTRAP_CACHE_DIR = path.join(app.getPath('userData'), 'cache', 'bootstrap')
 const KNOWLEDGE_CACHE_DIR = path.join(app.getPath('userData'), 'knowledge')
+const IMAGE_TEXT_INDEX_CACHE_DIR = path.join(app.getPath('userData'), 'image-text-index')
 
 export interface CacheClearOptions {
   beforeClearKnowledge?: () => Promise<void>
+  /** 清理图片文字索引前调用：停任务 + 关闭派生库句柄。 */
+  beforeClearImageTextIndex?: () => Promise<void>
 }
 
 function inspectDirectory(directory: string): { sizeBytes: number; fileCount: number } {
@@ -46,6 +49,7 @@ export function getCacheSummary(): CacheSummary {
   const bootstrap = inspectDirectory(BOOTSTRAP_CACHE_DIR)
   const electron = inspectDirectory(path.join(app.getPath('userData'), 'Cache'))
   const knowledge = inspectDirectory(KNOWLEDGE_CACHE_DIR)
+  const imageTextIndex = inspectDirectory(IMAGE_TEXT_INDEX_CACHE_DIR)
   const items: CacheSummaryItem[] = [
     {
       id: 'bootstrap',
@@ -65,6 +69,13 @@ export function getCacheSummary(): CacheSummary {
       description:
         '为问问微信建立的所有账号本地检索索引。清理后需手动重新建立，不影响微信原始数据。',
       ...knowledge
+    },
+    {
+      id: 'image-text-index',
+      label: '图片文字索引',
+      description:
+        '本机从微信图片里识别出的文字及其检索索引。清理后无法搜索图片中的文字，可重新建立；不影响微信原始图片与聊天记录。',
+      ...imageTextIndex
     }
   ]
   return {
@@ -88,6 +99,11 @@ export async function clearCache(
   if (scope === 'knowledge' || scope === 'all') {
     await options.beforeClearKnowledge?.()
     await fs.remove(KNOWLEDGE_CACHE_DIR)
+  }
+  if (scope === 'image-text-index' || scope === 'all') {
+    // 先停下任务再删库，避免"边写边删"。
+    await options.beforeClearImageTextIndex?.()
+    await fs.remove(IMAGE_TEXT_INDEX_CACHE_DIR)
   }
   return getCacheSummary()
 }
