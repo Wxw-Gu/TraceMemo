@@ -79,6 +79,29 @@
   }
 }
 
+/* 清理类确认弹窗的正文（「不会删除……」清单）。
+   侧栏卡片那种 10px 在弹窗里太小，这里单独给一档。 */
+.settings-confirm-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+  line-height: 19px;
+
+  p {
+    margin: 0;
+  }
+
+  ul {
+    margin: 0;
+    padding-left: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+}
+
 .voice-runtime-card dl {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

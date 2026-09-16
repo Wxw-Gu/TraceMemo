@@ -112,6 +112,21 @@ export interface QueryEvidenceItem
   /** 该证据所属会话的展示名（群名 / 联系人名）。 */
   conversationName?: string
   conversationType?: 'user' | 'group'
+  /**
+   * 命中所依赖的**派生来源**（与 `sourceKind` 正交）。
+   *
+   * 有值时 Evidence UI 加一个轻量来源标记（如「图片文字」），
+   * 让用户知道这段内容来自**图片里的文字**，而不是群友真的发了一条文字消息。
+   * authoritative source 仍然是原始图片消息，`messageRef` 也仍然指向原图。
+   */
+  derivedSource?: 'image_ocr'
+  /**
+   * 「从图片里读出来的文字」片段，只用作命中解释。
+   *
+   * 刻意与 `text` 分开：`text` 是这条消息的内容，这里只回答"命中是因为图里的哪段文字"。
+   * 普通文字消息不会有这个字段。
+   */
+  imageOcrText?: string
 }
 
 /**
@@ -217,6 +232,28 @@ export interface QueryMessage {
     url?: string
     sizeBytes?: number
   }
+  /**
+   * 图片 OCR 派生文本（**仅**图片消息、且本地已识别出文字时存在）。
+   *
+   * 它是 derived content，不是消息正文：这条消息的正文仍然是空的"图片附件"，
+   * authoritative evidence 也仍然是**原始图片消息**（`messageRef` 指向它）。
+   * 之所以必须单独一个字段而不是塞进 `text`：一旦混进去，模型与 UI 就无法区分
+   * "群友发了一段文字"和"图片里识别出这段文字"，而这正是本功能的诚实性前提。
+   */
+  imageOcrText?: string
+  /** 派生来源语义：`image_ocr` = 这段文字来自图片识别，而不是原始文字消息。 */
+  derivedSource?: 'image_ocr'
+  /**
+   * 这条图片消息在本地图片文字索引里的状态。
+   *
+   * - `indexed`：识别过且有文字（此时 `imageOcrText` 有值）
+   * - `empty`：识别过，但图里确实没有文字 —— 这是**已知结论**，不是"没索引"
+   * - `not_indexed`：尚未进入索引（未建立 / 还没处理到 / 已被清理）
+   *
+   * 区分这三者是硬要求：`not_indexed` 不允许被当成"图里没内容"，
+   * `empty` 也不允许被当成"可以凭画面猜内容"（OCR 不是 Vision）。
+   */
+  imageTextState?: 'indexed' | 'empty' | 'not_indexed'
 }
 export interface QueryMessagesResponse {
   status: string
@@ -228,6 +265,14 @@ export interface QueryMessagesResponse {
   candidates?: Array<{ displayName: string; type: 'user' | 'group' }>
   /** 本次实际使用的语料边界。 */
   scope?: ResolvedCorpusScope
+  /**
+   * 图片文字索引的覆盖度。
+   *
+   * 与 `search_messages` 同源同口径 —— 精确读消息这条路径同样必须知道
+   * "图片里的文字到底索引了多少"，否则模型在图片文字尚未索引时
+   * 只能看到一个光秃秃的 `attachment`，进而把"索引缺口"说成"图片没有文字"。
+   */
+  imageOcrCoverage?: QueryImageTextCoverage
 }
 export interface SearchMessagesRequest {
   target: QueryTarget
@@ -279,6 +324,13 @@ export interface SearchMessagesResponse {
    * **本地时间**与结论，模型只需引用，不需要自己判断，也不需要输出 epoch 数字。
    */
   indexCoverage?: QueryIndexCoverage
+  /**
+   * 图片文字索引覆盖度（**独立于**文字索引的维度）。
+   *
+   * `state !== 'complete'` 时，涉及图片/截图/海报的问题**不允许**因为 0 条证据
+   * 就回答"没有"——必须说明图片文字索引尚未完成、当前结果无法覆盖全部图片。
+   */
+  imageOcrCoverage?: QueryImageTextCoverage
   /** 本次检索的真实耗时分解（ADDITIVE，用于诊断与 UI 展示；不进入模型上下文）。 */
   timings?: QuerySearchTimings
 }
@@ -291,6 +343,33 @@ export interface QueryIndexCoverage {
   /** 源数据最新时间（本地时间，`MM-DD HH:mm`）。 */
   sourceLatestAtLabel?: string
   /** 可直接引用的结论句；`covered: false` 时明确说明这段时间暂时无法确认。 */
+  summary: string
+}
+
+/**
+ * 图片文字索引（本地 OCR 派生文本）的覆盖度 —— 与文字索引覆盖度**互相独立**。
+ *
+ * 为什么必须单独一个维度：文字消息索引 100% 不代表图片里的文字可被搜索。
+ * 图片 OCR 是用户确认后才建立的重活，可能"未建立"，也可能"只做了 30%"。
+ * 这时如果模型因为 0 条证据就回答"没有"，就是把**索引缺口**说成了**事实空缺**。
+ */
+export interface QueryImageTextCoverage {
+  /**
+   * `failed` = 索引**当前异常**（处理过一批但一条都没成功，或运行时依赖缺失）。
+   *
+   * 它与 `partial` 都必须让 Query Agent 拒绝凭零结果下"没有"的结论。
+   */
+  state: 'not_built' | 'partial' | 'complete' | 'failed'
+  totalImageMessages: number
+  processed: number
+  indexed: number
+  empty: number
+  missing: number
+  failed: number
+  pending: number
+  /** 图片数量统计时刻（本地时间 `MM-DD HH:mm`）；从未统计时为 undefined。 */
+  countedAtLabel?: string
+  /** 可直接引用的结论句；模型只引用，不要自己换算或推断。 */
   summary: string
 }
 
@@ -346,6 +425,13 @@ export interface ConversationOverviewResponse {
   evidence?: QueryEvidenceItem[]
   candidates?: Array<{ displayName: string; type: 'user' | 'group' }>
   scope?: ResolvedCorpusScope
+  /**
+   * 图片文字索引覆盖度（**独立维度**，与 `voiceCoverage` 平级）。
+   *
+   * 会话概览以源数据为准，所以能如实反映"这段时间聊了什么"；但"图片里的文字"
+   * 只存在于本地 OCR 派生索引里，概览的完整性**不覆盖**这一维。
+   */
+  imageOcrCoverage?: QueryImageTextCoverage
   /**
    * 证据来源：`wcdb` = 直接读源数据（会话概览的事实来源）；`knowledge` = 派生索引。
    * 派生索引可能滞后，故概览以源数据为准。

@@ -150,6 +150,8 @@ function nextGetMessagesRequestId(): string {
 import type { AppLogEntry } from '../shared/app-log'
 import { appUpdateService } from './services/app-update-service'
 import { clearCache, getCacheSummary, openKnowledgeDirectory } from './services/cache-service'
+import { imageTextIndexService } from './services/image-text-index-service'
+import type { ImageTextIndexStartOptions } from '../shared/image-text-index'
 import type { CacheClearScope } from './services/cache-service'
 import { configureRecallArchive, RecallArchiveMonitor } from './services/recall-archive-service'
 import { VideoAssetService } from './video-asset-service'
@@ -637,8 +639,94 @@ app.whenReady().then(async () => {
   voiceRecognition.onTranscriptUpdate((update) =>
     knowledgeSearchService?.indexVoiceTranscript(update)
   )
+
+  /**
+   * 确保图片解密服务可用（按需创建，与 `db:getImage` 冷路径同一套构造方式）。
+   *
+   * 提取成显式入口是因为原来它只存在于 `db:getImage` 的闭包里，
+   * 别的需要解密的路径（图片文字索引回填）拿不到、只能拿到 `null`。
+   */
+  function ensureImageDecryptService(): ImageDecryptService | null {
+    if (imageDecryptService) return imageDecryptService
+    const { xorKey, aesKey } = getConfiguredImageKeys()
+    if (!aesKey) return null
+    imageDecryptService = new ImageDecryptService(
+      xorKey,
+      aesKey,
+      chat.getChatDb()?.getWcdb4Client(),
+      loadSettings().dbRoot
+    )
+    return imageDecryptService
+  }
+
+  // 图片文字索引（本地 System OCR 派生文本）。
+  // 与语音转写完全同构：派生文本在 main 进程解析后贴到消息上，Knowledge 侧只消费结果。
+  knowledgeSearchService.setImageOcrResolver((conversationId, messageId) =>
+    imageTextIndexService.getConversationOcr(conversationId).get(messageId)
+  )
+  /**
+   * 图片文字索引需要解密图片。
+   *
+   * 原先这个依赖直接读 `imageDecryptService`，而它**只在 `db:getImage`（用户点开某张图）
+   * 里才懒加载** —— 于是全量回填在用户没点开过任何图片时拿到 `null`，
+   * 45,479 张图片全部被记成 `decrypt_failed`（见事故报告）。
+   * 这里改成显式的"按需确保"，凡是需要解密的路径都能自己把它建起来。
+   */
+  imageTextIndexService.bind({
+    databaseRoot: join(app.getPath('userData'), 'image-text-index'),
+    resolveAccountId: () =>
+      chat.isReady()
+        ? String(chat.getSelfAccountInfo()?.wxid || chat.getCurrentAccountRoot() || '')
+        : '',
+    resolveAccountRoot: () => chat.getCurrentAccountRoot() || loadSettings().dbRoot || '',
+    listContacts: async () => {
+      const contacts = await chat.listContactsAsync()
+      return contacts.map((contact) => ({
+        md5: contact.md5,
+        m_nsUsrName: contact.m_nsUsrName,
+        type: contact.type
+      }))
+    },
+    listMessages: (conversationId) => chat.listMessagesAsync(conversationId),
+    countConversationImages: (conversationId, sinceMs) =>
+      chat.countImageMessagesAsync(conversationId, sinceMs),
+    imageWatermark: (conversationId, sinceMs) =>
+      chat.imageConversationWatermarkAsync(conversationId, sinceMs),
+    decryptService: () => ensureImageDecryptService(),
+    capability: () => systemOcrService.getCapability(),
+    recognize: async (imageDataUrl) => {
+      const result = await systemOcrService.recognize({ imageDataUrl })
+      return {
+        success: result.success,
+        text: result.text,
+        language: result.language,
+        ...(result.errorCode ? { errorCode: result.errorCode } : {})
+      }
+    },
+    // 会话图片全部处理完 → 重建该会话索引，OCR 文本才可被 search_messages 检索。
+    onConversationIndexed: (conversationId) =>
+      knowledgeSearchService?.indexImageOcr(conversationId) ?? Promise.resolve()
+  })
   aiSearchPipelineService = new AiSearchPipelineService(knowledgeSearchService, aiProviderService)
   localQueryApiService = new LocalQueryApiService(knowledgeSearchService)
+  // 图片文字索引覆盖度是**独立覆盖维度**：接到 search_messages 的 tool result 上，
+  // 让 Query Agent 在图片索引没做完时不能凭 0 条证据断言"没有"。
+  localQueryApiService.setImageTextCoverageProvider(() =>
+    imageTextIndexService.getCoverageSnapshot()
+  )
+  /**
+   * 单条图片消息的 OCR 派生文本也要接到精确读消息路径上。
+   *
+   * 与覆盖度是**两件不同的事**：覆盖度回答"索引建了多少"，这里回答
+   * "这一条图片已经识别出的文字是什么"。只接前者的话，图片索引建好了模型也读不到正文，
+   * 只能看到一个空的 `attachment` —— 真机上就是这么把"图片里有 ChatGPT 价格"
+   * 答成"没有取得 OCR 文字"的。
+   *
+   * 只读派生库，**不触发 OCR / 解密 / 读原图**。
+   */
+  localQueryApiService.setImageOcrEntryProvider((conversationId, messageId) =>
+    imageTextIndexService.getConversationOcr(conversationId).get(messageId)
+  )
   setLocalQueryApiService(localQueryApiService)
   // Query Agent：生产 Runtime 只在这里实例化一次，桌面问问微信与 Agent Hub 共用同一个实例。
   queryAgentService = new QueryAgentService(
@@ -658,6 +746,11 @@ app.whenReady().then(async () => {
   knowledgeSearchService.onStatusChange((status) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send('knowledge:status', status)
+    }
+  })
+  imageTextIndexService.onStatusChange((status) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('image-text-index:status', status)
     }
   })
   voiceRecognition.modelManager.setProgressListener((status) => {
@@ -748,12 +841,25 @@ app.whenReady().then(async () => {
   ipcMain.handle('cache:getSummary', () => getCacheSummary())
   ipcMain.handle('cache:openKnowledgeDirectory', () => openKnowledgeDirectory())
   ipcMain.handle('cache:clear', async (_, scope: CacheClearScope) => {
-    const allowedScopes: CacheClearScope[] = ['bootstrap', 'electron', 'knowledge', 'all']
+    const allowedScopes: CacheClearScope[] = [
+      'bootstrap',
+      'electron',
+      'knowledge',
+      'image-text-index',
+      'all'
+    ]
     if (!allowedScopes.includes(scope)) return getCacheSummary()
     imageDecryptService = null
+    // 这里刻意**不再**提前 resetAccount()：清理钩子需要先读到派生库里的
+    // "哪些会话有 OCR 派生文本"，才能把这些会话的 Knowledge 索引一起失效。
+    // 句柄由 beforeClearImageTextIndex 内部的 clear() 自己关闭（删文件前）。
     return clearCache(scope, {
       beforeClearKnowledge: () =>
-        knowledgeSearchService?.prepareForCacheClear() || Promise.resolve()
+        knowledgeSearchService?.prepareForCacheClear() || Promise.resolve(),
+      beforeClearImageTextIndex: async () => {
+        await imageTextIndexService.prepareForCacheClear()
+        imageTextIndexService.resetAccount()
+      }
     })
   })
 
@@ -841,6 +947,8 @@ app.whenReady().then(async () => {
             .catch((error) => console.warn('[WCDB4] message cursor warmup failed:', error))
         }
         imageDecryptService = null
+        // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+        imageTextIndexService.resetAccount()
         console.log(
           `[WCDB4] db:init ready sessions=${sessions.length} monitoring=${monitoring} cost=${Date.now() - startedAt}ms`
         )
@@ -1020,6 +1128,8 @@ app.whenReady().then(async () => {
       aesKey: result.aesKey
     })
     if (saved.success) imageDecryptService = null
+ // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+ imageTextIndexService.resetAccount()
     return {
       ...result,
       success: saved.success,
@@ -1040,6 +1150,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('image:saveConfig', (_, request: SaveImageKeyRequest) => {
     const result = imageKeyConfigService.save(request)
     if (result.success) imageDecryptService = null
+ // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+ imageTextIndexService.resetAccount()
     return result
   })
 
@@ -1050,6 +1162,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('image:clearConfig', () => {
     const result = imageKeyConfigService.clear()
     if (result.success) imageDecryptService = null
+ // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+ imageTextIndexService.resetAccount()
     return result
   })
 
@@ -1338,6 +1452,32 @@ app.whenReady().then(async () => {
     if (!knowledgeSearchService) throw new Error('本地知识库服务尚未初始化')
     return knowledgeSearchService.cancelCurrentAccountIndex()
   })
+  // ---- 图片文字索引（本地 System OCR 派生文本，非 AI Provider）----
+  ipcMain.handle('image-text-index:getStatus', () => imageTextIndexService.getStatus())
+  /**
+   * 点击索引前的快速统计：纯 SQL COUNT，**不解密任何图片**。
+   * 这是「先告诉用户有多少张图片再决定是否开始」能足够快的前提。
+   */
+  ipcMain.handle('image-text-index:count', (_, sinceMs?: number) =>
+    imageTextIndexService.countImageMessages(sinceMs)
+  )
+  ipcMain.handle(
+    'image-text-index:start',
+    (_, options?: ImageTextIndexStartOptions) => imageTextIndexService.startPass(options ?? {})
+  )
+  ipcMain.handle('image-text-index:pause', () => imageTextIndexService.pause())
+  ipcMain.handle(
+    'image-text-index:resume',
+    (_, options?: ImageTextIndexStartOptions) => imageTextIndexService.resume(options ?? {})
+  )
+  ipcMain.handle('image-text-index:cancel', () => imageTextIndexService.cancel())
+  ipcMain.handle('image-text-index:clear', () => imageTextIndexService.clear())
+  // 只重置失败记录（成功记录与其它数据一律不动），供"修好代码后重跑"使用。
+  ipcMain.handle('image-text-index:resetFailures', () =>
+    imageTextIndexService.resetRetriableFailures()
+  )
+  // 派生索引修复：只重建 Knowledge 里的图片派生条目（L3），**不重新 OCR**（L1 不动）。
+  ipcMain.handle('image-text-index:repair', () => imageTextIndexService.repairKnowledgeIndex())
   ipcMain.handle('ai-search:run', (event, request: AiSearchPipelineRequest) => {
     if (!aiSearchPipelineService) throw new Error('本地搜索服务尚未初始化')
     return aiSearchPipelineService.run(request, (progress) => {
@@ -1963,6 +2103,8 @@ app.whenReady().then(async () => {
       if (aesKey) imageKeyConfigService.save({ resourceRoot, xorKey, aesKey })
       else imageKeyConfigService.clear()
       imageDecryptService = null
+      // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+      imageTextIndexService.resetAccount()
     }
     if ('recallProtectionEnabled' in patch && chat.isReady()) {
       const currentDb = chat.getChatDb()

@@ -106,6 +106,17 @@ export interface QueryAgentTraceItem {
    * 会剥离）。用途：把不透明的 Tool 总耗时拆成 scope / freshness / 每个 probe / 合并 / 证据补全。
    */
   searchTimings?: QuerySearchTimings
+  /**
+   * 本次 Tool Result 里携带 OCR 派生文本的图片消息/证据条数（诊断用，不进模型上下文）。
+   *
+   * 存在的意义是让"图片已经识别出文字、但模型没拿到"这类**链路断点**可以被直接观测：
+   * 真机上曾经出现过 `query_messages` 返回了图片消息却只带 `attachment`、
+   * 模型因此回答"没有取得 OCR 文字"。当时从回答文本无法判断是"索引没建"还是"没接上"，
+   * 因为这两件事在日志里长得一模一样。有了这个数字就能一眼分开。
+   */
+  imageOcrTextCount?: number
+  /** 本次 Tool Result 里图片文字索引的覆盖度状态（`not_built` / `partial` / `complete` / `failed`）。 */
+  imageOcrCoverageState?: string
 }
 
 export interface QueryAgentModelCallDiagnostic {
@@ -207,6 +218,12 @@ const SYSTEM_PROMPT = `你是 TraceMemo 的本地聊天查询助手，只能使�
 规划原则：
 - 先判断问题需要哪种证据，再调用最少的 Tool。每次收到 Tool Result 后都判断“当前 Evidence 是否已经足以给出有边界的回答”；足够就立即回答，不为追求绝对完整继续调查。
 - query_messages 是精确事实查询，适用于能用联系人、时间、方向、消息类型、顺序等结构条件表达的问题。earliest/latest 等时间边界也是结构条件，必须使用 order 与 limit 精确查询，不能使用抽样 overview。每次调用都必须如实声明 temporalBasis。结果已经回答问题时，不要追加 conversation_overview。
+方向（direction）必须按**说话人是谁**来定，不要按语序猜：
+- direction 的参照物是“目标会话”：to_target = **我发出**的（说话人是我自己），from_target = **对方发来**的。没有 other 取值，拿不准就用 any。
+- 说话人是我 → to_target：“我给张三发了什么”“我发给张三的”“我发给他的文件”“我之前给他发过什么”“我发出去的图片”“我在这个群里发过什么”。
+- 说话人是对方 → from_target：“张三给我发了什么”“他之前给我的图片”“张三发给我的文件”。
+- **不许**因为“我”出现在句首就选 from_target；也不要凭昵称是否叫“我”来判断说话人，自我身份以消息自身的发送者标记为准。
+- 一旦某次 query_messages 返回 0 条，先回头核对 direction 是否与问题的说话人**冲突**；冲突就属于允许的 substantively different retry，必须直接换方向再查一次，**不要**问用户“是不是方向搞错了/要不要换个方向”，用户已经把话说清楚了。
 - 需要绝对时间范围时，startTime/endTime 必须使用带时区偏移的 ISO-8601 字符串（例如 2026-08-01T00:00:00+08:00 或 2026-07-31T16:00:00Z）。不要传 epoch 数字，也不要传没有时区的裸本地时间。
 - search_messages 是关键词检索，适用于结构条件无法确定答案的问题。queries 的每一项都是一次独立的字面检索：一项只放一个简短关键词，不要把多个近义词或整句话塞进同一项。首次最多 4 项。检索到 Evidence 后直接判断；只有本次完全没有 Evidence 时，才允许再检索一次，且每一项都必须与上一次实质不同。
 - conversation_overview 只用于真正需要理解一个时间范围内整体聊了什么、主要话题或整体互动的 broad summary。它返回 temporal coverage sample，不代表完整聊天，也不是检索不足时的默认 fallback。
@@ -219,6 +236,20 @@ const SYSTEM_PROMPT = `你是 TraceMemo 的本地聊天查询助手，只能使�
 - indexCoverage.covered 为 false 时，说明这段时间还没进索引：此时即使结果为 0 也只能说"索引尚未覆盖这段时间，暂时无法确认"，**绝不能**说成"没有"。必须如实引用结论里的索引更新时间。
 - 已经检索到 Evidence 时，只有当这个覆盖边界真的会影响结论时才补一句说明，不要机械附加警告。
 - 只有 coverage.state 为 complete（indexCoverage.covered 为 true）且结果为 0，才可以下"没有找到"的结论。不要自己把 partial 说成 complete。
+图片文字索引：search_messages 的 imageOcrCoverage 是**独立于文字索引**的覆盖维度，只针对“图片里的文字”（截图、报价图、公告截图、海报）。规则：
+- 文字消息索引完整**不代表**图片里的文字搜得到。不要把这两个维度混着说。
+- 问题涉及图片里的文字、而 imageOcrCoverage.state 不是 complete 时：即使图片证据为 0，也**绝不能**回答“没有”或“没找到”。必须如实引用 imageOcrCoverage.summary，说明图片文字索引尚未完成、当前无法确认全部历史图片。
+- imageOcrCoverage.state 为 not_built 时，明确告诉用户图片文字索引还没建立，图片里的文字目前搜不到，并提示可以在「问问微信」里建立。
+- 只有 imageOcrCoverage.state 为 complete 且图片证据为 0，才可以下“没有找到”的结论。
+图片消息的文字（query_messages 与 search_messages 都适用）：
+- 图片消息可能带 imageOcrText / derivedSource=image_ocr —— 那是**这张图片里识别出的文字**（本地 OCR 派生），可以直接用它回答“图片里写了什么”。问法可能是“我今早发的那张图片里写了什么”“那张 ChatGPT 价格截图是什么内容”。
+- imageOcrText 是派生内容，**证据永远是那条原始图片消息**：messageRef、sender、conversation、时间都只能用原始图片消息的。描述时说“图片里的文字是…”，**不许**把它说成某人发的一条文字消息，**不许**为了它编造任何不存在的消息。
+- imageTextState 是**结构化事实**，三种取值含义不同，不要互相替代：
+  - indexed：已识别出文字（同时有 imageOcrText）。
+  - empty：本地识别过，这张图里确实没有文字。此时**只能**回答图片本身，**绝不许**根据 OCR 去猜人物、场景、物体或表情包含义（OCR 不是看图，没有 Vision 能力就不要假装有）。
+  - not_indexed：这条图片还没进图片文字索引。**不许**把“还没索引”说成“图片里没有文字”；若 imageOcrCoverage 不是 complete，必须说明当前无法确认。
+- 图片文字索引状态一律以 Tool Result 的结构化字段为准。**不要**在回答里凭空建议“可以先建立图片文字索引再查”——只有 imageOcrCoverage.state 确实是 not_built 时才可以这么说。
+- 区分「图片里确实没有文字」（OCR 结果为空，属于已处理的正常终态）与「图片还没被索引」（覆盖缺口）：前者是事实，后者不能当成事实。
 缺少必要信息时用自然语言澄清；超出工具能力时说明不能可靠完成，并给出当前工具可以执行的替代方向。`
 
 function toolDefinitions(): AIChatToolDefinition[] {
@@ -545,7 +576,7 @@ function retryNote(name: string, result: QueryAgentToolResult, state: ZeroResult
   if (result.status !== 'completed') return undefined
   const counts = resultCount(result)
   if (name === 'search_messages' && !counts.evidenceCount && state.searchAttempts <= ZERO_RESULT_RETRY_LIMIT) return '本次检索没有任何 Evidence。允许再执行一次 search_messages，但每一项都必须与上一次实质不同；完全相同的检索会被拒绝。'
-  if (name === 'query_messages' && counts.resultCount === 0 && !result.fallbackLookup && state.queryAttempts <= ZERO_RESULT_RETRY_LIMIT) return '本次精确查询返回 0 条。允许再执行一次 query_messages，用于放宽 direction 或 messageTypes 等非时间条件；改变时间范围会被拒绝。'
+  if (name === 'query_messages' && counts.resultCount === 0 && !result.fallbackLookup && state.queryAttempts <= ZERO_RESULT_RETRY_LIMIT) return '本次精确查询返回 0 条。只允许放宽 direction 或 messageTypes 等非时间条件（改变时间范围会被拒绝）。**特别注意方向选反这种情况**：如果问题是“我给 X 发 / 我发给 X 的”，而本次用的是 from_target（对方发来），那是方向选反了 —— 直接改用 to_target 重查一次，这属于允许的实质不同重试。不要因为有 0 条就收尾，也不要问用户“是不是方向搞错了 / 要不要换个方向”，用户已经把说话人讲清楚了。'
   return undefined
 }
 
@@ -583,10 +614,52 @@ function messageRecordForModel(value: unknown): unknown {
   return record.messageType || !record.sourceKind ? record : { ...record, messageType: record.sourceKind }
 }
 
-function toolResultForModel(name: string, result: QueryAgentToolResult, callsUsed: number, nextTools: AIChatToolDefinition[], note?: string): QueryAgentToolResult {
-  const visible: QueryAgentToolResult = { ...result }
+/**
+ * 从 Tool Result 里读出图片 OCR 的两条**结构化事实**（诊断 / 日志用）。
+ *
+ * 只看字段存在与否与数量，**不读文本内容**：排查链路断点不需要正文，
+ * 日志里也不该多留一份聊天内容。
+ */
+function imageOcrDiagnostics(result: QueryAgentToolResult): {
+  imageOcrTextCount?: number
+  imageOcrCoverageState?: string
+} {
+  let count = 0
+  const collect = (value: unknown): void => {
+    if (!Array.isArray(value)) return
+    for (const item of value) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      const text = (item as Record<string, unknown>).imageOcrText
+      if (typeof text === 'string' && text.trim()) count += 1
+    }
+  }
+  collect(result.messages)
+  collect(result.evidence)
+  const coverage = result.imageOcrCoverage
+  const state =
+    coverage && typeof coverage === 'object' && !Array.isArray(coverage)
+      ? (coverage as Record<string, unknown>).state
+      : undefined
+  return {
+    ...(count > 0 ? { imageOcrTextCount: count } : {}),
+    ...(typeof state === 'string' ? { imageOcrCoverageState: state } : {})
+  }
+}
+
+function toolResultForModel(name: string, result: QueryAgentToolResult, callsUsed: number, nextTools: AIChatToolDefinition[], note?: string): QueryAgentToolResult {  const visible: QueryAgentToolResult = { ...result }
   if (Array.isArray(result.messages)) visible.messages = result.messages.map(messageRecordForModel)
-  if (Array.isArray(result.evidence)) visible.evidence = result.evidence.map(messageRecordForModel)
+  if (Array.isArray(result.evidence)) {
+    visible.evidence = result.evidence.map((item) => {
+      const record = messageRecordForModel(item)
+      if (!record || typeof record !== 'object' || Array.isArray(record)) return record
+      // `imageOcrText` 是给 Evidence UI 做"命中解释"的片段；它的内容已经在 `text` 里，
+      // 再原样带一份进模型上下文是纯重复。模型侧保留 `derivedSource` 这个语义标记即可，
+      // 由此知道"这条命中的是图片里的文字"。
+      const trimmed = { ...(record as Record<string, unknown>) }
+      delete trimmed.imageOcrText
+      return trimmed
+    })
+  }
   if (result.anchor) visible.anchor = messageRecordForModel(result.anchor)
   if (Array.isArray(result.before)) visible.before = result.before.map(messageRecordForModel)
   if (Array.isArray(result.after)) visible.after = result.after.map(messageRecordForModel)
@@ -616,7 +689,7 @@ function toolResultForModel(name: string, result: QueryAgentToolResult, callsUse
   return visible
 }
 
-function nextToolDefinitions(name: string, result: QueryAgentToolResult, state: ZeroResultRetryState, rangeWasAll = false): AIChatToolDefinition[] {
+function nextToolDefinitions(name: string, result: QueryAgentToolResult, state: ZeroResultRetryState): AIChatToolDefinition[] {
   // 重复重试已被拒绝，不再开放工具，避免用有限的 tool budget 反复试同一条件。
   if (result.constraint === 'duplicate_retry') return []
   if (result.status === 'invalid_tool_arguments') return toolDefinition(name)
@@ -631,10 +704,24 @@ function nextToolDefinitions(name: string, result: QueryAgentToolResult, state: 
   if (name === 'query_messages') {
     // Host 已经自动执行过一次扩大查询：不再开放 retry，避免出现第三次查询。
     if (result.fallbackLookup) return []
-    // 已经查了全部历史且 0 结果：再换时间范围毫无意义（更窄只会更少）。
-    if (rangeWasAll && counts.resultCount === 0) return []
-    // 只有 0 结果才开放一次重试；有结果时保持原有 stopping。
-    return counts.resultCount === 0 && state.queryAttempts <= ZERO_RESULT_RETRY_LIMIT ? toolDefinition('query_messages') : []
+    /**
+     * 这里**不能**因为"时间范围已经是全部"就关掉重试。
+     *
+     * 原实现是 `if (rangeWasAll && resultCount === 0) return []`，依据是"时间不能再放宽了、
+     * 更窄只会更少"。但 0 结果的重试本来就不是为了改时间 —— 它是为了放宽
+     * **direction / messageTypes**：「我给 X 发了什么图片」被错判成 `from_target` 时，
+     * 换成 `to_target` 会从 0 条变成有结果。
+     *
+     * 这个守卫的后果正是真机那个回归：工具没发出去 → 第二次调用被
+     * `tool_availability` 拒掉 → 模型想改向也调不动 → 只能回头问用户"是不是方向搞错了"。
+     *
+     * 时间范围不可变由 `constraint_time_range_immutable` 单独把关，
+     * 完全相同的重试由 `duplicate_retry` 拦下，次数由 ZERO_RESULT_RETRY_LIMIT 限制，
+     * 所以这里放开是安全的。
+     */
+    return counts.resultCount === 0 && state.queryAttempts <= ZERO_RESULT_RETRY_LIMIT
+      ? toolDefinition('query_messages')
+      : []
   }
   return []
 }
@@ -772,6 +859,12 @@ class EvidenceCollector {
           ? { messageType: record.sourceKind }
           : {}),
       ...(typeof record.text === 'string' && record.text ? { text: record.text } : {}),
+      // 「靠图片里的文字命中」这个来源语义必须带到 UI：用户要能看出这条答案来自
+      // 图片 OCR，而不是群友真发了一条文字消息。messageRef 仍然指向原始图片消息。
+      ...(record.derivedSource === 'image_ocr' ? { derivedSource: 'image_ocr' as const } : {}),
+      ...(typeof record.imageOcrText === 'string' && record.imageOcrText
+        ? { imageOcrText: record.imageOcrText }
+        : {}),
       ...(attachmentView && Object.keys(attachmentView).length ? { attachment: attachmentView } : {}),
       source
     }
@@ -967,10 +1060,10 @@ export class QueryAgentService {
           rawTimings && typeof rawTimings === 'object' && !Array.isArray(rawTimings)
             ? (rawTimings as QuerySearchTimings)
             : undefined
-        result.traces.push({ toolName: call.name, input: sanitizeInput(traceInput), durationMs, status: completedToolResult.status, ...counts, ...(temporalBasis ? { temporalBasis } : {}), ...(autoFallback ? { autoFallback } : {}), ...(searchTimings ? { searchTimings } : {}) })
+        result.traces.push({ toolName: call.name, input: sanitizeInput(traceInput), durationMs, status: completedToolResult.status, ...counts, ...imageOcrDiagnostics(completedToolResult), ...(temporalBasis ? { temporalBasis } : {}), ...(autoFallback ? { autoFallback } : {}), ...(searchTimings ? { searchTimings } : {}) })
         const nextTools = completedToolResult.constraint === 'tool_availability'
           ? tools
-          : nextToolDefinitions(call.name, completedToolResult, retry, rangeKind(traceInput) === 'all')
+          : nextToolDefinitions(call.name, completedToolResult, retry)
         const note = retryNote(call.name, completedToolResult, retry)
         messages.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: JSON.stringify(toolResultForModel(call.name, completedToolResult, result.toolCallCount, nextTools, note)) })
         tools = nextTools

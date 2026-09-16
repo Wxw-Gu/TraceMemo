@@ -34,6 +34,15 @@ export interface EvidenceItem {
   /** Program-owned Final Evidence ID. Cached legacy records may omit it. */
   evidenceId?: string
   sourceKind?: KnowledgeMessageKind
+  /**
+   * 命中所依赖的派生来源。
+   *
+   * `image_ocr` = 这条结果靠**图片里的文字**命中，而不是群友真的发了一条文字消息。
+   * 有值时 Evidence 卡片显示轻量来源标记（「图片文字」）。
+   */
+  derivedSource?: 'image_ocr'
+  /** 「从图片里读出来的文字」片段，只作命中解释。 */
+  imageOcrText?: string
   contact: Contact
   message: Message
   /**

@@ -43,6 +43,7 @@ import { ensureAiSearchDataConsent } from './services/aiSearchProviderConsent'
 import { ExternalProviderConsentDialog } from './ExternalProviderConsentDialog'
 import { AISearchComposer } from './AISearchComposer'
 import { AISearchEvidencePanel } from './AISearchEvidencePanel'
+import { ImageTextIndexCard } from './ImageTextIndexCard'
 import {
   forgetAskWechatConversation,
   requestAskWechatQuery,
@@ -1394,6 +1395,9 @@ export function AISearchWorkspace({
               <p>索引独立保存，不会删除或修改微信原始数据库。</p>
             </details>
           </section>
+          {/* 图片文字索引：与 Knowledge 卡片平级、但**独立的一维能力**。
+              文字消息索引完整不代表图片里的文字搜得到，所以两个入口必须并列可见。 */}
+          <ImageTextIndexCard dbReady={dbReady} onNotice={onNotice} />
         </aside>
         <main className="ai-search-main">
           <div className="ai-search-main-scroll">

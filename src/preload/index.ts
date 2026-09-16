@@ -31,6 +31,12 @@ import type {
   ImageInsight
 } from '../shared/image-insight'
 import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../shared/system-ocr'
+import type {
+  ImageTextIndexCountResult,
+  ImageTextIndexRepairResult,
+  ImageTextIndexStartOptions,
+  ImageTextIndexStatus
+} from '../shared/image-text-index'
 import type { AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 import type {
   PersonalWechatGeneratedTtsVoiceRequest,
@@ -63,7 +69,7 @@ import type { AppLogEntry } from '../shared/app-log'
 import type { AppUpdateState } from '../shared/app-update'
 import type { GroupExitMonitorState } from '../shared/group-exit-monitor'
 import type { ActionLogEntry } from '../shared/action-log'
-import type { CacheSummary } from '../shared/cache'
+import type { CacheClearScope, CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress } from '../shared/export'
 import type { ImageDecoderSelectionResult, ImageDecoderStatus } from '../shared/image-decryption'
 import type { AccountDiscoveryResult } from '../shared/database-key'
@@ -123,7 +129,7 @@ const api = {
     return () => ipcRenderer.removeListener('app-update:state', listener)
   },
   getCacheSummary: (): Promise<CacheSummary> => ipcRenderer.invoke('cache:getSummary'),
-  clearCache: (scope: 'bootstrap' | 'electron' | 'knowledge' | 'all'): Promise<CacheSummary> =>
+  clearCache: (scope: CacheClearScope): Promise<CacheSummary> =>
     ipcRenderer.invoke('cache:clear', scope),
   openKnowledgeDirectory: (): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('cache:openKnowledgeDirectory'),
@@ -468,6 +474,39 @@ const api = {
     ipcRenderer.invoke('system-ocr:getCapability'),
   recognizeLocalImageText: (request: SystemOcrRequest): Promise<SystemOcrResult> =>
     ipcRenderer.invoke('system-ocr:recognize', request),
+
+  // 图片文字索引（微信图片 → 本地解密 → System OCR → 派生文本 → Knowledge）
+  getImageTextIndexStatus: (): Promise<ImageTextIndexStatus> =>
+    ipcRenderer.invoke('image-text-index:getStatus'),
+  /** 点击索引前的快速统计（SQL COUNT，不解密图片）。 */
+  countImageMessages: (sinceMs?: number): Promise<ImageTextIndexCountResult> =>
+    ipcRenderer.invoke('image-text-index:count', sinceMs),
+  startImageTextIndex: (options?: ImageTextIndexStartOptions): Promise<{ started: boolean; state: string }> =>
+    ipcRenderer.invoke('image-text-index:start', options),
+  pauseImageTextIndex: (): Promise<{ paused: boolean; state: string }> =>
+    ipcRenderer.invoke('image-text-index:pause'),
+  resumeImageTextIndex: (options?: ImageTextIndexStartOptions): Promise<{ started: boolean; state: string }> =>
+    ipcRenderer.invoke('image-text-index:resume', options),
+  cancelImageTextIndex: (): Promise<{ cancellable: boolean; cancelled: boolean }> =>
+    ipcRenderer.invoke('image-text-index:cancel'),
+  clearImageTextIndex: (): Promise<{ removed: boolean; removedBytes: number }> =>
+    ipcRenderer.invoke('image-text-index:clear'),
+  /** 只重置失败记录（成功记录与其它数据不动），供"修好代码后重跑"。 */
+  resetImageTextIndexFailures: (): Promise<{ reset: number }> =>
+    ipcRenderer.invoke('image-text-index:resetFailures'),
+  /**
+   * 派生索引修复：只重建 Knowledge 里的图片派生条目与 FTS。
+   *
+   * 已有的 OCR 结果（L1）一条都不动 —— 修复索引问题永远不该让几万张图片重算。
+   */
+  repairImageTextIndex: (): Promise<ImageTextIndexRepairResult> =>
+    ipcRenderer.invoke('image-text-index:repair'),
+  onImageTextIndexStatus: (callback: (status: ImageTextIndexStatus) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: ImageTextIndexStatus): void =>
+      callback(status)
+    ipcRenderer.on('image-text-index:status', listener)
+    return () => ipcRenderer.removeListener('image-text-index:status', listener)
+  },
   getPersonalWechatSenderStatus: (): Promise<PersonalWechatSenderStatus> =>
     ipcRenderer.invoke('wechat-personal:getStatus'),
   getPersonalWechatSendCapability: (): Promise<PersonalWechatSendCapability> =>

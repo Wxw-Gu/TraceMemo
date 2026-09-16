@@ -77,9 +77,27 @@ export function AISearchEvidencePanel({
                 {item.sourceKind === 'voice' && (
                   <span className="block text-[11px] font-semibold text-primary">语音转写</span>
                 )}
+                {item.derivedSource === 'image_ocr' && (
+                  <span
+                    className="mt-0.5 inline-block rounded-sm bg-accent px-1.5 py-0.5 text-[10px] font-semibold text-primary"
+                    data-testid="evidence-image-ocr-badge"
+                  >
+                    图片文字
+                  </span>
+                )}
                 <span className="mt-[7px] block overflow-hidden text-[11px] leading-[17px] text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
                   {messageText(item.message)}
                 </span>
+                {/* 命中解释：明确告诉用户"命中的是图里的这段文字"，
+                    避免被读成群友真的发过一条这样的文字消息。 */}
+                {item.derivedSource === 'image_ocr' && item.imageOcrText && (
+                  <span
+                    className="mt-1 block overflow-hidden text-[11px] leading-[17px] text-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]"
+                    data-testid="evidence-image-ocr-snippet"
+                  >
+                    “{item.imageOcrText}”
+                  </span>
+                )}
                 <Button
                   variant="link"
                   size="sm"

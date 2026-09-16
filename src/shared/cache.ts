@@ -1,7 +1,12 @@
-export type CacheClearScope = 'bootstrap' | 'electron' | 'knowledge' | 'all'
+export type CacheClearScope =
+  | 'bootstrap'
+  | 'electron'
+  | 'knowledge'
+  | 'image-text-index'
+  | 'all'
 
 export interface CacheSummaryItem {
-  id: 'bootstrap' | 'electron' | 'knowledge'
+  id: 'bootstrap' | 'electron' | 'knowledge' | 'image-text-index'
   label: string
   description: string
   sizeBytes: number

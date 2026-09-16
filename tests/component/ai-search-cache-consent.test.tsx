@@ -7,6 +7,7 @@ import {
   buildSearchCacheKey
 } from '../../src/renderer/src/components/search/searchUtils'
 import { makePipelineEvidence, makeSearchResult } from './support/ai-search-fixtures'
+import { makeImageTextIndexApi } from './support/image-text-index-api'
 
 const api = {
   getSettings: vi.fn(),
@@ -17,7 +18,9 @@ const api = {
   getAiSearchProviderStatus: vi.fn(),
   authorizeAiSearchExternalProvider: vi.fn(),
   runAiSearch: vi.fn(),
-  cancelAiSearch: vi.fn()
+  cancelAiSearch: vi.fn(),
+  // 侧栏新增的「图片文字索引」卡片会读这些桥接。
+  ...makeImageTextIndexApi()
 }
 
 describe('AISearchWorkspace cache privacy boundary', () => {
