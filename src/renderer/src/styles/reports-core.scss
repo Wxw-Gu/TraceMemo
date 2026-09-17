@@ -1849,3 +1849,206 @@
   overflow-y: auto;
   padding: 0 10px 12px;
 }
+
+/* ------------------------------------------------------------------ */
+/* Agent Hub 对话记录（收发回看）                                       */
+/* 与运行日志明确分工：日志只记流程与故障，这里保存完整收发内容。        */
+/* 全部使用主题 token，因此浅色 / 深色自动适配，不需要单独覆写。        */
+/* ------------------------------------------------------------------ */
+.agent-hub-conversation-card {
+  max-width: 1080px;
+  margin: 16px auto 0;
+  padding: 20px 22px;
+}
+.agent-hub-conversation-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.agent-hub-conversation-heading h2 {
+  margin-top: 3px;
+}
+.agent-hub-conversation-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-hub-conversation-count {
+  color: var(--wxex-text-muted);
+  font: 500 12px/18px var(--wxex-font);
+}
+.agent-hub-conversation-body {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+  min-height: 340px;
+  border: 1px solid hsl(var(--tm-border-subtle));
+  border-radius: var(--wxex-radius-md);
+  overflow: hidden;
+}
+.agent-hub-conversation-list {
+  min-width: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 8px;
+  border-right: 1px solid hsl(var(--tm-border-subtle));
+}
+.agent-hub-conversation-list-empty {
+  padding: 12px 8px;
+  color: var(--wxex-text-muted);
+  font: 13px/20px var(--wxex-font);
+}
+.agent-hub-conversation-item {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-areas: 'avatar copy' 'avatar time';
+  gap: 2px 10px;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--wxex-radius-md);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--wxex-font);
+}
+.agent-hub-conversation-item:hover {
+  background: var(--wxex-bg-sidebar);
+}
+.agent-hub-conversation-item.is-active {
+  background: var(--wxex-brand-soft);
+}
+.agent-hub-conversation-avatar {
+  grid-area: avatar;
+  align-self: center;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+.agent-hub-conversation-avatar.is-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--wxex-bg-sidebar);
+  color: var(--wxex-text-secondary);
+  font: 600 13px/1 var(--wxex-font);
+}
+.agent-hub-conversation-avatar.is-fallback.is-self {
+  background: var(--wxex-brand-soft);
+  color: var(--wxex-brand);
+}
+.agent-hub-conversation-item-copy {
+  grid-area: copy;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.agent-hub-conversation-item-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--wxex-text-primary);
+  font: 700 13px/18px var(--wxex-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-hub-conversation-item-preview {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--wxex-text-muted);
+  font: 12px/17px var(--wxex-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-hub-conversation-item-time {
+  grid-area: time;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--wxex-text-muted);
+  font: 11px/16px var(--wxex-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-hub-conversation-note {
+  margin: 10px 4px 0;
+  color: var(--wxex-text-muted);
+  font: 11px/16px var(--wxex-font);
+}
+.agent-hub-conversation-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 14px 16px;
+  background: var(--wxex-bg-main);
+}
+.agent-hub-conversation-thread-empty {
+  margin: auto;
+  color: var(--wxex-text-muted);
+  font: 13px/20px var(--wxex-font);
+  text-align: center;
+}
+.agent-hub-message {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.agent-hub-message.is-out {
+  flex-direction: row-reverse;
+}
+.agent-hub-message-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  max-width: min(78%, 560px);
+}
+.agent-hub-message.is-out .agent-hub-message-main {
+  align-items: flex-end;
+}
+.agent-hub-message-bubble {
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 12px;
+  border: 1px solid hsl(var(--tm-border-subtle));
+  border-radius: var(--wxex-radius-md);
+  background: var(--wxex-bg-elevated);
+  color: var(--wxex-text-primary);
+  font: 13px/20px var(--wxex-font);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.agent-hub-message.is-out .agent-hub-message-bubble {
+  border-color: transparent;
+  background: var(--wxex-brand-soft);
+}
+.agent-hub-message-meta {
+  display: flex;
+  gap: 6px;
+  color: var(--wxex-text-muted);
+  font: 11px/16px var(--wxex-font);
+}
+.agent-hub-message-meta .is-failed {
+  color: var(--wxex-danger);
+}
+.agent-hub-bot-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border-radius: 50%;
+  background: var(--wxex-ai-soft);
+  color: var(--wxex-ai);
+}
+@media (max-width: 900px) {
+  .agent-hub-conversation-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .agent-hub-conversation-list {
+    max-height: 220px;
+    border-right: 0;
+    border-bottom: 1px solid hsl(var(--tm-border-subtle));
+  }
+}

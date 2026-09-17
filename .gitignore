@@ -10,7 +10,6 @@ out
 coverage/
 playwright-report/
 test-results/
-resources/connectors/wechat/
 resources/connectors/wechat-personal/
 .omc
 .codex/

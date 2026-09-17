@@ -1,0 +1,27 @@
+{
+  "extends": "./tsconfig.web.json",
+  "include": [
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
+    "src/**/*.d.ts",
+    "vitest.unit.config.ts",
+    "vitest.integration.config.ts",
+    "vitest.component.config.ts",
+    "vitest.knowledge-benchmark.config.ts",
+    "playwright.config.ts"
+  ],
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@renderer/*": [
+        "src/renderer/src/*"
+      ]
+    },
+    "types": [
+      "node"
+    ]
+  }
+}

@@ -6,7 +6,6 @@
 
 执行 `pnpm dev` 后，以下状态同时满足，说明本地开发环境已经可用：
 
-- 控制台显示连接器已生成，例如 `resources/connectors/wechat/win32-x64/wechat-connector.exe`；
 - Electron 窗口已打开，或 `http://localhost:5173/` 返回 HTTP `200`；
 - 控制台显示 Local HTTP API 正在监听 `http://127.0.0.1:6131`。
 
@@ -21,18 +20,6 @@ WCDB_DEBUG_LOGS=1 pnpm dev
 ```
 
 开启后会输出 `GETMSG-xxx` 请求耗时和 native `WCDB-EXPLAIN` 执行计划，不记录聊天正文。取消该环境变量或设为 `0` 即可关闭。
-
-## Go 命令找不到
-
-如果 `pnpm dev` 在构建微信连接器时出现 `spawnSync go ENOENT`，先执行：
-
-```bash
-go version
-```
-
-命令不可用表示当前终端的 `PATH` 没有找到 Go。Windows 默认安装位置是 `C:\Program Files\Go\bin`。确认 Go 已安装并把该目录加入系统 `PATH` 后，关闭并重新打开终端或 IDE，再重新执行 `go version` 和 `pnpm dev`。
-
-如果 Go 刚完成安装，已经打开的终端不会自动继承新的环境变量；重开终端是必要步骤。不要绕过连接器构建直接启动 `electron-vite dev`，否则 Agent Hub 的微信连接器不会生成。
 
 ## Electron 二进制缺失或下载失败
 
@@ -68,4 +55,4 @@ Vite 在某些 Windows 环境中只监听 IPv6 本机回环地址 `::1`。这时
 
 ## 仍无法启动时
 
-保留首次错误的完整输出，并同时记录操作系统、Node.js、pnpm 和 Go 版本，以及 `pnpm install --frozen-lockfile` 与 `pnpm dev` 的执行结果。不要提交数据库密钥、AI API Key、微信数据路径或聊天内容。
+保留首次错误的完整输出，并同时记录操作系统、Node.js 与 pnpm 版本，以及 `pnpm install --frozen-lockfile` 与 `pnpm dev` 的执行结果。不要提交数据库密钥、AI API Key、微信数据路径或聊天内容。

@@ -39,6 +39,10 @@ import type {
 } from '../shared/image-text-index'
 import type { AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
 import type {
+  AgentHubConversationMessage,
+  AgentHubConversationSummary
+} from '../shared/agent-hub-conversation'
+import type {
   PersonalWechatGeneratedTtsVoiceRequest,
   PersonalWechatGeneratedTtsVoiceResult,
   PersonalWechatSendRequest,
@@ -213,9 +217,7 @@ const api = {
    *
    * 事件带 requestId：UI 必须只认自己那一次请求，否则用户连问两次时阶段文案会串台。
    */
-  onAskWechatProgress: (
-    callback: (requestId: string, event: QueryAgentProgressEvent) => void
-  ) => {
+  onAskWechatProgress: (callback: (requestId: string, event: QueryAgentProgressEvent) => void) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
       requestId: string,
@@ -481,11 +483,15 @@ const api = {
   /** 点击索引前的快速统计（SQL COUNT，不解密图片）。 */
   countImageMessages: (sinceMs?: number): Promise<ImageTextIndexCountResult> =>
     ipcRenderer.invoke('image-text-index:count', sinceMs),
-  startImageTextIndex: (options?: ImageTextIndexStartOptions): Promise<{ started: boolean; state: string }> =>
+  startImageTextIndex: (
+    options?: ImageTextIndexStartOptions
+  ): Promise<{ started: boolean; state: string }> =>
     ipcRenderer.invoke('image-text-index:start', options),
   pauseImageTextIndex: (): Promise<{ paused: boolean; state: string }> =>
     ipcRenderer.invoke('image-text-index:pause'),
-  resumeImageTextIndex: (options?: ImageTextIndexStartOptions): Promise<{ started: boolean; state: string }> =>
+  resumeImageTextIndex: (
+    options?: ImageTextIndexStartOptions
+  ): Promise<{ started: boolean; state: string }> =>
     ipcRenderer.invoke('image-text-index:resume', options),
   cancelImageTextIndex: (): Promise<{ cancellable: boolean; cancelled: boolean }> =>
     ipcRenderer.invoke('image-text-index:cancel'),
@@ -604,6 +610,28 @@ const api = {
   reconnectAgentHub: () => ipcRenderer.invoke('agent-hub:reconnect'),
   disconnectAgentHub: () => ipcRenderer.invoke('agent-hub:disconnect'),
   selectAgentHubTestImage: () => ipcRenderer.invoke('agent-hub:selectTestImage'),
+  getAgentHubConversations: () => ipcRenderer.invoke('agent-hub:getConversations'),
+  getAgentHubConversation: (userId: string) =>
+    ipcRenderer.invoke('agent-hub:getConversation', userId),
+  clearAgentHubConversations: () => ipcRenderer.invoke('agent-hub:clearConversations'),
+  onAgentHubConversation: (
+    callback: (payload: {
+      summary: AgentHubConversationSummary
+      message: AgentHubConversationMessage
+    }) => void
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: { summary: AgentHubConversationSummary; message: AgentHubConversationMessage }
+    ): void => callback(payload)
+    ipcRenderer.on('agent-hub:conversation', listener)
+    return () => ipcRenderer.removeListener('agent-hub:conversation', listener)
+  },
+  onAgentHubConversationsCleared: (callback: () => void) => {
+    const listener = (): void => callback()
+    ipcRenderer.on('agent-hub:conversationsCleared', listener)
+    return () => ipcRenderer.removeListener('agent-hub:conversationsCleared', listener)
+  },
   onAgentHubStatus: (callback: (status: AgentHubStatus) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, status: AgentHubStatus): void =>
       callback(status)

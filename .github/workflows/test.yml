@@ -25,11 +25,6 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: services/wechat-connector/go.mod
-          cache-dependency-path: services/wechat-connector/go.sum
-
       - name: Install dependencies
         run: pnpm install
 
@@ -50,9 +45,6 @@ jobs:
 
       - name: Skill installation instruction tests
         run: pnpm test:skill-install
-
-      - name: WeChat connector tests
-        run: pnpm test:wechat-connector
 
       - name: Build Electron test application
         run: pnpm test:e2e:build

@@ -105,7 +105,6 @@ describe('production runtime packaging', () => {
 
   it('uses a Windows x64-only resource set', () => {
     const config = readFileSync(resolve(__dirname, '../../electron-builder.win.yml'), 'utf8')
-    expect(config).toContain('connectors/wechat/win32-x64/**')
     expect(config).toContain('key/win32/x64/**')
     expect(config).toContain('wcdb/win32/x64/**')
     expect(config).toContain('electronLanguages:')
