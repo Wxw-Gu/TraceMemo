@@ -249,16 +249,33 @@ function selectCoverage(
   }
 }
 
+/**
+ * Citation sanitize 的允许集合。
+ *
+ * 两个入口都只能引用「Host 侧已分配」的编号，但它们的形状不同：
+ * - Query Agent：`citationId` 字符串集合（`EvidenceCollector` 分配的 `E1`…`En`）；
+ * - Legacy AI Search：Final Evidence 列表（取其中的 `id`）。
+ *
+ * 故意不接受裸 `string`：那会被当成字符序列迭代，静默退化成单字符白名单。
+ */
+export type CitationAllowList =
+  | ReadonlyArray<string | Pick<AiSearchFinalEvidence, 'id'>>
+  | ReadonlySet<string>
+
 /** Do not expose citations that cannot resolve to program-owned Final Evidence. */
 export function sanitizeAnswerCitations(
   answer: string,
-  evidence: Array<Pick<AiSearchFinalEvidence, 'id'>>
+  allowed: CitationAllowList
 ): CitationValidationResult {
-  const allowed = new Set(evidence.map((item) => item.id))
+  const allowedIds = new Set<string>()
+  for (const entry of allowed) {
+    if (typeof entry === 'string') allowedIds.add(entry)
+    else if (entry && typeof entry.id === 'string') allowedIds.add(entry.id)
+  }
   const invalidCitationIds = new Set<string>()
   const sanitized = answer.replace(/\[E(\d+)\]/g, (citation, number: string) => {
     const id = `E${number}`
-    if (allowed.has(id as AiSearchFinalEvidence['id'])) return citation
+    if (allowedIds.has(id)) return citation
     invalidCitationIds.add(id)
     return ''
   })

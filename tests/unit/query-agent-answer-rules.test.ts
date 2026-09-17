@@ -23,7 +23,12 @@ describe('Query Agent 回答规则', () => {
 
   it('禁止续问邀约，并点名常见的错误句式', () => {
     expect(ANSWER_RULES).toContain('禁止')
-    for (const phrase of ['如果你需要，我可以', '要不要我继续', '我还可以帮你进一步', '需要的话我再查']) {
+    for (const phrase of [
+      '如果你需要，我可以',
+      '要不要我继续',
+      '我还可以帮你进一步',
+      '需要的话我再查'
+    ]) {
       expect(ANSWER_RULES).toContain(phrase)
     }
   })
@@ -45,5 +50,19 @@ describe('Query Agent 回答规则', () => {
 
   it('没有同一性证据时不把"疑似同图"写成确定事实', () => {
     expect(ANSWER_RULES).toContain('内容高度相似')
+  })
+
+  it('引用规则：关键事实要标 [E#]，只能引用真实存在的编号', () => {
+    expect(ANSWER_RULES).toContain('[E3]')
+    expect(ANSWER_RULES).toContain('citationId')
+    // 必须明说"不得创建/改写"——只要求"请引用"是不够的，那会诱发幻觉编号
+    expect(ANSWER_RULES).toContain('严禁')
+    expect(ANSWER_RULES).toContain('创建')
+    expect(ANSWER_RULES).toContain('改写')
+    // 其他括号写法必须被点名排除，否则模型会自创 [1] / (E3)
+    expect(ANSWER_RULES).toContain('[1]')
+    expect(ANSWER_RULES).toContain('(E3)')
+    // 概述/推断不加编号：避免"每句话都挂编号"的假依据
+    expect(ANSWER_RULES).toContain('不加')
   })
 })

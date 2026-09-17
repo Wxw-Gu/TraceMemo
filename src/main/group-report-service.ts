@@ -13,6 +13,8 @@ import {
   GroupReportRenderSnapshotExportRequest,
   ReportHeat,
   ReportSectionMeta,
+  buildReportAvatarAliasIndex,
+  mergeReportAvatars,
   selectHeroParticipantNames
 } from '../shared/group-report'
 import { resolveMd5, getGroupSnapshot } from './services/chat-service'
@@ -99,7 +101,10 @@ const fallbackAvatar = (name: string): RenderedAvatar => {
   const hue = hashName(name) % 360
   const initial = escapeHtml(Array.from(name.trim())[0] || '?')
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><rect width="96" height="96" rx="18" fill="hsl(${hue} 45% 82%)"/><text x="48" y="58" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,PingFang SC,sans-serif" font-size="38" fill="hsl(${hue} 35% 28%)">${initial}</text></svg>`
-  return { source: `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`, fallback: true }
+  return {
+    source: `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`,
+    fallback: true
+  }
 }
 
 const imageMimeType = (contentType: string | null, source: string): string => {
@@ -113,7 +118,8 @@ const imageMimeType = (contentType: string | null, source: string): string => {
 
 const embedAvatar = async (source: string | undefined, name: string): Promise<RenderedAvatar> => {
   if (!source) return fallbackAvatar(name)
-  if (/^data:image\/[a-z0-9.+/-]+;base64,[a-z0-9+/=]+$/i.test(source)) return { source, fallback: false }
+  if (/^data:image\/[a-z0-9.+/-]+;base64,[a-z0-9+/=]+$/i.test(source))
+    return { source, fallback: false }
 
   try {
     if (/^https?:\/\//i.test(source)) {
@@ -126,12 +132,18 @@ const embedAvatar = async (source: string | undefined, name: string): Promise<Re
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const mime = imageMimeType(response.headers.get('content-type'), source)
-      return { source: `data:${mime};base64,${Buffer.from(await response.arrayBuffer()).toString('base64')}`, fallback: false }
+      return {
+        source: `data:${mime};base64,${Buffer.from(await response.arrayBuffer()).toString('base64')}`,
+        fallback: false
+      }
     }
 
     const localPath = source.startsWith('file://') ? new URL(source) : source
     const buffer = await fs.readFile(localPath)
-    return { source: `data:${imageMimeType(null, source)};base64,${buffer.toString('base64')}`, fallback: false }
+    return {
+      source: `data:${imageMimeType(null, source)};base64,${buffer.toString('base64')}`,
+      fallback: false
+    }
   } catch (error) {
     console.warn(`[GroupReport] avatar fallback for ${name}:`, error)
     return fallbackAvatar(name)
@@ -144,6 +156,12 @@ const embedAvatar = async (source: string | undefined, name: string): Promise<Re
  * - talker 解析失败 / snapshot 拿不到 → 200 + warn,继续走 fallback
  * - 客户端传的 avatars[name](非空)优先;否则从 snapshot 的 m_nsHeadImgUrl 补
  * - 同名取首条(P2 风险:群里两人同名)
+ *
+ * **必须按多个别名建索引**：报告里的显示名取决于 `memberNameMode`
+ * （默认 `groupNickname` = 群昵称），而快照的 `nickname` 字段是
+ * `wechatNickname || groupNickname || username`（见 `normalizeGroupMembers`）。
+ * 一个成员同时有微信昵称与群昵称且两者不同时，只按 `nickname` 建索引就会**全部对不上**，
+ * 于是头像 enrichment 静默失效 —— 这正是原先只用单一索引键时的问题。
  */
 const enrichAvatarsFromGroup = async (metadata: GroupReportMetadata): Promise<void> => {
   if (!metadata.talker) return
@@ -162,22 +180,16 @@ const enrichAvatarsFromGroup = async (metadata: GroupReportMetadata): Promise<vo
     return
   }
 
-  const index = new Map<string, string>()
-  for (const member of snapshot.members) {
-    if (member.nickname && member.avatar && !index.has(member.nickname)) {
-      index.set(member.nickname, member.avatar)
-    }
-  }
+  // 每个成员的所有可用显示名都指向同一个头像 URL；先到先得，避免同名互相覆盖。
+  // 只按 `member.nickname` 建索引会在"微信昵称 ≠ 群昵称"时全部对不上 —— 见 shared 里的注释。
+  const index = buildReportAvatarAliasIndex(snapshot.members)
 
   metadata.avatars = metadata.avatars ?? {}
-  for (const [name, url] of index) {
-    if (metadata.avatars[name]) continue
-    metadata.avatars[name] = url
-  }
+  const filled = mergeReportAvatars(metadata.avatars, index)
 
   metadata.warnings = metadata.warnings ?? []
   metadata.warnings.push(
-    `enriched ${index.size} member avatars from snapshot (${snapshot.memberCount} members)`
+    `enriched ${filled}/${index.size} member avatar aliases from snapshot (${snapshot.memberCount} members)`
   )
 }
 
@@ -295,9 +307,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
   }
 
   const heroNames = selectHeroParticipantNames(metadata.heroParticipants)
-  const heroAvatars = heroNames
-    .map((name) => renderAvatar(name, 'hero', '', name))
-    .join('')
+  const heroAvatars = heroNames.map((name) => renderAvatar(name, 'hero', '', name)).join('')
   const heroAvatarClass = heroNames.length ? `avatar-count-${heroNames.length}` : 'empty-section'
 
   const topicCards = report.topics
@@ -656,7 +666,10 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
   for (const [key, value] of Object.entries(values)) html = replacePlaceholder(html, key, value)
   // 清空模板中残留的未使用占位符(模板独有但 values 没提供的键)
   html = html.replace(/\{\{[A-Z_]+\}\}/g, '')
-  return addReportCsp(injectReportTemplateFragmentContract(html), resolvedTemplate.source === 'builtin')
+  return addReportCsp(
+    injectReportTemplateFragmentContract(html),
+    resolvedTemplate.source === 'builtin'
+  )
 }
 
 const renderReportSnapshotHtml = async (
@@ -679,7 +692,10 @@ const renderReportSnapshotHtml = async (
     REPORT_DATE: request.snapshot.values.REPORT_DATE || escapeHtml(request.snapshot.reportDate)
   }
   for (const [key, value] of Object.entries(values)) html = replacePlaceholder(html, key, value)
-  return addReportCsp(html.replace(/\{\{[A-Z0-9_]+\}\}/g, ''), resolvedTemplate.source === 'builtin')
+  return addReportCsp(
+    html.replace(/\{\{[A-Z0-9_]+\}\}/g, ''),
+    resolvedTemplate.source === 'builtin'
+  )
 }
 
 export const extractGroupReportRenderSnapshot = async (
@@ -1021,15 +1037,10 @@ export const exportGroupReport = async (
     await fs.writeFile(htmlPath, html, 'utf8')
     const htmlEndedAt = new Date()
     const pngStartedAt = new Date()
-    const imageDataUrl = await captureFullPage(
-      htmlPath,
-      pngPath,
-      request.templateId,
-      {
-        ...resolvedTemplate.definition,
-        maxCaptureHeight: resolvedTemplate.captureMaxHeight
-      }
-    )
+    const imageDataUrl = await captureFullPage(htmlPath, pngPath, request.templateId, {
+      ...resolvedTemplate.definition,
+      maxCaptureHeight: resolvedTemplate.captureMaxHeight
+    })
     const pngEndedAt = new Date()
     return {
       success: true,
@@ -1074,15 +1085,10 @@ export const exportGroupReportSnapshot = async (
     await fs.writeFile(htmlPath, html, 'utf8')
     const htmlEndedAt = new Date()
     const pngStartedAt = new Date()
-    const imageDataUrl = await captureFullPage(
-      htmlPath,
-      pngPath,
-      request.templateId,
-      {
-        ...resolvedTemplate.definition,
-        maxCaptureHeight: resolvedTemplate.captureMaxHeight
-      }
-    )
+    const imageDataUrl = await captureFullPage(htmlPath, pngPath, request.templateId, {
+      ...resolvedTemplate.definition,
+      maxCaptureHeight: resolvedTemplate.captureMaxHeight
+    })
     const pngEndedAt = new Date()
     return {
       success: true,
