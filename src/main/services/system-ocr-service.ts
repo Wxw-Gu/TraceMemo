@@ -24,22 +24,34 @@
 //     抛出的错误是 `Windows error 操作成功完成。 (0x00000000)`（HRESULT 为 S_OK）。
 //   - 空白图不会报错，返回空文本 → 映射成 OCR_EMPTY_RESULT。
 //   - CJK 字符之间会被引擎插入空格，结果里做归一化。
+//
+// macOS 后端：Apple Vision（同一 native 包，darwin binding）。
+// 已实测的引擎行为（1.2.0 / macOS 15.7.7 / arm64）：
+//   - Buffer 输入 PNG / JPEG / WEBP / GIF / BMP / TIFF **全部直接可用**，
+//     所以 macOS 不做任何归一化，原始字节直通（不落盘、不起 ffmpeg 子进程）。
+//   - preferredLangs 对识别结果没有可观测影响（Vision 自行决定识别语言），
+//     因此默认不传语言提示；显式指定 language 时仍然透传。
+//   - 畸形图片抛普通 Error：`CRImage Reader Detector was given zero-dimensioned image (0 x 0)`；
+//     任一边 ≤2px 抛 `The image is too small in at least one dimension ...` → 都映射成 IMAGE_DECODE_FAILED。
+//   - macOS 没有"语言包缺失"这一失败模式。
 
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import {
   SYSTEM_OCR_CACHE_TTL_MS,
-  SYSTEM_OCR_ENGINE,
   SYSTEM_OCR_PROBE_PNG_BASE64,
   buildSystemOcrCacheKey,
   detectSystemOcrImageFormat,
+  isSystemOcrPlatform,
   mapSystemOcrNativeError,
   normalizeSystemOcrText,
   parseImageDataUrl,
+  resolveSystemOcrEngine,
   resolveSystemOcrLanguageTag
 } from '../../shared/system-ocr'
 import type {
   SystemOcrCapability,
+  SystemOcrEngine,
   SystemOcrErrorCode,
   SystemOcrImageFormat,
   SystemOcrLine,
@@ -71,13 +83,18 @@ interface NativeRuntime {
 export interface SystemOcrServiceDeps {
   /** 加载 native 运行时；不可用时返回 null（不允许抛） */
   loadRuntime?: () => NativeRuntime | null
-  /** 把输入图片转成 PNG 字节；失败返回 null */
+  /**
+   * 把输入图片转成引擎可接受的字节；失败返回 null。
+   *
+   * Windows 后端只吃 PNG，必须走这一步；macOS 的 Vision 直接接受
+   * PNG / JPEG / WEBP / GIF / BMP / TIFF，默认实现直接透传原始字节。
+   */
   toPngBytes?: (input: {
     buffer: Buffer
     format: SystemOcrImageFormat
   }) => Promise<Buffer | null>
   /**
-   * ffmpeg 可执行文件解析器。只用于 GIF/BMP/WebP/TIFF → PNG 的兜底归一化。
+   * ffmpeg 可执行文件解析器。只用于 Windows 上 GIF/BMP/WebP/TIFF → PNG 的兜底归一化。
    * main/index.ts 会注入项目统一的解析逻辑（与图片解密共用一套候选路径）。
    */
   resolveFfmpegExecutable?: () => string
@@ -86,6 +103,22 @@ export interface SystemOcrServiceDeps {
   /** 系统 locale（如 zh-CN），用于推导 OCR 语言标签 */
   locale?: () => string
 }
+
+const failure = (
+  engine: SystemOcrEngine,
+  errorCode: SystemOcrErrorCode,
+  error: string,
+  startedAt: number
+): SystemOcrResult => ({
+  success: false,
+  text: '',
+  lines: [],
+  language: null,
+  engine,
+  durationMs: Date.now() - startedAt,
+  errorCode,
+  error
+})
 
 /** 未被显式注入时的兜底：环境变量 → 打包内 ffmpeg-static → PATH。 */
 const defaultResolveFfmpegExecutable = (): string => {
@@ -114,22 +147,7 @@ const toLines = (lines: NativeLine[] | undefined): SystemOcrLine[] =>
       }))
     : []
 
-const failure = (
-  errorCode: SystemOcrErrorCode,
-  error: string,
-  startedAt: number
-): SystemOcrResult => ({
-  success: false,
-  text: '',
-  lines: [],
-  language: null,
-  engine: SYSTEM_OCR_ENGINE,
-  durationMs: Date.now() - startedAt,
-  errorCode,
-  error
-})
-
-/** 把任意容器（gif/bmp/webp/tiff）用 ffmpeg 走内存管道转成 PNG。不落盘。 */
+/** 把任意容器（gif/bmp/webp/tiff）用 ffmpeg 走内存管道转成 PNG。不落盘。仅 Windows 归一化路径会用到。 */
 const convertWithFfmpeg = (buffer: Buffer, executable: string): Promise<Buffer | null> =>
   new Promise((resolve) => {
     let settled = false
@@ -222,6 +240,16 @@ class SystemOcrService {
     return this.deps.arch ?? process.arch
   }
 
+  /** 该平台对应的引擎标识。进 artifact 指纹与缓存 key，不要硬编码。 */
+  private get engine(): SystemOcrEngine {
+    return resolveSystemOcrEngine(this.platform)
+  }
+
+  /** 本平台是否为 macOS 后端（决定是否跳过图片归一化）。 */
+  private get isMacBackend(): boolean {
+    return this.platform === 'darwin'
+  }
+
   private get locale(): string {
     if (this.deps.locale) {
       try {
@@ -245,7 +273,7 @@ class SystemOcrService {
       this.runtime = this.deps.loadRuntime()
       return this.runtime
     }
-    if (this.platform !== 'win32') {
+    if (!isSystemOcrPlatform(this.platform)) {
       this.runtime = null
       return this.runtime
     }
@@ -267,7 +295,7 @@ class SystemOcrService {
     } catch (error) {
       console.warn(
         '[SystemOcrService] native runtime unavailable engine=%s platform=%s reason=%s',
-        SYSTEM_OCR_ENGINE,
+        this.engine,
         this.platform,
         error instanceof Error ? error.message.split('\n')[0] : String(error)
       )
@@ -281,6 +309,11 @@ class SystemOcrService {
     format: SystemOcrImageFormat
   ): Promise<Buffer | null> {
     if (this.deps.toPngBytes) return this.deps.toPngBytes({ buffer, format })
+    /*
+     * macOS：Vision 后端直接接受 PNG / JPEG / WEBP / GIF / BMP / TIFF（已实测），
+     * 归一化没有收益，只会白白多一次转码或一个 ffmpeg 子进程 —— 原字节直通。
+     */
+    if (this.isMacBackend) return buffer
     if (format === 'png') return buffer
     if (format === 'jpeg') {
       // 项目内已有的进程内解码能力，优先于 ffmpeg（更快、无子进程）。
@@ -322,18 +355,18 @@ class SystemOcrService {
       SystemOcrCapability,
       'engine' | 'platform' | 'arch' | 'runtimeVersion' | 'language'
     > = {
-      engine: SYSTEM_OCR_ENGINE,
+      engine: this.engine,
       platform: this.platform,
       arch: this.arch,
       runtimeVersion: null,
       language: null
     }
-    if (this.platform !== 'win32') {
+    if (!isSystemOcrPlatform(this.platform)) {
       return {
         ...base,
         available: false,
         reason: 'UNSUPPORTED_PLATFORM',
-        message: '本地图片文字识别目前仅支持 Windows。'
+        message: '本地图片文字识别目前支持 Windows 与 macOS。'
       }
     }
     const runtime = this.loadRuntime()
@@ -355,20 +388,26 @@ class SystemOcrService {
         message: probed.message
       }
     }
+    const engineLabel = this.isMacBackend ? 'macOS 系统 OCR' : 'Windows 系统 OCR'
     return {
       ...base,
       runtimeVersion: runtime.version,
       available: true,
       language: probed.language,
       message: probed.language
-        ? `本地图片文字识别可用（Windows 系统 OCR，${probed.language}）。`
-        : '本地图片文字识别可用（Windows 系统 OCR，跟随系统语言）。'
+        ? `本地图片文字识别可用（${engineLabel}，${probed.language}）。`
+        : `本地图片文字识别可用（${engineLabel}，跟随系统语言）。`
     }
   }
 
   /**
-   * 用一个 64x32 纯白 PNG 探测语言可用性：引擎能创建即说明语言包可用。
-   * 首选「系统 locale 推导出的标签」，失败再退回「系统用户语言配置」。
+   * 用一个 64x32 纯白 PNG 探测引擎是否真的能跑。
+   *
+   * Windows：引擎创建依赖语言包，首选「系统 locale 推导出的标签」，
+   * 失败再退回「系统用户语言配置」，并据此区分 LANGUAGE_UNAVAILABLE。
+   *
+   * macOS：Vision 自行决定识别语言，**没有语言包缺失这一失败模式**，
+   * 所以不传语言提示，探测失败只可能是引擎本身起不来。
    */
   private async probeLanguage(
     runtime: NativeRuntime
@@ -377,7 +416,29 @@ class SystemOcrService {
     | { language: null; reason: 'LANGUAGE_UNAVAILABLE' | 'NATIVE_MODULE_MISSING'; message: string }
   > {
     const probeBuffer = Buffer.from(SYSTEM_OCR_PROBE_PNG_BASE64, 'base64')
-    const preferred = resolveSystemOcrLanguageTag(this.locale)
+    if (this.isMacBackend) {
+      try {
+        await runtime.recognize(probeBuffer, undefined, undefined)
+        return { language: null }
+      } catch (error) {
+        /*
+         * 探测图是纯白图。Vision 对"图里没有文字"是**抛错**（`No text recognized`），
+         * 而抛这个错恰恰证明识别器跑通了 —— 不能当成引擎故障。
+         */
+        if (
+          mapSystemOcrNativeError(error instanceof Error ? error.message : String(error)) ===
+          'OCR_EMPTY_RESULT'
+        ) {
+          return { language: null }
+        }
+        return {
+          language: null,
+          reason: 'NATIVE_MODULE_MISSING',
+          message: '本地文字识别引擎初始化失败，请重启 TraceMemo 或重新安装。'
+        }
+      }
+    }
+    const preferred = resolveSystemOcrLanguageTag(this.locale, this.platform)
     const candidates: Array<string | null> = preferred ? [preferred, null] : [null]
     let lastCode: SystemOcrErrorCode = 'OCR_FAILED'
     for (const candidate of candidates) {
@@ -433,22 +494,28 @@ class SystemOcrService {
    */
   async recognize(request: SystemOcrRequest): Promise<SystemOcrResult> {
     const startedAt = Date.now()
+    const engine = this.engine
     const parsed = parseImageDataUrl(request.imageDataUrl)
     if (!parsed) {
-      return failure('UNSUPPORTED_IMAGE', '仅支持 PNG、JPG、JPEG、WebP、GIF、BMP 图片。', startedAt)
+      return failure(
+        engine,
+        'UNSUPPORTED_IMAGE',
+        '仅支持 PNG、JPG、JPEG、WebP、GIF、BMP 图片。',
+        startedAt
+      )
     }
     let sourceBuffer: Buffer
     try {
       sourceBuffer = Buffer.from(parsed.base64, 'base64')
     } catch {
-      return failure('IMAGE_DECODE_FAILED', '图片数据无法解码。', startedAt)
+      return failure(engine, 'IMAGE_DECODE_FAILED', '图片数据无法解码。', startedAt)
     }
     if (sourceBuffer.length === 0) {
-      return failure('IMAGE_DECODE_FAILED', '图片数据为空。', startedAt)
+      return failure(engine, 'IMAGE_DECODE_FAILED', '图片数据为空。', startedAt)
     }
     const format = detectSystemOcrImageFormat(sourceBuffer)
     if (!format) {
-      return failure('UNSUPPORTED_IMAGE', '无法识别的图片格式。', startedAt)
+      return failure(engine, 'UNSUPPORTED_IMAGE', '无法识别的图片格式。', startedAt)
     }
 
     const imageHash =
@@ -464,7 +531,7 @@ class SystemOcrService {
           : capability.reason === 'LANGUAGE_UNAVAILABLE'
             ? 'OCR_LANGUAGE_UNAVAILABLE'
             : 'SYSTEM_OCR_UNAVAILABLE'
-      return failure(errorCode, capability.message, startedAt)
+      return failure(engine, errorCode, capability.message, startedAt)
     }
 
     const languageForCache = requestedLanguage ?? capability.language
@@ -472,7 +539,8 @@ class SystemOcrService {
       imageHash,
       language: languageForCache,
       runtimeVersion: capability.runtimeVersion,
-      platform: capability.platform
+      platform: capability.platform,
+      engine: capability.engine
     })
     if (requestedLanguage === null) {
       const cached = this.readCache(cacheKey, startedAt)
@@ -481,12 +549,12 @@ class SystemOcrService {
 
     const runtime = this.loadRuntime()
     if (!runtime) {
-      return failure('SYSTEM_OCR_UNAVAILABLE', '本地文字识别组件不可用。', startedAt)
+      return failure(engine, 'SYSTEM_OCR_UNAVAILABLE', '本地文字识别组件不可用。', startedAt)
     }
 
-    const png = await this.toPngBytes(sourceBuffer, format)
-    if (!png || png.length === 0 || !detectSystemOcrImageFormat(png)) {
-      return failure('IMAGE_DECODE_FAILED', '图片解码失败，无法读取这张图片。', startedAt)
+    const prepared = await this.toPngBytes(sourceBuffer, format)
+    if (!prepared || prepared.length === 0 || !detectSystemOcrImageFormat(prepared)) {
+      return failure(engine, 'IMAGE_DECODE_FAILED', '图片解码失败，无法读取这张图片。', startedAt)
     }
 
     const candidates: Array<string | null> = requestedLanguage
@@ -499,8 +567,11 @@ class SystemOcrService {
     let usedLanguage: string | null = null
     for (const candidate of candidates) {
       try {
+        // accuracy 传 undefined = 用 native 默认值，而该默认是 `Accurate`
+        // （见 @napi-rs/system-ocr 的 recognize 文档）。**不要改成 Fast**：
+        // 低精度档在中文上会明显掉字。Windows 忽略该参数。
         const result = await runtime.recognize(
-          png,
+          prepared,
           undefined,
           candidate ? [candidate] : undefined
         )
@@ -508,30 +579,37 @@ class SystemOcrService {
         const lines = toLines(result?.lines)
         usedLanguage = candidate
         if (!text) {
-          return failure('OCR_EMPTY_RESULT', '没有在这张图片里识别到文字。', startedAt)
+          return failure(engine, 'OCR_EMPTY_RESULT', '没有在这张图片里识别到文字。', startedAt)
         }
         const succeeded: SystemOcrResult = {
           success: true,
           text,
           lines,
           language: usedLanguage,
-          engine: SYSTEM_OCR_ENGINE,
+          engine,
           durationMs: Date.now() - startedAt
         }
-        // 生产日志只记录 error code / engine / platform / duration，绝不记录识别正文。
-        console.log(
-          '[SystemOcrService] ok engine=%s platform=%s language=%s chars=%d durationMs=%d',
-          SYSTEM_OCR_ENGINE,
-          capability.platform,
-          usedLanguage ?? 'system-default',
-          text.length,
-          succeeded.durationMs
-        )
+        /**
+         * 成功路径**刻意不逐张打日志**。
+         *
+         * 后台回填会连续识别几万张图片，逐张一条成功日志既是没有信息量的噪声，
+         * 又会把日志刷爆。逐张耗时由 `ImageTextIndexService` 的阶段画像低频汇总，
+         * 单张的 `durationMs` / 字数依然在**返回值**里（设置页的单图诊断就是用它）。
+         * 只有失败才值得在默认输出里留痕 —— 见下面的 `failed`。
+         */
         this.writeCache(cacheKey, succeeded)
         return succeeded
       } catch (error) {
         lastErrorMessage = error instanceof Error ? error.message : String(error)
         lastErrorCode = mapSystemOcrNativeError(lastErrorMessage)
+        /*
+         * macOS 的 Vision 在"图里没有文字"时是抛错（`No text recognized`）而不是返回空文本。
+         * 它必须走 empty 语义：表情包 / 风景 / 头像都是**正常终态**，不是 OCR 失败 ——
+         * 否则这些图片会落成可重试失败，被反复重算，覆盖率也会说谎。
+         */
+        if (lastErrorCode === 'OCR_EMPTY_RESULT') {
+          return failure(engine, 'OCR_EMPTY_RESULT', '没有在这张图片里识别到文字。', startedAt)
+        }
         // 语言不可用才值得换下一个候选；其它错误直接结束，避免无意义重试。
         if (lastErrorCode !== 'OCR_LANGUAGE_UNAVAILABLE') break
       }
@@ -539,12 +617,13 @@ class SystemOcrService {
 
     console.warn(
       '[SystemOcrService] failed engine=%s platform=%s errorCode=%s durationMs=%d',
-      SYSTEM_OCR_ENGINE,
+      engine,
       capability.platform,
       lastErrorCode,
       Date.now() - startedAt
     )
     return failure(
+      engine,
       lastErrorCode,
       lastErrorCode === 'OCR_LANGUAGE_UNAVAILABLE'
         ? '当前 Windows 未安装可用的 OCR 语言支持。'

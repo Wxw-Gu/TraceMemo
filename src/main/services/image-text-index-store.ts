@@ -3,7 +3,7 @@
  *
  * 为什么单独一个库而不是往 knowledge.sqlite 里加表：
  * - 清理语义干净：整个能力 = 三个文件（.sqlite/-wal/-shm），删掉即可，不留残渣。
- * - 零迁移风险：不动已发布的 knowledge schema（§26 要求升级不破坏既有派生库）。
+ * - 零迁移风险：不动已发布的 knowledge schema（升级不得破坏既有派生库）。
  * - 去重语义天然：artifact 按「图片内容 + OCR 运行时指纹」唯一，binding 承担多来源。
  *
  * 账号隔离与 Knowledge 一致：路径按 accountId 摘要分目录 + 库内 account_id 自证。
@@ -342,6 +342,29 @@ export class ImageTextIndexStore {
       // 统计时若有会话没数上（数据库不支持该统计），分母就是偏小的 →
       // 绝不能据此声称"已覆盖全部"，否则少数的那些会话会被静默算进"已覆盖"。
       complete: this.readMeta('total_image_messages_complete') === '1'
+    }
+  }
+
+  /**
+   * 扫描进度：所有会话累计「应扫多少张图片消息」与「实际扫过多少张」。
+   *
+   * 与上面的 `readCountedTotal()` 分工必须分清：
+   * - `readCountedTotal()` 是 `countImageMessages()` 给出的**预估**分母（遍历消息表数出来的，
+   *   会随新消息变动，且与「归档合并后流水线真正拿到的消息集合」并不完全一致）；
+   * - 这里是流水线**真实走过**的集合。
+   *
+   * 进度必须用后者。拿预估值当分母，进度会永远差最后几个百分点，
+   * 让已经跑完的索引一直显示成"部分完成"。
+   */
+  readScanProgress(): { total: number; processed: number } {
+    const row = this.database
+      .prepare(
+        'SELECT SUM(image_total) AS total, SUM(image_processed) AS processed FROM image_ocr_scan_state'
+      )
+      .get() as Record<string, unknown> | undefined
+    return {
+      total: Number(row?.total ?? 0) || 0,
+      processed: Number(row?.processed ?? 0) || 0
     }
   }
 

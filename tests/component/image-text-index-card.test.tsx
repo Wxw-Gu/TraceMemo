@@ -1,5 +1,5 @@
 /**
- * §3 / §4：「图片文字索引」卡片的用户可见行为。
+ * 「图片文字索引」卡片的用户可见行为。
  *
  * 这些断言对应的是产品需求里**写死的**交互契约，不是实现细节：
  * - 未建立时先给出检测到的图片消息数量，而不是一个空洞的按钮；
@@ -7,7 +7,8 @@
  * - 确认弹窗要写清本机执行、原图不会因识别而自动上传、可暂停、实际可识别数量取决于本地文件；
  * - 进度只给真实数字（processed/total、识别出文字、没有文字、图片已清理、失败、百分比）；
  * - 暂停 / 继续 / 取消三个动作都在，且暂停后能继续；
- * - 重启后进度来自主进程快照（这里用「首帧就是 paused 快照」模拟）。
+ * - 重启后进度来自主进程快照（这里用「首帧就是 paused 快照」模拟）；
+ * - 操作区是**单列堆叠**：这张卡最多并列 3 个操作，横向排会撑破窄侧栏。
  */
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -83,6 +84,20 @@ const running = status({
 const paused = status({
   ...running,
   progress: { ...running.progress, state: 'paused', cancellable: false, paused: true }
+})
+
+/** 取消：进度全部保留，但状态是 cancelled 而不是 paused。 */
+const cancelled = status({
+  ...running,
+  progress: { ...running.progress, state: 'cancelled', cancellable: false, paused: false },
+  coverage: { ...running.coverage, established: true }
+})
+
+/** 已建立但未完成：这张状态下操作区最多并列 3 个按钮（更新 / 重新统计 / 修复）。 */
+const establishedPartial = status({
+  ...running,
+  progress: { ...running.progress, state: 'idle', cancellable: false },
+  coverage: { ...running.coverage, established: true }
 })
 
 const api = {
@@ -174,12 +189,64 @@ describe('图片文字索引卡片', () => {
     expect(api.cancelImageTextIndex).toHaveBeenCalledTimes(1)
   })
 
+  it('运行中给出窗口速度与 ETA，而不是历史平均', async () => {
+    api.getImageTextIndexStatus.mockResolvedValue({
+      ...running,
+      progress: {
+        ...running.progress,
+        speedPerSec: 38,
+        etaMs: 2 * 60 * 60 * 1000 + 25 * 60 * 1000
+      }
+    })
+    await renderCard()
+
+    const rate = screen.getByTestId('image-text-index-rate')
+    expect(rate.textContent).toContain('约 38.0 张/秒')
+    expect(rate.textContent).toContain('2 小时 25 分')
+    // 用户界面不出现开发指标。
+    expect(rate.textContent).not.toMatch(/p50|p95|percentile/i)
+  })
+
+  it('速度样本不足时如实说「计算中」，不编数字', async () => {
+    // 默认的 running 夹具没有 speedPerSec / etaMs（主进程给 null 的情形）。
+    api.getImageTextIndexStatus.mockResolvedValue({
+      ...running,
+      progress: { ...running.progress, speedPerSec: null, etaMs: null }
+    })
+    await renderCard()
+
+    const rate = screen.getByTestId('image-text-index-rate')
+    expect(rate.textContent).toContain('当前速度：计算中')
+    expect(rate.textContent).toContain('预计剩余：计算中')
+  })
+
   it('暂停后可以继续，进度仍来自主进程快照', async () => {
     api.getImageTextIndexStatus.mockResolvedValue(paused)
     await renderCard()
 
     expect(screen.getByTestId('image-text-index-state').textContent).toBe('已暂停 · 30.8%')
     await userEvent.click(screen.getByTestId('image-text-index-resume'))
+    expect(api.resumeImageTextIndex).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * 「取消」之后的入口曾经是缺失的：状态落回「部分完成」、按钮只剩「更新图片文字索引」，
+   * 用户既看不出自己中断过，也找不到继续的地方 —— 于是以为进度丢了。
+   * 取消和暂停一样保留 checkpoint，所以必须给同样的「继续」。
+   */
+  it('取消之后仍然能继续：状态说「已取消」，「继续」入口还在', async () => {
+    api.getImageTextIndexStatus.mockResolvedValue(cancelled)
+    await renderCard()
+
+    expect(screen.getByTestId('image-text-index-state').textContent).toMatch(/^已取消 · /)
+    const resume = screen.getByTestId('image-text-index-resume')
+    expect(resume.textContent).toBe('继续')
+    // 「更新图片文字索引」和「继续」是同一件事，不能同时抢位。
+    expect(screen.queryByTestId('image-text-index-start')).toBeNull()
+    // 已经取消了，没有东西可再取消。
+    expect(screen.queryByTestId('image-text-index-cancel')).toBeNull()
+
+    await userEvent.click(resume)
     expect(api.resumeImageTextIndex).toHaveBeenCalledTimes(1)
   })
 
@@ -194,7 +261,7 @@ describe('图片文字索引卡片', () => {
     expect(screen.getByTestId('image-text-index-progress').textContent).toBe('3,842 / 12,483')
   })
 
-  it('统计失败时显示「无法统计」而不是 0，并给出原因与重新统计入口', async () => {
+  it('统计失败时显示「无法统计」而不是 0，并给出原因', async () => {
     api.countImageMessages.mockResolvedValue({
       totalImageMessages: 0,
       scannedConversations: 0,
@@ -213,7 +280,48 @@ describe('图片文字索引卡片', () => {
     const error = screen.getByTestId('image-text-index-count-error')
     expect(error.textContent).toContain('读取消息分片失败')
     expect(error.textContent).toContain('不代表账号里没有图片')
-    expect(screen.getByTestId('image-text-index-recount')).toBeVisible()
+    // 「重新统计」入口已收掉：进度改用流水线真实走过的集合之后，
+    // 重算那个预估值不再影响任何东西，留着只会多一个看不懂的按钮。
+    // 断言按**用户可见文案**而不是已删除的 testid —— 对已移除 testid 断言
+    // 「不存在」是恒真的，删掉按钮之后它就再也测不出任何东西。
+    expect(screen.queryByText('重新统计')).not.toBeInTheDocument()
+  })
+
+  /**
+   * 操作区布局契约：主按钮与「更多」各占一行。
+   *
+   * 修复类操作（修复搜索索引 / 重试失败的图片）收进了「更多」菜单 ——
+   * 平铺出来时，用户看到的是几个都在说「索引」的按钮，只能靠猜哪个该点。
+   *
+   * jsdom 不做真实排版，所以这里锁的是**能推出该结果的结构**：
+   * 两个按钮是同一个操作容器的直接子元素，且该容器带单列堆叠修饰类
+   * （共享的栅格类 + `ai-search-image-index-actions`，后者把 grid 覆盖成 flex column）。
+   * 一旦有人在按钮外面套一层 wrapper、或去掉修饰类，这个测试就会失败。
+   */
+  it('操作区只留主按钮与「更多」：同一容器的直接子元素，顺序为 更新 / 更多', async () => {
+    api.getImageTextIndexStatus.mockResolvedValue(establishedPartial)
+    api.countImageMessages.mockResolvedValue({
+      totalImageMessages: 12_483,
+      scannedConversations: 42,
+      failedConversations: 1,
+      typeColumn: 'local_type',
+      durationMs: 30
+    })
+    await renderCard()
+
+    const start = screen.getByTestId('image-text-index-start')
+    const more = screen.getByTestId('image-text-index-more')
+
+    expect(start.textContent).toBe('更新图片文字索引')
+    expect(more.textContent).toBe('更多')
+
+    const container = start.parentElement
+    expect(container).toBe(more.parentElement)
+    expect(container?.classList.contains('ai-search-knowledge-actions')).toBe(true)
+    expect(container?.classList.contains('ai-search-image-index-actions')).toBe(true)
+
+    // 直接子元素 == 独占一行；顺序断言同时锁住视觉顺序。
+    expect(Array.from(container?.children ?? [])).toEqual([start, more])
   })
 
   it('部分会话统计失败时给出真实数字并提示偏小', async () => {
@@ -244,7 +352,8 @@ describe('图片文字索引卡片', () => {
 
     expect(screen.getByTestId('image-text-index-count').textContent).toBe('0')
     expect(screen.queryByTestId('image-text-index-count-error')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('image-text-index-recount')).not.toBeInTheDocument()
+    // 同上：按文案断言，避免对已删除的 testid 做恒真断言。
+    expect(screen.queryByText('重新统计')).not.toBeInTheDocument()
   })
 })
 
@@ -286,7 +395,7 @@ describe('图片文字索引卡片 — 修复图片搜索索引', () => {
     }
   } as Partial<ImageTextIndexStatus>)
 
-  it('已建立且空闲时提供修复入口，只在点击后调用主进程', async () => {
+  it('已建立且空闲时，修复入口收在「更多」里，点击后才调用主进程', async () => {
     api.getImageTextIndexStatus.mockResolvedValue(established)
     api.repairImageTextIndex.mockResolvedValue({
       conversations: 12,
@@ -296,11 +405,15 @@ describe('图片文字索引卡片 — 修复图片搜索索引', () => {
     })
     const { onNotice } = await renderCard()
 
-    const button = screen.getByTestId('image-text-index-repair')
-    expect(button.textContent).toBe('修复图片搜索索引')
+    // 修复类操作不再平铺在操作区，必须先展开「更多」。
+    expect(screen.queryByTestId('image-text-index-repair')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByTestId('image-text-index-more'))
+
+    const item = await screen.findByTestId('image-text-index-repair')
+    expect(item.textContent).toContain('修复搜索索引')
     expect(api.repairImageTextIndex).not.toHaveBeenCalled()
 
-    await userEvent.click(button)
+    await userEvent.click(item)
 
     expect(api.repairImageTextIndex).toHaveBeenCalledTimes(1)
     // 提示语必须讲清楚"没有重新识别"，否则用户会以为又要跑几万张图。
@@ -312,6 +425,7 @@ describe('图片文字索引卡片 — 修复图片搜索索引', () => {
     api.getImageTextIndexStatus.mockResolvedValue(running)
     await renderCard()
 
+    expect(screen.queryByTestId('image-text-index-more')).not.toBeInTheDocument()
     expect(screen.queryByTestId('image-text-index-repair')).not.toBeInTheDocument()
   })
 
@@ -325,7 +439,8 @@ describe('图片文字索引卡片 — 修复图片搜索索引', () => {
     })
     const { onNotice } = await renderCard()
 
-    await userEvent.click(screen.getByTestId('image-text-index-repair'))
+    await userEvent.click(screen.getByTestId('image-text-index-more'))
+    await userEvent.click(await screen.findByTestId('image-text-index-repair'))
 
     expect(String(onNotice.mock.calls.at(-1)?.[0])).toContain('正在进行中')
   })

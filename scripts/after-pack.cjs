@@ -81,14 +81,14 @@ function validateSherpaRuntime(runtimeResources, platform, arch) {
 /**
  * System OCR 用 native package（@napi-rs/system-ocr）。它是 external + asarUnpack，
  * 打包后必须以 unpacked 形式存在，否则运行时会 MODULE_NOT_FOUND / native binding missing。
- * 本轮只有 Windows 是 supported target，所以只在 Windows 上做硬校验。
+ * Windows 与 macOS 都是 supported target，都要做硬校验（Linux 不是）。
  */
 function systemOcrTarget(platform, arch) {
   return platform === 'win32' ? `${platform}-${arch}-msvc` : `${platform}-${arch}`
 }
 
 function validateSystemOcrRuntime(runtimeResources, platform, arch) {
-  if (platform !== 'win32') return
+  if (platform !== 'win32' && platform !== 'darwin') return
   const target = systemOcrTarget(platform, arch)
   const basePath = path.join(
     runtimeResources,

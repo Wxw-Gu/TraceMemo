@@ -6,7 +6,11 @@ import type {
   AiSearchProgressEvent,
   AiSearchProgressStage
 } from '../../../../shared/ai-search'
-import type { KnowledgeMessageKind, KnowledgeVoiceCoverage } from '../../../../shared/knowledge'
+import type {
+  KnowledgeDerivedSource,
+  KnowledgeMessageKind,
+  KnowledgeVoiceCoverage
+} from '../../../../shared/knowledge'
 import type { Contact, Message } from '../../../../shared/types'
 
 export type SearchStage = 'idle' | 'loading' | 'result' | 'partial' | 'insufficient'
@@ -37,10 +41,11 @@ export interface EvidenceItem {
   /**
    * 命中所依赖的派生来源。
    *
-   * `image_ocr` = 这条结果靠**图片里的文字**命中，而不是群友真的发了一条文字消息。
-   * 有值时 Evidence 卡片显示轻量来源标记（「图片文字」）。
+   * 有值 = 这条结果靠**本地派生内容**命中，而不是原始消息本身的文字
+   * （`image_ocr` = 图片里的文字，`voice_transcript` = 语音转写）。
+   * authoritative source 始终是原始消息 —— 这里只用来多挂一个来源标记。
    */
-  derivedSource?: 'image_ocr'
+  derivedSource?: KnowledgeDerivedSource
   /** 「从图片里读出来的文字」片段，只作命中解释。 */
   imageOcrText?: string
   contact: Contact

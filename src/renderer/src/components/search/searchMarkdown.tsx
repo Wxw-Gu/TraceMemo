@@ -94,5 +94,33 @@ export const renderMarkdown = (value: string, options: MarkdownOptions = {}): Re
         </div>
       )
     }
+    /*
+     * Markdown 表格行。
+     *
+     * 结果栏很窄，真表格在这里只会挤成一团（列宽错位、长字段换行难读）。提示词已经
+     * 禁止模型为检索结果产表格，但历史回答与其它入口仍可能出现，所以这里把它降级成
+     * **逐行的键值列表**：内容读得出来，且永远不会横向溢出容器。
+     */
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      const cells = line
+        .trim()
+        .replace(/^\||\|$/g, '')
+        .split('|')
+        .map((cell) => cell.trim())
+        .filter((cell) => cell.length > 0)
+      // `|---|---|` 这类分隔行没有信息，当作空行处理。
+      if (!cells.length || cells.every((cell) => /^:?-{2,}:?$/.test(cell))) {
+        return <div key={key} className="ai-search-markdown-spacer" />
+      }
+      return (
+        <div key={key} className="ai-search-markdown-table-row">
+          {cells.map((cell, cellIndex) => (
+            <span key={`${key}-${cellIndex}`} className="ai-search-markdown-table-cell">
+              {inlineMarkdown(cell, `${key}-${cellIndex}`, options)}
+            </span>
+          ))}
+        </div>
+      )
+    }
     return <p key={key}>{inlineMarkdown(line, key, options)}</p>
   })

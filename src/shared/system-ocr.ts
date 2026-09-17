@@ -7,15 +7,38 @@
 //     它不占用 AIVisionRuntimeConfig.source，也不产生任何网络请求。
 //   - 能力边界：只把图片里的文字读出来。它不等于「理解人物 / 理解场景 /
 //     描述照片 / 理解表情包语义 / 视觉推理」——那些仍然属于 Vision Model。
-//   - Windows 后端为 Windows.Media.Ocr.OcrEngine（经 @napi-rs/system-ocr 调用）。
-//     macOS 本轮只保留架构位置，未实现；Linux 不支持。
+//   - 后端按平台选择（统一经 @napi-rs/system-ocr 调用）：
+//       Windows → Windows.Media.Ocr.OcrEngine
+//       macOS   → Apple Vision（VNRecognizeTextRequest / RecognizeDocumentsRequest）
+//     Linux 不支持。
+//   - 引擎标识会进入 artifact 指纹与缓存 key，两个平台的结果**不得互相复用**。
 //
-// 数据边界（本轮不做）：
-//   - 不做历史图片全量 OCR、不做 Knowledge 回填、不把 OCR 文字伪装成原始聊天文字。
-//     原始消息始终是权威来源，OCR 文字只是派生内容（本轮仅存在于内存）。
+// 数据边界：
+//   - OCR 文字始终是**派生内容**，会把原图定位回去（artifact + binding），
+//     但绝不写回 WCDB、也绝不伪装成原始聊天文字；原始消息始终是权威来源。
+//   - 历史图片回填与 Knowledge 回填由 image-text-index 负责，本模块只提供识别能力。
+
+/** Windows 引擎标识（Windows.Media.Ocr.OcrEngine）。 */
+export const SYSTEM_OCR_ENGINE_WINDOWS = 'windows-system-ocr'
+
+/** macOS 引擎标识（Apple Vision）。 */
+export const SYSTEM_OCR_ENGINE_MACOS = 'macos-system-ocr'
 
 /** System OCR 引擎标识。这是本地 Runtime，不是 provider id。 */
-export const SYSTEM_OCR_ENGINE = 'windows-system-ocr'
+export type SystemOcrEngine = typeof SYSTEM_OCR_ENGINE_WINDOWS | typeof SYSTEM_OCR_ENGINE_MACOS
+
+/** 支持 System OCR 的平台。Linux 明确不支持。 */
+export const isSystemOcrPlatform = (platform: string): boolean =>
+  platform === 'win32' || platform === 'darwin'
+
+/**
+ * 平台 → 引擎标识。
+ *
+ * 不要把引擎串硬编码成某一个平台：它同时是 artifact 指纹的一部分，
+ * 一旦写死，跨平台结果就会互相复用。
+ */
+export const resolveSystemOcrEngine = (platform: string): SystemOcrEngine =>
+  platform === 'darwin' ? SYSTEM_OCR_ENGINE_MACOS : SYSTEM_OCR_ENGINE_WINDOWS
 
 /** 本地 OCR 结果在内存中的缓存时长。 */
 export const SYSTEM_OCR_CACHE_TTL_MS = 10 * 60 * 1000
@@ -27,13 +50,13 @@ export const SYSTEM_OCR_CACHE_TTL_MS = 10 * 60 * 1000
 export type SystemOcrErrorCode =
   /** 运行时不可用（native binding 缺失 / 加载失败） */
   | 'SYSTEM_OCR_UNAVAILABLE'
-  /** 当前平台不支持（Linux，或非 Windows 平台） */
+  /** 当前平台不支持（Linux，或非 Windows / macOS 平台） */
   | 'UNSUPPORTED_PLATFORM'
   /** 图片格式不在支持范围内 */
   | 'UNSUPPORTED_IMAGE'
-  /** 图片解码失败（格式可识别但内容损坏或无法转成 PNG） */
+  /** 图片解码失败（格式可识别但内容损坏或无法转成可识别图像） */
   | 'IMAGE_DECODE_FAILED'
-  /** 当前 Windows 未安装对应的 OCR 语言支持 */
+  /** 当前 Windows 未安装对应的 OCR 语言支持（macOS 由 Vision 自行决定，不会出现） */
   | 'OCR_LANGUAGE_UNAVAILABLE'
   /** 引擎执行失败 */
   | 'OCR_FAILED'
@@ -49,12 +72,17 @@ export type SystemOcrUnavailableReason =
 export interface SystemOcrCapability {
   /** 本机当前是否真的可以识别图片文字 */
   available: boolean
-  engine: typeof SYSTEM_OCR_ENGINE
+  engine: SystemOcrEngine
   platform: NodeJS.Platform
   arch: string
   /** @napi-rs/system-ocr 运行时版本；无法读取时为 null */
   runtimeVersion: string | null
-  /** 实际可用的 OCR 语言标签（对应 Windows 语言包）；null 表示走系统用户语言 */
+  /**
+   * 实际使用的 OCR 语言标签。
+   *
+   * Windows 为系统语言包对应的标签（如 zh-Hans-CN）；macOS 由 Vision 自行决定识别语言，
+   * 这里恒为 null（对应 UI 的「跟随系统语言」）。null 也表示走系统语言。
+   */
   language: string | null
   reason?: SystemOcrUnavailableReason
   /** 面向用户的中文说明，可直接展示 */
@@ -71,20 +99,20 @@ export interface SystemOcrBoundingBox {
 
 export interface SystemOcrLine {
   text: string
-  /** Windows 恒为 1.0 */
+  /** Windows 恒为 1.0；macOS 为 Vision 返回的逐行平均置信度 */
   confidence: number
   boundingBox: SystemOcrBoundingBox
 }
 
-/** 本地 OCR 结果。不包含任何 Windows handle / native 内部对象。 */
+/** 本地 OCR 结果。不包含任何平台 handle / native 内部对象。 */
 export interface SystemOcrResult {
   success: boolean
   /** 归一化后的文本（去掉 CJK 字符之间的引擎伪空格） */
   text: string
   lines: SystemOcrLine[]
-  /** 实际使用的 OCR 语言标签；null 表示由系统用户语言决定 */
+  /** 实际使用的 OCR 语言标签；null 表示由系统决定识别语言 */
   language: string | null
-  engine: typeof SYSTEM_OCR_ENGINE
+  engine: SystemOcrEngine
   durationMs: number
   /** 命中内存缓存时为 true */
   fromCache?: boolean
@@ -104,21 +132,24 @@ export interface SystemOcrRequest {
 /**
  * 缓存 key 组合。刻意与 ImageInsight 的 `imageHash` 保持不同的键空间，
  * 保证远端 Vision 的旧结果永远不会被当成"本地 OCR 结果"复用，
- * 也保证 System OCR 运行时升级后不会永远命中旧结果。
+ * 也保证 System OCR 运行时升级 / 切换平台后不会永远命中旧结果。
  */
 export const buildSystemOcrCacheKey = (input: {
   imageHash: string
   language: string | null
   runtimeVersion: string | null
   platform?: string
-}): string =>
-  [
+  engine?: SystemOcrEngine
+}): string => {
+  const platform = input.platform ?? 'unknown'
+  return [
     input.imageHash,
-    SYSTEM_OCR_ENGINE,
-    input.platform ?? 'unknown',
+    input.engine ?? resolveSystemOcrEngine(platform),
+    platform,
     input.language ?? 'auto',
     input.runtimeVersion ?? 'unknown'
   ].join('|')
+}
 
 const CJK_CHAR =
   /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef\uac00-\ud7af]/
@@ -126,6 +157,9 @@ const CJK_CHAR =
 /**
  * Windows OCR 会在每个 CJK 字符之间插入空格（"本 地 图 片"）。
  * 这里只删除 **两侧都是 CJK** 的空格，保留 "TraceMemo 本地图片文字识别" 里的真实分隔。
+ *
+ * macOS（Vision）本就输出连续中文，这条规则对它恒等；保留是为了两个平台共用一条
+ * 归一化路径，而不是给 macOS 加特例。
  */
 export const normalizeSystemOcrText = (value: string): string => {
   const source = String(value ?? '')
@@ -149,8 +183,11 @@ export const normalizeSystemOcrText = (value: string): string => {
   return result.trim()
 }
 
-/** 把系统 locale（如 zh-CN / en-US）映射成 Windows OCR 语言标签。 */
-const LANGUAGE_TAG_BY_LOCALE: Record<string, string> = {
+/**
+ * 把系统 locale（如 zh-CN / en-US）映射成 **Windows OCR 语言标签**
+ * （即 Windows 语言包里注册的 BCP-47 标签，中文带 region 子标签）。
+ */
+const WINDOWS_LANGUAGE_TAG_BY_LOCALE: Record<string, string> = {
   zh: 'zh-Hans-CN',
   'zh-cn': 'zh-Hans-CN',
   'zh-hans': 'zh-Hans-CN',
@@ -186,7 +223,51 @@ const LANGUAGE_TAG_BY_LOCALE: Record<string, string> = {
   'ru-ru': 'ru-RU'
 }
 
-export const resolveSystemOcrLanguageTag = (
+/**
+ * 把系统 locale 映射成 **Apple Vision 语言标签**。
+ *
+ * 与 Windows 表刻意分开：Vision 只认脚本级子标签（`zh-Hans` / `zh-Hant`），
+ * 不认 `zh-Hans-CN` 这类 region 组合；港台繁体统一收敛到 `zh-Hant`。
+ */
+const MACOS_LANGUAGE_TAG_BY_LOCALE: Record<string, string> = {
+  zh: 'zh-Hans',
+  'zh-cn': 'zh-Hans',
+  'zh-sg': 'zh-Hans',
+  'zh-hans': 'zh-Hans',
+  'zh-hans-cn': 'zh-Hans',
+  'zh-hans-sg': 'zh-Hans',
+  'zh-tw': 'zh-Hant',
+  'zh-hk': 'zh-Hant',
+  'zh-mo': 'zh-Hant',
+  'zh-hant': 'zh-Hant',
+  'zh-hant-tw': 'zh-Hant',
+  'zh-hant-hk': 'zh-Hant',
+  'zh-hant-mo': 'zh-Hant',
+  en: 'en-US',
+  'en-us': 'en-US',
+  'en-gb': 'en-GB',
+  'en-au': 'en-AU',
+  'en-ca': 'en-CA',
+  ja: 'ja-JP',
+  'ja-jp': 'ja-JP',
+  ko: 'ko-KR',
+  'ko-kr': 'ko-KR',
+  fr: 'fr-FR',
+  'fr-fr': 'fr-FR',
+  de: 'de-DE',
+  'de-de': 'de-DE',
+  es: 'es-ES',
+  'es-es': 'es-ES',
+  it: 'it-IT',
+  'it-it': 'it-IT',
+  pt: 'pt-BR',
+  'pt-br': 'pt-BR',
+  ru: 'ru-RU',
+  'ru-ru': 'ru-RU'
+}
+
+const lookupLanguageTag = (
+  table: Record<string, string>,
   locale: string | null | undefined
 ): string | null => {
   const normalized = String(locale ?? '')
@@ -194,10 +275,25 @@ export const resolveSystemOcrLanguageTag = (
     .toLowerCase()
     .replace(/_/g, '-')
   if (!normalized) return null
-  if (LANGUAGE_TAG_BY_LOCALE[normalized]) return LANGUAGE_TAG_BY_LOCALE[normalized]
+  if (table[normalized]) return table[normalized]
   const primary = normalized.split('-')[0]
-  return LANGUAGE_TAG_BY_LOCALE[primary] ?? null
+  return table[primary] ?? null
 }
+
+/** 系统 locale → Windows OCR 语言标签。 */
+export const resolveWindowsOcrLanguageTag = (locale: string | null | undefined): string | null =>
+  lookupLanguageTag(WINDOWS_LANGUAGE_TAG_BY_LOCALE, locale)
+
+/** 系统 locale → Apple Vision 语言标签。 */
+export const resolveMacOcrLanguageTag = (locale: string | null | undefined): string | null =>
+  lookupLanguageTag(MACOS_LANGUAGE_TAG_BY_LOCALE, locale)
+
+/** 按平台把系统 locale 映射成该平台 OCR 引擎接受的语言标签。 */
+export const resolveSystemOcrLanguageTag = (
+  locale: string | null | undefined,
+  platform: string = 'win32'
+): string | null =>
+  platform === 'darwin' ? resolveMacOcrLanguageTag(locale) : resolveWindowsOcrLanguageTag(locale)
 
 /**
  * 把 native 错误映射成产品级错误码。
@@ -206,6 +302,16 @@ export const resolveSystemOcrLanguageTag = (
  *   - 语言包缺失 / 引擎无法创建：`Windows error 操作成功完成。 (0x00000000)`
  *     —— TryCreateFromLanguage 返回 null 引擎但 HRESULT 是 S_OK，非常容易误判。
  *   - 送给解码器的字节不是可识别的图片：`Windows error Could not recognize file (0x80070005)`
+ *
+ * 已确认的 macOS 行为（1.2.0 / Vision）：
+ *   - 图片无法解码成 CGImage（截断、伪造魔数、维度非法）：
+ *     `CRImage Reader Detector was given zero-dimensioned image (0 x 0)`
+ *   - 图片任一边不超过 2px：`The image is too small in at least one dimension 2 x 2 ...`
+ *   - **图片没有文字时是抛错而不是返回空文本**：`No text recognized`
+ *     —— 它必须映射成 `OCR_EMPTY_RESULT`（正常终态）。映射成失败会让表情包 /
+ *     风景图 / 头像全部变成"可重试失败"，既污染派生库也会被反复重试。
+ *   - macOS 没有"语言包缺失"这个概念（Vision 自行决定识别语言），
+ *     所以这里不会映射出 OCR_LANGUAGE_UNAVAILABLE。
  */
 export const mapSystemOcrNativeError = (message: string): SystemOcrErrorCode => {
   const detail = String(message ?? '')
@@ -216,6 +322,12 @@ export const mapSystemOcrNativeError = (message: string): SystemOcrErrorCode => 
   if (/\(0x00000000\)/.test(detail)) return 'OCR_LANGUAGE_UNAVAILABLE'
   if (/Could not recognize file/i.test(detail)) return 'IMAGE_DECODE_FAILED'
   if (/Could not open file/i.test(detail)) return 'IMAGE_DECODE_FAILED'
+  // macOS Vision / CoreImage 解码失败。
+  if (/zero-dimensioned image/i.test(detail)) return 'IMAGE_DECODE_FAILED'
+  if (/The image is too small/i.test(detail)) return 'IMAGE_DECODE_FAILED'
+  if (/CRImage|CIImage|CGImage/i.test(detail)) return 'IMAGE_DECODE_FAILED'
+  // macOS Vision 的"图里没有文字"：正常终态，不是失败。
+  if (/No text recognized/i.test(detail)) return 'OCR_EMPTY_RESULT'
   return 'OCR_FAILED'
 }
 

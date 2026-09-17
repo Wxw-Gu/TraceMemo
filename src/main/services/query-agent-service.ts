@@ -109,10 +109,8 @@ export interface QueryAgentTraceItem {
   /**
    * 本次 Tool Result 里携带 OCR 派生文本的图片消息/证据条数（诊断用，不进模型上下文）。
    *
-   * 存在的意义是让"图片已经识别出文字、但模型没拿到"这类**链路断点**可以被直接观测：
-   * 真机上曾经出现过 `query_messages` 返回了图片消息却只带 `attachment`、
-   * 模型因此回答"没有取得 OCR 文字"。当时从回答文本无法判断是"索引没建"还是"没接上"，
-   * 因为这两件事在日志里长得一模一样。有了这个数字就能一眼分开。
+   * 用来区分"图片索引没建"与"索引建了但没接到 tool result 上"这两类链路断点 ——
+   * 没有这个数字时，两者在回答文本里长得一样。
    */
   imageOcrTextCount?: number
   /** 本次 Tool Result 里图片文字索引的覆盖度状态（`not_built` / `partial` / `complete` / `failed`）。 */
@@ -213,6 +211,26 @@ export interface QueryAgentEvidenceItem {
 const MAX_EVIDENCE_ITEMS = 40
 
 
+/**
+ * 回答格式与单轮语义的硬规则。
+ *
+ * 单独抽出来是为了让它可被测试直接断言 —— 这几条是产品契约，不是措辞偏好：
+ * 换行、改写都可以，但三条实质约束不能丢。
+ */
+export const ANSWER_RULES = `
+回答结构（检索型结果）：
+- **不要用 Markdown 表格**承载多条命中结果 —— 结果栏很窄，表格列宽会错位、长字段换行后难读。改用编号列表：先给一句结论，再逐条列出（发送者 / 时间 / 会话 / 类型 / 内容），最后按需说明与范围。
+- 逐条里的内容若来自本地派生（图片 OCR、语音转写），要写明它来自派生内容，不要说成群友发过的一条这样的文字消息。
+
+单轮语义（重要）：
+- 当前是**单次检索回答**：一次提问、一次检索、一次回答。没有自动连续的多轮工具执行。
+- **禁止**任何"下一步还能帮你继续"的邀约，包括但不限于："如果你需要，我可以…""要不要我继续…""我还可以帮你进一步…""需要的话我再查…""我可以再帮你分析…"。除非该动作在**本轮已经真实执行过**。
+- 需要收口时，用陈述句说明范围（如"以上为当前检索范围内的结果"），或者直接结束。
+
+事实与推断：
+- 没有内容哈希 / artifact 同一性这些直接证据时，不要写"就是同一张图转发了三次"这类确定说法，只能写"内容高度相似，可能是同一张或同系列"。
+- 范围说明只在确有必要时给：索引覆盖不完整、内容属于本地派生、时间或检索范围受限、有已知未覆盖数据。不要在每次回答末尾机械复读同一句。`
+
 const SYSTEM_PROMPT = `你是 TraceMemo 的本地聊天查询助手，只能使用提供的四个 Query Tool 获取事实，最终回答只基于 Tool Result。
 
 规划原则：
@@ -250,7 +268,8 @@ const SYSTEM_PROMPT = `你是 TraceMemo 的本地聊天查询助手，只能使�
   - not_indexed：这条图片还没进图片文字索引。**不许**把“还没索引”说成“图片里没有文字”；若 imageOcrCoverage 不是 complete，必须说明当前无法确认。
 - 图片文字索引状态一律以 Tool Result 的结构化字段为准。**不要**在回答里凭空建议“可以先建立图片文字索引再查”——只有 imageOcrCoverage.state 确实是 not_built 时才可以这么说。
 - 区分「图片里确实没有文字」（OCR 结果为空，属于已处理的正常终态）与「图片还没被索引」（覆盖缺口）：前者是事实，后者不能当成事实。
-缺少必要信息时用自然语言澄清；超出工具能力时说明不能可靠完成，并给出当前工具可以执行的替代方向。`
+缺少必要信息时用自然语言澄清；超出工具能力时说明不能可靠完成，并给出当前工具可以执行的替代方向。
+${ANSWER_RULES}`
 
 function toolDefinitions(): AIChatToolDefinition[] {
   return LOCAL_QUERY_TOOL_DEFINITIONS.map((tool) => ({
@@ -707,13 +726,9 @@ function nextToolDefinitions(name: string, result: QueryAgentToolResult, state: 
     /**
      * 这里**不能**因为"时间范围已经是全部"就关掉重试。
      *
-     * 原实现是 `if (rangeWasAll && resultCount === 0) return []`，依据是"时间不能再放宽了、
-     * 更窄只会更少"。但 0 结果的重试本来就不是为了改时间 —— 它是为了放宽
-     * **direction / messageTypes**：「我给 X 发了什么图片」被错判成 `from_target` 时，
-     * 换成 `to_target` 会从 0 条变成有结果。
-     *
-     * 这个守卫的后果正是真机那个回归：工具没发出去 → 第二次调用被
-     * `tool_availability` 拒掉 → 模型想改向也调不动 → 只能回头问用户"是不是方向搞错了"。
+     * 0 结果的重试不是为了让时间更宽 —— 它的作用是放宽 **direction / messageTypes**：
+     * 「我给 X 发了什么图片」被判成 `from_target` 时，换成 `to_target` 会从 0 条变成有结果。
+     * 一旦在这里关掉，模型想改向也调不动，只能回头问用户"是不是方向搞错了"。
      *
      * 时间范围不可变由 `constraint_time_range_immutable` 单独把关，
      * 完全相同的重试由 `duplicate_retry` 拦下，次数由 ZERO_RESULT_RETRY_LIMIT 限制，
@@ -859,9 +874,12 @@ class EvidenceCollector {
           ? { messageType: record.sourceKind }
           : {}),
       ...(typeof record.text === 'string' && record.text ? { text: record.text } : {}),
-      // 「靠图片里的文字命中」这个来源语义必须带到 UI：用户要能看出这条答案来自
-      // 图片 OCR，而不是群友真发了一条文字消息。messageRef 仍然指向原始图片消息。
-      ...(record.derivedSource === 'image_ocr' ? { derivedSource: 'image_ocr' as const } : {}),
+      // 派生来源原样透传到 UI（取值集合由 `KnowledgeDerivedSource` 约束）：
+      // 用户要能看出这条答案来自图片 OCR / 语音转写，而不是群友真发了一条文字消息。
+      // messageRef 始终指向原始消息，authoritative source 不变。
+      ...(record.derivedSource === 'image_ocr' || record.derivedSource === 'voice_transcript'
+        ? { derivedSource: record.derivedSource }
+        : {}),
       ...(typeof record.imageOcrText === 'string' && record.imageOcrText
         ? { imageOcrText: record.imageOcrText }
         : {}),

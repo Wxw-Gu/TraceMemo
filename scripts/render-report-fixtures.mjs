@@ -24,10 +24,17 @@ const avatarSvg = (label, color) =>
     `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><rect width="96" height="96" rx="18" fill="${color}"/><text x="48" y="58" text-anchor="middle" font-family="PingFang SC, sans-serif" font-size="36" fill="#0f172a">${label}</text></svg>`
   ).toString('base64')}`
 
-const localImagePath = '/Users/Wxw_/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/a969409112_d784/temp/RWTemp/2026-07/94ce24699a5a1d539c00a37ec8ace755.png'
-const sampleImage = fs.existsSync(localImagePath)
-  ? `data:image/png;base64,${fs.readFileSync(localImagePath).toString('base64')}`
-  : avatarSvg('图', '#dbeafe')
+/**
+ * 可选的本地样例图（用于人工核对图片区块的排版）。
+ *
+ * 走环境变量传入，**不要在源码里写本机路径** —— 微信数据目录会连带暴露
+ * 系统用户名与账号目录名。不传就退回内置的 SVG 头像占位。
+ */
+const localImagePath = process.env.REPORT_FIXTURE_IMAGE || ''
+const sampleImage =
+  localImagePath && fs.existsSync(localImagePath)
+    ? `data:image/png;base64,${fs.readFileSync(localImagePath).toString('base64')}`
+    : avatarSvg('图', '#dbeafe')
 
 const avatars = {
   阿宇: avatarSvg('宇', '#dcfce7'),

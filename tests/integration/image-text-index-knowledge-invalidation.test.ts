@@ -1,5 +1,5 @@
 /**
- * §2 / §3 的硬条件：清理图片文字索引必须让 **Knowledge 里已经产生的 OCR 派生文字**一起失效。
+ * 硬条件：清理图片文字索引必须让 **Knowledge 里已经产生的 OCR 派生文字**一起失效。
  *
  * 背景：OCR 文本经 normalizer 的固定前缀 `图片文字：` 拼进 `searchableText`，
  * 再进 chunks / FTS。所以"清理成功"不能只等于"派生 SQLite 删掉了" ——
@@ -96,9 +96,7 @@ function imageMessageWithoutOcr(caption?: string): KnowledgeSourceMessage {
 }
 
 function searchTokens(store: KnowledgeStore, text: string): string[] {
-  return store
-    .search({ accountId: ACCOUNT, text, limit: 20 })
-    .map((item) => item.messageId)
+  return store.search({ accountId: ACCOUNT, text, limit: 20 }).map((item) => item.messageId)
 }
 
 function evidenceFor(store: KnowledgeStore, text: string) {
@@ -115,7 +113,7 @@ async function indexConversation(
   })
 }
 
-describe('§2-A Knowledge 侧的失效机制：OCR 派生文字必须能真的消失', () => {
+describe('Knowledge 侧的失效机制：OCR 派生文字必须能真的消失', () => {
   it('图片消息仍然存在、只是 OCR 文本没了 → 旧 OCR 文字搜不到，普通文字不受影响', async () => {
     const store = new KnowledgeStore(makeRoot(), ACCOUNT, fts)
 
@@ -155,7 +153,7 @@ describe('§2-A Knowledge 侧的失效机制：OCR 派生文字必须能真的�
     store.close()
   })
 
-  it('§3：OCR 文本变化（state 仍是 indexed）也必须让旧文本失效', async () => {
+  it('OCR 文本变化（state 仍是 indexed）也必须让旧文本失效', async () => {
     const store = new KnowledgeStore(makeRoot(), ACCOUNT, fts)
 
     await indexConversation(store, [textMessage(), imageMessageWithOcr()])
@@ -175,7 +173,7 @@ describe('§2-A Knowledge 侧的失效机制：OCR 派生文字必须能真的�
   })
 })
 
-describe('§2-B 生产路径：清理必须逐会话重建 Knowledge', () => {
+describe('生产路径：清理必须逐会话重建 Knowledge', () => {
   function imageMessage(localId: number, conversationId: string): chat.FormattedMessage {
     return {
       localId: String(localId),
@@ -215,9 +213,14 @@ describe('§2-B 生产路径：清理必须逐会话重建 Knowledge', () => {
     await service.startPass()
     await vi.waitFor(() => expect(service.isRunning()).toBe(false))
 
-    // 两个会话都真的产生了绑定。
+    /**
+     * 这个 fixture **刻意没有解密服务** ⇒ 所有图片都落成 `image_missing`，没有一条
+     * 可搜索的 OCR 文字。所以本遍**不应该**叫醒 Knowledge：
+     * 索引侧没有可搜索内容变化，重建纯属白读一遍 WCDB。
+     * （"有文字 ⇒ 必须重建"由 image-text-index-store-cache 的门控用例覆盖。）
+     */
     const databasePath = getImageTextIndexDatabasePath(databaseRoot, ACCOUNT)
-    expect(onConversationIndexed).toHaveBeenCalledTimes(2)
+    expect(onConversationIndexed).toHaveBeenCalledTimes(0)
 
     onConversationIndexed.mockClear()
     const result = await service.clear()

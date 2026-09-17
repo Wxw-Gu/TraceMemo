@@ -765,7 +765,8 @@ export class KnowledgeStore {
       evidence: asRows(
         this.database
           .prepare(
-            `SELECT m.conversation_id, m.message_id, m.create_time, m.searchable_text, m.kind, m.sender_id, m.sender_name
+            `SELECT m.conversation_id, m.message_id, m.create_time, m.searchable_text, m.kind, m.sender_id, m.sender_name,
+                    m.image_ocr_text, m.voice_transcript
            FROM knowledge_messages m
            WHERE ${clauses.join(' AND ')}
            ORDER BY m.create_time DESC
@@ -797,7 +798,18 @@ export class KnowledgeStore {
       // 来源信息由下面的结构化字段表达。
       text: toEvidenceDisplayText(String(row.searchable_text)),
       ...(row.image_ocr_text ? { imageOcrText: String(row.image_ocr_text) } : {}),
-      ...(row.image_ocr_text ? { derivedSource: 'image_ocr' as const } : {}),
+      /*
+       * 来源标记按"这条消息带什么派生内容"判定，与 `sourceKind` 正交：
+       * `image_ocr` = 靠图片里的文字命中，`voice_transcript` = 靠语音转写命中。
+       *
+       * 两者都有时以图片 OCR 为先 —— 图片消息不会同时带语音转写，这里只是取确定值，
+       * 实际不会出现需要二选一的数据。
+       */
+      ...(row.image_ocr_text
+        ? { derivedSource: 'image_ocr' as const }
+        : String(row.voice_transcript || '').trim()
+          ? { derivedSource: 'voice_transcript' as const }
+          : {}),
       score: String(row.kind) === 'system' ? 1 : 0
     }
   }

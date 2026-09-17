@@ -11,23 +11,61 @@
  * 2. `ImageOcrBinding`  —— 「某个会话里的某条图片消息 → 某个 artifact」的绑定，保证去重不丢来源。
  */
 
-/** 派生文本的引擎标识；与 System OCR 的引擎常量保持一致。 */
-export const IMAGE_TEXT_INDEX_ENGINE = 'windows-system-ocr'
+/**
+ * 派生文本的引擎标识**不在这里定义**：它是 System OCR 运行时按平台决定的
+ * （`resolveSystemOcrEngine`），并随 `ImageOcrProvenance` 一起进入 artifact 指纹。
+ * 本模块只消费该值，不再持有任何单一平台的引擎常量。
+ */
 
 /** 派生库自身的 schema 版本（与 Knowledge 的 schema 相互独立）。 */
 export const IMAGE_TEXT_INDEX_SCHEMA_VERSION = 1
 
-/**
- * OCR 并发上限。
- *
- * 当前实现**严格串行**（循环体内只有一次 await，无 Promise.all 扇出），等价于 1。
- * 这个常量是后续调高的唯一入口：Windows OCR 是进程内 WinRT 调用，实测单张
- * 20–40ms，串行已足够；调高只会和 Query Agent 抢 CPU。
- */
-export const DEFAULT_IMAGE_TEXT_OCR_CONCURRENCY = 1
-
 /** 每个批次的图片条数；批间让出 event loop，保证 UI / 查询不被卡住。 */
 export const IMAGE_TEXT_INDEX_BATCH_SIZE = 12
+
+/**
+ * 正常运行态下，向 Renderer 推送进度的最小间隔。
+ *
+ * 后台仍然按 `IMAGE_TEXT_INDEX_BATCH_SIZE` 推进（batch / checkpoint / 并发都不受影响），
+ * 但**UI 不该感知 batch 大小** —— 每批都推会让计数以「+12」的粒度跳动。
+ * 所以这里只节流**通知**：状态变化（开始/暂停/继续/取消/失败/完成/清理）一律立即推送。
+ */
+export const IMAGE_TEXT_INDEX_PROGRESS_INTERVAL_MS = 5000
+
+/** 速度统计窗口：取最近这段时间的增量，而不是整个任务的平均。 */
+export const IMAGE_TEXT_INDEX_RATE_WINDOW_MS = 60_000
+
+/** 窗口内至少要有这么长的跨度才给出速度，否则显示「计算中」。 */
+export const IMAGE_TEXT_INDEX_RATE_MIN_SPAN_MS = 20_000
+
+/**
+ * OCR 并发度**硬上限**。
+ *
+ * `@napi-rs/system-ocr` 的 `recognize()` 是 napi AsyncTask，实际执行会占用
+ * libuv **共享**线程池（fs / zlib / dns 等 native 异步工作也在用同一个池）。
+ * 开得太高不会让单个识别更快，只会挤占同一进程里其它 native 异步工作。
+ */
+export const MAX_IMAGE_TEXT_OCR_CONCURRENCY = 4
+
+/**
+ * 默认 OCR 并发度（生产值）。
+ *
+ * 取值规则：在"吞吐明显更高、且 CPU / UI 交互代价可接受"的前提下取**最低**并发。
+ * 超过 2 之后单次识别耗时会明显劣化（多个识别互相争抢 CPU），
+ * 属于"多出来的并发全花在争抢上"。
+ *
+ * **这个值是待复测的**：原取舍依据来自一次现已修复的固定开销存在时的对照，
+ * 而那个开销不随并发变化、会压扁并发收益。需要重新做锁定输入的对照后再决定；
+ * 在那之前保持 2，不要按"池子多大就用多大"去推。
+ */
+export const DEFAULT_IMAGE_TEXT_OCR_CONCURRENCY = 2
+
+/** 解析并发度：只接受 1..MAX 的整数，其余一律回落到默认值。 */
+export function resolveImageTextOcrConcurrency(raw?: string | number | null): number {
+  const value = typeof raw === 'number' ? raw : Number.parseInt(String(raw ?? ''), 10)
+  if (!Number.isFinite(value) || value < 1) return DEFAULT_IMAGE_TEXT_OCR_CONCURRENCY
+  return Math.min(MAX_IMAGE_TEXT_OCR_CONCURRENCY, Math.floor(value))
+}
 
 /** 已完成一批之后、回到会话循环前的让出时间。 */
 export const IMAGE_TEXT_INDEX_YIELD_MS = 0
@@ -222,6 +260,15 @@ export interface ImageTextIndexProgress {
   cancellable: boolean
   paused: boolean
   lastError?: string
+  /**
+   * 最近窗口（`IMAGE_TEXT_INDEX_RATE_WINDOW_MS`）的实测速度，单位 张/秒。
+   *
+   * 刻意用**滑动窗口**而不是整个任务的平均：全量回填要跑几小时，
+   * 历史平均会把"现在到底快不快"完全糊掉。样本跨度不足时为 null（UI 显示"计算中"）。
+   */
+  speedPerSec?: number | null
+  /** 按当前窗口速度估算的剩余时间（毫秒）；速度不可用或分母不可信时为 null。 */
+  etaMs?: number | null
 }
 
 /**
@@ -278,9 +325,8 @@ export function imageTextCoverageState(coverage: ImageTextIndexCoverage): ImageT
 /**
  * 处理进度百分比。
  *
- * 保留 1 位小数，且**未完成时封顶 99.9%**：
- * `Math.round(45479 / 45707 * 100)` 会得到 `100`，于是出现了"已建立 · 仅完成 100%"
- * 这种自相矛盾的显示。进度条可以近似，结论句不行。
+ * 保留 1 位小数，且**未完成时封顶 99.9%**：直接四舍五入会把 99.5% 显示成 100%，
+ * 于是出现"已建立 · 仅完成 100%"这种自相矛盾的显示。进度条可以近似，结论句不行。
  */
 export function imageTextProcessedPercent(processed: number, total: number): number {
   if (!(total > 0)) return 0
@@ -324,7 +370,7 @@ export interface ImageTextIndexCountResult {
 }
 
 /**
- * 单个会话的图片消息计数探针。
+ * 单个会话的图片消息计数结果。
  *
  * `count: null` = **统计失败**，不等于 0 张。调用方必须区分处理。
  */
@@ -417,6 +463,89 @@ export interface ImageTextIndexStartOptions {
   sinceMs?: number
 }
 
+/** 单个阶段的耗时聚合。**只含性能数字**，不含任何图片内容 / 路径 / 标识。 */
+export interface ImageTextIndexStageStat {
+  count: number
+  mean: number
+  p50: number
+  p95: number
+  max: number
+}
+
+/**
+ * backfill 的**只读性能画像**，用来回答"时间花在哪一段"。
+ *
+ * 只写性能数字，不含图片内容 / 路径 / 会话标识；UI 不渲染，仅落到 app log。
+ * 刻意不暴露单张图片的耗时序列：那会把"哪张图慢"变成可推断的信息。
+ */
+export interface ImageTextIndexStageTimings {
+  /** 本遍累计计数（与 UI 进度同源）。让这一行日志自洽，不必再去别处对数。 */
+  counters: {
+    processed: number
+    indexed: number
+    empty: number
+    missing: number
+    failed: number
+  }
+  /** 最近窗口的实测速度（张/秒）；样本不足或分母不可信时为 null。 */
+  ratePerSec: number | null
+  /** 本遍实际执行过的 OCR 次数（命中已有 artifact 而跳过的不计）。 */
+  ocrExecutions: number
+  /** 本遍生效的 OCR 并发度。 */
+  ocrConcurrency: number
+  /** 找图片文件（同步，占主线程）。 */
+  locate: ImageTextIndexStageStat
+  /** 解密（同步 + CPU，占主线程）。 */
+  decrypt: ImageTextIndexStageStat
+  /** 构造可识别输入（base64 编码；Windows 还包含转 PNG）。 */
+  normalize: ImageTextIndexStageStat
+  /** 识别（异步）。 */
+  ocr: ImageTextIndexStageStat
+  /** 写 artifact + binding（SQLite，单 writer）。 */
+  persist: ImageTextIndexStageStat
+  /**
+   * 单张图片在流水线里的净耗时。
+   *
+   * 分母只含真正进入流水线的图片，所以这个值可以直接与上面五段之和对照；
+   * **不要用"整遍耗时 ÷ 处理张数"**，那会把 `preLoop` 的一次性成本摊进每张图片。
+   */
+  perImageMs: number
+  /**
+   * 本遍因为"没有可搜索内容变化"而**跳过** Knowledge 重建的会话数。
+   *
+   * 与 `preLoop.onConversationIndexedMs` 配套看：跳过越多、那段时间越小，
+   * 说明门控在起作用。它同时是"到底有没有白做"的直接证据。
+   */
+  knowledgeIndexSkipped: number
+  /** 进入流水线**之前**的一次性成本（不按图片数摊）。 */
+  preLoop: ImageTextIndexPreLoopCost
+}
+
+/**
+ * 流水线**之外**的成本（单位毫秒），用来解释"单张成本很低、整遍却很慢"。
+ *
+ * 这个结构的每一个字段都是"有理由不属于单张成本"的量：
+ * 一次性的、每会话一次的、以及**别的模块**的。它们必须单独可见 ——
+ * 否则 `perImageMs` 会看起来很好，而墙钟吞吐差好几倍，且无从归因。
+ */
+export interface ImageTextIndexPreLoopCost {
+  /** 一遍 pass 开始前的一次性成本（能力探测 + 全账号图片统计 + 会话列表）。 */
+  startupMs: number
+  /** └ 其中：统计图片消息总数（遍历全部会话的 SQL）。 */
+  countImageMessagesMs: number
+  /** 每个会话进入流水线前的准备累计（水位 / 计数 / `listMessages`）。 */
+  conversationSetupMs: number
+  /** └ 其中：读取并格式化会话消息累计。**已知的大头之一**。 */
+  listMessagesMs: number
+  /**
+   * 会话完成后等待 Knowledge 重建（`onConversationIndexed`）的累计。
+   *
+   * 这是**别的模块**的成本：Knowledge 侧会对同一个会话再全量读一遍消息并整篇写索引，
+   * 而且如果此时有索引在跑还会先等它。它不在 batch 循环里，所以 `perImageMs` 看不到它。
+   */
+  onConversationIndexedMs: number
+}
+
 /** 对外状态快照（问问微信卡片 / 设置清理页共用同一份）。 */
 export interface ImageTextIndexStatus {
   progress: ImageTextIndexProgress
@@ -424,4 +553,6 @@ export interface ImageTextIndexStatus {
   storage: ImageTextIndexStorageStats
   /** 正在做「检测到多少条图片消息」的 SQL 统计。 */
   counting: boolean
+  /** 各阶段耗时画像（可选的附加诊断字段，UI 不渲染）。 */
+  stageTimings?: ImageTextIndexStageTimings
 }

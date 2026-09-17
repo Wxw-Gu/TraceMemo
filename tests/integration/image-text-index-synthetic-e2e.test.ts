@@ -1,5 +1,5 @@
 /**
- * §2：图片 OCR 来源语义的 **deterministic synthetic E2E**。
+ * 图片 OCR 来源语义的 **deterministic synthetic E2E**。
  *
  * 硬要求是"不依赖真实线上 AI 模型也能 PASS"，所以这里把两个外部边界**确定性**地固定住：
  * - WCDB（chat-service）→ 用合成联系人 / 合成消息；
@@ -124,7 +124,7 @@ function makeKnowledge() {
 
 const NOW = new Date('2026-09-16T09:00:00+08:00')
 
-describe('§2 图片文字索引 synthetic E2E（确定性，不依赖真模型）', () => {
+describe('图片文字索引 synthetic E2E（确定性，不依赖真模型）', () => {
   let knowledge: ReturnType<typeof makeKnowledge>
   let service: LocalQueryApiService
 
@@ -244,7 +244,7 @@ describe('§2 图片文字索引 synthetic E2E（确定性，不依赖真模型�
   })
 })
 
-describe('§3 partial coverage honesty（确定性，不依赖真模型）', () => {
+describe('partial coverage honesty（确定性，不依赖真模型）', () => {
   const NOT_INDEXED_KEYWORD = 'TRACE_NOT_YET_INDEXED_IMAGE'
 
   function partialImageCoverage() {

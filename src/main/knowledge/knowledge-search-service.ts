@@ -1081,7 +1081,7 @@ export class KnowledgeSearchService {
     lane: WcdbReadLane = 'interactive'
   ): ReturnType<typeof chat.listMessagesAsync> {
     return this.enqueueWcdbRead(
-      () => chat.listMessagesAsync(conversationId, startTime, endTime),
+      () => chat.listMessagesAsync(conversationId, startTime, endTime, undefined, undefined, 'knowledge'),
       lane
     )
   }

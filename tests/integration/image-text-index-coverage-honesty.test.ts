@@ -1,14 +1,13 @@
 /**
- * 事故回归：**"4.5 万张全部失败，UI 却说已建立"** 这一整套语义。
+ * 覆盖度诚实性：**派生库的统计绝不能替用户宣称"已经建好了"。**
  *
- * 真机现场（派生库实测）：
- *   total = 45,707 / 全部 binding = decrypt_failed 45,479 / artifacts = 0 行
- * 根因是解密服务在回填时不存在（只在 db:getImage 里懒加载），每张图都在
- * `processOne` 第一步就失败。这里把"不许再发生"的四件事钉死：
- *   1. 前置依赖缺失时必须**一条记录都不写**（preflight）；
- *   2. 处理过但一条没成功 = **异常**，不是"已建立"；
- *   3. 百分比不许四舍五入到 100（45,479 / 45,707）；
+ * 这一组覆盖四条彼此独立的硬约束：
+ *   1. 前置依赖缺失时必须**一条记录都不写**（否则会写出一堆假失败）；
+ *   2. 处理过但一条都没成功 = **异常**，不是"已建立"，且必须阻断 complete；
+ *   3. 百分比不许四舍五入到 100（99.5% 不能显示成"全部完成"）；
  *   4. 重置失败记录**不能**动已经成功的记录。
+ *
+ * 判据来自 `ImageTextIndexStore.countByState()` 的落盘统计，不依赖任何内存计数器。
  */
 import { mkdtempSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
@@ -28,12 +27,12 @@ import {
   type ImageTextIndexCoverage
 } from '../../src/shared/image-text-index'
 
-const ACCOUNT = 'wxid_incident_fixture'
-const CONVERSATION = 'md5-incident'
+const ACCOUNT = 'wxid_coverage_fixture'
+const CONVERSATION = 'md5-coverage'
 const roots: string[] = []
 
 function makeRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), 'tm-image-incident-'))
+  const root = mkdtempSync(join(tmpdir(), 'tm-image-coverage-'))
   roots.push(root)
   return root
 }
@@ -69,13 +68,13 @@ function coverageOf(overrides: Partial<ImageTextIndexCoverage>): ImageTextIndexC
   }
 }
 
-describe('事故语义：全失败不能叫"已建立"', () => {
+describe('全失败不能叫"已建立"', () => {
   it('indexed/empty/missing 全为 0 而 failed 不为 0 → 异常，且 complete 必为 false', () => {
     const coverage = coverageOf({
-      totalImageMessages: 45_707,
-      processed: 45_479,
-      failed: 45_479,
-      pending: 228,
+      totalImageMessages: 2000,
+      processed: 1990,
+      failed: 1990,
+      pending: 10,
       established: true,
       countedAt: 1_789_516_520_246,
       complete: false, // 服务侧已经算出 false；这里验证状态与文案
@@ -87,12 +86,12 @@ describe('事故语义：全失败不能叫"已建立"', () => {
     expect(describeImageTextCoverage(coverage)).not.toContain('已覆盖全部')
   })
 
-  it('45,479 / 45,707 不能显示成 100%', () => {
-    // Math.round(45479 / 45707 * 100) === 100 —— 这正是"仅完成 100%"的来源。
-    expect(Math.round((45_479 / 45_707) * 100)).toBe(100)
+  it('处理好绝大多数时不能四舍五入显示成 100%', () => {
+    // Math.round(1990 / 2000 * 100) === 100 —— 这就是"未完成却显示 100%"的来源。
+    expect(Math.round((1990 / 2000) * 100)).toBe(100)
     // 正确口径：保留 1 位小数，未完成时封顶 99.9。
-    expect(imageTextProcessedPercent(45_479, 45_707)).toBe(99.5)
-    expect(imageTextProcessedPercent(45_707, 45_707)).toBe(100)
+    expect(imageTextProcessedPercent(1990, 2000)).toBe(99.5)
+    expect(imageTextProcessedPercent(2000, 2000)).toBe(100)
     expect(imageTextProcessedPercent(0, 0)).toBe(0)
   })
 
@@ -172,7 +171,7 @@ describe('事故语义：全失败不能叫"已建立"', () => {
   })
 })
 
-describe('事故防线：前置依赖缺失时一条记录都不写', () => {
+describe('前置依赖缺失时一条记录都不写', () => {
   it('解密服务不可用 → pass 直接报错，不写任何 binding', async () => {
     const databaseRoot = makeRoot()
     const databasePath = getImageTextIndexDatabasePath(databaseRoot, ACCOUNT)
@@ -181,7 +180,7 @@ describe('事故防线：前置依赖缺失时一条记录都不写', () => {
       databaseRoot,
       resolveAccountId: () => ACCOUNT,
       listContacts: async () => [
-        { md5: CONVERSATION, m_nsUsrName: 'incident', type: 'group' as const }
+        { md5: CONVERSATION, m_nsUsrName: 'coverage', type: 'group' as const }
       ],
       listMessages: async () => [imageMessage(1)],
       countConversationImages: async () => ({ count: 1, typeColumn: 'local_type' }),
@@ -193,7 +192,7 @@ describe('事故防线：前置依赖缺失时一条记录都不写', () => {
         runtimeVersion: '1.2.0',
         language: 'zh-Hans-CN'
       }),
-      // 关键：没有解密服务（本次事故的根因形态）
+      // 关键：解密服务缺失是**运行时**问题，不能落成每张图的"解密失败"
       decryptService: () => null
     })
 
@@ -201,7 +200,7 @@ describe('事故防线：前置依赖缺失时一条记录都不写', () => {
     await vi.waitFor(() => expect(service.isRunning()).toBe(false))
 
     const status = await service.getStatus()
-    // 这一条就是整场事故的防线：宁可一次都不跑，也不要写 45,479 条假失败。
+    // 判据：宁可一次都不跑，也不要写一堆假失败把派生库和 coverage 一起污染。
     expect(status.progress.state).toBe('error')
     expect(status.progress.lastError).toContain('解密服务')
     expect(status.coverage.processed).toBe(0)
@@ -215,7 +214,7 @@ describe('事故防线：前置依赖缺失时一条记录都不写', () => {
   })
 })
 
-describe('事故收尾：重置失败记录不能动成功记录', () => {
+describe('重置失败记录不能动成功记录', () => {
   it('只删失败绑定与它们的 checkpoint，indexed 一条不动', async () => {
     const databaseRoot = makeRoot()
     const databasePath = getImageTextIndexDatabasePath(databaseRoot, ACCOUNT)
