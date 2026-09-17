@@ -1,11 +1,10 @@
 {
   "note": "测试文件类型检查基线：只允许下降，不允许上升。用 node scripts/typecheck-tests.cjs --update 下调。",
-  "total": 258,
+  "total": 240,
   "files": {
     "tests/component/ai-model-settings.test.tsx": 2,
     "tests/component/ai-search-cache-consent.test.tsx": 3,
     "tests/component/ai-search-knowledge-status-hook.test.tsx": 1,
-    "tests/component/ai-search-query-agent.test.tsx": 18,
     "tests/component/ai-search-run-hook.test.tsx": 1,
     "tests/component/ai-search-workspace-regression.test.tsx": 4,
     "tests/component/database-connection.test.tsx": 2,

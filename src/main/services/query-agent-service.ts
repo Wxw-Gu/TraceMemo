@@ -5,6 +5,9 @@
  * entry point behaves consistently; they differ only by injected tool executor and adapter.
  */
 import type { AIChatToolCall, AIChatToolDefinition } from './ai-provider-service'
+// 引用清理与 Legacy AI Search 共用同一份实现（不复制第二套逻辑），避免两个引擎的
+// "哪些 [E#] 合法" 判断分叉。
+import { sanitizeAnswerCitations } from './ai-search-evidence'
 import {
   LOCAL_QUERY_TOOL_DEFINITIONS,
   type QueryCorpusScope,
@@ -12,21 +15,28 @@ import {
   type QueryTemporalBasisKind
 } from '../../shared/local-query-api'
 // 进度事件定义在 shared（renderer 也要用），这里只是把它带进本文件作用域。
-import type {
-  QueryAgentProgressEvent,
-  QueryAgentProgressStage
-} from '../../shared/query-agent'
+import type { QueryAgentProgressEvent, QueryAgentProgressStage } from '../../shared/query-agent'
 
 const MAX_TOOL_CALLS = 5
-const FORBIDDEN_INPUT_KEYS = new Set(['apiKey', 'authorization', 'token', 'databasePath', 'sql', 'wxid', 'md5'])
+const FORBIDDEN_INPUT_KEYS = new Set([
+  'apiKey',
+  'authorization',
+  'token',
+  'databasePath',
+  'sql',
+  'wxid',
+  'md5'
+])
 // 每个工具在“首次执行但结果为 0”之后允许的额外重试次数上限。
 const ZERO_RESULT_RETRY_LIMIT = 1
 // absolute 时间契约：LLM 只能给带时区的 ISO-8601 字符串，Host 负责换算成 Local Query API 的 epoch seconds。
-const ISO_ABSOLUTE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/
+const ISO_ABSOLUTE_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/
 // sanity 窗口：聊天记录不可能早于 2000 年，也不允许查询明显属于未来的区间。
 const ABSOLUTE_MIN_MS = Date.UTC(2000, 0, 1)
 const ABSOLUTE_MAX_FUTURE_MS = 366 * 24 * 60 * 60 * 1000
-const ISO_ABSOLUTE_HINT = '带时区偏移的 ISO-8601，例如 2026-08-01T00:00:00+08:00 或 2026-07-31T16:00:00Z'
+const ISO_ABSOLUTE_HINT =
+  '带时区偏移的 ISO-8601，例如 2026-08-01T00:00:00+08:00 或 2026-07-31T16:00:00Z'
 
 interface ToolSchema {
   type?: string
@@ -53,7 +63,12 @@ export interface ToolArgumentValidationError {
 }
 
 export interface QueryAgentProvider {
-  getRuntimeConfig(): { configured: boolean; providerName: string; model: string; modelName: string }
+  getRuntimeConfig(): {
+    configured: boolean
+    providerName: string
+    model: string
+    modelName: string
+  }
   chatWithTools(
     messages: Array<Record<string, unknown>>,
     tools: AIChatToolDefinition[]
@@ -135,7 +150,11 @@ export interface QueryAgentModelCallDiagnostic {
  * 'provider_unavailable' = Provider 未配置；'provider_failure' = 模型请求本身失败
  * （网络 / 上游 / 超时）。未分类的异常由 Adapter 归类为 runtime_error。
  */
-export type QueryAgentErrorKind = 'invalid_question' | 'provider_unavailable' | 'provider_failure' | 'tool_limit'
+export type QueryAgentErrorKind =
+  | 'invalid_question'
+  | 'provider_unavailable'
+  | 'provider_failure'
+  | 'tool_limit'
 
 /**
  * 多轮澄清所需的最小历史。**由 Adapter 提供**，Runtime 只负责按顺序放进 messages。
@@ -167,6 +186,12 @@ export interface QueryAgentResult {
   errorKind?: QueryAgentErrorKind
   /** 本次回答实际依据的证据（additive）；按首次命中顺序去重。 */
   evidence?: QueryAgentEvidenceItem[]
+  /**
+   * Host 侧 citation 校验中被移除的非法 `[E#]`（additive 诊断字段）。
+   *
+   * 非空表示模型引用了未分配过的编号，已从 `answer` 中移除。
+   */
+  invalidCitationIds?: string[]
 }
 
 /**
@@ -194,6 +219,17 @@ export type QueryAgentToolExecutor = (
  * 只保留可展示字段；messageRef 仍是 opaque 引用。
  */
 export interface QueryAgentEvidenceItem {
+  /**
+   * Host 分配的稳定引用编号（`E1`、`E2`…）。
+   *
+   * 在证据**首次命中**时分配，之后无论被多少 Tool 重复命中都不变；
+   * 同一个编号同时用于（a）Tool Result 里的模型可见上下文、（b）最终回答的校验白名单、
+   * （c）UI 证据卡与底部引用按钮。三条路径必须同号，否则 inline citation 无意义。
+   *
+   * 只有前 `MAX_EVIDENCE_ITEMS` 条（= 会真正出现在 UI 与模型上下文里的那些）才分配编号，
+   * 保证"模型可见集合 ⊆ UI 可见集合并同号"这一不变量。
+   */
+  citationId: string
   messageRef: string
   conversationName?: string
   conversationType?: 'user' | 'group'
@@ -210,6 +246,8 @@ export interface QueryAgentEvidenceItem {
 /** 一次回答最多带出多少条证据（IPC 体积与 UI 噪声控制）。 */
 const MAX_EVIDENCE_ITEMS = 40
 
+/** 尚未分配引用编号的证据条目；编号只在首次收录时由 `EvidenceCollector` 决定。 */
+type PendingEvidenceItem = Omit<QueryAgentEvidenceItem, 'citationId'>
 
 /**
  * 回答格式与单轮语义的硬规则。
@@ -221,6 +259,13 @@ export const ANSWER_RULES = `
 回答结构（检索型结果）：
 - **不要用 Markdown 表格**承载多条命中结果 —— 结果栏很窄，表格列宽会错位、长字段换行后难读。改用编号列表：先给一句结论，再逐条列出（发送者 / 时间 / 会话 / 类型 / 内容），最后按需说明与范围。
 - 逐条里的内容若来自本地派生（图片 OCR、语音转写），要写明它来自派生内容，不要说成群友发过的一条这样的文字消息。
+
+引用（citation）：
+- Tool Result 里每条消息都带 citationId 字段（形如 E1、E2）。**关键事实后面必须标出它来自哪一条**，写法是紧跟该事实加方括号编号，例如：张三提到周五团建[E3]。
+- 只能引用 **Tool Result 里真实出现过的 citationId**。没有 citationId 的消息**不可引用**。
+- **严禁**创建、猜测、改写编号：不要写没出现过的 [E9]，不要把 E3 写成 E30，不要自己编号，也不要改用 [1]、(E3)、【E3】 等其他写法。
+- 无法对应到某条具体消息的概述、推断或范围说明**不加**编号；不要为了"看起来有依据"而给每句话都挂编号。
+- 同一事实由多条消息支持时，可以并列写多个编号，例如 [E2][E7]。
 
 单轮语义（重要）：
 - 当前是**单次检索回答**：一次提问、一次检索、一次回答。没有自动连续的多轮工具执行。
@@ -300,7 +345,9 @@ function sanitizeInput(input: Record<string, unknown>): Record<string, unknown> 
 function containsForbiddenKey(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsForbiddenKey)
   if (!value || typeof value !== 'object') return false
-  return Object.entries(value as Record<string, unknown>).some(([key, child]) => FORBIDDEN_INPUT_KEYS.has(key) || containsForbiddenKey(child))
+  return Object.entries(value as Record<string, unknown>).some(
+    ([key, child]) => FORBIDDEN_INPUT_KEYS.has(key) || containsForbiddenKey(child)
+  )
 }
 
 function actualType(value: unknown): string {
@@ -316,32 +363,78 @@ function schemaTypeMatches(value: unknown, type: string): boolean {
   return actualType(value) === type
 }
 
-function validateSchema(value: unknown, schema: ToolSchema, field = '$'): ToolArgumentValidationError | undefined {
+function validateSchema(
+  value: unknown,
+  schema: ToolSchema,
+  field = '$'
+): ToolArgumentValidationError | undefined {
   if (schema.type && !schemaTypeMatches(value, schema.type)) {
-    return { status: 'invalid_tool_arguments', field, constraint: 'type', expected: schema.type, actual: actualType(value) }
+    return {
+      status: 'invalid_tool_arguments',
+      field,
+      constraint: 'type',
+      expected: schema.type,
+      actual: actualType(value)
+    }
   }
   if (schema.enum && !schema.enum.some((allowed) => Object.is(allowed, value))) {
-    return { status: 'invalid_tool_arguments', field, constraint: 'enum', expected: schema.enum, actual: value }
+    return {
+      status: 'invalid_tool_arguments',
+      field,
+      constraint: 'enum',
+      expected: schema.enum,
+      actual: value
+    }
   }
   if (typeof value === 'string') {
     if (schema.minLength !== undefined && value.length < schema.minLength) {
-      return { status: 'invalid_tool_arguments', field, constraint: 'minLength', expected: schema.minLength, actual: value.length }
+      return {
+        status: 'invalid_tool_arguments',
+        field,
+        constraint: 'minLength',
+        expected: schema.minLength,
+        actual: value.length
+      }
     }
   }
   if (typeof value === 'number') {
     if (schema.minimum !== undefined && value < schema.minimum) {
-      return { status: 'invalid_tool_arguments', field, constraint: 'minimum', expected: schema.minimum, actual: value }
+      return {
+        status: 'invalid_tool_arguments',
+        field,
+        constraint: 'minimum',
+        expected: schema.minimum,
+        actual: value
+      }
     }
     if (schema.maximum !== undefined && value > schema.maximum) {
-      return { status: 'invalid_tool_arguments', field, constraint: 'maximum', expected: schema.maximum, actual: value }
+      return {
+        status: 'invalid_tool_arguments',
+        field,
+        constraint: 'maximum',
+        expected: schema.maximum,
+        actual: value
+      }
     }
   }
   if (Array.isArray(value)) {
     if (schema.minItems !== undefined && value.length < schema.minItems) {
-      return { status: 'invalid_tool_arguments', field, constraint: 'minItems', expected: schema.minItems, actual: value.length }
+      return {
+        status: 'invalid_tool_arguments',
+        field,
+        constraint: 'minItems',
+        expected: schema.minItems,
+        actual: value.length
+      }
     }
     if (schema.maxItems !== undefined && value.length > schema.maxItems) {
-      return { status: 'invalid_tool_arguments', field, constraint: 'maxItems', expected: schema.maxItems, actual: value.length }
+      return {
+        status: 'invalid_tool_arguments',
+        field,
+        constraint: 'maxItems',
+        expected: schema.maxItems,
+        actual: value.length
+      }
     }
     if (schema.items) {
       for (let index = 0; index < value.length; index += 1) {
@@ -354,20 +447,36 @@ function validateSchema(value: unknown, schema: ToolSchema, field = '$'): ToolAr
     const objectValue = value as Record<string, unknown>
     for (const required of schema.required || []) {
       if (!(required in objectValue)) {
-        return { status: 'invalid_tool_arguments', field: field === '$' ? required : `${field}.${required}`, constraint: 'required', expected: true, actual: false }
+        return {
+          status: 'invalid_tool_arguments',
+          field: field === '$' ? required : `${field}.${required}`,
+          constraint: 'required',
+          expected: true,
+          actual: false
+        }
       }
     }
     const properties = schema.properties || {}
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(objectValue)) {
         if (!(key in properties)) {
-          return { status: 'invalid_tool_arguments', field: field === '$' ? key : `${field}.${key}`, constraint: 'additionalProperties', expected: false, actual: true }
+          return {
+            status: 'invalid_tool_arguments',
+            field: field === '$' ? key : `${field}.${key}`,
+            constraint: 'additionalProperties',
+            expected: false,
+            actual: true
+          }
         }
       }
     }
     for (const [key, childSchema] of Object.entries(properties)) {
       if (key in objectValue) {
-        const error = validateSchema(objectValue[key], childSchema, field === '$' ? key : `${field}.${key}`)
+        const error = validateSchema(
+          objectValue[key],
+          childSchema,
+          field === '$' ? key : `${field}.${key}`
+        )
         if (error) return error
       }
     }
@@ -375,8 +484,21 @@ function validateSchema(value: unknown, schema: ToolSchema, field = '$'): ToolAr
   return undefined
 }
 
-function argError(field: string, constraint: string, expected?: unknown, actual?: unknown, hint?: string): ToolArgumentValidationError {
-  return { status: 'invalid_tool_arguments', field, constraint, ...(expected === undefined ? {} : { expected }), ...(actual === undefined ? {} : { actual }), ...(hint ? { hint } : {}) }
+function argError(
+  field: string,
+  constraint: string,
+  expected?: unknown,
+  actual?: unknown,
+  hint?: string
+): ToolArgumentValidationError {
+  return {
+    status: 'invalid_tool_arguments',
+    field,
+    constraint,
+    ...(expected === undefined ? {} : { expected }),
+    ...(actual === undefined ? {} : { actual }),
+    ...(hint ? { hint } : {})
+  }
 }
 
 /**
@@ -392,11 +514,17 @@ function parseIsoInstant(value: string): number | undefined {
   const hour = Number(match[4])
   const minute = Number(match[5])
   const second = Number(match[6])
-  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return undefined
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59)
+    return undefined
   // 先在 UTC 语义下校验字面日期真实存在，再套用时区偏移，避免 2 月 31 日被静默进位。
   const naiveMs = Date.UTC(year, month - 1, day, hour, minute, second)
   const naive = new Date(naiveMs)
-  if (naive.getUTCFullYear() !== year || naive.getUTCMonth() !== month - 1 || naive.getUTCDate() !== day) return undefined
+  if (
+    naive.getUTCFullYear() !== year ||
+    naive.getUTCMonth() !== month - 1 ||
+    naive.getUTCDate() !== day
+  )
+    return undefined
   const offset = match[7]
   if (offset === 'Z') return naiveMs
   const sign = offset.startsWith('-') ? -1 : 1
@@ -406,7 +534,10 @@ function parseIsoInstant(value: string): number | undefined {
   return naiveMs - sign * (offsetHour * 60 + offsetMinute) * 60000
 }
 
-function canonicalizeTimeRange(timeRange: Record<string, unknown>, now: Date): { value?: Record<string, unknown>; error?: ToolArgumentValidationError } {
+function canonicalizeTimeRange(
+  timeRange: Record<string, unknown>,
+  now: Date
+): { value?: Record<string, unknown>; error?: ToolArgumentValidationError } {
   const startTime = timeRange.startTime
   const endTime = timeRange.endTime
   if (timeRange.kind !== 'absolute') {
@@ -415,19 +546,50 @@ function canonicalizeTimeRange(timeRange: Record<string, unknown>, now: Date): {
     return { value: rest }
   }
   if (typeof startTime !== 'string' || typeof endTime !== 'string') {
-    return { error: argError('timeRange.startTime', 'required', ISO_ABSOLUTE_HINT, actualType(startTime ?? endTime), ISO_ABSOLUTE_HINT) }
+    return {
+      error: argError(
+        'timeRange.startTime',
+        'required',
+        ISO_ABSOLUTE_HINT,
+        actualType(startTime ?? endTime),
+        ISO_ABSOLUTE_HINT
+      )
+    }
   }
   const startMs = parseIsoInstant(startTime)
-  if (startMs === undefined) return { error: argError('timeRange.startTime', 'format', ISO_ABSOLUTE_HINT, startTime, ISO_ABSOLUTE_HINT) }
+  if (startMs === undefined)
+    return {
+      error: argError(
+        'timeRange.startTime',
+        'format',
+        ISO_ABSOLUTE_HINT,
+        startTime,
+        ISO_ABSOLUTE_HINT
+      )
+    }
   const endMs = parseIsoInstant(endTime)
-  if (endMs === undefined) return { error: argError('timeRange.endTime', 'format', ISO_ABSOLUTE_HINT, endTime, ISO_ABSOLUTE_HINT) }
-  if (endMs < startMs) return { error: argError('timeRange.endTime', 'range_order', 'endTime 不得早于 startTime', endTime) }
+  if (endMs === undefined)
+    return {
+      error: argError('timeRange.endTime', 'format', ISO_ABSOLUTE_HINT, endTime, ISO_ABSOLUTE_HINT)
+    }
+  if (endMs < startMs)
+    return {
+      error: argError('timeRange.endTime', 'range_order', 'endTime 不得早于 startTime', endTime)
+    }
   const latestMs = now.getTime() + ABSOLUTE_MAX_FUTURE_MS
   const sanityWindow = `2000-01-01 至 ${new Date(latestMs).toISOString()}`
-  if (startMs < ABSOLUTE_MIN_MS || startMs > latestMs) return { error: argError('timeRange.startTime', 'range_sanity', sanityWindow, startTime) }
-  if (endMs < ABSOLUTE_MIN_MS || endMs > latestMs) return { error: argError('timeRange.endTime', 'range_sanity', sanityWindow, endTime) }
+  if (startMs < ABSOLUTE_MIN_MS || startMs > latestMs)
+    return { error: argError('timeRange.startTime', 'range_sanity', sanityWindow, startTime) }
+  if (endMs < ABSOLUTE_MIN_MS || endMs > latestMs)
+    return { error: argError('timeRange.endTime', 'range_sanity', sanityWindow, endTime) }
   // 通过全部校验后才换算成 Local Query API 使用的 epoch seconds。
-  return { value: { kind: 'absolute', startTime: Math.floor(startMs / 1000), endTime: Math.floor(endMs / 1000) } }
+  return {
+    value: {
+      kind: 'absolute',
+      startTime: Math.floor(startMs / 1000),
+      endTime: Math.floor(endMs / 1000)
+    }
+  }
 }
 
 /** canonical（已剥离、已校验）的 temporalBasis。 */
@@ -448,7 +610,11 @@ function canonicalizeToolInput(
   input: Record<string, unknown>,
   now: Date,
   question: string
-): { input?: Record<string, unknown>; temporalBasis?: CanonicalTemporalBasis; error?: ToolArgumentValidationError } {
+): {
+  input?: Record<string, unknown>
+  temporalBasis?: CanonicalTemporalBasis
+  error?: ToolArgumentValidationError
+} {
   const output: Record<string, unknown> = { ...input }
   const rawBasis = output.temporalBasis
   delete output.temporalBasis
@@ -458,21 +624,50 @@ function canonicalizeToolInput(
     const record = rawBasis as Record<string, unknown>
     const kind = record.kind
     if (kind === 'constraint' || kind === 'recall_hint' || kind === 'none') {
-      const sourceText = typeof record.sourceText === 'string' ? record.sourceText.trim() : undefined
+      const sourceText =
+        typeof record.sourceText === 'string' ? record.sourceText.trim() : undefined
       if (kind === 'none') {
         if (sourceText) {
-          return { error: argError('temporalBasis.sourceText', 'forbidden_for_none', null, sourceText, 'kind=none 表示问题里没有任何时间表达，此时不要提供 sourceText。') }
+          return {
+            error: argError(
+              'temporalBasis.sourceText',
+              'forbidden_for_none',
+              null,
+              sourceText,
+              'kind=none 表示问题里没有任何时间表达，此时不要提供 sourceText。'
+            )
+          }
         }
       } else if (!sourceText) {
-        return { error: argError('temporalBasis.sourceText', 'required', '用户原问题中的时间原文片段', undefined, `kind=${kind} 时必须给出用户原问题中实际出现的时间片段。`) }
+        return {
+          error: argError(
+            'temporalBasis.sourceText',
+            'required',
+            '用户原问题中的时间原文片段',
+            undefined,
+            `kind=${kind} 时必须给出用户原问题中实际出现的时间片段。`
+          )
+        }
       } else if (!question.includes(sourceText)) {
-        return { error: argError('temporalBasis.sourceText', 'source_not_in_question', question, sourceText, 'sourceText 必须是用户原问题中逐字出现的片段，不要改写、翻译或补全。') }
+        return {
+          error: argError(
+            'temporalBasis.sourceText',
+            'source_not_in_question',
+            question,
+            sourceText,
+            'sourceText 必须是用户原问题中逐字出现的片段，不要改写、翻译或补全。'
+          )
+        }
       }
       temporalBasis = { kind, ...(sourceText ? { sourceText } : {}) }
     }
   }
 
-  if (output.timeRange && typeof output.timeRange === 'object' && !Array.isArray(output.timeRange)) {
+  if (
+    output.timeRange &&
+    typeof output.timeRange === 'object' &&
+    !Array.isArray(output.timeRange)
+  ) {
     const canonical = canonicalizeTimeRange(output.timeRange as Record<string, unknown>, now)
     if (canonical.error) return { error: canonical.error }
     output.timeRange = canonical.value
@@ -482,13 +677,24 @@ function canonicalizeToolInput(
   if (temporalBasis?.kind === 'none') {
     const kind = rangeKind(output)
     if (kind && kind !== 'all') {
-      return { error: argError('timeRange', 'temporal_basis_mismatch', 'timeRange.kind=all', output.timeRange, '用户没有给出任何时间表达（temporalBasis.kind=none）。请改用 timeRange.kind=all；如果需要 earliest/latest 这类边界，用 order 与 limit 表达。') }
+      return {
+        error: argError(
+          'timeRange',
+          'temporal_basis_mismatch',
+          'timeRange.kind=all',
+          output.timeRange,
+          '用户没有给出任何时间表达（temporalBasis.kind=none）。请改用 timeRange.kind=all；如果需要 earliest/latest 这类边界，用 order 与 limit 表达。'
+        )
+      }
     }
   }
 
   if (name === 'search_messages') {
     const raw = Array.isArray(output.queries) ? (output.queries as unknown[]) : []
-    const probes = raw.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter(Boolean)
+    const probes = raw
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter(Boolean)
     if (!probes.length) return { error: argError('queries', 'required', '至少一个非空检索项') }
     const [first, ...rest] = probes
     delete output.queries
@@ -537,11 +743,20 @@ function lockConstraintTimeRange(
   if (name !== 'query_messages' || temporalBasis?.kind !== 'constraint') return undefined
   const signature = JSON.stringify(input.timeRange ?? null)
   if (!state.lockedConstraintRange) {
-    state.lockedConstraintRange = { signature, timeRange: (input.timeRange as Record<string, unknown>) ?? {} }
+    state.lockedConstraintRange = {
+      signature,
+      timeRange: (input.timeRange as Record<string, unknown>) ?? {}
+    }
     return undefined
   }
   if (state.lockedConstraintRange.signature === signature) return undefined
-  return argError('timeRange', 'constraint_time_range_immutable', state.lockedConstraintRange.timeRange, input.timeRange, '用户明确给出的时间范围不得改变；只能放宽 direction / messageTypes 等非时间条件。')
+  return argError(
+    'timeRange',
+    'constraint_time_range_immutable',
+    state.lockedConstraintRange.timeRange,
+    input.timeRange,
+    '用户明确给出的时间范围不得改变；只能放宽 direction / messageTypes 等非时间条件。'
+  )
 }
 
 /**
@@ -562,7 +777,8 @@ function shouldAutoBroaden(
 
 function normalizedTarget(input: Record<string, unknown>): string {
   const target = input.target
-  const query = target && typeof target === 'object' ? (target as Record<string, unknown>).query : undefined
+  const query =
+    target && typeof target === 'object' ? (target as Record<string, unknown>).query : undefined
   return typeof query === 'string' ? query.trim().toLowerCase() : ''
 }
 
@@ -572,30 +788,70 @@ function retrySignature(name: string, input: Record<string, unknown>): string {
     const probes = [input.query, ...(Array.isArray(input.variants) ? input.variants : [])]
       .filter((value): value is string => typeof value === 'string')
       .map((value) => value.trim().toLowerCase())
-    return JSON.stringify({ target: normalizedTarget(input), timeRange: input.timeRange ?? null, probes: Array.from(new Set(probes)).sort() })
+    return JSON.stringify({
+      target: normalizedTarget(input),
+      timeRange: input.timeRange ?? null,
+      probes: Array.from(new Set(probes)).sort()
+    })
   }
-  const messageTypes = Array.isArray(input.messageTypes) ? [...(input.messageTypes as string[])].sort() : []
-  return JSON.stringify({ target: normalizedTarget(input), timeRange: input.timeRange ?? null, direction: input.direction ?? null, messageTypes })
+  const messageTypes = Array.isArray(input.messageTypes)
+    ? [...(input.messageTypes as string[])].sort()
+    : []
+  return JSON.stringify({
+    target: normalizedTarget(input),
+    timeRange: input.timeRange ?? null,
+    direction: input.direction ?? null,
+    messageTypes
+  })
 }
 
-function duplicateRetry(name: string, input: Record<string, unknown>, state: ZeroResultRetryState): boolean {
+function duplicateRetry(
+  name: string,
+  input: Record<string, unknown>,
+  state: ZeroResultRetryState
+): boolean {
   const signature = retrySignature(name, input)
   if (name === 'search_messages') return state.searchSignatures.includes(signature)
   if (name === 'query_messages') return state.querySignatures.includes(signature)
   return false
 }
 
-function recordAttempt(name: string, input: Record<string, unknown>, state: ZeroResultRetryState): void {
-  if (name === 'search_messages') { state.searchAttempts += 1; state.searchSignatures.push(retrySignature(name, input)) }
-  else if (name === 'query_messages') { state.queryAttempts += 1; state.querySignatures.push(retrySignature(name, input)) }
+function recordAttempt(
+  name: string,
+  input: Record<string, unknown>,
+  state: ZeroResultRetryState
+): void {
+  if (name === 'search_messages') {
+    state.searchAttempts += 1
+    state.searchSignatures.push(retrySignature(name, input))
+  } else if (name === 'query_messages') {
+    state.queryAttempts += 1
+    state.querySignatures.push(retrySignature(name, input))
+  }
 }
 
-function retryNote(name: string, result: QueryAgentToolResult, state: ZeroResultRetryState): string | undefined {
-  if (result.constraint === 'duplicate_retry') return '本次重试的条件与上一次完全相同，已被拒绝；请改用实质不同的条件，或直接基于现有结果作答。'
+function retryNote(
+  name: string,
+  result: QueryAgentToolResult,
+  state: ZeroResultRetryState
+): string | undefined {
+  if (result.constraint === 'duplicate_retry')
+    return '本次重试的条件与上一次完全相同，已被拒绝；请改用实质不同的条件，或直接基于现有结果作答。'
   if (result.status !== 'completed') return undefined
   const counts = resultCount(result)
-  if (name === 'search_messages' && !counts.evidenceCount && state.searchAttempts <= ZERO_RESULT_RETRY_LIMIT) return '本次检索没有任何 Evidence。允许再执行一次 search_messages，但每一项都必须与上一次实质不同；完全相同的检索会被拒绝。'
-  if (name === 'query_messages' && counts.resultCount === 0 && !result.fallbackLookup && state.queryAttempts <= ZERO_RESULT_RETRY_LIMIT) return '本次精确查询返回 0 条。只允许放宽 direction 或 messageTypes 等非时间条件（改变时间范围会被拒绝）。**特别注意方向选反这种情况**：如果问题是“我给 X 发 / 我发给 X 的”，而本次用的是 from_target（对方发来），那是方向选反了 —— 直接改用 to_target 重查一次，这属于允许的实质不同重试。不要因为有 0 条就收尾，也不要问用户“是不是方向搞错了 / 要不要换个方向”，用户已经把说话人讲清楚了。'
+  if (
+    name === 'search_messages' &&
+    !counts.evidenceCount &&
+    state.searchAttempts <= ZERO_RESULT_RETRY_LIMIT
+  )
+    return '本次检索没有任何 Evidence。允许再执行一次 search_messages，但每一项都必须与上一次实质不同；完全相同的检索会被拒绝。'
+  if (
+    name === 'query_messages' &&
+    counts.resultCount === 0 &&
+    !result.fallbackLookup &&
+    state.queryAttempts <= ZERO_RESULT_RETRY_LIMIT
+  )
+    return '本次精确查询返回 0 条。只允许放宽 direction 或 messageTypes 等非时间条件（改变时间范围会被拒绝）。**特别注意方向选反这种情况**：如果问题是“我给 X 发 / 我发给 X 的”，而本次用的是 from_target（对方发来），那是方向选反了 —— 直接改用 to_target 重查一次，这属于允许的实质不同重试。不要因为有 0 条就收尾，也不要问用户“是不是方向搞错了 / 要不要换个方向”，用户已经把说话人讲清楚了。'
   return undefined
 }
 
@@ -604,7 +860,11 @@ export function validateToolArguments(
   value: unknown,
   now: Date = new Date(),
   question = ''
-): { input?: Record<string, unknown>; temporalBasis?: CanonicalTemporalBasis; error?: ToolArgumentValidationError } {
+): {
+  input?: Record<string, unknown>
+  temporalBasis?: CanonicalTemporalBasis
+  error?: ToolArgumentValidationError
+} {
   const definition = LOCAL_QUERY_TOOL_DEFINITIONS.find((tool) => tool.name === name)
   if (!definition) return { error: argError('$', 'tool', 'supported tool', name) }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -618,19 +878,31 @@ export function validateToolArguments(
   return canonicalizeToolInput(name, value as Record<string, unknown>, now, question)
 }
 
-function resultCount(result: QueryAgentToolResult): { resultCount?: number; evidenceCount?: number; sourceMessageCount?: number } {
+function resultCount(result: QueryAgentToolResult): {
+  resultCount?: number
+  evidenceCount?: number
+  sourceMessageCount?: number
+} {
   return {
     resultCount: typeof result.returnedCount === 'number' ? result.returnedCount : undefined,
-    evidenceCount: typeof result.evidenceCount === 'number' ? result.evidenceCount : Array.isArray(result.evidence) ? result.evidence.length : undefined,
+    evidenceCount:
+      typeof result.evidenceCount === 'number'
+        ? result.evidenceCount
+        : Array.isArray(result.evidence)
+          ? result.evidence.length
+          : undefined,
     // 会话概览用它说明"覆盖了多少条源消息"，UI 顶部统计需要真实数字。
-    sourceMessageCount: typeof result.sourceMessageCount === 'number' ? result.sourceMessageCount : undefined
+    sourceMessageCount:
+      typeof result.sourceMessageCount === 'number' ? result.sourceMessageCount : undefined
   }
 }
 
 function messageRecordForModel(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value
   const record = value as Record<string, unknown>
-  return record.messageType || !record.sourceKind ? record : { ...record, messageType: record.sourceKind }
+  return record.messageType || !record.sourceKind
+    ? record
+    : { ...record, messageType: record.sourceKind }
 }
 
 /**
@@ -665,11 +937,43 @@ function imageOcrDiagnostics(result: QueryAgentToolResult): {
   }
 }
 
-function toolResultForModel(name: string, result: QueryAgentToolResult, callsUsed: number, nextTools: AIChatToolDefinition[], note?: string): QueryAgentToolResult {  const visible: QueryAgentToolResult = { ...result }
-  if (Array.isArray(result.messages)) visible.messages = result.messages.map(messageRecordForModel)
+/**
+ * 按 messageRef 查 Host 已分配的引用编号。
+ * 只有被 `EvidenceCollector` 收录（= 会同时出现在 UI 证据列表里）的消息才返回编号。
+ */
+type CitationLookup = (messageRef: string) => string | undefined
+
+/**
+ * 把 `citationId` 注入模型可见的 Tool Result。
+ *
+ * 这是 inline citation 的**必要条件**：模型只能引用它在上下文里见过的编号。
+ * 未分配编号的消息（超过证据上限、未被 Collector 收录）不会被注入 —— 模型因此无法引用它们，
+ * Host 侧的 sanitize 也就不会放过任何"看起来像编号但从未分配过"的引用。
+ */
+const withCitationId = (value: unknown, lookup?: CitationLookup): unknown => {
+  if (!lookup || !value || typeof value !== 'object' || Array.isArray(value)) return value
+  const record = value as Record<string, unknown>
+  const messageRef = record.messageRef
+  if (typeof messageRef !== 'string' || !messageRef) return value
+  const citationId = lookup(messageRef)
+  return citationId ? { ...record, citationId } : value
+}
+
+function toolResultForModel(
+  name: string,
+  result: QueryAgentToolResult,
+  callsUsed: number,
+  nextTools: AIChatToolDefinition[],
+  note?: string,
+  citations?: CitationLookup
+): QueryAgentToolResult {
+  const visible: QueryAgentToolResult = { ...result }
+  const forModel = (value: unknown): unknown =>
+    withCitationId(messageRecordForModel(value), citations)
+  if (Array.isArray(result.messages)) visible.messages = result.messages.map(forModel)
   if (Array.isArray(result.evidence)) {
     visible.evidence = result.evidence.map((item) => {
-      const record = messageRecordForModel(item)
+      const record = forModel(item)
       if (!record || typeof record !== 'object' || Array.isArray(record)) return record
       // `imageOcrText` 是给 Evidence UI 做"命中解释"的片段；它的内容已经在 `text` 里，
       // 再原样带一份进模型上下文是纯重复。模型侧保留 `derivedSource` 这个语义标记即可，
@@ -679,14 +983,14 @@ function toolResultForModel(name: string, result: QueryAgentToolResult, callsUse
       return trimmed
     })
   }
-  if (result.anchor) visible.anchor = messageRecordForModel(result.anchor)
-  if (Array.isArray(result.before)) visible.before = result.before.map(messageRecordForModel)
-  if (Array.isArray(result.after)) visible.after = result.after.map(messageRecordForModel)
+  if (result.anchor) visible.anchor = forModel(result.anchor)
+  if (Array.isArray(result.before)) visible.before = result.before.map(forModel)
+  if (Array.isArray(result.after)) visible.after = result.after.map(forModel)
   if (result.fallbackLookup && typeof result.fallbackLookup === 'object') {
     const fallback = result.fallbackLookup as Record<string, unknown>
     visible.fallbackLookup = {
       ...fallback,
-      ...(Array.isArray(fallback.messages) ? { messages: fallback.messages.map(messageRecordForModel) } : {})
+      ...(Array.isArray(fallback.messages) ? { messages: fallback.messages.map(forModel) } : {})
     }
   }
   visible._agent = {
@@ -703,12 +1007,18 @@ function toolResultForModel(name: string, result: QueryAgentToolResult, callsUse
         ? '本次结果有两个 scope：顶层是原查询，fallbackLookup 是系统自动扩大到全部历史后的结果。回答时必须分别说明这两个范围，不要让用户以为原问题就是按“全部历史”提出的。'
         : undefined,
       note
-    ].filter(Boolean).join(' ')
+    ]
+      .filter(Boolean)
+      .join(' ')
   }
   return visible
 }
 
-function nextToolDefinitions(name: string, result: QueryAgentToolResult, state: ZeroResultRetryState): AIChatToolDefinition[] {
+function nextToolDefinitions(
+  name: string,
+  result: QueryAgentToolResult,
+  state: ZeroResultRetryState
+): AIChatToolDefinition[] {
   // 重复重试已被拒绝，不再开放工具，避免用有限的 tool budget 反复试同一条件。
   if (result.constraint === 'duplicate_retry') return []
   if (result.status === 'invalid_tool_arguments') return toolDefinition(name)
@@ -767,7 +1077,9 @@ export interface QueryAgentRunOptions {
 function conversationScopeNote(input: QueryAgentConversationScope): string {
   const { scope } = input
   const label = input.label?.trim()
-  const header = label ? `当前搜索范围（由应用界面决定）：${label}。` : '当前搜索范围由应用界面决定。'
+  const header = label
+    ? `当前搜索范围（由应用界面决定）：${label}。`
+    : '当前搜索范围由应用界面决定。'
   const rules = [
     '所有工具调用都会被强制限制在这个范围内；target 若不在范围内会被拒绝，被拒绝时请如实说明范围限制，不要试图绕过。',
     '范围之外还有别的会话，但你**看不到**它们，也不要在回答里声称它们的情况。'
@@ -790,16 +1102,22 @@ function conversationScopeNote(input: QueryAgentConversationScope): string {
  * 从 Tool Result 中提取**真实**证据供 UI 展示 —— UI 不允许从回答文本里反解析证据。
  * - 按 `messageRef` 去重（search 与 context 命中同一条消息只显示一次）；
  * - 顺序 = 首次命中顺序；上限 MAX_EVIDENCE_ITEMS；
+ * - **首次命中时分配稳定 citationId**，重复命中保持原编号；
  * - 只保留展示字段，不携带 wxid / md5 / DB id / raw Tool JSON。
  */
 class EvidenceCollector {
   private readonly items = new Map<string, QueryAgentEvidenceItem>()
+  private nextCitationNumber = 1
 
   addFromToolResult(toolName: string, result: QueryAgentToolResult): void {
-    const target = result.target && typeof result.target === 'object' ? (result.target as Record<string, unknown>) : undefined
+    const target =
+      result.target && typeof result.target === 'object'
+        ? (result.target as Record<string, unknown>)
+        : undefined
     const defaults: { conversationName?: string; conversationType?: 'user' | 'group' } = {
       conversationName: typeof target?.displayName === 'string' ? target.displayName : undefined,
-      conversationType: target?.type === 'user' || target?.type === 'group' ? target.type : undefined
+      conversationType:
+        target?.type === 'user' || target?.type === 'group' ? target.type : undefined
     }
     const push = (value: unknown): void => {
       const item = this.normalize(value, toolName, defaults)
@@ -810,21 +1128,42 @@ class EvidenceCollector {
     // message_context：只收 anchor（被补充语境的那条证据），前后文不是本次结论的依据。
     if (result.anchor) push(result.anchor)
     // recall_hint 自动扩大的那次查询也是真实证据。
-    const fallback = result.fallbackLookup && typeof result.fallbackLookup === 'object' ? (result.fallbackLookup as Record<string, unknown>) : undefined
+    const fallback =
+      result.fallbackLookup && typeof result.fallbackLookup === 'object'
+        ? (result.fallbackLookup as Record<string, unknown>)
+        : undefined
     if (Array.isArray(fallback?.messages)) fallback.messages.forEach(push)
   }
 
   list(): QueryAgentEvidenceItem[] {
-    return Array.from(this.items.values()).slice(0, MAX_EVIDENCE_ITEMS)
+    return Array.from(this.items.values())
   }
 
-  private merge(item: QueryAgentEvidenceItem): void {
+  /**
+   * 已分配的合法引用编号 = Host 侧 sanitize 的白名单。
+   *
+   * 与 UI 证据列表、模型可见上下文是**同一个集合**，所以
+   * 「模型能引用什么」与「UI 能跳到哪一条」由构造保证一致。
+   */
+  citationIds(): string[] {
+    return Array.from(this.items.values(), (item) => item.citationId)
+  }
+
+  /** Tool Result → citationId 查询（模型上下文注入用）。 */
+  readonly citationIdFor = (messageRef: string): string | undefined =>
+    this.items.get(messageRef)?.citationId
+
+  private merge(item: PendingEvidenceItem): void {
     const existing = this.items.get(item.messageRef)
     if (!existing) {
-      this.items.set(item.messageRef, item)
+      // 超过上限的条目不收录：它们既不在 UI 列表里，也不会带 citationId 进模型上下文，
+      // 因此不可能被合法引用 —— 这正是"模型可见集合 ⊆ UI 可见集合"不变量的实现方式。
+      if (this.items.size >= MAX_EVIDENCE_ITEMS) return
+      this.items.set(item.messageRef, { ...item, citationId: `E${this.nextCitationNumber}` })
+      this.nextCitationNumber += 1
       return
     }
-    // 同一消息被不同 Tool 命中：补齐缺失字段，保留首次的 source。
+    // 同一消息被不同 Tool 命中：补齐缺失字段，保留首次的 source **与 citationId**。
     const merged = existing as unknown as Record<string, unknown>
     for (const key of Object.keys(item)) {
       if (key === 'source') continue
@@ -837,13 +1176,15 @@ class EvidenceCollector {
     value: unknown,
     source: string,
     defaults: { conversationName?: string; conversationType?: 'user' | 'group' }
-  ): QueryAgentEvidenceItem | undefined {
+  ): PendingEvidenceItem | undefined {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
     const record = value as Record<string, unknown>
     const messageRef = typeof record.messageRef === 'string' ? record.messageRef : undefined
     if (!messageRef) return undefined
     const attachment =
-      record.attachment && typeof record.attachment === 'object' && !Array.isArray(record.attachment)
+      record.attachment &&
+      typeof record.attachment === 'object' &&
+      !Array.isArray(record.attachment)
         ? (record.attachment as Record<string, unknown>)
         : undefined
     const attachmentView = attachment
@@ -883,7 +1224,9 @@ class EvidenceCollector {
       ...(typeof record.imageOcrText === 'string' && record.imageOcrText
         ? { imageOcrText: record.imageOcrText }
         : {}),
-      ...(attachmentView && Object.keys(attachmentView).length ? { attachment: attachmentView } : {}),
+      ...(attachmentView && Object.keys(attachmentView).length
+        ? { attachment: attachmentView }
+        : {}),
       source
     }
   }
@@ -935,12 +1278,37 @@ export class QueryAgentService {
     const trimmed = question.trim()
     const startedAt = Date.now()
     const runtime = this.provider.getRuntimeConfig()
-    const result: QueryAgentResult = { question: trimmed, provider: runtime.providerName, model: runtime.modelName || runtime.model, modelCallCount: 0, toolCallCount: 0, toolTotalMs: 0, totalMs: 0, traces: [], modelDurationsMs: [], modelDiagnostics: [] }
-    if (!trimmed) return { ...result, error: '请输入查询问题', errorKind: 'invalid_question', totalMs: Date.now() - startedAt }
-    if (!runtime.configured) return { ...result, error: '当前 AI Provider 尚未配置', errorKind: 'provider_unavailable', totalMs: Date.now() - startedAt }
+    const result: QueryAgentResult = {
+      question: trimmed,
+      provider: runtime.providerName,
+      model: runtime.modelName || runtime.model,
+      modelCallCount: 0,
+      toolCallCount: 0,
+      toolTotalMs: 0,
+      totalMs: 0,
+      traces: [],
+      modelDurationsMs: [],
+      modelDiagnostics: []
+    }
+    if (!trimmed)
+      return {
+        ...result,
+        error: '请输入查询问题',
+        errorKind: 'invalid_question',
+        totalMs: Date.now() - startedAt
+      }
+    if (!runtime.configured)
+      return {
+        ...result,
+        error: '当前 AI Provider 尚未配置',
+        errorKind: 'provider_unavailable',
+        totalMs: Date.now() - startedAt
+      }
 
     const history = options.history || []
-    const scopeNote = options.conversationScope ? conversationScopeNote(options.conversationScope) : undefined
+    const scopeNote = options.conversationScope
+      ? conversationScopeNote(options.conversationScope)
+      : undefined
     const messages: Array<Record<string, unknown>> = [
       { role: 'system', content: SYSTEM_PROMPT },
       // 范围说明是**上下文**，不是强制执行手段：真正的边界由 Engine 拒绝越界 target 来保证。
@@ -982,20 +1350,55 @@ export class QueryAgentService {
         ...(model.success ? {} : { error: model.error || '模型调用失败' })
       })
       if (firstModelAt === undefined) firstModelAt = Date.now()
-      if (!model.success) return { ...result, error: model.error || '模型调用失败', errorKind: 'provider_failure', firstModelMs: firstModelAt - startedAt, totalMs: Date.now() - startedAt }
+      if (!model.success)
+        return {
+          ...result,
+          error: model.error || '模型调用失败',
+          errorKind: 'provider_failure',
+          firstModelMs: firstModelAt - startedAt,
+          totalMs: Date.now() - startedAt
+        }
       const calls = model.toolCalls || []
       if (calls.length === 0) {
         finalModelDuration = modelDuration
-        result.answer = model.data?.trim() || '模型未返回答案'
+        /**
+         * Host 侧 citation 校验：只保留能解析到本轮真实证据的 `[E#]`。
+         *
+         * 必须在返回给 Adapter 之前完成 —— 否则一个幻觉编号会在 UI 里被渲染成
+         * 可点击的引用按钮，把"有依据"这个产品承诺反过来变成误导。
+         * 白名单就是 `EvidenceCollector` 分配过的编号集合（= 模型见过的那一批）。
+         */
+        const citationValidation = sanitizeAnswerCitations(
+          model.data?.trim() || '模型未返回答案',
+          evidence.citationIds()
+        )
+        result.answer = citationValidation.answer
+        if (citationValidation.invalidCitationIds.length) {
+          result.invalidCitationIds = citationValidation.invalidCitationIds
+        }
         result.firstModelMs = firstModelAt - startedAt
         result.finalModelMs = finalModelDuration
         result.totalMs = Date.now() - startedAt
         return result
       }
       if (result.toolCallCount + calls.length > MAX_TOOL_CALLS) {
-        return { ...result, error: `超过最大工具调用次数（${MAX_TOOL_CALLS}）`, errorKind: 'tool_limit', firstModelMs: firstModelAt - startedAt, totalMs: Date.now() - startedAt }
+        return {
+          ...result,
+          error: `超过最大工具调用次数（${MAX_TOOL_CALLS}）`,
+          errorKind: 'tool_limit',
+          firstModelMs: firstModelAt - startedAt,
+          totalMs: Date.now() - startedAt
+        }
       }
-      messages.push({ role: 'assistant', content: model.data || '', tool_calls: calls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) })
+      messages.push({
+        role: 'assistant',
+        content: model.data || '',
+        tool_calls: calls.map((call) => ({
+          id: call.id,
+          type: 'function',
+          function: { name: call.name, arguments: call.arguments }
+        }))
+      })
       for (const call of calls) {
         const inputStartedAt = Date.now()
         let toolResult: QueryAgentToolResult | undefined
@@ -1004,11 +1407,19 @@ export class QueryAgentService {
         let autoFallback: QueryAgentTraceItem['autoFallback']
         try {
           if (!tools.some((tool) => tool.function.name === call.name)) {
-            toolResult = { status: 'invalid_tool_arguments', field: '$', constraint: 'tool_availability', expected: tools.map((tool) => tool.function.name), actual: call.name }
+            toolResult = {
+              status: 'invalid_tool_arguments',
+              field: '$',
+              constraint: 'tool_availability',
+              expected: tools.map((tool) => tool.function.name),
+              actual: call.name
+            }
           }
           if (!toolResult) {
             let parsed: unknown
-            try { parsed = JSON.parse(call.arguments || '{}') } catch {
+            try {
+              parsed = JSON.parse(call.arguments || '{}')
+            } catch {
               toolResult = { status: 'invalid_tool_arguments', field: '$', constraint: 'json' }
             }
             if (!toolResult) {
@@ -1019,12 +1430,23 @@ export class QueryAgentService {
                 traceInput = validated.input || {}
                 temporalBasis = validated.temporalBasis
                 // constraint 时间边界由 Host 结构性锁定：不依赖 prompt，也不静默改写用户问题。
-                const constraintViolation = lockConstraintTimeRange(call.name, temporalBasis, traceInput, retry)
+                const constraintViolation = lockConstraintTimeRange(
+                  call.name,
+                  temporalBasis,
+                  traceInput,
+                  retry
+                )
                 if (constraintViolation) {
                   toolResult = constraintViolation
                 } else if (duplicateRetry(call.name, traceInput, retry)) {
                   // 明确拒绝“换关键词重搜”里的 identical retry，让模型改用实质不同的条件。
-                  toolResult = { status: 'invalid_tool_arguments', field: '$', constraint: 'duplicate_retry', expected: '与上一次实质不同的条件', actual: '与上一次完全相同的条件' }
+                  toolResult = {
+                    status: 'invalid_tool_arguments',
+                    field: '$',
+                    constraint: 'duplicate_retry',
+                    expected: '与上一次实质不同的条件',
+                    actual: '与上一次完全相同的条件'
+                  }
                 } else {
                   recordAttempt(call.name, traceInput, retry)
                   // Tool 真正开始执行 = "在搜索聊天记录"。跨会话范围会明显更慢，
@@ -1037,14 +1459,25 @@ export class QueryAgentService {
                   // 注意：自动补查必须沿用同一个语料边界，不能借它逃出当前搜索范围。
                   if (shouldAutoBroaden(call.name, temporalBasis, traceInput, primary)) {
                     const fallbackStartedAt = Date.now()
-                    const fallbackResult = await this.executeTool('query_messages', { ...traceInput, timeRange: { kind: 'all' } }, toolContext)
+                    const fallbackResult = await this.executeTool(
+                      'query_messages',
+                      { ...traceInput, timeRange: { kind: 'all' } },
+                      toolContext
+                    )
                     const fallbackCounts = resultCount(fallbackResult)
-                    autoFallback = { reason: AUTO_FALLBACK_REASON, timeRange: { kind: 'all' }, status: fallbackResult.status, durationMs: Date.now() - fallbackStartedAt, ...fallbackCounts }
+                    autoFallback = {
+                      reason: AUTO_FALLBACK_REASON,
+                      timeRange: { kind: 'all' },
+                      status: fallbackResult.status,
+                      durationMs: Date.now() - fallbackStartedAt,
+                      ...fallbackCounts
+                    }
                     toolResult = {
                       ...primary,
                       fallbackLookup: {
                         reason: AUTO_FALLBACK_REASON,
-                        explanation: '你的 temporalBasis.kind=recall_hint 表示该时间范围只是你推断的回忆线索，并非用户给出的硬边界；首次查询为 0 条，系统已自动在全部历史中再查一次。请分别说明这两个范围的结果。',
+                        explanation:
+                          '你的 temporalBasis.kind=recall_hint 表示该时间范围只是你推断的回忆线索，并非用户给出的硬边界；首次查询为 0 条，系统已自动在全部历史中再查一次。请分别说明这两个范围的结果。',
                         timeRange: { kind: 'all' },
                         status: fallbackResult.status,
                         resolvedTimeRange: fallbackResult.resolvedTimeRange,
@@ -1059,9 +1492,16 @@ export class QueryAgentService {
             }
           }
         } catch (error) {
-          if (!toolResult) toolResult = { status: 'invalid_request', error: error instanceof Error ? error.message : '工具调用失败' }
+          if (!toolResult)
+            toolResult = {
+              status: 'invalid_request',
+              error: error instanceof Error ? error.message : '工具调用失败'
+            }
         }
-        const completedToolResult = toolResult || { status: 'invalid_request', error: '工具调用失败' }
+        const completedToolResult = toolResult || {
+          status: 'invalid_request',
+          error: '工具调用失败'
+        }
         const durationMs = Date.now() - inputStartedAt
         result.toolCallCount += 1
         counters.toolCallCount = result.toolCallCount
@@ -1078,17 +1518,47 @@ export class QueryAgentService {
           rawTimings && typeof rawTimings === 'object' && !Array.isArray(rawTimings)
             ? (rawTimings as QuerySearchTimings)
             : undefined
-        result.traces.push({ toolName: call.name, input: sanitizeInput(traceInput), durationMs, status: completedToolResult.status, ...counts, ...imageOcrDiagnostics(completedToolResult), ...(temporalBasis ? { temporalBasis } : {}), ...(autoFallback ? { autoFallback } : {}), ...(searchTimings ? { searchTimings } : {}) })
-        const nextTools = completedToolResult.constraint === 'tool_availability'
-          ? tools
-          : nextToolDefinitions(call.name, completedToolResult, retry)
+        result.traces.push({
+          toolName: call.name,
+          input: sanitizeInput(traceInput),
+          durationMs,
+          status: completedToolResult.status,
+          ...counts,
+          ...imageOcrDiagnostics(completedToolResult),
+          ...(temporalBasis ? { temporalBasis } : {}),
+          ...(autoFallback ? { autoFallback } : {}),
+          ...(searchTimings ? { searchTimings } : {})
+        })
+        const nextTools =
+          completedToolResult.constraint === 'tool_availability'
+            ? tools
+            : nextToolDefinitions(call.name, completedToolResult, retry)
         const note = retryNote(call.name, completedToolResult, retry)
-        messages.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: JSON.stringify(toolResultForModel(call.name, completedToolResult, result.toolCallCount, nextTools, note)) })
+        // 注意顺序：证据必须先收集（上一行），模型可见的 Tool Result 才带得上 citationId。
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          name: call.name,
+          content: JSON.stringify(
+            toolResultForModel(
+              call.name,
+              completedToolResult,
+              result.toolCallCount,
+              nextTools,
+              note,
+              evidence.citationIdFor
+            )
+          )
+        })
         tools = nextTools
       }
     }
     result.firstModelMs = firstModelAt ? firstModelAt - startedAt : undefined
     result.totalMs = Date.now() - startedAt
-    return { ...result, error: `超过最大工具调用次数（${MAX_TOOL_CALLS}）`, errorKind: 'tool_limit' }
+    return {
+      ...result,
+      error: `超过最大工具调用次数（${MAX_TOOL_CALLS}）`,
+      errorKind: 'tool_limit'
+    }
   }
 }

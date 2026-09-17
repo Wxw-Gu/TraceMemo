@@ -26,6 +26,7 @@ const VOICE_REF = encodeMessageRef('fixture-conversation-a', '9002')
 const TEXT_REF = encodeMessageRef('fixture-conversation-a', '9003')
 
 const base = {
+  citationId: 'E1',
   conversationName: '测试群',
   conversationType: 'group' as const,
   sender: '用户A',
@@ -35,6 +36,7 @@ const base = {
 /** 图片 OCR 命中。 */
 const imageOcrEvidence: AskWechatEvidenceItem = {
   ...base,
+  citationId: 'E1',
   messageRef: IMAGE_REF,
   timestamp: Date.parse('2026-09-03T14:32:00+08:00'),
   messageType: 'image',
@@ -46,6 +48,7 @@ const imageOcrEvidence: AskWechatEvidenceItem = {
 /** 语音转写命中。 */
 const voiceTranscriptEvidence: AskWechatEvidenceItem = {
   ...base,
+  citationId: 'E2',
   messageRef: VOICE_REF,
   timestamp: Date.parse('2026-09-03T14:34:00+08:00'),
   messageType: 'voice',
@@ -56,6 +59,7 @@ const voiceTranscriptEvidence: AskWechatEvidenceItem = {
 /** 普通文字消息（对照组）。 */
 const plainEvidence: AskWechatEvidenceItem = {
   ...base,
+  citationId: 'E3',
   messageRef: TEXT_REF,
   timestamp: Date.parse('2026-09-03T14:30:00+08:00'),
   messageType: 'text',

@@ -61,21 +61,29 @@
         font-size: 13px;
         line-height: 1.55;
       }
+      /*
+       * hero 头像簇的几何必须由 contract 变量驱动，不能再写死容器尺寸。
+       *
+       * 生产导出会额外注入 `report-template-fragment-contract.ts`，其中
+       * `img.tm-avatar.tm-avatar--hero` 用 !important 把头像钉在
+       * clamp(28px, var(--tm-avatar-hero-size, 40px), 56px)。
+       * 旧版这里写死 58x58（单头像 28x28），两个权威打架：头像实际 40px，
+       * 2 列 x 40px + 3px gap = 83px 塞不进 58px 的盒子，于是头像向右向下溢出容器，
+       * 视觉上越过卡片内边距、压到卡片边缘之外。
+       *
+       * 现在容器尺寸由内容决定（列宽/行高都取同一个变量）：头像数 1..4 都不会溢出，
+       * 主题调整 --tm-avatar-hero-size 时容器与头像也不会分叉。
+       */
       .avatar-grid {
-        width: 58px;
-        height: 58px;
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(2, var(--tm-avatar-hero-size, 40px));
+        grid-auto-rows: var(--tm-avatar-hero-size, 40px);
         gap: 3px;
         flex: 0 0 auto;
       }
+      /* 单头像时不保留空列，簇宽恰好等于一个头像。 */
       .avatar-grid.avatar-count-1 {
-        width: 28px;
-        height: 28px;
-        grid-template-columns: 1fr;
-      }
-      .avatar-grid.avatar-count-2 {
-        height: 28px;
+        grid-template-columns: var(--tm-avatar-hero-size, 40px);
       }
       .avatar-grid.empty-section {
         display: none;

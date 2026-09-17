@@ -23,6 +23,45 @@ import {
 
 const aiProvider = new AIProviderService()
 
+/**
+ * 用真实群成员快照补全消息的显示名与头像。
+ *
+ * **头像与名称的门槛刻意不同**：
+ *
+ * 此前这里先用 `isInternalName(message.name)` 做整体早退 —— 只有当消息里的名字还是内部标识
+ * （空 / `wxid_*` / `*@chatroom` / 18+ 位字母数字）时才继续。但 `listMessages` 产出的 `name`
+ * 优先取 `senderNickname`，在真实群里通常是**已可读的昵称**，于是整条记录被跳过、
+ * `member.avatar` 永远补不上，导出层只能退化成首字头像；软件内日报没有这个门槛，
+ * 所以它能显示真实头像。
+ *
+ * 现在：**只要 senderId 命中真实群成员就允许补头像**；名称只在解析结果确实是可读名时才采用，
+ * 避免把调用方已有的昵称降级成空串或内部标识。消息自带的 `img` 始终优先。
+ */
+export function hydrateGroupMemberIdentity(
+  messages: Message[],
+  members: ReadonlyArray<NonNullable<ReturnType<typeof getGroupSnapshot>>['members'][number]>,
+  memberNameMode: ScheduledReportMemberNameMode
+): Message[] {
+  const index = new Map(
+    members.map((member) => [
+      member.wxid,
+      { name: resolveMemberName(member, memberNameMode), avatar: member.avatar }
+    ])
+  )
+  return messages.map((message) => {
+    const member = index.get(String(message.senderId || message.name || ''))
+    if (!member) return message
+    const shouldFillAvatar = !message.img && Boolean(member.avatar)
+    const resolvedName = member.name && !isInternalName(member.name) ? member.name : message.name
+    if (!shouldFillAvatar && resolvedName === message.name) return message
+    return {
+      ...message,
+      name: resolvedName,
+      ...(shouldFillAvatar ? { img: member.avatar } : {})
+    }
+  })
+}
+
 export interface AgentGroupReportRequest {
   group: string
   range?: SummaryDateRange | 'recent24h'
@@ -101,22 +140,11 @@ export async function generateAgentGroupReport(
 
   const snapshot = getGroupSnapshot(contact.md5)
   if (snapshot) {
-    const members = new Map(
-      snapshot.members.map((member) => [
-        member.wxid,
-        {
-          name: resolveMemberName(member, request.memberNameMode || 'groupNickname'),
-          avatar: member.avatar
-        }
-      ])
+    messages = hydrateGroupMemberIdentity(
+      messages,
+      snapshot.members,
+      request.memberNameMode || 'groupNickname'
     )
-    messages = messages.map((message) => {
-      if (!isInternalName(message.name)) return message
-      const member = members.get(String(message.senderId || message.name || ''))
-      return member?.name
-        ? { ...message, name: member.name, img: message.img || member.avatar }
-        : message
-    })
   }
 
   const input = await buildGroupReportInput(messages, contact as Contact, true, 'full')

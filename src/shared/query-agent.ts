@@ -26,6 +26,15 @@ export interface AskWechatScope {
 
 /** 展示用证据：只含可读字段，不含 wxid / md5 / DB id / raw Tool JSON。 */
 export interface AskWechatEvidenceItem {
+  /**
+   * Host 分配的稳定引用编号（`E1`、`E2`…）。
+   *
+   * 由 Runtime 的 EvidenceCollector 在**模型调用之前**按首次命中顺序分配，并随 Tool Result
+   * 进入模型可见上下文 —— 因此正文里的 `[E#]` 与 UI 证据卡 / 底部引用按钮用的是同一个编号。
+   * UI **不得**再用数组下标自行合成编号：那会在证据被过滤、分页或重排时漂移，
+   * 而且模型无从知道它（inline citation 会因此失效）。
+   */
+  citationId: string
   messageRef: string
   conversationName?: string
   conversationType?: 'user' | 'group'
@@ -197,6 +206,13 @@ export type AskWechatQueryResult =
       answer: string
       /** 本次回答实际依据的证据（去重、限量）；UI 不允许从 answer 反解析。 */
       evidence: AskWechatEvidenceItem[]
+      /**
+       * Host 侧 citation 校验中被移除的非法编号（additive）。
+       *
+       * 非空表示模型引用了不存在的 `[E#]`，已从 answer 中移除 —— UI 可据此提示
+       * "已移除无法对应证据的引用"，而不是把幻觉编号渲染成可点击的引用。
+       */
+      invalidCitationIds?: string[]
       stats: AskWechatStats
       diagnostics: QueryAgentDiagnostics
     }

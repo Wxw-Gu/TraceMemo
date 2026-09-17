@@ -94,6 +94,13 @@ export function AISearchWorkspace({
   const [queryAgentEnabled, setQueryAgentEnabled] = useState(false)
   /** Query Agent 本次回答的真实统计（读取条数 / 证据条数 / 模型调用 / 耗时）。 */
   const [askStats, setAskStats] = useState<AskWechatStats | null>(null)
+  /**
+   * Query Agent 回答里被 Host 移除的非法 `[E#]`。
+   *
+   * 有值 = 模型引用了不存在的编号；已从正文剥离，这里只做告知，
+   * 不让用户以为"每条断言都有出处"。
+   */
+  const [askInvalidCitationIds, setAskInvalidCitationIds] = useState<string[]>([])
   const {
     evidence,
     setEvidence,
@@ -194,6 +201,7 @@ export function AISearchWorkspace({
     setCachedAt(reset.cachedAt)
     setSearchTrace(reset.searchTrace)
     setAskStats(null)
+    setAskInvalidCitationIds([])
     resetSearchRun()
     setSearchDetailsOpen(reset.searchDetailsOpen)
   }
@@ -443,12 +451,17 @@ export function AISearchWorkspace({
           }
           if (askResult.status === 'answered') {
             const mappedEvidence = mapAskWechatEvidence(askResult.evidence)
-            addDebugEntry('查询 Agent 完成', { ...askResult.diagnostics })
+            addDebugEntry('查询 Agent 完成', {
+              ...askResult.diagnostics,
+              invalidCitationIds: askResult.invalidCitationIds
+            })
             setResultQuery(normalizedQuery)
             setAnswer(askResult.answer)
             // 真实证据直接来自 Runtime 收集的 Tool 结果，不从回答文本反解析。
+            // 证据卡的编号是 Host 分配的 citationId，与正文 [E#] 同号。
             setEvidenceResult(mappedEvidence, mappedEvidence)
             setAskStats(askResult.stats)
+            setAskInvalidCitationIds(askResult.invalidCitationIds || [])
             setMessageCount(0)
             rememberQuery(normalizedQuery)
             persistSearchResult({
@@ -468,6 +481,7 @@ export function AISearchWorkspace({
               ? askResult.message
               : '本次查询没有完成，请稍后再试。'
           setAskStats(null)
+          setAskInvalidCitationIds([])
           addDebugEntry('查询失败', { ...askResult.diagnostics })
           setAnalysisError(failureMessage)
           setStage('insufficient')
@@ -883,6 +897,13 @@ export function AISearchWorkspace({
                 {askWechatToolLabels(askStats.tools).map((label) => (
                   <span key={label}>能力：{label}</span>
                 ))}
+                {/* 与 Legacy 同一措辞：Host 侧已把无法对应证据的引用从正文移除。
+                    这里只做告知，不把它渲染成可点击的引用。 */}
+                {askInvalidCitationIds.length > 0 && (
+                  <span data-testid="query-invalid-citations">
+                    已移除无效引用：{askInvalidCitationIds.join('、')}
+                  </span>
+                )}
               </div>
               {/* 耗时拆解：把总耗时还原成"AI 花了多少 / 本地查询花了多少"。
                   普通 UI 只出现这三个用户能理解的名字，不出现 firstModelMs / toolTotalMs
@@ -904,7 +925,8 @@ export function AISearchWorkspace({
                       {askStats.timings.modelDurationsMs?.map((v) => Math.round(v)).join(', ') ||
                         '-'}
                       ] ms · 本地 [
-                      {askStats.timings.toolDurationsMs?.map((v) => Math.round(v)).join(', ') || '-'}
+                      {askStats.timings.toolDurationsMs?.map((v) => Math.round(v)).join(', ') ||
+                        '-'}
                       ] ms
                     </span>
                   )}
@@ -985,9 +1007,16 @@ export function AISearchWorkspace({
         {evidence.length > 0 && (
           <div className="ai-search-answer-evidence" aria-label="AI 引用证据">
             <span>引用：</span>
-            {evidence.map((_, index) => (
-              <button key={index} type="button" onClick={() => focusEvidence(index)}>
-                E{index + 1}
+            {evidence.map((item, index) => (
+              // 标签取 Host 分配的 evidenceId（= citationId），与正文 inline citation 同号；
+              // 只有 Legacy 缓存记录可能缺 evidenceId，才退回下标编号。
+              <button
+                key={item.evidenceId || index}
+                type="button"
+                data-evidence-id={item.evidenceId || `E${index + 1}`}
+                onClick={() => focusEvidence(index)}
+              >
+                {item.evidenceId || `E${index + 1}`}
               </button>
             ))}
           </div>
@@ -1283,7 +1312,8 @@ export function AISearchWorkspace({
                 )}
                 {knowledgeStatus.pass && knowledgeStatus.pass.skippedConversations > 0 && (
                   <p className="ai-search-knowledge-pass-line">
-                    已跳过 {knowledgeStatus.pass.skippedConversations.toLocaleString()} 个没有新消息的会话
+                    已跳过 {knowledgeStatus.pass.skippedConversations.toLocaleString()}{' '}
+                    个没有新消息的会话
                   </p>
                 )}
               </div>

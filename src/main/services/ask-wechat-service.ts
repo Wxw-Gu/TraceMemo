@@ -136,7 +136,12 @@ export class AskWechatService {
       status: 'answered',
       answer,
       // 直接透传 Runtime 收集的真实证据：UI 不允许从 answer 文本反解析。
+      // citationId 由 Runtime 分配，Adapter 不改写、不重编号。
       evidence: (result.evidence || []) as AskWechatEvidenceItem[],
+      // Host 侧 citation 校验中被移除的非法编号（非空 = 模型引用过不存在的 E#）。
+      ...(result.invalidCitationIds?.length
+        ? { invalidCitationIds: result.invalidCitationIds }
+        : {}),
       stats: buildAskWechatStats(result, request.scope, startedAt),
       diagnostics
     }
@@ -168,7 +173,12 @@ export class AskWechatService {
         requestId: request.requestId,
         text: request.text
       })
-      this.writeLog('warn', `Query Agent 失败后回退 Legacy（${this.options.entry}）`, diagnostics, reason)
+      this.writeLog(
+        'warn',
+        `Query Agent 失败后回退 Legacy（${this.options.entry}）`,
+        diagnostics,
+        reason
+      )
       return { engine: 'legacy', status: 'legacy', reason, result: legacyResult }
     } catch {
       this.writeLog('error', `Legacy fallback 也失败（${this.options.entry}）`, diagnostics, reason)
@@ -199,10 +209,7 @@ export class AskWechatService {
   ): QueryAgentDiagnostics {
     const traces = result.traces || []
     // 图片 OCR 的两条结构化事实：不回读正文，只统计"取到了几条"与"当时覆盖度是多少"。
-    const imageOcrTextCount = traces.reduce(
-      (sum, trace) => sum + (trace.imageOcrTextCount || 0),
-      0
-    )
+    const imageOcrTextCount = traces.reduce((sum, trace) => sum + (trace.imageOcrTextCount || 0), 0)
     const coverageState = traces
       .map((trace) => trace.imageOcrCoverageState)
       .filter((value): value is string => typeof value === 'string')
@@ -267,9 +274,7 @@ export function buildAskWechatStats(
   const totalMs = result.totalMs || Date.now() - startedAt
   // 真实拆解：模型总耗时直接来自每次模型调用的测量；本地查询 = 所有 Tool 的 durationMs 之和。
   // 两者不互相推算（用 total - model 反推会把"框架开销"混进"本地查询"，那是另一种谎）。
-  const modelDurationsMs = (result.modelDurationsMs || []).filter((value) =>
-    Number.isFinite(value)
-  )
+  const modelDurationsMs = (result.modelDurationsMs || []).filter((value) => Number.isFinite(value))
   const toolDurationsMs = (result.traces || [])
     .map((trace) => trace.durationMs)
     .filter((value) => Number.isFinite(value))

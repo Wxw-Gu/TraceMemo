@@ -1,8 +1,5 @@
 import type { AskWechatEvidenceItem, AskWechatStats } from '../../../../shared/query-agent'
-import {
-  decodeMessageRef,
-  type CanonicalMessageIdentity
-} from '../../../../shared/local-query-api'
+import { decodeMessageRef, type CanonicalMessageIdentity } from '../../../../shared/local-query-api'
 import type { Contact } from '../../../../shared/types'
 import { formatEvidenceTimestamp } from './searchFormatters'
 import type { EvidenceItem } from './searchTypes'
@@ -37,20 +34,36 @@ const SCOPE_LABELS: Record<string, string> = {
  * （展示契约里刻意不含 md5 字段）；`messageRef` 缺失或解析失败时退化成合成 key，
  * 并且调用方必须按"无法定位"处理。
  */
-function evidenceContact(item: AskWechatEvidenceItem, anchor: CanonicalMessageIdentity | null): Contact {
+function evidenceContact(
+  item: AskWechatEvidenceItem,
+  anchor: CanonicalMessageIdentity | null
+): Contact {
   const name = item.conversationName?.trim() || '未命名会话'
   const type = item.conversationType === 'group' ? 'group' : 'user'
   if (anchor) {
-    return { md5: anchor.conversationId, m_nsUsrName: anchor.conversationId, m_nsNickName: name, type }
+    return {
+      md5: anchor.conversationId,
+      m_nsUsrName: anchor.conversationId,
+      m_nsNickName: name,
+      type
+    }
   }
-  return { md5: `query-agent:${item.conversationName || 'unknown'}`, m_nsUsrName: '', m_nsNickName: name, type }
+  return {
+    md5: `query-agent:${item.conversationName || 'unknown'}`,
+    m_nsUsrName: '',
+    m_nsNickName: name,
+    type
+  }
 }
 
 export function mapAskWechatEvidence(items: AskWechatEvidenceItem[]): EvidenceItem[] {
-  return items.map((item, index) => {
+  return items.map((item) => {
     const anchor = decodeMessageRef(item.messageRef)
     return {
-      evidenceId: `E${index + 1}`,
+      // 编号直接消费 Host 分配的 citationId —— 不再用数组下标自行合成。
+      // 正文 inline citation、底部引用按钮、证据卡标题因此是同一条 evidence 的同一个编号；
+      // 下标一旦被过滤 / 分页 / 重排就会漂移，而且模型无从知道它（引用必然失效）。
+      evidenceId: item.citationId,
       sourceKind: item.messageType as EvidenceItem['sourceKind'],
       // 「靠图片里的文字命中」是来源语义，必须原样带到 UI；
       // 但 authoritative source 仍然是原始图片消息（messageRef 已指向它）。

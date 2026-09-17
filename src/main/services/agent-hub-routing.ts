@@ -88,14 +88,49 @@ export function matchGroupMemberChatIntent(text: string): GroupMemberChatIntent 
 }
 
 /**
+ * 「列出会话」的**形态标记**：用户在问"有哪些 / 和谁 / 列表 / 最近 N 条"，
+ * 而不是在问"聊了什么内容"。
+ */
+const RECENT_LIST_SHAPE = /(哪些|哪个|都有谁|都跟谁|和谁|跟谁|是谁|列表|名单|\d{1,2}(条|个|位))/
+/** 名单类问题必须落到会话 / 联系人这个对象上。 */
+const RECENT_LIST_TARGET = /(聊天|会话|联系人|好友|人|群|消息|窗口)/
+/** 「和谁 / 跟谁」问法本身就在问会话对象，不要求额外载体词。 */
+const RECENT_PEER_QUESTION = /(和谁|跟谁)/
+/** 内容探针：问的是消息里的内容 / 是否提到某事物 —— 必须交给 Query Agent。 */
+const RECENT_CONTENT_PROBE =
+  /(提到|提过|说过|说啥|说什么|说了什么|聊了啥|聊了什么|都聊什么|都说什么|什么话题|聊到|讨论|内容|讲了什么|哪条|哪一句|有没有|是否)/
+
+/**
  * "最近有哪些会话"类请求。
  *
  * 这是**确定性能力**（列出会话），不是消息内容查询 —— Query Agent 无法表达，
  * 因此保留为不经过模型的无 LLM 快捷路径。
+ *
+ * 判定必须**正向**：只有用户确实在要一份"会话 / 联系人名单"时才算 recent_list。
+ * 早先的实现只要求「最近」+「消息|会话|聊天」同时出现，于是
+ * 「最近群里聊的消息里有没有提到报价？」这类**内容查询**会被截走，
+ * 直接回一串会话名，用户永远得不到答案。
  */
 export function matchRecentChatIntent(text: string): number | null {
   const normalized = text.replace(/\s+/g, '')
-  if (!normalized.includes('最近') || !/(消息|会话|聊天)/.test(normalized)) return null
+  if (!normalized.includes('最近')) return null
+
+  // 内容探针优先排除：问"有没有提到 X / 谁提过 X / 聊了什么"是在查消息内容，不是要名单。
+  if (RECENT_CONTENT_PROBE.test(normalized)) return null
+
+  /**
+   * 只有两种形态算"要最近会话列表"：
+   * 1) 「和谁 / 跟谁」问法 —— 它本身就在问会话对象，不需要额外的载体词
+   *    （如「最近和谁聊过」）；
+   * 2) 名单形态 + 会话载体 —— 如「最近有哪些聊天」「最近 5 个会话」「最近3条消息」。
+   *
+   * 两种都不满足时交给 Query Agent：形状不像"要名单"的，就是在问内容。
+   */
+  const listLike =
+    RECENT_PEER_QUESTION.test(normalized) ||
+    (RECENT_LIST_SHAPE.test(normalized) && RECENT_LIST_TARGET.test(normalized))
+  if (!listLike) return null
+
   const limit = Number(normalized.match(/\d{1,2}/)?.[0] || 5)
   return Math.max(1, Math.min(20, limit))
 }

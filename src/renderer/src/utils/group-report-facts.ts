@@ -772,7 +772,15 @@ export const buildGroupReportFacts = async (
     footerNote: '基于已读取聊天记录生成；图片、表情等未解析内容默认只按类型与上下文参与日报。',
     heroParticipants: topSpeakers.slice(0, 4).map((speaker) => speaker.name),
     avatars,
-    reportMode
+    reportMode,
+    /**
+     * 会话标识：导出层 `enrichAvatarsFromGroup` 靠它反查群成员快照补头像。
+     *
+     * 必须用 `m_nsUsrName`（群 roomid，形如 `xxx@chatroom`）而不是群名 —— 群名是展示名，
+     * 可能重名或带表情符号；`resolveMd5` 对 roomid / md5 / wxid 都是精确匹配。
+     * 此前这个字段从未被赋值，导致那条 enrich 分支实际是死代码，头像只能靠消息自带的 img。
+     */
+    ...(contact?.m_nsUsrName ? { talker: contact.m_nsUsrName } : {})
   }
 
   const { media, voiceLeaderboard, warnings, imageInsightSummary } = await buildMediaSection(
