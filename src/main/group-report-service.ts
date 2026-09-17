@@ -107,47 +107,135 @@ const fallbackAvatar = (name: string): RenderedAvatar => {
   }
 }
 
-const imageMimeType = (contentType: string | null, source: string): string => {
-  if (contentType?.startsWith('image/')) return contentType.split(';')[0]
-  const extension = path.extname(source).toLowerCase()
-  if (extension === '.png') return 'image/png'
-  if (extension === '.webp') return 'image/webp'
-  if (extension === '.gif') return 'image/gif'
-  return 'image/jpeg'
+/**
+ * 只认真实图片字节。
+ *
+ * `content-type` 与 URL 扩展名都**不可信**：微信 CDN 在限流 / 反盗链时会返回 200 + HTML 正文。
+ * 旧实现按扩展名猜 mime 并默认 `image/jpeg`，会把 HTML 内联成"解码失败的 data URL" ——
+ * 在报告里表现为**空白头像**（比首字占位更糟：用户看不到任何东西，也不知道为什么）。
+ */
+const IMAGE_MAGIC: Array<{ mime: string; bytes: number[] }> = [
+  { mime: 'image/jpeg', bytes: [0xff, 0xd8, 0xff] },
+  { mime: 'image/png', bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
+  { mime: 'image/gif', bytes: [0x47, 0x49, 0x46, 0x38] },
+  { mime: 'image/bmp', bytes: [0x42, 0x4d] }
+]
+
+export const detectImageMime = (bytes: Buffer): string | undefined => {
+  for (const signature of IMAGE_MAGIC) {
+    if (
+      bytes.length >= signature.bytes.length &&
+      signature.bytes.every((byte, index) => bytes[index] === byte)
+    ) {
+      return signature.mime
+    }
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes.toString('ascii', 0, 4) === 'RIFF' &&
+    bytes.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp'
+  }
+  const head = bytes.subarray(0, 64).toString('utf8').trimStart()
+  if (head.startsWith('<svg')) return 'image/svg+xml'
+  if (head.startsWith('<?xml') && head.includes('<svg')) return 'image/svg+xml'
+  return undefined
 }
 
-const embedAvatar = async (source: string | undefined, name: string): Promise<RenderedAvatar> => {
+const AVATAR_FETCH_TIMEOUT_MS = 8000
+/** 首次 + 一次重试：单次瞬时失败（限流 / 连接重置 / 超时）不该让一个人永久退回首字。 */
+const AVATAR_FETCH_ATTEMPTS = 2
+/** 同一 origin 的并发上限。几十个头像同时打一个 CDN 会显著抬高被限流的概率。 */
+const AVATAR_FETCH_CONCURRENCY = 6
+/** 进程内头像缓存条目上限（老报告重渲染 / 连续生成同一群时不必重复下载）。 */
+const AVATAR_CACHE_LIMIT = 256
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+const avatarEmbedCache = new Map<string, RenderedAvatar>()
+
+const rememberAvatarEmbed = (source: string, rendered: RenderedAvatar): void => {
+  if (rendered.fallback) return
+  avatarEmbedCache.set(source, rendered)
+  while (avatarEmbedCache.size > AVATAR_CACHE_LIMIT) {
+    const oldest = avatarEmbedCache.keys().next().value
+    if (oldest === undefined) break
+    avatarEmbedCache.delete(oldest)
+  }
+}
+
+/** 有界并发：把 N 个任务压到 limit 个同时在飞，结果顺序与输入一致。 */
+export const mapWithConcurrency = async <T, R>(
+  items: readonly T[],
+  limit: number,
+  task: (item: T) => Promise<R>
+): Promise<R[]> => {
+  const results: R[] = new Array(items.length)
+  let cursor = 0
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const index = cursor
+      cursor += 1
+      if (index >= items.length) return
+      results[index] = await task(items[index])
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+const readAvatarSource = async (source: string): Promise<RenderedAvatar> => {
+  if (/^https?:\/\//i.test(source)) {
+    const response = await fetch(source, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 TraceMemo',
+        Referer: 'https://weixin.qq.com/'
+      },
+      signal: AbortSignal.timeout(AVATAR_FETCH_TIMEOUT_MS)
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const bytes = Buffer.from(await response.arrayBuffer())
+    const mime = detectImageMime(bytes)
+    if (!mime) {
+      throw new Error(
+        `not an image (content-type=${response.headers.get('content-type') || 'unknown'}, ${bytes.length} bytes)`
+      )
+    }
+    return { source: `data:${mime};base64,${bytes.toString('base64')}`, fallback: false }
+  }
+
+  const localPath = source.startsWith('file://') ? new URL(source) : source
+  const bytes = await fs.readFile(localPath)
+  const mime = detectImageMime(bytes)
+  if (!mime) throw new Error(`not an image (${bytes.length} bytes)`)
+  return { source: `data:${mime};base64,${bytes.toString('base64')}`, fallback: false }
+}
+
+export const embedAvatar = async (
+  source: string | undefined,
+  name: string
+): Promise<RenderedAvatar> => {
   if (!source) return fallbackAvatar(name)
   if (/^data:image\/[a-z0-9.+/-]+;base64,[a-z0-9+/=]+$/i.test(source))
     return { source, fallback: false }
 
-  try {
-    if (/^https?:\/\//i.test(source)) {
-      const response = await fetch(source, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 TraceMemo',
-          Referer: 'https://weixin.qq.com/'
-        },
-        signal: AbortSignal.timeout(8000)
-      })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const mime = imageMimeType(response.headers.get('content-type'), source)
-      return {
-        source: `data:${mime};base64,${Buffer.from(await response.arrayBuffer()).toString('base64')}`,
-        fallback: false
-      }
-    }
+  const cached = avatarEmbedCache.get(source)
+  if (cached) return cached
 
-    const localPath = source.startsWith('file://') ? new URL(source) : source
-    const buffer = await fs.readFile(localPath)
-    return {
-      source: `data:${imageMimeType(null, source)};base64,${buffer.toString('base64')}`,
-      fallback: false
+  let lastError: unknown
+  for (let attempt = 1; attempt <= AVATAR_FETCH_ATTEMPTS; attempt += 1) {
+    try {
+      const embedded = await readAvatarSource(source)
+      rememberAvatarEmbed(source, embedded)
+      return embedded
+    } catch (error) {
+      lastError = error
+      if (attempt < AVATAR_FETCH_ATTEMPTS) await sleep(150 * attempt)
     }
-  } catch (error) {
-    console.warn(`[GroupReport] avatar fallback for ${name}:`, error)
-    return fallbackAvatar(name)
   }
+  console.warn(`[GroupReport] avatar fallback for ${name}:`, lastError)
+  return fallbackAvatar(name)
 }
 
 /**
@@ -288,12 +376,22 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
   report.media?.voiceHighlights?.forEach((item) => avatarNames.add(item.sender))
   report.media?.funBadges?.forEach((item) => avatarNames.add(item.owner))
 
-  const avatars = new Map<string, RenderedAvatar>()
-  await Promise.all(
-    Array.from(avatarNames).map(async (name) => {
-      avatars.set(name, await embedAvatar(metadata.avatars[name], name))
-    })
+  // 有界并发 + 单条重试：几十个头像同时打同一个 CDN 会被限流，瞬时失败会让一个人
+  // 在整份报告里永久退化成首字占位（实测同一天三次生成：0% / 0% / 32% 失败）。
+  const renderedAvatars = await mapWithConcurrency(
+    Array.from(avatarNames),
+    AVATAR_FETCH_CONCURRENCY,
+    async (name) => [name, await embedAvatar(metadata.avatars[name], name)] as const
   )
+  const avatars = new Map(renderedAvatars)
+  const fallbackCount = renderedAvatars.filter(([, item]) => item.fallback).length
+  if (fallbackCount > 0) {
+    // 只记数量，不记人名：报告本身已经有名字，这里只需要一个可诊断的信号。
+    metadata.warnings = metadata.warnings ?? []
+    metadata.warnings.push(
+      `avatar fallback ${fallbackCount}/${renderedAvatars.length}: 未取到真实头像，已用首字占位`
+    )
+  }
   const avatar = (name: string): RenderedAvatar => avatars.get(name) || fallbackAvatar(name)
   const renderAvatar = (
     name: string,
