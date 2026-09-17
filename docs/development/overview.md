@@ -6,7 +6,6 @@
 
 - Electron + React + TypeScript；
 - pnpm 7+；
-- Go（构建微信连接器）；
 - 平台对应的 Electron/native 构建环境。
 
 产品文档的事实来源优先级是：当前源码 → 当前 UI/Renderer → 测试 → package/config → README/docs → 历史资料。功能、API、版本、隐私和兼容性变更时，不要只改 README。
@@ -18,7 +17,7 @@ pnpm install
 pnpm dev
 ```
 
-本地依赖安装、Go 环境和 Electron 二进制下载异常，请查看[本地启动排障](./local-startup-troubleshooting.md)。
+本地依赖安装与 Electron 二进制下载异常，请查看[本地启动排障](./local-startup-troubleshooting.md)。
 
 常用检查：
 
@@ -30,7 +29,7 @@ pnpm test:integration
 pnpm test:e2e:build
 ```
 
-完整测试入口 `pnpm test` 还会运行 Skill 安装指令、微信连接器、构建和 Playwright 测试；需要对应平台环境。
+完整测试入口 `pnpm test` 还会运行 Skill 安装指令、构建和 Playwright 测试；需要对应平台环境。
 
 ## 代码变更对应文档
 

@@ -35,7 +35,6 @@ extraResources:
       - mobile_daily_report.html
       - mobile_daily_report_v1.html
       - mobile_daily_report_v2.html
-      - connectors/wechat/win32-x64/**
       - key/win32/x64/**
       - runtime/win32/**
       - wcdb/win32/x64/**

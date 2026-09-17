@@ -5,7 +5,10 @@ import {
   GroupReportExportResult,
   GroupReportRenderSnapshotExportRequest
 } from '../shared/group-report'
-import type { InstalledReportTemplate, ReportTemplateOperationResult } from '../shared/report-template-package'
+import type {
+  InstalledReportTemplate,
+  ReportTemplateOperationResult
+} from '../shared/report-template-package'
 import type {
   ReportTemplateCatalogInstallResult,
   ReportTemplateCatalogResult
@@ -65,6 +68,11 @@ import type {
   ImageTextIndexStatus
 } from '../shared/image-text-index'
 import type { AgentHubActionResult, AgentHubLogEntry, AgentHubStatus } from '../shared/agent-hub'
+import type {
+  AgentHubConversation,
+  AgentHubConversationMessage,
+  AgentHubConversationSummary
+} from '../shared/agent-hub-conversation'
 import type {
   PersonalWechatGeneratedTtsVoiceRequest,
   PersonalWechatGeneratedTtsVoiceResult,
@@ -672,9 +680,13 @@ declare global {
       recognizeLocalImageText: (request: SystemOcrRequest) => Promise<SystemOcrResult>
       getImageTextIndexStatus: () => Promise<ImageTextIndexStatus>
       countImageMessages: (sinceMs?: number) => Promise<ImageTextIndexCountResult>
-      startImageTextIndex: (options?: ImageTextIndexStartOptions) => Promise<{ started: boolean; state: string }>
+      startImageTextIndex: (
+        options?: ImageTextIndexStartOptions
+      ) => Promise<{ started: boolean; state: string }>
       pauseImageTextIndex: () => Promise<{ paused: boolean; state: string }>
-      resumeImageTextIndex: (options?: ImageTextIndexStartOptions) => Promise<{ started: boolean; state: string }>
+      resumeImageTextIndex: (
+        options?: ImageTextIndexStartOptions
+      ) => Promise<{ started: boolean; state: string }>
       cancelImageTextIndex: () => Promise<{ cancellable: boolean; cancelled: boolean }>
       clearImageTextIndex: () => Promise<{ removed: boolean; removedBytes: number }>
       resetImageTextIndexFailures: () => Promise<{ reset: number }>
@@ -742,6 +754,16 @@ declare global {
       reconnectAgentHub: () => Promise<AgentHubActionResult>
       disconnectAgentHub: () => Promise<AgentHubActionResult>
       selectAgentHubTestImage: () => Promise<{ canceled: boolean; path?: string }>
+      getAgentHubConversations: () => Promise<AgentHubConversationSummary[]>
+      getAgentHubConversation: (userId: string) => Promise<AgentHubConversation | null>
+      clearAgentHubConversations: () => Promise<{ success: boolean }>
+      onAgentHubConversation: (
+        callback: (payload: {
+          summary: AgentHubConversationSummary
+          message: AgentHubConversationMessage
+        }) => void
+      ) => () => void
+      onAgentHubConversationsCleared: (callback: () => void) => () => void
       onAgentHubStatus: (callback: (status: AgentHubStatus) => void) => () => void
       onAgentHubLog: (callback: (entry: AgentHubLogEntry) => void) => () => void
     }

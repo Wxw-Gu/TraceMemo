@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '../../components/ui'
+import { AgentHubConversationPanel } from './AgentHubConversationPanel'
 
 const STATUS_LABELS: Record<WechatConnectorStatus, string> = {
   checking: '正在检查',
@@ -30,7 +31,14 @@ const LOG_SOURCE_LABELS: Record<AgentHubLogSource, string> = {
   'wechat-connector': '微信连接器'
 }
 
-export function AgentHubWorkspace(): React.ReactElement {
+export interface AgentHubWorkspaceProps {
+  /** 软件左下角那个账号：用于在对话记录左侧显示"对方是谁"。 */
+  selfInfo?: { wxid: string; nickname: string; avatar?: string } | null
+}
+
+export function AgentHubWorkspace({
+  selfInfo = null
+}: AgentHubWorkspaceProps = {}): React.ReactElement {
   const [status, setStatus] = React.useState<AgentHubStatus>({
     hub: 'offline',
     connector: 'checking',
@@ -283,6 +291,8 @@ export function AgentHubWorkspace(): React.ReactElement {
         </div>
         <p className="agent-hub-log-note">日志会隐藏 Token 和二维码数据，不记录你的微信密码。</p>
       </section>
+
+      <AgentHubConversationPanel selfInfo={selfInfo} selfUserId={status.wechatUserId} />
     </div>
   )
 }

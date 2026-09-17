@@ -2087,7 +2087,7 @@ function App(): React.ReactElement {
           />
         )
       case 'agent-hub':
-        return <AgentHubWorkspace />
+        return <AgentHubWorkspace selfInfo={selfInfo} />
       case 'api':
         return (
           <ApiWorkspace

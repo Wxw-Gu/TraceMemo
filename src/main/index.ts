@@ -109,6 +109,8 @@ import {
 } from './services/bootstrap-cache'
 import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
+import { WechatConnectorService } from './services/wechat-ilink'
+import { wechatSendGateway } from './services/wechat-send-gateway'
 import { groupExitMonitorService } from './services/group-exit-monitor-service'
 import { wechatActionLogService } from './services/wechat-action-log-service'
 import { wechatActionGateway } from './services/wechat-action-gateway'
@@ -195,6 +197,12 @@ import type {
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
 // handler. Wrap console.* before any other module logs anything.
 installSafeConsole()
+
+/**
+ * 进程内微信 iLink 连接器：inbound 回调与 outbound 发送都在主进程内完成，
+ * 不依赖子进程，也不开本地 HTTP 端口。
+ */
+const wechatConnectorService = new WechatConnectorService()
 
 let voiceService: VoiceService | null = null
 let voiceRecognition: VoiceRecognitionUseCase | null = null
@@ -774,6 +782,28 @@ app.whenReady().then(async () => {
       })
   })
   agentHubService.setQueryAgentService(queryAgentService)
+  // 微信 iLink 连接器直接跑在主进程内：inbound 回调与 outbound 发送都不经过本地 HTTP 桥。
+  agentHubService.setWechatConnector(wechatConnectorService)
+  wechatSendGateway.configureIlinkSender(async (request) => {
+    const target = {
+      to: request.to,
+      ...(request.account_id ? { accountId: request.account_id } : {}),
+      ...(request.context_token ? { contextToken: request.context_token } : {})
+    }
+    if (request.type === 'text') {
+      await wechatConnectorService.sendText({ ...target, text: request.msg })
+      return
+    }
+    if (request.type === 'image' || request.type === 'file') {
+      if (/^https?:\/\//i.test(request.msg)) {
+        await wechatConnectorService.sendMediaUrl({ ...target, mediaUrl: request.msg })
+      } else {
+        await wechatConnectorService.sendMediaPath({ ...target, filePath: request.msg })
+      }
+      return
+    }
+    throw new Error('iLink 通道暂不支持发送语音')
+  })
   knowledgeSearchService.onStatusChange((status) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send('knowledge:status', status)
@@ -2292,6 +2322,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('agent-hub:cancelLogin', () => agentHubService.cancelLogin())
   ipcMain.handle('agent-hub:reconnect', () => agentHubService.reconnect())
   ipcMain.handle('agent-hub:disconnect', () => agentHubService.disconnect())
+  // 对话记录：完整收发回看，仅本机，不进日志。
+  ipcMain.handle('agent-hub:getConversations', () => agentHubService.listConversations())
+  ipcMain.handle('agent-hub:getConversation', (_, userId: string) =>
+    agentHubService.getConversation(String(userId || ''))
+  )
+  ipcMain.handle('agent-hub:clearConversations', () => {
+    agentHubService.clearConversations()
+    return { success: true }
+  })
   ipcMain.handle('wechat-personal:getStatus', () => personalWechatSendService.getStatus())
   ipcMain.handle('wechat-personal:getKeepProcess', () =>
     personalWechatSendService.getKeepOneBotProcess()

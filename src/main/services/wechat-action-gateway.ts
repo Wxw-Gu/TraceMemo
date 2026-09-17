@@ -17,7 +17,7 @@ import type {
   WechatActionResult
 } from '../../shared/wechat-action'
 import { personalWechatCapabilityService } from './personal-wechat-capability-service'
-import { personalWechatSendService } from './personal-wechat-send-service'
+import { wechatSendGateway } from './wechat-send-gateway'
 
 const MAX_AUDIT_RECORDS = 500
 const MAX_CONTENT_PREVIEW_LENGTH = 240
@@ -54,7 +54,8 @@ const defaultDependencies = (): Required<
   >
 > => ({
   getCapability: () => personalWechatCapabilityService.getPersonalWechatSendCapability(),
-  send: (request) => personalWechatSendService.send(request),
+  // 高层业务审计之后仍然统一走 WechatSendGateway，保证每一次真实发送都有 Send Log。
+  send: (request) => wechatSendGateway.sendPersonal(request),
   getUserDataPath: () => app.getPath('userData'),
   now: () => new Date(),
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
