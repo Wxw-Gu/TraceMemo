@@ -229,9 +229,18 @@ export interface KnowledgeEvidence {
    * 有值 = 这条结果依赖本地派生内容才能命中（而不是原始消息本身的文字）。
    * 与 `sourceKind` 正交：`sourceKind` 说的是原始消息是什么，这里说的是"靠什么搜到的"。
    */
-  derivedSource?: 'image_ocr'
+  derivedSource?: KnowledgeDerivedSource
   score?: number
 }
+
+/**
+ * 派生来源的种类。
+ *
+ * 用 union 而不是 `isOcr: boolean`：以后接视频字幕 / 文件解析时只需要加一个成员，
+ * 不必给每个消费方再添一个布尔字段。UI 侧的展示文案集中在
+ * `renderer/src/components/search/evidenceSourceLabels.ts`，不在这里。
+ */
+export type KnowledgeDerivedSource = 'image_ocr' | 'voice_transcript'
 
 /**
  * 证据文本面向用户 / 模型时的可读化处理。

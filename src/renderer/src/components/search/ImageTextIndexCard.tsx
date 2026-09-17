@@ -8,6 +8,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
   Select,
   SelectContent,
   SelectItem,
@@ -33,7 +37,7 @@ type ImageTextIndexCardProps = {
  * 与 Knowledge 卡片**平级并列**（同一组索引入口），但刻意是**独立的一维能力**：
  * 文字消息索引完整不代表图片里的文字搜得到。
  *
- * 文案遵从严禁混淆的语义（§9）：这里做的是「识别图片中文字」，不是
+ * 文案遵从严禁混淆的语义：这里做的是「识别图片中文字」，不是
  * 「本地识图模型 / 本地 Vision / AI OCR」，也不能暗示能理解场景或表情包。
  */
 export function ImageTextIndexCard({ dbReady, onNotice }: ImageTextIndexCardProps): ReactElement {
@@ -79,8 +83,8 @@ export function ImageTextIndexCard({ dbReady, onNotice }: ImageTextIndexCardProp
   /**
    * 处理进度百分比。
    *
-   * 刻意不在这里做 `Math.round(x * 100)` —— `45479 / 45707` 会被四舍五入成 `100`，
-   * 于是出现了"已建立 · 仅完成 100%"这种自相矛盾的显示。未完成时封顶 99.9%。
+   * 刻意不在这里做 `Math.round(x * 100)` —— 那会把 99.5% 显示成 100%，
+   * 于是出现"已建立 · 仅完成 100%"这种自相矛盾的显示。未完成时封顶 99.9%。
    */
   const percent = coverage
     ? imageTextProcessedPercent(coverage.processed, coverage.totalImageMessages)
@@ -110,10 +114,25 @@ export function ImageTextIndexCard({ dbReady, onNotice }: ImageTextIndexCardProp
   const nothingCounted =
     count !== null && count.scannedConversations === 0 && count.failedConversations > 0
 
+  /** 识别失败的图片数（派生库的真实统计），决定「更多」里有没有重试入口。 */
+  const failureCount = coverage?.failed ?? 0
+
+  /**
+   * 中断但**可续做**。
+   *
+   * `paused` 和 `cancelled` 都能靠 checkpoint 从断点接上（`startPass` 会跳过已完成会话、
+   * 命中已有 artifact 不再重复 OCR），所以两者必须给**同一个**「继续」入口。
+   * 只认 `paused` 的后果真实发生过：点过「取消」之后卡片只剩「更新图片文字索引」，
+   * 状态还被显示成「部分完成 · 2.1%」—— 用户既看不出自己中断过，也找不到继续的地方。
+   */
+  const interrupted = paused || progress?.state === 'cancelled'
+
   const stateLabel = (() => {
     if (progress?.state === 'error') return '建立失败'
     if (running) return `建立中 · ${percent}%`
     if (paused) return `已暂停 · ${percent}%`
+    // 取消 ≠ 部分完成：进度是保留的，但"被打断过"这件事必须说出来。
+    if (progress?.state === 'cancelled') return `已取消 · ${percent}%`
     if (!established) return '未建立'
     // 「已建立」不能等于「全失败」：处理过但一条都没成功时必须叫异常。
     if (coverageState === 'failed') return '图片文字索引异常'
@@ -227,6 +246,21 @@ export function ImageTextIndexCard({ dbReady, onNotice }: ImageTextIndexCardProp
             <p className="ai-search-knowledge-pass-line">
               {`${progress.percent}% · 识别出文字 ${progress.indexed.toLocaleString()} · 没有文字 ${progress.empty.toLocaleString()} · 图片已清理 ${progress.missing.toLocaleString()} · 失败 ${progress.failed.toLocaleString()}`}
             </p>
+            {/*
+              速度用最近窗口的实测值（Main 给的就是窗口速度，不是全程平均）。
+              样本还不足时如实说"计算中"，不要编一个数 —— 全量回填要跑几小时，
+              一个假 ETA 比没有 ETA 更糟。
+            */}
+            <p
+              className="ai-search-knowledge-pass-line"
+              data-testid="image-text-index-rate"
+            >
+              {`当前速度：${
+                typeof progress.speedPerSec === 'number' && progress.speedPerSec > 0
+                  ? `约 ${progress.speedPerSec.toFixed(1)} 张/秒`
+                  : '计算中'
+              } · 预计剩余：${formatEta(progress.etaMs)}`}
+            </p>
           </div>
         )}
 
@@ -284,8 +318,9 @@ export function ImageTextIndexCard({ dbReady, onNotice }: ImageTextIndexCardProp
           <p className="ai-search-knowledge-error">请先连接微信数据，然后再建立图片文字索引。</p>
         )}
 
-        <div className="ai-search-knowledge-actions">
-          {!running && !paused && (
+        {/* 这张卡最多并列 3 个操作，横向排会撑破窄侧栏；修饰类把它改成单列堆叠。 */}
+        <div className="ai-search-knowledge-actions ai-search-image-index-actions">
+          {!running && !interrupted && (
             <Button
               size="sm"
               className="ai-search-knowledge-primary"
@@ -296,44 +331,50 @@ export function ImageTextIndexCard({ dbReady, onNotice }: ImageTextIndexCardProp
               {established ? '更新图片文字索引' : '建立图片文字索引'}
             </Button>
           )}
-          {!running && !paused && countFailed && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="ai-search-knowledge-cancel"
-              data-testid="image-text-index-recount"
-              disabled={pending !== null || counting}
-              onClick={() => void refreshCount()}
-            >
-              {counting ? '统计中…' : '重新统计'}
-            </Button>
-          )}
-          {/* 修好之后重跑：只重置失败记录，成功记录与其它数据一律不动。 */}
-          {!running && !paused && systemicFailure && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="ai-search-knowledge-cancel"
-              data-testid="image-text-index-reset-failures"
-              disabled={pending !== null}
-              onClick={() => void resetFailures()}
-            >
-              {pending === 'reset' ? '处理中…' : '重试失败的图片'}
-            </Button>
-          )}
-          {/* 派生索引修复：只重建 Knowledge 里的图片搜索索引，**不重新识别任何图片**。
-              存在的意义就是"别为修一个索引问题重跑几万张图"。 */}
-          {!running && !paused && established && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="ai-search-knowledge-cancel"
-              data-testid="image-text-index-repair"
-              disabled={pending !== null}
-              onClick={() => void repair()}
-            >
-              {pending === 'repair' ? '修复中…' : '修复图片搜索索引'}
-            </Button>
+          {/*
+            修复类操作收进「更多」。
+
+            它们各自只在很窄的情况下才有用（搜索索引不一致 / 有识别失败的图片），
+            而主路径永远只有一个：更新索引。平铺出来时，用户看到的是四个都在说
+            「索引」的按钮，只能靠猜哪个该点。
+          */}
+          {!running && (established || failureCount > 0) && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ai-search-knowledge-cancel"
+                  data-testid="image-text-index-more"
+                  disabled={pending !== null}
+                >
+                  更多
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {/* 派生索引修复：只重建 Knowledge 里的图片搜索索引，**不重新识别任何图片**。
+                    存在的意义就是"别为修一个索引问题重跑几万张图"。 */}
+                {established && (
+                  <DropdownMenuItem
+                    data-testid="image-text-index-repair"
+                    disabled={pending !== null}
+                    onSelect={() => void repair()}
+                  >
+                    图片内容搜不到？修复搜索索引
+                  </DropdownMenuItem>
+                )}
+                {/* 修好之后重跑：只重置失败记录，成功记录与其它数据一律不动。 */}
+                {failureCount > 0 && (
+                  <DropdownMenuItem
+                    data-testid="image-text-index-reset-failures"
+                    disabled={pending !== null}
+                    onSelect={() => void resetFailures()}
+                  >
+                    {`重试识别失败的图片（${failureCount.toLocaleString()} 张）`}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
           {running && (
             <>
@@ -359,28 +400,35 @@ export function ImageTextIndexCard({ dbReady, onNotice }: ImageTextIndexCardProp
               </Button>
             </>
           )}
+          {/*
+            中断（暂停 / 取消）之后必须能找到「继续」。
+            两种状态的 checkpoint 都是保留的，继续 = 从断点接上，
+            所以这里刻意合并成一个入口 —— 否则「取消」过的索引会只剩
+            「更新图片文字索引」，用户根本看不出还能接着做。
+          */}
+          {interrupted && (
+            <Button
+              size="sm"
+              className="ai-search-knowledge-primary"
+              data-testid="image-text-index-resume"
+              disabled={pending !== null}
+              onClick={() => void resume()}
+            >
+              {pending === 'resume' ? '继续中…' : '继续'}
+            </Button>
+          )}
+          {/* 只有真的处在"暂停中"才有东西可取消：已取消的状态再点取消没有意义。 */}
           {paused && (
-            <>
-              <Button
-                size="sm"
-                className="ai-search-knowledge-primary"
-                data-testid="image-text-index-resume"
-                disabled={pending !== null}
-                onClick={() => void resume()}
-              >
-                {pending === 'resume' ? '继续中…' : '继续'}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="ai-search-knowledge-cancel"
-                data-testid="image-text-index-cancel"
-                disabled={pending !== null}
-                onClick={() => void cancel()}
-              >
-                取消
-              </Button>
-            </>
+            <Button
+              size="sm"
+              variant="outline"
+              className="ai-search-knowledge-cancel"
+              data-testid="image-text-index-cancel"
+              disabled={pending !== null}
+              onClick={() => void cancel()}
+            >
+              取消
+            </Button>
           )}
         </div>
       </section>
@@ -424,4 +472,19 @@ export function ImageTextIndexCard({ dbReady, onNotice }: ImageTextIndexCardProp
       </AlertDialog>
     </>
   )
+}
+
+/**
+ * 剩余时间文案。
+ *
+ * `null` = 分母不可信或速度样本还不足 —— 如实说"计算中"。
+ * 刻意不显示 p50 / p95 这类开发指标：这是用户界面，不是性能面板。
+ */
+function formatEta(etaMs: number | null | undefined): string {
+  if (typeof etaMs !== 'number' || !Number.isFinite(etaMs) || etaMs <= 0) return '计算中'
+  const totalMinutes = Math.round(etaMs / 60_000)
+  if (totalMinutes < 1) return '不到 1 分钟'
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return hours > 0 ? `${hours} 小时 ${minutes} 分` : `${minutes} 分`
 }

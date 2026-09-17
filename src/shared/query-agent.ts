@@ -1,4 +1,5 @@
 import type { AiSearchPipelineRequest, AiSearchPipelineResult } from './ai-search'
+import type { KnowledgeDerivedSource } from './knowledge'
 import type { QueryCorpusScope } from './local-query-api'
 
 /**
@@ -36,10 +37,11 @@ export interface AskWechatEvidenceItem {
   /**
    * 命中所依赖的派生来源（与 `messageType` 正交）。
    *
-   * `image_ocr` = 这条结果靠**图片里的文字**命中，而不是群友真的发了一条文字消息。
-   * Evidence UI 会据此显示轻量来源标记。authoritative source 仍是原始图片消息。
+   * 有值 = 这条结果靠**本地派生内容**命中，而不是原始消息本身的文字
+   * （`image_ocr` = 图片里的文字，`voice_transcript` = 语音转写）。
+   * Evidence UI 会据此多挂一个来源标记；authoritative source 仍是原始消息。
    */
-  derivedSource?: 'image_ocr'
+  derivedSource?: KnowledgeDerivedSource
   /** 「从图片里读出来的文字」片段，只作命中解释（普通文字消息不会有）。 */
   imageOcrText?: string
   attachment?: { kind?: string; name?: string; url?: string; sizeBytes?: number }

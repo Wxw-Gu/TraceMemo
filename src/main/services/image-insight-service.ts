@@ -322,16 +322,16 @@ class ImageInsightService {
   // 与 Vision 路径的关系：
   //   ImageInsightService 是统一编排入口，下面挂两条互不干扰的运行时——
   //     - Vision Model Runtime（AIProviderService，走 AI Provider，可能联网）
-  //     - Windows System OCR Runtime（SystemOcrService，纯本地，不联网）
+  //     - System OCR Runtime（SystemOcrService，纯本地，不联网）
   //
   // 边界与约束：
   //   1. 本地 OCR 结果属于 **派生内容**，原始消息始终是权威来源；
-  //      本轮不落库、不写 Knowledge、不做历史图片 backfill。
+  //      本服务只返回识别文本，不做持久化 —— 落库与 Knowledge 回填在图片文字索引侧。
   //   2. 本地 OCR 结果 **不会** 写入 image-insights.json——那是 Vision 结果的缓存，
   //      两者的缓存键空间也不同（见 buildSystemOcrCacheKey）。
   //   3. 这里不读取也绝不修改 AI Vision Provider / 模型配置。
 
-  /** 本机是否支持本地图片文字识别（Windows System OCR）。 */
+  /** 本机是否支持本地图片文字识别（System OCR，引擎按平台决定）。 */
   getSystemOcrCapability(): Promise<SystemOcrCapability> {
     return systemOcrService.getCapability()
   }

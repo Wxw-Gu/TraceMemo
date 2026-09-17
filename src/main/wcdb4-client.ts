@@ -1531,6 +1531,84 @@ export class Wcdb4Client {
     return this.finalizeMessages(username, allRows, startTime, endTime, limit)
   }
 
+  /**
+   * 只读**图片消息**，供图片文字索引使用。
+   *
+   * 为什么需要它：`getMessagesAsync` 会把整个会话的消息都读出来，
+   * 一个 20 万条消息的会话要花十几秒（实测 `rawReadMs≈15s`），
+   * 而图片索引只关心其中的图片 —— 那是错误的数据边界。
+   *
+   * 实现上刻意**复用 `finalizeMessages`**（即 `normalizeMessage` + 群昵称解析 + 排序），
+   * 这样产出的 `Wcdb4Message` 与全量路径**逐字段同构**，`messageId` / `contentData`
+   * 语义完全一致 —— 否则 artifact / binding / checkpoint 的键会全变。
+   * 变化的只有"读哪些行"：靠 `imageMessageWhere` 在 SQL 层过滤。
+   *
+   * 这里仍是一次性读完该会话的图片（**未分页**）：行数由图片数量决定而不是消息数量，
+   * 已经比全量小一到两个数量级。超过 `limit` 会被截断并告警，调用方应改成分页。
+   */
+  async listImageMessagesAsync(
+    md5OrUsername: string,
+    options: { sinceMs?: number; limit?: number; requestId?: string } = {}
+  ): Promise<Wcdb4Message[]> {
+    if (!this.wcdbExecQuery) return []
+    const requestId = options.requestId ?? 'NO-REQUEST'
+    const username = this.resolveMessageUsername(md5OrUsername)
+    if (!username) return []
+
+    const startedAt = Date.now()
+    let tables: Wcdb4MessageStore[] = []
+    try {
+      tables = await this.listMessageStoresAsync(username)
+    } catch (error) {
+      console.warn('[WCDB4] image message table stats failed:', error)
+      return []
+    }
+    if (!tables.length) return []
+
+    const limit = Math.max(1, options.limit ?? 200_000)
+    const allRows: Record<string, unknown>[] = []
+    let successfulTables = 0
+    for (const table of tables) {
+      // 真实类型列名必须逐表探测：硬编码会让过滤静默失效，把全量消息当图片读回来。
+      const column = this.resolveMessageTypeColumn(table)
+      if (!column) continue
+      try {
+        const where = this.imageMessageWhere(column, options.sinceMs)
+        // `local_id` 参与排序：`create_time` 同秒的消息需要一个稳定次序，
+        // 否则多次读取的行序可能不同，调用方无法做稳定游标。
+        const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${where} ORDER BY "create_time" ASC, "local_id" ASC LIMIT ${limit}`
+        const queryStartedAt = Date.now()
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          table.dbPath,
+          sql
+        )
+        successfulTables += 1
+        if (Array.isArray(rows)) allRows.push(...rows)
+        wcdbDebugLog(
+          `[${requestId}] WCDB image messages table=${table.tableName} rows=${Array.isArray(rows) ? rows.length : 0} cost=${Date.now() - queryStartedAt}ms`
+        )
+      } catch (error) {
+        console.warn(
+          `[WCDB4] image message scan failed table=${table.tableName}:`,
+          error
+        )
+      }
+    }
+    if (tables.length > 0 && successfulTables === 0) return []
+
+    const messages = this.finalizeMessages(username, allRows)
+    if (allRows.length >= limit) {
+      // 不静默丢数据：截断会让该会话被标成"处理完了"，下一遍靠水位修正。
+      console.warn(`[WCDB4] image message scan truncated rows=${allRows.length} limit=${limit}`)
+    }
+    wcdbDebugLog(
+      `[${requestId}] WCDB image messages end rows=${messages.length} cost=${Date.now() - startedAt}ms`
+    )
+    return messages
+  }
+
   private async getMessagesByTableScanAsync(
     username: string,
     startTime?: number,

@@ -19,6 +19,11 @@ asarUnpack:
   - node_modules/silk-wasm/**
   - node_modules/sherpa-onnx-node/**
   - node_modules/sherpa-onnx-*/**
+  # System OCR（@napi-rs/system-ocr）的 native binding 必须 unpacked，否则
+  # macOS 的系统 OCR 会在运行时 MODULE_NOT_FOUND。平台本机的 binding 由
+  # scripts/after-pack.cjs 校验，外架构的同级包在 afterPack 里被裁掉。
+  - node_modules/@napi-rs/system-ocr/**
+  - node_modules/@napi-rs/system-ocr-*/**
 extraResources:
   # Keep the updater provider in every packaged macOS app. electron-builder also
   # regenerates this file during publish, using the same release configuration.

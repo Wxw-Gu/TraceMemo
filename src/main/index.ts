@@ -32,10 +32,7 @@ import {
   resolveFfmpegExecutable,
   type DecodedImage
 } from './image-decrypt-service'
-import {
-  exportGroupReportSnapshot,
-  extractGroupReportRenderSnapshot
-} from './group-report-service'
+import { exportGroupReportSnapshot, extractGroupReportRenderSnapshot } from './group-report-service'
 import {
   deleteGeneratedReport,
   listGeneratedReports,
@@ -45,9 +42,7 @@ import {
 } from './report-history-service'
 import { reportTemplateService } from './report-template-service'
 import { registerReportTemplateIpc } from './report-template-ipc'
-import type {
-  GroupReportRenderSnapshotExportRequest
-} from '../shared/group-report'
+import type { GroupReportRenderSnapshotExportRequest } from '../shared/group-report'
 import type {
   SaveGeneratedReportRequest,
   PrepareGeneratedReportTemplateSwitchRequest,
@@ -667,10 +662,8 @@ app.whenReady().then(async () => {
   /**
    * 图片文字索引需要解密图片。
    *
-   * 原先这个依赖直接读 `imageDecryptService`，而它**只在 `db:getImage`（用户点开某张图）
-   * 里才懒加载** —— 于是全量回填在用户没点开过任何图片时拿到 `null`，
-   * 45,479 张图片全部被记成 `decrypt_failed`（见事故报告）。
-   * 这里改成显式的"按需确保"，凡是需要解密的路径都能自己把它建起来。
+   * 解密服务原本只在 `db:getImage`（用户点开某张图）里才懒加载，于是没点开过图片时
+   * 全量回填会拿到 `null`。这里改成显式"按需确保"，凡是需要解密的路径都能自己建起来。
    */
   imageTextIndexService.bind({
     databaseRoot: join(app.getPath('userData'), 'image-text-index'),
@@ -687,13 +680,46 @@ app.whenReady().then(async () => {
         type: contact.type
       }))
     },
-    listMessages: (conversationId) => chat.listMessagesAsync(conversationId),
+    listMessages: (conversationId) =>
+      chat.listMessagesAsync(
+        conversationId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'image-text-index'
+      ),
+    /**
+     * 图片索引走**专用查询**：只读图片消息，不读整个会话。
+     *
+     * 全量读取一个 20 万条消息的会话实测要 15s 以上，而其中 99% 以上的行
+     * 图片索引根本不看 —— 那是数据边界错了，不是 OCR 慢。
+     */
+    listImageMessages: (conversationId) =>
+      chat.listImageMessagesAsync(conversationId, undefined, 'image-text-index'),
     countConversationImages: (conversationId, sinceMs) =>
       chat.countImageMessagesAsync(conversationId, sinceMs),
     imageWatermark: (conversationId, sinceMs) =>
       chat.imageConversationWatermarkAsync(conversationId, sinceMs),
     decryptService: () => ensureImageDecryptService(),
     capability: () => systemOcrService.getCapability(),
+    /**
+     * OCR 并发度的运行时覆盖；不设置则走 `DEFAULT_IMAGE_TEXT_OCR_CONCURRENCY`。
+     *
+     * 同一份二进制、同一批图片只改这一个数，才能把并发度当作对照变量来比较。
+     * 非法值会被 `resolveImageTextOcrConcurrency` 收敛掉。
+     */
+    ...(process.env.TRACEMEMO_OCR_CONCURRENCY
+      ? { ocrConcurrency: Number(process.env.TRACEMEMO_OCR_CONCURRENCY) }
+      : {}),
+    /** 低频性能画像：只写性能数字，不含图片内容 / 路径 / 会话标识。 */
+    logStageProfile: (profile) =>
+      appLogger.write({
+        level: 'info',
+        scope: 'image-text-index',
+        message: '图片文字索引性能画像',
+        details: { ...profile }
+      }),
     recognize: async (imageDataUrl) => {
       const result = await systemOcrService.recognize({ imageDataUrl })
       return {
@@ -719,8 +745,7 @@ app.whenReady().then(async () => {
    *
    * 与覆盖度是**两件不同的事**：覆盖度回答"索引建了多少"，这里回答
    * "这一条图片已经识别出的文字是什么"。只接前者的话，图片索引建好了模型也读不到正文，
-   * 只能看到一个空的 `attachment` —— 真机上就是这么把"图片里有 ChatGPT 价格"
-   * 答成"没有取得 OCR 文字"的。
+   * 只能看到一个空的 `attachment`。
    *
    * 只读派生库，**不触发 OCR / 解密 / 读原图**。
    */
@@ -740,7 +765,13 @@ app.whenReady().then(async () => {
       if (!aiSearchPipelineService) throw new Error('本地搜索服务尚未初始化')
       return aiSearchPipelineService.run(request, () => undefined)
     },
-    log: (record) => appLogger.write({ level: record.level, scope: 'query-agent', message: record.message, details: record.details })
+    log: (record) =>
+      appLogger.write({
+        level: record.level,
+        scope: 'query-agent',
+        message: record.message,
+        details: record.details
+      })
   })
   agentHubService.setQueryAgentService(queryAgentService)
   knowledgeSearchService.onStatusChange((status) => {
@@ -1128,8 +1159,8 @@ app.whenReady().then(async () => {
       aesKey: result.aesKey
     })
     if (saved.success) imageDecryptService = null
- // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
- imageTextIndexService.resetAccount()
+    // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+    imageTextIndexService.resetAccount()
     return {
       ...result,
       success: saved.success,
@@ -1150,8 +1181,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('image:saveConfig', (_, request: SaveImageKeyRequest) => {
     const result = imageKeyConfigService.save(request)
     if (result.success) imageDecryptService = null
- // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
- imageTextIndexService.resetAccount()
+    // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+    imageTextIndexService.resetAccount()
     return result
   })
 
@@ -1162,8 +1193,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('image:clearConfig', () => {
     const result = imageKeyConfigService.clear()
     if (result.success) imageDecryptService = null
- // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
- imageTextIndexService.resetAccount()
+    // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+    imageTextIndexService.resetAccount()
     return result
   })
 
@@ -1288,7 +1319,7 @@ app.whenReady().then(async () => {
       const requestId = nextGetMessagesRequestId()
       const startedAt = Date.now()
       wcdbDebugLog(
-        `[${requestId}] IPC db:getMessages start userMd5=${userMd5} start=${startTime || 0} end=${endTime || 0} limit=${options?.limit || 0}`
+        `[${requestId}] IPC db:getMessages start start=${startTime || 0} end=${endTime || 0} limit=${options?.limit || 0}`
       )
       try {
         const messages = await chat.listMessagesAsync(
@@ -1349,7 +1380,7 @@ app.whenReady().then(async () => {
         return { messages: [], found: false, radiusSeconds: 0, truncated: false }
       }
       wcdbDebugLog(
-        `[${requestId}] IPC db:getMessagesAround start userMd5=${userMd5} messageId=${target.messageId} anchor=${anchorSeconds || 0}`
+        `[${requestId}] IPC db:getMessagesAround start messageId=${target.messageId} anchor=${anchorSeconds || 0}`
       )
       for (const radius of radii) {
         const start = Math.max(0, (anchorSeconds as number) - radius)
@@ -1461,14 +1492,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('image-text-index:count', (_, sinceMs?: number) =>
     imageTextIndexService.countImageMessages(sinceMs)
   )
-  ipcMain.handle(
-    'image-text-index:start',
-    (_, options?: ImageTextIndexStartOptions) => imageTextIndexService.startPass(options ?? {})
+  ipcMain.handle('image-text-index:start', (_, options?: ImageTextIndexStartOptions) =>
+    imageTextIndexService.startPass(options ?? {})
   )
   ipcMain.handle('image-text-index:pause', () => imageTextIndexService.pause())
-  ipcMain.handle(
-    'image-text-index:resume',
-    (_, options?: ImageTextIndexStartOptions) => imageTextIndexService.resume(options ?? {})
+  ipcMain.handle('image-text-index:resume', (_, options?: ImageTextIndexStartOptions) =>
+    imageTextIndexService.resume(options ?? {})
   )
   ipcMain.handle('image-text-index:cancel', () => imageTextIndexService.cancel())
   ipcMain.handle('image-text-index:clear', () => imageTextIndexService.clear())
@@ -2036,12 +2065,12 @@ app.whenReady().then(async () => {
   )
 
   // ============================================================
-  // 本地图片文字识别（System OCR / Windows System OCR Runtime）
+  // 本地图片文字识别（System OCR Runtime：Windows 系统 OCR / macOS 系统 OCR）
   // ============================================================
   // 这是本地 Runtime，不是 AI Vision Provider：
   //   - 不联网、不上传原图；
   //   - 不读写 AI Provider / Vision 模型配置；
-  //   - 结果不落库（派生内容，本轮只做内存级闭环）。
+  //   - 本 IPC 只返回识别文本、不落库：派生文本的持久化由图片文字索引负责。
   ipcMain.handle('system-ocr:getCapability', async (): Promise<SystemOcrCapability> => {
     return imageInsightService.getSystemOcrCapability()
   })
@@ -2049,8 +2078,8 @@ app.whenReady().then(async () => {
   ipcMain.handle(
     'system-ocr:recognize',
     async (_, request: SystemOcrRequest): Promise<SystemOcrResult> => {
-      // 日志只记录结构性信息，不记录 base64、不记录识别正文。
-      console.log('[IPC] system-ocr:recognize hash=%s', request?.imageHash || 'auto')
+      // 单图识别是用户主动触发的一次操作，结果里已经带了 text / durationMs / errorCode，
+      // 调用方直接用返回值判断即可，这里不再打日志（尤其不打稳定的图片标识）。
       return imageInsightService.extractLocalText(request)
     }
   )

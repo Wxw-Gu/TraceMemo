@@ -1,4 +1,4 @@
-import type { KnowledgeEvidence, KnowledgeVoiceCoverage } from './knowledge'
+import type { KnowledgeDerivedSource, KnowledgeEvidence, KnowledgeVoiceCoverage } from './knowledge'
 
 export type QueryDirection = 'any' | 'from_target' | 'to_target'
 export type QueryOrder = 'asc' | 'desc'
@@ -119,7 +119,7 @@ export interface QueryEvidenceItem
    * 让用户知道这段内容来自**图片里的文字**，而不是群友真的发了一条文字消息。
    * authoritative source 仍然是原始图片消息，`messageRef` 也仍然指向原图。
    */
-  derivedSource?: 'image_ocr'
+  derivedSource?: KnowledgeDerivedSource
   /**
    * 「从图片里读出来的文字」片段，只用作命中解释。
    *
@@ -242,7 +242,7 @@ export interface QueryMessage {
    */
   imageOcrText?: string
   /** 派生来源语义：`image_ocr` = 这段文字来自图片识别，而不是原始文字消息。 */
-  derivedSource?: 'image_ocr'
+  derivedSource?: KnowledgeDerivedSource
   /**
    * 这条图片消息在本地图片文字索引里的状态。
    *

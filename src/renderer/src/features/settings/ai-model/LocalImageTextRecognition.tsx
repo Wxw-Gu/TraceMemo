@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { SystemOcrCapability, SystemOcrResult } from '../../../../../shared/system-ocr'
+import type {
+  SystemOcrCapability,
+  SystemOcrEngine,
+  SystemOcrResult
+} from '../../../../../shared/system-ocr'
 import { Button } from '../../../components/ui'
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -18,12 +22,15 @@ interface LocalOcrState {
 }
 
 /**
- * 本地图片文字识别（Windows 系统 OCR）。
+ * 本地图片文字识别（系统 OCR）。
  *
  * 这是**本地 Runtime**，不是 AI 图片理解：
  *   - 只把图片里的文字读出来；不描述画面、人物、场景，也不做视觉推理；
  *   - 原始图片不会因为这一步发给任何 AI Provider；
  *   - 结果只是派生内容，不会写进本地知识库。
+ *
+ * 引擎由平台决定（Windows 系统 OCR / macOS 系统 OCR），UI 一律从 capability 派生文案，
+ * 不硬编码平台名。
  */
 export function LocalImageTextRecognition(): React.ReactElement {
   const [capability, setCapability] = useState<SystemOcrCapability | null>(null)
@@ -120,13 +127,14 @@ export function LocalImageTextRecognition(): React.ReactElement {
 
   const running = state.status === 'running'
   const result = state.result
+  const engineLabel = systemOcrEngineLabel(capability?.engine)
 
   return (
     <section className="settings-card local-ocr-test">
       <header>
         <div>
           <h2>本地图片文字识别</h2>
-          <p>使用 Windows 系统 OCR 在本机读取图片中的文字，原始图片无需发送给 AI Provider。</p>
+          <p>使用{engineLabel}在本机读取图片中的文字，原始图片无需发送给 AI Provider。</p>
         </div>
         <span className={`local-ocr-capability ${capability?.available ? 'supported' : ''}`}>
           {capability ? (capability.available ? '本机可用' : '本机不可用') : '检测中…'}
@@ -138,7 +146,7 @@ export function LocalImageTextRecognition(): React.ReactElement {
       ) : null}
       {capability?.available ? (
         <p className="local-ocr-runtime">
-          引擎：Windows 系统 OCR
+          引擎：{engineLabel}
           {capability.runtimeVersion ? ` · 组件 ${capability.runtimeVersion}` : ''}
           {capability.language ? ` · 语言 ${capability.language}` : ' · 语言跟随系统'}
         </p>
@@ -183,7 +191,7 @@ export function LocalImageTextRecognition(): React.ReactElement {
           <dl>
             <div>
               <dt>引擎</dt>
-              <dd>Windows 系统 OCR</dd>
+              <dd>{systemOcrEngineLabel(result.engine)}</dd>
             </div>
             <div>
               <dt>语言</dt>
@@ -218,10 +226,22 @@ export function LocalImageTextRecognition(): React.ReactElement {
   )
 }
 
+/** 引擎标识 → 展示名。UI 不硬编码平台，一律从 capability / result 派生。 */
+function systemOcrEngineLabel(engine: SystemOcrEngine | undefined): string {
+  switch (engine) {
+    case 'macos-system-ocr':
+      return 'macOS 系统 OCR'
+    case 'windows-system-ocr':
+      return 'Windows 系统 OCR'
+    default:
+      return '系统 OCR'
+  }
+}
+
 function localOcrErrorMessage(result: SystemOcrResult): string {
   switch (result.errorCode) {
     case 'UNSUPPORTED_PLATFORM':
-      return '本地图片文字识别目前仅支持 Windows。'
+      return '本地图片文字识别目前支持 Windows 与 macOS。'
     case 'SYSTEM_OCR_UNAVAILABLE':
       return '本地文字识别组件不可用，请重新安装 TraceMemo。'
     case 'OCR_LANGUAGE_UNAVAILABLE':

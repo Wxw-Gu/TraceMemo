@@ -1,17 +1,21 @@
-// Windows System OCR native fidelity。
+// 【Windows】System OCR native fidelity。
 //
 // 这是 capability-gated 的原生冒烟测试：
-//   - 只有在「当前平台支持 + native 运行时可用 + 有可用 OCR 语言包」时才真正跑；
+//   - 只有在「Windows + native 运行时可用 + 有可用 OCR 语言包」时才真正跑；
 //   - CI 环境无法保证 Windows OCR 语言包，所以中文识别不作为所有 CI 的硬门槛
 //     （mock 单元测试才是 mandatory，见 tests/unit/system-ocr-service.test.ts）；
 //   - 在 Windows 真机上必须实际通过。
+//
+// 这个文件断言的是 **Windows 专有**的性质：Windows 引擎标识、以及「引擎只吃 PNG，
+// JPEG 必须走本服务归一化」这条约束。macOS 的对应测试见 system-ocr-macos.test.ts
+// （macOS 不做归一化，不要把这个文件里的约束套到 macOS 上）。
 //
 // fixture 全部是 synthetic 图片（tests/fixtures/ocr/*），不含任何真实聊天数据。
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { SYSTEM_OCR_ENGINE } from '../../src/shared/system-ocr'
+import { SYSTEM_OCR_ENGINE_WINDOWS } from '../../src/shared/system-ocr'
 
 vi.mock('../../src/main/image-decrypt-service', () => ({
   resolveFfmpegExecutable: (): string => 'ffmpeg'
@@ -33,11 +37,13 @@ const expectContainsTokens = (text: string, tokens: string[]): void => {
 }
 
 const capability = await systemOcrService.getCapability()
-const nativeGate = capability.available ? it : it.skip
+const onWindows = process.platform === 'win32'
+const platformGate = onWindows ? it : it.skip
+const nativeGate = onWindows && capability.available ? it : it.skip
 
 describe('Windows System OCR native fidelity', () => {
-  it('reports a usable capability on this machine', () => {
-    expect(capability.engine).toBe(SYSTEM_OCR_ENGINE)
+  platformGate('reports a usable capability on this machine', () => {
+    expect(capability.engine).toBe(SYSTEM_OCR_ENGINE_WINDOWS)
     if (!capability.available) {
       console.warn(`[integration] System OCR native smoke skipped: ${capability.message}`)
     }

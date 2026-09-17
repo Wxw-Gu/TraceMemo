@@ -944,6 +944,25 @@
   grid-template-columns: 180px minmax(0, 1fr);
   gap: 14px;
 }
+/*
+ * AES 密钥字段 +「显示/隐藏」开关。
+ *
+ * 用 flex 让按钮做**同级的兄弟节点**，而不是浮在输入框上：
+ * 这样不需要绝对定位、不需要给输入框留 padding，值很长时也不会被图标压住。
+ */
+.image-key-secret {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.image-key-secret > input {
+  /* Input 自身是 w-full（width: 100%），flex 里必须放开 min-width 才能收缩。 */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.image-key-secret-toggle {
+  flex: 0 0 auto;
+}
 .image-key-editor > p {
   margin: 0;
   color: #66706b;

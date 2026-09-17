@@ -2,14 +2,18 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  SYSTEM_OCR_ENGINE,
+  SYSTEM_OCR_ENGINE_MACOS,
+  SYSTEM_OCR_ENGINE_WINDOWS,
   SYSTEM_OCR_PROBE_PNG_BASE64,
   buildSystemOcrCacheKey,
   detectSystemOcrImageFormat,
   mapSystemOcrNativeError,
   normalizeSystemOcrText,
   parseImageDataUrl,
-  resolveSystemOcrLanguageTag
+  resolveMacOcrLanguageTag,
+  resolveSystemOcrEngine,
+  resolveSystemOcrLanguageTag,
+  resolveWindowsOcrLanguageTag
 } from '../../src/shared/system-ocr'
 
 vi.mock('../../src/main/image-decrypt-service', () => ({
@@ -106,6 +110,27 @@ describe('system-ocr shared helpers', () => {
     expect(resolveSystemOcrLanguageTag('en')).toBe('en-US')
     expect(resolveSystemOcrLanguageTag('')).toBeNull()
     expect(resolveSystemOcrLanguageTag('xx-YY')).toBeNull()
+    expect(resolveWindowsOcrLanguageTag('zh-HK')).toBe('zh-Hant-HK')
+  })
+
+  it('maps system locale onto Apple Vision language tags without region suffixes', () => {
+    // Vision 只认脚本级中文字标签，`zh-Hans-CN` 这类组合不是合法输入。
+    expect(resolveMacOcrLanguageTag('zh-CN')).toBe('zh-Hans')
+    expect(resolveMacOcrLanguageTag('zh-Hans-CN')).toBe('zh-Hans')
+    expect(resolveMacOcrLanguageTag('zh_TW')).toBe('zh-Hant')
+    expect(resolveMacOcrLanguageTag('zh-HK')).toBe('zh-Hant')
+    expect(resolveMacOcrLanguageTag('en-US')).toBe('en-US')
+    expect(resolveMacOcrLanguageTag('')).toBeNull()
+    expect(resolveMacOcrLanguageTag('xx-YY')).toBeNull()
+    // 同一个 locale 在两个平台上必须给出各自的标签，不能串用。
+    expect(resolveSystemOcrLanguageTag('zh-TW', 'darwin')).toBe('zh-Hant')
+    expect(resolveSystemOcrLanguageTag('zh-TW', 'win32')).toBe('zh-Hant-TW')
+  })
+
+  it('resolves a distinct engine identity per platform', () => {
+    expect(resolveSystemOcrEngine('win32')).toBe(SYSTEM_OCR_ENGINE_WINDOWS)
+    expect(resolveSystemOcrEngine('darwin')).toBe(SYSTEM_OCR_ENGINE_MACOS)
+    expect(SYSTEM_OCR_ENGINE_WINDOWS).not.toBe(SYSTEM_OCR_ENGINE_MACOS)
   })
 
   it('maps native Windows errors onto product error codes', () => {
@@ -115,6 +140,23 @@ describe('system-ocr shared helpers', () => {
     expect(mapSystemOcrNativeError('Failed to load native binding')).toBe('SYSTEM_OCR_UNAVAILABLE')
     expect(mapSystemOcrNativeError('Windows error something broke (0x80070057)')).toBe('OCR_FAILED')
     expect(mapSystemOcrNativeError('')).toBe('OCR_FAILED')
+  })
+
+  it('maps native macOS Vision errors onto product error codes', () => {
+    // 实测自 1.2.0 / macOS 15：畸形图片与伪造魔数都走这条。
+    expect(
+      mapSystemOcrNativeError('CRImage Reader Detector was given zero-dimensioned image (0 x 0)')
+    ).toBe('IMAGE_DECODE_FAILED')
+    expect(
+      mapSystemOcrNativeError(
+        'The image is too small in at least one dimension 2 x 2 (each dimension has to be more than 2 pixels)'
+      )
+    ).toBe('IMAGE_DECODE_FAILED')
+    expect(mapSystemOcrNativeError('Cannot find native binding.')).toBe('SYSTEM_OCR_UNAVAILABLE')
+    // macOS 没有语言包概念：不能把普通失败误判成语言不可用。
+    expect(mapSystemOcrNativeError('Vision request failed')).toBe('OCR_FAILED')
+    // "图里没有文字"是正常终态，不是失败 —— 否则表情包会落成可重试失败。
+    expect(mapSystemOcrNativeError('No text recognized')).toBe('OCR_EMPTY_RESULT')
   })
 
   it('parses image data urls and rejects other payloads', () => {
@@ -139,7 +181,7 @@ describe('system-ocr shared helpers', () => {
     const base = { imageHash: 'a'.repeat(32), language: 'zh-Hans-CN', runtimeVersion: '1.2.0' }
     const key = buildSystemOcrCacheKey({ ...base, platform: 'win32' })
     expect(key).not.toBe(base.imageHash)
-    expect(key).toContain(SYSTEM_OCR_ENGINE)
+    expect(key).toContain(SYSTEM_OCR_ENGINE_WINDOWS)
     expect(key).toContain('zh-Hans-CN')
     expect(key).toContain('1.2.0')
     // 语言或运行时版本变化必须换 key，避免复用过期 / 跨引擎结果。
@@ -147,6 +189,19 @@ describe('system-ocr shared helpers', () => {
     expect(
       buildSystemOcrCacheKey({ ...base, runtimeVersion: '1.3.0', platform: 'win32' })
     ).not.toBe(key)
+  })
+
+  it('never shares a cache key between the Windows and macOS engines', () => {
+    // 同一张图、同一 runtime 版本：平台不同 → key 必须不同，否则 macOS 会直接
+    // 复用 Windows 变体算出的 artifact，用户永远看不到新引擎的结果。
+    const shared = { imageHash: 'a'.repeat(32), language: null, runtimeVersion: '1.2.0' }
+    const windows = buildSystemOcrCacheKey({ ...shared, platform: 'win32' })
+    const macos = buildSystemOcrCacheKey({ ...shared, platform: 'darwin' })
+    expect(windows).not.toBe(macos)
+    expect(windows).toContain(SYSTEM_OCR_ENGINE_WINDOWS)
+    expect(macos).toContain(SYSTEM_OCR_ENGINE_MACOS)
+    // 同一个平台重启后必须给出同一个 key —— artifact 要能正常复用。
+    expect(buildSystemOcrCacheKey({ ...shared, platform: 'darwin' })).toBe(macos)
   })
 })
 
@@ -156,12 +211,29 @@ describe('SystemOcrService capability detection', () => {
     const capability = await service.getCapability()
     expect(capability).toMatchObject({
       available: true,
-      engine: SYSTEM_OCR_ENGINE,
+      engine: SYSTEM_OCR_ENGINE_WINDOWS,
       platform: 'win32',
       arch: 'x64',
       runtimeVersion: '1.2.0',
       language: 'zh-Hans-CN'
     })
+  })
+
+  it('reports available on macOS without a language hint', async () => {
+    const runtime = createRuntime()
+    const service = createService(runtime, { platform: 'darwin', arch: 'arm64' })
+    const capability = await service.getCapability()
+    expect(capability).toMatchObject({
+      available: true,
+      engine: SYSTEM_OCR_ENGINE_MACOS,
+      platform: 'darwin',
+      arch: 'arm64',
+      runtimeVersion: '1.2.0',
+      // Vision 自行决定识别语言，capability 不再声称某个语言包。
+      language: null
+    })
+    // 探测本身也要走 native 运行时，而不是凭平台就宣称可用。
+    expect(runtime.recognize).toHaveBeenCalled()
   })
 
   it('is unavailable on unsupported platforms without loading a runtime', async () => {
@@ -171,6 +243,29 @@ describe('SystemOcrService capability detection', () => {
     expect(capability.available).toBe(false)
     expect(capability.reason).toBe('UNSUPPORTED_PLATFORM')
     expect(loadRuntime).not.toHaveBeenCalled()
+  })
+
+  it('reports a failed macOS probe as an engine failure, never as a missing language pack', async () => {
+    const service = createService(createRuntime({ probeError: 'Vision request failed' }), {
+      platform: 'darwin',
+      arch: 'arm64'
+    })
+    const capability = await service.getCapability()
+    expect(capability.available).toBe(false)
+    expect(capability.reason).toBe('NATIVE_MODULE_MISSING')
+    expect(capability.message).not.toContain('语言包')
+  })
+
+  it('treats a macOS "No text recognized" probe as proof the recognizer works', async () => {
+    // 探测图是纯白图，真机 Vision 对它就是抛 `No text recognized`。
+    // 这是 macOS 上 capability 探测的**正常路径**，不是故障。
+    const service = createService(createRuntime({ probeError: 'No text recognized' }), {
+      platform: 'darwin',
+      arch: 'arm64'
+    })
+    const capability = await service.getCapability()
+    expect(capability.available).toBe(true)
+    expect(capability.engine).toBe(SYSTEM_OCR_ENGINE_MACOS)
   })
 
   it('is unavailable when the native runtime cannot be loaded', async () => {
@@ -210,7 +305,7 @@ describe('SystemOcrService recognition', () => {
       success: true,
       text: 'TraceMemo 本地 OCR 2026',
       language: 'zh-Hans-CN',
-      engine: SYSTEM_OCR_ENGINE
+      engine: SYSTEM_OCR_ENGINE_WINDOWS
     })
     expect(result.lines[0].boundingBox).toEqual({ x: 0.1, y: 0.2, width: 0.3, height: 0.4 })
     expect(result.durationMs).toBeGreaterThanOrEqual(0)
@@ -224,12 +319,66 @@ describe('SystemOcrService recognition', () => {
     expect(result.text).toBe('')
   })
 
-  it('returns UNSUPPORTED_PLATFORM on non-Windows platforms', async () => {
-    const service = createService(null, { platform: 'darwin', arch: 'arm64' })
+  it('returns UNSUPPORTED_PLATFORM on platforms without a system OCR backend', async () => {
+    const service = createService(null, { platform: 'linux', arch: 'x64' })
     const result = await service.recognize({ imageDataUrl: PNG_DATA_URL })
     expect(result.success).toBe(false)
     expect(result.errorCode).toBe('UNSUPPORTED_PLATFORM')
-    expect(result.engine).toBe(SYSTEM_OCR_ENGINE)
+    expect(result.engine).toBe(SYSTEM_OCR_ENGINE_WINDOWS)
+  })
+
+  it('recognizes on macOS and skips image normalization entirely', async () => {
+    const runtime = createRuntime({ text: 'TraceMemo 图 片 OCR 2026' })
+    const resolveFfmpegExecutable = vi.fn(() => 'ffmpeg')
+    // 刻意不注入 toPngBytes：要验证的就是**默认归一化路径**在 macOS 上被绕过。
+    const service = new SystemOcrService({
+      platform: 'darwin',
+      arch: 'arm64',
+      locale: () => 'zh-CN',
+      loadRuntime: () => ({ ...runtime }),
+      resolveFfmpegExecutable
+    })
+
+    const result = await service.recognize({ imageDataUrl: JPEG_DATA_URL })
+
+    expect(result).toMatchObject({
+      success: true,
+      text: 'TraceMemo 图片 OCR 2026',
+      language: null,
+      engine: SYSTEM_OCR_ENGINE_MACOS
+    })
+    // Vision 原生接受 JPEG：不转码、不起 ffmpeg 子进程。
+    expect(resolveFfmpegExecutable).not.toHaveBeenCalled()
+    // 而且送给引擎的就是原始 JPEG 字节，没有被换成 PNG。
+    const businessCall = runtime.recognize.mock.calls.find(
+      (call) => !Buffer.from(call[0] as Uint8Array).equals(PROBE_BYTES)
+    )
+    expect(Buffer.from(businessCall?.[0] as Uint8Array)).toEqual(
+      Buffer.from(JPEG_DATA_URL.split(',')[1], 'base64')
+    )
+  })
+
+  it('maps a macOS Vision decode failure onto IMAGE_DECODE_FAILED', async () => {
+    const runtime = createRuntime({
+      error: 'CRImage Reader Detector was given zero-dimensioned image (0 x 0)'
+    })
+    const service = createService(runtime, { platform: 'darwin', arch: 'arm64' })
+    const result = await service.recognize({ imageDataUrl: PNG_DATA_URL })
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('IMAGE_DECODE_FAILED')
+    // 不把 native 堆栈透给用户。
+    expect(result.error).not.toContain('CRImage')
+  })
+
+  it('treats a macOS "No text recognized" throw as OCR_EMPTY_RESULT, not a failure', async () => {
+    // Windows 对无文字图片返回空文本；macOS 的 Vision 是抛错。
+    // 两者必须是同一个终态，否则表情包 / 风景图会全部落成可重试失败。
+    const runtime = createRuntime({ error: 'No text recognized' })
+    const service = createService(runtime, { platform: 'darwin', arch: 'arm64' })
+    const result = await service.recognize({ imageDataUrl: PNG_DATA_URL })
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('OCR_EMPTY_RESULT')
+    expect(result.error).toContain('没有在这张图片里识别到文字')
   })
 
   it('returns OCR_LANGUAGE_UNAVAILABLE when no OCR language pack is installed', async () => {
@@ -337,13 +486,76 @@ describe('ImageInsightService local OCR orchestration', () => {
     })
 
     const capability = await imageInsightService.getSystemOcrCapability()
-    expect(capability.engine).toBe(SYSTEM_OCR_ENGINE)
+    // 单例用的是真实平台，断言也按平台推导，避免变成"只能在这台机器上过"的测试。
+    expect(capability.engine).toBe(resolveSystemOcrEngine(process.platform))
 
     const result = await imageInsightService.extractLocalText({ imageDataUrl: PNG_DATA_URL })
-    expect(result.engine).toBe(SYSTEM_OCR_ENGINE)
+    expect(result.engine).toBe(resolveSystemOcrEngine(process.platform))
     // 关键约束：本地 OCR 路径绝不调用远端 Vision Provider。
     expect(analyzeImage).not.toHaveBeenCalled()
     // 也不写 Vision 的 insight 缓存。
     expect(upsert).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * 日志契约：后台回填会连续识别几万张，默认输出**不能**逐张留痕。
+ *
+ * 判据是"默认输出里一条成功日志都没有"，而不是"日志看起来还行" ——
+ * 这条约束一旦破了，跑一次全量回填就会把日志刷爆。
+ */
+describe('system-ocr 日志契约', () => {
+  const runOnce = async (
+    service: SystemOcrService
+  ): Promise<{ log: ReturnType<typeof vi.spyOn>; warn: ReturnType<typeof vi.spyOn> }> => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      await service.getCapability()
+      await service.recognize({ imageDataUrl: PNG_DATA_URL })
+      return { log, warn }
+    } finally {
+      log.mockRestore()
+      warn.mockRestore()
+    }
+  }
+
+  it('识别成功时不写任何 console.log（逐张成功日志是纯噪声）', async () => {
+    const service = createService(createRuntime({ text: '本地图片文字识别' }))
+    const { log } = await runOnce(service)
+
+    const messages = log.mock.calls.map((call) => String(call[0] ?? ''))
+    expect(messages.filter((message) => message.includes('[SystemOcrService]'))).toEqual([])
+  })
+
+  it('单张的耗时与字数仍然通过返回值给出（设置页诊断不依赖日志）', async () => {
+    const service = createService(createRuntime({ text: '本地图片文字识别' }))
+    const result = await service.recognize({ imageDataUrl: PNG_DATA_URL })
+
+    expect(result.success).toBe(true)
+    expect(result.text).toBe('本地图片文字识别')
+    expect(typeof result.durationMs).toBe('number')
+    expect(result.durationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('失败时保留一条 warn，且只含 error code / engine / platform / duration', async () => {
+    const service = createService(createRuntime({ error: 'Windows error 拒绝访问 (0x80070005)' }))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      await service.getCapability()
+      const result = await service.recognize({ imageDataUrl: PNG_DATA_URL })
+      expect(result.success).toBe(false)
+
+      const failedLines = warn.mock.calls
+        .map((call) => String(call[0] ?? ''))
+        .filter((message) => message.includes('[SystemOcrService] failed'))
+      expect(failedLines).toHaveLength(1)
+      // 绝不出现识别正文 / 图片内容 / 稳定标识。
+      const joined = failedLines.join(' ')
+      expect(joined).not.toContain('base64')
+      expect(joined).not.toContain('data:image')
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

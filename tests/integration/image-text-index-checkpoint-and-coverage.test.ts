@@ -1,5 +1,5 @@
 /**
- * 「图片文字索引」的 P0 语义测试。
+ * 「图片文字索引」的 checkpoint（增量水位）与覆盖度契约。
  *
  * 这里覆盖的都是**不能用 UI 数字糊过去**的硬约束：
  * - 覆盖度必须在重启后依然诚实（派生库只知道处理过什么，不知道源数据一共多少）；
@@ -93,7 +93,7 @@ function makeHarness(options: { messages?: chat.FormattedMessage[] } = {}): Harn
   }
 }
 
-describe('§2 增量水位：只比条数会漏掉「等量替换」', () => {
+describe('增量水位：只比条数会漏掉「等量替换」', () => {
   it('水位（条数 + 最大插入序）都没变时才跳过，不读 WCDB', async () => {
     const harness = makeHarness({ messages: [imageMessage(10, 1000), imageMessage(20, 2000)] })
     harness.watermark.count = 2
@@ -162,7 +162,7 @@ describe('§2 增量水位：只比条数会漏掉「等量替换」', () => {
   })
 })
 
-describe('§1 覆盖度诚实性', () => {
+describe('覆盖度诚实性', () => {
   it('重启后仍是 partial：分母来自落盘统计，不会退化成 processed', async () => {
     const { databaseRoot, databasePath } = makeHarness()
     // 先按「已建立过索引」写库：总数 100，实际只处理了 30 条。
@@ -227,7 +227,7 @@ describe('§1 覆盖度诚实性', () => {
   })
 })
 
-describe('§5 清理：删得掉才算成功', () => {
+describe('清理：删得掉才算成功', () => {
   it('清理后派生库文件消失，覆盖度回到未建立', async () => {
     const { service, databasePath } = makeHarness()
     // 建一份有内容的派生数据（建库 + 写 artifact/binding/水位 + 落盘总数）。
@@ -261,7 +261,7 @@ describe('§5 清理：删得掉才算成功', () => {
   })
 })
 
-describe('§1/§7 查询层：覆盖度必须是独立维度且带零结果诚实性', () => {
+describe('查询层：覆盖度必须是独立维度且带零结果诚实性', () => {
   const coverageOf = (input: Partial<ImageTextIndexCoverage>): ImageTextIndexCoverage => ({
     totalImageMessages: 0,
     processed: 0,

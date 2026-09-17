@@ -420,6 +420,34 @@
   min-width: 0;
 }
 
+/*
+ * 图片文字索引卡片的操作区：每个按钮独占一行。
+ *
+ * 这张卡最多并列 3 个操作（更新图片文字索引 / 更多 / 继续或取消），
+ * 而上面那套两列栅格是按「1 主 + 1 次」设计的：`auto` 列不可收缩，
+ * 窄侧栏下第 2、3 个按钮会把卡片撑出横向溢出。
+ * 改成纵向堆叠后按钮宽度只跟随容器，结构上不可能溢出。
+ */
+.ai-search-knowledge-actions.ai-search-image-index-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/*
+ * 宽度严格跟随容器：`min-width: 0` 覆盖按钮自身的 68px 下限
+ * （单列下那个下限已经没有意义，反而会阻止收缩）。
+ * 标签最长 8 个汉字，最窄侧栏（190px）下仍有余量，所以保持单行不换行。
+ */
+.ai-search-knowledge-actions.ai-search-image-index-actions > * {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .ai-search-knowledge-primary {
   min-width: 0;
 }
@@ -1080,6 +1108,32 @@
 .ai-search-markdown-list-item > span:first-child {
   color: var(--wxex-brand);
   font-weight: 700;
+}
+
+/*
+ * Markdown 表格的降级渲染。
+ *
+ * 结果栏很窄，真表格塞进来只会列宽错位、长字段换行难读。渲染层把表格行转成
+ * 逐行的键值列表（见 searchMarkdown.tsx），这里只保证两件事：
+ * 读得出来，且**永远不会横向溢出容器**。所以用 flex + wrap，不用 table。
+ */
+.ai-search-markdown-table-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin: 3px 0;
+  min-width: 0;
+}
+
+.ai-search-markdown-table-cell {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--wxex-text-secondary);
+}
+
+.ai-search-markdown-table-cell:first-child {
+  color: var(--wxex-text-primary);
+  font-weight: 600;
 }
 
 @media (max-width: 760px) {
