@@ -13,11 +13,14 @@ import { mkdirSync, rmSync, statSync, existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import {
+  IMAGE_TEXT_BACKFILL_TIER_ORDER,
   IMAGE_TEXT_INDEX_SCHEMA_VERSION,
   type ImageOcrArtifact,
   type ImageOcrBinding,
   type ImageOcrPersistedState,
-  type ImageTextIndexStorageStats
+  type ImageTextBackfillTier,
+  type ImageTextIndexStorageStats,
+  type ImageTextTierRunState
 } from '../../shared/image-text-index'
 
 const MAX_SAFE_ACCOUNT_SEGMENT = /^[a-f0-9]{32}$/
@@ -374,6 +377,76 @@ export class ImageTextIndexStore {
     this.writeMeta('total_image_messages_complete', input.complete ? '1' : '0')
   }
 
+  // ---------------------------------------------------- recent-first 回填状态
+  //
+  // 全部走 `image_ocr_meta`（key/value），**不加表、不加列** —— 这是 old checkpoint
+  // 兼容性的来源：旧库没有这些 key 时读出来就是"没有计划"，于是下一次 pass
+  // 以当前时刻为锚点重新建计划。已经处理过的图片由 terminal binding 兜住，
+  // 不会因为"计划是新的"而重新 OCR。
+
+  /**
+   * 读取回填计划状态。
+   *
+   * `anchorMs === null` = 从未规划过（新用户，或从旧版本升级且没有这些 key）。
+   * 调用方此时必须**新建**计划，而不是假设"已完成"。
+   */
+  readBackfillState(): {
+    anchorMs: number | null
+    tierStates: Partial<Record<ImageTextBackfillTier, ImageTextTierRunState>>
+    coveredToMs: number | null
+  } {
+    const anchorRaw = this.readMeta('backfill_anchor_ms')
+    const anchorMs = anchorRaw === null ? null : Number(anchorRaw)
+    let tierStates: Partial<Record<ImageTextBackfillTier, ImageTextTierRunState>> = {}
+    const statesRaw = this.readMeta('backfill_tier_states')
+    if (statesRaw) {
+      try {
+        const parsed = JSON.parse(statesRaw) as Record<string, unknown>
+        for (const tier of IMAGE_TEXT_BACKFILL_TIER_ORDER) {
+          const value = parsed[tier]
+          if (value === 'pending' || value === 'running' || value === 'complete') {
+            tierStates[tier] = value
+          }
+        }
+      } catch {
+        // 状态串损坏时按"没有分段状态"处理：最坏情况是重扫一遍，
+        // 而 terminal binding 保证不会重复 OCR。
+        tierStates = {}
+      }
+    }
+    const coveredRaw = this.readMeta('backfill_covered_to_ms')
+    const coveredToMs = coveredRaw === null ? null : Number(coveredRaw)
+    return {
+      anchorMs: anchorMs !== null && Number.isFinite(anchorMs) ? anchorMs : null,
+      tierStates,
+      coveredToMs: coveredToMs !== null && Number.isFinite(coveredToMs) ? coveredToMs : null
+    }
+  }
+
+  writeBackfillAnchor(anchorMs: number): void {
+    this.writeMeta('backfill_anchor_ms', String(Math.floor(anchorMs)))
+  }
+
+  /**
+   * 写入单个分段的运行态。
+   *
+   * 一个 pass 是单线程串行推进分段，所以"读-改-写"整体落在一条 meta 行里；
+   * 这里额外做的只有"保留其它分段"。
+   */
+  writeBackfillTierState(tier: ImageTextBackfillTier, state: ImageTextTierRunState): void {
+    const current = this.readBackfillState().tierStates
+    const next = { ...current, [tier]: state }
+    this.writeMeta('backfill_tier_states', JSON.stringify(next))
+  }
+
+  /** 增量补齐水位：处理到哪儿了（`create_time <= ms` 都已就绪）。只增不减。 */
+  writeBackfillCoveredToMs(coveredToMs: number): void {
+    const previous = this.readBackfillState().coveredToMs
+    if (previous !== null && previous >= coveredToMs) return
+    this.writeMeta('backfill_covered_to_ms', String(Math.floor(coveredToMs)))
+  }
+
+
   readScanState(): Map<
     string,
     { state: string; imageTotal: number; processed: number; maxLocalId: number }
@@ -563,7 +636,10 @@ export class ImageTextIndexStore {
       DELETE FROM image_ocr_meta WHERE key IN (
         'total_image_messages',
         'total_image_counted_at',
-        'total_image_messages_complete'
+        'total_image_messages_complete',
+        'backfill_anchor_ms',
+        'backfill_tier_states',
+        'backfill_covered_to_ms'
       );
     `)
   }

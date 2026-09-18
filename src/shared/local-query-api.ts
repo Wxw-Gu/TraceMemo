@@ -369,6 +369,14 @@ export interface QueryImageTextCoverage {
   pending: number
   /** 图片数量统计时刻（本地时间 `MM-DD HH:mm`）；从未统计时为 undefined。 */
   countedAtLabel?: string
+  /**
+   * 已经**真正完整**的时间段描述（新 → 旧），例如"最近 7 天"。
+   *
+   * recent-first 之后必须有这一维：总进度 30% 不代表"最近一周不可信"，
+   * 反过来总进度 99% 也不代表"去年可以下确定性结论"。模型只能引用这里列出的
+   * 时间段去下"没有"的结论，其余范围一律只能说"仍在补齐"。
+   */
+  coveredRanges?: string[]
   /** 可直接引用的结论句；模型只引用，不要自己换算或推断。 */
   summary: string
 }

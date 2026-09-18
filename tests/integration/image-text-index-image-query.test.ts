@@ -86,8 +86,24 @@ function createHarness(): Harness {
   const all = mixedMessages()
   const imagesOnly = all.filter((message) => message.contentData?.type === 'image')
 
+  /**
+   * recent-first 之后，"读哪些行"由**时间分段**决定，所以夹具必须像真 WCDB 一样
+   * 按窗口说话。忽略窗口的夹具测不出调度行为，只会让"读了几次"变成 4 次。
+   */
+  const inWindow = (
+    message: chat.FormattedMessage,
+    window?: { sinceMs?: number; beforeMs?: number }
+  ): boolean => {
+    const createTimeMs = (message.createTime || 0) * 1000
+    if (window?.sinceMs !== undefined && createTimeMs < window.sinceMs) return false
+    if (window?.beforeMs !== undefined && createTimeMs >= window.beforeMs) return false
+    return true
+  }
   const listMessages = vi.fn(async () => all)
-  const listImageMessages = vi.fn(async () => imagesOnly)
+  const listImageMessages = vi.fn(
+    async (_conversationId: string, window?: { sinceMs?: number; beforeMs?: number }) =>
+      imagesOnly.filter((message) => inWindow(message, window))
+  )
 
   const service = new ImageTextIndexService()
   service.bind({
@@ -98,7 +114,13 @@ function createHarness(): Harness {
     listContacts: async () => [
       { md5: CONVERSATION, m_nsUsrName: 'boundary', type: 'user' as const }
     ],
-    countConversationImages: async () => ({ count: IMAGE_COUNT, typeColumn: 'local_type' }),
+    countConversationImages: async (
+      _conversationId: string,
+      window?: { sinceMs?: number; beforeMs?: number }
+    ) => ({
+      count: imagesOnly.filter((message) => inWindow(message, window)).length,
+      typeColumn: 'local_type'
+    }),
     imageWatermark: async () => ({ count: IMAGE_COUNT, maxLocalId: TEXT_COUNT + IMAGE_COUNT }),
     listMessages,
     listImageMessages,

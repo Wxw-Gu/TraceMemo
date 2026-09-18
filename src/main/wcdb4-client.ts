@@ -7,6 +7,7 @@ import { createConnection, Socket } from 'net'
 import { getResourceRoots } from './resource-paths'
 import { wcdbDebugLog } from './wcdb-debug'
 import type { ImageMessageCountProbe } from '../shared/image-text-index'
+import { imageTextWindowToSeconds } from '../shared/image-text-index'
 
 export interface Wcdb4Session {
   username: string
@@ -1352,13 +1353,53 @@ export class Wcdb4Client {
     return value
   }
 
-  /** 图片消息的 WHERE 片段；`sinceMs` 用于只统计某个时间点之后的消息（测试小窗口）。 */
-  private imageMessageWhere(column: string, sinceMs?: number): string {
-    const clauses = [`(${this.quoteSqlIdentifier(column)} & 65535) = 3`]
-    // 微信的 create_time 是**秒**，调用方给的是毫秒。
-    if (sinceMs && Number.isFinite(sinceMs) && sinceMs > 0) {
-      clauses.push(`"create_time" >= ${Math.floor(sinceMs / 1000)}`)
+  /**
+   * 归一化图片消息的时间范围参数。
+   *
+   * 同时接受旧的裸 `sinceMs` 与新的 `{ sinceMs, beforeMs }`：
+   * 前者有若干既有调用点（统计卡片、增量水位），不该为了新功能去改它们；
+   * 后者是 recent-first 分段计划要的半开区间。
+   */
+  private normalizeImageRange(
+    input?: number | { sinceMs?: number; beforeMs?: number }
+  ): { sinceMs?: number; beforeMs?: number } {
+    if (typeof input === 'number') {
+      return Number.isFinite(input) && input > 0 ? { sinceMs: input } : {}
     }
+    if (!input) return {}
+    const range: { sinceMs?: number; beforeMs?: number } = {}
+    if (typeof input.sinceMs === 'number' && Number.isFinite(input.sinceMs) && input.sinceMs > 0) {
+      range.sinceMs = input.sinceMs
+    }
+    if (
+      typeof input.beforeMs === 'number' &&
+      Number.isFinite(input.beforeMs) &&
+      input.beforeMs > 0
+    ) {
+      range.beforeMs = input.beforeMs
+    }
+    return range
+  }
+
+  /**
+   * 图片消息的 WHERE 片段；`[sinceMs, beforeMs)` 半开区间。
+   *
+   * 边界换算**只走** `imageTextWindowToSeconds`：COUNT 与列表两条路径必须用
+   * 同一份换算，否则"统计说有 3 张、列表却返回 2 张"，而调用方会据此把一段
+   * 标成"已覆盖"。
+   */
+  private imageMessageWhere(
+    column: string,
+    input?: number | { sinceMs?: number; beforeMs?: number }
+  ): string {
+    const clauses = [`(${this.quoteSqlIdentifier(column)} & 65535) = 3`]
+    // 微信的 create_time 是**秒**，`[sinceMs, beforeMs)` 转成秒闭区间
+    // `[sinceSec, beforeSecInclusive]`；两端同一套下取整，保证不重不漏。
+    const { sinceSec, beforeSecInclusive } = imageTextWindowToSeconds(
+      this.normalizeImageRange(input)
+    )
+    if (sinceSec !== null) clauses.push(`"create_time" >= ${sinceSec}`)
+    if (beforeSecInclusive !== null) clauses.push(`"create_time" <= ${beforeSecInclusive}`)
     return clauses.join(' AND ')
   }
 
@@ -1373,7 +1414,7 @@ export class Wcdb4Client {
    */
   async countImageMessagesAsync(
     md5OrUsername: string,
-    sinceMs?: number
+    input?: number | { sinceMs?: number; beforeMs?: number }
   ): Promise<ImageMessageCountProbe> {
     if (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery) {
       return { count: null, typeColumn: null, error: '当前数据服务不支持消息表统计' }
@@ -1406,7 +1447,7 @@ export class Wcdb4Client {
           this.wcdbExecQuery as unknown as KoffiAsyncFunction,
           'message',
           table.dbPath,
-          `SELECT COUNT(*) AS "image_count" FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${this.imageMessageWhere(column, sinceMs)}`
+          `SELECT COUNT(*) AS "image_count" FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${this.imageMessageWhere(column, input)}`
         )
         const value = Number(this.pickValue(rows[0] || {}, ['image_count', 'count', 'COUNT(*)']))
         if (Number.isFinite(value)) total += value
@@ -1433,7 +1474,7 @@ export class Wcdb4Client {
    */
   async imageConversationWatermarkAsync(
     md5OrUsername: string,
-    sinceMs?: number
+    input?: number | { sinceMs?: number; beforeMs?: number }
   ): Promise<{ count: number; maxLocalId: number } | null> {
     if (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery) return null
     // 与计数同因：必须先把会话 md5 解析成原生接口要的 username，否则永远匹配不到消息表。
@@ -1458,7 +1499,7 @@ export class Wcdb4Client {
           this.wcdbExecQuery as unknown as KoffiAsyncFunction,
           'message',
           table.dbPath,
-          `SELECT COUNT(*) AS "image_count", MAX("local_id") AS "image_max_local_id" FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${this.imageMessageWhere(column, sinceMs)}`
+          `SELECT COUNT(*) AS "image_count", MAX("local_id") AS "image_max_local_id" FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${this.imageMessageWhere(column, input)}`
         )
         const row = rows[0] || {}
         const tableCount = Number(this.pickValue(row, ['image_count', 'count', 'COUNT(*)']))
@@ -1548,7 +1589,21 @@ export class Wcdb4Client {
    */
   async listImageMessagesAsync(
     md5OrUsername: string,
-    options: { sinceMs?: number; limit?: number; requestId?: string } = {}
+    options: {
+      sinceMs?: number
+      /**
+       * 开区间上界。recent-first 的分段窗口靠它把"最近 30 天"和"更早"切开，
+       * 与 `sinceMs` 一起构成 `[sinceMs, beforeMs)`。
+       */
+      beforeMs?: number
+      limit?: number
+      /**
+       * 行序。默认 `asc` 保持既有行为不变；recent-first 的窗口用 `desc`，
+       * 让同一窗口内**新的图片先被处理**（用户先受益，且断点续跑更有意义）。
+       */
+      order?: 'asc' | 'desc'
+      requestId?: string
+    } = {}
   ): Promise<Wcdb4Message[]> {
     if (!this.wcdbExecQuery) return []
     const requestId = options.requestId ?? 'NO-REQUEST'
@@ -1573,10 +1628,11 @@ export class Wcdb4Client {
       const column = this.resolveMessageTypeColumn(table)
       if (!column) continue
       try {
-        const where = this.imageMessageWhere(column, options.sinceMs)
+        const where = this.imageMessageWhere(column, options)
         // `local_id` 参与排序：`create_time` 同秒的消息需要一个稳定次序，
         // 否则多次读取的行序可能不同，调用方无法做稳定游标。
-        const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${where} ORDER BY "create_time" ASC, "local_id" ASC LIMIT ${limit}`
+        const direction = options.order === 'desc' ? 'DESC' : 'ASC'
+        const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${where} ORDER BY "create_time" ${direction}, "local_id" ${direction} LIMIT ${limit}`
         const queryStartedAt = Date.now()
         const rows = await this.callJsonAsync<Record<string, unknown>[]>(
           this.wcdbExecQuery as unknown as KoffiAsyncFunction,

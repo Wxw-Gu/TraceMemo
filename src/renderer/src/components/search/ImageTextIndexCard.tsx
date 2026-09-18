@@ -21,7 +21,10 @@ import {
 import {
   describeImageTextCoverage,
   imageTextCoverageState,
-  imageTextProcessedPercent
+  imageTextPhaseLabel,
+  imageTextProcessedPercent,
+  imageTextTierSearchableNotice,
+  type ImageTextBackfillTier
 } from '../../../../shared/image-text-index'
 import { useImageTextIndexStatus } from './hooks/useImageTextIndexStatus'
 
@@ -89,6 +92,31 @@ export function ImageTextIndexCard({ dbReady, onNotice }: ImageTextIndexCardProp
   const percent = coverage
     ? imageTextProcessedPercent(coverage.processed, coverage.totalImageMessages)
     : 0
+  /**
+   * 当前阶段文案（recent-first）。
+   *
+   * 它**不参与进度计算**：进度永远是 `processed / totalImageMessages`
+   * （例如 12,800 / 349,838）。阶段只回答"现在在优先做什么"，
+   * 绝不允许用"某个分段做完了"冒充整体完成。
+   */
+  const phaseLabel = progress?.currentPhase ? imageTextPhaseLabel(progress.currentPhase) : null
+  /**
+   * 已经**真正完整**的最新分段 —— 只有这时才敢告诉用户"这段时间已经能搜了"。
+   *
+   * 判据是 `state === 'complete'`，不是"扫到过"。整体 complete 时不必重复宣告。
+   */
+  const searchableNotice = (() => {
+    if (!coverage || coverageState === 'complete') return null
+    const completed = new Set(
+      (coverage.tiers ?? [])
+        .filter((entry) => entry.state === 'complete')
+        .map((entry) => entry.tier)
+    )
+    const newest = (
+      ['recent_7d', 'recent_30d', 'recent_1y', 'archive'] as ImageTextBackfillTier[]
+    ).find((tier) => completed.has(tier))
+    return newest ? imageTextTierSearchableNotice(newest) : null
+  })()
   const systemicFailure = coverage?.systemicFailure === true
   const visualState =
     progress?.state === 'error' || coverageState === 'failed'
@@ -243,6 +271,15 @@ export function ImageTextIndexCard({ dbReady, onNotice }: ImageTextIndexCardProp
                 }}
               />
             </div>
+            {/*
+              阶段只是一句人话，没有百分比 —— 进度必须留在上面那行
+              （processed / total 全量），否则用户会把"最近 7 天做完了"读成"整体做完了"。
+            */}
+            {phaseLabel && (
+              <p className="ai-search-knowledge-pass-line" data-testid="image-text-index-phase">
+                {phaseLabel}
+              </p>
+            )}
             <p className="ai-search-knowledge-pass-line">
               {`${progress.percent}% · 识别出文字 ${progress.indexed.toLocaleString()} · 没有文字 ${progress.empty.toLocaleString()} · 图片已清理 ${progress.missing.toLocaleString()} · 失败 ${progress.failed.toLocaleString()}`}
             </p>
@@ -290,6 +327,18 @@ export function ImageTextIndexCard({ dbReady, onNotice }: ImageTextIndexCardProp
                   {coverage.failed.toLocaleString()}
                 </strong>
               </div>
+            )}
+            {/*
+              只有**真正完整**的分段才敢说"已可搜索"。这是一句承诺，不是进度提示 ——
+              所以判据是 coverage 里该分段的 state === 'complete'，而不是"扫到过"。
+            */}
+            {searchableNotice && (
+              <p
+                className="ai-search-knowledge-pass-line"
+                data-testid="image-text-index-searchable-notice"
+              >
+                {searchableNotice}
+              </p>
             )}
             <p className="ai-search-knowledge-pass-line">{describeImageTextCoverage(coverage)}</p>
           </div>
