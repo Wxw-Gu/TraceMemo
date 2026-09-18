@@ -17,12 +17,14 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import {
   DEFAULT_IMAGE_TEXT_OCR_CONCURRENCY,
+  IMAGE_TEXT_BACKFILL_TIER_ORDER,
   IMAGE_TEXT_INDEX_BATCH_SIZE,
   IMAGE_TEXT_INDEX_PROGRESS_INTERVAL_MS,
   IMAGE_TEXT_INDEX_RATE_MIN_SPAN_MS,
   IMAGE_TEXT_INDEX_RATE_WINDOW_MS,
   IMAGE_OCR_RETRIABLE_FAILURE_STATES,
   buildImageOcrArtifactKey,
+  buildImageTextBackfillSegments,
   imageTextProcessedPercent,
   isTerminalImageOcrState,
   resolveImageTextOcrConcurrency,
@@ -30,8 +32,10 @@ import {
   type ImageMessageWatermark,
   type ImageOcrPersistedState,
   type ImageOcrProvenance,
+  type ImageTextBackfillSegment,
   type ImageTextIndexCountResult,
   type ImageTextIndexCoverage,
+  type ImageTextIndexPhase,
   type ImageTextIndexProgress,
   type ImageTextIndexRepairResult,
   type ImageTextIndexRunState,
@@ -39,7 +43,8 @@ import {
   type ImageTextIndexStageTimings,
   type ImageTextIndexStartOptions,
   type ImageTextIndexStatus,
-  type ImageTextIndexStorageStats
+  type ImageTextIndexStorageStats,
+  type ImageTextTierCoverage
 } from '../../shared/image-text-index'
 import {
   detectSystemOcrImageFormat,
@@ -86,7 +91,16 @@ export interface ImageTextIndexServiceDeps {
    * 由 WCDB 在 SQL 层过滤，而不是把整个会话读进来再筛。
    * 缺省时回退到 `listMessages`（测试用），但生产必须接上 —— 否则大会话会拖垮一遍 pass。
    */
-  listImageMessages?: (conversationId: string) => Promise<chat.FormattedMessage[]>
+  listImageMessages?: (
+    conversationId: string,
+    /**
+     * 时间窗（`[sinceMs, beforeMs)`，半开）。不传 = 整个会话。
+     *
+     * recent-first 的分段计划靠它把"最近 7 天"和"更早"分开，而不是把整个会话
+     * 读进来再在 JS 里筛 —— 那正是大会话跑不动的根因。
+     */
+    window?: { sinceMs?: number; beforeMs?: number }
+  ) => Promise<chat.FormattedMessage[]>
   /**
    * 单个会话的图片消息计数（SQL 统计，不解密）。
    *
@@ -94,7 +108,7 @@ export interface ImageTextIndexServiceDeps {
    */
   countConversationImages?: (
     conversationId: string,
-    sinceMs?: number
+    range?: number | { sinceMs?: number; beforeMs?: number }
   ) => Promise<ImageMessageCountProbe>
   /**
    * 单个会话的图片消息增量水位（条数 + 最大插入序），SQL 聚合，不解密。
@@ -103,7 +117,7 @@ export interface ImageTextIndexServiceDeps {
    */
   imageWatermark?: (
     conversationId: string,
-    sinceMs?: number
+    range?: number | { sinceMs?: number; beforeMs?: number }
   ) => Promise<ImageMessageWatermark | null>
   decryptService?: () => ImageDecryptService | null
   /** 本地 OCR。 */
@@ -289,6 +303,14 @@ export class ImageTextIndexService {
   private counting = false
   private listeners = new Set<(status: ImageTextIndexStatus) => void>()
   private lastError: string | undefined
+  /**
+   * 当前阶段（recent-first 可见性）。
+   *
+   * 它**不参与进度计算**：总进度永远是 `processed / totalImageMessages`。
+   */
+  private currentPhase: ImageTextIndexPhase = 'complete'
+  /** 本遍 pass 的起点，用于 `preLoop.startupMs`。 */
+  private passStartedAt = 0
   private startedAt: number | undefined
   /** 上一次清理实际重建（失效）了多少个会话的 Knowledge 索引；用于诊断与测试。 */
   lastInvalidatedConversations = 0
@@ -602,6 +624,20 @@ export class ImageTextIndexService {
      * 它必须阻断 `complete` —— 否则 Query Agent 会拿着"覆盖完整"去回答"没有"。
      */
     const systemicFailure = processed > 0 && indexed === 0 && empty === 0 && missing === 0
+    /**
+     * 覆盖完整性。
+     *
+     * 分母取自流水线**真实走过**的集合时（`useScan`），不再要求 `counted.complete`：
+     * 那个标志表达的是"`countImageMessages()` 把每个会话都数上了"，而进度现在已经
+     * 不用那个分母了。继续要求它，会让一个**已经跑完**的索引因为"某个会话数不上"
+     * 而永远停在"部分完成"。
+     */
+    const complete =
+      total > 0 &&
+      runtimeUnavailable === 0 &&
+      !systemicFailure &&
+      processed >= total &&
+      (useScan || (counted !== null && counted.complete))
     return {
       totalImageMessages: total,
       processed,
@@ -613,22 +649,11 @@ export class ImageTextIndexService {
       pending: Math.max(0, total - processed - runtimeUnavailable),
       // 从未统计过总数 → 不算"已建立"：不知道分母就不允许声称覆盖。
       established: counted !== null && (processed > 0 || runtimeUnavailable > 0),
-      /**
-       * 覆盖完整性。
-       *
-       * 分母取自流水线**真实走过**的集合时（`useScan`），不再要求 `counted.complete`：
-       * 那个标志表达的是"`countImageMessages()` 把每个会话都数上了"，而进度现在已经
-       * 不用那个分母了。继续要求它，会让一个**已经跑完**的索引因为"某个会话数不上"
-       * 而永远停在"部分完成"。
-       */
-      complete:
-        total > 0 &&
-        runtimeUnavailable === 0 &&
-        !systemicFailure &&
-        processed >= total &&
-        (useScan || (counted !== null && counted.complete)),
+      complete,
       systemicFailure,
-      countedAt: counted?.countedAt ?? null
+      countedAt: counted?.countedAt ?? null,
+      // recent-first 的时间维度：让调用方能回答"这一段时间能不能下确定性结论"。
+      ...this.tierCoverageSnapshot(complete)
     }
   }
 
@@ -672,7 +697,14 @@ export class ImageTextIndexService {
       cancellable: this.running,
       paused: this.runState === 'paused',
       ...this.rateSnapshot(coverage.processed, total),
-      ...(this.lastError ? { lastError: this.lastError } : {})
+      ...(this.lastError ? { lastError: this.lastError } : {}),
+      // 阶段提示只在"真的在做这件事"时给：运行/暂停时报当前分段；整体完成时报完成。
+      // 其余情况（idle / cancelled 且未完成）不给 —— 宁可不说，也不给一句过期的阶段。
+      ...(this.running || this.runState === 'paused'
+        ? { currentPhase: this.currentPhase }
+        : coverage.complete
+          ? { currentPhase: 'complete' as ImageTextIndexPhase }
+          : {})
     }
   }
 
@@ -713,7 +745,9 @@ export class ImageTextIndexService {
           established: false,
           complete: false,
           systemicFailure: false,
-          countedAt: null
+          countedAt: null,
+          tiers: [],
+          coveredToMs: null
         },
         storage: this.emptyStorage(),
         counting: this.counting
@@ -1265,6 +1299,22 @@ export class ImageTextIndexService {
     return { started: true, state: this.runState }
   }
 
+  /**
+   * 一次索引 pass。
+   *
+   * recent-first 的核心：**外层是时间分段，内层才是会话**。
+   *
+   * 为什么不能只把会话列表按"最近活跃"排序就完事：那只保证"先把 A 群全部历史扫完"，
+   * 而用户要的是"最近这几天的图片，不管在哪个群，都先能搜"。所以必须分段优先 ——
+   * 先把最近 7 天在所有会话上横着扫完，再退到下一个更老的分段。
+   *
+   * 四条不可动摇的性质：
+   * 1. **锚点固定**：backfill 的 `anchorMs` 一旦落盘就不再变，分段边界因此稳定，
+   *    不会"跑几小时后 7 天窗口往前挪"。
+   * 2. **新消息永远优先**：比锚点更新的图片由"增量补齐"负责，且它在每个调度点之前跑。
+   * 3. **已完成的分段不重扫**；已 terminal 的 binding 永远跳过（不重复 OCR）。
+   * 4. **进度不骗人**：总进度始终是 `processed / total`，分段只提供阶段文案。
+   */
   private async runPass(options: ImageTextIndexStartOptions): Promise<void> {
     const store = this.ensureStore()
     if (!store) {
@@ -1276,6 +1326,8 @@ export class ImageTextIndexService {
 
     // 进入图片流水线之前的一次性成本：单列出来，避免被摊进"每张图片"。
     const preLoopStartedAt = this.now()
+    // `startupMs` 的参照点。逐会话逻辑被抽成独立方法之后，它必须放在实例上。
+    this.passStartedAt = preLoopStartedAt
     const capability = (await this.deps.capability?.()) ?? null
     if (capability && !capability.available) {
       this.lastError = '当前系统不支持本地图片文字识别'
@@ -1323,16 +1375,261 @@ export class ImageTextIndexService {
      * `startupMs` 的取样点必须是"第一张图片进入流水线的那一刻"，不能在这里就记 ——
      * 否则会话级的准备成本会漏在外面，而那正是"单张很快、整遍很慢"的差额来源之一。
      */
-    let preLoopCaptured = false
+    const preLoopState = { captured: false }
 
     const scanState = store.readScanState()
-    let budget = options.messageLimit && options.messageLimit > 0 ? options.messageLimit : Infinity
+    const budget = {
+      remaining: options.messageLimit && options.messageLimit > 0 ? options.messageLimit : Infinity
+    }
+    /**
+     * 受控窗口（用于小样本验证）：只跑这一个窗口，**不写任何分段状态**，
+     * 因此同一个窗口可以反复跑（checkpoint 是围绕全量集合建立的，混用会让"跳过"
+     * 变得不可解释）。
+     */
+    const windowed = Boolean(options.sinceMs && options.sinceMs > 0)
+
+    const plan = this.resolveBackfillPlan(store, options)
+
+    /**
+     * 升级场景：老版本可能已经把**全量**图片索引建完了。此时库里没有任何分段信息，
+     * 应当直接落成"全部完成"，不重新回填 —— 用户已经拥有的东西不能被降级。
+     *
+     * 但**不能只看库里自称的进度**：`readScanProgress()` 记的是"上一次跑完时留下了多少"，
+     * 它不知道源里后来又新增了图片。只信它就会把"库里自称已完成、源侧其实有新增"
+     * 误判成"全部完成"，于是那些新增的图片永远不会被索引。
+     *
+     * 所以必须先向**源侧**核实：逐会话比对插入序水位，只有确实没有新内容时才算数。
+     * 这次核实本身就是增量补齐（水位没涨的会话一条 SQL 就跳过），不会白跑。
+     */
+    if (!windowed && plan.created) {
+      const existing = this.coverageFromCounts(store.countByState())
+      if (existing.complete) {
+        const verified = await this.processWindow({
+          window: null,
+          incremental: true,
+          contacts,
+          provenance,
+          store,
+          budget,
+          scanState,
+          preLoopState,
+          marksConversationDone: true
+        })
+        if (!verified.interrupted && !verified.truncated && verified.imageCount === 0) {
+          for (const tier of IMAGE_TEXT_BACKFILL_TIER_ORDER) {
+            store.writeBackfillTierState(tier, 'complete')
+          }
+          store.writeBackfillCoveredToMs(this.now())
+          this.currentPhase = 'complete'
+          this.runState = 'completed'
+          this.running = false
+          await this.emit()
+          return
+        }
+      }
+    }
+    const lastSegment = plan.segments[plan.segments.length - 1]
+    /**
+     * 增量补齐跑过没有（本次 pass）。
+     *
+     * 它必须**独立于"本分段要不要扫"**：所有分段都已完成时，仍然需要一次补齐，
+     * 否则"全部建完之后新到的图片"就再也没人接。
+     */
+    let swept = false
+
+    for (const segment of plan.segments) {
+      if (this.cancelRequested || this.pauseRequested || budget.remaining <= 0) break
+
+      const tierState = windowed ? null : store.readBackfillState().tierStates[segment.tier]
+      // 已完成的分段不再重扫 —— restart / resume 因此从**当前**分段继续，
+      // 而不是回到最近 7 天把已经做过的事再做一遍。
+      const shouldScan = windowed || tierState !== 'complete'
+
+      /**
+       * 增量补齐：**每个调度点先跑一次**，且本 pass 至少跑一次。
+       *
+       * 排在历史分段之前，是为了"绝不会因为正在扫十年前的历史，让今天新收到的图片排队"；
+       * 即使分段全部完成、本 pass 没有任何分段要扫，也仍然要跑一次。
+       */
+      if (!windowed && (!swept || shouldScan)) {
+        const interrupted = await this.sweepIncremental({
+          plan,
+          contacts,
+          provenance,
+          store,
+          budget,
+          scanState,
+          preLoopState
+        })
+        swept = true
+        if (interrupted) break
+      }
+
+      if (!shouldScan) continue
+
+      this.currentPhase = windowed ? 'incremental' : segment.tier
+      if (!windowed) store.writeBackfillTierState(segment.tier, 'running')
+      await this.emit()
+
+      const scanned = await this.processWindow({
+        window: { sinceMs: segment.startMs, beforeMs: segment.endMs },
+        incremental: false,
+        contacts,
+        provenance,
+        store,
+        budget,
+        scanState,
+        preLoopState,
+        marksConversationDone: !windowed && segment === lastSegment
+      })
+
+      // 被取消 / 暂停 / 预算截断 → 这一段**没有**跑完，绝不能标成 complete。
+      if (scanned.interrupted || scanned.truncated) break
+
+      if (!windowed) store.writeBackfillTierState(segment.tier, 'complete')
+      await this.emit()
+    }
+
+    if (this.cancelRequested) this.runState = 'cancelled'
+    else if (this.pauseRequested) this.runState = 'paused'
+    else this.runState = 'completed'
+    // 只有真正跑完全部分段才把阶段切成"完成"；中途停下时保留当前阶段（那才是实话）。
+    if (this.runState === 'completed' && !windowed) this.currentPhase = 'complete'
+    this.running = false
+    await this.emit()
+  }
+
+  /**
+   * 解析本次 pass 的分段计划。
+   *
+   * 计划一律由**落盘的锚点**派生：锚点不随 pass 变化，所以"跑了几小时之后
+   * 7 天窗口往前漂移、进而产生重复或遗漏"在结构上就不可能发生。
+   */
+  private resolveBackfillPlan(
+    store: ImageTextIndexStore,
+    options: ImageTextIndexStartOptions
+  ): { anchorMs: number; segments: ImageTextBackfillSegment[]; created: boolean } {
+    if (options.sinceMs && options.sinceMs > 0) {
+      // 受控窗口：单段、无上界、不落任何分段状态。
+      return {
+        anchorMs: options.sinceMs,
+        segments: [
+          { tier: 'recent_7d', startMs: options.sinceMs, endMs: Number.POSITIVE_INFINITY }
+        ],
+        created: false
+      }
+    }
+    const state = store.readBackfillState()
+    if (state.anchorMs !== null) {
+      return {
+        anchorMs: state.anchorMs,
+        segments: buildImageTextBackfillSegments(state.anchorMs),
+        created: false
+      }
+    }
+    const anchorMs = this.now()
+    store.writeBackfillAnchor(anchorMs)
+    for (const tier of IMAGE_TEXT_BACKFILL_TIER_ORDER) {
+      store.writeBackfillTierState(tier, 'pending')
+    }
+    return { anchorMs, segments: buildImageTextBackfillSegments(anchorMs), created: true }
+  }
+
+  /**
+   * 增量补齐：把"锚点之后新到的东西"处理掉，永远排在历史分段之前。
+   *
+   * 窗口 = `[max(锚点, 上次补齐水位), +∞)`，只覆盖新到的东西，所以刚建计划时
+   * 它在时间上是空的、连枚举都省掉。水位可用时另有一层判据：插入序没涨的会话
+   * 直接跳过，涨了的会话则**去掉时间窗**读（见 `processWindow`）。
+   *
+   * 返回 true = 被取消 / 暂停 / 预算截断。
+   */
+  private async sweepIncremental(input: {
+    plan: { anchorMs: number; segments: ImageTextBackfillSegment[] }
+    contacts: Array<{ md5: string; m_nsUsrName: string; type: 'user' | 'group' }>
+    provenance: ImageOcrProvenance
+    store: ImageTextIndexStore
+    budget: { remaining: number }
+    scanState: Map<
+      string,
+      { state: string; imageTotal: number; processed: number; maxLocalId: number }
+    >
+    preLoopState: { captured: boolean }
+  }): Promise<boolean> {
+    const incrementalSinceMs = Math.max(
+      input.plan.anchorMs,
+      input.store.readBackfillState().coveredToMs ?? 0
+    )
+    // 窗口在时间上必然为空 → 直接跳过，省掉一轮枚举。
+    if (this.now() - incrementalSinceMs < 1_000) return false
+
+    const swept = await this.processWindow({
+      window: { sinceMs: incrementalSinceMs },
+      incremental: true,
+      contacts: input.contacts,
+      provenance: input.provenance,
+      store: input.store,
+      budget: input.budget,
+      scanState: input.scanState,
+      preLoopState: input.preLoopState,
+      marksConversationDone: false
+    })
+    // 只有真的扫完（没被取消 / 暂停 / 预算截断）才推进水位，否则会漏掉没扫到的部分。
+    if (!swept.interrupted && !swept.truncated && input.budget.remaining > 0) {
+      input.store.writeBackfillCoveredToMs(this.now())
+    }
+    return swept.interrupted || swept.truncated
+  }
+
+  /**
+   * 处理一个窗口（`null` = 不看时间，用于受控小样本验证）。
+   *
+   * 每个会话先做两条**纯 SQL 聚合**：源侧水位 + 窗口内图片条数。
+   * 条数为 0 就整段跳过 —— 不读消息、不解密、不写任何"完成"标记。
+   */
+  private async processWindow(input: {
+    window: { sinceMs?: number; beforeMs?: number } | null
+    /**
+     * 增量补齐模式。
+     *
+     * - 水位**可用**且水位涨了 → 去掉时间窗读这个会话（接得住晚到的旧时间消息）；
+     * - 水位可用且没涨 → 跳过；
+     * - 水位**不可用** → 按时间窗兜底重扫：宁可慢，也不允许因为判据拿不到就漏。
+     */
+    incremental: boolean
+    contacts: Array<{ md5: string; m_nsUsrName: string; type: 'user' | 'group' }>
+    provenance: ImageOcrProvenance
+    store: ImageTextIndexStore
+    budget: { remaining: number }
+    scanState: Map<
+      string,
+      { state: string; imageTotal: number; processed: number; maxLocalId: number }
+    >
+    preLoopState: { captured: boolean }
+    /** 本窗口扫完是否意味着该会话**全部**图片都已定态（最后一个分段）。 */
+    marksConversationDone: boolean
+  }): Promise<{ interrupted: boolean; imageCount: number; truncated: boolean }> {
+    const { incremental, contacts, provenance, store, budget, scanState } = input
+    let imageCount = 0
+    /**
+     * 预算被截断。
+     *
+     * 必须与"跑完了"区分开：被截断的分段**不能**被标记成 complete ——
+     * 否则下一次 pass 会以"这一段已完成"跳过，被截掉的那些图片就永远不会被处理。
+     */
+    let truncated = false
 
     for (const contact of contacts) {
-      if (this.cancelRequested || this.pauseRequested) break
-      if (budget <= 0) break
+      if (this.cancelRequested || this.pauseRequested) {
+        return { interrupted: true, imageCount, truncated }
+      }
+      if (budget.remaining <= 0) {
+        truncated = true
+        break
+      }
 
       const conversationId = contact.md5
+      const previous = scanState.get(conversationId)
       /**
        * 会话级准备：水位 / 计数 / 让路 / 读消息。
        *
@@ -1341,45 +1638,66 @@ export class ImageTextIndexService {
        * 而 `perImageMs` 只覆盖 batch 循环，看不到它。
        */
       const setupStartedAt = this.now()
+
       /**
-       * 是否只处理一个时间窗口（用于小样本验证）。
+       * 源侧水位：`count` + `max(local_id)`，一条 SQL 聚合（**整会话**，不带窗口）。
        *
-       * 带窗口时**不做增量跳过**：checkpoint 是围绕全量集合建立的，
-       * 窗口内的图片可能从未被处理过，继续按"该会话已完成"跳过会让窗口形同虚设。
+       * 增量判据用 `maxLocalId` 而不是 create_time：`local_id` 是 WCDB 行内单调的
+       * 插入序，因此"撤回一张旧图 + 新增一张新图"这种总数不变的变更也能被发现，
+       * 而 create_time 会被"晚到的旧时间消息"骗过。
        */
-      const windowed = Boolean(options.sinceMs && options.sinceMs > 0)
-      // 增量水位 = 条数 + 最大插入序。只比条数会漏掉「撤回一张旧图 +
-      // 新增一张新图」这种总数不变、集合却变了的会话。
-      const watermark = await (this.deps.imageWatermark?.(conversationId, options.sinceMs) ??
-        Promise.resolve(null))
-      const imageTotal =
-        watermark?.count ??
-        (await this.deps.countConversationImages?.(conversationId, options.sinceMs))?.count ??
-        0
-      if (imageTotal === 0) {
+      const watermark = await (this.deps.imageWatermark?.(conversationId) ??
+        Promise.resolve<ImageMessageWatermark | null>(null))
+
+      /**
+       * 这一段对这个会话实际要读的时间窗。
+       *
+       * `null` = 不看时间（整会话，新 → 旧）。
+       */
+      let effectiveWindow = input.window
+      if (incremental && watermark !== null && previous !== undefined) {
+        // 水位可用：没涨就代表确实没有新内容，跳过（不读消息、不查窗口）。
+        if (previous.maxLocalId > 0 && watermark.maxLocalId <= previous.maxLocalId) {
+          this.preLoop.conversationSetupMs += this.now() - setupStartedAt
+          continue
+        }
+        /**
+         * 判据可用且涨了 → **去掉时间窗**读这个会话。
+         *
+         * 为什么不能只读"锚点之后"：`local_id` 是插入序，而 `create_time` 是业务时间，
+         * 两者可以不一致 —— 网络补发、消息恢复、合并转发回填都会让一条**旧时间**的
+         * 消息在今天才落库。只按时间窗读就永远接不到它，用户会"搜不到明明收到过的图"。
+         * 代价只落在真的发生了插入的会话上，而每一轮之后水位即被推平。
+         */
+        effectiveWindow = null
+      }
+      const windowArg = effectiveWindow === null ? undefined : effectiveWindow
+
+      /**
+       * 窗口内是否有图片：一条 SQL COUNT。
+       *
+       * `count === null` 是**统计失败，不是 0 张** —— 必须跳过并且不写任何完成标记，
+       * 否则这段会被当成"已覆盖"，把数不出来谎报成没有图片。
+       */
+      const probe = await (this.deps.countConversationImages?.(
+        conversationId,
+        windowArg
+      ) ?? Promise.resolve<ImageMessageCountProbe>({ count: null, typeColumn: null }))
+      if (probe.count === null) {
         this.preLoop.conversationSetupMs += this.now() - setupStartedAt
-        store.writeScanState({
-          conversationId,
-          state: 'done',
-          imageTotal: 0,
-          imageProcessed: 0,
-          maxLocalId: watermark?.maxLocalId ?? 0
-        })
         continue
       }
-
-      // 增量：会话已完成且**水位完全未变** → 不读 WCDB、不 OCR。
-      // 水位不可用时（数据库不支持该聚合）一律重扫：宁可慢，不可漏。
-      const previous = scanState.get(conversationId)
-      if (
-        !windowed &&
-        watermark &&
-        previous &&
-        previous.state === 'done' &&
-        previous.imageTotal === watermark.count &&
-        previous.maxLocalId === watermark.maxLocalId
-      ) {
+      const imageTotal = probe.count
+      if (imageTotal === 0) {
         this.preLoop.conversationSetupMs += this.now() - setupStartedAt
+        this.rememberConversationWatermark({
+          store,
+          scanState,
+          conversationId,
+          watermark,
+          processed: previous?.processed ?? 0,
+          marksConversationDone: input.marksConversationDone
+        })
         continue
       }
 
@@ -1401,34 +1719,47 @@ export class ImageTextIndexService {
       try {
         const source = await this.runStep('list-image-messages', () =>
           this.deps.listImageMessages
-            ? this.deps.listImageMessages(conversationId)
+            ? this.deps.listImageMessages(conversationId, windowArg)
             : (this.deps.listMessages?.(conversationId) ?? Promise.resolve([]))
         )
         imageMessages = source
           // 专用路径仍要过滤：召回归档合并可能补进非图片的撤回消息。
           .filter(isImageMessage)
-          // 时间窗过滤：小样本验证时只看窗口内的图片，不然还是在跑全量。
-          .filter((message) =>
-            windowed ? (message.createTime || 0) * 1000 >= (options.sinceMs as number) : true
-          )
+          // 时间窗过滤：兼容路径没有 SQL 层窗口，只能在这里筛；这也让小样本验证
+          // 的语义与专用路径一致。
+          .filter((message) => {
+            if (effectiveWindow === null) return true
+            const createTimeMs = (message.createTime || 0) * 1000
+            if (effectiveWindow.sinceMs !== undefined && createTimeMs < effectiveWindow.sinceMs) {
+              return false
+            }
+            if (effectiveWindow.beforeMs !== undefined && createTimeMs >= effectiveWindow.beforeMs) {
+              return false
+            }
+            return true
+          })
       } catch {
         imageMessages = []
       }
       this.preLoop.listMessagesMs += this.now() - listStartedAt
       this.preLoop.conversationSetupMs += this.now() - setupStartedAt
       if (!imageMessages.length) {
-        store.writeScanState({
+        this.rememberConversationWatermark({
+          store,
+          scanState,
           conversationId,
-          state: 'done',
-          imageTotal: 0,
-          imageProcessed: 0,
-          maxLocalId: 0
+          watermark,
+          processed: previous?.processed ?? 0,
+          marksConversationDone: input.marksConversationDone
         })
         continue
       }
-      // 水位取**实际读到的**消息里最大的 local_id，而不是源侧水位：
-      // 万一在我们查水位之后、读消息之前又落了一条新图，用观测值会让下一轮
-      // 发现"源水位更高"从而重扫（安全）；用源侧水位则会把它永久跳过（漏索引）。
+      imageCount += imageMessages.length
+      /**
+       * 水位取**实际读到的**消息里最大的 local_id，而不是源侧水位：
+       * 万一在我们查水位之后、读消息之前又落了一条新图，用观测值会让下一轮
+       * 发现"源水位更高"从而重扫（安全）；用源侧水位则会把它永久跳过（漏索引）。
+       */
       const observedMaxLocalId = imageMessages.reduce(
         (max, message) => Math.max(max, Number(message.localId) || 0),
         0
@@ -1441,9 +1772,9 @@ export class ImageTextIndexService {
       this.knowledgeDirty = false
 
       for (let index = 0; index < imageMessages.length; index += IMAGE_TEXT_INDEX_BATCH_SIZE) {
-        if (!preLoopCaptured) {
-          preLoopCaptured = true
-          this.preLoop.startupMs = this.now() - preLoopStartedAt
+        if (!input.preLoopState.captured) {
+          input.preLoopState.captured = true
+          this.preLoop.startupMs = this.now() - this.passStartedAt
         }
         if (this.cancelRequested || this.pauseRequested) {
           interrupted = true
@@ -1456,9 +1787,9 @@ export class ImageTextIndexService {
           conversationId,
           provenance,
           ocrByMessage,
-          () => budget > 0,
+          () => budget.remaining > 0,
           () => {
-            budget -= 1
+            budget.remaining -= 1
           }
         )
         processedInConversation += batchResult.processed
@@ -1481,23 +1812,39 @@ export class ImageTextIndexService {
        * 写 `done` 会让下一遍按水位错误跳过这些图片（**永久漏索引**），
        * 或者让用户以为这个会话已经处理完。预算耗尽只能记 `partial`。
        */
-      if (interrupted || budget <= 0) {
+      if (interrupted || budget.remaining <= 0) {
         store.writeScanState({
           conversationId,
           state: 'partial',
-          imageTotal: imageMessages.length,
+          /**
+           * **整会话**的图片总数，不是本窗口的条数。
+           *
+           * `image_ocr_scan_state.image_total` 是进度的分母（`readScanProgress()` 求和）；
+           * 把某个分段的窗口条数写进去，分母就会缩到"这一段处理了多少"，
+           * 于是总进度会突然跳到接近 100% —— 那是这个功能最不能犯的谎。
+           */
+          imageTotal: watermark?.count ?? previous?.imageTotal ?? imageMessages.length,
           imageProcessed: processedInConversation,
           maxLocalId: observedMaxLocalId
         })
-        break
+        scanState.set(conversationId, {
+          state: 'partial',
+          imageTotal: imageMessages.length,
+          processed: previous?.processed ?? 0,
+          maxLocalId: observedMaxLocalId
+        })
+        truncated = true
+        return { interrupted: true, imageCount, truncated }
       }
 
-      store.writeScanState({
+      this.rememberConversationWatermark({
+        store,
+        scanState,
         conversationId,
-        state: 'done',
-        imageTotal: imageMessages.length,
-        imageProcessed: processedInConversation,
-        maxLocalId: observedMaxLocalId
+        watermark,
+        processed: (previous?.processed ?? 0) + processedInConversation,
+        marksConversationDone: input.marksConversationDone,
+        observedMaxLocalId
       })
 
       /**
@@ -1530,12 +1877,76 @@ export class ImageTextIndexService {
       await this.emit()
     }
 
-    if (this.cancelRequested) this.runState = 'cancelled'
-    else if (this.pauseRequested) this.runState = 'paused'
-    else this.runState = 'completed'
-    this.running = false
-    await this.emit()
+    return { interrupted: false, imageCount, truncated }
   }
+
+  /**
+   * 写入会话 checkpoint。
+   *
+   * 存的是**源侧水位**（整会话的 count / maxLocalId），不是窗口内的观测值：
+   * 增量补齐的判据必须是"源有没有变"，用窗口观测值会让每次窗口扫描都改水位，
+   * 于是增量判断永远为真 —— 表现就是"每轮都重扫一遍"。
+   */
+  private rememberConversationWatermark(input: {
+    store: ImageTextIndexStore
+    scanState: Map<
+      string,
+      { state: string; imageTotal: number; processed: number; maxLocalId: number }
+    >
+    conversationId: string
+    watermark: ImageMessageWatermark | null
+    processed: number
+    marksConversationDone: boolean
+    observedMaxLocalId?: number
+  }): void {
+    const { store, scanState, conversationId, watermark, processed, marksConversationDone } = input
+    const previous = scanState.get(conversationId)
+    const state: 'done' | 'partial' =
+      marksConversationDone && previous?.state !== 'partial' ? 'done' : 'partial'
+    const imageTotal = watermark?.count ?? previous?.imageTotal ?? 0
+    const maxLocalId = watermark?.maxLocalId ?? input.observedMaxLocalId ?? previous?.maxLocalId ?? 0
+    store.writeScanState({
+      conversationId,
+      state,
+      imageTotal,
+      imageProcessed: processed,
+      maxLocalId
+    })
+    scanState.set(conversationId, { state, imageTotal, processed, maxLocalId })
+  }
+
+  /**
+   * 分段覆盖度（recent-first 的时间维度）。
+   *
+   * 三种情形必须分清：
+   * - 从未规划过（新用户 / 旧版本）→ `tiers: []`，调用方只能按整体状态判断。
+   * - 规划过 → 逐段给出真实运行态。
+   * - **整体已经 complete** → 一律表达为"全部完成"。老版本已经把全量索引建完的账号，
+   *   升级后不能被重新拉回去做 backfill，也不能因为"没有分段信息"而让 Query Agent
+   *   以为历史还没扫完。
+   */
+  private tierCoverageSnapshot(complete: boolean): {
+    tiers: ImageTextTierCoverage[]
+    coveredToMs: number | null
+  } {
+    const store = this.store
+    if (!store) return { tiers: [], coveredToMs: null }
+    const state = store.readBackfillState()
+    const anchorMs =
+      state.anchorMs ?? (complete ? (store.readCountedTotal()?.countedAt ?? this.now()) : null)
+    if (anchorMs === null) return { tiers: [], coveredToMs: state.coveredToMs }
+    const tiers: ImageTextTierCoverage[] = buildImageTextBackfillSegments(anchorMs).map(
+      (segment) => ({
+        tier: segment.tier,
+        state: complete ? 'complete' : (state.tierStates[segment.tier] ?? 'pending'),
+        startMs: segment.startMs,
+        endMs: segment.endMs
+      })
+    )
+    const coveredToMs = complete ? Math.max(state.coveredToMs ?? 0, anchorMs) : state.coveredToMs
+    return { tiers, coveredToMs }
+  }
+
 
   // --------------------------------------------------------------- 控制接口
 

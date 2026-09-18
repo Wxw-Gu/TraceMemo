@@ -117,8 +117,15 @@ function createService(options: { count: number; notifyIntervalMs: number; perIm
   return { service, notifications }
 }
 
+/**
+ * 等 pass 收尾。
+ *
+ * 显式给足超时：这些用例故意让 240 张图各睡几毫秒来制造可观测的持续时间，
+ * 而 `vi.waitFor` 的默认超时是 1000ms —— 机器稍慢就会以**断言失败**而不是
+ * "超时"的形态报出来。这里等的是"跑完"，不是"跑得快"。
+ */
 const finish = async (service: ImageTextIndexService): Promise<void> => {
-  await vi.waitFor(() => expect(service.isRunning()).toBe(false))
+  await vi.waitFor(() => expect(service.isRunning()).toBe(false), { timeout: 30_000 })
 }
 
 describe('进度通知节流', () => {

@@ -29,7 +29,9 @@ import {
   normalizeMessageIdentity
 } from '../../shared/local-query-api'
 import {
+  IMAGE_TEXT_BACKFILL_TIER_LABEL,
   describeImageTextCoverage,
+  describeImageTextCoveredRanges,
   imageTextCoverageState,
   type ImageTextIndexCoverage
 } from '../../shared/image-text-index'
@@ -144,6 +146,17 @@ export function buildImageOcrCoverage(
     ? `（图片数量统计于 ${formatLocalMinute(coverage.countedAt)}）`
     : ''
   const base = describeImageTextCoverage(coverage)
+  /**
+   * recent-first 之后必须把"哪段时间能下确定性结论"一起给出。
+   *
+   * 否则模型只看一个总百分比：30% 时它会以为连最近一周都不可信（过度保守没坏处），
+   * 但 99% 时它会以为"去年也能放心下结论"（这就把索引缺口说成了事实空缺）。
+   */
+  const tiers = coverage.tiers ?? []
+  const coveredRanges = tiers
+    .filter((entry) => entry.state === 'complete')
+    .map((entry) => IMAGE_TEXT_BACKFILL_TIER_LABEL[entry.tier])
+  const rangeNote = tiers.length ? describeImageTextCoveredRanges(coverage) : ''
   return {
     state,
     totalImageMessages: coverage.totalImageMessages,
@@ -154,10 +167,11 @@ export function buildImageOcrCoverage(
     failed: coverage.failed,
     pending: coverage.pending,
     ...(coverage.countedAt ? { countedAtLabel: formatLocalMinute(coverage.countedAt) } : {}),
+    ...(coveredRanges.length ? { coveredRanges } : {}),
     summary:
       state === 'complete'
         ? `${base}${countedNote}`
-        : `${base}${countedNote}${IMAGE_OCR_ZERO_RESULT_CAUTION}`
+        : `${base}${countedNote}${rangeNote}${IMAGE_OCR_ZERO_RESULT_CAUTION}`
   }
 }
 

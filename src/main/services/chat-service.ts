@@ -17,6 +17,7 @@ import {
 import { mergeRecallArchiveMessages, recordRecallArchiveMessages } from './recall-archive-service'
 import type { ExportImageQuality } from '../../shared/image-quality'
 import type { ImageMessageCountProbe } from '../../shared/image-text-index'
+import { imageTextWindowToSeconds } from '../../shared/image-text-index'
 import { wcdbDebugLog } from '../wcdb-debug'
 import {
   buildContactSearchIndex,
@@ -852,23 +853,45 @@ export async function listMessagesAsync(
  */
 export async function listImageMessagesAsync(
   userMd5: string,
+  window: {
+    /** 闭下界（epoch ms）。 */
+    sinceMs?: number
+    /** 开上界（epoch ms）。 */
+    beforeMs?: number
+    limit?: number
+  } = {},
   requestId = '',
   caller: ListMessagesCaller = 'unknown'
 ): Promise<FormattedMessage[]> {
   if (!dbRef) return []
   const perf = emptyPerf(caller, requestId || nextListMessagesRequestId())
   const totalStartedAt = Date.now()
+  // ms 半开区间 → 秒闭区间。换算只有共享契约里那一处实现。
+  const { sinceSec, beforeSecInclusive } = imageTextWindowToSeconds(window)
+  const startTime = sinceSec ?? undefined
+  const endTime = beforeSecInclusive ?? undefined
   try {
     const rawReadStartedAt = Date.now()
-    const rawMessages = await dbRef
-      .getWcdb4Client()
-      .listImageMessagesAsync(userMd5, { requestId: perf.requestId })
+    const rawMessages = await dbRef.getWcdb4Client().listImageMessagesAsync(userMd5, {
+      ...(window.sinceMs !== undefined ? { sinceMs: window.sinceMs } : {}),
+      ...(window.beforeMs !== undefined ? { beforeMs: window.beforeMs } : {}),
+      ...(window.limit !== undefined ? { limit: window.limit } : {}),
+      // recent-first：同一时间窗内**新的图片先处理**。
+      order: 'desc',
+      requestId: perf.requestId
+    })
     perf.rawReadMs += Date.now() - rawReadStartedAt
+    /**
+     * 时间边界必须同时交给格式化与召回归档合并。
+     *
+     * 少了这一步，归档合并会把**窗口之外**的撤回图片补回来 —— 于是"最近 7 天"
+     * 这一段会混进十年前的消息，分段窗口形同虚设。
+     */
     const sourceMessages = listSourceMessages(
       userMd5,
-      undefined,
-      undefined,
-      undefined,
+      startTime,
+      endTime,
+      window.limit !== undefined ? { limit: window.limit } : undefined,
       rawMessages,
       perf.requestId,
       perf
@@ -880,9 +903,9 @@ export async function listImageMessagesAsync(
     const result = mergeRecallArchiveMessages(
       userMd5,
       sourceMessages,
-      undefined,
-      undefined,
-      undefined
+      startTime,
+      endTime,
+      window.limit
     )
     perf.sortMs += Date.now() - recallStartedAt
     return result
@@ -933,10 +956,10 @@ export async function listMessagesForExport(
  */
 export async function countImageMessagesAsync(
   userMd5: string,
-  sinceMs?: number
+  range?: number | { sinceMs?: number; beforeMs?: number }
 ): Promise<ImageMessageCountProbe> {
   if (!dbRef) return { count: null, typeColumn: null, error: '微信数据库尚未就绪' }
-  return dbRef.getWcdb4Client().countImageMessagesAsync(userMd5, sinceMs)
+  return dbRef.getWcdb4Client().countImageMessagesAsync(userMd5, range)
 }
 
 /**
@@ -947,10 +970,10 @@ export async function countImageMessagesAsync(
  */
 export async function imageConversationWatermarkAsync(
   userMd5: string,
-  sinceMs?: number
+  range?: number | { sinceMs?: number; beforeMs?: number }
 ): Promise<{ count: number; maxLocalId: number } | null> {
   if (!dbRef) return null
-  return dbRef.getWcdb4Client().imageConversationWatermarkAsync(userMd5, sinceMs)
+  return dbRef.getWcdb4Client().imageConversationWatermarkAsync(userMd5, range)
 }
 
 export async function countVoiceMessagesAsync(

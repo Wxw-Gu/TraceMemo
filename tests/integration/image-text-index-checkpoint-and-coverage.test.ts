@@ -19,6 +19,7 @@ import {
 } from '../../src/main/services/image-text-index-store'
 import { buildImageOcrCoverage } from '../../src/main/services/local-query-api-service'
 import type { ImageTextIndexCoverage } from '../../src/shared/image-text-index'
+import { sourceMessageId } from '../../src/main/knowledge/message-identity'
 
 const ACCOUNT = 'wxid_fixture_account'
 const CONVERSATION = 'conversation-md5-fixture'
@@ -93,72 +94,161 @@ function makeHarness(options: { messages?: chat.FormattedMessage[] } = {}): Harn
   }
 }
 
-describe('增量水位：只比条数会漏掉「等量替换」', () => {
-  it('水位（条数 + 最大插入序）都没变时才跳过，不读 WCDB', async () => {
-    const harness = makeHarness({ messages: [imageMessage(10, 1000), imageMessage(20, 2000)] })
-    harness.watermark.count = 2
-    harness.watermark.maxLocalId = 20
-
-    await harness.service.startPass()
-    // 走到完成态需要等内部 promise 收敛。
-    await vi.waitFor(() => expect(harness.service.isRunning()).toBe(false))
-    expect(harness.listMessages).toHaveBeenCalledTimes(1)
-
-    // 第二遍：水位完全一致 → 跳过，不再读会话消息。
-    await harness.service.startPass()
-    await vi.waitFor(() => expect(harness.service.isRunning()).toBe(false))
-    expect(harness.listMessages).toHaveBeenCalledTimes(1)
-  })
-
-  it('总数相同但最大插入序前进 → 必须重扫（撤回一张旧图 + 新增一张新图）', async () => {
-    const harness = makeHarness({ messages: [imageMessage(10, 1000), imageMessage(20, 2000)] })
-    harness.watermark.count = 2
-    harness.watermark.maxLocalId = 20
-
-    await harness.service.startPass()
-    await vi.waitFor(() => expect(harness.service.isRunning()).toBe(false))
-    expect(harness.listMessages).toHaveBeenCalledTimes(1)
-
-    // 集合变了、条数没变：localId 10 被撤回，新增 localId 30。
-    harness.listMessages.mockImplementation(async () => [
-      imageMessage(20, 2000),
-      imageMessage(30, 3000)
-    ])
-    harness.watermark.maxLocalId = 30
-
-    await harness.service.startPass()
-    await vi.waitFor(() => expect(harness.service.isRunning()).toBe(false))
-    // 只看 count 的实现会在这里静默跳过 —— 那正是会漏掉新图片的洞。
-    expect(harness.listMessages).toHaveBeenCalledTimes(2)
-  })
-
-  it('水位不可用（数据库不支持该聚合）时一律重扫，宁可慢也不漏', async () => {
-    const harness = makeHarness({ messages: [imageMessage(10, 1000)] })
-    harness.watermark.count = 1
+/**
+ * 增量判据。
+ *
+ * recent-first 之后，"什么时候读 WCDB"由**分段完成状态 + 增量水位**共同决定，
+ * 但两条硬约束一个字都没变：
+ * 1. 没有新内容时**不得**重复读会话消息、更不得重复 OCR；
+ * 2. 有新内容（含"总数不变但集合变了"）时**必须**处理到 —— 宁可慢，也不漏。
+ *
+ * 这里的夹具刻意做成**窗口感知**的：新架构的"这段没有图片就整段跳过"完全依赖
+ * 计数说实话；忽略窗口的夹具测出来的只是"夹具不过滤"，不是调度器的行为。
+ */
+describe('增量判据：水位不得漏掉新图片', () => {
+  function makeIncrementalHarness(options: {
+    messages: chat.FormattedMessage[]
+    withWatermark?: boolean
+  }): {
+    service: ImageTextIndexService
+    databasePath: string
+    state: { messages: chat.FormattedMessage[]; count: number; maxLocalId: number; now: number }
+    listMessages: ReturnType<typeof vi.fn>
+    listImageMessages: ReturnType<typeof vi.fn>
+  } {
+    const databaseRoot = makeDatabaseRoot()
+    const databasePath = getImageTextIndexDatabasePath(databaseRoot, ACCOUNT)
+    const state = {
+      messages: [...options.messages],
+      count: options.messages.length,
+      maxLocalId: options.messages.reduce((max, m) => Math.max(max, Number(m.localId) || 0), 0),
+      now: 1_800_000_000_000
+    }
+    const inWindow = (
+      message: chat.FormattedMessage,
+      window?: { sinceMs?: number; beforeMs?: number }
+    ): boolean => {
+      const createTimeMs = (message.createTime || 0) * 1000
+      if (window?.sinceMs !== undefined && createTimeMs < window.sinceMs) return false
+      if (window?.beforeMs !== undefined && createTimeMs >= window.beforeMs) return false
+      return true
+    }
+    const listMessages = vi.fn(async () => state.messages)
+    const listImageMessages = vi.fn(
+      async (_conversationId: string, window?: { sinceMs?: number; beforeMs?: number }) =>
+        state.messages.filter((message) => inWindow(message, window))
+    )
     const service = new ImageTextIndexService()
-    const listMessages = vi.fn(async () => [imageMessage(10, 1000)])
     service.bind({
-      databaseRoot: harness.databaseRoot,
+      databaseRoot,
       resolveAccountId: () => ACCOUNT,
-      listContacts: async () => [{ md5: CONVERSATION, m_nsUsrName: 'fixture', type: 'group' }],
+      resolveAccountRoot: () => 'C:/fixture/account',
+      now: () => state.now,
+      listContacts: async () => [
+        { md5: CONVERSATION, m_nsUsrName: 'fixture', type: 'group' as const }
+      ],
       listMessages,
-      countConversationImages: async () => ({ count: 1, typeColumn: 'local_type' }),
-      // 关键：不提供 imageWatermark
+      listImageMessages,
+      countConversationImages: async (
+        _conversationId: string,
+        window?: { sinceMs?: number; beforeMs?: number }
+      ) => ({
+        count: state.messages.filter((message) => inWindow(message, window)).length,
+        typeColumn: 'local_type'
+      }),
+      ...(options.withWatermark === false
+        ? {}
+        : { imageWatermark: async () => ({ count: state.count, maxLocalId: state.maxLocalId }) }),
+      // 没有解密服务 → 每张图片都会被判成 image_missing。这样测试完全不碰真实图片。
       decryptService: () => ({ findImageFile: () => null, decryptImage: () => null }) as never,
       capability: async () => ({
         available: true,
         engine: 'windows-system-ocr',
         platform: 'win32',
-        runtimeVersion: null,
-        language: null
-      })
+        runtimeVersion: '1.2.0',
+        language: 'zh-Hans-CN'
+      }),
+      recognize: async () => ({ success: true, text: '', language: 'zh-Hans-CN' })
+    })
+    return { service, databasePath, state, listMessages, listImageMessages }
+  }
+
+  /** 直接读派生库的绑定，回答"到底处理了哪几条"，而不是只看调用次数。 */
+  const bindingIds = (databasePath: string): string[] => {
+    const store = new ImageTextIndexStore(databasePath, ACCOUNT)
+    const ids = [...store.getConversationOcr(CONVERSATION).keys()]
+    store.close()
+    return ids
+  }
+
+  it('全部完成之后：第二遍不再读会话消息，也不重复 OCR', async () => {
+    const harness = makeIncrementalHarness({
+      messages: [imageMessage(10, 1000), imageMessage(20, 2000)]
     })
 
-    await service.startPass()
-    await vi.waitFor(() => expect(service.isRunning()).toBe(false))
-    await service.startPass()
-    await vi.waitFor(() => expect(service.isRunning()).toBe(false))
-    expect(listMessages).toHaveBeenCalledTimes(2)
+    await harness.service.startPass()
+    await vi.waitFor(() => expect(harness.service.isRunning()).toBe(false))
+    // 两条图片的 create_time 都很老 → 只落在归档段，只被那一段读到。
+    expect(harness.listImageMessages).toHaveBeenCalledTimes(1)
+    const firstIds = bindingIds(harness.databasePath)
+    expect(firstIds).toHaveLength(2)
+
+    // 第二遍：水位完全一致 + 各分段已完成 → 一个字都不再读。
+    await harness.service.startPass()
+    await vi.waitFor(() => expect(harness.service.isRunning()).toBe(false))
+    expect(harness.listImageMessages).toHaveBeenCalledTimes(1)
+    expect(bindingIds(harness.databasePath)).toEqual(firstIds)
+  })
+
+  it('总数相同但最大插入序前进 → 必须处理到新图片（即使是旧时间）', async () => {
+    const harness = makeIncrementalHarness({
+      messages: [imageMessage(10, 1000), imageMessage(20, 2000)]
+    })
+
+    await harness.service.startPass()
+    await vi.waitFor(() => expect(harness.service.isRunning()).toBe(false))
+    expect(bindingIds(harness.databasePath)).toHaveLength(2)
+
+    // 集合变了、条数没变：localId 10 被撤回，新增 localId 30 —— 而且它带着**旧时间**，
+    // 只按时间窗读的实现在这里就会漏掉它。
+    harness.state.messages = [imageMessage(20, 2000), imageMessage(30, 2000)]
+    harness.state.count = 2
+    harness.state.maxLocalId = 30
+    harness.state.now += 5_000
+
+    await harness.service.startPass()
+    await vi.waitFor(() => expect(harness.service.isRunning()).toBe(false))
+
+    // 只看 count 的实现会在这里静默跳过 —— 那正是会漏掉新图片的洞。
+    const ids = bindingIds(harness.databasePath)
+    expect(ids).toHaveLength(3)
+    expect(ids).toContain(sourceMessageId(imageMessage(30, 2000)))
+  })
+
+  it('水位不可用（数据库不支持该聚合）时按时间窗兜底重扫，宁可慢也不漏', async () => {
+    const harness = makeIncrementalHarness({
+      messages: [imageMessage(10, 1000)],
+      withWatermark: false
+    })
+    const anchorSeconds = Math.floor(harness.state.now / 1000)
+
+    await harness.service.startPass()
+    await vi.waitFor(() => expect(harness.service.isRunning()).toBe(false))
+    expect(bindingIds(harness.databasePath)).toHaveLength(1)
+
+    // 锚点之后新到一张图；并且时间确实往前走了一段（否则"窗口必然为空"的短路会生效，
+    // 那不是漏，而是正确地判定"还没有新东西"）。
+    harness.state.messages = [imageMessage(10, 1000), imageMessage(40, anchorSeconds + 10)]
+    harness.state.count = 2
+    harness.state.maxLocalId = 40
+    harness.state.now += 20_000
+
+    await harness.service.startPass()
+    await vi.waitFor(() => expect(harness.service.isRunning()).toBe(false))
+
+    const ids = bindingIds(harness.databasePath)
+    expect(ids).toHaveLength(2)
+    expect(ids).toContain(sourceMessageId(imageMessage(40, anchorSeconds + 10)))
   })
 })
 

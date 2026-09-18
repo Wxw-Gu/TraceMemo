@@ -445,3 +445,105 @@ describe('图片文字索引卡片 — 修复图片搜索索引', () => {
     expect(String(onNotice.mock.calls.at(-1)?.[0])).toContain('正在进行中')
   })
 })
+
+/**
+ * recent-first 的阶段可见性。
+ *
+ * 这里要守住的是两件**不能混**的事：
+ * - **总进度**永远是 `processed / totalImageMessages`（全量图片消息）；
+ * - **阶段文案**只回答"现在在优先做什么"。
+ *
+ * 用"某个分段做完了"去冒充整体完成，是这次改动最容易撒的谎，所以两条都断言。
+ */
+describe('recent-first 阶段显示', () => {
+  /** 已建立、且不在运行/暂停 —— 卡片明细块的渲染条件。 */
+  const settled = (
+    coverageOverride: Partial<ImageTextIndexStatus['coverage']>
+  ): ImageTextIndexStatus =>
+    status({
+      ...running,
+      progress: { ...running.progress, state: 'idle', cancellable: false, paused: false },
+      coverage: { ...running.coverage, ...coverageOverride }
+    })
+
+  const tiers = (
+    completeTier: 'recent_7d' | 'recent_30d' | 'recent_1y' | 'archive' | null
+  ): ImageTextIndexStatus['coverage']['tiers'] => [
+    {
+      tier: 'recent_7d',
+      state: completeTier === 'recent_7d' ? 'complete' : 'running',
+      startMs: 7,
+      endMs: 8
+    },
+    {
+      tier: 'recent_30d',
+      state: completeTier === 'recent_30d' ? 'complete' : 'pending',
+      startMs: 6,
+      endMs: 7
+    },
+    {
+      tier: 'recent_1y',
+      state: completeTier === 'recent_1y' ? 'complete' : 'pending',
+      startMs: 5,
+      endMs: 6
+    },
+    {
+      tier: 'archive',
+      state: completeTier === 'archive' ? 'complete' : 'pending',
+      startMs: 4,
+      endMs: 5
+    }
+  ]
+
+  it('运行中显示阶段文案，同时总进度仍以全量为分母', async () => {
+    api.getImageTextIndexStatus.mockResolvedValue(
+      status({
+        ...running,
+        progress: { ...running.progress, currentPhase: 'recent_30d' }
+      })
+    )
+
+    await renderCard()
+
+    expect(screen.getByTestId('image-text-index-phase').textContent).toBe('正在补齐最近 30 天')
+    // 阶段 ≠ 进度：分子分母仍然是全量数字，不是"这一段处理了多少张"。
+    expect(screen.getByTestId('image-text-index-progress').textContent).toBe(
+      `${running.progress.processed.toLocaleString()} / ${running.progress.totalImageMessages.toLocaleString()}`
+    )
+  })
+
+  it('阶段文案是用户语言，不出现工程术语', async () => {
+    api.getImageTextIndexStatus.mockResolvedValue(
+      status({ ...running, progress: { ...running.progress, currentPhase: 'archive' } })
+    )
+
+    await renderCard()
+
+    const text = screen.getByTestId('image-text-index-phase').textContent ?? ''
+    expect(text).toBe('正在补齐更早图片')
+    expect(text).not.toMatch(/Tier/i)
+  })
+
+  it('分段真的完成时才宣告"已可搜索"', async () => {
+    api.getImageTextIndexStatus.mockResolvedValue(
+      settled({ tiers: tiers('recent_7d'), coveredToMs: 8 })
+    )
+
+    await renderCard()
+
+    expect(screen.getByTestId('image-text-index-searchable-notice').textContent).toBe(
+      '最近图片已可搜索'
+    )
+  })
+
+  it('分段还没完成时不得宣告"已可搜索"', async () => {
+    api.getImageTextIndexStatus.mockResolvedValue(
+      settled({ tiers: tiers(null), coveredToMs: 8 })
+    )
+
+    await renderCard()
+
+    // 这是一句承诺，不是进度提示：没有真正 complete 就不许说。
+    expect(screen.queryByTestId('image-text-index-searchable-notice')).toBeNull()
+  })
+})

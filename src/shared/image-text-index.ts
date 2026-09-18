@@ -70,6 +70,308 @@ export function resolveImageTextOcrConcurrency(raw?: string | number | null): nu
 /** 已完成一批之后、回到会话循环前的让出时间。 */
 export const IMAGE_TEXT_INDEX_YIELD_MS = 0
 
+/**
+ * 单段时间窗口的图片消息读取上限。
+ *
+ * 必须显式给 limit：底层在不给 limit 时按 `create_time ASC` 排序并截断 ——
+ * 那是"从最老开始读"，正好与 recent-first 相反，而且会把窗口内较新的图片悄悄丢掉。
+ */
+export const IMAGE_TEXT_SEGMENT_MESSAGE_LIMIT = 200_000
+
+// ---------------------------------------------------------------- recent-first
+//
+// 首次建立索引时，用户要的不是"从十年前开始扫"，而是"最近聊天的图片先能搜"。
+// 这里把"最近优先"固化成**显式时间分段计划**，而不是靠反转全库排序碰运气。
+//
+// 三条硬约束（任何实现都必须同时满足）：
+// 1. 分段唯一来源是本文件：`[startInclusive, endExclusive)`，不允许别的模块自己推边界。
+// 2. 一次 backfill session 的 `anchorMs` **固定不变**，否则跑几小时后窗口会漂移，
+//    产生重复 / 遗漏 / checkpoint 不稳定。
+// 3. 比锚点更新的消息由**增量补齐**单独负责，永远排在所有历史分段之前。
+
+/** 历史回填分段。刻意用时间语义而不是 Tier 编号（内部也不要出现 Tier 1/2）。 */
+export type ImageTextBackfillTier = 'recent_7d' | 'recent_30d' | 'recent_1y' | 'archive'
+
+/** 处理顺序 = 优先级顺序：越靠前越新。 */
+export const IMAGE_TEXT_BACKFILL_TIER_ORDER: readonly ImageTextBackfillTier[] = [
+  'recent_7d',
+  'recent_30d',
+  'recent_1y',
+  'archive'
+]
+
+/**
+ * 「最近」窗口的天数。
+ *
+ * 取 7 天而不是 3 天：用户对"最近"的直觉通常是"这一周"，而 7 天窗口在真实库里
+ * 通常只有几百到几千张图，几分钟内就能把"最近聊天里的图"变成可搜索。
+ */
+export const IMAGE_TEXT_RECENT_WINDOW_DAYS = 7
+
+/** 各段下界的回看天数；`archive` 无下界。 */
+export const IMAGE_TEXT_BACKFILL_WINDOW_DAYS: Record<ImageTextBackfillTier, number> = {
+  recent_7d: IMAGE_TEXT_RECENT_WINDOW_DAYS,
+  recent_30d: 30,
+  recent_1y: 365,
+  archive: Number.POSITIVE_INFINITY
+}
+
+/** 各段的用户可见名称。 */
+export const IMAGE_TEXT_BACKFILL_TIER_LABEL: Record<ImageTextBackfillTier, string> = {
+  recent_7d: '最近图片',
+  recent_30d: '最近 30 天',
+  recent_1y: '近一年图片',
+  archive: '更早图片'
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** 一段回填窗口。`endMs` 为开区间上界；`archive` 的 `startMs` 是 -∞。 */
+export interface ImageTextBackfillSegment {
+  tier: ImageTextBackfillTier
+  /** epoch ms，**闭**下界。 */
+  startMs: number
+  /** epoch ms，**开**上界。 */
+  endMs: number
+}
+
+/**
+ * 由固定锚点推出全部分段。
+ *
+ * 结果按优先级从新到旧排列，且**互不重叠、无空隙**：
+ * `[now-7d, now)` → `[now-30d, now-7d)` → `[now-365d, now-30d)` → `(-∞, now-365d)`。
+ *
+ * 相邻段的边界由同一个锚点派生，所以不会 off-by-one：上一段的 `endMs` 恒等于下一段的
+ * `startMs`，而区间语义是"下界闭、上界开"，落在边界上的消息只会被**一段**认领。
+ */
+export function buildImageTextBackfillSegments(anchorMs: number): ImageTextBackfillSegment[] {
+  const segments: ImageTextBackfillSegment[] = []
+  let upper = anchorMs
+  for (const tier of IMAGE_TEXT_BACKFILL_TIER_ORDER) {
+    const days = IMAGE_TEXT_BACKFILL_WINDOW_DAYS[tier]
+    const lower = Number.isFinite(days) ? anchorMs - days * DAY_MS : Number.NEGATIVE_INFINITY
+    segments.push({ tier, startMs: lower, endMs: upper })
+    upper = lower
+  }
+  return segments
+}
+
+/**
+ * 把 ms 半开区间转换成底层查询要的**秒**闭区间。
+ *
+ * **唯一的换算实现**：`sinceMs` 下取整做闭下界，`beforeMs` 下取整减一放开区间上界。
+ * 两端必须用同一种取整方式 —— 一边 ceil 一边 floor 的话，边界那一秒会被
+ * 相邻两段同时认领（重复 OCR）或被同时跳过（漏索引）。
+ *
+ * 微信的 `create_time` 只有秒级精度，所以 1 秒以内的边界歧义无法在源头消除；
+ * 能做的是让它**确定且不重叠**。
+ */
+export function imageTextWindowToSeconds(range: { sinceMs?: number; beforeMs?: number }): {
+  sinceSec: number | null
+  beforeSecInclusive: number | null
+} {
+  const { sinceMs, beforeMs } = range
+  const sinceSec =
+    typeof sinceMs === 'number' && Number.isFinite(sinceMs) && sinceMs > 0
+      ? Math.floor(sinceMs / 1000)
+      : null
+  const beforeSecInclusive =
+    typeof beforeMs === 'number' && Number.isFinite(beforeMs) && beforeMs > 0
+      ? Math.floor(beforeMs / 1000) - 1
+      : null
+  return { sinceSec, beforeSecInclusive }
+}
+
+/** 分段 → 秒闭区间；语义同 `imageTextWindowToSeconds`。 */
+export function imageTextSegmentToSecondRange(segment: ImageTextBackfillSegment): {
+  sinceSec: number | null
+  beforeSecInclusive: number | null
+} {
+  return imageTextWindowToSeconds({
+    ...(Number.isFinite(segment.startMs) ? { sinceMs: segment.startMs } : {}),
+    ...(Number.isFinite(segment.endMs) ? { beforeMs: segment.endMs } : {})
+  })
+}
+
+// ---------------------------------------------------------------- 进度阶段
+
+/** 索引运行阶段：增量补齐 / 某个历史分段 / 全部完成。 */
+export type ImageTextIndexPhase = 'incremental' | ImageTextBackfillTier | 'complete'
+
+export function imageTextPhaseLabel(phase: ImageTextIndexPhase): string {
+  switch (phase) {
+    case 'incremental':
+    case 'recent_7d':
+      return '正在优先索引最近图片'
+    case 'recent_30d':
+      return '正在补齐最近 30 天'
+    case 'recent_1y':
+      return '正在补齐近一年图片'
+    case 'archive':
+      return '正在补齐更早图片'
+    case 'complete':
+      return '图片文字索引已完成'
+  }
+}
+
+/**
+ * 「某段已可搜索」的宣告文案。
+ *
+ * 只允许在**该段真的 complete** 时使用 —— 它是一句承诺，不是进度提示。
+ */
+export function imageTextTierSearchableNotice(tier: ImageTextBackfillTier): string {
+  switch (tier) {
+    case 'recent_7d':
+      return '最近图片已可搜索'
+    case 'recent_30d':
+      return '最近 30 天图片已可搜索'
+    case 'recent_1y':
+      return '近一年图片已可搜索'
+    case 'archive':
+      return '更早图片已可搜索'
+  }
+}
+
+/** 分段的运行态。只有 `complete` 才允许被当作"这段已经完整可搜"。 */
+export type ImageTextTierRunState = 'pending' | 'running' | 'complete'
+
+/** 单个历史分段的完成状态与边界。 */
+export interface ImageTextTierCoverage {
+  tier: ImageTextBackfillTier
+  state: ImageTextTierRunState
+  /** epoch ms，闭下界；`archive` 为 -∞。 */
+  startMs: number
+  /** epoch ms，开上界。 */
+  endMs: number
+}
+
+/** 时间范围询问的结论。 */
+export interface ImageTextRangeCoverage {
+  state: 'not_built' | 'partial' | 'complete'
+  /** 请求范围内**已真正完整**的子区间；无交集时为 null。 */
+  coveredFromMs: number | null
+  coveredToMs: number | null
+  /** 请求范围是否有一部分落在"尚未覆盖"的区域。 */
+  hasUncovered: boolean
+}
+
+/**
+ * 给定查询时间范围，回答"这一段的图片文字覆盖是否完整"。
+ *
+ * 判据刻意严格：只有当**整个请求区间**都落在已完成的覆盖并集里才回 `complete`。
+ * 请求范围开放（不传 sinceMs / beforeMs）时视为"全部历史"，只要有任何一段没完成
+ * 就是 `partial` —— 这正是零结果诚实性要的：0 条证据不能回答"没有"。
+ */
+export function imageTextRangeCoverage(
+  coverage: ImageTextIndexCoverage,
+  range: { sinceMs?: number; beforeMs?: number } = {}
+): ImageTextRangeCoverage {
+  if (!coverage.established) {
+    return { state: 'not_built', coveredFromMs: null, coveredToMs: null, hasUncovered: true }
+  }
+  // 整体 complete = 全部图片消息都已定态 → 任意时间范围都完整，开放区间也一样。
+  // 少了这一条，"全历史"这种没有上界的查询会永远因为"上界之后还没覆盖"被判成 partial。
+  if (coverage.complete) {
+    return { state: 'complete', coveredFromMs: null, coveredToMs: null, hasUncovered: false }
+  }
+  // 已完成分段 + 增量水位合并成"已覆盖并集"。
+  //
+  // `?? []` 不是多余的防御：覆盖度快照可能来自**旧版本落盘的库**（那时还没有分段概念），
+  // 也可能来自手写的夹具。缺字段只应该让"时间维度"暂时不可用，绝不能让查询直接崩。
+  const tiers = coverage.tiers ?? []
+  const covered: { startMs: number; endMs: number }[] = tiers
+    .filter((entry) => entry.state === 'complete')
+    .map((entry) => ({ startMs: entry.startMs, endMs: entry.endMs }))
+  if (coverage.coveredToMs !== null && coverage.coveredToMs !== undefined && tiers.length) {
+    const anchorMs = tiers[0]?.endMs ?? coverage.coveredToMs
+    covered.push({ startMs: anchorMs, endMs: coverage.coveredToMs })
+  }
+  const merged = mergeImageTextRanges(covered)
+
+  // 查询范围：不给边界 = 全历史（-∞, +∞）。
+  const queryStart = range.sinceMs ?? Number.NEGATIVE_INFINITY
+  const queryEnd = range.beforeMs ?? Number.POSITIVE_INFINITY
+  if (!(queryEnd > queryStart)) {
+    return { state: 'complete', coveredFromMs: null, coveredToMs: null, hasUncovered: false }
+  }
+
+  let cursor = queryStart
+  let coveredFromMs: number | null = null
+  let coveredToMs: number | null = null
+  for (const span of merged) {
+    if (span.endMs <= cursor) continue
+    if (span.startMs > cursor) break
+    if (coveredFromMs === null) coveredFromMs = Math.max(span.startMs, queryStart)
+    coveredToMs = Math.min(span.endMs, queryEnd)
+    cursor = Math.min(span.endMs, queryEnd)
+    if (cursor >= queryEnd) break
+  }
+  const hasUncovered = cursor < queryEnd
+  return {
+    state: hasUncovered ? 'partial' : 'complete',
+    coveredFromMs: coveredFromMs === null ? null : coveredFromMs,
+    coveredToMs,
+    hasUncovered
+  }
+}
+
+function mergeImageTextRanges(
+  ranges: { startMs: number; endMs: number }[]
+): { startMs: number; endMs: number }[] {
+  const sorted = [...ranges].sort((left, right) => left.startMs - right.startMs)
+  const merged: { startMs: number; endMs: number }[] = []
+  for (const current of sorted) {
+    const last = merged[merged.length - 1]
+    if (last && current.startMs <= last.endMs) {
+      if (current.endMs > last.endMs) last.endMs = current.endMs
+      continue
+    }
+    merged.push({ ...current })
+  }
+  return merged
+}
+
+/**
+ * 「哪些时间段已经**真正**可以放心搜」的人话描述。
+ *
+ * recent-first 之后，"索引建了多少"和"哪段时间能下确定结论"是两件事：
+ * 最近 7 天可能已经 100% 可用，而更早的历史还在补齐。只给一个总百分比，
+ * 模型会把"最近能搜"误当成"全历史都搜过了"，于是对"去年有没有发过 XXX"
+ * 给出"没有"这种不该下的结论。
+ */
+export function describeImageTextCoveredRanges(coverage: ImageTextIndexCoverage): string {
+  if (!coverage.established) return '还没有任何一个时间段完成图片文字索引。'
+  const completed = (coverage.tiers ?? []).filter((entry) => entry.state === 'complete')
+  if (coverage.complete) return '全部历史时间的图片文字都已可搜索。'
+  if (!completed.length) return '还没有任何一个时间段完成图片文字索引。'
+  const labels = completed.map((entry) => IMAGE_TEXT_BACKFILL_TIER_LABEL[entry.tier])
+  // 只有归档段也完成才可能覆盖到最早；否则一定还有更老的历史没扫。
+  const hasArchive = completed.some((entry) => entry.tier === 'archive')
+  return hasArchive
+    ? `已完整覆盖：${labels.join('、')}。`
+    : `已完整覆盖：${labels.join('、')}；更早的图片仍在补齐。`
+}
+
+/**
+ * 时间范围覆盖度的人话结论（Query Agent 只引用，不自己换算）。
+ *
+ * 与 `describeImageTextCoverage` 的分工：那个回答"整体建了多少"，
+ * 这个回答"**这次查的这个时间段**能不能下确定性结论"。
+ */
+export function describeImageTextRangeCoverage(
+  coverage: ImageTextIndexCoverage,
+  range: { sinceMs?: number; beforeMs?: number } = {}
+): string {
+  const result = imageTextRangeCoverage(coverage, range)
+  if (result.state === 'not_built') {
+    return '图片文字索引尚未建立：当前范围内图片里的文字还搜不到，不能据此回答"没有"。'
+  }
+  if (result.state === 'complete') {
+    return '图片文字索引已覆盖该时间范围：范围内没有匹配的图片文字，可以据此回答。'
+  }
+  return '图片文字历史仍在补齐，这次查询的时间范围尚未完整索引：当前结果不能排除尚未索引的图片。'
+}
+
 /** 单张图片的 OCR 结果状态。 */
 export type ImageOcrState =
   /** 尚未处理 */
@@ -269,6 +571,13 @@ export interface ImageTextIndexProgress {
   speedPerSec?: number | null
   /** 按当前窗口速度估算的剩余时间（毫秒）；速度不可用或分母不可信时为 null。 */
   etaMs?: number | null
+  /**
+   * 当前正在处理的阶段（recent-first 的可见性）。
+   *
+   * **它只是阶段提示，不是进度**：总进度仍然必须是 `processed / totalImageMessages`
+   * （全量图片消息），绝不允许用"某个分段处理完了"冒充整体完成。
+   */
+  currentPhase?: ImageTextIndexPhase
 }
 
 /**
@@ -311,6 +620,19 @@ export interface ImageTextIndexCoverage {
    * 冒充成「现在完整」。
    */
   countedAt: number | null
+  /**
+   * 各历史分段的完成状态与边界（新 → 旧）。未建立 / 旧快照时为 `[]`。
+   *
+   * 边界来自**当时固定的锚点**，因此可以和用户查询的时间范围直接求交。
+   */
+  tiers: ImageTextTierCoverage[]
+  /**
+   * 增量补齐水位：`create_time <= coveredToMs` 的新图片都已处理完；null = 尚无。
+   *
+   * 它单独存在的原因：锚点之后新到的图片不属于任何历史分段，必须有独立水位
+   * 才能回答"最近这几个小时是否已经可搜"。
+   */
+  coveredToMs: number | null
 }
 
 /** 覆盖度状态（外加"未建立"）。UI 与 Query Agent 共用同一判据，避免两处各推一套口径漂移。 */

@@ -148,7 +148,10 @@ import type { AppLogEntry } from '../shared/app-log'
 import { appUpdateService } from './services/app-update-service'
 import { clearCache, getCacheSummary, openKnowledgeDirectory } from './services/cache-service'
 import { imageTextIndexService } from './services/image-text-index-service'
-import type { ImageTextIndexStartOptions } from '../shared/image-text-index'
+import {
+  IMAGE_TEXT_SEGMENT_MESSAGE_LIMIT,
+  type ImageTextIndexStartOptions
+} from '../shared/image-text-index'
 import type { CacheClearScope } from './services/cache-service'
 import { configureRecallArchive, RecallArchiveMonitor } from './services/recall-archive-service'
 import { VideoAssetService } from './video-asset-service'
@@ -703,12 +706,20 @@ app.whenReady().then(async () => {
      * 全量读取一个 20 万条消息的会话实测要 15s 以上，而其中 99% 以上的行
      * 图片索引根本不看 —— 那是数据边界错了，不是 OCR 慢。
      */
-    listImageMessages: (conversationId) =>
-      chat.listImageMessagesAsync(conversationId, undefined, 'image-text-index'),
-    countConversationImages: (conversationId, sinceMs) =>
-      chat.countImageMessagesAsync(conversationId, sinceMs),
-    imageWatermark: (conversationId, sinceMs) =>
-      chat.imageConversationWatermarkAsync(conversationId, sinceMs),
+    listImageMessages: (conversationId, window) =>
+      chat.listImageMessagesAsync(
+        conversationId,
+        {
+          ...(window?.sinceMs !== undefined ? { sinceMs: window.sinceMs } : {}),
+          ...(window?.beforeMs !== undefined ? { beforeMs: window.beforeMs } : {}),
+          limit: IMAGE_TEXT_SEGMENT_MESSAGE_LIMIT
+        },
+        'image-text-index'
+      ),
+    countConversationImages: (conversationId, range) =>
+      chat.countImageMessagesAsync(conversationId, range),
+    imageWatermark: (conversationId, range) =>
+      chat.imageConversationWatermarkAsync(conversationId, range),
     decryptService: () => ensureImageDecryptService(),
     capability: () => systemOcrService.getCapability(),
     /**
