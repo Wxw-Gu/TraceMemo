@@ -143,7 +143,9 @@ describe('DatabaseConnectionPage', () => {
 
     expect(screen.getByRole('button', { name: '开始获取密钥' })).toBeVisible()
     expect(screen.queryByText(/管理员授权|电脑密码/)).not.toBeInTheDocument()
-    expect(screen.queryByText(/Frida|Python|SIP|重新签名/)).not.toBeInTheDocument()
+    // SIP is a user prerequisite, not an implementation detail: seeing it in the
+    // UI is expected whenever the key cannot be captured without it.
+    expect(screen.queryByText(/Frida|Python|重新签名/)).not.toBeInTheDocument()
   })
 
   it('renders a discovered nickname and avatar before connection', () => {

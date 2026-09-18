@@ -134,6 +134,15 @@ export function parseXkeyHelperOutput(output: string): DatabaseKeyResult {
   return mapXkeyHelperFailure(rawError)
 }
 
+export const SIP_ENABLED_ERROR =
+  'macOS 系统完整性保护（SIP）已开启，无法自动获取数据库密钥。请先关闭 SIP，或改用手动粘贴。'
+
+export function parseSipEnabled(statusOutput: string): boolean {
+  const status = statusOutput.match(/status:\s*([a-z]+)/i)?.[1]?.toLowerCase()
+  if (status) return status === 'enabled'
+  return statusOutput.toLowerCase().includes('enabled')
+}
+
 export class KeyServiceMac {
   private getMacKeyRuntimeDir(): string {
     return path.join(app.getPath('userData'), 'key-runtime')
@@ -306,7 +315,7 @@ export class KeyServiceMac {
   private async isSipEnabled(): Promise<boolean> {
     try {
       const { stdout } = await execFileAsync('/usr/bin/csrutil', ['status'])
-      return stdout.toLowerCase().includes('enabled')
+      return parseSipEnabled(stdout)
     } catch {
       return false
     }
@@ -346,10 +355,7 @@ export class KeyServiceMac {
       return { success: false, error: '自动获取密钥目前仅支持 macOS' }
     }
     if (await this.isSipEnabled()) {
-      return {
-        success: false,
-        error: '当前系统还未完成连接环境准备，请按页面提示完成设置。'
-      }
+      return { success: false, code: 'SIP_ENABLED', error: SIP_ENABLED_ERROR }
     }
 
     try {
