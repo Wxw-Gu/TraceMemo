@@ -7,9 +7,11 @@ vi.mock('electron', () => ({
 }))
 
 import {
+  SIP_ENABLED_ERROR,
   buildAppleSiliconXkeyInvocation,
   buildXkeyHelperArguments,
   mapXkeyHelperFailure,
+  parseSipEnabled,
   parseXkeyHelperOutput,
   resolveXkeyHelperMode
 } from '../../src/main/key-service-mac'
@@ -131,5 +133,30 @@ describe('parseXkeyHelperOutput', () => {
       code: 'HOOK_FAILED',
       error: '密钥工具执行未完成（HOOK_FAILED），请确认微信仍在运行后重试。'
     })
+  })
+})
+
+describe('parseSipEnabled', () => {
+  it.each<[string, boolean]>([
+    ['System Integrity Protection status: enabled.', true],
+    ['System Integrity Protection status: disabled.', false],
+    ['System Integrity Protection status: unknown (Custom Configuration).', false],
+    ['System Integrity Protection status: enabled (Apple Internal).', true],
+    ['System Integrity Protection status: disabled (Apple Internal).', false]
+  ])('reads "%s" as %s', (statusOutput, expected) => {
+    expect(parseSipEnabled(statusOutput)).toBe(expected)
+  })
+
+  it('only reads the status field, not the word enabled elsewhere in the output', () => {
+    expect(
+      parseSipEnabled('System Integrity Protection status: disabled.\nKernel Extensions: enabled')
+    ).toBe(false)
+  })
+})
+
+describe('SIP blocking message', () => {
+  it('names the prerequisite and the next action', () => {
+    expect(SIP_ENABLED_ERROR).toContain('SIP')
+    expect(SIP_ENABLED_ERROR).toMatch(/关闭 SIP|手动粘贴/)
   })
 })
