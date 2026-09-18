@@ -8,6 +8,14 @@ import { getResourceRoots } from './resource-paths'
 import { wcdbDebugLog } from './wcdb-debug'
 import type { ImageMessageCountProbe } from '../shared/image-text-index'
 
+function voiceServerId(value: string | number = 0): bigint | null {
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) return null
+  const text = String(value).trim() || '0'
+  if (!/^\d+$/.test(text)) return null
+  const id = BigInt(text)
+  return id <= 9223372036854775807n ? id : null
+}
+
 export interface Wcdb4Session {
   username: string
   nickname: string
@@ -2503,6 +2511,9 @@ export class Wcdb4Client {
       return { success: false, error: '当前 DLL 版本不支持获取语音数据' }
     }
 
+    const serverId = voiceServerId(svrId)
+    if (serverId === null) return { success: false, error: '语音服务器消息 ID 无效或精度已丢失' }
+
     const handle = this.ensureHandle()
     const fn = this.wcdbGetVoiceData as unknown as KoffiAsyncFunction
     return this.createTrackedNativeCall<Wcdb4VoiceDataResult>((resolve, reject) => {
@@ -2511,8 +2522,10 @@ export class Wcdb4Client {
         handle,
         sessionId,
         createTime,
-        localId,
-        BigInt(svrId || 0),
+        // Local IDs can collide across media shards. Do not let the native
+        // local-ID shortcut override a known server identity.
+        serverId > 0n ? 0 : localId,
+        serverId,
         JSON.stringify(candidates),
         outHex,
         (error: unknown, code: unknown) => {
@@ -2542,7 +2555,8 @@ export class Wcdb4Client {
 
   async getVoiceDataBatch(requests: Wcdb4VoiceDataRequest[]): Promise<Wcdb4VoiceDataResult[]> {
     if (!requests.length) return []
-    if (!this.wcdbGetVoiceDataBatch) {
+    const serverIds = requests.map((request) => voiceServerId(request.svrId))
+    if (!this.wcdbGetVoiceDataBatch || serverIds.some((id) => id === null)) {
       return this.getVoiceDataIndividually(requests)
     }
 
@@ -2553,8 +2567,8 @@ export class Wcdb4Client {
           requests.map((request, index) => ({
             session_id: request.sessionId,
             create_time: request.createTime,
-            local_id: request.localId || 0,
-            svr_id: String(request.svrId || 0),
+            local_id: serverIds[index]! > 0n ? 0 : request.localId || 0,
+            svr_id: String(serverIds[index]),
             candidates: request.candidates,
             index
           }))
