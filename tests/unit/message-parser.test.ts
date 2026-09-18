@@ -118,6 +118,55 @@ describe('message parser', () => {
     })
   })
 
+  it('renders the templated join-group notice instead of its hidden button label', () => {
+    // 微信 4.x 的 sysmsgtemplate：<plain> 为空、正文在 <template> 里用 $名称$ 引用 link，
+    // hidden="1" 的 link 是可点击按钮，不应作为正文。
+    const parsed = parseMessageContent(
+      [
+        '<sysmsg type="sysmsgtemplate">',
+        '<sysmsgtemplate><content_template type="tmpl_type_profilewithrevokeqrcode">',
+        '<plain><![CDATA[]]></plain>',
+        '<template><![CDATA["$adder$"通过扫描你分享的二维码加入群聊  $revoke$]]></template>',
+        '<link_list>',
+        '<link name="adder" type="link_profile"><memberlist><member>',
+        '<username><![CDATA[wxid_fixture_member]]></username>',
+        '<nickname><![CDATA[成员昵称]]></nickname>',
+        '</member></memberlist></link>',
+        '<link name="revoke" type="link_revoke_qrcode" hidden="1">',
+        '<title><![CDATA[撤销]]></title>',
+        '</link>',
+        '</link_list>',
+        '</content_template></sysmsgtemplate></sysmsg>'
+      ].join(''),
+      10000
+    )
+
+    expect(parsed).toMatchObject({
+      type: 'system',
+      content: '"成员昵称"通过扫描你分享的二维码加入群聊'
+    })
+  })
+
+  it('keeps parsing the legacy delchatroommember join-group notice', () => {
+    const parsed = parseMessageContent(
+      [
+        '<sysmsg type="delchatroommember"><delchatroommember>',
+        '<plain><![CDATA["成员昵称"通过扫描你分享的二维码加入群聊  ]]></plain>',
+        '<text><![CDATA["成员昵称"通过扫描你分享的二维码加入群聊  ]]></text>',
+        '<link><scene>qrcode</scene><text><![CDATA[  撤销]]></text>',
+        '<memberlist><username><![CDATA[wxid_fixture_member]]></username></memberlist>',
+        '</link>',
+        '</delchatroommember></sysmsg>'
+      ].join(''),
+      10000
+    )
+
+    expect(parsed).toMatchObject({
+      type: 'system',
+      content: '"成员昵称"通过扫描你分享的二维码加入群聊'
+    })
+  })
+
   it('uses an explicit unknown type for unsupported messages', () => {
     expect(parseMessageContent('opaque fixture payload', 999)).toEqual({
       type: 'unknown',
