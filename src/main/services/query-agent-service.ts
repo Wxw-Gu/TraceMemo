@@ -1309,10 +1309,13 @@ export class QueryAgentService {
     const scopeNote = options.conversationScope
       ? conversationScopeNote(options.conversationScope)
       : undefined
+    // Some OpenAI-compatible providers (including strict vLLM/Qwen chat templates)
+    // reject consecutive system messages. Keep the scope note as system context, but
+    // fold it into the leading prompt so every request starts with exactly one system message.
+    const systemContent = scopeNote ? `${SYSTEM_PROMPT}\n\n${scopeNote}` : SYSTEM_PROMPT
     const messages: Array<Record<string, unknown>> = [
-      { role: 'system', content: SYSTEM_PROMPT },
       // 范围说明是**上下文**，不是强制执行手段：真正的边界由 Engine 拒绝越界 target 来保证。
-      ...(scopeNote ? [{ role: 'system', content: scopeNote }] : []),
+      { role: 'system', content: systemContent },
       ...history.flatMap((turn) => [
         { role: 'user', content: turn.question },
         { role: 'assistant', content: turn.answer }
