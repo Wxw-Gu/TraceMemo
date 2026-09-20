@@ -82,6 +82,7 @@ import type {
   PersonalWechatVoiceDiagnostic
 } from '../shared/personal-wechat'
 import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
+import type { GroupMemberStatsQuery, GroupMemberStatsResult } from '../shared/group-stats'
 import type {
   ScheduledReportCreateInput,
   ScheduledReportExecution,
@@ -101,7 +102,7 @@ import type {
   PersonalWechatVoiceEncodingEnvironmentResult
 } from '../shared/personal-wechat-voice-runtime'
 import type { AppLogEntry } from '../shared/app-log'
-import type { GroupExitMonitorState } from '../shared/group-exit-monitor'
+import type { GroupExitMonitorEvent, GroupExitMonitorState } from '../shared/group-exit-monitor'
 import type { ActionLogEntry } from '../shared/action-log'
 import type {
   AppUpdateCheckResult,
@@ -293,7 +294,14 @@ declare global {
           avatar: string
         }[]
       } | null>
+      getGroupMemberStats: (request: GroupMemberStatsQuery) => Promise<GroupMemberStatsResult>
       getGroupExitMonitorState: () => Promise<GroupExitMonitorState>
+      listGroupExitMonitorEvents: (query?: {
+        roomId?: string
+        sinceMs?: number
+        untilMs?: number
+        limit?: number
+      }) => Promise<GroupExitMonitorEvent[]>
       setGroupExitMonitorEnabled: (enabled: boolean) => Promise<GroupExitMonitorState>
       setGroupExitMonitorGroups: (
         roomIds: string[],

@@ -71,7 +71,8 @@ import type {
 } from '../shared/personal-wechat-voice-runtime'
 import type { AppLogEntry } from '../shared/app-log'
 import type { AppUpdateState } from '../shared/app-update'
-import type { GroupExitMonitorState } from '../shared/group-exit-monitor'
+import type { GroupExitMonitorEvent, GroupExitMonitorState } from '../shared/group-exit-monitor'
+import type { GroupMemberStatsQuery, GroupMemberStatsResult } from '../shared/group-stats'
 import type { ActionLogEntry } from '../shared/action-log'
 import type { CacheClearScope, CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress } from '../shared/export'
@@ -167,8 +168,17 @@ const api = {
   ): Promise<MessagesAroundResult> =>
     ipcRenderer.invoke('db:getMessagesAround', userMd5, messageId, anchorSeconds, radiusSeconds),
   getGroupSnapshot: (userMd5: string) => ipcRenderer.invoke('db:getGroupSnapshot', userMd5),
+  getGroupMemberStats: (request: GroupMemberStatsQuery): Promise<GroupMemberStatsResult> =>
+    ipcRenderer.invoke('group-stats:getMemberStats', request),
   getGroupExitMonitorState: (): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:getState'),
+  listGroupExitMonitorEvents: (query?: {
+    roomId?: string
+    sinceMs?: number
+    untilMs?: number
+    limit?: number
+  }): Promise<GroupExitMonitorEvent[]> =>
+    ipcRenderer.invoke('group-exit-monitor:listEvents', query),
   setGroupExitMonitorEnabled: (enabled: boolean): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:setEnabled', enabled),
   setGroupExitMonitorGroups: (

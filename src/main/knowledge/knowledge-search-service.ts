@@ -4,6 +4,7 @@ import type {
   KnowledgeImageOcrState,
   KnowledgeAttachmentMetadata,
   KnowledgeEvidence,
+  KnowledgeMemberStatsResult,
   KnowledgeMessageKind,
   KnowledgePassProgress,
   KnowledgeRuntimeState,
@@ -495,6 +496,37 @@ export class KnowledgeSearchService {
     } catch (error) {
       console.warn('[Knowledge] search failed, using legacy fallback:', error)
       return { ...(await this.searchFallback(request, 'error')), sourceLatestAt }
+    }
+  }
+
+  /**
+   * 单群发言聚合（群员统计的数据来源）。
+   *
+   * 这一层只**如实**返回引擎能给出的东西（含 `indexLatestAt`），不做追赶决策 ——
+   * 「要不要等索引、要不要把结果标成不完整」是产品判断，属于 GroupStatsService。
+   * 同时返回一次 `sourceLatestAt`（同步、零额外 WCDB 调用），让调用方一次拿到
+   * freshness 的两个口径，不必再发一次 status 请求。
+   */
+  async memberStats(request: {
+    conversationId: string
+    startTime: number
+    endTime: number
+  }): Promise<{ result: KnowledgeMemberStatsResult | null; sourceLatestAt: number | null }> {
+    const sourceLatestAt = this.sourceLatestAt()
+    const accountId = this.currentAccountId()
+    if (!accountId) return { result: null, sourceLatestAt }
+    try {
+      const result = await this.service.memberStats({
+        accountId,
+        fts: DEFAULT_KNOWLEDGE_FTS_CONFIG,
+        conversationId: request.conversationId,
+        startTime: request.startTime,
+        endTime: request.endTime
+      })
+      return { result, sourceLatestAt }
+    } catch (error) {
+      console.warn('[Knowledge] member stats failed:', error)
+      return { result: null, sourceLatestAt }
     }
   }
 

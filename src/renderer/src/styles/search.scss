@@ -206,7 +206,6 @@
 .ai-search-knowledge-card {
   display: grid;
   gap: 10px;
-  margin-top: auto;
   padding: 12px;
   border: 1px solid hsl(var(--tm-border-subtle));
   border-radius: var(--wxex-radius-md);
@@ -216,6 +215,17 @@
   min-width: 0;
   word-break: normal;
   overflow-wrap: normal;
+}
+
+/**
+ * 「把知识库卡片推到底部」**只对问问微信侧栏成立**。
+ *
+ * 这条规则原先写在 `.ai-search-knowledge-card` 基类上，于是任何复用该卡片的页面
+ * （例如「设置 · 本地索引」）都会让每张卡片各自被推开一大段，卡片之间出现几百像素空白。
+ * 现在限定在 `.ai-search-workspace` 作用域内 —— 这里才是它语义成立的地方。
+ */
+.ai-search-workspace .ai-search-knowledge-card {
+  margin-top: auto;
 }
 
 .ai-search-knowledge-card.building,

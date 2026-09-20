@@ -492,6 +492,62 @@ export interface KnowledgeStatusRequest {
 }
 
 /**
+ * 单个会话内的「按发送者聚合」统计请求。
+ *
+ * 存在的理由：群员统计（谁说话了、说了多少条、谁一个字没说）只需要
+ * `GROUP BY sender_id` 的聚合结果，**不需要**把消息逐条搬到主进程再算。
+ *
+ * 刻意不做成 `KnowledgeQuery` 的一个分支：检索是「找内容」，这里是「数人头」，
+ * 两者的谓词与返回形状没有交集，塞在一起会让两端都长出用不到的条件分支。
+ */
+export interface KnowledgeMemberStatsRequest {
+  accountId: string
+  databaseRoot: string
+  fts: KnowledgeFtsConfig
+  /** 会话 md5（= `md5(username)`），不是原始 `@chatroom`。 */
+  conversationId: string
+  /** Unix epoch **毫秒**，闭区间。与 knowledge 内部口径一致，不经过 WCDB 的秒级边界。 */
+  startTime: number
+  /** Unix epoch **毫秒**，闭区间。 */
+  endTime: number
+}
+
+/** 单个发送者在指定会话 / 时间窗内的发言聚合。 */
+export interface KnowledgeMemberStatRow {
+  senderId: string
+  messageCount: number
+  /** 该发送者在窗口内最后一条消息的时间（epoch ms）。 */
+  lastMessageTime: number
+}
+
+export interface KnowledgeMemberStatsResult {
+  conversationId: string
+  /** 窗口内、排除系统消息之后的总消息数（**含**未归属消息）。 */
+  totalMessages: number
+  /** 按 `messageCount` 降序。 */
+  senders: KnowledgeMemberStatRow[]
+  /**
+   * 窗口内 `sender_id` 缺失的消息数。
+   *
+   * 这些消息**不得归属任何成员**：把它们硬塞给某个人，会让「未发言」名单出现
+   * 错误否定，而这份名单是会被发到群里的。
+   */
+  unattributedMessages: number
+  /** 窗口内被 `kind = 'system'` 排除的消息数。 */
+  excludedSystemMessages: number
+  /**
+   * 窗口内**最早一条消息**的时间（epoch ms），**不过滤 kind**。
+   *
+   * 用途：选「全部」时向用户显示真实的数据起点（「本机这个群第一条消息是什么时候」），
+   * 而不是含糊的「全部历史」。刻意不过滤系统消息 —— 群的第一条往往就是建群通知，
+   * 那才是用户认知里的「第一条」。
+   */
+  earliestMessageTime: number | null
+  /** 派生索引里最新一条消息的时间（epoch ms）；null 表示无法判定。 */
+  indexLatestAt: number | null
+}
+
+/**
  * 索引「已覆盖到的源数据时间」与源数据「当前最新活跃时间」之间允许的固定落差。
  *
  * 两侧都来自消息的 create_time（索引侧 = 完整 pass 扫到的最大 create_time，
@@ -515,7 +571,16 @@ export function isKnowledgeFresh(
 
 export interface KnowledgeWorkerRequest {
   version: 1
-  type: 'index' | 'preflight' | 'search' | 'status' | 'remove' | 'cancel' | 'close' | 'highWater'
+  type:
+    | 'index'
+    | 'preflight'
+    | 'search'
+    | 'status'
+    | 'remove'
+    | 'cancel'
+    | 'close'
+    | 'highWater'
+    | 'memberStats'
   requestId: string
   /** Parent monotonic wall-clock used only for transport timing. */
   sentAt?: number
@@ -524,6 +589,7 @@ export interface KnowledgeWorkerRequest {
     | KnowledgeCapacityPreflightRequest
     | KnowledgeSearchRequest
     | KnowledgeStatusRequest
+    | KnowledgeMemberStatsRequest
     | { accountId: string; databaseRoot: string }
     | { targetRequestId: string }
     | Record<string, never>
@@ -539,6 +605,7 @@ export interface KnowledgeWorkerResponse {
     | KnowledgeCapacityPreflight
     | KnowledgeSearchResult
     | KnowledgeRuntimeStatus
+    | KnowledgeMemberStatsResult
     | { removed: true }
   error?: string
   transport?: {
