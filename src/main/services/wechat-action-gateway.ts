@@ -22,7 +22,15 @@ import { wechatSendGateway } from './wechat-send-gateway'
 const MAX_AUDIT_RECORDS = 500
 const MAX_CONTENT_PREVIEW_LENGTH = 240
 export const AUTOMATION_SEND_INTERVAL_MS = 3_000
-const AUTOMATION_PURPOSE_ALLOWLIST = new Set(['scheduled_report', 'member_left_notification'])
+const AUTOMATION_PURPOSE_ALLOWLIST = new Set([
+  'scheduled_report',
+  'member_left_notification',
+  // Automation v1（@我生成日报）。必须与 `src/shared/automation.ts` 的
+  // `AUTOMATION_SEND_PURPOSE` 保持一致，否则会被下面 evaluateWechatActionPolicy
+  // 以 ACTION_NOT_ALLOWED 拦下 —— 那是有意的闸门，不是 bug。
+  'automation_reply',
+  'automation_report'
+])
 
 export interface WechatActionGatewayDependencies {
   getCapability?: () => Promise<PersonalWechatSendCapability>

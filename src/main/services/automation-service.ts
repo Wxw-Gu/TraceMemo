@@ -1,0 +1,422 @@
+import { randomUUID } from 'node:crypto'
+import {
+  matchAutomationRule,
+  type AutomationMatchInput
+} from '../../shared/automation-matcher'
+import type {
+  AutomationExecution,
+  AutomationRule,
+  AutomationStatusSummary
+} from '../../shared/automation'
+import type { PersonalWechatSendCapability } from '../../shared/personal-wechat'
+import type { Wcdb4Client } from '../wcdb4-client'
+import type { NormalizedIncomingMessage } from './message-listener-service'
+import { listContacts } from './chat-service'
+import { getPersonalWechatSendCapability } from './personal-wechat-capability-service'
+import {
+  automationRuleStore,
+  type AutomationRuleStore
+} from './automation-rule-store'
+import {
+  automationExecutionLogService,
+  type AutomationExecutionLogService
+} from './automation-execution-log-service'
+import {
+  automationActionRunner,
+  type AutomationActionRunner
+} from './automation-action-runner'
+
+/**
+ * AutomationService —— Automation v1 的编排层。
+ *
+ * ```text
+ * MessageListener
+ *       ↓  NormalizedIncomingMessage
+ * AutomationService.handleMessage
+ *       ↓  TriggerMatcher（shared，纯函数；规则编辑页的预览共用同一份）
+ *       ↓  cooldown → 同消息幂等 → 发送能力预检
+ * AutomationActionRunner
+ *       ↓
+ * Execution Log
+ * ```
+ *
+ * 刻意不引入 EventBus / RxJS / MQ / 工作流引擎 —— 这条链路的每一步都是同步可读的。
+ *
+ * **防循环 / 防刷屏四道闸**（缺一不可）：
+ * 1. `isSelf` 防护：自己发的消息不触发（TriggerMatcher 内）；
+ * 2. MessageListener dedup：同一条消息不会重复投递；
+ * 3. cooldown：同一规则 + 同一会话的最小间隔；
+ * 4. 同消息幂等：`ruleId:sessionId:localId` 只执行一次。
+ *
+ * 第 1 条是关键：TraceMemo 回复的那句「收到，正在生成今日日报」本身含关键词「日报」，
+ * 少了它就会自己触发自己，形成死循环。
+ */
+
+/** 幂等登记表的存活时间与容量上限（与 MessageListener 的 dedup 同思路）。 */
+const CLAIM_TTL_MS = 10 * 60 * 1000
+const CLAIM_MAX_ENTRIES = 5_000
+/** 自己的 username 候选集缓存时长 —— 这个值几乎不变，没必要每条消息都查。 */
+const SELF_USERNAME_TTL_MS = 30_000
+
+export interface AutomationServiceDependencies {
+  ruleStore?: AutomationRuleStore
+  executionLog?: AutomationExecutionLogService
+  runner?: AutomationActionRunner
+  getCapability?: () => Promise<PersonalWechatSendCapability>
+  /** 由主进程注入：MessageListener 是否在运行。 */
+  isListening?: () => boolean
+  now?: () => number
+}
+
+interface ClaimEntry {
+  at: number
+}
+
+export class AutomationService {
+  private readonly ruleStore: AutomationRuleStore
+  private readonly executionLog: AutomationExecutionLogService
+  private readonly runner: AutomationActionRunner
+  private readonly getCapability: () => Promise<PersonalWechatSendCapability>
+  private readonly isListening: () => boolean
+  private readonly now: () => number
+
+  /** `ruleId:sessionId:localId` → 登记时间。 */
+  private readonly claims = new Map<string, ClaimEntry>()
+  /** `${ruleId}:${conversationId}` → 上次真正开始执行的毫秒时间戳。 */
+  private readonly cooldowns = new Map<string, number>()
+
+  private selfUsernames: string[] = []
+  private selfUsernamesAt = 0
+
+  constructor(
+    private readonly client: Wcdb4Client,
+    dependencies: AutomationServiceDependencies = {}
+  ) {
+    this.ruleStore = dependencies.ruleStore ?? automationRuleStore
+    this.executionLog = dependencies.executionLog ?? automationExecutionLogService
+    this.runner = dependencies.runner ?? automationActionRunner
+    this.getCapability = dependencies.getCapability ?? getPersonalWechatSendCapability
+    this.isListening = dependencies.isListening ?? (() => true)
+    this.now = dependencies.now ?? (() => Date.now())
+  }
+
+  /**
+   * 消息入口。**绝不抛** —— 它挂在 MessageListener 的回调上，
+   * 抛出去会影响后续监听者。
+   */
+  async handleMessage(message: NormalizedIncomingMessage): Promise<void> {
+    let rules: AutomationRule[]
+    try {
+      rules = this.ruleStore.listRules()
+    } catch (error) {
+      this.warn(`读取规则失败: ${errorText(error)}`)
+      return
+    }
+    if (!rules.length) return
+
+    const selfUsernames = this.resolveSelfUsernames()
+    const input: AutomationMatchInput = {
+      ...(message.content !== undefined ? { content: message.content } : {}),
+      mentionTargets: message.mentionTargets,
+      isSelf: message.isSelf,
+      isGroup: message.isGroup,
+      // conversationId 与规则里的 conversationIds 同口径：群为 `xxx@chatroom`。
+      conversationId: message.sessionId
+    }
+
+    for (const rule of rules) {
+      let matched: boolean
+      try {
+        matched = matchAutomationRule(rule, input, selfUsernames).matched
+      } catch (error) {
+        this.warn(`规则匹配异常 ruleId=${rule.id}: ${errorText(error)}`)
+        continue
+      }
+      if (!matched) continue
+
+      // 三道闸全部是**同步**的，必须在任何 await 之前完成登记，
+      // 否则同一批并发消息会同时穿过检查。
+      if (this.isCoolingDown(rule, message.sessionId)) continue
+      if (!this.claim(rule, message)) continue
+
+      const sourceDisplayName = this.resolveDisplayName(message)
+      await this.execute(rule, message, sourceDisplayName)
+    }
+  }
+
+  /** 顶部状态条数据。全部来自真实能力，不做渲染层平台猜测。 */
+  async getStatus(): Promise<AutomationStatusSummary> {
+    const now = this.now()
+    const startOfToday = new Date(now)
+    startOfToday.setHours(0, 0, 0, 0)
+    const counts = this.executionLog.countSince(startOfToday.getTime())
+    let capability: PersonalWechatSendCapability | null = null
+    try {
+      capability = await this.getCapability()
+    } catch {
+      capability = null
+    }
+    return {
+      listening: this.isListening(),
+      // 底层只能回读「最近活跃会话」（见 message-listener-service.ts 的 BLOCKER 注释），
+      // UI 必须如实告知，不允许把它包装成「全局监听」。
+      listeningDegraded: true,
+      todayExecutions: counts.total,
+      todaySuccesses: counts.success,
+      sendCapability: {
+        supported: Boolean(capability?.supported),
+        ready: Boolean(capability?.ready),
+        canSendText: Boolean(capability?.capabilities?.text),
+        canSendImage: Boolean(capability?.capabilities?.image),
+        message: capability?.message ?? '暂时无法获知微信发送能力'
+      }
+    }
+  }
+
+  /** 「在哪些聊天生效」的可选项。`id` 必须是 `xxx@chatroom`，与 message.sessionId 对齐。 */
+  listGroups(): Array<{ id: string; name: string }> {
+    try {
+      return listContacts()
+        .filter((contact) => contact.type === 'group' || contact.m_nsUsrName?.endsWith('@chatroom'))
+        .map((contact) => ({
+          id: String(contact.m_nsUsrName || ''),
+          name: String(contact.m_nsNickName || contact.m_nsUsrName || '')
+        }))
+        .filter((group) => group.id)
+        .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+    } catch (error) {
+      this.warn(`读取群列表失败: ${errorText(error)}`)
+      return []
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 内部
+  // ---------------------------------------------------------------------------
+
+  private async execute(
+    rule: AutomationRule,
+    message: NormalizedIncomingMessage,
+    sourceDisplayName: string
+  ): Promise<void> {
+    const executionId = randomUUID()
+    const startedAt = this.now()
+    const isGroup = message.isGroup
+
+    // 发送能力预检：环境发不出去时**不要执行**，直接留下一条说明清楚的失败记录。
+    // 「假装规则正常运行」比直接报错更糟 —— 用户会以为发出去了。
+    const missing = await this.checkSendCapability(rule, isGroup)
+    if (missing) {
+      this.executionLog.record(
+        this.buildExecution({
+          executionId,
+          rule,
+          startedAt,
+          sourceDisplayName,
+          status: 'failed',
+          durationMs: this.now() - startedAt,
+          steps: [],
+          errorSummary: missing
+        })
+      )
+      this.warn(`发送能力不足，跳过执行 ruleId=${rule.id} code=capability_missing`)
+      return
+    }
+
+    this.cooldowns.set(`${rule.id}:${message.sessionId}`, this.now())
+
+    let result: Awaited<ReturnType<AutomationActionRunner['run']>>
+    try {
+      result = await this.runner.run({
+        executionId,
+        rule,
+        conversationId: message.sessionId,
+        isGroup,
+        sourceDisplayName
+      })
+    } catch (error) {
+      result = {
+        steps: [],
+        status: 'failed',
+        errorSummary: `执行过程异常：${errorText(error)}`
+      }
+    }
+
+    this.executionLog.record(
+      this.buildExecution({
+        executionId,
+        rule,
+        startedAt,
+        sourceDisplayName,
+        status: result.status,
+        durationMs: this.now() - startedAt,
+        steps: result.steps,
+        ...(result.errorSummary ? { errorSummary: result.errorSummary } : {})
+      })
+    )
+
+    // 隐私红线：日志里只允许出现 ruleId / executionId / 状态 / 耗时 / 步骤状态。
+    // 群名、昵称、wxid、正文、source、文件路径一律不进日志。
+    const trail = result.steps.map((step) => `${step.key}=${step.status}`).join(' ')
+    this.info(
+      `executed ruleId=${rule.id} executionId=${executionId} status=${result.status}` +
+        ` durationMs=${this.now() - startedAt}${trail ? ` ${trail}` : ''}`
+    )
+  }
+
+  /**
+   * 检查当前环境是否具备规则所需的发送能力。
+   *
+   * 返回「缺失的能力」说明；返回 `undefined` 表示可以执行。
+   * 私聊场景下 `sendReportImage` 同样受限，所以不做特殊豁免。
+   */
+  private async checkSendCapability(
+    rule: AutomationRule,
+    isGroup: boolean
+  ): Promise<string | undefined> {
+    const needsText = rule.actions.some((action) => action.type === 'replyText' && action.enabled)
+    const needsImage = rule.actions.some(
+      (action) => action.type === 'sendReportImage' && action.enabled
+    )
+    if (!needsText && !needsImage) return undefined
+
+    let capability: PersonalWechatSendCapability | null = null
+    try {
+      capability = await this.getCapability()
+    } catch {
+      return '暂时无法获知微信发送能力，已跳过本次执行'
+    }
+    if (!capability?.supported) {
+      return capability?.message || '当前系统不支持微信消息发送'
+    }
+    const target = isGroup ? '群聊' : '联系人'
+    if (needsText && !capability.capabilities?.text) {
+      return `当前环境无法发送文字，已跳过本次执行（无法回复${target}）`
+    }
+    if (needsImage && !capability.capabilities?.image) {
+      return '当前环境无法发送图片，已跳过本次执行（无法发送日报）'
+    }
+    return undefined
+  }
+
+  private buildExecution(input: {
+    executionId: string
+    rule: AutomationRule
+    startedAt: number
+    sourceDisplayName: string
+    status: AutomationExecution['status']
+    durationMs: number
+    steps: AutomationExecution['steps']
+    errorSummary?: string
+  }): AutomationExecution {
+    return {
+      executionId: input.executionId,
+      ruleId: input.rule.id,
+      ruleName: input.rule.name,
+      triggerTime: input.startedAt,
+      sourceDisplayName: input.sourceDisplayName,
+      status: input.status,
+      durationMs: input.durationMs,
+      steps: input.steps,
+      ...(input.errorSummary ? { errorSummary: input.errorSummary } : {})
+    }
+  }
+
+  private isCoolingDown(rule: AutomationRule, conversationId: string): boolean {
+    const seconds = Number(rule.cooldownSeconds)
+    if (!Number.isFinite(seconds) || seconds <= 0) return false
+    const last = this.cooldowns.get(`${rule.id}:${conversationId}`)
+    if (last === undefined) return false
+    return this.now() - last < seconds * 1000
+  }
+
+  /** 登记「这条消息已经被这条规则处理过」。返回 false 表示重复，应当跳过。 */
+  private claim(rule: AutomationRule, message: NormalizedIncomingMessage): boolean {
+    const key = `${rule.id}:${message.sessionId}:${message.localId}`
+    const now = this.now()
+    if (this.claims.has(key)) return false
+    this.claims.set(key, { at: now })
+    if (this.claims.size > CLAIM_MAX_ENTRIES) this.evictClaims(now)
+    return true
+  }
+
+  /** 先按 TTL 清理；仍超限则按插入顺序丢最旧的一批。 */
+  private evictClaims(now: number): void {
+    for (const [key, entry] of this.claims) {
+      if (now - entry.at > CLAIM_TTL_MS) this.claims.delete(key)
+    }
+    if (this.claims.size <= CLAIM_MAX_ENTRIES) return
+    const overflow = this.claims.size - CLAIM_MAX_ENTRIES
+    let removed = 0
+    for (const key of this.claims.keys()) {
+      this.claims.delete(key)
+      removed += 1
+      if (removed >= overflow) break
+    }
+  }
+
+  private resolveSelfUsernames(): string[] {
+    const now = this.now()
+    if (this.selfUsernames.length && now - this.selfUsernamesAt < SELF_USERNAME_TTL_MS) {
+      return this.selfUsernames
+    }
+    try {
+      this.selfUsernames = (this.client.getMyUsernameCandidates?.() ?? []).filter(Boolean)
+      this.selfUsernamesAt = now
+    } catch (error) {
+      this.warn(`读取自身 username 失败: ${errorText(error)}`)
+    }
+    return this.selfUsernames
+  }
+
+  /**
+   * 会话显示名。
+   *
+   * 拿不到会话昵称时**降级成「群聊 / 联系人」**，绝不回落到 wxid ——
+   * 那个值一旦漏进执行日志就等于把隐私写进了用户可见的界面。
+   */
+  private resolveDisplayName(message: NormalizedIncomingMessage): string {
+    try {
+      const session = this.client.getSessions().find((item) => item.username === message.sessionId)
+      const nickname = String(session?.nickname || '').trim()
+      if (nickname) return nickname
+    } catch {
+      // 忽略：走下面的通用降级名
+    }
+    return message.isGroup ? '群聊' : '联系人'
+  }
+
+  /** 日志统一出口：只允许不可逆的运维信息，禁止任何身份信息。 */
+  private info(message: string): void {
+    console.log(`[Automation] ${message}`)
+  }
+
+  private warn(message: string): void {
+    console.warn(`[Automation] ${message}`)
+  }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+let instance: AutomationService | null = null
+
+/**
+ * 主进程启动时调用一次。
+ *
+ * 用惰性初始化而不是模块级单例，是因为它需要 `Wcdb4Client`，
+ * 而那个实例要等数据库解锁后才存在。
+ */
+export function initAutomationService(
+  client: Wcdb4Client,
+  dependencies: AutomationServiceDependencies = {}
+): AutomationService {
+  instance = new AutomationService(client, dependencies)
+  return instance
+}
+
+export function getAutomationService(): AutomationService {
+  if (!instance) throw new Error('AutomationService 尚未初始化')
+  return instance
+}

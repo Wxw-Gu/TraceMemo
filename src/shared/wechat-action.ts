@@ -2,6 +2,8 @@ export type WechatActionOrigin =
   | 'member_monitor'
   | 'scheduled_report'
   | 'user_tts'
+  /** Automation v1（@我生成日报）。与 `shared/automation.ts` 的 AUTOMATION_SEND_ORIGIN 一致。 */
+  | 'automation'
   | 'unknown'
   | (string & {})
 
@@ -9,6 +11,15 @@ export type WechatActionPurpose =
   | 'member_left_notification'
   | 'scheduled_report'
   | 'tts_voice'
+  /**
+   * Automation v1 的两个用途。
+   *
+   * ⚠️ 这两个值必须同步登记进 `wechat-action-gateway.ts` 的
+   * `AUTOMATION_PURPOSE_ALLOWLIST`，否则会被策略层以 `ACTION_NOT_ALLOWED` 拦下。
+   * 与 `shared/automation.ts` 的 `AUTOMATION_SEND_PURPOSE` 保持一致。
+   */
+  | 'automation_reply'
+  | 'automation_report'
   | (string & {})
 
 export type WechatActionTriggerType = 'automation' | 'user'

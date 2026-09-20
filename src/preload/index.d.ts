@@ -103,6 +103,12 @@ import type {
 } from '../shared/personal-wechat-voice-runtime'
 import type { AppLogEntry } from '../shared/app-log'
 import type { GroupExitMonitorEvent, GroupExitMonitorState } from '../shared/group-exit-monitor'
+import type {
+  AutomationExecution,
+  AutomationRule,
+  AutomationRuleDraft,
+  AutomationStatusSummary
+} from '../shared/automation'
 import type { ActionLogEntry } from '../shared/action-log'
 import type {
   AppUpdateCheckResult,
@@ -313,6 +319,15 @@ declare global {
       resendGroupExitMonitorEvent: (eventId: string) => Promise<GroupExitMonitorState>
       markGroupExitMonitorRead: (readAt?: number) => Promise<GroupExitMonitorState>
       listWechatActionLogs: () => Promise<ActionLogEntry[]>
+      getAutomationStatus: () => Promise<AutomationStatusSummary>
+      listAutomationRules: () => Promise<AutomationRule[]>
+      createAutomationRule: (draft: AutomationRuleDraft) => Promise<AutomationRule>
+      updateAutomationRule: (id: string, draft: AutomationRuleDraft) => Promise<AutomationRule | null>
+      deleteAutomationRule: (id: string) => Promise<boolean>
+      setAutomationRuleEnabled: (id: string, enabled: boolean) => Promise<AutomationRule | null>
+      listAutomationExecutions: (query?: { limit?: number }) => Promise<AutomationExecution[]>
+      clearAutomationExecutions: () => Promise<boolean>
+      listAutomationGroups: () => Promise<Array<{ id: string; name: string }>>
       onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => () => void
       search: (keyword: string) => Promise<string | null>
       searchKnowledge: (request: KnowledgeSearchIpcRequest) => Promise<KnowledgeSearchIpcResult>

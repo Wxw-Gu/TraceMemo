@@ -112,6 +112,10 @@ import { agentHubService } from './services/agent-hub-service'
 import { WechatConnectorService } from './services/wechat-ilink'
 import { wechatSendGateway } from './services/wechat-send-gateway'
 import { groupExitMonitorService } from './services/group-exit-monitor-service'
+import { MessageListenerService } from './services/message-listener-service'
+import { automationRuleStore } from './services/automation-rule-store'
+import { automationExecutionLogService } from './services/automation-execution-log-service'
+import { initAutomationService, getAutomationService } from './services/automation-service'
 import { GroupStatsService } from './services/group-stats-service'
 import { wechatActionLogService } from './services/wechat-action-log-service'
 import { wechatActionGateway } from './services/wechat-action-gateway'
@@ -1002,6 +1006,50 @@ app.whenReady().then(async () => {
           return { success: false, error: '应用正在退出，数据库连接已取消', monitoring: false }
         }
         const wcdb4Client = nextWechatDb.getWcdb4Client()
+        /**
+         * 正式 MessageListener（Observation Mode 接入）。
+         *
+         * 本轮**只监听、回读、规范化、去重、统计**，不触发任何业务：
+         * 不匹配关键词、不判断 @我、不出日报、不回复、不调 AI / Agent、不发送。
+         * 下一层的 Trigger 由后续任务接入。
+         */
+        const messageListener = new MessageListenerService(wcdb4Client)
+        /**
+         * Automation v1（@我生成日报）。
+         *
+         * `isListening` 要等下面 `startMonitor` 有结果才知道，所以先用闭包变量占位。
+         */
+        let automationListening = false
+        initAutomationService(wcdb4Client, { isListening: () => automationListening })
+        messageListener.onMessage((message) => {
+          // 日志只允许出现「类型 / 群或私聊 / 是否自己发 / @ 数量」这类不可逆标识，
+          // 不含 wxid、昵称、群名、正文与 source。
+          console.log(
+            `[MessageListener] incoming messageType=${message.messageType}` +
+              ` group=${message.isGroup} self=${message.isSelf}` +
+              ` mentions=${message.mentionTargets.length}`
+          )
+          // Automation 自带 isSelf / cooldown / 同消息幂等三重闸，不会形成回复循环。
+          // 用 try 包住同步那一段：`getAutomationService()` 在未初始化时会抛，
+          // 而 `.catch()` 只能接住异步拒绝 —— 漏了这层就会把异常抛进 MessageListener 的投递循环。
+          try {
+            void getAutomationService()
+              .handleMessage(message)
+              .catch((error) => {
+                console.warn(
+                  `[Automation] handleMessage failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                )
+              })
+          } catch (error) {
+            console.warn(
+              `[Automation] 未初始化，已跳过本次消息: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+          }
+        })
         const sessions = await wcdb4Client.getSessionsAsync({ hydrateDisplayNames: false })
         configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
         voiceService = new VoiceService(wcdb4Client, resolvedRoot)
@@ -1010,12 +1058,15 @@ app.whenReady().then(async () => {
         videoAssetService = new VideoAssetService(wcdb4Client)
         const monitoring = await wcdb4Client.startMonitor((type, json) => {
           wcdb4Client.invalidateSessionCache()
+          // 正式 MessageListener：只做 coalesce + 有界回读 + dedup + 投递，不触发业务。
+          messageListener.handleNativeChange()
           groupExitMonitorService.notifyDatabaseChanged(json)
           recallArchiveMonitor?.handleDatabaseChange(json)
           for (const window of BrowserWindow.getAllWindows()) {
             if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
           }
         })
+        automationListening = monitoring === true
         void groupExitMonitorService.start(monitoring)
         const recentSession = sessions[0]
         if (recentSession?.username) {
@@ -1539,6 +1590,61 @@ app.whenReady().then(async () => {
     groupExitMonitorService.markRead(readAt)
   )
   ipcMain.handle('wechat-action-log:list', () => wechatActionLogService.list())
+
+  /**
+   * Automation v1（@我生成日报）。
+   *
+   * 规则与执行日志都是纯文件存储，**不依赖数据库**，所以这两组 handler 在数据库
+   * 解锁前也可以安全调用；只有 `getStatus` / `listGroups` 需要会话数据，因此用
+   * `tryAutomationService()` 兜底，避免渲染层在启动阶段拿到一个 rejected promise。
+   */
+  const tryAutomationService = (): ReturnType<typeof getAutomationService> | null => {
+    try {
+      return getAutomationService()
+    } catch {
+      return null
+    }
+  }
+  ipcMain.handle('automation:listRules', () => automationRuleStore.listRules())
+  ipcMain.handle('automation:createRule', (_, draft: unknown) =>
+    automationRuleStore.createRule(draft)
+  )
+  ipcMain.handle('automation:updateRule', (_, input: unknown) => {
+    const payload = (input || {}) as { id?: unknown; draft?: unknown }
+    return automationRuleStore.updateRule(String(payload.id || ''), payload.draft) ?? null
+  })
+  ipcMain.handle('automation:deleteRule', (_, id: string) => automationRuleStore.deleteRule(id))
+  ipcMain.handle('automation:setRuleEnabled', (_, input: unknown) => {
+    const payload = (input || {}) as { id?: unknown; enabled?: unknown }
+    return automationRuleStore.setRuleEnabled(String(payload.id || ''), payload.enabled === true) ?? null
+  })
+  ipcMain.handle('automation:listExecutions', (_, query: unknown) => {
+    const input = (query || {}) as { limit?: unknown }
+    return automationExecutionLogService.list({ limit: Number(input.limit) })
+  })
+  ipcMain.handle('automation:clearExecutions', () => automationExecutionLogService.clear())
+  ipcMain.handle('automation:listGroups', () => tryAutomationService()?.listGroups() ?? [])
+  ipcMain.handle('automation:getStatus', async () => {
+    const service = tryAutomationService()
+    if (service) return service.getStatus()
+    // 数据库尚未就绪：如实返回「未监听 + 能力未知」，而不是假装一切正常。
+    const todayStart = new Date()
+    todayStart.setHours(0, 0, 0, 0)
+    const counts = automationExecutionLogService.countSince(todayStart.getTime())
+    return {
+      listening: false,
+      listeningDegraded: true,
+      todayExecutions: counts.total,
+      todaySuccesses: counts.success,
+      sendCapability: {
+        supported: false,
+        ready: false,
+        canSendText: false,
+        canSendImage: false,
+        message: '数据库尚未就绪，暂时无法获知微信发送能力'
+      }
+    }
+  })
 
   ipcMain.handle('db:search', (_, keyword: string) => chat.searchMessages(keyword))
   ipcMain.handle(

@@ -72,6 +72,12 @@ import type {
 import type { AppLogEntry } from '../shared/app-log'
 import type { AppUpdateState } from '../shared/app-update'
 import type { GroupExitMonitorEvent, GroupExitMonitorState } from '../shared/group-exit-monitor'
+import type {
+  AutomationExecution,
+  AutomationRule,
+  AutomationRuleDraft,
+  AutomationStatusSummary
+} from '../shared/automation'
 import type { GroupMemberStatsQuery, GroupMemberStatsResult } from '../shared/group-stats'
 import type { ActionLogEntry } from '../shared/action-log'
 import type { CacheClearScope, CacheSummary } from '../shared/cache'
@@ -200,6 +206,25 @@ const api = {
     ipcRenderer.invoke('group-exit-monitor:markRead', readAt),
   listWechatActionLogs: (): Promise<ActionLogEntry[]> =>
     ipcRenderer.invoke('wechat-action-log:list'),
+  // ---- Automation v1（@我生成日报）。命名与既有扁平风格一致。 ----
+  getAutomationStatus: (): Promise<AutomationStatusSummary> =>
+    ipcRenderer.invoke('automation:getStatus'),
+  listAutomationRules: (): Promise<AutomationRule[]> => ipcRenderer.invoke('automation:listRules'),
+  createAutomationRule: (draft: AutomationRuleDraft): Promise<AutomationRule> =>
+    ipcRenderer.invoke('automation:createRule', draft),
+  updateAutomationRule: (id: string, draft: AutomationRuleDraft): Promise<AutomationRule | null> =>
+    ipcRenderer.invoke('automation:updateRule', { id, draft }),
+  deleteAutomationRule: (id: string): Promise<boolean> =>
+    ipcRenderer.invoke('automation:deleteRule', id),
+  setAutomationRuleEnabled: (id: string, enabled: boolean): Promise<AutomationRule | null> =>
+    ipcRenderer.invoke('automation:setRuleEnabled', { id, enabled }),
+  listAutomationExecutions: (query?: { limit?: number }): Promise<AutomationExecution[]> =>
+    ipcRenderer.invoke('automation:listExecutions', query),
+  clearAutomationExecutions: (): Promise<boolean> =>
+    ipcRenderer.invoke('automation:clearExecutions'),
+  /** 「在哪些聊天生效」的可选项。`id` 为 `xxx@chatroom`，与规则内 conversationIds 同口径。 */
+  listAutomationGroups: (): Promise<Array<{ id: string; name: string }>> =>
+    ipcRenderer.invoke('automation:listGroups'),
   onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: GroupExitMonitorState): void =>
       callback(state)
