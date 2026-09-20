@@ -1,5 +1,13 @@
 import { createRequire } from 'module'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join, resolve } from 'path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -16,13 +24,37 @@ const {
   validateFfmpegRuntime,
   validateReaderSkillRuntime,
   validateSherpaRuntime,
-  validateSilkWasmRuntime
+  validateSilkWasmRuntime,
+  findMacosHelperPaths,
+  isMacosCodeValid,
+  signMacosHelpers,
+  signMacosAppBundle
 } = nodeRequire('../../scripts/after-pack.cjs') as {
   validateAsarRuntimeDependencies: (runtimeResources: string) => void
   validateFfmpegRuntime: (runtimeResources: string, platform?: NodeJS.Platform) => void
   validateReaderSkillRuntime: (runtimeResources: string) => string
   validateSherpaRuntime: (runtimeResources: string, platform: NodeJS.Platform, arch: string) => void
   validateSilkWasmRuntime: (runtimeResources: string) => void
+  findMacosHelperPaths: (runtimeResources: string) => string[]
+  isMacosCodeValid: (targetPath: string, run?: CodesignRunner) => boolean
+  signMacosHelpers: (runtimeResources: string, run?: CodesignRunner) => string[]
+  signMacosAppBundle: (appBundlePath: string, run?: CodesignRunner) => string
+}
+
+type CodesignRunner = (args: string[]) => void
+
+function createCodesignStub(options: { verifyFails?: (args: string[]) => boolean } = {}): {
+  calls: string[][]
+  run: CodesignRunner
+} {
+  const calls: string[][] = []
+  const run: CodesignRunner = (args) => {
+    calls.push(args)
+    if (options.verifyFails && args[0] === '--verify' && options.verifyFails(args)) {
+      throw new Error('code object is not signed at all')
+    }
+  }
+  return { calls, run }
 }
 const root = mkdtempSync(join(tmpdir(), 'wxe-runtime-package-'))
 
@@ -216,6 +248,96 @@ describe('production runtime packaging', () => {
     const config = readFileSync(resolve(__dirname, '../../electron-builder.yml'), 'utf8')
     expect(config).toContain('node_modules/sherpa-onnx-node/**')
     expect(config).toContain('node_modules/sherpa-onnx-*/**')
+  })
+
+  it('finds only the macOS helpers that exist in packaged resources', () => {
+    const resources = join(root, 'helper-detect-resources', 'resources')
+    mkdirSync(resources, { recursive: true })
+    expect(findMacosHelperPaths(join(root, 'helper-detect-resources'))).toEqual([])
+
+    const helperPath = join(resources, 'xkey_helper')
+    writeFileSync(helperPath, 'fixture')
+    const versionedPath = join(resources, 'xkey_helper_4_1_13')
+    writeFileSync(versionedPath, 'fixture')
+    expect(findMacosHelperPaths(join(root, 'helper-detect-resources'))).toEqual([
+      helperPath,
+      versionedPath
+    ])
+  })
+
+  it('ad-hoc signs packaged helpers whose signature is missing or modified', () => {
+    const resources = join(root, 'helper-sign-resources', 'resources')
+    mkdirSync(resources, { recursive: true })
+    const helperPath = join(resources, 'xkey_helper')
+    writeFileSync(helperPath, 'fixture')
+    const stub = createCodesignStub({ verifyFails: (args) => !args.includes('--arch') })
+
+    expect(signMacosHelpers(join(root, 'helper-sign-resources'), stub.run)).toEqual([helperPath])
+    expect(stub.calls).toContainEqual(['--force', '--sign', '-', helperPath])
+    expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'arm64', helperPath])
+    expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'x86_64', helperPath])
+    expect(statSync(helperPath).mode & 0o777).toBe(0o755)
+  })
+
+  it('keeps helpers that already verify strictly without re-signing them', () => {
+    const resources = join(root, 'helper-valid-resources', 'resources')
+    mkdirSync(resources, { recursive: true })
+    const helperPath = join(resources, 'xkey_helper')
+    writeFileSync(helperPath, 'fixture')
+    const stub = createCodesignStub()
+
+    expect(signMacosHelpers(join(root, 'helper-valid-resources'), stub.run)).toEqual([helperPath])
+    expect(stub.calls.filter((args) => args[0] === '--force')).toEqual([])
+    expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'arm64', helperPath])
+    expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'x86_64', helperPath])
+  })
+
+  it('fails packaging when a helper signature cannot be repaired', () => {
+    const resources = join(root, 'helper-broken-resources', 'resources')
+    mkdirSync(resources, { recursive: true })
+    writeFileSync(join(resources, 'xkey_helper'), 'fixture')
+    const stub = createCodesignStub({ verifyFails: () => true })
+
+    expect(() => signMacosHelpers(join(root, 'helper-broken-resources'), stub.run)).toThrow(
+      /xkey_helper \(arm64\)/
+    )
+  })
+
+  it('ad-hoc signs an invalid app bundle and verifies it strictly', () => {
+    const appBundle = join(root, 'TraceMemo.app')
+    const calls: string[][] = []
+    let verifyCount = 0
+    const run: CodesignRunner = (args) => {
+      calls.push(args)
+      if (args[0] === '--verify') {
+        verifyCount += 1
+        if (verifyCount === 1) throw new Error('bundle is not signed')
+      }
+    }
+
+    expect(signMacosAppBundle(appBundle, run)).toBe(appBundle)
+    expect(calls).toEqual([
+      ['--verify', '--strict', appBundle],
+      ['--force', '--sign', '-', appBundle],
+      ['--verify', '--strict', appBundle]
+    ])
+  })
+
+  it('keeps an app bundle that already verifies strictly', () => {
+    const appBundle = join(root, 'Valid.app')
+    const stub = createCodesignStub()
+
+    expect(signMacosAppBundle(appBundle, stub.run)).toBe(appBundle)
+    expect(stub.calls).toEqual([['--verify', '--strict', appBundle]])
+  })
+
+  it('fails packaging when the app bundle cannot be made strictly valid', () => {
+    const appBundle = join(root, 'Broken.app')
+    const stub = createCodesignStub({ verifyFails: () => true })
+
+    expect(() => signMacosAppBundle(appBundle, stub.run)).toThrow(
+      /app bundle signature verification failed/
+    )
   })
 })
 
