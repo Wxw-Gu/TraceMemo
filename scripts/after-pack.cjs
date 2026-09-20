@@ -16,6 +16,15 @@ const REQUIRED_RUNTIME_PACKAGES = [
   'koffi'
 ]
 
+// electron-builder 26 skips macOS signing entirely when no Developer ID
+// identity is configured, so an unpacked bundle can ship without a usable
+// signature. macOS kills a helper whose code or signature is missing or
+// modified even when SIP is disabled, which is what customers hit on newer
+// macOS releases. Ad-hoc re-sign the runtime helpers and the outer bundle so
+// every Mach-O verifies strictly; spctl still rejects ad-hoc code, which is
+// acceptable for the SIP-disabled customer workflow.
+const MACOS_HELPER_NAMES = ['xkey_helper', 'xkey_helper_4_1_13']
+
 function getRuntimeResources(context) {
   const productName = context.packager.appInfo.productFilename
   return context.electronPlatformName === 'darwin'
@@ -119,6 +128,63 @@ function validateSystemOcrRuntime(runtimeResources, platform, arch) {
 function normalizeBuilderArch(arch) {
   if (typeof arch === 'string') return arch
   return { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' }[arch] || String(arch)
+}
+
+function runCodesign(args) {
+  execFileSync('/usr/bin/codesign', args, { stdio: 'ignore' })
+}
+
+function isMacosCodeValid(targetPath, run = runCodesign) {
+  try {
+    run(['--verify', '--strict', targetPath])
+    return true
+  } catch {
+    return false
+  }
+}
+
+function findMacosHelperPaths(runtimeResources) {
+  return MACOS_HELPER_NAMES.map((name) => path.join(runtimeResources, 'resources', name)).filter(
+    (helperPath) => existsSync(helperPath)
+  )
+}
+
+function signMacosHelpers(runtimeResources, run = runCodesign) {
+  const helperPaths = findMacosHelperPaths(runtimeResources)
+  for (const helperPath of helperPaths) {
+    chmodSync(helperPath, 0o755)
+    if (!isMacosCodeValid(helperPath, run)) {
+      run(['--force', '--sign', '-', helperPath])
+    }
+    for (const arch of ['arm64', 'x86_64']) {
+      try {
+        run(['--verify', '--strict', '--arch', arch, helperPath])
+      } catch (error) {
+        throw new Error(
+          'macOS helper signature verification failed: ' +
+            path.basename(helperPath) +
+            ' (' +
+            arch +
+            ')',
+          { cause: error }
+        )
+      }
+    }
+  }
+  return helperPaths
+}
+
+function signMacosAppBundle(appBundlePath, run = runCodesign) {
+  if (isMacosCodeValid(appBundlePath, run)) return appBundlePath
+  run(['--force', '--sign', '-', appBundlePath])
+  try {
+    run(['--verify', '--strict', appBundlePath])
+  } catch (error) {
+    throw new Error('macOS app bundle signature verification failed: ' + appBundlePath, {
+      cause: error
+    })
+  }
+  return appBundlePath
 }
 
 /**
@@ -226,7 +292,9 @@ function pruneForeignArchNativeRuntimes(runtimeResources, platform, arch) {
     for (const entry of readdirSync(modulesRoot, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name === expected || !foreign.test(entry.name)) continue
       rmSync(path.join(modulesRoot, entry.name), { recursive: true, force: true })
-      removed.push(runtime.modules.length ? `${runtime.modules.join('/')}/${entry.name}` : entry.name)
+      removed.push(
+        runtime.modules.length ? `${runtime.modules.join('/')}/${entry.name}` : entry.name
+      )
     }
   }
   return removed
@@ -280,6 +348,9 @@ exports.default = async function afterPack(context) {
     execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', ffmpegPath], {
       stdio: 'ignore'
     })
+    signMacosHelpers(runtimeResources)
+    const productName = context.packager.appInfo.productFilename
+    signMacosAppBundle(path.join(context.appOutDir, productName + '.app'))
   }
 
   if (context.electronPlatformName === 'win32') {
@@ -298,7 +369,6 @@ exports.default = async function afterPack(context) {
     }
     return
   }
-
 }
 
 exports.getRuntimeResources = getRuntimeResources
@@ -312,3 +382,7 @@ exports.pruneIntelMacKeyTool = pruneIntelMacKeyTool
 exports.pruneForeignArchConnectors = pruneForeignArchConnectors
 exports.pruneForeignArchNativeRuntimes = pruneForeignArchNativeRuntimes
 exports.validateRuntimeBinaryArchitecture = validateRuntimeBinaryArchitecture
+exports.findMacosHelperPaths = findMacosHelperPaths
+exports.isMacosCodeValid = isMacosCodeValid
+exports.signMacosHelpers = signMacosHelpers
+exports.signMacosAppBundle = signMacosAppBundle
