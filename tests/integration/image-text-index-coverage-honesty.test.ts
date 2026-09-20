@@ -64,6 +64,8 @@ function coverageOf(overrides: Partial<ImageTextIndexCoverage>): ImageTextIndexC
     complete: false,
     systemicFailure: false,
     countedAt: null,
+    tiers: [],
+    coveredToMs: null,
     ...overrides
   }
 }
@@ -189,8 +191,10 @@ describe('前置依赖缺失时一条记录都不写', () => {
         available: true,
         engine: 'windows-system-ocr',
         platform: 'win32',
+        arch: 'x64',
         runtimeVersion: '1.2.0',
-        language: 'zh-Hans-CN'
+        language: 'zh-Hans-CN',
+        message: ''
       }),
       // 关键：解密服务缺失是**运行时**问题，不能落成每张图的"解密失败"
       decryptService: () => null

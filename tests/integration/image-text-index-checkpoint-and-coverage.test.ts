@@ -80,8 +80,10 @@ function makeHarness(options: { messages?: chat.FormattedMessage[] } = {}): Harn
       available: true,
       engine: 'windows-system-ocr',
       platform: 'win32',
+      arch: 'x64',
       runtimeVersion: '1.2.0',
-      language: 'zh-Hans-CN'
+      language: 'zh-Hans-CN',
+      message: ''
     }),
     recognize: async () => ({ success: true, text: '', language: 'zh-Hans-CN' })
   })
@@ -151,9 +153,11 @@ describe('增量判据：水位不得漏掉新图片', () => {
       listImageMessages,
       countConversationImages: async (
         _conversationId: string,
-        window?: { sinceMs?: number; beforeMs?: number }
+        range?: number | { sinceMs?: number; beforeMs?: number }
       ) => ({
-        count: state.messages.filter((message) => inWindow(message, window)).length,
+        count: state.messages.filter((message) =>
+          inWindow(message, typeof range === 'number' ? undefined : range)
+        ).length,
         typeColumn: 'local_type'
       }),
       ...(options.withWatermark === false
@@ -165,8 +169,10 @@ describe('增量判据：水位不得漏掉新图片', () => {
         available: true,
         engine: 'windows-system-ocr',
         platform: 'win32',
+        arch: 'x64',
         runtimeVersion: '1.2.0',
-        language: 'zh-Hans-CN'
+        language: 'zh-Hans-CN',
+        message: ''
       }),
       recognize: async () => ({ success: true, text: '', language: 'zh-Hans-CN' })
     })
@@ -359,10 +365,14 @@ describe('查询层：覆盖度必须是独立维度且带零结果诚实性', (
     empty: 0,
     missing: 0,
     failed: 0,
+    runtimeUnavailable: 0,
     pending: 0,
     established: false,
     complete: false,
+    systemicFailure: false,
     countedAt: null,
+    tiers: [],
+    coveredToMs: null,
     ...input
   })
 

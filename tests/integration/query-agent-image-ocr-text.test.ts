@@ -82,7 +82,6 @@ import {
 
 /** 与真实派生库同形：binding 主键 = `sourceMessageId(message)` = `local:<localId>`。 */
 const SELF_KEY = 'local:9001'
-const OTHER_KEY = 'local:9002'
 
 function coverage(overrides: Partial<ImageTextIndexCoverage> = {}): ImageTextIndexCoverage {
   return {
@@ -98,6 +97,8 @@ function coverage(overrides: Partial<ImageTextIndexCoverage> = {}): ImageTextInd
     complete: true,
     systemicFailure: false,
     countedAt: Date.parse('2026-09-16T09:00:00+08:00'),
+    tiers: [],
+    coveredToMs: null,
     ...overrides
   }
 }

@@ -131,8 +131,11 @@ function makeHarness(options: {
     ],
     listImageMessages,
     // 窗口感知的计数：新架构"这段没图片就整段跳过"完全依赖它说实话。
-    countConversationImages: async (_conversationId: string, window?: Window) => ({
-      count: state.messages.filter((message) => inWindow(message, window)).length,
+    // 参数必须是 `number | Window`——与 ImageMessageCountProbe 的签名保持一致。
+    countConversationImages: async (_conversationId: string, range?: number | Window) => ({
+      count: state.messages.filter((message) =>
+        inWindow(message, typeof range === 'number' ? undefined : range)
+      ).length,
       typeColumn: 'local_type'
     }),
     imageWatermark: async () => ({ count: state.count, maxLocalId: state.maxLocalId }),
@@ -142,8 +145,10 @@ function makeHarness(options: {
       available: true,
       engine: 'windows-system-ocr',
       platform: 'win32',
+      arch: 'x64',
       runtimeVersion: '1.2.0',
-      language: 'zh-Hans-CN'
+      language: 'zh-Hans-CN',
+      message: ''
     }),
     recognize: async () => ({ success: true, text: '', language: 'zh-Hans-CN' })
   })

@@ -114,11 +114,14 @@ function createHarness(): Harness {
     listContacts: async () => [
       { md5: CONVERSATION, m_nsUsrName: 'boundary', type: 'user' as const }
     ],
+    // 参数必须是 `number | {…}`——与 ImageMessageCountProbe 的签名保持一致。
     countConversationImages: async (
       _conversationId: string,
-      window?: { sinceMs?: number; beforeMs?: number }
+      range?: number | { sinceMs?: number; beforeMs?: number }
     ) => ({
-      count: imagesOnly.filter((message) => inWindow(message, window)).length,
+      count: imagesOnly.filter((message) =>
+        inWindow(message, typeof range === 'number' ? undefined : range)
+      ).length,
       typeColumn: 'local_type'
     }),
     imageWatermark: async () => ({ count: IMAGE_COUNT, maxLocalId: TEXT_COUNT + IMAGE_COUNT }),
@@ -128,8 +131,10 @@ function createHarness(): Harness {
       available: true,
       engine: 'macos-system-ocr',
       platform: 'darwin',
+      arch: 'arm64',
       runtimeVersion: '1.2.0',
-      language: null
+      language: null,
+      message: ''
     }),
     decryptService: () =>
       ({
