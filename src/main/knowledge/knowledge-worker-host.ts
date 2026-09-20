@@ -6,6 +6,8 @@ import type {
   KnowledgeIndexProgress,
   KnowledgeIndexRequest,
   KnowledgeIndexResult,
+  KnowledgeMemberStatsRequest,
+  KnowledgeMemberStatsResult,
   KnowledgeRuntimeStatus,
   KnowledgeSearchRequest,
   KnowledgeSearchResult,
@@ -19,6 +21,7 @@ type WorkerResult =
   | KnowledgeCapacityPreflight
   | KnowledgeSearchResult
   | KnowledgeRuntimeStatus
+  | KnowledgeMemberStatsResult
   | { marks: Record<string, number> }
   | { removed: true }
 type PendingRequest = {
@@ -74,6 +77,11 @@ export class KnowledgeWorkerHost {
     return this.request('highWater', payload as unknown as KnowledgeWorkerRequest['payload']).then(
       (result) => ('marks' in result ? result.marks : {})
     )
+  }
+
+  /** 单个会话内「按发送者聚合」的发言统计（群员统计用，只回聚合不回正文）。 */
+  memberStats(payload: KnowledgeMemberStatsRequest): Promise<KnowledgeMemberStatsResult> {
+    return this.request('memberStats', payload) as Promise<KnowledgeMemberStatsResult>
   }
 
   /** 只中止正在跑的索引任务，返回是否真的有任务被中止。 */

@@ -53,7 +53,7 @@ describe('chat menus', () => {
       />
     )
 
-    const trigger = screen.getByRole('button', { name: '更多' })
+    const trigger = screen.getByRole('button', { name: '更多功能' })
     await user.click(trigger)
     expect(screen.getByRole('menuitem', { name: '刷新数据' })).toBeVisible()
     await user.keyboard('{Escape}')

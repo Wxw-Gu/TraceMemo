@@ -9,6 +9,7 @@ import { AIModelPage } from './pages/AIModelPage'
 import { RecallProtectionPage } from './pages/RecallProtectionPage'
 import { AdvancedPage } from './pages/AdvancedPage'
 import { CacheCleanupPage } from './pages/CacheCleanupPage'
+import { LocalIndexPage } from './pages/LocalIndexPage'
 import { AppearancePage } from './pages/AppearancePage'
 import { AboutPage } from './pages/AboutPage'
 import { VoiceRecognitionPage } from './pages/VoiceRecognitionPage'
@@ -120,6 +121,8 @@ export function SettingsWorkspace({
         return <AdvancedPage onNotice={onNotice} />
       case 'cache-cleanup':
         return <CacheCleanupPage onNotice={onNotice} />
+      case 'local-index':
+        return <LocalIndexPage onNotice={onNotice} dbReady={dbReady} />
       case 'storage-export':
         return (
           <SettingsEmptyState

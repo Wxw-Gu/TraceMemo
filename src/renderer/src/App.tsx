@@ -1639,6 +1639,17 @@ function App(): React.ReactElement {
     setActivePage('settings')
   }
 
+  /**
+   * 跳到「设置 · 本地索引」。
+   *
+   * 用在群统计这类场景：结果不完整的原因是索引没追平，用户需要一个**可操作的去处**，
+   * 而不是只看到一句「结果可能不完整」却不知道去哪解决。
+   */
+  const openLocalIndexSettings = (): void => {
+    setSettingsCategory('local-index')
+    setActivePage('settings')
+  }
+
   const openAgentHub = (): void => {
     setActivePage('agent-hub')
   }
@@ -1907,6 +1918,7 @@ function App(): React.ReactElement {
         onCreateGroupReport={handleOpenReportWorkspace}
         onOpenTextToSpeechSettings={openTextToSpeechSettings}
         onOpenPersonalWechatSettings={openWechatSendSettings}
+        onOpenLocalIndexSettings={openLocalIndexSettings}
         isAiLoading={reportGeneration.isGenerating}
         jumpToTime={archiveJumpTime}
         jumpToMessageId={archiveJumpMessageId}

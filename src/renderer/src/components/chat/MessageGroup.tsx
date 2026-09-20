@@ -1,5 +1,7 @@
 import React from 'react'
 import { Contact } from '../../../../shared/types'
+import { isGroupExitEventMessage } from '../../../../shared/group-exit-event-message'
+import { GroupExitEventBubble } from './GroupExitEventBubble'
 import { MessageBubble } from './MessageBubble'
 import { MessageGroupModel } from './messageGrouping'
 
@@ -26,11 +28,17 @@ export function MessageGroup({
     return (
       <>
         {group.timeLabel && <div className="chat-time-separator">{group.timeLabel}</div>}
-        {group.messages.map((message) => (
-          <div key={message.id} className="wechat-system-message-row">
-            <div className="wechat-system-message">{message.content}</div>
-          </div>
-        ))}
+        {group.messages.map((message) =>
+          // 退群推断事件与真实微信系统消息都落在 isSystem 分支，
+          // 但必须分开渲染：前者是本地推断，后者是微信原话。
+          isGroupExitEventMessage(message) ? (
+            <GroupExitEventBubble key={message.id} message={message} />
+          ) : (
+            <div key={message.id} className="wechat-system-message-row">
+              <div className="wechat-system-message">{message.content}</div>
+            </div>
+          )
+        )}
       </>
     )
   }

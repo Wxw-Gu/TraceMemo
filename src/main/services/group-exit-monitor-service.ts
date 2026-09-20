@@ -57,6 +57,14 @@ type StoredGroupSnapshot = Pick<
 
 const DB_CHANGE_DEBOUNCE_MS = 350
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000
+/**
+ * **只约束「一次状态回传带多少条」**，不是存储上限。
+ *
+ * 事件现在写在 append-only 的 JSONL 里（`eventsPath()`），**永久保留、不做截断**。
+ * 之所以必须把「存储」和「回传」分开：状态文件是整体重写的（`save()`），
+ * 事件留在里面时每来一条新事件都要重写整个文件 —— 越写越慢。
+ * 而 `getState()` 每次都把结果推过 IPC，也不能无上限。
+ */
 const MAX_EVENTS = 500
 
 export interface GroupExitMonitorServiceDependencies {
@@ -104,7 +112,9 @@ class GroupExitMonitorService {
   getState(): GroupExitMonitorState {
     this.ensureLoaded()
     return {
-      events: [...this.events],
+      events: this.events.slice(0, MAX_EVENTS),
+      /** 永久保留的事件总数（`events` 只是最近一批）。 */
+      totalEventCount: this.events.length,
       enabled: this.enabled,
       running: this.enabled && this.active && chat.isReady(),
       nativeMonitorActive: this.nativeMonitorActive,
@@ -134,6 +144,7 @@ class GroupExitMonitorService {
     ) {
       this.actionGateway.clearMemberEvents?.()
       this.events = []
+      this.rewriteEventsToDisk([])
       this.lastReadAt = 0
       this.monitorSelectionConfigured = true
       this.monitoredRoomIds.clear()
@@ -273,9 +284,41 @@ class GroupExitMonitorService {
     return this.getState()
   }
 
+  /**
+   * 按群 / 时间范围查退群事件（档案合并展示用）。
+   *
+   * 与 `getState()` 的分工：后者只带回最近 `MAX_EVENTS` 条、且是**给管理页**看的概览；
+   * 档案要的是「某个群在这段时间里的全部事件」，所以单独开一个查询入口，
+   * 直接打在内存里的完整历史上（事件是永久保留的）。
+   *
+   * 返回**按时间升序**（旧 → 新），与档案消息流的顺序一致。
+   */
+  listEvents(
+    query: { roomId?: string; sinceMs?: number; untilMs?: number; limit?: number } = {}
+  ): GroupExitMonitorEvent[] {
+    this.ensureLoaded()
+    const roomId = String(query.roomId || '').trim()
+    const since = Number(query.sinceMs)
+    const until = Number(query.untilMs)
+    const limit = Number(query.limit)
+
+    // this.events 是倒序（新在前）。
+    let result = [...this.events].reverse()
+    if (roomId) result = result.filter((event) => event.roomId === roomId)
+    if (Number.isFinite(since)) result = result.filter((event) => event.detectedAt >= since)
+    if (Number.isFinite(until)) result = result.filter((event) => event.detectedAt <= until)
+    // 超量时保留**最近**的一批（尾部即最新）。
+    if (Number.isFinite(limit) && limit > 0 && result.length > limit) {
+      result = result.slice(-limit)
+    }
+    return result
+  }
+
   clearEvents(): GroupExitMonitorState {
     this.ensureLoaded()
     this.events = []
+    // 磁盘上的 append-only 历史也要清掉，否则下次启动又读回来了。
+    this.rewriteEventsToDisk([])
     this.actionGateway.clearMemberEvents?.()
     this.lastReadAt = Date.now()
     this.save()
@@ -593,7 +636,10 @@ class GroupExitMonitorService {
       notificationStatus: 'not_requested'
     }
     this.actionGateway.registerMemberEvent?.(event)
-    this.events = [event, ...this.events].slice(0, MAX_EVENTS)
+    // 内存按时间倒序（新事件在前）；磁盘**只追加这一条**，不重写历史。
+    // 这里不再有 `.slice(0, MAX_EVENTS)` —— 事件是永久保留的。
+    this.events = [event, ...this.events]
+    this.appendEventsToDisk([event])
     console.log(
       `[GroupMonitor] detected member exit roomId=${group.roomId} member=${member.wxid} ${previousCount}->${currentCount}`
     )
@@ -681,13 +727,78 @@ class GroupExitMonitorService {
     return path.join(app.getPath('userData'), 'group-exit-monitor.json')
   }
 
+  /**
+   * 退群事件的 append-only 存储（每行一条 JSON）。
+   *
+   * 与状态文件分开，因为两者的写入模式完全不同：
+   * - **状态**（开关 / 监控范围 / 快照 / 模板）小、且总是整体重写；
+   * - **事件**只增不改，且要求**永久保留**。
+   * 混在一个文件里时，每来一条事件都要把整部历史重新序列化写一遍 —— 越写越慢。
+   */
+  private eventsPath(): string {
+    return path.join(app.getPath('userData'), 'group-exit-monitor-events.jsonl')
+  }
+
+  /** 读全量历史事件。单行损坏只跳过该行，不让整部历史读不出来。 */
+  private readEventsFromDisk(): GroupExitMonitorEvent[] {
+    let raw = ''
+    try {
+      raw = fs.readFileSync(this.eventsPath(), 'utf8')
+    } catch {
+      return []
+    }
+    const events: GroupExitMonitorEvent[] = []
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        events.push(JSON.parse(trimmed) as GroupExitMonitorEvent)
+      } catch {
+        // 跳过坏行
+      }
+    }
+    return events
+  }
+
+  /** 只追加新增的那几行，不重写历史。 */
+  private appendEventsToDisk(events: GroupExitMonitorEvent[]): void {
+    if (!events.length) return
+    try {
+      fs.ensureDirSync(path.dirname(this.eventsPath()))
+      const payload = events.map((event) => `${JSON.stringify(event)}\n`).join('')
+      fs.appendFileSync(this.eventsPath(), payload, 'utf8')
+    } catch (error) {
+      console.warn('[GroupMonitor] 追加退群事件失败:', error)
+    }
+  }
+
+  /** 整体重写事件文件（清空、切换账号、老数据迁移时使用）。 */
+  private rewriteEventsToDisk(events: GroupExitMonitorEvent[]): void {
+    try {
+      fs.ensureDirSync(path.dirname(this.eventsPath()))
+      const payload = events.map((event) => `${JSON.stringify(event)}\n`).join('')
+      fs.writeFileSync(this.eventsPath(), payload, 'utf8')
+    } catch (error) {
+      console.warn('[GroupMonitor] 重写退群事件失败:', error)
+    }
+  }
+
   private ensureLoaded(): void {
     if (this.loaded) return
     this.loaded = true
     try {
       const stored = fs.readJsonSync(this.filePath()) as StoredState
       this.enabled = stored.enabled !== false
-      this.events = normalizeEvents(stored.events)
+      // 事件从 append-only 文件读；状态文件不再承载它们。
+      const fromDisk = this.readEventsFromDisk()
+      const legacy = normalizeEvents(stored.events)
+      if (legacy.length && !fromDisk.length) {
+        // 老版本把事件塞在状态文件里 —— 一次性迁移过去，避免这批历史丢失。
+        this.rewriteEventsToDisk(legacy)
+        this.events = legacy
+      } else {
+        this.events = normalizeEvents(fromDisk)
+      }
       this.actionGateway.registerMemberEvents?.(this.events)
       this.lastReadAt = Number(stored.lastReadAt) || 0
       this.accountRoot = String(stored.accountRoot || '')
@@ -704,8 +815,9 @@ class GroupExitMonitorService {
       )
       this.snapshots = normalizeSnapshots(stored.snapshots, this.monitoredRoomIds)
     } catch {
-      // 首次启动或文件损坏时从空记录开始。
-      this.events = []
+      // 首次启动或状态文件损坏时从空记录开始 —— 但事件在独立文件里，
+      // 不该被状态文件的问题连累，仍然读回来。
+      this.events = normalizeEvents(this.readEventsFromDisk())
       this.enabled = true
       this.lastReadAt = 0
       this.monitorSelectionConfigured = true
@@ -725,7 +837,8 @@ class GroupExitMonitorService {
         {
           accountRoot: this.accountRoot,
           enabled: this.enabled,
-          events: this.events,
+          // 事件**不在这里**：它们走 append-only 的 JSONL（见 `eventsPath()`）。
+          // 放进状态文件会让每新增一条事件都把整部历史重写一遍。
           lastReadAt: this.lastReadAt,
           monitorSelectionConfigured: this.monitorSelectionConfigured,
           monitoredRoomIds: Array.from(this.monitoredRoomIds),
@@ -935,7 +1048,7 @@ function normalizeEvents(
         ? { notification: normalizeNotification(value.notification) }
         : {})
     })
-    if (normalized.length >= MAX_EVENTS) break
+    // 不再按 MAX_EVENTS 截断：事件是永久保留的，截在这里等于每次启动都丢掉历史。
   }
   return normalized
 }

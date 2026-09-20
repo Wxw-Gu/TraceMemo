@@ -1,0 +1,276 @@
+/**
+ * 设置 · 本地索引页。
+ *
+ * 设计约束（来自页面目标）：这是一个「本机索引管理面板」，不是两个独立开发工具卡片。
+ * 层级自上而下：页面标题 → 一句话说明 → 卡片；卡片内部：标题 → 状态徽章 → 核心数字 → 操作。
+ *
+ * ⚠️ 不用裸 Tailwind：`tailwind.config.cjs` 设了 `preflight: false`，
+ * 裸类拿不到浏览器默认样式重置（`<ol>` 的 list-style、`<h3>/<p>` 的 margin、
+ * `border-style: none`），会直接崩掉版式。
+ */
+
+.local-index-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  /* 页面级四周 padding：设置页 panel（.settings-page-panel）本身没有任何 padding，
+     width:100% 会一路顶到窗口右缘 —— 右侧 gutter 必须在这里建立，而不是给卡片打 margin 补丁。
+     上/左收紧、底部留足、右侧略宽（视觉重心），都在页面目标给的区间内。 */
+  padding: 20px 32px 32px 24px;
+  /* 内容宽度：太窄会挤，太宽会让数字和状态离得太远、读不到一行。
+     1040 是 border-box 总宽（含 padding），内容区约 984px。
+     用 width:100% 保证窄窗口下自然收缩，而不是硬撑着留白。 */
+  width: 100%;
+  max-width: 1040px;
+  /* panel 比 max-width 宽时水平居中，左右 gutter 对称；
+     窄窗口（panel < 1040）时它不生效，由 padding 负责两侧留白。 */
+  margin-inline: auto;
+  box-sizing: border-box;
+  color: var(--wxex-text-primary);
+}
+
+/* ---- 页面标题 ---- */
+
+.local-index-head h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--wxex-text-primary);
+}
+
+.local-index-head p {
+  margin: 0;
+  max-width: 66ch;
+  color: var(--wxex-text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* ---- 卡片容器 ---- */
+
+.local-index-cards {
+  display: flex;
+  flex-direction: column;
+  /* 标准垂直间距：两张卡片要看起来像一个连续模块，而不是两块被空白隔开的工具。 */
+  gap: 18px;
+}
+
+.local-index-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-sizing: border-box;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-lg, 8px);
+  background: var(--wxex-bg-elevated);
+  padding: 16px 18px;
+  /* 高度由内容自然撑开 —— 不设 min-height，不用空白凑版面。 */
+}
+
+/* ---- 卡片头部：标题 + 状态徽章 ---- */
+
+.local-index-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.local-index-card-title {
+  min-width: 0;
+}
+
+.local-index-card-title h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--wxex-text-primary);
+}
+
+.local-index-card-title p {
+  margin: 0;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ---- 状态徽章（颜色全部走主题 token，不硬编码彩虹色） ---- */
+
+.local-index-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  border: 1px solid var(--wxex-border);
+  border-radius: 999px;
+  background: var(--wxex-bg-sidebar);
+  padding: 2px 10px;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.local-index-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
+}
+
+.local-index-badge.is-ok {
+  border-color: color-mix(in srgb, var(--wxex-success) 45%, var(--wxex-border));
+  color: var(--wxex-success);
+}
+
+.local-index-badge.is-warn {
+  border-color: color-mix(in srgb, var(--wxex-warning) 55%, var(--wxex-border));
+  color: var(--wxex-warning);
+}
+
+.local-index-badge.is-error {
+  border-color: color-mix(in srgb, var(--wxex-danger) 55%, var(--wxex-border));
+  color: var(--wxex-danger);
+}
+
+.local-index-badge.is-idle {
+  color: var(--wxex-text-muted);
+}
+
+/* ---- 核心数字：数字是主体，label 是注解 ---- */
+
+.local-index-stats {
+  display: grid;
+  /* 窄窗口自动换行成单列；宽窗口排成 N 列，不写死列数。 */
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 14px 20px;
+}
+
+.local-index-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.local-index-stat-value {
+  color: var(--wxex-text-primary);
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  /* 数字很长时允许收缩，不撑破卡片。 */
+  overflow-wrap: anywhere;
+}
+
+.local-index-stat-label {
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* ---- 说明 / 状态行 ---- */
+
+.local-index-note {
+  margin: 0;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.local-index-note.is-error {
+  color: var(--wxex-danger);
+}
+
+.local-index-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- 进度 ---- */
+
+.local-index-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.local-index-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+}
+
+.local-index-progress-count {
+  color: var(--wxex-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 进度轨道复用 `ui/progress.tsx`（Radix），这里不写第二套。 */
+
+/* ---- Card footer：明确的 [状态说明] ←→ [操作按钮] 两栏 ----
+   按钮不再悬浮在 stats 区域右下角，而是固定在卡片底栏右侧，
+   左侧放覆盖量 / 同步状态这类辅助说明。 */
+
+.local-index-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.local-index-footer > .local-index-note {
+  min-width: 0;
+}
+
+/* 窄窗口放不下时按钮整体换到第二行，仍靠右，不与说明文字挤在一行。 */
+.local-index-footer > .local-index-actions {
+  margin-left: auto;
+}
+
+/* ---- 操作区：右对齐，按钮宽度按内容，不占满整行 ---- */
+
+.local-index-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 窗口很窄时才让主按钮撑满一行，避免按钮被压成碎块。 */
+@media (max-width: 520px) {
+  .local-index-actions {
+    justify-content: stretch;
+  }
+
+  .local-index-actions > * {
+    flex: 1 1 auto;
+  }
+}
+
+/* ---- 确认区（就地展开，不用 alert） ---- */
+
+.local-index-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-md, 6px);
+  background: var(--wxex-bg-app);
+  padding: 12px 14px;
+}
+
+.local-index-confirm p {
+  margin: 0;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 1.65;
+}

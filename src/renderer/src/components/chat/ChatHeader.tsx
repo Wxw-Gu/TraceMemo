@@ -14,6 +14,7 @@ import {
 import { ConversationContentSearch } from './ConversationContentSearch'
 import { AiIcon, MoreIcon, RefreshIcon, SearchIcon, SendIcon } from './icons'
 import { supportsPersonalWechatSend } from '../../utils/runtime-environment'
+import { GroupMemberStatsDialog } from '../group-stats/GroupMemberStatsDialog'
 
 interface ChatHeaderProps {
   contact: Contact
@@ -27,6 +28,8 @@ interface ChatHeaderProps {
   onRefreshData?: () => void
   onTestSend: () => void
   onOpenAiSettings: () => void
+  /** 跳到「设置 · 本地索引」（群统计发现索引没追平时用）。 */
+  onOpenLocalIndexSettings?: () => void
 }
 
 export function ChatHeader({
@@ -40,9 +43,11 @@ export function ChatHeader({
   onRefresh,
   onRefreshData,
   onTestSend,
-  onOpenAiSettings
+  onOpenAiSettings,
+  onOpenLocalIndexSettings
 }: ChatHeaderProps): React.ReactElement {
   const [searchOpen, setSearchOpen] = useState(Boolean(contentFilter))
+  const [statsOpen, setStatsOpen] = useState(false)
   const displayName = contact.m_nsNickName || contact.m_nsUsrName || '未命名会话'
   const typeLabel = isGroupChat ? '群聊' : '联系人'
   const visibleCount = contentFilter ? filteredCount : loadedCount
@@ -93,12 +98,23 @@ export function ChatHeader({
         </IconButton>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <IconButton label="更多" tooltip="" variant="ghost" className="h-8 w-8">
+            <Button
+              variant="outline"
+              size="sm"
+              className="chat-header-text-action"
+              aria-label="更多功能"
+              title="更多功能"
+            >
               <MoreIcon />
-            </IconButton>
+              <span>更多功能</span>
+            </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={() => onRefreshData?.()}>刷新数据</DropdownMenuItem>
+            {/* 群发言统计只对群聊有意义；单聊没有「成员名单」这个概念。 */}
+            {isGroupChat ? (
+              <DropdownMenuItem onSelect={() => setStatsOpen(true)}>群发言统计</DropdownMenuItem>
+            ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
         {supportsPersonalWechatSend ? (
@@ -148,6 +164,14 @@ export function ChatHeader({
           <span>{isAiLoading ? '生成中' : '生成 AI 日报'}</span>
         </Button>
       </div>
+      {isGroupChat ? (
+        <GroupMemberStatsDialog
+          open={statsOpen}
+          onOpenChange={setStatsOpen}
+          contact={contact}
+          onOpenLocalIndexSettings={onOpenLocalIndexSettings}
+        />
+      ) : null}
     </div>
   )
 }
