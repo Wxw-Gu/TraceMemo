@@ -4,6 +4,7 @@ import { join } from 'path'
 import { describe, expect, it, vi } from 'vitest'
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/tracememo-test-user-data' } }))
 import {
+  buildScheduledReportActionRequest,
   calculateNextRunAt,
   ScheduledReportService,
   validateScheduleTime
@@ -971,5 +972,412 @@ describe('scheduled report scheduling', () => {
     expect(
       (await service.listExecutions()).filter((item) => item.taskId === created.data!.id)
     ).toHaveLength(1)
+  })
+})
+
+describe('scheduled report auto resend', () => {
+  const latestExecution = async (
+    service: ScheduledReportService,
+    taskId: string
+  ): Promise<ScheduledReportExecution> => (await service.listExecutions(taskId))[0]
+
+  const waitForAutoResend = async (
+    predicate: () => Promise<boolean>,
+    timeoutMs = 3_000
+  ): Promise<void> => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (await predicate()) return
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    throw new Error('auto resend state did not settle in time')
+  }
+
+  const sentAction = {
+    actionId: 'send-success-action',
+    status: 'sent' as const,
+    decision: 'allow' as const,
+    startedAt: '2026-08-27T01:06:00.000Z',
+    finishedAt: '2026-08-27T01:06:01.000Z'
+  }
+
+  const unavailableSendAction = () => async () => ({
+    actionId: 'send-unavailable-action',
+    status: 'failed' as const,
+    decision: 'allow' as const,
+    errorCode: 'SEND_CAPABILITY_UNAVAILABLE' as const,
+    reason: '当前微信发送能力不可用',
+    startedAt: '2026-08-27T01:00:00.000Z',
+    finishedAt: '2026-08-27T01:00:01.000Z'
+  })
+
+  it('auto resends a waiting report after backoff and notifies recovery', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-auto-resend-'))
+    await enableNotifications(storageDir)
+    const clock = { now: Date.parse('2026-08-27T01:00:00.000Z') }
+    const sendNotification = vi.fn(async () => ({
+      success: true as const,
+      status: 'sent' as const
+    }))
+    const sendAction = vi
+      .fn()
+      .mockResolvedValueOnce({
+        actionId: 'send-1',
+        status: 'failed' as const,
+        decision: 'allow' as const,
+        errorCode: 'SEND_CAPABILITY_UNAVAILABLE' as const,
+        reason: '当前微信发送能力不可用',
+        startedAt: '2026-08-27T01:00:00.000Z',
+        finishedAt: '2026-08-27T01:00:01.000Z'
+      })
+      .mockResolvedValueOnce({
+        actionId: 'send-2',
+        status: 'sent' as const,
+        decision: 'allow' as const,
+        startedAt: '2026-08-27T01:06:00.000Z',
+        finishedAt: '2026-08-27T01:06:01.000Z'
+      })
+    const service = new ScheduledReportService({
+      storageDir,
+      now: () => new Date(clock.now),
+      ...makeDependencies({ sendAction, sendNotification })
+    })
+    const created = await service.createTask({
+      name: '自动重发日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '09:00'
+    })
+
+    const first = await runScheduled(service, created.data!.id)
+    expect(first).toMatchObject({
+      status: 'waiting_to_send',
+      retryCount: 0,
+      pngPath: '/tmp/saved.png',
+      notificationStatus: 'not_needed'
+    })
+
+    // retryCount 0 的退避是 5 分钟：推进到到期时刻再 tick。
+    clock.now = Date.parse(first.finishedAt || first.startedAt) + 5 * 60_000 + 1_000
+    await service.tick(new Date(clock.now))
+    await waitForAutoResend(async () => sendAction.mock.calls.length >= 2)
+
+    const recovered = await latestExecution(service, created.data!.id)
+    expect(recovered).toMatchObject({
+      status: 'success',
+      retryCount: 1,
+      sendStatus: 'success',
+      notificationStatus: 'sent'
+    })
+    expect(sendAction).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        target: '研发群@chatroom',
+        filePath: '/tmp/saved.png',
+        executionId: first.id,
+        triggerType: 'scheduled',
+        retryCount: 1,
+        taskId: created.data!.id
+      })
+    )
+    expect(sendNotification).toHaveBeenCalledTimes(1)
+    expect(await service.listNotifications()).toEqual([
+      expect.objectContaining({
+        type: 'recovery',
+        status: 'sent',
+        title: expect.stringContaining('已恢复')
+      })
+    ])
+  })
+
+  it('does not auto resend before the backoff elapses', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-resend-early-'))
+    await enableNotifications(storageDir)
+    const clock = { now: Date.parse('2026-08-27T01:00:00.000Z') }
+    const sendAction = vi.fn(unavailableSendAction())
+    const sendNotification = vi.fn()
+    const service = new ScheduledReportService({
+      storageDir,
+      now: () => new Date(clock.now),
+      ...makeDependencies({ sendAction, sendNotification })
+    })
+    const created = await service.createTask({
+      name: '退避未到期日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '09:00'
+    })
+    const first = await runScheduled(service, created.data!.id)
+    expect(first).toMatchObject({ status: 'waiting_to_send', retryCount: 0 })
+
+    // 仅推进 1 分钟，尚未达到 5 分钟退避。
+    clock.now = Date.parse(first.finishedAt || first.startedAt) + 60_000
+    await service.tick(new Date(clock.now))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(sendAction).toHaveBeenCalledTimes(1)
+    expect(await latestExecution(service, created.data!.id)).toMatchObject({
+      status: 'waiting_to_send',
+      retryCount: 0
+    })
+  })
+
+  it('stops auto resending after the attempt limit but keeps manual retry', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-resend-limit-'))
+    await enableNotifications(storageDir)
+    const clock = { now: Date.parse('2026-08-27T01:00:00.000Z') }
+    const sendAction = vi.fn(unavailableSendAction())
+    const service = new ScheduledReportService({
+      storageDir,
+      now: () => new Date(clock.now),
+      ...makeDependencies({ sendAction })
+    })
+    const created = await service.createTask({
+      name: '重发上限日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '09:00'
+    })
+    let current = await runScheduled(service, created.data!.id)
+    expect(current).toMatchObject({ status: 'waiting_to_send', retryCount: 0 })
+
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      const backoff = Math.min(5 * 60_000 * 2 ** (current.retryCount || 0), 60 * 60_000)
+      clock.now = Date.parse(current.finishedAt || current.startedAt) + backoff + 1_000
+      await service.tick(new Date(clock.now))
+      await waitForAutoResend(async () => {
+        const execution = await latestExecution(service, created.data!.id)
+        return sendAction.mock.calls.length === attempt + 1 && execution.retryCount === attempt
+      })
+      // 等待后台 promise 从 retrying map 移除，避免影响下一次 tick 判定。
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      current = await latestExecution(service, created.data!.id)
+    }
+
+    // 已达 6 次自动重试上限：继续 tick 不再自动发送。
+    clock.now += 60 * 60_000 + 1_000
+    await service.tick(new Date(clock.now))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(sendAction).toHaveBeenCalledTimes(7)
+    expect(await latestExecution(service, created.data!.id)).toMatchObject({
+      status: 'waiting_to_send',
+      retryCount: 6
+    })
+
+    // 手动重试不受自动上限限制。
+    const manual = await service.retryScheduledReportSend(current.id)
+    expect(manual.success).toBe(true)
+    expect(sendAction).toHaveBeenCalledTimes(8)
+    expect(manual.data).toMatchObject({ status: 'waiting_to_send', retryCount: 7 })
+  })
+
+  it('skips auto resend when the task is disabled', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-resend-disabled-'))
+    await enableNotifications(storageDir)
+    const clock = { now: Date.parse('2026-08-27T01:00:00.000Z') }
+    const sendAction = vi.fn(unavailableSendAction())
+    const service = new ScheduledReportService({
+      storageDir,
+      now: () => new Date(clock.now),
+      ...makeDependencies({ sendAction })
+    })
+    const created = await service.createTask({
+      name: '任务禁用日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '09:00'
+    })
+    const first = await runScheduled(service, created.data!.id)
+    expect(first).toMatchObject({ status: 'waiting_to_send', retryCount: 0 })
+
+    await service.setTaskEnabled(created.data!.id, false)
+    clock.now = Date.parse(first.finishedAt || first.startedAt) + 10 * 60_000
+    await service.tick(new Date(clock.now))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(sendAction).toHaveBeenCalledTimes(1)
+    expect(await latestExecution(service, created.data!.id)).toMatchObject({
+      status: 'waiting_to_send',
+      retryCount: 0
+    })
+  })
+
+  it('sends an expired execution only once when ticks overlap', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-resend-overlap-'))
+    const clock = { now: Date.parse('2026-08-27T01:00:00.000Z') }
+    let releaseRetry: ((value: typeof sentAction) => void) | undefined
+    const retryPending = new Promise<typeof sentAction>((resolve) => {
+      releaseRetry = resolve
+    })
+    const sendAction = vi
+      .fn()
+      .mockResolvedValueOnce(unavailableSendAction()())
+      .mockReturnValueOnce(retryPending)
+    const service = new ScheduledReportService({
+      storageDir,
+      now: () => new Date(clock.now),
+      ...makeDependencies({ sendAction })
+    })
+    const created = await service.createTask({
+      name: '并发重发日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '09:00'
+    })
+    const first = await runScheduled(service, created.data!.id)
+    const dueAt = Date.parse(first.finishedAt || first.startedAt) + 5 * 60_000 + 1_000
+
+    const firstTick = service.tick(new Date(dueAt))
+    const secondTick = service.tick(new Date(dueAt))
+    await waitForAutoResend(async () => sendAction.mock.calls.length === 2)
+    expect(sendAction).toHaveBeenCalledTimes(2)
+
+    releaseRetry!(sentAction)
+    await Promise.all([firstTick, secondTick])
+    expect(sendAction).toHaveBeenCalledTimes(2)
+    expect(await latestExecution(service, created.data!.id)).toMatchObject({
+      status: 'success',
+      retryCount: 1
+    })
+  })
+
+  it('shares the automatic resend with a concurrent manual retry', async () => {
+    const storageDir = await mkdtemp(
+      join(tmpdir(), 'tracememo-scheduled-report-resend-manual-race-')
+    )
+    const clock = { now: Date.parse('2026-08-27T01:00:00.000Z') }
+    let releaseRetry: ((value: typeof sentAction) => void) | undefined
+    const retryPending = new Promise<typeof sentAction>((resolve) => {
+      releaseRetry = resolve
+    })
+    const sendAction = vi
+      .fn()
+      .mockResolvedValueOnce(unavailableSendAction()())
+      .mockReturnValueOnce(retryPending)
+    const service = new ScheduledReportService({
+      storageDir,
+      now: () => new Date(clock.now),
+      ...makeDependencies({ sendAction })
+    })
+    const created = await service.createTask({
+      name: '手动竞争日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '09:00'
+    })
+    const first = await runScheduled(service, created.data!.id)
+    const dueAt = Date.parse(first.finishedAt || first.startedAt) + 5 * 60_000 + 1_000
+
+    const automatic = service.tick(new Date(dueAt))
+    await waitForAutoResend(async () => sendAction.mock.calls.length === 2)
+    const manual = service.retryScheduledReportSend(first.id)
+    expect(sendAction).toHaveBeenCalledTimes(2)
+
+    releaseRetry!(sentAction)
+    await automatic
+    const manualResult = await manual
+    expect(sendAction).toHaveBeenCalledTimes(2)
+    expect(manualResult).toMatchObject({
+      success: true,
+      data: { status: 'success', retryCount: 1 }
+    })
+    expect(await latestExecution(service, created.data!.id)).toMatchObject(manualResult.data)
+  })
+
+  it('resumes an expired waiting execution after service recreation', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-resend-restart-'))
+    const clock = { now: Date.parse('2026-08-27T01:00:00.000Z') }
+    const firstSendAction = vi.fn(unavailableSendAction())
+    const firstService = new ScheduledReportService({
+      storageDir,
+      now: () => new Date(clock.now),
+      ...makeDependencies({ sendAction: firstSendAction })
+    })
+    const created = await firstService.createTask({
+      name: '重启恢复日报',
+      group: '研发群',
+      target: '研发群@chatroom',
+      scheduleTime: '09:00'
+    })
+    const first = await runScheduled(firstService, created.data!.id)
+    expect(first.status).toBe('waiting_to_send')
+
+    const resumedSendAction = vi.fn().mockResolvedValue(sentAction)
+    const secondService = new ScheduledReportService({
+      storageDir,
+      now: () => new Date(clock.now),
+      ...makeDependencies({ sendAction: resumedSendAction })
+    })
+    const dueAt = Date.parse(first.finishedAt || first.startedAt) + 5 * 60_000 + 1_000
+    await secondService.tick(new Date(dueAt))
+
+    expect(resumedSendAction).toHaveBeenCalledTimes(1)
+    expect(await latestExecution(secondService, created.data!.id)).toMatchObject({
+      status: 'success',
+      retryCount: 1,
+      sendStatus: 'success'
+    })
+    const restored = new ScheduledReportService({ storageDir })
+    expect(await latestExecution(restored, created.data!.id)).toMatchObject({
+      status: 'success',
+      retryCount: 1
+    })
+  })
+})
+
+describe('scheduled report filehelper target', () => {
+  it('builds contact recipients for filehelper and group recipients for chatrooms', () => {
+    expect(
+      buildScheduledReportActionRequest({
+        target: 'filehelper',
+        filePath: '/tmp/report.png',
+        executionId: 'exec-1',
+        triggerType: 'scheduled',
+        retryCount: 1,
+        taskId: 'task-1'
+      })
+    ).toMatchObject({ recipient: { type: 'contact', id: 'filehelper' } })
+    expect(
+      buildScheduledReportActionRequest({
+        target: '12345@chatroom',
+        filePath: '/tmp/report.png',
+        executionId: 'exec-2',
+        triggerType: 'scheduled'
+      })
+    ).toMatchObject({ recipient: { type: 'group', id: '12345@chatroom' } })
+  })
+
+  it('sends a waiting report to filehelper when the target is the transfer assistant', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-filehelper-'))
+    const sendAction = vi.fn(async () => ({
+      actionId: 'send-filehelper',
+      status: 'failed' as const,
+      decision: 'allow' as const,
+      errorCode: 'SEND_CAPABILITY_UNAVAILABLE' as const,
+      reason: '当前微信发送能力不可用',
+      startedAt: '2026-08-27T01:00:00.000Z',
+      finishedAt: '2026-08-27T01:00:01.000Z'
+    }))
+    const service = new ScheduledReportService({
+      storageDir,
+      ...makeDependencies({ sendAction })
+    })
+    const created = await service.createTask({
+      name: '文件传输助手日报',
+      group: '文件传输助手',
+      target: 'filehelper',
+      scheduleTime: '09:00'
+    })
+
+    const execution = await runScheduled(service, created.data!.id)
+
+    expect(execution).toMatchObject({
+      status: 'waiting_to_send',
+      sendTarget: 'filehelper',
+      pngPath: '/tmp/saved.png'
+    })
+    expect(sendAction).toHaveBeenCalledWith(
+      expect.objectContaining({ target: 'filehelper', filePath: '/tmp/saved.png' })
+    )
   })
 })

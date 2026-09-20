@@ -46,6 +46,9 @@ const EXECUTIONS_FILE = 'executions.json'
 const NOTIFICATIONS_FILE = 'notifications.json'
 const SETTINGS_FILE = 'settings.json'
 const TICK_MS = 15_000
+const AUTO_RESEND_MAX_ATTEMPTS = 6
+const AUTO_RESEND_BASE_BACKOFF_MS = 5 * 60_000
+const AUTO_RESEND_MAX_BACKOFF_MS = 60 * 60_000
 const NOTIFICATION_TEST_MESSAGE = `✅ TraceMemo 定时日报通知已开启
 
 以后定时日报生成或发送出现异常时，
@@ -75,28 +78,6 @@ export interface ScheduledReportSendActionInput {
   triggerType: 'scheduled' | 'manual'
   retryCount?: number
   taskId?: string
-}
-
-function buildScheduledReportActionRequest(
-  input: ScheduledReportSendActionInput
-): WechatActionRequest {
-  return {
-    idempotencyKey:
-      input.retryCount && input.retryCount > 0
-        ? `scheduled_report:${input.executionId}:retry:${input.retryCount}`
-        : `scheduled_report:${input.executionId}`,
-    origin: 'scheduled_report',
-    purpose: 'scheduled_report',
-    triggerType: input.triggerType === 'scheduled' ? 'automation' : 'user',
-    sourceId: input.executionId,
-    executionId: input.executionId,
-    recipient: { type: 'group', id: input.target },
-    content: { type: 'image', path: input.filePath },
-    metadata: {
-      taskId: input.taskId,
-      retryCount: input.retryCount || 0
-    }
-  }
 }
 
 const defaultDependencies = (): ScheduledReportDependencies => ({
@@ -159,6 +140,29 @@ interface ScheduledReportNotificationPayload {
   title: string
   message: string
   suggestedAction?: string
+}
+
+export function buildScheduledReportActionRequest(
+  input: ScheduledReportSendActionInput
+): WechatActionRequest {
+  return {
+    idempotencyKey:
+      input.retryCount && input.retryCount > 0
+        ? `scheduled_report:${input.executionId}:retry:${input.retryCount}`
+        : `scheduled_report:${input.executionId}`,
+    origin: 'scheduled_report',
+    purpose: 'scheduled_report',
+    triggerType: input.triggerType === 'scheduled' ? 'automation' : 'user',
+    sourceId: input.executionId,
+    executionId: input.executionId,
+    // filehelper 是文件传输助手：唯一的真实发送验收对象，走 contact 而不是群。
+    recipient: { type: input.target === 'filehelper' ? 'contact' : 'group', id: input.target },
+    content: { type: 'image', path: input.filePath },
+    metadata: {
+      taskId: input.taskId,
+      retryCount: input.retryCount || 0
+    }
+  }
 }
 
 export function validateScheduleTime(value: string): boolean {
@@ -498,11 +502,7 @@ export class ScheduledReportService {
     await this.load()
     const execution = this.executions!.find((item) => item.id === executionId)
     if (!execution) return { success: false, error: '未找到定时日报执行记录' }
-    const existing = this.retrying.get(executionId)
-    if (existing) return { success: true, data: await existing }
-    const promise = this.retrySend(execution).finally(() => this.retrying.delete(executionId))
-    this.retrying.set(executionId, promise)
-    const result = await promise
+    const result = await this.startRetry(execution)
     return {
       success: result.status !== 'failed',
       data: result,
@@ -568,6 +568,7 @@ export class ScheduledReportService {
   async tick(at = this.deps.now?.() || new Date()): Promise<void> {
     await this.load()
     await this.flushNotifications()
+    await this.flushPendingSends(at)
     if (!this.deps.isDatabaseReady()) return
     const nowMs = at.getTime()
     for (const task of [...this.tasks!]) {
@@ -959,6 +960,15 @@ export class ScheduledReportService {
     return completed
   }
 
+  /** 为同一执行记录复用唯一的重发 Promise，合并自动重发和手动重试。 */
+  private startRetry(execution: ScheduledReportExecution): Promise<ScheduledReportExecution> {
+    const existing = this.retrying.get(execution.id)
+    if (existing) return existing
+    const promise = this.retrySend(execution).finally(() => this.retrying.delete(execution.id))
+    this.retrying.set(execution.id, promise)
+    return promise
+  }
+
   private clearFailureFields(
     execution: ScheduledReportExecution,
     patch: Partial<ScheduledReportExecution>
@@ -1190,6 +1200,40 @@ export class ScheduledReportService {
     await Promise.all([this.saveNotifications(), this.saveExecutions()])
   }
 
+  /** waiting_to_send 执行的下一次自动重发时间：自 finishedAt 起按指数退避。 */
+  private autoResendDueAt(execution: ScheduledReportExecution): number {
+    const base = Date.parse(execution.finishedAt || execution.startedAt)
+    const attempt = Math.max(execution.retryCount || 0, 0)
+    return base + Math.min(AUTO_RESEND_BASE_BACKOFF_MS * 2 ** attempt, AUTO_RESEND_MAX_BACKOFF_MS)
+  }
+
+  /** 能力恢复后自动重发挂起的日报；重试有上限，超限后仍可手动重试。 */
+  private async flushPendingSends(at: Date): Promise<void> {
+    await this.load()
+    const nowMs = at.getTime()
+    const candidates = this.executions!.filter(
+      (item) =>
+        item.status === 'waiting_to_send' &&
+        item.retryable !== false &&
+        Boolean(item.pngPath) &&
+        (item.retryCount || 0) < AUTO_RESEND_MAX_ATTEMPTS &&
+        !this.retrying.has(item.id) &&
+        this.autoResendDueAt(item) <= nowMs
+    )
+    const retries: Promise<ScheduledReportExecution>[] = []
+    for (const execution of candidates) {
+      const task = this.tasks!.find((item) => item.id === execution.taskId)
+      if (!task || !task.enabled) continue
+      retries.push(this.startRetry(execution))
+    }
+    const results = await Promise.allSettled(retries)
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.warn('[ScheduledReport] auto resend failed:', result.reason)
+      }
+    }
+  }
+
   private notificationCapabilityReasonForSend(
     result: AgentHubNotificationResult
   ): ScheduledReportNotificationCapabilityReason {
@@ -1219,6 +1263,8 @@ export class ScheduledReportService {
   private resolveTarget(task: ScheduledReportTask): string | undefined {
     const explicit = String(task.target || '').trim()
     if (explicit.endsWith('@chatroom')) return explicit
+    // 文件传输助手是唯一允许真实发送验收的个人目标。
+    if (explicit.toLowerCase() === 'filehelper') return 'filehelper'
     const contact = resolveMd5(task.group || explicit)
     return contact?.m_nsUsrName?.endsWith('@chatroom') ? contact.m_nsUsrName : undefined
   }
