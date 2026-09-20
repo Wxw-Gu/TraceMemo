@@ -588,7 +588,7 @@ const renderReportHtml = async (request: GroupReportExportRequest): Promise<stri
       (item, index) => `<div class="rank tm-fragment tm-ranking-item">
         ${renderAvatar(item.sender, 'ranking')}
         <b>${index + 1}. ${escapeHtml(item.sender)}</b>
-        <span>${item.count} 条 · ${item.durationSec} 秒</span>
+        <span>${item.count} 条 · ${Math.round(item.durationSec)} 秒</span>
       </div>`
     )
     .join('')

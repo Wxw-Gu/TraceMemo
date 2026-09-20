@@ -1853,12 +1853,15 @@ app.whenReady().then(async () => {
     return error ? { success: false, error } : { success: true }
   })
 
-  ipcMain.handle('voice:recognize', (_, reference: VoiceMessageReference) => {
-    if (!voiceRecognition) {
-      return { success: false, code: 'NOT_CONNECTED', error: '语音识别服务尚未初始化' }
+  ipcMain.handle(
+    'voice:recognize',
+    (_, reference: VoiceMessageReference, options?: { force?: boolean }) => {
+      if (!voiceRecognition) {
+        return { success: false, code: 'NOT_CONNECTED', error: '语音识别服务尚未初始化' }
+      }
+      return voiceRecognition.recognize(reference, options)
     }
-    return voiceRecognition.recognize(reference)
-  })
+  )
 
   ipcMain.handle('voice:getTranscriptSnapshot', (_, reference: VoiceMessageReference) => {
     return voiceRecognition?.getTranscriptSnapshot(reference) || { state: 'pending' as const }

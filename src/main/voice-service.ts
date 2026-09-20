@@ -73,11 +73,19 @@ export class VoiceService {
       pcmResult.audio.sampleRate,
       pcmResult.audio.channels
     )
+    // duration 由 PCM 字节数反算（wavData 去掉 44 字节头即 PCM），
+    // 用来和用户实际听到的长度对齐、排查「时长显示不对」这类问题。
+    // 注意它**不是权威值**：权威时长在消息 XML 的 <voicemsg voicelength>（毫秒），
+    // 显示层以那个为准；这里只是解码结果的自证。
+    const durationSeconds =
+      pcmData.length / (pcmResult.audio.sampleRate * pcmResult.audio.channels * 2)
     console.log(
       '[VoiceService] wavData length:',
       wavData.length,
       'base64 length:',
-      wavData.toString('base64').length
+      wavData.toString('base64').length,
+      'duration:',
+      `${durationSeconds.toFixed(2)}s`
     )
 
     const base64Data = wavData.toString('base64')

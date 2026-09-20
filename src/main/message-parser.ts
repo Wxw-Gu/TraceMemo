@@ -125,7 +125,10 @@ export type ParsedContent =
 export function parseMessageContent(content: string, messageType: number): ParsedContent {
   // Voice rows may keep their binary payload outside msgContent, so an empty
   // content string is still a valid voice message.
-  if (messageType === 34) return { type: 'voice' }
+  if (messageType === 34) {
+    const duration = parseVoiceDurationSeconds(content)
+    return duration === undefined ? { type: 'voice' } : { type: 'voice', duration }
+  }
   if (!content || typeof content !== 'string') {
     return { type: 'unknown', raw: content || '' }
   }
@@ -155,6 +158,33 @@ export function parseMessageContent(content: string, messageType: number): Parse
     default:
       return { type: 'unknown', raw: normalized, messageType }
   }
+}
+
+/**
+ * 语音时长藏在解压后的 message_content 里：`<voicemsg ... voicelength="1600" ...>`，单位毫秒。
+ * Msg_* 表没有 voice_length 列，这是唯一来源。
+ *
+ * `<voicemsg>` 上两个极易混淆的属性（真机实测，同一条 1.6 秒语音，2026-09-20）：
+ *
+ *   - `voicelength="1600"` → **毫秒时长**。这条语音微信气泡显示 2"（1.6 秒四舍五入）。
+ *     **要取的是它。**
+ *   - `length="6672"` → **SILK 编码数据的字节数，与时长无关**。
+ *     已验证：`wcdb_get_voice_data` 取出的 SILK 恰好是 6672 字节，
+ *     解码后为 51200 字节 PCM（1.6 秒）。误取它会算出 6.672 秒，把 2" 显示成 0:07。
+ *
+ * 换算成秒后**刻意保留小数**（1600ms → 1.6）：在这里取整会把精度永久丢掉，
+ * 后面显示层再怎么四舍五入都对不回微信的口径（微信是四舍五入到整秒）。
+ *
+ * 注：`<videomsg length="...">` 的 `length` 同理是字节数，不是时长。
+ */
+function parseVoiceDurationSeconds(content: string): number | undefined {
+  if (!content || typeof content !== 'string') return undefined
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const rawLength = extractXmlAttribute(decoded, 'voicemsg', 'voicelength')
+  if (!rawLength) return undefined
+  const milliseconds = Number(rawLength)
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return undefined
+  return milliseconds / 1000
 }
 
 function parseVideoMessage(content: string): ParsedContent {

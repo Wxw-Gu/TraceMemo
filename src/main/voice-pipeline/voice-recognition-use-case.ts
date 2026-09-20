@@ -23,6 +23,7 @@ type TranscriptUpdateListener = (update: VoiceTranscriptUpdate) => Promise<void>
 type RecognitionOptions = {
   priority?: VoiceRecognitionPriority
   publishTranscriptUpdate?: boolean
+  force?: boolean
 }
 
 export class VoiceRecognitionUseCase {
@@ -108,7 +109,9 @@ export class VoiceRecognitionUseCase {
               error: '请先下载语音识别模型'
             } as const
           }
-          const result = await pipeline.run(accountId, reference, signal)
+          const result = await pipeline.run(accountId, reference, signal, {
+            force: options?.force
+          })
           if (signal.aborted || !this.isCurrentAccount(accountId, generation)) {
             throw new DOMException('Recognition cancelled', 'AbortError')
           }

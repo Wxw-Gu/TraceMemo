@@ -73,12 +73,14 @@ export function VoicePlayer({
     const audio = new Audio()
     audio.preload = 'auto'
     audio.src = blobUrl
-    audio.onloadedmetadata = () => {
+    // Silk 解码出来的时长比微信的 length 系统性偏短（实测少 20–279ms），
+    // 用它覆盖会把刚补回来的精度又弄丢：有原生时长时一律不覆盖，没有才回退。
+    const useDecodedDuration = () => {
+      if (duration !== undefined) return
       if (Number.isFinite(audio.duration)) setAudioDuration(audio.duration)
     }
-    audio.ontimeupdate = () => {
-      if (Number.isFinite(audio.duration)) setAudioDuration(audio.duration)
-    }
+    audio.onloadedmetadata = useDecodedDuration
+    audio.ontimeupdate = useDecodedDuration
     audio.onended = () => {
       setIsPlaying(false)
       if (globalCurrentAudio === audio) {
@@ -89,7 +91,7 @@ export function VoicePlayer({
     audioRef.current = audio
     objectUrlRef.current = blobUrl
     return audio
-  }, [])
+  }, [duration])
 
   const handlePlayPause = useCallback(async () => {
     if (loading) return
@@ -163,7 +165,8 @@ export function VoicePlayer({
 
       setTranscribing(true)
       try {
-        const result = await window.api.recognizeVoice(voiceReference)
+        // 用户主动触发：跳过身份级缓存，重新取音频（音频级缓存仍生效）。
+        const result = await window.api.recognizeVoice(voiceReference, { force: true })
         if (result.success) {
           setTranscript(result.transcript?.trim() || '未识别出文字')
           setModelStatus(null)
@@ -204,8 +207,11 @@ export function VoicePlayer({
 
   const formatDuration = (seconds: number | undefined): string => {
     if (!seconds || !isFinite(seconds)) return '0:00'
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.floor(seconds % 60)
+    // 微信的口径是四舍五入到整秒（length=4211ms 显示 4"），所以这里也必须 round 而非 floor。
+    // 先整体取整再拆分钟/秒，59.6 → "1:00" 而不会冒出 "0:60"。
+    const rounded = Math.round(seconds)
+    const mins = Math.floor(rounded / 60)
+    const secs = rounded % 60
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 

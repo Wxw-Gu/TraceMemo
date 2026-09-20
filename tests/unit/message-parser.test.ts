@@ -17,6 +17,38 @@ describe('message parser', () => {
     ).toMatchObject({ type: 'sticker', md5: 'abcdefabcdefabcdefabcdefabcdefab' })
   })
 
+  it('reads the WeChat voice length in milliseconds and keeps fractional seconds', () => {
+    // 真机实测（2026-09-20）：voicelength 才是毫秒时长，length 是编码数据长度——别取错。
+    // 属性值取自一条真机采样的语音（1.6 秒，微信气泡显示 2"）。
+    const parsed = parseMessageContent(
+      '<msg><voicemsg endflag="1" cancelflag="0" forwardflag="0" voiceformat="4" voicelength="1600" length="6672" bufid="0" /></msg>',
+      34
+    )
+    expect(parsed).toEqual({ type: 'voice', duration: 1.6 })
+    // 误取 length 会得到 6.672 秒（把 2" 的语音显示成 0:07）——这条断言就是防这个回归。
+    expect(parsed).not.toEqual({ type: 'voice', duration: 6.672 })
+
+    // 微信四舍五入到整秒，取整必须在显示层做，不能在解析层丢精度。
+    expect(parseMessageContent('<msg><voicemsg voicelength="4211" /></msg>', 34)).toEqual({
+      type: 'voice',
+      duration: 4.211
+    })
+  })
+
+  it('leaves the voice duration undefined when the payload is missing or unusable', () => {
+    expect(parseMessageContent('', 34)).toEqual({ type: 'voice' })
+    expect(parseMessageContent('voice fixture', 34)).toEqual({ type: 'voice' })
+    expect(parseMessageContent('<msg><voicemsg voiceformat="4" /></msg>', 34)).toEqual({
+      type: 'voice'
+    })
+    expect(parseMessageContent('<msg><voicemsg voicelength="0" /></msg>', 34)).toEqual({
+      type: 'voice'
+    })
+    expect(parseMessageContent('<msg><voicemsg voicelength="abc" /></msg>', 34)).toEqual({
+      type: 'voice'
+    })
+  })
+
   it('keeps video metadata when WeChat omits every MD5 field', () => {
     const parsed = parseMessageContent(
       '<msg><videomsg length="6402169" playlength="30" cdnthumbwidth="224" cdnthumbheight="398" aeskey="25201cc658042689d1ad6747cea2b240" rawmd5="" /></msg>',

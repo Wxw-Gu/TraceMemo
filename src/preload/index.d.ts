@@ -378,7 +378,10 @@ declare global {
       cancelVoiceModelDownload: () => Promise<{ success: boolean }>
       removeVoiceModel: () => Promise<VoiceModelStatus>
       openVoiceModelDirectory: () => Promise<{ success: boolean; error?: string }>
-      recognizeVoice: (reference: VoiceMessageReference) => Promise<VoiceRecognitionResult>
+      recognizeVoice: (
+        reference: VoiceMessageReference,
+        options?: { force?: boolean }
+      ) => Promise<VoiceRecognitionResult>
       getVoiceTranscriptSnapshot: (
         reference: VoiceMessageReference
       ) => Promise<VoiceTranscriptSnapshot>

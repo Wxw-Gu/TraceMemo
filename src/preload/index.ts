@@ -285,8 +285,10 @@ const api = {
   removeVoiceModel: (): Promise<VoiceModelStatus> => ipcRenderer.invoke('voice:removeModel'),
   openVoiceModelDirectory: (): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('voice:openModelDirectory'),
-  recognizeVoice: (reference: VoiceMessageReference): Promise<VoiceRecognitionResult> =>
-    ipcRenderer.invoke('voice:recognize', reference),
+  recognizeVoice: (
+    reference: VoiceMessageReference,
+    options?: { force?: boolean }
+  ): Promise<VoiceRecognitionResult> => ipcRenderer.invoke('voice:recognize', reference, options),
   getVoiceTranscriptSnapshot: (
     reference: VoiceMessageReference
   ): Promise<VoiceTranscriptSnapshot> =>

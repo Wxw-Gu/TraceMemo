@@ -101,6 +101,49 @@ describe('VoiceRecognitionUseCase transcript updates', () => {
     await useCase.dispose()
   })
 
+  it('forwards force to the pipeline so manual re-recognition can bypass the identity cache', async () => {
+    const useCase = createUseCase()
+    const state = useCase as unknown as {
+      pipeline: { run: ReturnType<typeof vi.fn> }
+    }
+    state.pipeline.run.mockResolvedValue({
+      transcript: '重新识别的文字',
+      durationMs: 900,
+      cached: false
+    })
+    const reference = { sessionId: 'fixture-contact', localId: 12, createTime: 1_785_895_203 }
+
+    const result = await useCase.recognize(reference, { force: true })
+
+    expect(result).toMatchObject({ success: true, transcript: '重新识别的文字' })
+    expect(state.pipeline.run).toHaveBeenCalledWith(
+      'account-a',
+      reference,
+      expect.anything(),
+      { force: true }
+    )
+    await useCase.dispose()
+  })
+
+  it('leaves force undefined when the caller does not ask for a recompute', async () => {
+    const useCase = createUseCase()
+    const state = useCase as unknown as {
+      pipeline: { run: ReturnType<typeof vi.fn> }
+    }
+    state.pipeline.run.mockResolvedValue({ transcript: '缓存文字', durationMs: 900, cached: true })
+    const reference = { sessionId: 'fixture-contact', localId: 13, createTime: 1_785_895_204 }
+
+    await useCase.recognize(reference)
+
+    expect(state.pipeline.run).toHaveBeenCalledWith(
+      'account-a',
+      reference,
+      expect.anything(),
+      { force: undefined }
+    )
+    await useCase.dispose()
+  })
+
   it('publishes an explicit cached transcript for a coalesced export index refresh', async () => {
     const useCase = createUseCase()
     const listener = vi.fn().mockResolvedValue(undefined)

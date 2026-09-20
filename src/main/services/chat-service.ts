@@ -669,6 +669,9 @@ function listSourceMessages(
         : msg.mesLocalID || Math.random().toString()
     )
     const imageContent = contentData?.type === 'image' ? contentData : undefined
+    // 语音时长来自 message_content 的 <voicemsg voicelength>（毫秒）——注意不是 length，
+    // 那是 SILK 数据字节数。已在 parseMessageContent 里换算成秒。
+    const voiceDuration = contentData?.type === 'voice' ? contentData.duration : undefined
     // Local ids repeat across conversations. Scope media handles to this database
     // connection and image without changing the message id used by other clients.
     const mediaId = imageContent
@@ -737,7 +740,8 @@ function listSourceMessages(
       createTime,
       recoveredFromRecallJournal,
       contentData,
-      media
+      media,
+      voiceDuration
     }
   })
 
