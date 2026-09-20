@@ -1036,6 +1036,20 @@ export async function getGroupSnapshotAsync(userMd5: string): Promise<GroupSnaps
   }
 }
 
+/**
+ * 把群会话 md5 解析成原生接口真正需要的 roomId（`xxx@chatroom`）。
+ *
+ * 存在的理由：群员统计从界面拿到的是会话 md5（与 `getGroupSnapshot(userMd5)` 同口径），
+ * 而成员相关的原生接口吃的是 username。没有这层导出，调用方就得自己去碰
+ * `dbRef.getWcdb4Client()`，等于让服务层绕开 chat-service 的封装。
+ * 非群会话或解析不到时返回 null。
+ */
+export function resolveGroupRoomId(userMd5: string): string | null {
+  if (!dbRef) return null
+  const roomId = dbRef.getWcdb4Client().getUsernameByMd5(userMd5)
+  return roomId && roomId.endsWith('@chatroom') ? roomId : null
+}
+
 /** 退群检测专用轻量读取，不执行成员名称或头像 hydration。 */
 export async function getGroupMemberIdsAsync(
   roomId: string

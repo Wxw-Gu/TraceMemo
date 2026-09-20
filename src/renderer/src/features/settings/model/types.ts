@@ -12,6 +12,7 @@ export type SettingsCategoryId =
   | 'local-api'
   | 'storage-export'
   | 'cache-cleanup'
+  | 'local-index'
   | 'appearance'
   | 'advanced'
   | 'about'

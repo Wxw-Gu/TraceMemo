@@ -173,7 +173,10 @@ export function buildMemberLeftNotification(
 }
 
 export interface GroupExitMonitorState {
+  /** 最近一批事件（一次回报最多带回这么多条，避免把整部历史推过 IPC）。 */
   events: GroupExitMonitorEvent[]
+  /** 永久保留的事件总数；`events` 只是其中最近的若干条。 */
+  totalEventCount?: number
   enabled: boolean
   running: boolean
   nativeMonitorActive: boolean

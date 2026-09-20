@@ -878,3 +878,48 @@ export interface ImageTextIndexStatus {
   /** 各阶段耗时画像（可选的附加诊断字段，UI 不渲染）。 */
   stageTimings?: ImageTextIndexStageTimings
 }
+
+/**
+ * 图片索引的状态文案。
+ *
+ * **两处 UI 共用**（问问微信侧栏卡片 / 设置页宽版卡片）—— 各写一份必然会分叉，
+ * 而这段文案里有几条不能丢的语义：
+ * - 「已建立」不能等于「全失败」（`coverageState === 'failed'` 必须叫异常）；
+ * - 「取消」不等于「部分完成」（进度保留，但被打断过这件事要说出来）；
+ * - 未完成时进度封顶 99.9%（`imageTextProcessedPercent` 保证），不允许显示成 100%。
+ *
+ * 参数用宽松类型而不是具体 interface：调用方两边的局部状态形状不同（侧栏卡片多几个
+ * 派生布尔值），传具体类型会逼着两边先做一次无用适配。
+ */
+export function imageTextStateLabel(input: {
+  progressState?: string
+  running: boolean
+  paused: boolean
+  established: boolean
+  coverageState: string
+  percent: number
+}): string {
+  if (input.progressState === 'error') return '建立失败'
+  if (input.running) return `建立中 · ${input.percent}%`
+  if (input.paused) return `已暂停 · ${input.percent}%`
+  if (input.progressState === 'cancelled') return `已取消 · ${input.percent}%`
+  if (!input.established) return '未建立'
+  if (input.coverageState === 'failed') return '图片文字索引异常'
+  if (input.coverageState === 'complete') return '已完成'
+  return `部分完成 · ${input.percent}%`
+}
+
+/** 状态徽章色调（两处 UI 共用同一套映射）。 */
+export function imageTextStateTone(input: {
+  progressState?: string
+  running: boolean
+  paused: boolean
+  established: boolean
+  coverageState: string
+}): 'ok' | 'warn' | 'error' | 'idle' {
+  if (input.progressState === 'error' || input.coverageState === 'failed') return 'error'
+  if (!input.established) return 'idle'
+  if (input.running || input.paused || input.progressState === 'cancelled') return 'warn'
+  if (input.coverageState === 'complete') return 'ok'
+  return 'warn'
+}

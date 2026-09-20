@@ -112,6 +112,7 @@ import { agentHubService } from './services/agent-hub-service'
 import { WechatConnectorService } from './services/wechat-ilink'
 import { wechatSendGateway } from './services/wechat-send-gateway'
 import { groupExitMonitorService } from './services/group-exit-monitor-service'
+import { GroupStatsService } from './services/group-stats-service'
 import { wechatActionLogService } from './services/wechat-action-log-service'
 import { wechatActionGateway } from './services/wechat-action-gateway'
 import { personalWechatSendService } from './services/personal-wechat-send-service'
@@ -211,6 +212,7 @@ let voiceService: VoiceService | null = null
 let voiceRecognition: VoiceRecognitionUseCase | null = null
 let voiceBatchService: VoiceBatchService | null = null
 let knowledgeSearchService: KnowledgeSearchService | null = null
+let groupStatsService: GroupStatsService | null = null
 let localQueryApiService: LocalQueryApiService | null = null
 let aiSearchPipelineService: AiSearchPipelineService | null = null
 let queryAgentService: QueryAgentService | null = null
@@ -754,6 +756,9 @@ app.whenReady().then(async () => {
   })
   aiSearchPipelineService = new AiSearchPipelineService(knowledgeSearchService, aiProviderService)
   localQueryApiService = new LocalQueryApiService(knowledgeSearchService)
+  // 群员统计复用同一个 Knowledge 实例：它只是「读派生库 + 读成员名单」的编排，
+  // 不持有自己的数据库，也不新建索引。
+  groupStatsService = new GroupStatsService(knowledgeSearchService)
   // 图片文字索引覆盖度是**独立覆盖维度**：接到 search_messages 的 tool result 上，
   // 让 Query Agent 在图片索引没做完时不能凭 0 条证据断言"没有"。
   localQueryApiService.setImageTextCoverageProvider(() =>
@@ -1469,6 +1474,28 @@ app.whenReady().then(async () => {
     return snapshot
   })
 
+  /**
+   * 群员统计（单群）。
+   *
+   * 时间单位刻意用 epoch **毫秒**：这一路完全走 Knowledge，而 Knowledge 内部口径就是毫秒。
+   * 沿用聊天消息的秒级口径会在 service 内部凭空多出一次换算 —— 而单位换错是**静默读 0 条**，
+   * 不会报错。
+   */
+  ipcMain.handle(
+    'group-stats:getMemberStats',
+    async (_, request: { userMd5?: unknown; startTime?: unknown; endTime?: unknown }) => {
+      if (!groupStatsService) throw new Error('群员统计服务尚未就绪')
+      const userMd5 = String(request?.userMd5 || '').trim()
+      if (!userMd5) throw new Error('缺少会话标识')
+      const startTime = Number(request?.startTime)
+      const endTime = Number(request?.endTime)
+      if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime < startTime) {
+        throw new Error('统计时间范围无效')
+      }
+      return groupStatsService.getMemberStats({ userMd5, startTime, endTime })
+    }
+  )
+
   ipcMain.handle('group-exit-monitor:getState', () => groupExitMonitorService.getState())
   ipcMain.handle('group-exit-monitor:setEnabled', (_, enabled: boolean) =>
     groupExitMonitorService.setEnabled(enabled === true)
@@ -1485,6 +1512,25 @@ app.whenReady().then(async () => {
     groupExitMonitorService.setNotificationTemplate(template)
   )
   ipcMain.handle('group-exit-monitor:checkNow', () => groupExitMonitorService.checkNow())
+  /**
+   * 按群查退群事件（档案合并展示用）。
+   *
+   * 时间参数是 epoch **毫秒**，与事件的 `detectedAt` 同口径。
+   */
+  ipcMain.handle('group-exit-monitor:listEvents', (_, query: unknown) => {
+    const input = (query || {}) as {
+      roomId?: unknown
+      sinceMs?: unknown
+      untilMs?: unknown
+      limit?: unknown
+    }
+    return groupExitMonitorService.listEvents({
+      roomId: typeof input.roomId === 'string' ? input.roomId : undefined,
+      sinceMs: Number(input.sinceMs),
+      untilMs: Number(input.untilMs),
+      limit: Number(input.limit)
+    })
+  })
   ipcMain.handle('group-exit-monitor:clearEvents', () => groupExitMonitorService.clearEvents())
   ipcMain.handle('group-exit-monitor:resendEvent', (_, eventId: string) =>
     groupExitMonitorService.resendEvent(eventId)

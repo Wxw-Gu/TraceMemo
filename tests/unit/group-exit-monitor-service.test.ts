@@ -1,4 +1,4 @@
-import { mkdtempSync, readJsonSync, rmSync, writeJsonSync } from 'fs-extra'
+import { existsSync, mkdtempSync, readFileSync, readJsonSync, rmSync, writeJsonSync } from 'fs-extra'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -394,6 +394,7 @@ describe('GroupExitMonitorService', () => {
     await service.start(true)
 
     const statePath = join(mocks.userData, 'group-exit-monitor.json')
+    const eventsPath = join(mocks.userData, 'group-exit-monitor-events.jsonl')
     await vi.waitFor(() => {
       expect(readJsonSync(statePath).snapshots[0].members[1]).toMatchObject({
         wxid: departed.wxid,
@@ -401,7 +402,10 @@ describe('GroupExitMonitorService', () => {
       })
     })
     const baseline = readJsonSync(statePath)
-    expect(baseline.events).toEqual([])
+    // 事件**不再写在状态文件里**（它们走 append-only 的 JSONL），
+    // 所以这里断言的是「两条存储都没有事件」，而不是只看状态文件。
+    expect(baseline.events).toBeUndefined()
+    expect(existsSync(eventsPath) ? readFileSync(eventsPath, 'utf8').trim() : '').toBe('')
     expect(baseline.snapshots).toEqual([
       expect.objectContaining({
         roomId: 'room@chatroom',

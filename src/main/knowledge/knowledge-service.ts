@@ -5,6 +5,8 @@ import type {
   KnowledgeIndexProgress,
   KnowledgeIndexRequest,
   KnowledgeIndexResult,
+  KnowledgeMemberStatsRequest,
+  KnowledgeMemberStatsResult,
   KnowledgeRuntimeStatus,
   KnowledgeSearchRequest,
   KnowledgeSearchResult,
@@ -51,6 +53,13 @@ export class KnowledgeService {
   /** 每个会话已经索引到的源侧时刻（epoch ms）；增量 pass 用它跳过没有变化的会话。 */
   highWaterMarks(request: Omit<KnowledgeStatusRequest, 'databaseRoot'>): Promise<Record<string, number>> {
     return this.worker.highWaterMarks({ ...request, databaseRoot: this.databaseRoot })
+  }
+
+  /** 单个会话内「按发送者聚合」的发言统计（群员统计用）。 */
+  memberStats(
+    request: Omit<KnowledgeMemberStatsRequest, 'databaseRoot'>
+  ): Promise<KnowledgeMemberStatsResult> {
+    return this.worker.memberStats({ ...request, databaseRoot: this.databaseRoot })
   }
 
   /** 只中止正在跑的索引任务；查询请求不受影响。 */
