@@ -473,8 +473,8 @@ describe('AskWechatService — 搜索范围（conversationScope）', () => {
 
     expect(seen[0]).toEqual({ kind: 'groups' })
     // 范围说明只描述边界；强制由 Engine 完成（越界 target 会被结构化拒绝）。
-    expect(String(calls[0].messages[1]?.content)).toContain('群聊专属')
-    expect(String(calls[0].messages[1]?.content)).toContain('群成员实际发送的消息')
+    expect(String(calls[0].messages[0]?.content)).toContain('群聊专属')
+    expect(String(calls[0].messages[0]?.content)).toContain('群成员实际发送的消息')
   })
 
   it('没有 scope 时不注入范围说明（保持毕业版本的 messages 形状）', async () => {
