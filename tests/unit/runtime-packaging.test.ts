@@ -26,7 +26,6 @@ const {
   validateSherpaRuntime,
   validateSilkWasmRuntime,
   findMacosHelperPaths,
-  isMacosCodeValid,
   signMacosHelpers,
   signMacosAppBundle
 } = nodeRequire('../../scripts/after-pack.cjs') as {
@@ -36,7 +35,6 @@ const {
   validateSherpaRuntime: (runtimeResources: string, platform: NodeJS.Platform, arch: string) => void
   validateSilkWasmRuntime: (runtimeResources: string) => void
   findMacosHelperPaths: (runtimeResources: string) => string[]
-  isMacosCodeValid: (targetPath: string, run?: CodesignRunner) => boolean
   signMacosHelpers: (runtimeResources: string, run?: CodesignRunner) => string[]
   signMacosAppBundle: (appBundlePath: string, run?: CodesignRunner) => string
 }
@@ -276,7 +274,9 @@ describe('production runtime packaging', () => {
     expect(stub.calls).toContainEqual(['--force', '--sign', '-', helperPath])
     expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'arm64', helperPath])
     expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'x86_64', helperPath])
-    expect(statSync(helperPath).mode & 0o777).toBe(0o755)
+    if (process.platform !== 'win32') {
+      expect(statSync(helperPath).mode & 0o777).toBe(0o755)
+    }
   })
 
   it('keeps helpers that already verify strictly without re-signing them', () => {
