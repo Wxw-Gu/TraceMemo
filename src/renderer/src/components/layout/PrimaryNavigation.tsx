@@ -54,6 +54,13 @@ function NavIcon({ page }: NavIconProps): React.ReactElement {
           <path d="M5.5 15.5v3h13v-3" />
         </svg>
       )
+    case 'automation':
+      // 闪电：强调「命中即自动执行」，与退群监控的箭头区分开。
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M13 4.5 7.5 13h4l-.5 6.5L16.5 11h-4z" />
+        </svg>
+      )
     case 'agent-hub':
       return (
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">

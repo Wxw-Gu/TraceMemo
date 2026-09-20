@@ -46,6 +46,7 @@ import { runtimePlatform, supportsPersonalWechatSend } from './utils/runtime-env
 import { useToast } from './components/ui'
 import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
 import { GroupExitMonitorWorkspace } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
+import { AutomationWorkspace } from './features/automation/AutomationWorkspace'
 import { selectContactAvatarRefreshUsernames } from './utils/contact-avatar'
 import {
   buildContactSearchIndex,
@@ -2095,6 +2096,13 @@ function App(): React.ReactElement {
           <GroupExitMonitorWorkspace
             dbReady={isDatabaseConnected}
             contacts={contacts}
+            onOpenSendSettings={openWechatSendSettings}
+          />
+        )
+      case 'automation':
+        return (
+          <AutomationWorkspace
+            dbReady={isDatabaseConnected}
             onOpenSendSettings={openWechatSendSettings}
           />
         )
