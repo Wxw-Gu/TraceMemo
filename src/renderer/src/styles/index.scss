@@ -17,4 +17,7 @@
 @use './settings-preferences';
 @use './settings-text-to-speech';
 @use './group-exit-monitor';
+@use './group-exit-event';
+@use './group-member-stats';
+@use './local-index';
 @use './theme';

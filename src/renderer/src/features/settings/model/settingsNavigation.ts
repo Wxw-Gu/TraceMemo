@@ -29,6 +29,10 @@ export const SETTINGS_NAVIGATION: SettingsNavigationGroup[] = [
     items: [
       // “存储与导出”暂不开放；保留 category/render case 以兼容已有页面状态。
       // { id: 'storage-export', label: '存储与导出' },
+      // 「本地索引」= 问问微信的聊天记录索引 + 图片文字索引。
+      // 放在设置里是因为它属于「本地数据管理」，而原来只藏在问问微信页面里，
+      // 用户根本不知道它是什么、更不知道还要手动同步。
+      { id: 'local-index', label: '本地索引' },
       { id: 'cache-cleanup', label: '缓存与清理' }
     ]
   },

@@ -7,6 +7,8 @@ import { DataTrustBar } from './chat/DataTrustBar'
 import { EmptyConversationState } from './chat/EmptyConversationState'
 import { MessageList } from './chat/MessageList'
 import { PersonalWechatSendDialog } from './chat/PersonalWechatSendDialog'
+import { mergeGroupExitEvents } from '../../../shared/group-exit-event-message'
+import { useGroupExitEvents } from '../hooks/useGroupExitEvents'
 
 interface ChatWindowProps {
   contact: Contact | null
@@ -22,6 +24,8 @@ interface ChatWindowProps {
   onCreateGroupReport?: () => void
   onOpenTextToSpeechSettings?: () => void
   onOpenPersonalWechatSettings?: () => void
+  /** 跳到「设置 · 本地索引」（群统计发现索引没追平时用）。 */
+  onOpenLocalIndexSettings?: () => void
   isAiLoading?: boolean
   jumpToTime?: number | null
   /** 精确跳转目标（消息 id）。与 jumpToTime 取或：任一存在就说明"这是一次跳转"。 */
@@ -42,6 +46,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   onCreateGroupReport,
   onOpenTextToSpeechSettings,
   onOpenPersonalWechatSettings,
+  onOpenLocalIndexSettings,
   isAiLoading = false,
   jumpToTime,
   jumpToMessageId
@@ -122,8 +127,20 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   }
 
+  /**
+   * 退群推断事件并入档案消息流。
+   *
+   * **先合并再过滤**：反过来的话搜索词就命中不了事件，而「谁退群了」
+   * 恰恰是最需要能被搜到的内容之一。
+   */
+  const groupExitEvents = useGroupExitEvents(contact)
+  const allMessages = React.useMemo(
+    () => (groupExitEvents.length ? mergeGroupExitEvents(messages, groupExitEvents) : messages),
+    [messages, groupExitEvents]
+  )
+
   const filteredMessages = React.useMemo(() => {
-    return messages.filter((msg) => {
+    return allMessages.filter((msg) => {
       const filterTypes = (import.meta.env.VITE_FILTER_MSG_TYPES || '')
         .split(',')
         .map((type) => type.trim())
@@ -132,7 +149,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       const contentMatch = !contentFilter || msg.content.includes(contentFilter)
       return typeMatch && contentMatch
     })
-  }, [messages, contentFilter])
+  }, [allMessages, contentFilter])
 
   const handleOpenPersonalWechatSend = useCallback(async (): Promise<void> => {
     try {
@@ -168,6 +185,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         onRefreshData={onRefreshData}
         onTestSend={() => void handleOpenPersonalWechatSend()}
         onOpenAiSettings={onCreateGroupReport || (() => undefined)}
+        onOpenLocalIndexSettings={onOpenLocalIndexSettings}
       />
       <DataTrustBar messageCount={messages.length} />
       <MessageList

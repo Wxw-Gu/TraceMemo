@@ -13,6 +13,7 @@ import type {
   KnowledgeIndexProgress,
   KnowledgeIndexRequest,
   KnowledgeIndexResult,
+  KnowledgeMemberStatsResult,
   KnowledgeRuntimeStatus,
   KnowledgeNormalizedMessage,
   KnowledgeQuery,
@@ -314,6 +315,93 @@ export class KnowledgeStore {
       indexedChunkCount,
       indexLatestAt: this.readIndexLatestAt(),
       timings: emptyKnowledgeSearchTimings()
+    }
+  }
+
+  /**
+   * 单个会话在时间窗内的「按发送者聚合」统计。
+   *
+   * 只回聚合结果、不回消息正文：群员统计只需要「谁说了几条、最后一条是什么时候」，
+   * 把消息逐条搬到主进程再统计会把几十万行推过 IPC 边界。
+   *
+   * 三条硬规则**全部由 SQL 保证**，不指望调用方记得：
+   * 1. `kind <> 'system'`：系统消息不是任何成员的发言（微信侧 10000/10002 在建库时
+   *    已归一为 `kind = 'system'`，见 `knowledge-search-service` 的 kind 映射）；
+   * 2. `sender_id IS NULL` 的行不归给任何人，只计入 `unattributedMessages` ——
+   *    硬塞给某个成员会让「未发言」名单出现错误否定；
+   * 3. 时间窗口是**闭区间**，单位 **epoch 毫秒**，与 knowledge 内部口径一致，
+   *    不经过 WCDB 的秒级边界（跨错单位会静默读到 0 条）。
+   */
+  memberStats(request: {
+    conversationId: string
+    startTime: number
+    endTime: number
+  }): KnowledgeMemberStatsResult {
+    const { conversationId, startTime, endTime } = request
+    const indexLatestAt = this.readIndexLatestAt()
+    const empty: KnowledgeMemberStatsResult = {
+      conversationId,
+      totalMessages: 0,
+      senders: [],
+      unattributedMessages: 0,
+      excludedSystemMessages: 0,
+      earliestMessageTime: null,
+      indexLatestAt
+    }
+    if (!conversationId) return empty
+
+    // 用 `(conversation_id, create_time)` 索引直接命中：这是本查询唯一的访问路径，
+    // 写成全表扫描等价于把单群统计的 26ms 变成 10s。
+    const scope = 'conversation_id = ? AND create_time >= ? AND create_time <= ?'
+    const args = [conversationId, startTime, endTime]
+
+    const count = (extra: string): number => {
+      const row = this.database
+        .prepare(`SELECT COUNT(*) AS n FROM knowledge_messages WHERE ${scope} AND ${extra}`)
+        .get(...args) as DbRow | undefined
+      return Number(row?.n) || 0
+    }
+
+    const rows = asRows(
+      this.database
+        .prepare(
+          `SELECT sender_id,
+                  COUNT(*) AS message_count,
+                  MAX(create_time) AS last_message_time
+             FROM knowledge_messages
+            WHERE ${scope} AND kind <> 'system' AND sender_id IS NOT NULL
+            GROUP BY sender_id
+            ORDER BY message_count DESC, last_message_time DESC`
+        )
+        .all(...args)
+    )
+
+    const senders: KnowledgeMemberStatsResult['senders'] = []
+    for (const row of rows) {
+      const senderId = String(row.sender_id ?? '').trim()
+      if (!senderId) continue
+      senders.push({
+        senderId,
+        messageCount: Number(row.message_count) || 0,
+        lastMessageTime: Number(row.last_message_time) || 0
+      })
+    }
+
+    // 窗口内最早一条消息：**不过滤 kind** —— 群的第一条常常是建群通知，
+    // 那才是用户认知里的「这个群第一条消息」。选「全部」时用它显示真实起点。
+    const earliestRow = this.database
+      .prepare(`SELECT MIN(create_time) AS m FROM knowledge_messages WHERE ${scope}`)
+      .get(...args) as DbRow | undefined
+    const earliestValue = Number(earliestRow?.m)
+
+    return {
+      conversationId,
+      totalMessages: count("kind <> 'system'"),
+      senders,
+      unattributedMessages: count("kind <> 'system' AND sender_id IS NULL"),
+      excludedSystemMessages: count("kind = 'system'"),
+      earliestMessageTime: Number.isFinite(earliestValue) && earliestValue > 0 ? earliestValue : null,
+      indexLatestAt
     }
   }
 

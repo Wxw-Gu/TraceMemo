@@ -1,6 +1,8 @@
 import type {
   KnowledgeCapacityPreflightRequest,
   KnowledgeIndexRequest,
+  KnowledgeMemberStatsRequest,
+  KnowledgeMemberStatsResult,
   KnowledgeRuntimeStatus,
   KnowledgeSearchRequest,
   KnowledgeStatusRequest,
@@ -187,6 +189,38 @@ async function handleHighWater(
   })
 }
 
+/**
+ * 群员统计的按发送者聚合。
+ *
+ * 与 `handleSearch` 同样先判库是否存在：**「还没建索引」是正常状态，不是故障**，
+ * 返回空结果而不是抛错，让上层能稳定地区分「没人发言」与「索引不存在」。
+ */
+async function handleMemberStats(
+  request: KnowledgeWorkerRequest,
+  payload: KnowledgeMemberStatsRequest
+): Promise<void> {
+  const path = getKnowledgeDatabasePath(payload.databaseRoot, payload.accountId)
+  if (!existsSync(path)) {
+    const unavailable: KnowledgeMemberStatsResult = {
+      conversationId: payload.conversationId,
+      totalMessages: 0,
+      senders: [],
+      unattributedMessages: 0,
+      excludedSystemMessages: 0,
+      earliestMessageTime: null,
+      indexLatestAt: null
+    }
+    send({ version: 1, type: 'result', requestId: request.requestId, payload: unavailable })
+    return
+  }
+  send({
+    version: 1,
+    type: 'result',
+    requestId: request.requestId,
+    payload: getStore(payload).memberStats(payload)
+  })
+}
+
 async function handle(request: KnowledgeWorkerRequest, messageReceivedAt: number): Promise<void> {
   try {
     if (request.type === 'cancel') {
@@ -224,6 +258,10 @@ async function handle(request: KnowledgeWorkerRequest, messageReceivedAt: number
     }
     if (request.type === 'highWater') {
       await handleHighWater(request, request.payload as KnowledgeStatusRequest)
+      return
+    }
+    if (request.type === 'memberStats') {
+      await handleMemberStats(request, request.payload as KnowledgeMemberStatsRequest)
       return
     }
     if (request.type === 'index') {

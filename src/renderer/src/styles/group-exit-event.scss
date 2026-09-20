@@ -1,0 +1,44 @@
+/**
+ * 档案里的「退群」推断事件。
+ *
+ * ⚠️ 视觉上必须与 `.wechat-system-message`（微信真实系统消息）**明确区分**：
+ * 那是微信的原话，这条是 TraceMemo 通过「群成员快照前后对比」推断出来的 ——
+ * 可信度不同，时间含义也不同（记录的是**检测时刻**，不是真实退群时间）。
+ * 所以用虚线边框 + 「本地推断」标记，而不是套用系统消息的样式。
+ */
+
+.group-exit-event-row {
+  display: flex;
+  justify-content: center;
+  padding: 6px 16px;
+}
+
+.group-exit-event-bubble {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 82%;
+  box-sizing: border-box;
+  border: 1px dashed var(--wxex-warning);
+  border-radius: var(--tm-radius-md, 6px);
+  background: color-mix(in srgb, var(--wxex-warning) 8%, transparent);
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--wxex-text-secondary);
+}
+
+.group-exit-event-tag {
+  flex: none;
+  border-radius: 3px;
+  background: var(--wxex-warning);
+  color: #fff;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.group-exit-event-text {
+  word-break: break-all;
+}
