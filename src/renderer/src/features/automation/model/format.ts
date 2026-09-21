@@ -50,9 +50,13 @@ export function stepStatusTone(status: AutomationStepStatus): string {
  * `skipped` 步骤的说明。
  *
  * 用户最容易困惑的就是「为什么这一步没跑」—— 必须区分
- * 「规则本来就没配这个动作」和「上一步挂了所以跳过」。
+ * 「规则本来就没配这个动作」「上一步挂了所以跳过」「被规则自身的冷却/去重拦下」。
+ *
+ * **优先用服务端给的 `skipReason`**：它知道确切原因（例如「前置步骤失败（日报未生成）」），
+ * 下面这套推断只是兜底，不许在这里重新发明原因。
  */
 export function describeSkippedStep(step: AutomationStep, steps: AutomationStep[]): string {
+  if (step.skipReason) return step.skipReason
   const index = steps.findIndex((item) => item.key === step.key)
   const blockedByFailure = steps
     .slice(0, index < 0 ? 0 : index)
@@ -60,6 +64,6 @@ export function describeSkippedStep(step: AutomationStep, steps: AutomationStep[
   if (blockedByFailure) return '上一步失败，已跳过'
   if (step.key === 'reply') return '规则未启用「回复确认」'
   if (step.key === 'report') return '规则未启用「生成日报」'
-  if (step.key === 'send') return '没有可发送的日报图片'
+  if (step.key === 'send') return '规则未启用「发送日报图片」'
   return '未执行'
 }

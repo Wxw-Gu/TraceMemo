@@ -1,8 +1,10 @@
 import * as React from 'react'
 import {
+  AUTOMATION_REPLY_DELAY_MAX_SECONDS,
   DEFAULT_REPLY_TEXT,
   KEYWORD_MATCH_MODE_LABELS,
   createDefaultDailyReportRule,
+  normalizeReplyDelaySeconds,
   normalizeRuleDraft,
   type AutomationActionType,
   type AutomationRule,
@@ -54,7 +56,10 @@ function draftFromRule(rule: AutomationRule | null): AutomationRuleDraft {
     scope: base.scope,
     conditions: base.conditions,
     actions: base.actions,
-    cooldownSeconds: base.cooldownSeconds
+    cooldownSeconds: base.cooldownSeconds,
+    // 漏掉一个字段就会被 normalizeRuleDraft 的默认值悄悄覆盖 ——
+    // 比如把用户设成 0 的「回复前等待」重置回 2 秒。
+    replyDelaySeconds: base.replyDelaySeconds
   })
 }
 
@@ -121,6 +126,15 @@ export function RuleEditorPanel({
         group.name.toLowerCase().includes(needle) || group.id.toLowerCase().includes(needle)
     )
   }, [groups, groupFilter])
+
+  /**
+   * 生效范围的实际状态。
+   *
+   * 现在的交互是「勾选群 = 指定群聊；一个都不勾 = 所有群聊」，所以没有单独的
+   * 「所有群聊 / 指定群聊」单选控件 —— 不去动第 2 节的结构，只把这个状态显式说出来，
+   * 好让「所有群聊」那条例外提示挂在对的上下文里。
+   */
+  const hasSelectedGroups = draft.conditions.conversationIds.length > 0
 
   const handleSave = (): void => {
     if (!draft.name.trim()) {
@@ -228,9 +242,9 @@ export function RuleEditorPanel({
             <div className="automation-section-heading">
               <h3>2 · 在哪些聊天生效</h3>
               <span className="automation-section-note">
-                {draft.conditions.conversationIds.length
+                {hasSelectedGroups
                   ? `已选 ${draft.conditions.conversationIds.length} 个群`
-                  : '未选择时对所有群聊生效'}
+                  : '所有群聊'}
               </span>
             </div>
             <Input
@@ -261,12 +275,44 @@ export function RuleEditorPanel({
                 })
               )}
             </div>
+            {hasSelectedGroups ? null : (
+              // 只在「所有群聊」这个上下文里说明真实边界。
+              // 不解释底层原因（表事件 / 会话回读），也不写「100% 覆盖」这种绝对承诺。
+              <p className="automation-section-hint">
+                <span aria-hidden="true">ⓘ</span>
+                当前版本在多个会话同时收到消息时，极少数自动化触发可能遗漏。
+              </p>
+            )}
           </section>
 
           <section className="automation-section">
             <div className="automation-section-heading">
               <h3>3 · 触发后执行</h3>
               <span className="automation-section-note">按下列顺序执行</span>
+            </div>
+            {/* 第一步不是动作，而是「等多久」—— 所以放在动作列表之前，不混进 ACTION_META。 */}
+            <div className="automation-inline-row">
+              <div>
+                <span className="automation-field-label">回复前等待（秒）</span>
+                <small>命中后先等这么久再回复，避免秒回显得像机器人；0 = 立刻回复</small>
+              </div>
+              <Input
+                type="number"
+                min={0}
+                max={AUTOMATION_REPLY_DELAY_MAX_SECONDS}
+                value={String(draft.replyDelaySeconds)}
+                onChange={(event) => {
+                  const next = Number(event.target.value)
+                  setDraft((current) => ({
+                    ...current,
+                    replyDelaySeconds: normalizeReplyDelaySeconds(
+                      Number.isFinite(next) ? next : 0
+                    )
+                  }))
+                }}
+                className="automation-number-input"
+                aria-label="回复前等待秒数"
+              />
             </div>
             {ACTION_META.map((meta) => {
               const action = actionOf(meta.type)
@@ -304,7 +350,10 @@ export function RuleEditorPanel({
             <div className="automation-inline-row">
               <div>
                 <span className="automation-field-label">触发间隔（秒）</span>
-                <small>同一个群里，两次触发之间至少间隔这么久，避免刷屏</small>
+                {/* 这句就是本产品的门语义定义，不要写 debounce / mutex / in-flight 这类技术词。 */}
+                <small>
+                  触发后，在当前任务执行期间及设定间隔内，不再处理本规则在该会话中的新消息。
+                </small>
               </div>
               <Input
                 type="number"

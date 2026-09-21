@@ -147,6 +147,21 @@
   font-size: 12px;
 }
 
+// 轻量边界说明（例如「所有群聊」时的遗漏提示）。
+// 只陈述用户能理解的结果，不解释底层机制，也不做「100% 覆盖」这类承诺。
+.automation-section-hint {
+  display: flex;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--wxex-radius-sm);
+  border: 1px solid var(--wxex-border);
+  background: color-mix(in srgb, var(--wxex-text-muted) 6%, transparent);
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .automation-loading {
   display: flex;
   align-items: center;
@@ -855,10 +870,15 @@
     color: var(--wxex-success);
   }
 
-  &.failed,
-  &.running {
+  &.failed {
     background: color-mix(in srgb, var(--wxex-danger) 16%, transparent);
     color: var(--wxex-danger);
+  }
+
+  // 「执行中」用强调色，不是红色。
+  &.running {
+    background: var(--wxex-brand-soft);
+    color: var(--wxex-brand);
   }
 }
 

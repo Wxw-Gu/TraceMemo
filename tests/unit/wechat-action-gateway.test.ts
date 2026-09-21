@@ -18,10 +18,11 @@ vi.mock('../../src/main/services/personal-wechat-send-service', () => ({
 
 import {
   AUTOMATION_SEND_INTERVAL_MS,
-  WechatActionGateway
+  WechatActionGateway,
+  toPersonalWechatSendResult
 } from '../../src/main/services/wechat-action-gateway'
 import type { PersonalWechatSendCapability } from '../../src/shared/personal-wechat'
-import type { WechatActionResult } from '../../src/shared/wechat-action'
+import type { WechatActionRequest, WechatActionResult } from '../../src/shared/wechat-action'
 
 const readyCapability: PersonalWechatSendCapability = {
   supported: true,
@@ -374,5 +375,133 @@ describe('WechatActionGateway', () => {
     expect(mocks.sender.send).toHaveBeenCalledOnce()
     expect(Date.now()).toBe(startedAt)
     vi.useRealTimers()
+  })
+
+  /**
+   * 项目规则：**所有发送都走 WechatActionGateway**。
+   *
+   * 手动发送（`wechat-personal:send`）改造前是直连 `PersonalWechatSendService` 的，
+   * 于是没有审计、没有幂等、也不进 Send Log。这一组锁住改造后的语义。
+   */
+  describe('用户手动发送（triggerType: user）', () => {
+    function manualAction(
+      gateway: WechatActionGateway,
+      overrides: Partial<WechatActionRequest> = {}
+    ): Promise<WechatActionResult> {
+      return gateway.execute({
+        origin: 'user_manual',
+        purpose: 'manual_image',
+        triggerType: 'user',
+        recipient: { type: 'group', id: 'room@chatroom' },
+        content: { type: 'image', path: '/tmp/report.png' },
+        ...overrides
+      } as WechatActionRequest)
+    }
+
+    it('放行、发送一次，并写入审计记录', async () => {
+      const userData = mkdtempSync(join(tmpdir(), 'tracememo-wechat-action-'))
+      directories.push(userData)
+      const gateway = new WechatActionGateway({ getUserDataPath: () => userData })
+
+      const result = await manualAction(gateway)
+
+      expect(result).toMatchObject({ status: 'sent', decision: 'allow' })
+      expect(mocks.sender.send).toHaveBeenCalledWith({
+        type: 'image',
+        to: 'room@chatroom',
+        isGroup: true,
+        filePath: '/tmp/report.png'
+      })
+      const audit = readJsonSync(join(userData, 'actions', 'wechat-actions.json'))
+      expect(audit).toEqual([
+        expect.objectContaining({
+          origin: 'user_manual',
+          purpose: 'manual_image',
+          triggerType: 'user',
+          recipientId: 'room@chatroom',
+          decision: 'allow',
+          sendStatus: 'sent'
+        })
+      ])
+    })
+
+    it('不受 automation 的 purpose allowlist 限制，也不吃 3s 节流', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-09-21T01:00:00.000Z'))
+      const gateway = createGateway()
+
+      const first = await manualAction(gateway)
+      const second = await manualAction(gateway)
+
+      expect(first.status).toBe('sent')
+      expect(second.status).toBe('sent')
+      // 节流只对 triggerType === 'automation' 生效：两次点击必须立刻都发出去。
+      expect(mocks.sender.send).toHaveBeenCalledTimes(2)
+      vi.useRealTimers()
+    })
+
+    it('空文本由规范化拦下，不落到发送层', async () => {
+      const gateway = createGateway()
+      const result = await manualAction(gateway, {
+        purpose: 'manual_text',
+        content: { type: 'text', text: '   ' }
+      })
+
+      expect(result.status).toBe('blocked')
+      expect(result.errorCode).toBe('INVALID_REQUEST')
+      expect(mocks.sender.send).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('toPersonalWechatSendResult', () => {
+    const fallback = { canSend: true } as unknown as Parameters<
+      typeof toPersonalWechatSendResult
+    >[1]
+
+    it('优先返回底层 sendResult（它带着真实的 status）', () => {
+      const underlying = { success: true, status: { canSend: true, marker: 'real' } }
+      expect(
+        toPersonalWechatSendResult(
+          {
+            actionId: 'a1',
+            status: 'sent',
+            decision: 'allow',
+            startedAt: '2026-09-21T01:00:00.000Z',
+            finishedAt: '2026-09-21T01:00:01.000Z',
+            sendResult: underlying
+          },
+          fallback
+        )
+      ).toBe(underlying)
+    })
+
+    it('拿不到 sendResult 时按 action.status 合成', () => {
+      const sent = toPersonalWechatSendResult(
+        {
+          actionId: 'a1',
+          status: 'sent',
+          decision: 'allow',
+          startedAt: '2026-09-21T01:00:00.000Z',
+          finishedAt: '2026-09-21T01:00:01.000Z'
+        },
+        fallback
+      )
+      expect(sent).toEqual({ success: true, status: fallback })
+
+      const blocked = toPersonalWechatSendResult(
+        {
+          actionId: 'a2',
+          status: 'blocked',
+          decision: 'block',
+          errorCode: 'ACTION_NOT_ALLOWED',
+          reason: '自动化动作不允许执行',
+          startedAt: '2026-09-21T01:00:00.000Z',
+          finishedAt: '2026-09-21T01:00:01.000Z'
+        },
+        fallback
+      )
+      expect(blocked.success).toBe(false)
+      expect(blocked.error).toBe('自动化动作不允许执行')
+    })
   })
 })

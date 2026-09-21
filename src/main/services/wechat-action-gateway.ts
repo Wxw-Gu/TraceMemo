@@ -5,7 +5,8 @@ import path from 'path'
 import type {
   PersonalWechatSendCapability,
   PersonalWechatSendRequest,
-  PersonalWechatSendResult
+  PersonalWechatSendResult,
+  PersonalWechatSenderStatus
 } from '../../shared/personal-wechat'
 import type {
   PolicyDecision,
@@ -605,6 +606,32 @@ function toPersonalWechatSendRequest(request: WechatActionRequest): PersonalWech
     filePath: request.content.path,
     ...(fromId ? { fromId } : {}),
     ...(durationMs !== undefined ? { durationMs } : {})
+  }
+}
+
+/**
+ * 把网关结果还原成既有调用方期望的 `PersonalWechatSendResult`。
+ *
+ * 为什么需要：手动发送的 IPC（`wechat-personal:send`）返回契约是
+ * `PersonalWechatSendResult`，界面上靠 `response.success` / `response.error` 判读。
+ * 改成走网关之后必须把这个契约**原样**还回去，否则「统一发送路径」会把 UI 一起改坏。
+ *
+ * 网关成功时会把底层 `sendResult` 原样挂在 `action.sendResult` 上，优先用它
+ * （它带着真实的 `status`）；拿不到时按 `action.status` 合成一个。
+ */
+export function toPersonalWechatSendResult(
+  action: WechatActionResult,
+  fallbackStatus: PersonalWechatSenderStatus
+): PersonalWechatSendResult {
+  const raw = action.sendResult
+  if (raw && typeof raw === 'object' && 'success' in (raw as Record<string, unknown>)) {
+    return raw as PersonalWechatSendResult
+  }
+  if (action.status === 'sent') return { success: true, status: fallbackStatus }
+  return {
+    success: false,
+    status: fallbackStatus,
+    error: action.reason || action.errorCode || '微信发送失败'
   }
 }
 

@@ -384,6 +384,79 @@ export function resolveWindowsNativeAccountRoot(
   }
 }
 
+/**
+ * native monitor 事件（pipe / socket 上的一行 JSON）。
+ *
+ * ## 两个协议版本
+ *
+ * **v1（历史）** —— 变更信号来自**文件系统通知**（Windows `ReadDirectoryChangesW` /
+ * macOS `kqueue`），native 只知道「哪个文件被写了」：
+ *
+ * ```json
+ * {"db":"message_0.db","table":"message","action":"update"}
+ * ```
+ *
+ * 它**不携带会话**，所以上层只能回读「最近活跃会话」。`protocol` 会标成 1。
+ *
+ * **v2（Native Monitor Event v2）** —— native 侧在收到文件变化后做一次
+ * SessionTable watermark diff，把**每一个真正变化的会话**各发一条：
+ *
+ * ```json
+ * {"version":2,"kind":"message_change","session_id":"xxx@chatroom",
+ *  "db":"message_0.db","table":"message","action":"update","observed_at_ms":1}
+ * ```
+ *
+ * `protocol = 2` 且带 `sessionId` 时，上层可以**直接按会话回读**，不再依赖
+ * `getSessions()[0]`。
+ *
+ * **降级规则**：只要 `version`/`kind`/`session_id` 任一不符合 v2 契约，
+ * 就按 v1 处理（`protocol = 1`）—— 宁可不精确，也不能拿一个不可信的会话 id 去读。
+ */
+export interface Wcdb4MonitorEvent {
+  /** pipe 上的原始一行（原样转发给需要它的消费者，例如退群监控）。 */
+  raw: string
+  /** 语义化的动作类型。当事件语义出现时用它，比如 `'user_change'`。 */
+  type: string
+  action: string
+  /** `2` = 精确会话事件；`1` = legacy（不含会话）。 */
+  protocol: 1 | 2
+  /** 粗表分类：`database` / `message` / `Session` / `contact`。 */
+  table: string
+  /** `protocol === 2` 时才有：发生变化的会话（`xxx@chatroom` 或 wxid）。 */
+  sessionId?: string
+  /** native 侧观测时刻（epoch ms），仅用于诊断。 */
+  observedAtMs?: number
+}
+
+/** 把 pipe 上的一行 payload 解析成事件。纯函数，便于单测。 */
+export function parseMonitorEvent(rawPayload: string): Wcdb4MonitorEvent {
+  const raw = rawPayload.trim()
+  let parsed: Record<string, unknown> = {}
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      parsed = value as Record<string, unknown>
+    }
+  } catch {
+    // 不是 JSON：当作 legacy 事件处理，保留原始 payload。
+  }
+
+  const action = typeof parsed.action === 'string' && parsed.action ? parsed.action : 'update'
+  const sessionId = typeof parsed.session_id === 'string' ? parsed.session_id.trim() : ''
+  // 三个条件缺一不可：版本、语义、以及**非空**的会话 id。
+  const precise = parsed.version === 2 && parsed.kind === 'message_change' && Boolean(sessionId)
+
+  return {
+    raw,
+    type: action,
+    action,
+    protocol: precise ? 2 : 1,
+    table: typeof parsed.table === 'string' ? parsed.table : '',
+    ...(precise ? { sessionId } : {}),
+    ...(typeof parsed.observed_at_ms === 'number' ? { observedAtMs: parsed.observed_at_ms } : {})
+  }
+}
+
 export class Wcdb4Client {
   static readonly defaultRoot = Wcdb4Client.findExistingDefaultRoot()
 
@@ -495,7 +568,7 @@ export class Wcdb4Client {
   private wcdbStopMonitorPipe: (() => void) | null = null
   private wcdbGetMonitorPipeName: ((outName: WcdbVoidOut) => number) | null = null
   private monitorPipeClient: Socket | null = null
-  private monitorCallback: ((type: string, json: string) => void) | null = null
+  private monitorCallback: ((event: Wcdb4MonitorEvent) => void) | null = null
   private monitorConnectTimer: ReturnType<typeof setTimeout> | null = null
   private monitorReconnectTimer: ReturnType<typeof setTimeout> | null = null
   private monitorPipePath = ''
@@ -773,7 +846,7 @@ export class Wcdb4Client {
     })
   }
 
-  async startMonitor(callback: (type: string, json: string) => void): Promise<boolean> {
+  async startMonitor(callback: (event: Wcdb4MonitorEvent) => void): Promise<boolean> {
     if (this.closing || !this.wcdbStartMonitorPipe || !this.wcdbGetMonitorPipeName || !this.koffi) {
       return false
     }
@@ -911,13 +984,7 @@ export class Wcdb4Client {
   private emitMonitorPayload(rawPayload: string): void {
     const payload = rawPayload.trim()
     if (!payload || !this.monitorCallback) return
-
-    try {
-      const parsed = JSON.parse(payload) as { action?: string }
-      this.monitorCallback(parsed.action || 'update', payload)
-    } catch {
-      this.monitorCallback('update', payload)
-    }
+    this.monitorCallback(parseMonitorEvent(payload))
   }
 
   private scheduleMonitorReconnect(): void {

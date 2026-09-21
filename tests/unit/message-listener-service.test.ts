@@ -6,6 +6,7 @@ import {
   extractMentionTargets,
   type NormalizedIncomingMessage
 } from '../../src/main/services/message-listener-service'
+import { parseMonitorEvent } from '../../src/main/wcdb4-client'
 import type { Wcdb4Client, Wcdb4Message } from '../../src/main/wcdb4-client'
 
 /**
@@ -342,5 +343,168 @@ describe('Observation Mode 约束', () => {
     await flush()
 
     expect(received).toHaveLength(0)
+  })
+})
+
+/**
+ * Native Monitor Event v2：pipe payload 里带上**发生变化的会话**。
+ *
+ * 这一组锁的是「不再依赖 `getSessions()[0]`」这件事，以及两个必须保留的行为：
+ * legacy（v1 runtime）fallback 和同消息 dedup。
+ */
+describe('parseMonitorEvent（协议解析）', () => {
+  it('v2 + message_change + session_id ⇒ precise', () => {
+    const event = parseMonitorEvent(
+      JSON.stringify({
+        version: 2,
+        kind: 'message_change',
+        session_id: 'group_A@chatroom',
+        db: 'message_0.db',
+        table: 'message',
+        action: 'update',
+        observed_at_ms: 1_700_000_000_000
+      })
+    )
+    expect(event.protocol).toBe(2)
+    expect(event.sessionId).toBe('group_A@chatroom')
+    expect(event.table).toBe('message')
+    expect(event.observedAtMs).toBe(1_700_000_000_000)
+  })
+
+  it('v1 payload 仍然解析成 legacy（不带会话）', () => {
+    const event = parseMonitorEvent(
+      JSON.stringify({ db: 'session.db', table: 'Session', action: 'update' })
+    )
+    expect(event.protocol).toBe(1)
+    expect(event.sessionId).toBeUndefined()
+    expect(event.action).toBe('update')
+    expect(event.raw).toContain('session.db')
+  })
+
+  it('v2 但缺 session_id / kind 不对 ⇒ 一律降级成 legacy，绝不猜会话', () => {
+    for (const payload of [
+      { version: 2, kind: 'message_change' },
+      { version: 2, kind: 'message_change', session_id: '   ' },
+      { version: 2, session_id: 'group_A@chatroom' },
+      { version: 1, kind: 'message_change', session_id: 'group_A@chatroom' }
+    ]) {
+      expect(parseMonitorEvent(JSON.stringify(payload)).protocol).toBe(1)
+      expect(parseMonitorEvent(JSON.stringify(payload)).sessionId).toBeUndefined()
+    }
+  })
+
+  it('不是 JSON 也不崩', () => {
+    const event = parseMonitorEvent('not-json')
+    expect(event.protocol).toBe(1)
+    expect(event.action).toBe('update')
+  })
+})
+
+describe('MessageListener · precise session path', () => {
+  const v2Event = (sessionId: string) =>
+    parseMonitorEvent(
+      JSON.stringify({ version: 2, kind: 'message_change', session_id: sessionId, table: 'message' })
+    )
+  const v1Event = () =>
+    parseMonitorEvent(JSON.stringify({ db: 'session.db', table: 'Session', action: 'update' }))
+
+  /** 按会话返回消息，并记录每个会话被回读了几次。 */
+  function multiSessionClient(bySession: Record<string, Wcdb4Message[]>): {
+    client: Wcdb4Client
+    calls: string[]
+  } {
+    const calls: string[] = []
+    const client = {
+      // legacy fallback 用的「最近活跃会话」，故意与 precise 的会话不同。
+      getSessions: vi.fn(() => [{ username: 'recent@chatroom' }]),
+      getMessagesAsync: vi.fn(async (sessionId: string) => {
+        calls.push(sessionId)
+        return bySession[sessionId] ?? []
+      })
+    } as unknown as Wcdb4Client
+    return { client, calls }
+  }
+
+  it('v2 事件直接按 sessionId 回读，不再碰 getSessions()[0]', async () => {
+    const { client, calls } = multiSessionClient({
+      'A@chatroom': [makeMessage({ mesLocalID: '1' })]
+    })
+    const listener = new MessageListenerService(client)
+    collect(listener)
+
+    listener.handleNativeChange(v2Event('A@chatroom'))
+    await flush()
+
+    expect(calls).toEqual(['A@chatroom'])
+    expect(received.map((message) => message.sessionId)).toEqual(['A@chatroom'])
+  })
+
+  it('120ms 内 A/B/A/C 会回读 A、B、C 各一次（不是「最后一个 wins」）', async () => {
+    const { client, calls } = multiSessionClient({
+      'A@chatroom': [makeMessage({ mesLocalID: '1' })],
+      'B@chatroom': [makeMessage({ mesLocalID: '2' })],
+      'C@chatroom': [makeMessage({ mesLocalID: '3' })]
+    })
+    const listener = new MessageListenerService(client)
+    collect(listener)
+
+    listener.handleNativeChange(v2Event('A@chatroom'))
+    listener.handleNativeChange(v2Event('B@chatroom'))
+    listener.handleNativeChange(v2Event('A@chatroom'))
+    listener.handleNativeChange(v2Event('C@chatroom'))
+    await flush()
+
+    expect(calls.sort()).toEqual(['A@chatroom', 'B@chatroom', 'C@chatroom'])
+    expect(received.map((message) => message.sessionId).sort()).toEqual([
+      'A@chatroom',
+      'B@chatroom',
+      'C@chatroom'
+    ])
+  })
+
+  it('一批里既有 v2 又有 v1 时，仍然按 v2 的精确会话回读', async () => {
+    const { client, calls } = multiSessionClient({
+      'A@chatroom': [makeMessage({ mesLocalID: '1' })],
+      'recent@chatroom': [makeMessage({ mesLocalID: '9' })]
+    })
+    const listener = new MessageListenerService(client)
+    collect(listener)
+
+    listener.handleNativeChange(v2Event('A@chatroom'))
+    listener.handleNativeChange(v1Event())
+    await flush()
+
+    expect(calls).toEqual(['A@chatroom'])
+  })
+
+  it('legacy（v1 runtime）仍然退回最近活跃会话，行为不变', async () => {
+    const { client, calls } = multiSessionClient({
+      'recent@chatroom': [makeMessage({ mesLocalID: '1' })]
+    })
+    const listener = new MessageListenerService(client)
+    collect(listener)
+
+    listener.handleNativeChange(v1Event())
+    await flush()
+
+    expect(calls).toEqual(['recent@chatroom'])
+    expect(received).toHaveLength(1)
+  })
+
+  it('native 重复发同一条消息的 v2 事件，只会投递一次', async () => {
+    const { client, calls } = multiSessionClient({
+      'A@chatroom': [makeMessage({ mesLocalID: '42' })]
+    })
+    const listener = new MessageListenerService(client)
+    collect(listener)
+
+    listener.handleNativeChange(v2Event('A@chatroom'))
+    await flush()
+    listener.handleNativeChange(v2Event('A@chatroom'))
+    await flush()
+
+    // 回读了两次（两次事件各一个窗口），但同一条消息只投递一次。
+    expect(calls).toEqual(['A@chatroom', 'A@chatroom'])
+    expect(received).toHaveLength(1)
   })
 })

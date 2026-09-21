@@ -9,9 +9,6 @@ import {
   Button,
   SegmentedControl,
   SegmentedControlItem,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
   useToast
 } from '../../components/ui'
 import { RuleListPanel } from './RuleListPanel'
@@ -188,21 +185,8 @@ export function AutomationWorkspace({
         <div className="automation-status-card">
           <span className="automation-status-label">消息监听</span>
           <span className={`automation-status-value ${status.listening ? 'ok' : 'off'}`}>
-            {status.listening ? '正在监听新消息' : '未在监听'}
+            {status.listening ? '运行中' : '未在监听'}
           </span>
-          {status.listeningDegraded ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <small className="automation-status-note" tabIndex={0}>
-                  当前仅能捕获最近活跃的会话
-                </small>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                微信底层只会上报「有表发生了变化」，不带是哪条会话。TraceMemo
-                目前据此回读最近活跃的会话，因此同一时刻多个群同时来消息时，只会处理其中的一个。
-              </TooltipContent>
-            </Tooltip>
-          ) : null}
         </div>
 
         <div className="automation-status-card">
