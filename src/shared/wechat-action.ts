@@ -2,6 +2,14 @@ export type WechatActionOrigin =
   | 'member_monitor'
   | 'scheduled_report'
   | 'user_tts'
+  /**
+   * 用户在界面上**手动**触发的发送（发送日报图片、给群发统计文本等）。
+   *
+   * 立项规则：**所有发送都必须经过 `WechatActionGateway`**。手动发送在改造前是
+   * 从 IPC 直连 `PersonalWechatSendService` 的，因此没有审计记录、没有幂等、
+   * 也不进 Send Log —— 排查「消息到底发没发出去」时会缺一份证据。
+   */
+  | 'user_manual'
   /** Automation v1（@我生成日报）。与 `shared/automation.ts` 的 AUTOMATION_SEND_ORIGIN 一致。 */
   | 'automation'
   | 'unknown'
@@ -11,6 +19,10 @@ export type WechatActionPurpose =
   | 'member_left_notification'
   | 'scheduled_report'
   | 'tts_voice'
+  /** 用户手动发送图片（日报图片 / 群成员统计图）。 */
+  | 'manual_image'
+  /** 用户手动发送文本。 */
+  | 'manual_text'
   /**
    * Automation v1 的两个用途。
    *

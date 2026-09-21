@@ -131,6 +131,10 @@ function buildChain(): Chain {
 
   const store = new AutomationRuleStore({ userDataPath: () => root })
   const log = new AutomationExecutionLogService({ userDataPath: () => root })
+  // 回复等待归零：端到端链路要跑得快且可复现。
+  // 真实默认值是 2 秒（编辑自动化 → 3 · 触发后执行），等待语义本身由 runner 单测覆盖。
+  const seeded = store.listRules()[0]
+  if (seeded) store.updateRule(seeded.id, { ...seeded, replyDelaySeconds: 0 })
   const runner = new AutomationActionRunner({
     executeAction: (request) => gateway.execute(request),
     generateReport: async (request) => {

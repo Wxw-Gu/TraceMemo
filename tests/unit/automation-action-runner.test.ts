@@ -53,6 +53,14 @@ function fakeClock(step = 5): () => number {
   }
 }
 
+/**
+ * 默认不真的等。
+ *
+ * 内置规则的 `replyDelaySeconds` 默认是 2 秒，如果每条例都真 sleep，
+ * 这个文件会平白多出几十秒。**等待语义**由「回复前等待」那组用例显式覆盖。
+ */
+const noDelay = async (): Promise<void> => {}
+
 function sentResult(): WechatActionResult {
   return {
     actionId: 'action-1',
@@ -78,6 +86,7 @@ function failedResult(code: string, reason: string): WechatActionResult {
 function buildRunner(options: {
   executeAction?: (request: WechatActionRequest) => Promise<WechatActionResult>
   generateReport?: () => Promise<AgentGroupReportResult>
+  delay?: (ms: number) => Promise<void>
 }): {
   runner: AutomationActionRunner
   calls: WechatActionRequest[]
@@ -87,6 +96,7 @@ function buildRunner(options: {
   const reports: Array<{ group: string; range?: string }> = []
   const runner = new AutomationActionRunner({
     now: fakeClock(),
+    delay: options.delay ?? noDelay,
     executeAction: async (request) => {
       calls.push(request)
       return options.executeAction ? options.executeAction(request) : sentResult()
@@ -184,6 +194,8 @@ describe('AutomationActionRunner', () => {
     expect(statusOf(result, 'report')).toBe('failed')
     expect(statusOf(result, 'send')).toBe('skipped')
     expect(result.errorSummary).toBe('所选时间范围没有可总结的消息')
+    // 跳过必须写清「是因为前置那步挂了」，否则用户看到「已跳过」会以为规则没配好。
+    expect(result.steps.find((step) => step.key === 'send')?.skipReason).toContain('前置步骤失败')
     // 只发过那条文字回复，图片一次都没发。
     expect(calls).toHaveLength(1)
     expect(calls[0].content.type).toBe('text')
@@ -245,16 +257,38 @@ describe('AutomationActionRunner', () => {
     expect(calls[0].content.type).toBe('image')
   })
 
-  it('未启用生成日报时，发送图片也必须 skipped（不能凭空发图）', async () => {
+  it('规则没启用「发送日报图片」时，该步 skipped 且整体仍算成功（情况 A）', async () => {
     const { runner, calls, reports } = buildRunner({})
+    const rule = makeRule((item) => {
+      item.actions = item.actions.filter((action) => action.type !== 'sendReportImage')
+    })
+    const result = await run(runner, rule)
+
+    expect(result.status).toBe('success')
+    expect(statusOf(result, 'reply')).toBe('success')
+    expect(statusOf(result, 'report')).toBe('success')
+    expect(statusOf(result, 'send')).toBe('skipped')
+    // 没配发送就只发了一条回复，不该有多余的图片请求。
+    expect(calls).toHaveLength(1)
+    expect(calls[0].content.type).toBe('text')
+    expect(reports).toHaveLength(1)
+  })
+
+  it('规则要求发送图片、但手上没有图片时判失败，不允许静默跳过（情况 B）', async () => {
+    const { runner, calls } = buildRunner({})
+    // 只留 reply + send：没有 generateReport ⇒ 永远拿不到 pngPath。
     const rule = makeRule((item) => {
       item.actions = item.actions.filter((action) => action.type !== 'generateReport')
     })
     const result = await run(runner, rule)
 
     expect(statusOf(result, 'report')).toBe('skipped')
-    expect(statusOf(result, 'send')).toBe('skipped')
-    expect(reports).toHaveLength(0)
+    expect(statusOf(result, 'send')).toBe('failed')
+    // 关键：整次执行必须是 failed（合并分支会把它错记成 success）。
+    expect(result.status).toBe('failed')
+    const sendStep = result.steps.find((step) => step.key === 'send')
+    expect(sendStep?.error).toContain('日报图片未生成')
+    // 而且**绝不**退而求其次去发别的东西：只有那条文字回复出去过。
     expect(calls).toHaveLength(1)
     expect(calls[0].content.type).toBe('text')
   })
@@ -287,6 +321,7 @@ describe('AutomationActionRunner', () => {
     const executeAction = vi.fn(async (_request: WechatActionRequest) => sentResult())
     const runner = new AutomationActionRunner({
       now: fakeClock(),
+      delay: noDelay,
       executeAction,
       generateReport: async () => ({ success: true, pngPath: '/tmp/report.png' })
     })
@@ -303,5 +338,96 @@ describe('AutomationActionRunner', () => {
       type: 'contact',
       id: 'wxid_friend'
     })
+  })
+
+  /**
+   * 回复前等待：规则一命中就秒回看起来像机器人，所以它是**规则自己的一项执行参数**
+   * （`rule.replyDelaySeconds`，在「编辑自动化 → 3 · 触发后执行」里配），
+   * 而不是全局设置 —— 不同规则可以不一样。
+   *
+   * 这一组锁三件事：等待真的发生在回复之前、等待不计入回复步骤耗时、
+   * 以及「不该等的时候一步都不等」。
+   */
+  it('回复等待发生在发送回复之前，顺序为 等待 → 回复 → 日报 → 图片', async () => {
+    const order: string[] = []
+    const delay = vi.fn(async (ms: number) => {
+      order.push(`delay:${ms}`)
+    })
+    const runner = new AutomationActionRunner({
+      now: fakeClock(),
+      delay,
+      executeAction: async (request) => {
+        order.push(`send:${request.content.type}`)
+        return sentResult()
+      },
+      generateReport: async () => {
+        order.push('report')
+        return { success: true, pngPath: '/tmp/report.png' }
+      }
+    })
+
+    await run(
+      runner,
+      makeRule((rule) => {
+        rule.replyDelaySeconds = 2
+      })
+    )
+
+    expect(delay).toHaveBeenCalledTimes(1)
+    expect(delay).toHaveBeenCalledWith(2_000)
+    expect(order).toEqual(['delay:2000', 'send:text', 'report', 'send:image'])
+  })
+
+  it('等待不计入「回复确认」这一步的耗时', async () => {
+    const { runner } = buildRunner({ delay: noDelay })
+    const result = await run(
+      runner,
+      makeRule((rule) => {
+        rule.replyDelaySeconds = 2
+      })
+    )
+
+    // fakeClock 每调用一次进 5ms：reply 从 startedAt 到 finishedAt 只跨一次 now()。
+    const replyStep = result.steps.find((step) => step.key === 'reply')
+    expect(replyStep?.durationMs).toBe(5)
+  })
+
+  it('等待为 0 时完全不等待；字段缺失（旧版 rules.json）按默认 2 秒', async () => {
+    const delay = vi.fn(noDelay)
+    const { runner } = buildRunner({ delay })
+
+    await run(
+      runner,
+      makeRule((rule) => {
+        rule.replyDelaySeconds = 0
+      })
+    )
+    expect(delay).not.toHaveBeenCalled()
+
+    // 历史规则里没有这个字段：按默认 2 秒处理，而不是凭空变成「不等待」。
+    await run(
+      runner,
+      makeRule((rule) => {
+        delete (rule as { replyDelaySeconds?: number }).replyDelaySeconds
+      })
+    )
+    expect(delay).toHaveBeenCalledWith(2_000)
+  })
+
+  it('回复动作被关掉时不再空等', async () => {
+    const delay = vi.fn(noDelay)
+    const { runner } = buildRunner({ delay })
+
+    await run(
+      runner,
+      makeRule((rule) => {
+        rule.replyDelaySeconds = 2
+        for (const action of rule.actions) {
+          if (action.type === 'replyText') action.enabled = false
+        }
+      })
+    )
+
+    expect(delay).not.toHaveBeenCalled()
   })
 })

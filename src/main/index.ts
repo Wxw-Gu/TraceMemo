@@ -118,7 +118,7 @@ import { automationExecutionLogService } from './services/automation-execution-l
 import { initAutomationService, getAutomationService } from './services/automation-service'
 import { GroupStatsService } from './services/group-stats-service'
 import { wechatActionLogService } from './services/wechat-action-log-service'
-import { wechatActionGateway } from './services/wechat-action-gateway'
+import { toPersonalWechatSendResult, wechatActionGateway } from './services/wechat-action-gateway'
 import { personalWechatSendService } from './services/personal-wechat-send-service'
 import { getPersonalWechatSendCapability } from './services/personal-wechat-capability-service'
 import { scheduledReportService } from './services/scheduled-report-service'
@@ -1056,14 +1056,17 @@ app.whenReady().then(async () => {
         voiceRecognition?.connect(voiceService, resolvedRoot)
         stickerService = new StickerService(wcdb4Client)
         videoAssetService = new VideoAssetService(wcdb4Client)
-        const monitoring = await wcdb4Client.startMonitor((type, json) => {
+        const monitoring = await wcdb4Client.startMonitor((event) => {
           wcdb4Client.invalidateSessionCache()
           // 正式 MessageListener：只做 coalesce + 有界回读 + dedup + 投递，不触发业务。
-          messageListener.handleNativeChange()
-          groupExitMonitorService.notifyDatabaseChanged(json)
-          recallArchiveMonitor?.handleDatabaseChange(json)
+          // v2 事件带 sessionId ⇒ 回读不再依赖「最近活跃会话」。
+          messageListener.handleNativeChange(event)
+          groupExitMonitorService.notifyDatabaseChanged(event.raw)
+          recallArchiveMonitor?.handleDatabaseChange(event.raw)
           for (const window of BrowserWindow.getAllWindows()) {
-            if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
+            if (!window.isDestroyed()) {
+              window.webContents.send('wcdb-change', { type: event.type, json: event.raw })
+            }
           }
         })
         automationListening = monitoring === true
@@ -1208,7 +1211,33 @@ app.whenReady().then(async () => {
   )
   // 日报等系统动作仍复用现有发送服务；普通聊天不再暴露这个入口。
   ipcMain.handle('wechat-personal:send', async (_, request: PersonalWechatSendRequest) => {
-    if (request.type !== 'voice' || String(request.fromId || '').trim()) {
+    // 项目规则：**所有发送都必须经过 WechatActionGateway**（审计 + 幂等 + 同一个 Send Log）。
+    // 手动发送在改造前从这里直连 `PersonalWechatSendService`，于是完全不留痕 ——
+    // 排查「消息到底发没发出去」时恰好缺的就是那份证据。
+    // `triggerType: 'user'` 不会命中 automation 专用的 purpose allowlist 与 3s 节流，
+    // 所以行为与改造前一致，只是多一条审计记录（「发送日志」里能看到）。
+    if (request.type === 'text' || request.type === 'image') {
+      const to = String(request.to || '').trim()
+      const action = await wechatActionGateway.execute({
+        origin: 'user_manual',
+        purpose: request.type === 'text' ? 'manual_text' : 'manual_image',
+        triggerType: 'user',
+        recipient: {
+          type: request.isGroup || to.endsWith('@chatroom') ? 'group' : 'contact',
+          id: to
+        },
+        content:
+          request.type === 'text'
+            ? { type: 'text', text: String(request.text || '') }
+            : { type: 'image', path: String(request.filePath || '') }
+      })
+      // 返回契约保持 `PersonalWechatSendResult`，界面判读不用改。
+      return toPersonalWechatSendResult(action, await personalWechatSendService.getStatus())
+    }
+
+    // 语音仍走既有分支：它有自己的网关入口 `wechat-personal:sendGeneratedTtsVoice`，
+    // 且需要先解析当前账号 wxid 才能编码。
+    if (String(request.fromId || '').trim()) {
       return personalWechatSendService.send(request)
     }
     let fromId = ''
@@ -2368,11 +2397,13 @@ app.whenReady().then(async () => {
     if (client) {
       voiceService = new VoiceService(client, client.getAccountRoot())
       voiceRecognition?.connect(voiceService, client.getAccountRoot())
-      const monitoring = await client.startMonitor((type, json) => {
+      const monitoring = await client.startMonitor((event) => {
         client.invalidateSessionCache()
-        groupExitMonitorService.notifyDatabaseChanged(json)
+        groupExitMonitorService.notifyDatabaseChanged(event.raw)
         for (const window of BrowserWindow.getAllWindows()) {
-          if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
+          if (!window.isDestroyed()) {
+            window.webContents.send('wcdb-change', { type: event.type, json: event.raw })
+          }
         }
       })
       void groupExitMonitorService.start(monitoring)

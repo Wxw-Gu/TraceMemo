@@ -1,5 +1,5 @@
 import { decompress as zstdDecompress } from 'fzstd'
-import type { Wcdb4Client, Wcdb4Message } from '../wcdb4-client'
+import type { Wcdb4Client, Wcdb4Message, Wcdb4MonitorEvent } from '../wcdb4-client'
 
 /**
  * MessageListener —— 实时消息回读底座。
@@ -21,9 +21,8 @@ import type { Wcdb4Client, Wcdb4Message } from '../wcdb4-client'
  * **不负责**（这些属于下一层，本模块不许碰）：关键词匹配、@我业务判断、日报、
  * 自动回复、AI 调用、Agent 调度、发送消息。
  *
- * 设计约束全部来自 2026-09-20 的真实环境 Spike（见
- * `.ai-local/reports/2026-09-20-realtime-message-spike-result.md`）：
- * 一条真实消息平均触发 **≈17 个** native event，所以**绝不能**一个事件触发一次业务动作。
+ * 设计约束：一次写入会触发**一连串** native event（十几条），
+ * 所以**绝不能**一个事件触发一次业务动作。
  */
 
 /** zstd 帧魔数（微信 `source` 列是 zstd 压缩）。 */
@@ -185,6 +184,13 @@ export class MessageListenerService {
    * 必须有界 —— Spike 里用的是无上限 `Set`，长时间运行会持续吃内存。
    */
   private readonly seen = new Map<string, number>()
+  /**
+   * 本批 coalesce 窗口内**出现过精确会话**的事件收集到的 session 集合。
+   *
+   * v2 事件（Native Monitor Event v2）会带上发生变化的 sessionId，这里用 **Set** 收集 ——
+   * 120ms 内收到 `A B A C B` 必须回读 A/B/C 三个，绝不能「最后一个 wins」。
+   */
+  private readonly pendingSessions = new Set<string>()
   private coalesceTimer: ReturnType<typeof setTimeout> | null = null
   private readbackInFlight = false
   private disposed = false
@@ -243,11 +249,17 @@ export class MessageListenerService {
   /**
    * 接 native change event。
    *
-   * 只做计数与 coalesce —— **绝不**在这里回读，更不触发任何业务。
+   * 只做计数、收集会话与 coalesce —— **绝不**在这里回读，更不触发任何业务。
+   *
+   * `event.protocol === 2` 时把 `sessionId` 收进本批的集合；legacy 事件（v1，不带会话）
+   * 走到回读时仍然只能退化成「最近活跃会话」。
    */
-  handleNativeChange(): void {
+  handleNativeChange(event?: Wcdb4MonitorEvent): void {
     if (this.disposed) return
     this.counters.nativeEvents += 1
+    if (event?.protocol === 2 && event.sessionId) {
+      this.pendingSessions.add(event.sessionId)
+    }
     if (this.coalesceTimer) {
       // 已经在同一个窗口里：直接合并掉，这就是 17:1 那个比值的收敛点。
       this.counters.coalescedEvents += 1
@@ -262,47 +274,44 @@ export class MessageListenerService {
   /**
    * 有界回读 → normalize → dedup → 投递。
    *
-   * 回读范围严格受限：**单会话** + **小时间窗口** + **条数上限**。
-   * 不遍历会话、不扫全库。
+   * 回读范围严格受限：**按会话** + **小时间窗口** + **条数上限**。不遍历会话、不扫全库。
+   *
+   * 目标会话的来源有两种：
+   * - **precise（protocol v2）**：本批事件收集到的 `sessionId` 集合，逐个回读
+   *   （多个会话同时来消息时，A/B/C 都会被读到）；
+   * - **legacy（protocol v1，旧 runtime）**：只能退回「最近活跃会话」`getSessions()[0]`。
    */
   private async readback(): Promise<void> {
     if (this.disposed || this.readbackInFlight) return
     this.readbackInFlight = true
     const startedAt = Date.now()
+
+    const preciseSessions = Array.from(this.pendingSessions)
+    this.pendingSessions.clear()
+
     try {
-      const nowSec = Math.floor(startedAt / 1000)
-      const sessions = this.client.getSessions()
-      const session = sessions[0]
-      if (!session?.username) return
-
-      this.counters.readbacks += 1
-      const messages = await this.client.getMessagesAsync(
-        session.username,
-        nowSec - this.lookbackSec,
-        nowSec + this.lookaheadSec,
-        { limit: this.readLimit }
-      )
-      if (this.disposed) return
-
       let delivered = 0
-      for (const message of messages) {
-        const normalized = this.normalize(session.username, message)
-        if (!normalized) continue
-        // dedup：同一条消息可能在多个读回窗口中反复出现。
-        if (!this.markSeen(normalized)) {
-          this.counters.deduped += 1
-          continue
+      let sessions = 0
+
+      if (preciseSessions.length > 0) {
+        for (const sessionId of preciseSessions) {
+          if (this.disposed) return
+          delivered += await this.readbackSession(sessionId)
+          sessions += 1
         }
-        this.counters.delivered += 1
-        delivered += 1
-        this.deliver(normalized)
+      } else {
+        // legacy：旧 runtime 的 payload 不带会话，只能回读「最近活跃会话」。
+        const session = this.client.getSessions()[0]
+        if (!session?.username) return
+        delivered = await this.readbackSession(session.username)
+        sessions = 1
       }
 
       if (delivered > 0) {
-        // 日志只记录数量与耗时，**不含** wxid / 群名 / 昵称 / 正文 / source。
+        // 日志只记录协议版本、数量与耗时 —— **不含** wxid / 群名 / 昵称 / 正文 / source / sessionId。
         console.log(
-          `[MessageListener] delivered=${delivered} readbackMs=${Date.now() - startedAt}` +
-            ` sessionType=${session.username.endsWith('@chatroom') ? 'group' : 'direct'}` +
+          `[MessageListener] protocol=${preciseSessions.length > 0 ? 'v2' : 'v1'}` +
+            ` sessions=${sessions} delivered=${delivered} readbackMs=${Date.now() - startedAt}` +
             ` events=${this.counters.nativeEvents} coalesced=${this.counters.coalescedEvents}`
         )
       }
@@ -313,6 +322,34 @@ export class MessageListenerService {
     } finally {
       this.readbackInFlight = false
     }
+  }
+
+  /** 回读**单个**会话并投递。返回本次真正投递出去的条数。 */
+  private async readbackSession(sessionId: string): Promise<number> {
+    const nowSec = Math.floor(Date.now() / 1000)
+    this.counters.readbacks += 1
+    const messages = await this.client.getMessagesAsync(
+      sessionId,
+      nowSec - this.lookbackSec,
+      nowSec + this.lookaheadSec,
+      { limit: this.readLimit }
+    )
+    if (this.disposed) return 0
+
+    let delivered = 0
+    for (const message of messages) {
+      const normalized = this.normalize(sessionId, message)
+      if (!normalized) continue
+      // dedup：同一条消息可能在多个读回窗口中反复出现（native 事件本身也可能重复）。
+      if (!this.markSeen(normalized)) {
+        this.counters.deduped += 1
+        continue
+      }
+      this.counters.delivered += 1
+      delivered += 1
+      this.deliver(normalized)
+    }
+    return delivered
   }
 
   private deliver(message: NormalizedIncomingMessage): void {

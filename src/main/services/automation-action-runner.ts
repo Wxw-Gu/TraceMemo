@@ -4,6 +4,7 @@ import {
   AUTOMATION_SEND_PURPOSE,
   DEFAULT_REPLY_TEXT,
   automationIdempotencyKey,
+  normalizeReplyDelaySeconds,
   type AutomationAction,
   type AutomationRule,
   type AutomationStep,
@@ -31,6 +32,22 @@ import { wechatActionGateway } from './wechat-action-gateway'
 /** 一步执行完毕后，后续步骤的处置方式。 */
 const STEP_ORDER: AutomationStepKey[] = ['received', 'matched', 'reply', 'report', 'send']
 
+/**
+ * 前置步骤失败时，后续步骤的 `skipReason`。
+ *
+ * 必须写清「是因为前面那步没成」，否则用户看到一连串「已跳过」会以为是规则没配好。
+ */
+const SKIPPED_AFTER_REPLY_FAILURE = '前置步骤失败（回复确认未成功），本次不再继续。'
+const SKIPPED_AFTER_REPORT_FAILURE = '前置步骤失败（日报未生成），没有图片可发送。'
+
+/**
+ * 规则启用了「发送日报图片」，但手上没有图片文件。
+ *
+ * 这不是「正常跳过」，也不允许退而求其次去发空路径 / 上一张旧图 / 不存在的文件 ——
+ * 发错东西比不发更糟，所以直接判失败。
+ */
+const SEND_WITHOUT_IMAGE_ERROR = '日报图片未生成，无法发送。'
+
 export interface AutomationRunInput {
   executionId: string
   rule: AutomationRule
@@ -52,6 +69,8 @@ export interface AutomationActionRunnerDependencies {
   generateReport?: (request: AgentGroupReportRequest) => Promise<AgentGroupReportResult>
   executeAction?: (request: WechatActionRequest) => Promise<WechatActionResult>
   now?: () => number
+  /** 延迟实现。默认真 sleep；单测注入即时 resolve 的假实现，避免真的等 2 秒。 */
+  delay?: (ms: number) => Promise<void>
 }
 
 /** 策略层的错误码 → 用户可读短句。UI 直接展示这些文案，不做二次翻译。 */
@@ -86,8 +105,9 @@ function markFailed(step: AutomationStep, at: number, error: string): void {
   step.error = error
 }
 
-function markSkipped(step: AutomationStep): void {
+function markSkipped(step: AutomationStep, skipReason?: string): void {
   step.status = 'skipped'
+  if (skipReason) step.skipReason = skipReason
 }
 
 function actionErrorMessage(code: string | undefined, fallback: string | undefined): string {
@@ -102,11 +122,15 @@ export class AutomationActionRunner {
   private readonly generateReport: (request: AgentGroupReportRequest) => Promise<AgentGroupReportResult>
   private readonly executeAction: (request: WechatActionRequest) => Promise<WechatActionResult>
   private readonly now: () => number
+  private readonly delay: (ms: number) => Promise<void>
 
   constructor(dependencies: AutomationActionRunnerDependencies = {}) {
     this.generateReport = dependencies.generateReport ?? generateAgentGroupReport
     this.executeAction = dependencies.executeAction ?? ((request) => wechatActionGateway.execute(request))
     this.now = dependencies.now ?? (() => Date.now())
+    this.delay =
+      dependencies.delay ??
+      ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   }
 
   async run(input: AutomationRunInput): Promise<AutomationRunResult> {
@@ -122,6 +146,22 @@ export class AutomationActionRunner {
     const sendAction = findAction(input.rule, 'sendReportImage')
 
     // ---- 步骤 3：回复确认 ----
+    //
+    // 回复等待：规则一命中就秒回，看起来就是个机器人（消息刚到、回复就到）。
+    // 等待时长是**规则自己的一项执行参数**（`rule.replyDelaySeconds`，在
+    // 「编辑自动化 → 3 · 触发后执行」里配），所以不同规则可以不一样。
+    //
+    // 等待刻意放在 `reply` 步骤计时**之外** —— `reply.durationMs` 只应该反映发送本身，
+    // 否则用户看到「回复确认 2000ms」会误以为是发送慢。
+    // 已经命中就不再回头重判规则：等待窗口里规则被停用/删掉也不中断本次执行，
+    // 与 cooldown、同消息幂等的口径一致（都是「命中那一刻」的快照）。
+    if (replyAction) {
+      // 用共享的归一化函数，而不是 `Number(...) || 0`：旧版 rules.json 里没有这个字段，
+      // 那应该按**默认 2 秒**处理（否则「默认 2 秒」要等用户手动进编辑页才会生效）。
+      const replyDelayMs = normalizeReplyDelaySeconds(input.rule.replyDelaySeconds) * 1_000
+      if (replyDelayMs > 0) await this.delay(replyDelayMs)
+    }
+
     if (!replyAction) {
       markSkipped(stepAt('reply'))
     } else {
@@ -134,7 +174,7 @@ export class AutomationActionRunner {
       })
       if (!sent.ok) {
         markFailed(replyStep, this.now(), sent.error || '回复确认失败')
-        markRemainingSkipped(steps, 'reply')
+        markRemainingSkipped(steps, 'reply', SKIPPED_AFTER_REPLY_FAILURE)
         return { steps, status: 'failed', errorSummary: replyStep.error }
       }
       markSuccess(replyStep, this.now())
@@ -159,7 +199,7 @@ export class AutomationActionRunner {
       }
       if (!result.success || !result.pngPath) {
         markFailed(reportStep, this.now(), result.error || '日报生成失败')
-        markRemainingSkipped(steps, 'report')
+        markRemainingSkipped(steps, 'report', SKIPPED_AFTER_REPORT_FAILURE)
         return { steps, status: 'failed', errorSummary: reportStep.error }
       }
       pngPath = result.pngPath
@@ -167,12 +207,23 @@ export class AutomationActionRunner {
     }
 
     // ---- 步骤 5：发送日报图片 ----
-    // 日报被跳过（或没产出图片）时，这一条也必须 skipped —— 不能凭空发图。
-    if (!sendAction || !pngPath) {
+    //
+    // 三种情况必须分开判断 —— 合并成 `!sendAction || !pngPath` 会把
+    // 「规则要求发图、但图根本没生成」当成正常跳过，execution 还记成 success：
+    //
+    // A. 规则**本来就没有启用**这个动作 → skipped，这是正常的，不影响整体结果；
+    // B. 启用了，但要发的东西不存在 → **failed**，不能假装成功，
+    //    更不能退而求其次去发空路径 / 上一次的旧图 / 不存在的文件；
+    // C. 前置（生成日报）已经失败 → 上面就 return 了，走不到这里。
+    if (!sendAction) {
       markSkipped(stepAt('send'))
       return { steps, status: 'success', ...(pngPath ? { pngPath } : {}) }
     }
     const sendStep = stepAt('send')
+    if (!pngPath) {
+      markFailed(sendStep, this.now(), SEND_WITHOUT_IMAGE_ERROR)
+      return { steps, status: 'failed', errorSummary: sendStep.error }
+    }
     sendStep.status = 'running'
     sendStep.startedAt = this.now()
     const sent = await this.sendThroughGateway(input, 'report', { type: 'image', path: pngPath })
@@ -226,11 +277,15 @@ function findAction(rule: AutomationRule, type: AutomationAction['type']): Autom
 }
 
 /** 把 `after` 之后的步骤全部标成 `skipped`（前一步挂了，后面的不许再动）。 */
-function markRemainingSkipped(steps: AutomationStep[], after: AutomationStepKey): void {
+function markRemainingSkipped(
+  steps: AutomationStep[],
+  after: AutomationStepKey,
+  skipReason?: string
+): void {
   const from = STEP_ORDER.indexOf(after) + 1
   for (const key of STEP_ORDER.slice(from)) {
     const step = steps.find((item) => item.key === key)
-    if (step) markSkipped(step)
+    if (step) markSkipped(step, skipReason)
   }
 }
 

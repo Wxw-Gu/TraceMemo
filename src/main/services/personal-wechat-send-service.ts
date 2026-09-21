@@ -931,6 +931,44 @@ function windowsStatusBase(host = windowsHookHost() || ''): PersonalWechatSender
   }
 }
 
+/** 文件字节数；读不到时返回 `-1`（**不是** 0 —— 0 会被误读成「空文件」）。 */
+function safeFileSize(target: string): number {
+  try {
+    return statSync(target).size
+  } catch {
+    return -1
+  }
+}
+
+/**
+ * 发送链路诊断日志（排查「hook 报成功、群里却没有消息」时用）。
+ *
+ * 只有在设置里打开「调试模式」时才输出，所以正常使用不会刷屏。
+ *
+ * **隐私约束**：只允许输出类型、字节数、HTTP 状态码、hook 的 `ret` 这类结构性字段。
+ * 文件名、完整路径、wxid、群名、消息正文不进日志。
+ */
+function logSendDiagnostic(stage: string, detail: Record<string, string | number | boolean | null>): void {
+  try {
+    if (!loadSettings().debugEnabled) return
+  } catch {
+    return
+  }
+  console.log(`[SendDiag] ${stage} ${JSON.stringify(detail)}`)
+}
+
+/**
+ * 发送完成后**保留**图片临时文件的时长（毫秒）。默认 `0` = 立刻删除（现行行为）。
+ *
+ * 为什么留这个开关：`finally` 里的删除发生在 **hook 返回之后**，这隐含假设
+ * 「hook 返回时发送已经完成」。如果 hook 其实是「先回 200、后台再读文件」，
+ * 文件就可能在它读到之前已经被删掉 —— 现象正好是「hook 报成功、微信里没有消息」。
+ *
+ * 置为非 0 时可分辨两类失败：保留期间图片到了 ⇒ 删除时机问题（修法与 hook 约定文件生命周期）；
+ * 仍然没到 ⇒ 与文件生命周期无关。
+ */
+const WINDOWS_TEMP_IMAGE_GRACE_MS = 0
+
 async function requestWindowsHook(
   endpoint: string,
   body: Record<string, unknown>,
@@ -939,15 +977,41 @@ async function requestWindowsHook(
   host = windowsHookHost()
 ): Promise<WindowsHookResponse> {
   if (!host) throw new Error('尚未配置微信发送能力端口')
+  const startedAt = Date.now()
   const init: RequestInit = {
     method,
     headers: { 'Content-Type': 'application/json' }
   }
   if (method !== 'GET') init.body = JSON.stringify(body)
+  logSendDiagnostic('hook-request', {
+    endpoint,
+    method,
+    // 只报 payload 里有没有内容，不报内容本身。
+    hasPayload: method !== 'GET' ? init.body !== undefined : false
+  })
   const response = await requestWithTimeout(`http://${host}${endpoint}`, init, timeoutMs)
   const responseText = await response.text()
-  if (!response.ok) throw new WindowsHookHttpError(response.status, responseText)
-  return parseWindowsHookResponse(responseText, method === 'POST')
+  if (!response.ok) {
+    // HTTP 层失败：状态码不是隐私，正文可能是（hook 有时会把请求原样回显）。
+    logSendDiagnostic('hook-response', {
+      endpoint,
+      httpStatus: response.status,
+      ok: false,
+      bodyLength: responseText.length,
+      elapsedMs: Date.now() - startedAt
+    })
+    throw new WindowsHookHttpError(response.status, responseText)
+  }
+  const parsed = parseWindowsHookResponse(responseText, method === 'POST')
+  logSendDiagnostic('hook-response', {
+    endpoint,
+    httpStatus: response.status,
+    ok: true,
+    ret: typeof parsed.ret === 'number' ? parsed.ret : null,
+    retMessageLength: String(parsed.retmsg ?? parsed.msg ?? '').length,
+    elapsedMs: Date.now() - startedAt
+  })
+  return parsed
 }
 
 export class PersonalWechatSendService {
@@ -1465,6 +1529,14 @@ export class PersonalWechatSendService {
       } else if (request.type === 'image') {
         const preparedImage = prepareWindowsImageFile(request.filePath)
         temporaryImagePath = preparedImage.temporary ? preparedImage.filePath : undefined
+        // 关键证据：源文件有多大、是否走了临时副本、副本拷出来多大。
+        // `copiedBytes < sourceBytes` ⇒ 截断的拷贝：拷贝中途失败不会抛错，
+        // 只看「有没有文件」会漏掉这种情况。
+        logSendDiagnostic('image-prepared', {
+          sourceBytes: safeFileSize(request.filePath),
+          usedTempCopy: preparedImage.temporary,
+          copiedBytes: safeFileSize(preparedImage.filePath)
+        })
         const windowsRequest = buildWindowsWechatRequest({
           ...request,
           filePath: preparedImage.filePath
@@ -1503,10 +1575,22 @@ export class PersonalWechatSendService {
       }
     } finally {
       if (temporaryImagePath) {
-        try {
-          unlinkSync(temporaryImagePath)
-        } catch {
-          // Temporary files are best-effort cleanup only.
+        if (WINDOWS_TEMP_IMAGE_GRACE_MS > 0) {
+          // 诊断模式：先不删，等一段时间再删（见常量注释）。
+          const pending = temporaryImagePath
+          setTimeout(() => {
+            try {
+              unlinkSync(pending)
+            } catch {
+              // best effort
+            }
+          }, WINDOWS_TEMP_IMAGE_GRACE_MS).unref?.()
+        } else {
+          try {
+            unlinkSync(temporaryImagePath)
+          } catch {
+            // Temporary files are best-effort cleanup only.
+          }
         }
       }
       if (temporaryVoicePath) {

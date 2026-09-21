@@ -52,6 +52,28 @@ import {
  * 少了它就会自己触发自己，形成死循环。
  */
 
+/**
+ * gate 表的容量上限。超了才清理「已解锁」的条目 —— 不是为了省内存，
+ * 而是防止长期运行下 ruleId × conversationId 无界增长。
+ */
+const GATE_MAX_ENTRIES = 5_000
+
+/**
+ * 一条规则在一个会话里的 gate 状态。
+ *
+ * ```
+ * blocked = inFlight || now < triggeredAt + cooldown
+ * ```
+ */
+interface ConversationRuleGate {
+  /** **第一次**触发的时间（cooldown 起点）。执行完成时**不重置**。 */
+  triggeredAt: number
+  /** 当前是否有这条规则在这个会话里的执行还在跑。 */
+  inFlight: boolean
+  /** 本次执行期间被 gate 挡下的消息数（仅诊断日志用）。 */
+  blockedSinceTrigger: number
+}
+
 /** 幂等登记表的存活时间与容量上限（与 MessageListener 的 dedup 同思路）。 */
 const CLAIM_TTL_MS = 10 * 60 * 1000
 const CLAIM_MAX_ENTRIES = 5_000
@@ -66,6 +88,8 @@ export interface AutomationServiceDependencies {
   /** 由主进程注入：MessageListener 是否在运行。 */
   isListening?: () => boolean
   now?: () => number
+  /** gate 表容量上限。默认 `GATE_MAX_ENTRIES`；单测用小值来触发清理路径。 */
+  gateMaxEntries?: number
 }
 
 interface ClaimEntry {
@@ -82,8 +106,18 @@ export class AutomationService {
 
   /** `ruleId:sessionId:localId` → 登记时间。 */
   private readonly claims = new Map<string, ClaimEntry>()
-  /** `${ruleId}:${conversationId}` → 上次真正开始执行的毫秒时间戳。 */
-  private readonly cooldowns = new Map<string, number>()
+  /**
+   * Automation rule ↔ conversation gate。
+   *
+   * 粒度是 **`ruleId + conversationId`**（不是 sender，也不是整个会话）：
+   * 群 A 的「@我生成日报」被触发后，群 B 的同一条规则、或同群里的**另一条规则**都不受影响。
+   */
+  private readonly gates = new Map<string, ConversationRuleGate>()
+
+  /** 仅用于诊断统计（`[Automation] blockedMessages=N`），**不进用户执行日志**。 */
+  private blockedMessageCount = 0
+
+  private readonly gateMaxEntries: number
 
   private selfUsernames: string[] = []
   private selfUsernamesAt = 0
@@ -98,6 +132,7 @@ export class AutomationService {
     this.getCapability = dependencies.getCapability ?? getPersonalWechatSendCapability
     this.isListening = dependencies.isListening ?? (() => true)
     this.now = dependencies.now ?? (() => Date.now())
+    this.gateMaxEntries = dependencies.gateMaxEntries ?? GATE_MAX_ENTRIES
   }
 
   /**
@@ -125,6 +160,30 @@ export class AutomationService {
     }
 
     for (const rule of rules) {
+      // ① Gate 检查放在 TriggerMatcher **之前**（纯读，无副作用）。
+      //
+      // Automation rule conversation gate:
+      // Once a rule is triggered for a conversation, ignore subsequent messages for
+      // this rule while the current execution is still running OR until the configured
+      // cooldown has elapsed from the original trigger time.
+      //
+      // Messages arriving during this blocked window must not be matched, replied to,
+      // executed, or written to the user-facing execution log.
+      //
+      // The rule becomes eligible again only after BOTH:
+      // 1. the previous execution has finished; and
+      // 2. the cooldown since the original trigger has expired.
+      //
+      // Important: cooldown starts at the original trigger time, not when execution finishes.
+      //
+      // 也就是说：第一个任务执行期间，以及配置的触发间隔内，后续消息全部静默忽略。
+      if (this.isGated(rule, message.sessionId)) {
+        this.blockedMessageCount += 1
+        this.noteBlocked(rule, message.sessionId)
+        continue
+      }
+
+      // ② 匹配（同步）。放在 gate 之后 —— 阻塞窗口内的消息不该被匹配。
       let matched: boolean
       try {
         matched = matchAutomationRule(rule, input, selfUsernames).matched
@@ -134,13 +193,28 @@ export class AutomationService {
       }
       if (!matched) continue
 
-      // 三道闸全部是**同步**的，必须在任何 await 之前完成登记，
-      // 否则同一批并发消息会同时穿过检查。
-      if (this.isCoolingDown(rule, message.sessionId)) continue
-      if (!this.claim(rule, message)) continue
+      // ③ Gate claim：check → 写入。**中间不能有 await**，否则两条几乎同时到达的消息
+      //    会一起穿过检查。上面 ① 到这里的唯一代码是同步的 matcher，所以这里仍是原子的。
+      if (!this.claimGate(rule, message.sessionId)) {
+        this.blockedMessageCount += 1
+        this.noteBlocked(rule, message.sessionId)
+        continue
+      }
+
+      // ④ 同一条消息只处理一次（native 事件重复 / 多窗口回读都可能重复投递）。
+      if (!this.claim(rule, message)) {
+        this.leaveGate(rule, message.sessionId)
+        continue
+      }
 
       const sourceDisplayName = this.resolveDisplayName(message)
-      await this.execute(rule, message, sourceDisplayName)
+      try {
+        await this.execute(rule, message, sourceDisplayName)
+      } finally {
+        // 无论 success / failed / 抛异常都要解除 in-flight。
+        // 漏掉这一步会让这条规则在这个会话里**永久锁死**。
+        this.leaveGate(rule, message.sessionId)
+      }
     }
   }
 
@@ -223,7 +297,8 @@ export class AutomationService {
       return
     }
 
-    this.cooldowns.set(`${rule.id}:${message.sessionId}`, this.now())
+    // cooldown 起点已经在 `claimGate()` 记过了（= 第一次触发时间）。
+    // 这里**不再**写任何时间戳 —— 否则「执行真正开始」的时间会把 cooldown 起点往后推。
 
     let result: Awaited<ReturnType<AutomationActionRunner['run']>>
     try {
@@ -322,15 +397,108 @@ export class AutomationService {
     }
   }
 
-  private isCoolingDown(rule: AutomationRule, conversationId: string): boolean {
-    const seconds = Number(rule.cooldownSeconds)
-    if (!Number.isFinite(seconds) || seconds <= 0) return false
-    const last = this.cooldowns.get(`${rule.id}:${conversationId}`)
-    if (last === undefined) return false
-    return this.now() - last < seconds * 1000
+  private gateKey(rule: AutomationRule, conversationId: string): string {
+    // 粒度：规则 × 会话。**不含 senderId** —— 产品语义是「这个群里这条规则刚被触发过」，
+    // 不是「张三 60 秒内不能再触发」。
+    return `${rule.id}:${conversationId}`
   }
 
-  /** 登记「这条消息已经被这条规则处理过」。返回 false 表示重复，应当跳过。 */
+  private cooldownMs(rule: AutomationRule): number {
+    const seconds = Number(rule.cooldownSeconds)
+    if (!Number.isFinite(seconds) || seconds <= 0) return 0
+    return seconds * 1000
+  }
+
+  /**
+   * 是否处于阻塞窗口。**纯读**，所以可以放在 TriggerMatcher 之前。
+   *
+   * ```
+   * blocked = inFlight || now < triggeredAt + cooldown
+   * ```
+   *
+   * `triggeredAt` 是**第一次触发**的时间，不是执行完成时间：
+   * 任务跑得比 cooldown 久时，真正的解锁时间是
+   * `max(执行完成, triggeredAt + cooldown)`，而不是「完成之后再等一个 cooldown」。
+   */
+  private isGated(rule: AutomationRule, conversationId: string): boolean {
+    const gate = this.gates.get(this.gateKey(rule, conversationId))
+    if (!gate) return false
+    if (gate.inFlight) return true
+    const cooldownMs = this.cooldownMs(rule)
+    if (cooldownMs <= 0) return false
+    // 用「当前时间 vs triggeredAt」现算，**不依赖 setTimeout** ——
+    // 事件循环卡顿 / app suspend / 定时器漂移都不会把冷却算错。
+    return this.now() < gate.triggeredAt + cooldownMs
+  }
+
+  /**
+   * 原子地占用 gate（check + 写入）。
+   *
+   * 返回 `false` 表示这一刻已经被阻塞（调用方按「忽略」处理，不匹配、不执行、不写日志）。
+   * 调用方必须保证**从 `isGated()` 到这里之间没有 await**。
+   */
+  private claimGate(rule: AutomationRule, conversationId: string): boolean {
+    if (this.isGated(rule, conversationId)) return false
+    this.gates.set(this.gateKey(rule, conversationId), {
+      triggeredAt: this.now(),
+      inFlight: true,
+      blockedSinceTrigger: 0
+    })
+    this.evictGatesIfNeeded()
+    return true
+  }
+
+  /**
+   * 解除 in-flight。**保留 `triggeredAt`** —— cooldown 仍以第一次触发时间为起点。
+   *
+   * 无论 success / failed / 抛异常都必须走这里，否则这条规则在这个会话里会永久锁死。
+   */
+  private leaveGate(rule: AutomationRule, conversationId: string): void {
+    const gate = this.gates.get(this.gateKey(rule, conversationId))
+    if (!gate) return
+    gate.inFlight = false
+    // 本次执行期间被挡下的消息数，汇总成**一行**诊断日志。
+    // 只允许出现数量与 ruleId（不含群名 / wxid / 昵称 / 正文）。
+    if (gate.blockedSinceTrigger > 0) {
+      this.info(`blockedMessages=${gate.blockedSinceTrigger} ruleId=${rule.id}`)
+      gate.blockedSinceTrigger = 0
+    }
+  }
+
+  /** 记一次「被 gate 拦下的消息」。**只计数**，绝不写入用户执行日志。 */
+  private noteBlocked(rule: AutomationRule, conversationId: string): void {
+    const gate = this.gates.get(this.gateKey(rule, conversationId))
+    if (gate) gate.blockedSinceTrigger += 1
+  }
+
+  /** 仅供诊断：累计被 gate 拦下的消息数。不接 IPC、不进 UI。 */
+  getBlockedMessageCount(): number {
+    return this.blockedMessageCount
+  }
+
+  /**
+   * gate 表有界：**只清理已经解锁的条目**。
+   *
+   * 硬不变量：**正在执行（`inFlight === true`）的 gate 永不被淘汰** ——
+   * 淘汰它就等于把一条正在跑的规则提前放开，会立刻产生第二次并发执行。
+   * 所以这里的条件是 `!inFlight && 已过 cooldown`，两个都要满足；
+   * 清理不掉就一直留着（宁可让表大一点，也不能让正在跑的规则失去保护）。
+   */
+  private evictGatesIfNeeded(): void {
+    if (this.gates.size <= this.gateMaxEntries) return
+    const now = this.now()
+    const rules = this.ruleStore.listRules()
+    for (const [key, gate] of this.gates) {
+      if (this.gates.size <= this.gateMaxEntries) break
+      if (gate.inFlight) continue
+      const separator = key.lastIndexOf(':')
+      const ruleId = separator < 0 ? key : key.slice(0, separator)
+      const rule = rules.find((item) => item.id === ruleId)
+      const cooldownMs = rule ? this.cooldownMs(rule) : 0
+      if (now >= gate.triggeredAt + cooldownMs) this.gates.delete(key)
+    }
+  }
+
   private claim(rule: AutomationRule, message: NormalizedIncomingMessage): boolean {
     const key = `${rule.id}:${message.sessionId}:${message.localId}`
     const now = this.now()

@@ -100,7 +100,18 @@ interface Harness {
   setRunResult: (value: AutomationRunResult) => void
 }
 
-function buildHarness(options: { now?: () => number; capability?: PersonalWechatSendCapability } = {}): Harness {
+function buildHarness(
+  options: {
+    now?: () => number
+    capability?: PersonalWechatSendCapability
+    /** 执行期间的挂起点：resolve 之前 `runner.run` 不会返回（用来模拟长任务）。 */
+    holdExecution?: () => Promise<void>
+    /** 每次真正进入 runner 时通知测试，便于确定时序。 */
+    onRunStart?: () => void
+    /** gate 表容量上限，用来在单测里触发清理路径。 */
+    gateMaxEntries?: number
+  } = {}
+): Harness {
   const store = new AutomationRuleStore()
   const log = new AutomationExecutionLogService()
   const runs: AutomationRunInput[] = []
@@ -120,6 +131,8 @@ function buildHarness(options: { now?: () => number; capability?: PersonalWechat
   const spyRunner = {
     run: async (input: AutomationRunInput): Promise<AutomationRunResult> => {
       runs.push(input)
+      options.onRunStart?.()
+      await options.holdExecution?.()
       return runResult
     }
   } as unknown as AutomationActionRunner
@@ -135,7 +148,8 @@ function buildHarness(options: { now?: () => number; capability?: PersonalWechat
     runner: spyRunner,
     getCapability: async () => currentCapability,
     isListening: () => true,
-    ...(options.now ? { now: options.now } : {})
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.gateMaxEntries !== undefined ? { gateMaxEntries: options.gateMaxEntries } : {})
   })
 
   return {
@@ -187,13 +201,17 @@ describe('AutomationService', () => {
     expect(records[0].executionId).toBe(harness.runs[0].executionId)
   })
 
-  it('同一条消息被重复投递时只执行一次', async () => {
+  it('同一条消息被重复投递时只执行一次，且**不产生任何额外记录**', async () => {
     const harness = buildHarness()
+    // 关掉 cooldown，单独验证「同消息幂等」这条闸 —— 否则第二次会先被 gate 拦下。
+    const seeded = harness.store.listRules()[0]
+    harness.store.updateRule(seeded.id, { ...seeded, cooldownSeconds: 0 })
+
     await harness.service.handleMessage(message())
     await harness.service.handleMessage(message())
-    await harness.service.handleMessage(message({ localId: '100' }))
 
     expect(harness.runs).toHaveLength(1)
+    // 重复投递是「这条消息已经处理过」，不是「跳过了一次执行」——用户日志里不该出现。
     expect(harness.log.list()).toHaveLength(1)
   })
 
@@ -205,7 +223,7 @@ describe('AutomationService', () => {
     expect(harness.runs).toHaveLength(2)
   })
 
-  it('cooldown 内不重复触发', async () => {
+  it('cooldown 内不重复触发，且对用户完全静默', async () => {
     let now = 1_700_000_000_000
     const harness = buildHarness({ now: () => now })
 
@@ -213,7 +231,12 @@ describe('AutomationService', () => {
     now += 30_000
     await harness.service.handleMessage(message({ localId: '2' }))
 
+    // 只执行一次 —— 这条是硬要求。
     expect(harness.runs).toHaveLength(1)
+    // 但第二次**不留任何痕迹**：没有 execution、没有「已跳过」、没有「冷却中」。
+    expect(harness.log.list()).toHaveLength(1)
+    // 只进诊断计数（不上 UI）。
+    expect(harness.service.getBlockedMessageCount()).toBe(1)
   })
 
   it('cooldown 过后可以再次触发', async () => {
@@ -370,6 +393,16 @@ describe('AutomationService', () => {
     })
   })
 
+  it('把命中时的规则整条交给 Runner（含回复前等待）', async () => {
+    const harness = buildHarness()
+    await harness.service.handleMessage(message())
+
+    expect(harness.runs).toHaveLength(1)
+    // 「回复前等待」是规则自己的字段，编排层只负责把规则原样传下去 ——
+    // 不该再有一份全局设置参与，否则同一字段有两个来源就必然对不上。
+    expect(harness.runs[0].rule.replyDelaySeconds).toBe(2)
+  })
+
   it('handleMessage 内部异常不会向外抛', async () => {
     const harness = buildHarness()
     const brokenStore = {
@@ -383,5 +416,251 @@ describe('AutomationService', () => {
     )
     await expect(service.handleMessage(message())).resolves.toBeUndefined()
     void harness
+  })
+})
+
+/**
+ * Automation rule conversation gate —— 规则 × 会话维度的阻塞窗口。
+ *
+ * ```
+ * blocked = inFlight || now < triggeredAt + cooldown      // 粒度：ruleId + conversationId
+ * ```
+ *
+ * 窗口内的消息：不匹配、不执行、不回复、**不写用户执行日志**，只进诊断计数。
+ * `triggeredAt` 是**第一次触发**的时间；执行完成不重置它。
+ */
+describe('AutomationService · rule conversation gate', () => {
+  const T0 = 1_700_000_000_000
+
+  // 这个 describe 在文件后段，**不会**继承上一个 describe 的 beforeEach；
+  // 而规则是写盘的（同一个 userData root），不清理就会互相污染
+  // （Test 6 建的第二条规则会漏给 Test 7/8）。
+  beforeEach(() => {
+    fs.removeSync(path.join(root, 'automation'))
+  })
+
+  it('Test 1 · 0s 触发，2/20/59s 全忽略，61s 重新触发（executions = 2 而不是 5）', async () => {
+    let now = T0
+    const harness = buildHarness({ now: () => now })
+
+    await harness.service.handleMessage(message({ localId: '1' }))
+    for (const offset of [2_000, 20_000, 59_000]) {
+      now = T0 + offset
+      await harness.service.handleMessage(message({ localId: `t${offset}` }))
+    }
+    now = T0 + 61_000
+    await harness.service.handleMessage(message({ localId: 'e' }))
+
+    expect(harness.runs).toHaveLength(2)
+    expect(harness.log.list()).toHaveLength(2)
+    expect(harness.service.getBlockedMessageCount()).toBe(3)
+  })
+
+  it('Test 2 · 短任务（8s 就完成）仍然阻塞到 cooldown 到期', async () => {
+    let now = T0
+    const harness = buildHarness({ now: () => now })
+
+    await harness.service.handleMessage(message({ localId: '1' })) // 0s 触发，立即完成
+    now = T0 + 8_000
+    now = T0 + 30_000 // 任务早完成了，但 cooldown 还没到
+    await harness.service.handleMessage(message({ localId: '2' }))
+    expect(harness.runs).toHaveLength(1)
+
+    now = T0 + 61_000
+    await harness.service.handleMessage(message({ localId: '3' }))
+    expect(harness.runs).toHaveLength(2)
+  })
+
+  it('Test 3 · 长任务（超过 cooldown）一直阻塞到执行结束：解锁 = max(完成, 触发+cooldown)', async () => {
+    let now = T0
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    const harness = buildHarness({
+      now: () => now,
+      holdExecution: () => held,
+      onRunStart: markStarted
+    })
+
+    const firstRun = harness.service.handleMessage(message({ localId: '1' }))
+    await started
+
+    // 61s：cooldown 早就过期了，但第一条执行还在跑 ⇒ 仍然忽略
+    now = T0 + 61_000
+    await harness.service.handleMessage(message({ localId: '2' }))
+    expect(harness.runs).toHaveLength(1)
+
+    // 75s：第一条终于结束
+    now = T0 + 75_000
+    release()
+    await firstRun
+
+    // 76s：这才重新允许 —— **不是**「完成后再等 60 秒」
+    now = T0 + 76_000
+    await harness.service.handleMessage(message({ localId: '3' }))
+    expect(harness.runs).toHaveLength(2)
+  })
+
+  it('Test 4 · 同群不同发送者也忽略（gate 不是 sender 级）', async () => {
+    let now = T0
+    const harness = buildHarness({ now: () => now })
+
+    await harness.service.handleMessage(message({ localId: '1' }))
+    now = T0 + 20_000
+    await harness.service.handleMessage(
+      message({ localId: '2', senderId: 'wxid_other', senderNickname: '李四' })
+    )
+
+    expect(harness.runs).toHaveLength(1)
+  })
+
+  it('Test 5 · 同一条规则在另一个群正常执行（gate 是 ruleId + conversationId）', async () => {
+    let now = T0
+    const harness = buildHarness({ now: () => now })
+
+    await harness.service.handleMessage(message({ localId: '1' }))
+    now = T0 + 10_000
+    await harness.service.handleMessage(message({ localId: '2', sessionId: OTHER_GROUP }))
+
+    expect(harness.runs).toHaveLength(2)
+  })
+
+  it('Test 6 · 同一群里的另一条规则不受影响（不是会话全局锁）', async () => {
+    let now = T0
+    const harness = buildHarness({ now: () => now })
+    const seeded = harness.store.listRules()[0]
+    // 第二条规则同样命中这条消息，但**没有冷却** —— 用它证明 gate 按 ruleId 隔离。
+    harness.store.createRule({
+      name: '帮助',
+      enabled: true,
+      scope: 'group',
+      conditions: {
+        requireMentionMe: true,
+        keyword: '日报',
+        keywordMatchMode: 'contains',
+        conversationIds: [],
+        ignoreSelf: true
+      },
+      actions: [{ type: 'replyText', enabled: true, text: '好的' }],
+      cooldownSeconds: 0,
+      replyDelaySeconds: 0
+    })
+
+    await harness.service.handleMessage(message({ localId: '1' }))
+    expect(harness.runs).toHaveLength(2)
+
+    now = T0 + 10_000
+    await harness.service.handleMessage(message({ localId: '2' }))
+    // 规则 A 被 gate 挡下，规则 B 照常执行。
+    expect(harness.runs).toHaveLength(3)
+    expect(harness.runs[2].rule.id).not.toBe(seeded.id)
+  })
+
+  it('Test 7 · 第一条失败后仍然走完整 cooldown（避免故障期疯狂重试）', async () => {
+    let now = T0
+    const harness = buildHarness({ now: () => now })
+    harness.setRunResult({ steps: [], status: 'failed', errorSummary: 'AI 服务不可达' })
+
+    await harness.service.handleMessage(message({ localId: '1' }))
+    expect(harness.runs).toHaveLength(1)
+
+    now = T0 + 5_000
+    await harness.service.handleMessage(message({ localId: '2' }))
+    expect(harness.runs).toHaveLength(1)
+
+    now = T0 + 61_000
+    await harness.service.handleMessage(message({ localId: '3' }))
+    expect(harness.runs).toHaveLength(2)
+  })
+
+  it('Test 8 · 60 秒内 10 条符合条件的消息，用户执行日志只留 1 条', async () => {
+    let now = T0
+    const harness = buildHarness({ now: () => now })
+
+    await harness.service.handleMessage(message({ localId: '1' }))
+    for (let index = 2; index <= 11; index += 1) {
+      now = T0 + index * 5_000 // 5s..55s，全部落在 60s 窗口内
+      await harness.service.handleMessage(message({ localId: String(index) }))
+    }
+
+    expect(harness.runs).toHaveLength(1)
+    const records = harness.log.list()
+    expect(records).toHaveLength(1)
+    expect(records[0].status).toBe('success')
+    // 不许出现「冷却中 / 剩余 N 秒」这类记录。
+    expect(JSON.stringify(records)).not.toContain('冷却')
+    expect(harness.service.getBlockedMessageCount()).toBe(10)
+  })
+})
+
+/**
+ * gate 表清理的硬不变量：**正在执行（`inFlight === true`）的 gate 永不被淘汰**。
+ *
+ * 淘汰它 = 把一条正在跑的规则提前放开，立刻会产生第二次并发执行。
+ * 这里用极小的上限（1）逼出清理路径。
+ */
+describe('AutomationService · gate 缓存清理', () => {
+  const T0 = 1_700_000_000_000
+  const GROUP_A = 'aaa@chatroom'
+  const GROUP_B = 'bbb@chatroom'
+  const GROUP_C = 'ccc@chatroom'
+
+  beforeEach(() => {
+    fs.removeSync(path.join(root, 'automation'))
+  })
+
+  it('清理只删「inFlight=false 且 cooldown 已过期」的条目，正在执行的一条必须留着', async () => {
+    let now = T0
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    // 只把**第一次**执行挂住（也就是 A 群那条）；B/C 的执行立即完成。
+    let runCount = 0
+    const harness = buildHarness({
+      now: () => now,
+      gateMaxEntries: 1,
+      holdExecution: () => {
+        runCount += 1
+        return runCount === 1 ? held : Promise.resolve()
+      },
+      onRunStart: markStarted
+    })
+    // cooldown = 0：这样「执行完成」的 gate 立刻就算「已解锁」，可以被清理。
+    const seeded = harness.store.listRules()[0]
+    harness.store.updateRule(seeded.id, { ...seeded, cooldownSeconds: 0 })
+
+    // A 群：开始执行并**挂住**（gate A 处于 inFlight）
+    const runningA = harness.service.handleMessage(
+      message({ localId: 'a1', sessionId: GROUP_A })
+    )
+    await started
+    expect(harness.runs).toHaveLength(1)
+
+    // B 群：执行一次并正常结束（gate B 变成「已解锁」，是本次清理的目标）
+    now = T0 + 1_000
+    await harness.service.handleMessage(message({ localId: 'b1', sessionId: GROUP_B }))
+    expect(harness.runs).toHaveLength(2)
+
+    // C 群：claim 一条新 gate ⇒ 表 size 超过上限 ⇒ 触发 evictGatesIfNeeded
+    now = T0 + 2_000
+    await harness.service.handleMessage(message({ localId: 'c1', sessionId: GROUP_C }))
+
+    // 关键不变量：A 的执行还在跑，往 A 发消息必须**仍然被挡住**。
+    now = T0 + 3_000
+    await harness.service.handleMessage(message({ localId: 'a2', sessionId: GROUP_A }))
+    expect(harness.runs.filter((run) => run.conversationId === GROUP_A)).toHaveLength(1)
+
+    release()
+    await runningA
   })
 })

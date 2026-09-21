@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { AUTOMATION_EXECUTION_STATUS_LABELS } from '../../../../shared/automation'
 import type { AutomationExecution } from '../../../../shared/automation'
 import { Button } from '../../components/ui'
 import {
@@ -75,7 +76,7 @@ export function ExecutionDetailDrawer({
               <dt>结果</dt>
               <dd>
                 <span className={`automation-status-chip ${execution.status}`}>
-                  {execution.status === 'success' ? '成功' : '失败'}
+                  {AUTOMATION_EXECUTION_STATUS_LABELS[execution.status]}
                 </span>
               </dd>
             </div>

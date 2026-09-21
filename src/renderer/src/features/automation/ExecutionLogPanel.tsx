@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { AUTOMATION_EXECUTION_STATUS_LABELS } from '../../../../shared/automation'
 import type { AutomationExecution } from '../../../../shared/automation'
 import { Button, Spinner } from '../../components/ui'
 import { STEP_STATUS_LABELS, formatDuration, formatTriggerTime, stepStatusTone } from './model/format'
@@ -100,7 +101,7 @@ export function ExecutionLogPanel({
               </span>
               <span role="cell">
                 <span className={`automation-status-chip ${execution.status}`}>
-                  {execution.status === 'success' ? '成功' : '失败'}
+                  {AUTOMATION_EXECUTION_STATUS_LABELS[execution.status]}
                 </span>
               </span>
               <span role="cell" className="automation-log-duration">

@@ -22,6 +22,8 @@ export interface AutomationExecutionLogDependencies {
   userDataPath?: () => string
 }
 
+const EXECUTION_STATUSES: AutomationExecution['status'][] = ['running', 'success', 'failed']
+
 function normalizeExecution(value: unknown): AutomationExecution | null {
   if (!value || typeof value !== 'object') return null
   const record = value as Partial<AutomationExecution>
@@ -33,7 +35,10 @@ function normalizeExecution(value: unknown): AutomationExecution | null {
     ruleName: String(record.ruleName || ''),
     triggerTime: Number(record.triggerTime) || 0,
     sourceDisplayName: String(record.sourceDisplayName || ''),
-    status: record.status === 'success' || record.status === 'failed' ? record.status : 'running',
+    // 不认识的 status（含历史遗留值）一律降级成 `running`，绝不凭空造出成功/失败。
+    status: EXECUTION_STATUSES.includes(record.status as AutomationExecution['status'])
+      ? (record.status as AutomationExecution['status'])
+      : 'running',
     durationMs: Number(record.durationMs) || 0,
     steps: Array.isArray(record.steps) ? record.steps : [],
     ...(record.errorSummary ? { errorSummary: String(record.errorSummary) } : {})
@@ -78,7 +83,12 @@ export class AutomationExecutionLogService {
     return true
   }
 
-  /** 统计 `sinceMs` 之后（含）的记录数与成功数。用于顶部「今日执行」。 */
+  /**
+   * 统计 `sinceMs` 之后（含）的记录数与成功数。用于顶部「今日执行」。
+   *
+   * 每条记录都对应一次**真正跑过**的执行（gate 拦下的消息不会产生记录），
+   * 所以这里直接计数即可。
+   */
   countSince(sinceMs: number): { total: number; success: number } {
     this.ensureLoaded()
     const from = Number(sinceMs) || 0
