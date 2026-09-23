@@ -61,7 +61,6 @@ Agent Hub 让微信机器人调用本机 TraceMemo；Reader Skill / Local HTTP A
 - [实验性：自托管微信分享卡片](./deployment/experimental-wechat-share-card.md)
 - [微信分享卡片自动部署 Skill](./skill/setup-wechat-share-card/SKILL.md)
 - [TraceMemo Reader Skill 文件](./skill/tracememo-reader/SKILL.md)
-- [第三方组件说明](./third-party/wechat-chatter/NOTICE.md)
 
 ## 版本说明
 

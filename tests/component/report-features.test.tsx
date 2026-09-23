@@ -54,7 +54,7 @@ describe('daily report controls', () => {
           sipDisabled: true,
           wechatRunning: true,
           runtimeReady: true,
-          endpoint: '127.0.0.1:58080',
+          endpoint: '127.0.0.1:4290',
           endpointReady: true,
           attachReady: true,
           baseAddressReady: true,
@@ -618,6 +618,10 @@ describe('daily report controls', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送到当前群聊' }))
 
     expect(await screen.findByRole('dialog', { name: '测试群' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: '发送日报图片' })).toBeVisible()
+    expect(screen.queryByText('文字转语音')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '语音发送诊断' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: '发送后置词' })).toHaveValue('今日日报')
     const detect = screen.queryByRole('button', { name: '重新检测' })
     if (detect) fireEvent.click(detect)
     expect(screen.getByRole('region', { name: '日报图片发送' })).toBeVisible()

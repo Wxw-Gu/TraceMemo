@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PersonalWechatSendPage } from '../../src/renderer/src/features/settings/pages/PersonalWechatSendPage'
 
@@ -12,15 +11,7 @@ vi.mock('../../src/renderer/src/utils/runtime-environment', () => ({
 
 const getCapability = vi.fn()
 const getSenderStatus = vi.fn()
-const getRuntimeStatus = vi.fn()
-const onRuntimeProgress = vi.fn(() => vi.fn())
-const downloadRuntime = vi.fn()
-const cancelRuntimeDownload = vi.fn()
-const removeRuntime = vi.fn()
-const openRuntimeDirectory = vi.fn()
 const rebindSender = vi.fn()
-const getKeepOneBotProcess = vi.fn()
-const setKeepOneBotProcess = vi.fn()
 
 const senderStatus = {
   state: 'online' as const,
@@ -30,8 +21,7 @@ const senderStatus = {
   wechatRunning: true,
   wechatPid: 4668,
   boundWechatPid: 4668,
-  oneBotPid: 5401,
-  endpoint: '127.0.0.1:58080',
+  endpoint: '127.0.0.1:4290',
   endpointReady: true,
   wechatVersion: '4.1.11.53',
   runtimeReady: true,
@@ -50,19 +40,6 @@ const senderStatus = {
   message: '个人微信已绑定'
 }
 
-const readyRuntime = {
-  version: 'v0.0.18',
-  state: 'ready' as const,
-  downloadedBytes: 66_599_785,
-  totalBytes: 66_599_785,
-  progress: 1,
-  platform: 'darwin' as NodeJS.Platform,
-  architecture: 'arm64',
-  supported: true,
-  removable: true,
-  directory: '/tmp/personal-wechat-runtime'
-}
-
 const capability = {
   supported: true,
   ready: true,
@@ -76,85 +53,23 @@ describe('PersonalWechatSendPage on macOS', () => {
   beforeEach(() => {
     getCapability.mockReset().mockResolvedValue(capability)
     getSenderStatus.mockReset().mockResolvedValue(senderStatus)
-    getRuntimeStatus.mockReset().mockResolvedValue(readyRuntime)
-    onRuntimeProgress.mockReset().mockReturnValue(vi.fn())
-    downloadRuntime.mockReset().mockResolvedValue({ success: true, status: readyRuntime })
-    cancelRuntimeDownload.mockReset().mockResolvedValue({ success: true })
-    removeRuntime.mockReset().mockResolvedValue({
-      ...readyRuntime,
-      state: 'missing',
-      downloadedBytes: 0,
-      progress: 0,
-      removable: false,
-      directory: undefined
-    })
-    openRuntimeDirectory.mockReset().mockResolvedValue({ success: true })
     rebindSender.mockReset().mockResolvedValue(senderStatus)
-    getKeepOneBotProcess.mockReset().mockResolvedValue(false)
-    setKeepOneBotProcess.mockReset().mockImplementation(async (keep: boolean) => keep)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
         getPersonalWechatSendCapability: getCapability,
         getPersonalWechatSenderStatus: getSenderStatus,
-        getPersonalWechatRuntimeStatus: getRuntimeStatus,
-        onPersonalWechatRuntimeProgress: onRuntimeProgress,
-        downloadPersonalWechatRuntime: downloadRuntime,
-        cancelPersonalWechatRuntimeDownload: cancelRuntimeDownload,
-        removePersonalWechatRuntime: removeRuntime,
-        openPersonalWechatRuntimeDirectory: openRuntimeDirectory,
-        rebindPersonalWechatSender: rebindSender,
-        getPersonalWechatKeepOneBotProcess: getKeepOneBotProcess,
-        setPersonalWechatKeepOneBotProcess: setKeepOneBotProcess
+        rebindPersonalWechatSender: rebindSender
       }
     })
   })
 
-  it('keeps OneBot runtime management on the WeChat send page', async () => {
-    const user = userEvent.setup()
+  it('shows the native runtime readiness', async () => {
     render(<PersonalWechatSendPage onNotice={vi.fn()} />)
 
-    expect(await screen.findByText('OneBot v0.0.18')).toBeVisible()
+    expect(await screen.findByText('微信消息发送已配置完成')).toBeVisible()
     expect(screen.getAllByText('已就绪')).not.toHaveLength(0)
-    await user.click(screen.getByRole('button', { name: '打开目录' }))
-    expect(openRuntimeDirectory).toHaveBeenCalledOnce()
-
-    await user.click(screen.getByRole('button', { name: '卸载组件' }))
-    await waitFor(() => expect(removeRuntime).toHaveBeenCalledOnce())
-
-    await user.click(screen.getByRole('button', { name: '支持版本' }))
-    const versionsDialog = screen.getByRole('dialog', { name: '支持的微信版本' })
-    expect(versionsDialog).toBeVisible()
-    expect(versionsDialog).toHaveTextContent('4.1.11.53')
-  })
-
-  it('keeps the OneBot process setting on the macOS WeChat send page', async () => {
-    const user = userEvent.setup()
-    render(<PersonalWechatSendPage onNotice={vi.fn()} />)
-
-    const keepProcess = await screen.findByRole('switch', { name: '保留 OneBot 进程' })
-    expect(keepProcess).not.toBeChecked()
-    await user.click(keepProcess)
-
-    await waitFor(() => expect(setKeepOneBotProcess).toHaveBeenCalledWith(true))
-    expect(keepProcess).toBeChecked()
-  })
-
-  it('downloads a missing macOS runtime from the send page', async () => {
-    getRuntimeStatus.mockResolvedValue({
-      ...readyRuntime,
-      state: 'missing',
-      downloadedBytes: 0,
-      progress: 0,
-      removable: false,
-      directory: undefined
-    })
-    const onNotice = vi.fn()
-    render(<PersonalWechatSendPage onNotice={onNotice} />)
-
-    await userEvent.setup().click(await screen.findByRole('button', { name: '下载组件' }))
-    await waitFor(() => expect(downloadRuntime).toHaveBeenCalledOnce())
-    expect(onNotice).toHaveBeenCalledWith('微信发送组件已准备好')
+    expect(screen.queryByText('查看支持的微信版本')).not.toBeInTheDocument()
+    expect(screen.queryByText('高级诊断')).not.toBeInTheDocument()
   })
 })

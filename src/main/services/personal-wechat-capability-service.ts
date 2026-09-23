@@ -7,15 +7,28 @@ import {
   personalWechatSendService,
   type PersonalWechatSendService
 } from './personal-wechat-send-service'
+import { macWechatRuntimeManager } from './mac-wechat-runtime-manager'
 
 /**
  * Converts the detailed sender diagnostics into a small contract that other
- * features can consume without knowing about OneBot, Hook or platform details.
+ * features can consume without knowing about the macOS native runtime, the
+ * Windows hook transport, or platform details.
+ *
+ * On macOS the capability is derived only from MacWechatRuntimeManager and its
+ * validated runtime manifest. Windows continues to use the existing sender.
  */
 export class PersonalWechatCapabilityService {
-  constructor(private readonly sender: Pick<PersonalWechatSendService, 'getStatus'>) {}
+  constructor(
+    private readonly sender: Pick<PersonalWechatSendService, 'getStatus'>,
+    private readonly platform: NodeJS.Platform = process.platform,
+    private readonly getMacStatus: () => Promise<PersonalWechatSenderStatus> = () =>
+      macWechatRuntimeManager.buildSenderStatus()
+  ) {}
 
   async getPersonalWechatSendCapability(): Promise<PersonalWechatSendCapability> {
+    if (this.platform === 'darwin') {
+      return this.fromMacRuntime()
+    }
     const senderStatus = await this.sender.getStatus()
     return this.fromSenderStatus(senderStatus)
   }
@@ -49,6 +62,16 @@ export class PersonalWechatCapabilityService {
     }
   }
 
+  /*
+   * macOS capability from the native runtime. Builds a senderStatus snapshot
+   * aligned with the mac binding state and reuses the shared mapping, so the
+   * settings header and the binding card can never disagree.
+   */
+  private async fromMacRuntime(): Promise<PersonalWechatSendCapability> {
+    const senderStatus = await this.getMacStatus()
+    return this.fromSenderStatus(senderStatus)
+  }
+
   private mapState(senderStatus: PersonalWechatSenderStatus): PersonalWechatSendCapabilityState {
     if (senderStatus.platform === 'win32') {
       if (senderStatus.canSend) return 'ready'
@@ -60,6 +83,7 @@ export class PersonalWechatCapabilityService {
       return 'unsupported'
     }
     if (senderStatus.state === 'error') return 'error'
+    if (senderStatus.state === 'runtime_missing') return 'unconfigured'
     const hasCurrentBinding = Boolean(
       senderStatus.endpointReady &&
       senderStatus.attachReady &&

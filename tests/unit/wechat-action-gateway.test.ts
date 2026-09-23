@@ -307,6 +307,55 @@ describe('WechatActionGateway', () => {
     vi.useRealTimers()
   })
 
+  it('sends a report postfix only after the image succeeds and keeps the 3s interval', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-23T09:00:00.000Z'))
+    const gateway = createGateway()
+    const sent: Array<{ type: string; at: number }> = []
+    mocks.sender.send.mockImplementation(async (request: { type: string }) => {
+      sent.push({ type: request.type, at: Date.now() })
+      return { success: true, status: {} }
+    })
+
+    const pending = gateway.executeReportImageSequence({
+      recipient: { type: 'group', id: 'room@chatroom' },
+      imagePath: '/tmp/report.png',
+      postfixText: '今日日报'
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent.map((item) => item.type)).toEqual(['image'])
+
+    await vi.advanceTimersByTimeAsync(AUTOMATION_SEND_INTERVAL_MS - 1)
+    expect(sent).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
+    const result = await pending
+
+    expect(result.image.status).toBe('sent')
+    expect(result.postfix?.status).toBe('sent')
+    expect(sent.map((item) => item.type)).toEqual(['image', 'text'])
+    expect(sent[1].at - sent[0].at).toBe(AUTOMATION_SEND_INTERVAL_MS)
+    vi.useRealTimers()
+  })
+
+  it('does not create the report postfix action when the image fails', async () => {
+    const gateway = createGateway()
+    mocks.sender.send.mockResolvedValueOnce({
+      success: false,
+      status: {},
+      error: 'image failed'
+    })
+
+    const result = await gateway.executeReportImageSequence({
+      recipient: { type: 'group', id: 'room@chatroom' },
+      imagePath: '/tmp/report.png',
+      postfixText: '今日日报'
+    })
+
+    expect(result.image.status).toBe('failed')
+    expect(result.postfix).toBeUndefined()
+    expect(mocks.sender.send).toHaveBeenCalledOnce()
+  })
+
   it('lets a user action send immediately while an automatic action is waiting', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-03T09:30:00.000Z'))

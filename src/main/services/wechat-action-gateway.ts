@@ -30,8 +30,21 @@ const AUTOMATION_PURPOSE_ALLOWLIST = new Set([
   // `AUTOMATION_SEND_PURPOSE` 保持一致，否则会被下面 evaluateWechatActionPolicy
   // 以 ACTION_NOT_ALLOWED 拦下 —— 那是有意的闸门，不是 bug。
   'automation_reply',
-  'automation_report'
+  'automation_report',
+  'manual_report_image',
+  'manual_report_postfix'
 ])
+
+export interface ReportImageSequenceRequest {
+  recipient: WechatActionRequest['recipient']
+  imagePath: string
+  postfixText: string
+}
+
+export interface ReportImageSequenceResult {
+  image: WechatActionResult
+  postfix?: WechatActionResult
+}
 
 export interface WechatActionGatewayDependencies {
   getCapability?: () => Promise<PersonalWechatSendCapability>
@@ -109,6 +122,35 @@ export class WechatActionGateway {
 
   clearMemberEvents(): void {
     this.memberEvents.clear()
+  }
+
+  /**
+   * 用户确认后的日报发送序列。两步都进入 automation 发送队列，从而复用既有 3 秒间隔；
+   * 后置词 action 只在图片明确 sent 后创建，图片失败/blocked 时严格短路。
+   */
+  async executeReportImageSequence(
+    request: ReportImageSequenceRequest
+  ): Promise<ReportImageSequenceResult> {
+    const image = await this.execute({
+      origin: 'user_manual',
+      purpose: 'manual_report_image',
+      triggerType: 'automation',
+      recipient: request.recipient,
+      content: { type: 'image', path: String(request.imagePath || '') }
+    })
+    if (image.status !== 'sent') return { image }
+
+    const postfixText = String(request.postfixText || '').trim()
+    if (!postfixText) return { image }
+
+    const postfix = await this.execute({
+      origin: 'user_manual',
+      purpose: 'manual_report_postfix',
+      triggerType: 'automation',
+      recipient: request.recipient,
+      content: { type: 'text', text: postfixText }
+    })
+    return { image, postfix }
   }
 
   listAuditRecords(): WechatActionAuditRecord[] {

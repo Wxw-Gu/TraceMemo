@@ -120,14 +120,15 @@ import { GroupStatsService } from './services/group-stats-service'
 import { wechatActionLogService } from './services/wechat-action-log-service'
 import { toPersonalWechatSendResult, wechatActionGateway } from './services/wechat-action-gateway'
 import { personalWechatSendService } from './services/personal-wechat-send-service'
+import { macWechatRuntimeManager } from './services/mac-wechat-runtime-manager'
 import { getPersonalWechatSendCapability } from './services/personal-wechat-capability-service'
 import { scheduledReportService } from './services/scheduled-report-service'
-import { PersonalWechatRuntimeManager } from './services/personal-wechat-runtime-manager'
 import { personalWechatVoiceEnvironmentService } from './services/personal-wechat-voice-environment-service'
 import type {
   PersonalWechatGeneratedTtsVoiceRequest,
   PersonalWechatSendRequest,
-  PersonalWechatSendResult
+  PersonalWechatSendResult,
+  PersonalWechatSenderStatus
 } from '../shared/personal-wechat'
 import type {
   ScheduledReportCreateInput,
@@ -201,6 +202,12 @@ import type {
   WechatShareServiceConfig
 } from '../shared/wechat-share-card'
 
+async function currentPersonalWechatSenderStatus(): Promise<PersonalWechatSenderStatus> {
+  return process.platform === 'darwin'
+    ? macWechatRuntimeManager.buildSenderStatus()
+    : personalWechatSendService.getStatus()
+}
+
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
 // handler. Wrap console.* before any other module logs anything.
@@ -228,7 +235,6 @@ const databaseKeyStore = new DatabaseKeyStore()
 const imageKeyConfigService = new ImageKeyConfigService()
 const aiProviderService = new AIProviderService()
 const textToSpeechSettingsService = new TextToSpeechSettingsService()
-const personalWechatRuntimeManager = new PersonalWechatRuntimeManager()
 const keyServiceMac = new KeyServiceMac()
 const keyServiceWin = new KeyServiceWin()
 const wechatShareConfigStore = new WechatShareConfigStore()
@@ -839,11 +845,6 @@ app.whenReady().then(async () => {
       if (!window.isDestroyed()) window.webContents.send('voice:modelProgress', status)
     }
   })
-  personalWechatRuntimeManager.setProgressListener((status) => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) window.webContents.send('wechat-personal:runtimeProgress', status)
-    }
-  })
   protocol.handle('wxe-media', async (request) => {
     const filePath = videoAssetService?.pathForUrl(request.url)
     if (!filePath) return new Response('Not found', { status: 404 })
@@ -1214,25 +1215,46 @@ app.whenReady().then(async () => {
     // 项目规则：**所有发送都必须经过 WechatActionGateway**（审计 + 幂等 + 同一个 Send Log）。
     // 手动发送在改造前从这里直连 `PersonalWechatSendService`，于是完全不留痕 ——
     // 排查「消息到底发没发出去」时恰好缺的就是那份证据。
-    // `triggerType: 'user'` 不会命中 automation 专用的 purpose allowlist 与 3s 节流，
-    // 所以行为与改造前一致，只是多一条审计记录（「发送日志」里能看到）。
+    // 普通手动发送保持 triggerType=user；带 postfixText 的日报图片由 Gateway 编排成
+    // 两个 automation action，以复用同一条 3s 队列，并严格在图片 sent 后才发后置词。
     if (request.type === 'text' || request.type === 'image') {
       const to = String(request.to || '').trim()
+      const recipient = {
+        type:
+          request.isGroup || to.endsWith('@chatroom') ? ('group' as const) : ('contact' as const),
+        id: to
+      }
+      if (request.type === 'image' && request.postfixText !== undefined) {
+        const sequence = await wechatActionGateway.executeReportImageSequence({
+          recipient,
+          imagePath: String(request.filePath || ''),
+          postfixText: request.postfixText
+        })
+        const imageResult = toPersonalWechatSendResult(
+          sequence.image,
+          await currentPersonalWechatSenderStatus()
+        )
+        if (!imageResult.success || !sequence.postfix) return imageResult
+        return {
+          ...imageResult,
+          postfixSent: sequence.postfix.status === 'sent',
+          ...(sequence.postfix.status === 'sent'
+            ? {}
+            : { postfixError: sequence.postfix.reason || '后置词发送失败' })
+        }
+      }
       const action = await wechatActionGateway.execute({
         origin: 'user_manual',
         purpose: request.type === 'text' ? 'manual_text' : 'manual_image',
         triggerType: 'user',
-        recipient: {
-          type: request.isGroup || to.endsWith('@chatroom') ? 'group' : 'contact',
-          id: to
-        },
+        recipient,
         content:
           request.type === 'text'
             ? { type: 'text', text: String(request.text || '') }
             : { type: 'image', path: String(request.filePath || '') }
       })
       // 返回契约保持 `PersonalWechatSendResult`，界面判读不用改。
-      return toPersonalWechatSendResult(action, await personalWechatSendService.getStatus())
+      return toPersonalWechatSendResult(action, await currentPersonalWechatSenderStatus())
     }
 
     // 语音仍走既有分支：它有自己的网关入口 `wechat-personal:sendGeneratedTtsVoice`，
@@ -1645,7 +1667,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('automation:deleteRule', (_, id: string) => automationRuleStore.deleteRule(id))
   ipcMain.handle('automation:setRuleEnabled', (_, input: unknown) => {
     const payload = (input || {}) as { id?: unknown; enabled?: unknown }
-    return automationRuleStore.setRuleEnabled(String(payload.id || ''), payload.enabled === true) ?? null
+    return (
+      automationRuleStore.setRuleEnabled(String(payload.id || ''), payload.enabled === true) ?? null
+    )
   })
   ipcMain.handle('automation:listExecutions', (_, query: unknown) => {
     const input = (query || {}) as { limit?: unknown }
@@ -2528,42 +2552,16 @@ app.whenReady().then(async () => {
     agentHubService.clearConversations()
     return { success: true }
   })
-  ipcMain.handle('wechat-personal:getStatus', () => personalWechatSendService.getStatus())
-  ipcMain.handle('wechat-personal:getKeepProcess', () =>
-    personalWechatSendService.getKeepOneBotProcess()
-  )
-  ipcMain.handle('wechat-personal:setKeepProcess', (_, keep: boolean) =>
-    personalWechatSendService.setKeepOneBotProcess(Boolean(keep))
-  )
+  ipcMain.handle('wechat-personal:getStatus', () => currentPersonalWechatSenderStatus())
   ipcMain.handle('wechat-personal:checkStatus', (_, port?: string) =>
     personalWechatSendService.checkWindowsStatus(port)
   )
   ipcMain.handle('wechat-personal:checkVoiceEnvironment', () =>
     personalWechatVoiceEnvironmentService.check()
   )
-  ipcMain.handle('wechat-personal:installPilk', async () => {
-    const result = await personalWechatVoiceEnvironmentService.installPilk()
-    if (!result.success || process.platform !== 'darwin') return result
-
-    const senderStatus = await personalWechatSendService.getStatus()
-    if (!senderStatus.oneBotPid) return result
-    try {
-      const restartedStatus = await personalWechatSendService.restartRuntime()
-      return {
-        ...result,
-        restarted: restartedStatus.state !== 'error',
-        ...(restartedStatus.state === 'error'
-          ? { restartError: restartedStatus.error || restartedStatus.message }
-          : {})
-      }
-    } catch (error) {
-      return {
-        ...result,
-        restarted: false,
-        restartError: error instanceof Error ? error.message : String(error)
-      }
-    }
-  })
+  ipcMain.handle('wechat-personal:installPilk', () =>
+    personalWechatVoiceEnvironmentService.installPilk()
+  )
   ipcMain.handle('wechat-personal:openVoicePythonDownload', async () => {
     try {
       await shell.openExternal('https://www.python.org/downloads/macos/')
@@ -2580,23 +2578,20 @@ app.whenReady().then(async () => {
       return { success: false, error: '无法打开 FFmpeg 安装页面' }
     }
   })
-  ipcMain.handle('wechat-personal:getRuntimeStatus', () => personalWechatRuntimeManager.getStatus())
-  ipcMain.handle('wechat-personal:downloadRuntime', () => personalWechatRuntimeManager.download())
-  ipcMain.handle('wechat-personal:cancelRuntimeDownload', () => ({
-    success: personalWechatRuntimeManager.cancelDownload()
-  }))
-  ipcMain.handle('wechat-personal:removeRuntime', async () => {
-    await personalWechatSendService.terminate(true)
-    return personalWechatRuntimeManager.remove()
+  ipcMain.handle('wechat-personal:rebind', async () => {
+    if (process.platform !== 'darwin') return personalWechatSendService.rebind()
+
+    const result = await macWechatRuntimeManager.bind()
+    const status = await macWechatRuntimeManager.buildSenderStatus()
+    if (result.ok) return status
+
+    return {
+      ...status,
+      state: 'error',
+      message: result.message,
+      error: result.message
+    }
   })
-  ipcMain.handle('wechat-personal:openRuntimeDirectory', async () => {
-    const status = await personalWechatRuntimeManager.getStatus()
-    const directory = status.directory || personalWechatRuntimeManager.directory
-    await fsPromises.mkdir(directory, { recursive: true })
-    const error = await shell.openPath(directory)
-    return error ? { success: false, error } : { success: true }
-  })
-  ipcMain.handle('wechat-personal:rebind', () => personalWechatSendService.rebind())
   ipcMain.handle(
     'wechat-personal:sendGeneratedTtsVoice',
     async (_, request: PersonalWechatGeneratedTtsVoiceRequest) => {
@@ -2624,7 +2619,7 @@ app.whenReady().then(async () => {
         action.sendResult && typeof action.sendResult === 'object'
           ? (action.sendResult as PersonalWechatSendResult)
           : undefined
-      const status = sendResult?.status || (await personalWechatSendService.getStatus())
+      const status = sendResult?.status || (await currentPersonalWechatSenderStatus())
       return { action, status }
     }
   )
@@ -2699,9 +2694,11 @@ app.on('before-quit', (event) => {
       chat.closeChatDbForQuit().catch(() => false),
       voiceRecognition?.dispose().catch(() => undefined),
       knowledgeSearchService?.dispose().catch(() => undefined),
-      personalWechatSendService.terminate().catch((error) => {
-        console.warn('[Shutdown] personal WeChat sender cleanup failed:', error)
-      })
+      process.platform === 'darwin'
+        ? macWechatRuntimeManager.shutdown().catch((error) => {
+            console.warn('[Shutdown] macOS native WeChat runtime cleanup failed:', error)
+          })
+        : Promise.resolve()
     ])
     if (!nativeCallsDrained) {
       console.warn('[Shutdown] WCDB async calls did not fully drain before quit')

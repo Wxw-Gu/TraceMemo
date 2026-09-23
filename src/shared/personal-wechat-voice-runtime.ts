@@ -20,11 +20,10 @@ export interface PersonalWechatVoiceEncodingEnvironment {
   ready: boolean
   checkedAt?: string
   runtimeReady: boolean
-  runtimeRoot?: string
   python: PersonalWechatVoiceRuntimeComponent
   pilk: PersonalWechatVoiceRuntimeComponent
   ffmpeg: PersonalWechatVoiceRuntimeComponent
-  encoder: 'pilk' | 'go-silk' | 'unavailable'
+  encoder: 'pilk' | 'silk' | 'unavailable'
   message: string
 }
 
@@ -32,6 +31,4 @@ export interface PersonalWechatVoiceEncodingEnvironmentResult {
   success: boolean
   environment: PersonalWechatVoiceEncodingEnvironment
   error?: string
-  restarted?: boolean
-  restartError?: string
 }

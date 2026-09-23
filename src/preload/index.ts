@@ -61,11 +61,6 @@ import type {
   ScheduledReportUpdateInput
 } from '../shared/scheduled-report'
 import type {
-  PersonalWechatRuntimeDownloadResult,
-  PersonalWechatRuntimeProgressEvent,
-  PersonalWechatRuntimeStatus
-} from '../shared/personal-wechat-runtime'
-import type {
   PersonalWechatVoiceEncodingEnvironment,
   PersonalWechatVoiceEncodingEnvironmentResult
 } from '../shared/personal-wechat-voice-runtime'
@@ -554,10 +549,6 @@ const api = {
     ipcRenderer.invoke('wechat-personal:getStatus'),
   getPersonalWechatSendCapability: (): Promise<PersonalWechatSendCapability> =>
     ipcRenderer.invoke('wechat-personal:getSendCapability'),
-  getPersonalWechatKeepOneBotProcess: (): Promise<boolean> =>
-    ipcRenderer.invoke('wechat-personal:getKeepProcess'),
-  setPersonalWechatKeepOneBotProcess: (keep: boolean): Promise<boolean> =>
-    ipcRenderer.invoke('wechat-personal:setKeepProcess', keep),
   checkPersonalWechatSenderStatus: (port?: string): Promise<PersonalWechatSenderStatus> =>
     ipcRenderer.invoke('wechat-personal:checkStatus', port),
   checkPersonalWechatVoiceEncodingEnvironment:
@@ -569,26 +560,6 @@ const api = {
     ipcRenderer.invoke('wechat-personal:openVoicePythonDownload'),
   openPersonalWechatVoiceFfmpegDownload: (): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('wechat-personal:openVoiceFfmpegDownload'),
-  getPersonalWechatRuntimeStatus: (): Promise<PersonalWechatRuntimeStatus> =>
-    ipcRenderer.invoke('wechat-personal:getRuntimeStatus'),
-  downloadPersonalWechatRuntime: (): Promise<PersonalWechatRuntimeDownloadResult> =>
-    ipcRenderer.invoke('wechat-personal:downloadRuntime'),
-  cancelPersonalWechatRuntimeDownload: (): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke('wechat-personal:cancelRuntimeDownload'),
-  removePersonalWechatRuntime: (): Promise<PersonalWechatRuntimeStatus> =>
-    ipcRenderer.invoke('wechat-personal:removeRuntime'),
-  openPersonalWechatRuntimeDirectory: (): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('wechat-personal:openRuntimeDirectory'),
-  onPersonalWechatRuntimeProgress: (
-    callback: (status: PersonalWechatRuntimeProgressEvent) => void
-  ) => {
-    const listener = (
-      _event: Electron.IpcRendererEvent,
-      status: PersonalWechatRuntimeProgressEvent
-    ): void => callback(status)
-    ipcRenderer.on('wechat-personal:runtimeProgress', listener)
-    return () => ipcRenderer.removeListener('wechat-personal:runtimeProgress', listener)
-  },
   rebindPersonalWechatSender: (): Promise<PersonalWechatSenderStatus> =>
     ipcRenderer.invoke('wechat-personal:rebind'),
   sendGeneratedTtsVoice: (

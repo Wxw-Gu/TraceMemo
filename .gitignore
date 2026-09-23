@@ -10,7 +10,8 @@ out
 coverage/
 playwright-report/
 test-results/
-resources/connectors/wechat-personal/
+resources/runtime/darwin-arm64
+.native-runtime-source
 .omc
 .codex/
 skills-lock.json

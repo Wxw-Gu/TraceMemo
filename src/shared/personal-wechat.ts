@@ -20,7 +20,6 @@ export interface PersonalWechatSenderStatus {
   wechatRunning: boolean
   wechatPid?: number
   boundWechatPid?: number
-  oneBotPid?: number
   endpoint: string
   endpointReady: boolean
   wechatVersion?: string
@@ -80,6 +79,8 @@ export interface PersonalWechatSendTextRequest extends PersonalWechatSendBaseReq
 export interface PersonalWechatSendImageRequest extends PersonalWechatSendBaseRequest {
   type: 'image'
   filePath: string
+  /** 日报图片成功后再发送的文字；undefined 表示普通图片发送，不启用日报序列。 */
+  postfixText?: string
 }
 
 export interface PersonalWechatSendVoiceRequest extends PersonalWechatSendBaseRequest {
@@ -112,7 +113,11 @@ export interface PersonalWechatSendResult {
   success: boolean
   status: PersonalWechatSenderStatus
   error?: string
+  postfixSent?: boolean
+  postfixError?: string
 }
+
+export const DEFAULT_REPORT_IMAGE_POSTFIX_TEXT = '今日日报'
 
 /** Safe, user-copyable metadata for the most recent voice send attempt. */
 export interface PersonalWechatVoiceDiagnostic {

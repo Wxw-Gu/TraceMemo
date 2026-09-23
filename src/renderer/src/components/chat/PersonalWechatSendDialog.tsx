@@ -5,16 +5,14 @@ import type {
   PersonalWechatSenderStatus,
   PersonalWechatVoiceDiagnostic
 } from '../../../../shared/personal-wechat'
-import type {
-  PersonalWechatRuntimeProgressEvent,
-  PersonalWechatRuntimeStatus
-} from '../../../../shared/personal-wechat-runtime'
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui'
 import { isMac, isWindows } from '../../utils/runtime-environment'
 import { PersonalWechatChatComposer, type ChatMessage } from './PersonalWechatChatComposer'
 import { PersonalWechatSetupGuide } from './PersonalWechatSetupGuide'
 import { PersonalWechatVoiceDiagnosticDialog } from './PersonalWechatVoiceDiagnosticDialog'
 import { PersonalWechatWindowsSendDialog } from './PersonalWechatWindowsSendDialog'
+import { ReportImagePostfixInput } from './ReportImagePostfixInput'
+import { useReportImagePostfixSetting } from './useReportImagePostfixSetting'
 
 type SelectedLocalFile = { path: string; name: string }
 
@@ -36,7 +34,7 @@ function fallbackStatus(error: unknown): PersonalWechatSenderStatus {
     sipDisabled: false,
     wechatRunning: false,
     runtimeReady: false,
-    endpoint: '127.0.0.1:58080',
+    endpoint: '',
     endpointReady: false,
     attachReady: false,
     baseAddressReady: false,
@@ -67,18 +65,14 @@ function PersonalWechatMacSendDialog({
   initialImage = null
 }: PersonalWechatSendDialogProps): React.ReactElement {
   const [senderStatus, setSenderStatus] = useState<PersonalWechatSenderStatus | null>(null)
-  const [runtimeStatus, setRuntimeStatus] = useState<PersonalWechatRuntimeStatus | null>(null)
-  const [runtimeProgress, setRuntimeProgress] = useState<PersonalWechatRuntimeProgressEvent | null>(
-    null
-  )
   const [detecting, setDetecting] = useState(true)
   const [binding, setBinding] = useState(false)
-  const [runtimeBusy, setRuntimeBusy] = useState(false)
   const [sendBusy, setSendBusy] = useState(false)
-  // 状态可能来自之前的 OneBot 进程或日志；发送入口只信任当前语音能力状态。
+  // 发送入口只信任当前 native runtime 上报的能力状态。
   const [sessionBound, setSessionBound] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sendError, setSendError] = useState<string | null>(null)
+  const [sendSuccess, setSendSuccess] = useState<string | null>(null)
   const [voiceDiagnostic, setVoiceDiagnostic] = useState<PersonalWechatVoiceDiagnostic | null>(null)
   const [voiceDiagnosticOpen, setVoiceDiagnosticOpen] = useState(false)
   const requestIdRef = useRef(0)
@@ -86,23 +80,19 @@ function PersonalWechatMacSendDialog({
   const closingRef = useRef(false)
   const displayName = contact.m_nsNickName || contact.m_nsUsrName || '未命名会话'
   const targetId = contact.m_nsUsrName
-  const isBusy = binding || runtimeBusy || sendBusy
+  const isBusy = binding || sendBusy
   const setupReady = Boolean(initialImage ? senderStatus?.canSendImage : senderStatus?.canSendVoice)
+  const { postfixText, setPostfixText, persistPostfixText } = useReportImagePostfixSetting(
+    Boolean(initialImage)
+  )
 
   const refreshStatus = useCallback(async (): Promise<void> => {
     const requestId = ++requestIdRef.current
     setDetecting(true)
     setSendError(null)
     try {
-      const [nextRuntime, nextSender] = await Promise.all([
-        isMac
-          ? window.api.getPersonalWechatRuntimeStatus?.() || Promise.resolve(null)
-          : Promise.resolve(null),
-        window.api.getPersonalWechatSenderStatus()
-      ])
+      const nextSender = await window.api.getPersonalWechatSenderStatus()
       if (requestId !== requestIdRef.current) return
-      setRuntimeStatus(nextRuntime)
-      setRuntimeProgress(nextRuntime?.state === 'downloading' ? nextRuntime : null)
       setSenderStatus(nextSender)
       setSessionBound(
         nextSender.state === 'online' ||
@@ -122,13 +112,6 @@ function PersonalWechatMacSendDialog({
 
   useEffect(() => {
     void refreshStatus()
-    if (!isMac) return undefined
-    const unsubscribe = window.api.onPersonalWechatRuntimeProgress?.((status) => {
-      setRuntimeProgress(status)
-      setRuntimeStatus(status)
-      if (status.state === 'ready') void refreshStatus()
-    })
-    return unsubscribe
   }, [refreshStatus])
 
   useEffect(() => {
@@ -145,22 +128,6 @@ function PersonalWechatMacSendDialog({
     const timer = window.setInterval(() => void refreshStatus(), 1_000)
     return () => window.clearInterval(timer)
   }, [refreshStatus, senderStatus])
-
-  const handleDownloadRuntime = async (): Promise<void> => {
-    if (runtimeBusy) return
-    setRuntimeBusy(true)
-    setSendError(null)
-    try {
-      const result = await window.api.downloadPersonalWechatRuntime()
-      setRuntimeStatus(result.status)
-      if (!result.success && result.error) setSendError(result.error)
-      if (result.success) await refreshStatus()
-    } catch (error) {
-      setSendError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setRuntimeBusy(false)
-    }
-  }
 
   const handleBind = async (): Promise<void> => {
     if (binding) return
@@ -232,17 +199,26 @@ function PersonalWechatMacSendDialog({
     if (!initialImage || !senderStatus?.canSendImage || sendBusy) return
     setSendBusy(true)
     setSendError(null)
+    setSendSuccess(null)
     try {
+      await persistPostfixText()
       const response = await window.api.sendPersonalWechatMessage({
         type: 'image',
         to: targetId,
         isGroup: isGroupChat,
-        filePath: initialImage.path
+        filePath: initialImage.path,
+        postfixText
       } satisfies PersonalWechatSendRequest)
       setSenderStatus(response.status)
       if (!response.success) {
         setSendError(response.error || '日报图片发送失败')
         return
+      }
+      if (response.postfixError) {
+        setSendError(`日报图片已发送，但${response.postfixError}`)
+        setSendSuccess('日报图片发送成功')
+      } else {
+        setSendSuccess(postfixText.trim() ? '日报图片和后置词发送成功' : '日报图片发送成功')
       }
       setMessages((current) => [
         ...current,
@@ -287,7 +263,7 @@ function PersonalWechatMacSendDialog({
               {displayName.slice(0, 1)}
             </div>
             <div className="personal-wechat-chat-heading">
-              <DialogTitle>文字转语音</DialogTitle>
+              <DialogTitle>{initialImage ? '发送日报图片' : '文字转语音'}</DialogTitle>
               <DialogDescription>
                 发送给 {displayName} · {setupReady ? '微信已连接' : '配置微信发送能力'}
               </DialogDescription>
@@ -319,14 +295,10 @@ function PersonalWechatMacSendDialog({
 
             {!setupReady && senderStatus && (
               <PersonalWechatSetupGuide
-                runtimeStatus={runtimeStatus}
                 senderStatus={senderStatus}
-                runtimeProgress={runtimeProgress}
-                runtimeBusy={runtimeBusy}
                 binding={binding}
                 detecting={detecting}
                 sessionBound={sessionBound}
-                onDownloadRuntime={() => void handleDownloadRuntime()}
                 onBind={() => void handleBind()}
                 onStartSending={() => undefined}
                 onOpenTextToSpeechSettings={handleOpenSettings}
@@ -336,6 +308,16 @@ function PersonalWechatMacSendDialog({
             {setupReady && initialImage && (
               <section className="personal-wechat-composer" aria-label="日报图片发送">
                 <p>已准备日报图片：{initialImage.name}</p>
+                <ReportImagePostfixInput
+                  value={postfixText}
+                  onChange={setPostfixText}
+                  onBlur={() =>
+                    void persistPostfixText().catch((error) =>
+                      setSendError(error instanceof Error ? error.message : '发送后置词保存失败')
+                    )
+                  }
+                  disabled={sendBusy}
+                />
                 <Button size="sm" onClick={() => void handleSendReportImage()} disabled={sendBusy}>
                   {sendBusy ? '发送中…' : '发送日报图片'}
                 </Button>
@@ -358,8 +340,13 @@ function PersonalWechatMacSendDialog({
                 {sendError}
               </div>
             )}
+            {sendSuccess && (
+              <div className="personal-wechat-global-success" role="status">
+                {sendSuccess}
+              </div>
+            )}
           </div>
-          {setupReady && isMac && (
+          {setupReady && isMac && !initialImage && (
             <div className="personal-wechat-chat-footer flex items-center justify-end">
               <Button variant="link" size="sm" onClick={() => void handleOpenVoiceDiagnostic()}>
                 语音发送诊断

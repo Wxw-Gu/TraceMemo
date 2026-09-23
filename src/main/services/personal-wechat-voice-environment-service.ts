@@ -7,11 +7,8 @@ import type {
   PersonalWechatVoiceRuntimeComponent
 } from '../../shared/personal-wechat-voice-runtime'
 import { PERSONAL_WECHAT_PILK_VERSION } from '../../shared/personal-wechat-voice-runtime'
-import {
-  buildPersonalWechatRuntimeEnvironment,
-  findPersonalWechatRuntime
-} from './personal-wechat-send-service'
-import type { RuntimeLayout } from './personal-wechat-send-service'
+import { buildPersonalWechatRuntimeEnvironment } from './personal-wechat-send-service'
+import { macWechatRuntimeManager } from './mac-wechat-runtime-manager'
 import { appLogger } from '../app-logger'
 
 const execFileAsync = promisify(execFile)
@@ -37,8 +34,8 @@ type CommandRunner = (
 interface PersonalWechatVoiceEnvironmentServiceOptions {
   platform?: NodeJS.Platform
   architecture?: string
-  findRuntime?: () => RuntimeLayout | null
-  buildEnvironment?: (runtimeRoot?: string) => NodeJS.ProcessEnv
+  isRuntimePresent?: () => boolean
+  buildEnvironment?: () => NodeJS.ProcessEnv
   runCommand?: CommandRunner
   now?: () => Date
 }
@@ -100,18 +97,26 @@ function unsupportedEnvironment(): PersonalWechatVoiceEncodingEnvironment {
   }
 }
 
+function defaultIsRuntimePresent(): boolean {
+  try {
+    return macWechatRuntimeManager.isRuntimePresent()
+  } catch {
+    return false
+  }
+}
+
 export class PersonalWechatVoiceEnvironmentService {
   private readonly platform: NodeJS.Platform
   private readonly architecture: string
-  private readonly findRuntime: () => RuntimeLayout | null
-  private readonly buildEnvironment: (runtimeRoot?: string) => NodeJS.ProcessEnv
+  private readonly isRuntimePresent: () => boolean
+  private readonly buildEnvironment: () => NodeJS.ProcessEnv
   private readonly runCommand: CommandRunner
   private readonly now: () => Date
 
   constructor(options: PersonalWechatVoiceEnvironmentServiceOptions = {}) {
     this.platform = options.platform || process.platform
     this.architecture = options.architecture || process.arch
-    this.findRuntime = options.findRuntime || findPersonalWechatRuntime
+    this.isRuntimePresent = options.isRuntimePresent || defaultIsRuntimePresent
     this.buildEnvironment = options.buildEnvironment || buildPersonalWechatRuntimeEnvironment
     this.runCommand = options.runCommand || runCommand
     this.now = options.now || (() => new Date())
@@ -123,8 +128,8 @@ export class PersonalWechatVoiceEnvironmentService {
     }
 
     logEnvironmentLine('Checking voice encoding environment')
-    const runtime = this.findRuntime()
-    const environment = this.buildEnvironment(runtime?.root)
+    const runtimeReady = this.isRuntimePresent()
+    const environment = this.buildEnvironment()
     const python = blankComponent()
     const pilk = blankComponent()
     const ffmpeg = blankComponent()
@@ -197,26 +202,25 @@ export class PersonalWechatVoiceEnvironmentService {
       logEnvironmentWarning('ffmpeg: unavailable', { error: ffmpeg.error })
     }
 
-    const ready = Boolean(runtime && python.ready && pilk.ready && ffmpeg.ready)
+    const ready = Boolean(runtimeReady && python.ready && pilk.ready && ffmpeg.ready)
     const result: PersonalWechatVoiceEncodingEnvironment = {
       state: ready ? 'ready' : 'incomplete',
       ready,
       checkedAt: this.now().toISOString(),
-      runtimeReady: Boolean(runtime),
-      ...(runtime ? { runtimeRoot: runtime.root } : {}),
+      runtimeReady,
       python,
       pilk,
       ffmpeg,
       encoder: pilk.ready
         ? 'pilk'
-        : runtime && python.ready && ffmpeg.ready
-          ? 'go-silk'
+        : runtimeReady && python.ready && ffmpeg.ready
+          ? 'silk'
           : 'unavailable',
       message: ready
         ? '语音编码环境正常，可以使用 pilk 编码'
-        : runtime
-          ? '语音编码环境不完整，OneBot 可能回退到 go-silk'
-          : '微信发送组件尚未安装，请先准备 OneBot 运行时'
+        : runtimeReady
+          ? '语音编码环境不完整，语音将回退到内置 SILK 编码'
+          : '当前版本暂未提供微信消息发送功能'
     }
     logEnvironmentLine(
       ready ? 'Voice encoding environment is ready' : 'Voice encoding environment is NOT ready',
@@ -245,7 +249,7 @@ export class PersonalWechatVoiceEnvironmentService {
         pythonExecutable,
         ['-m', 'pip', 'install', '--user', `pilk==${PERSONAL_WECHAT_PILK_VERSION}`],
         {
-          env: this.buildEnvironment(before.runtimeRoot || undefined),
+          env: this.buildEnvironment(),
           timeout: INSTALL_TIMEOUT_MS
         }
       )

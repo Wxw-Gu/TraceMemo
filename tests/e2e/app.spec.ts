@@ -429,7 +429,7 @@ test('GUIDE-01 first-use welcome is keyboard-safe and fits the viewport', async 
   }
 })
 
-test('SETTINGS-01 supported WeChat versions dialog is keyboard-safe and fits the viewport', async () => {
+test('SETTINGS-01 macOS WeChat setup keeps the binding guidance focused', async () => {
   test.skip(process.platform !== 'darwin', 'The personal WeChat runtime is currently macOS-only')
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []
@@ -441,21 +441,16 @@ test('SETTINGS-01 supported WeChat versions dialog is keyboard-safe and fits the
       .click()
     await fixture.page.getByRole('button', { name: '微信发送' }).click()
 
-    const trigger = fixture.page.getByRole('button', { name: '支持版本' })
-    await expect(trigger).toBeVisible()
-    await trigger.click()
-    const dialog = fixture.page.getByRole('dialog', { name: '支持的微信版本' })
-    await expect(dialog).toBeVisible()
-    await expect(dialog.getByText('4.1.6.12')).toBeVisible()
-    await expect(dialog.getByText('4.1.11.53')).toBeVisible()
+    await expect(
+      fixture.page.getByText('请保持微信未登录窗口状态，点击“绑定微信”后，再点击微信窗口登录。')
+    ).toBeVisible()
+    await expect(fixture.page.getByRole('button', { name: '支持版本' })).toHaveCount(0)
+    await expect(fixture.page.getByText('查看支持的微信版本')).toHaveCount(0)
+    await expect(fixture.page.getByText('高级诊断')).toHaveCount(0)
     expect(
       await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true)
     expect(pageErrors).toEqual([])
-
-    await fixture.page.keyboard.press('Escape')
-    await expect(dialog).toHaveCount(0)
-    await expect(trigger).toBeFocused()
 
     await fixture.page.getByRole('button', { name: '文字转语音' }).click()
     const modelSelect = fixture.page.getByRole('combobox', { name: '合成模型' })

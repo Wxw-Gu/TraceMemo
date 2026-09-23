@@ -22,14 +22,10 @@ vi.mock('electron', () => ({
 import {
   buildPersonalWechatVoiceDiagnostic,
   buildWindowsWechatRequest,
-  buildPersonalWechatOneBotRequest,
   findWechatImagePath,
-  findPersonalWechatRuntime,
   normalizeWindowsWechatPort,
   parseWindowsLoginStatus,
   parseWindowsHookResponse,
-  parsePersonalWechatHookLog,
-  deriveMacSendCapabilities,
   prepareWindowsImageFile,
   WindowsHookHttpError
 } from '../../src/main/services/personal-wechat-send-service'
@@ -48,7 +44,7 @@ afterEach(() => {
   }
 })
 
-describe('personal WeChat OneBot request', () => {
+describe('personal WeChat voice diagnostics', () => {
   it('keeps voice diagnostics to the safe metadata allowlist', () => {
     const diagnostic = buildPersonalWechatVoiceDiagnostic('request-1', 'completed', {
       input_bytes: 10,
@@ -78,70 +74,6 @@ describe('personal WeChat OneBot request', () => {
     expect(diagnostic.error).not.toContain('bearer-secret')
     expect(diagnostic.error).not.toContain('token-value')
     expect(diagnostic.error).not.toContain('json-secret')
-  })
-
-  it('builds a private text message request', () => {
-    expect(
-      buildPersonalWechatOneBotRequest({
-        to: ' wxid_fixture ',
-        type: 'text',
-        text: ' 测试发送 ',
-        isGroup: false
-      })
-    ).toEqual({
-      endpoint: '/send_private_msg',
-      body: {
-        user_id: 'wxid_fixture',
-        message: [{ type: 'text', data: { text: '测试发送' } }]
-      }
-    })
-  })
-
-  it('uses the group endpoint for chatroom targets', () => {
-    expect(
-      buildPersonalWechatOneBotRequest({
-        to: 'fixture-room@chatroom',
-        type: 'text',
-        text: '群聊测试',
-        isGroup: false
-      })
-    ).toEqual({
-      endpoint: '/send_group_msg',
-      body: {
-        group_id: 'fixture-room@chatroom',
-        message: [{ type: 'text', data: { text: '群聊测试' } }]
-      }
-    })
-  })
-
-  it('builds a base64 image request without mixing text content', () => {
-    expect(
-      buildPersonalWechatOneBotRequest(
-        { to: 'fixture-room@chatroom', type: 'image', filePath: '/tmp/test.png', isGroup: false },
-        'aGVsbG8='
-      )
-    ).toEqual({
-      endpoint: '/send_group_msg',
-      body: {
-        group_id: 'fixture-room@chatroom',
-        message: [{ type: 'image', data: { file: 'base64://aGVsbG8=' } }]
-      }
-    })
-  })
-
-  it('builds a base64 voice record request', () => {
-    expect(
-      buildPersonalWechatOneBotRequest(
-        { to: 'filehelper', type: 'voice', filePath: '/tmp/test.silk', isGroup: false },
-        'dm9pY2U='
-      )
-    ).toEqual({
-      endpoint: '/send_private_msg',
-      body: {
-        user_id: 'filehelper',
-        message: [{ type: 'record', data: { file: 'base64://dm9pY2U=' } }]
-      }
-    })
   })
 })
 
@@ -291,158 +223,5 @@ describe('personal WeChat runtime discovery', () => {
     expect(findWechatImagePath(root, new Date('2026-08-06'))).toBe(
       `${join(tempRoot, 'ImageTemp', '2026-08')}${sep}`
     )
-  })
-
-  it('finds the nested release archive layout', () => {
-    const root = temporaryDirectory()
-    mkdirSync(join(root, 'onebot'), { recursive: true })
-    mkdirSync(join(root, 'wechat_version'), { recursive: true })
-    writeFileSync(join(root, 'onebot', 'onebot'), 'fixture')
-    writeFileSync(join(root, 'onebot', 'script.js'), 'fixture')
-
-    expect(findPersonalWechatRuntime([root])).toEqual({
-      root,
-      executable: join(root, 'onebot', 'onebot'),
-      workingDirectory: join(root, 'onebot'),
-      configDirectory: join(root, 'wechat_version'),
-      logPath: join(root, 'onebot', 'log', 'macos.log')
-    })
-  })
-
-  it('finds a flat runtime layout and rejects incomplete directories', () => {
-    const incomplete = temporaryDirectory()
-    writeFileSync(join(incomplete, 'onebot'), 'fixture')
-
-    const root = temporaryDirectory()
-    mkdirSync(join(root, 'wechat_version'), { recursive: true })
-    writeFileSync(join(root, 'onebot'), 'fixture')
-    writeFileSync(join(root, 'script.js'), 'fixture')
-
-    expect(findPersonalWechatRuntime([incomplete, root])).toEqual({
-      root,
-      executable: join(root, 'onebot'),
-      workingDirectory: root,
-      configDirectory: join(root, 'wechat_version'),
-      logPath: join(root, 'log', 'macos.log')
-    })
-  })
-})
-
-describe('personal WeChat hook diagnostics', () => {
-  it('marks media ready from initialized hooks without an upload capture event', () => {
-    expect(
-      deriveMacSendCapabilities({
-        attached: true,
-        baseAddressReady: true,
-        textHookInstalled: true,
-        textHookReady: true,
-        imageHookInstalled: true,
-        imagePathBound: true
-      })
-    ).toEqual({ canSend: true, canSendText: true, canSendImage: true, canSendVoice: true })
-  })
-
-  it('keeps sending unavailable until the native send context is captured', () => {
-    expect(
-      deriveMacSendCapabilities({
-        attached: true,
-        baseAddressReady: true,
-        textHookInstalled: true,
-        textHookReady: false,
-        imageHookInstalled: true,
-        imagePathBound: true
-      }).canSend
-    ).toBe(false)
-  })
-
-  it('does not treat a listening service as hook-ready after req2buf scan failure', () => {
-    expect(
-      parsePersonalWechatHookLog(
-        [
-          JSON.stringify({ time: '2026-08-06T14:08:10+08:00', payload: '[+] HTTP 服务启动在' }),
-          JSON.stringify({
-            time: '2026-08-06T14:08:11+08:00',
-            err: "Error: [-] Cannot find 'req2buf' keyword in a range > 100MB"
-          })
-        ].join('\n')
-      )
-    ).toMatchObject({ readiness: 'failed' })
-  })
-
-  it('requires StartTask capture before reporting ready', () => {
-    expect(
-      parsePersonalWechatHookLog(
-        JSON.stringify({ payload: '[+] Dynamic Text Message Setup Complete.' })
-      )
-    ).toMatchObject({ readiness: 'initializing', textHookInstalled: true })
-    expect(
-      parsePersonalWechatHookLog(
-        JSON.stringify({ payload: '[+] 捕获到有效 StartTask 上下文，X0：0x1, Payload: 0x2' })
-      )
-    ).toMatchObject({ readiness: 'ready', textHookReady: true })
-  })
-
-  it('resets stale hook results when a new WeChat process attach starts', () => {
-    expect(
-      parsePersonalWechatHookLog(
-        [
-          JSON.stringify({ payload: '[+] 捕获到 StartTask 调用，X0：0x1, Payload: 0x2' }),
-          JSON.stringify({ message: '使用指定的微信进程 PID', PID: 123 }),
-          JSON.stringify({ payload: '[+] Dynamic Text Message Setup Complete.' })
-        ].join('\n')
-      )
-    ).toMatchObject({
-      readiness: 'initializing',
-      boundWechatPid: 123,
-      textHookInstalled: true,
-      textHookReady: false
-    })
-  })
-
-  it('tracks base, image Hook and message listener diagnostics', () => {
-    expect(
-      parsePersonalWechatHookLog(
-        [
-          JSON.stringify({ message: '使用指定的微信进程 PID', PID: 4668 }),
-          JSON.stringify({ message: '成功 Attach 微信进程', PID: 4668 }),
-          JSON.stringify({ payload: '[+] Base address from range: 0x114ef8000' }),
-          JSON.stringify({ payload: '[+] Dynamic Text Message Setup Complete.' }),
-          JSON.stringify({ payload: '[+] 图片上传 Hook Setup Complete.' }),
-          JSON.stringify({ payload: '[+] 捕获到图片上传上下文，uploadGlobalX0：0x1' }),
-          JSON.stringify({ message: '发送数据' })
-        ].join('\n')
-      )
-    ).toMatchObject({
-      attached: true,
-      baseAddress: '0x114ef8000',
-      textHookInstalled: true,
-      imageHookInstalled: true,
-      imageHookReady: true,
-      messageListenerReady: true,
-      boundWechatPid: 4668
-    })
-  })
-
-  it('recognizes a successful legacy image send without the new Hook marker', () => {
-    expect(
-      parsePersonalWechatHookLog(
-        JSON.stringify({ type: 'send_image', result: '1', message: '发送图片任务执行结果' })
-      )
-    ).toMatchObject({ imageHookInstalled: true, imageHookReady: true })
-  })
-
-  it('recognizes the real onebot two-record image result format', () => {
-    expect(
-      parsePersonalWechatHookLog(
-        [
-          JSON.stringify({ task_id: 536870915, type: 'send_image' }),
-          JSON.stringify({
-            result: '1',
-            task_id: 536870915,
-            message: '📩 发送图片任务执行结果'
-          })
-        ].join('\n')
-      )
-    ).toMatchObject({ imageHookInstalled: true, imageHookReady: true })
   })
 })

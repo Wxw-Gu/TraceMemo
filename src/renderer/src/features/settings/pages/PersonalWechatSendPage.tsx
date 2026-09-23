@@ -1,40 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useState, type ReactElement } from 'react'
 import type {
   PersonalWechatSendCapability,
   PersonalWechatSenderStatus
 } from '../../../../../shared/personal-wechat'
-import type {
-  PersonalWechatRuntimeProgressEvent,
-  PersonalWechatRuntimeStatus
-} from '../../../../../shared/personal-wechat-runtime'
-import {
-  Button,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  Input,
-  Skeleton,
-  Switch
-} from '../../../components/ui'
+import { Button, Input, Skeleton } from '../../../components/ui'
 import { PersonalWechatSetupGuide } from '../../../components/chat/PersonalWechatSetupGuide'
-import { PersonalWechatSupportedVersionsContent } from '../../../components/chat/PersonalWechatSupportedVersionsContent'
 import { isMac, isWindows } from '../../../utils/runtime-environment'
-
-const RUNTIME_STATUS_LABELS: Record<PersonalWechatRuntimeStatus['state'], string> = {
-  missing: '未下载',
-  downloading: '下载中',
-  ready: '已就绪',
-  invalid: '需要修复',
-  error: '下载失败',
-  unsupported: '暂不支持'
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`
-  return `${(value / 1024 / 1024).toFixed(1)} MB`
-}
 
 const REPOSITORY_URL = 'https://github.com/Wxw-Gu/TraceMemo'
 // README 就是仓库首页，跳转后需要的正是「交流与反馈」这一节（含群二维码）。
@@ -69,6 +40,26 @@ function boundToCurrentWechat(status: PersonalWechatSenderStatus | null): boolea
   )
 }
 
+function SendCapabilityAuthorizationCard(): ReactElement {
+  return (
+    <section className="settings-card grid gap-2">
+      <p>发送能力属授权制，需要联系群主。请先加入交流群，然后在群内添加群主申请授权。</p>
+      <p className="settings-footnote">
+        进群请点击{' '}
+        <a
+          className="text-primary hover:underline"
+          href={GROUP_README_URL}
+          target="_blank"
+          rel="noreferrer"
+        >
+          这里
+        </a>{' '}
+        跳转。
+      </p>
+    </section>
+  )
+}
+
 export function PersonalWechatSendPage({
   onNotice,
   onOpenTextToSpeechSettings
@@ -78,12 +69,7 @@ export function PersonalWechatSendPage({
 }): ReactElement {
   const [capability, setCapability] = useState<PersonalWechatSendCapability | null>(null)
   const [senderStatus, setSenderStatus] = useState<PersonalWechatSenderStatus | null>(null)
-  const [runtimeStatus, setRuntimeStatus] = useState<PersonalWechatRuntimeStatus | null>(null)
-  const [runtimeProgress, setRuntimeProgress] = useState<PersonalWechatRuntimeProgressEvent | null>(
-    null
-  )
   const [loading, setLoading] = useState(true)
-  const [runtimeBusy, setRuntimeBusy] = useState(false)
   const [binding, setBinding] = useState(false)
   const [detecting, setDetecting] = useState(false)
   const [error, setError] = useState('')
@@ -93,12 +79,6 @@ export function PersonalWechatSendPage({
   const [windowsPortInput, setWindowsPortInput] = useState('')
   const [windowsDetectedPort, setWindowsDetectedPort] = useState('')
   const [windowsEndpointBusy, setWindowsEndpointBusy] = useState(false)
-  const [keepOneBotProcess, setKeepOneBotProcess] = useState(false)
-  const [keepProcessBusy, setKeepProcessBusy] = useState(false)
-  const [showWechatVersions, setShowWechatVersions] = useState(false)
-  const runtimeVersionsTriggerRef = useRef<HTMLButtonElement | null>(null)
-  const personalWechatRuntimeSupported = isMac && Boolean(runtimeStatus?.supported)
-
   const refresh = useCallback(async (): Promise<void> => {
     if (isWindows) {
       setLoading(false)
@@ -106,15 +86,12 @@ export function PersonalWechatSendPage({
     }
     setError('')
     try {
-      const [nextCapability, nextSender, nextRuntime] = await Promise.all([
+      const [nextCapability, nextSender] = await Promise.all([
         window.api.getPersonalWechatSendCapability(),
-        window.api.getPersonalWechatSenderStatus(),
-        window.api.getPersonalWechatRuntimeStatus()
+        window.api.getPersonalWechatSenderStatus()
       ])
       setCapability(nextCapability)
       setSenderStatus(nextSender)
-      setRuntimeStatus(nextRuntime)
-      setRuntimeProgress(nextRuntime.state === 'downloading' ? nextRuntime : null)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '微信发送能力读取失败')
     } finally {
@@ -125,30 +102,7 @@ export function PersonalWechatSendPage({
   useEffect(() => {
     if (isWindows) return
     void refresh()
-    const subscribe = window.api.onPersonalWechatRuntimeProgress
-    if (!subscribe) return
-    const unsubscribe = subscribe((status) => {
-      setRuntimeProgress(status)
-      setRuntimeStatus(status)
-      if (status.state === 'ready') void refresh()
-    })
-    return () => unsubscribe?.()
   }, [refresh])
-
-  useEffect(() => {
-    if (!isMac) return undefined
-    let active = true
-    const readKeepProcess = window.api.getPersonalWechatKeepOneBotProcess
-    if (typeof readKeepProcess !== 'function') return undefined
-    void readKeepProcess()
-      .then((keep) => {
-        if (active && typeof keep === 'boolean') setKeepOneBotProcess(keep)
-      })
-      .catch(() => undefined)
-    return () => {
-      active = false
-    }
-  }, [])
 
   useEffect(() => {
     if (isWindows || !senderStatus || senderStatus.canSend || senderStatus.state === 'error') {
@@ -186,80 +140,6 @@ export function PersonalWechatSendPage({
       active = false
     }
   }, [refresh])
-
-  const downloadRuntime = async (): Promise<void> => {
-    if (runtimeBusy || !personalWechatRuntimeSupported) return
-    setRuntimeBusy(true)
-    setError('')
-    setRuntimeStatus((current) =>
-      current ? { ...current, state: 'downloading', downloadedBytes: 0, progress: 0 } : current
-    )
-    try {
-      const result = await window.api.downloadPersonalWechatRuntime()
-      setRuntimeStatus(result.status)
-      if (!result.success) setError(result.error || '微信发送组件准备失败')
-      else onNotice('微信发送组件已准备好')
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '微信发送组件准备失败')
-    } finally {
-      setRuntimeBusy(false)
-    }
-  }
-
-  const cancelRuntimeDownload = async (): Promise<void> => {
-    if (!personalWechatRuntimeSupported) return
-    await window.api.cancelPersonalWechatRuntimeDownload()
-    onNotice('正在取消发送组件下载')
-  }
-
-  const removeRuntime = async (): Promise<void> => {
-    if (!personalWechatRuntimeSupported || !runtimeStatus?.removable || runtimeBusy) return
-    if (!window.confirm('卸载微信发送组件？以后需要发送个人微信消息时可以重新下载。')) return
-    setRuntimeBusy(true)
-    try {
-      setRuntimeStatus(await window.api.removePersonalWechatRuntime())
-      onNotice('微信发送组件已卸载')
-    } catch (reason) {
-      onNotice(reason instanceof Error ? `发送组件卸载失败：${reason.message}` : '发送组件卸载失败')
-    } finally {
-      setRuntimeBusy(false)
-    }
-  }
-
-  const openRuntimeDirectory = async (): Promise<void> => {
-    if (!personalWechatRuntimeSupported) return
-    const result = await window.api.openPersonalWechatRuntimeDirectory()
-    if (!result.success) onNotice(result.error || '无法打开发送组件目录')
-  }
-
-  const refreshRuntime = async (): Promise<void> => {
-    if (!isMac || runtimeBusy) return
-    try {
-      setRuntimeStatus(await window.api.getPersonalWechatRuntimeStatus())
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '微信发送组件状态读取失败')
-    }
-  }
-
-  const handleKeepOneBotProcessChange = async (keep: boolean): Promise<void> => {
-    if (!isMac || keepProcessBusy) return
-    const saveKeepProcess = window.api.setPersonalWechatKeepOneBotProcess
-    if (typeof saveKeepProcess !== 'function') {
-      onNotice('请重启 TraceMemo 后再使用“保留 OneBot 进程”')
-      return
-    }
-    setKeepProcessBusy(true)
-    setKeepOneBotProcess(keep)
-    try {
-      const saved = await saveKeepProcess(keep)
-      if (typeof saved === 'boolean') setKeepOneBotProcess(saved)
-    } catch (reason) {
-      setKeepOneBotProcess(!keep)
-      onNotice(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setKeepProcessBusy(false)
-    }
-  }
 
   const bindWechat = async (): Promise<void> => {
     if (binding) return
@@ -386,6 +266,7 @@ export function PersonalWechatSendPage({
   const pageMessage = isWindows
     ? windowsSenderStatus?.message || '请输入端口并检测 Windows 微信发送能力'
     : capability?.message || '微信发送能力暂不可用'
+  const macUnavailable = isMac && senderStatus?.state === 'runtime_missing'
 
   return (
     <>
@@ -398,7 +279,7 @@ export function PersonalWechatSendPage({
           <span
             className={`settings-status-badge ${loading ? 'checking' : pageReady ? '' : pageStatus === 'unsupported' ? 'unavailable' : 'warning'}`}
           >
-            {loading ? '检测中' : capabilityLabel[pageStatus]}
+            {loading ? '检测中' : macUnavailable ? '暂不可用' : capabilityLabel[pageStatus]}
           </span>
         </header>
         <div className="settings-page-scroll">
@@ -407,48 +288,55 @@ export function PersonalWechatSendPage({
               <Skeleton className="h-28 w-full" />
             ) : (
               <>
-                <h2 className="settings-section-heading">发送能力</h2>
-                <section className="settings-card">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <span className="settings-card-kicker">个人微信</span>
-                      <strong className="mt-1 block text-base">{pageMessage}</strong>
-                      <p className="mt-2 text-sm text-muted-foreground">
-                        {pageStatus === 'unsupported' && isMac
-                          ? 'Intel Mac 不支持个人微信发送。'
-                          : pageStatus === 'unsupported' && !isWindows
-                            ? '微信消息发送目前仅支持 macOS 和 Windows。'
-                            : isWindows
-                              ? 'Windows 通过本机微信发送接口工作，请先配置并检测接口端口。'
-                              : '档案中的文字、图片和语音发送，以及定时日报发送，都会使用这项能力。'}
-                      </p>
-                    </div>
-                    <Button variant="outline" size="sm" onClick={() => void detectCapability()}>
-                      {detecting ? '刷新中…' : isWindows ? '重新检测' : '刷新状态'}
-                    </Button>
-                  </div>
-                  <div className="mt-5 grid grid-cols-3 gap-2" aria-label="微信发送能力明细">
-                    {(
-                      [
-                        ['文字', pageCapabilities.text],
-                        ['图片', pageCapabilities.image],
-                        ['语音', pageCapabilities.voice]
-                      ] as const
-                    ).map(([label, available]) => (
-                      <div key={label} className="rounded-lg border border-border-subtle px-3 py-2">
-                        <span className="block text-xs text-muted-foreground">{label}</span>
-                        <strong className="mt-1 block text-sm">
-                          {available ? '可发送' : '未就绪'}
-                        </strong>
+                {/* macOS 走下方「配置状态」SetupGuide 统一展示，这里只在 Windows/其它
+                 * 平台显示旧「发送能力」卡（Mac 上两者重复，已按用户要求移除）。 */}
+                {!isMac ? (
+                  <>
+                    <h2 className="settings-section-heading">发送能力</h2>
+                    <section className="settings-card">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <span className="settings-card-kicker">个人微信</span>
+                          <strong className="mt-1 block text-base">{pageMessage}</strong>
+                          <p className="mt-2 text-sm text-muted-foreground">
+                            {pageStatus === 'unsupported'
+                              ? '微信消息发送目前仅支持 macOS 和 Windows。'
+                              : isWindows
+                                ? 'Windows 通过本机微信发送接口工作，请先配置并检测接口端口。'
+                                : '档案中的文字、图片和语音发送，以及定时日报发送，都会使用这项能力。'}
+                          </p>
+                        </div>
+                        <Button variant="outline" size="sm" onClick={() => void detectCapability()}>
+                          {detecting ? '刷新中…' : isWindows ? '重新检测' : '刷新状态'}
+                        </Button>
                       </div>
-                    ))}
-                  </div>
-                  {error ? (
-                    <p className="mt-3 text-sm text-destructive" role="alert">
-                      {error}
-                    </p>
-                  ) : null}
-                </section>
+                      <div className="mt-5 grid grid-cols-3 gap-2" aria-label="微信发送能力明细">
+                        {(
+                          [
+                            ['文字', pageCapabilities.text],
+                            ['图片', pageCapabilities.image],
+                            ['语音', pageCapabilities.voice]
+                          ] as const
+                        ).map(([label, available]) => (
+                          <div
+                            key={label}
+                            className="rounded-lg border border-border-subtle px-3 py-2"
+                          >
+                            <span className="block text-xs text-muted-foreground">{label}</span>
+                            <strong className="mt-1 block text-sm">
+                              {available ? '可发送' : '未就绪'}
+                            </strong>
+                          </div>
+                        ))}
+                      </div>
+                      {error ? (
+                        <p className="mt-3 text-sm text-destructive" role="alert">
+                          {error}
+                        </p>
+                      ) : null}
+                    </section>
+                  </>
+                ) : null}
 
                 {isWindows ? (
                   <>
@@ -515,156 +403,16 @@ export function PersonalWechatSendPage({
                     </section>
 
                     <h2 className="settings-section-heading">发送能力授权</h2>
-                    <section className="settings-card grid gap-2">
-                      <p>发送能力属授权制，需要联系群主。请先加入交流群，然后在群内添加群主申请授权。</p>
-                      <p className="settings-footnote">
-                        进群请点击{' '}
-                        <a
-                          className="text-primary hover:underline"
-                          href={GROUP_README_URL}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          这里
-                        </a>{' '}
-                        跳转。
-                      </p>
-                    </section>
+                    <SendCapabilityAuthorizationCard />
                   </>
                 ) : isMac ? (
                   <>
-                    <h2 className="settings-section-heading">OneBot 运行时</h2>
-                    <section className="settings-card tts-runtime-card">
-                      <div className="tts-runtime-summary">
-                        <span className="settings-card-kicker">
-                          OneBot {runtimeStatus?.version || 'v0.0.18'}
-                        </span>
-                        <strong>
-                          {runtimeStatus?.state === 'downloading'
-                            ? `正在下载 ${Math.round(runtimeStatus.progress * 100)}%`
-                            : runtimeStatus
-                              ? RUNTIME_STATUS_LABELS[runtimeStatus.state]
-                              : '正在检测'}
-                        </strong>
-                        <small>
-                          {!runtimeStatus
-                            ? '正在检测当前平台与组件状态'
-                            : personalWechatRuntimeSupported
-                              ? `仅用于连接 macOS 微信 · ${formatBytes(runtimeStatus.totalBytes)}`
-                              : '当前 Mac 环境不满足个人微信发送组件要求'}
-                        </small>
-                        {runtimeStatus?.error ? (
-                          <p className="tts-runtime-error">{runtimeStatus.error}</p>
-                        ) : null}
-                      </div>
-
-                      <div className="tts-runtime-actions">
-                        {personalWechatRuntimeSupported &&
-                        runtimeStatus?.state === 'downloading' ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => void cancelRuntimeDownload()}
-                          >
-                            取消下载
-                          </Button>
-                        ) : personalWechatRuntimeSupported && runtimeStatus?.state === 'ready' ? (
-                          <>
-                            {runtimeStatus.directory ? (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => void openRuntimeDirectory()}
-                              >
-                                打开目录
-                              </Button>
-                            ) : null}
-                            {runtimeStatus.removable ? (
-                              <Button
-                                variant="destructive"
-                                size="sm"
-                                disabled={runtimeBusy}
-                                onClick={() => void removeRuntime()}
-                              >
-                                卸载组件
-                              </Button>
-                            ) : null}
-                          </>
-                        ) : personalWechatRuntimeSupported ? (
-                          <Button
-                            size="sm"
-                            disabled={runtimeBusy}
-                            onClick={() => void downloadRuntime()}
-                          >
-                            {runtimeStatus?.state === 'invalid' || runtimeStatus?.state === 'error'
-                              ? '重新下载'
-                              : '下载组件'}
-                          </Button>
-                        ) : null}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={runtimeBusy}
-                          onClick={() => void refreshRuntime()}
-                        >
-                          重新检测组件
-                        </Button>
-                        {personalWechatRuntimeSupported ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={(event) => {
-                              runtimeVersionsTriggerRef.current = event.currentTarget
-                              setShowWechatVersions(true)
-                            }}
-                          >
-                            支持版本
-                          </Button>
-                        ) : null}
-                      </div>
-
-                      {personalWechatRuntimeSupported && runtimeStatus?.state === 'downloading' ? (
-                        <div className="tts-runtime-progress">
-                          <div>
-                            <span>{Math.round(runtimeStatus.progress * 100)}%</span>
-                            <small>
-                              {formatBytes(runtimeStatus.downloadedBytes)} /{' '}
-                              {formatBytes(runtimeStatus.totalBytes)}
-                            </small>
-                          </div>
-                          <progress
-                            value={runtimeStatus.progress}
-                            max={1}
-                            aria-label="微信发送组件下载进度"
-                          />
-                        </div>
-                      ) : null}
-                      <div className="col-span-full flex items-center justify-between gap-4 border-t border-border-subtle pt-4">
-                        <div>
-                          <strong className="block text-sm">保留 OneBot 进程</strong>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            退出 TraceMemo 后继续保留进程，重新打开时可以复用。
-                          </p>
-                        </div>
-                        <Switch
-                          checked={keepOneBotProcess}
-                          disabled={keepProcessBusy}
-                          onCheckedChange={(checked) => void handleKeepOneBotProcessChange(checked)}
-                          aria-label="保留 OneBot 进程"
-                        />
-                      </div>
-                    </section>
-
                     <h2 className="settings-section-heading">配置状态</h2>
                     <PersonalWechatSetupGuide
-                      runtimeStatus={runtimeStatus}
                       senderStatus={senderStatus}
-                      runtimeProgress={runtimeProgress}
-                      runtimeBusy={runtimeBusy}
                       binding={binding}
                       detecting={detecting}
                       sessionBound={boundToCurrentWechat(senderStatus)}
-                      onDownloadRuntime={() => void downloadRuntime()}
                       onBind={() => void bindWechat()}
                       onStartSending={() =>
                         onNotice('微信消息发送能力已就绪，请在档案中选择会话开始发送。')
@@ -678,24 +426,6 @@ export function PersonalWechatSendPage({
           </div>
         </div>
       </div>
-      <Dialog open={showWechatVersions} onOpenChange={setShowWechatVersions}>
-        <DialogContent
-          className="max-h-[calc(100vh-3rem)] max-w-[620px] overflow-y-auto"
-          onCloseAutoFocus={(event) => {
-            const trigger = runtimeVersionsTriggerRef.current
-            if (!trigger) return
-            event.preventDefault()
-            trigger.focus()
-            runtimeVersionsTriggerRef.current = null
-          }}
-        >
-          <DialogHeader className="pr-8">
-            <DialogTitle className="text-lg">支持的微信版本</DialogTitle>
-            <DialogDescription>请安装下列完整版本之一。</DialogDescription>
-          </DialogHeader>
-          <PersonalWechatSupportedVersionsContent />
-        </DialogContent>
-      </Dialog>
     </>
   )
 }

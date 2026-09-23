@@ -39,7 +39,7 @@
     "prepare:ffmpeg:mac:arm64": "node scripts/prepare-electron-runtime.cjs --platform darwin --arch arm64",
     "prepare:ffmpeg:mac:x64": "node scripts/prepare-electron-runtime.cjs --platform darwin --arch x64",
     "prepare:win-runtime": "node scripts/prepare-win-runtime.cjs && npm run prepare:ffmpeg:win",
-    "prepare:wechat-personal": "node scripts/prepare-wechat-chatter-runtime.cjs",
+    "prepare:wechat-native": "node scripts/prepare-wechat-native-runtime.cjs",
     "start": "electron-vite preview",
     "predev": "node scripts/ensure-electron-binary.cjs",
     "dev": "node scripts/ensure-env.cjs && electron-vite dev",

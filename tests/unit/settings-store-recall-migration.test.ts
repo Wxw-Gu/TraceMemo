@@ -9,9 +9,9 @@ vi.mock('electron', () => ({ app: { getPath: () => '/tmp/tracememo-settings-test
  * settings-store 在模块加载时确定 settings.json 路径并缓存设置对象，
  * 所以每个用例都要用独立的目录 + 重新加载模块。
  */
-async function importStore(directory: string): Promise<
-  typeof import('../../src/main/services/settings-store')
-> {
+async function importStore(
+  directory: string
+): Promise<typeof import('../../src/main/services/settings-store')> {
   process.env.WE_SETTINGS_DIR = directory
   vi.resetModules()
   return import('../../src/main/services/settings-store')
@@ -67,5 +67,19 @@ describe('recall protection retirement migration', () => {
     const store = await importStore(createDirectory())
 
     expect(store.loadSettings().recallProtectionEnabled).toBe(false)
+  })
+
+  it('removes the retired keep-process setting from old settings files', async () => {
+    const directory = createDirectory()
+    writeFileSync(
+      join(directory, 'settings.json'),
+      JSON.stringify({ keepPersonalWechatProcess: true }),
+      'utf8'
+    )
+
+    const store = await importStore(directory)
+
+    expect(store.loadSettings()).not.toHaveProperty('keepPersonalWechatProcess')
+    expect(readSettingsFile(directory)).not.toHaveProperty('keepPersonalWechatProcess')
   })
 })

@@ -19,9 +19,9 @@ export interface VoiceSilkMetadata {
 }
 
 /**
- * Validate the exact PCM contract consumed by the bundled OneBot encoder.
- * The Go Silk encoder emits a header-only payload for sub-frame input, which
- * is accepted by the old path but produces an unplayable WeChat voice.
+ * Validate the exact PCM contract consumed by the bundled SILK encoder.
+ * The encoder emits a header-only payload for sub-frame input, which would
+ * produce an unplayable WeChat voice.
  */
 export function validateVoicePcm(
   pcm: Uint8Array,
