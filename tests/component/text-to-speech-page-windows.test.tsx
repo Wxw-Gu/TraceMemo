@@ -17,7 +17,6 @@ const openFishAudioApiKeys = vi.fn()
 const getSettings = vi.fn()
 const setSettings = vi.fn()
 const getPersonalWechatSenderStatus = vi.fn()
-const getPersonalWechatRuntimeStatus = vi.fn()
 const checkPersonalWechatSenderStatus = vi.fn()
 
 const textToSpeechSettings = {
@@ -70,7 +69,6 @@ describe('PersonalWechatSendPage on Windows', () => {
       settings: { windowsWechatPort: '4567' }
     })
     getPersonalWechatSenderStatus.mockReset()
-    getPersonalWechatRuntimeStatus.mockReset().mockResolvedValue(null)
     checkPersonalWechatSenderStatus.mockReset().mockResolvedValue(windowsStatus)
     Object.defineProperty(window, 'api', {
       configurable: true,
@@ -81,7 +79,6 @@ describe('PersonalWechatSendPage on Windows', () => {
         getSettings,
         setSettings,
         getPersonalWechatSenderStatus,
-        getPersonalWechatRuntimeStatus,
         checkPersonalWechatSenderStatus
       }
     })
@@ -128,7 +125,7 @@ describe('PersonalWechatSendPage on Windows', () => {
     expect(onNotice).toHaveBeenCalledWith('微信发送能力端口已清除')
   })
 
-  it('keeps the Windows send dialog free of macOS OneBot controls', async () => {
+  it('keeps the Windows send dialog free of macOS-only controls', async () => {
     getPersonalWechatSenderStatus.mockResolvedValue({
       ...windowsStatus,
       state: 'error',
@@ -156,9 +153,6 @@ describe('PersonalWechatSendPage on Windows', () => {
     expect(
       await screen.findByText('未检测到 Windows 微信发送能力，请先启动并登录微信')
     ).toBeVisible()
-    expect(getPersonalWechatRuntimeStatus).not.toHaveBeenCalled()
-    expect(screen.queryByText(/OneBot/i)).not.toBeInTheDocument()
-    expect(screen.queryByRole('switch', { name: '保留 OneBot 进程' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '语音发送诊断' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '文字转语音' })).toBeVisible()
     expect(screen.getByRole('region', { name: '文字转语音' })).toBeVisible()
@@ -188,7 +182,6 @@ describe('PersonalWechatSendPage on Windows', () => {
     render(<TextToSpeechPage onNotice={vi.fn()} />)
 
     expect(await screen.findByText('API 设置')).toBeVisible()
-    expect(screen.queryByText(/OneBot/i)).not.toBeInTheDocument()
     expect(screen.queryByText('微信发送组件')).not.toBeInTheDocument()
   })
 
@@ -196,7 +189,6 @@ describe('PersonalWechatSendPage on Windows', () => {
     render(<PersonalWechatSendPage onNotice={vi.fn()} />)
 
     expect(await screen.findByRole('spinbutton', { name: '微信发送能力端口' })).toBeVisible()
-    expect(screen.queryByRole('switch', { name: '保留 OneBot 进程' })).not.toBeInTheDocument()
   })
 
   it('shows the authorization notice with a README link on the Windows WeChat send page', async () => {

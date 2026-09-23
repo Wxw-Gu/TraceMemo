@@ -21,7 +21,6 @@ const personalWechatSupported = process.platform === 'darwin' || process.platfor
 const unsignedMacUpdate = process.env.WXE_E2E_UNSIGNED_MAC_UPDATE === '1'
 const fixtureNowMs =
   Number.isFinite(configuredNow) && configuredNow > 0 ? configuredNow : Date.now()
-let keepOneBotProcess = false
 
 const formatFixtureDateTime = (timestampSeconds) => {
   const date = new Date(timestampSeconds * 1000)
@@ -400,17 +399,6 @@ handle('tts:getSettings', () => ({
   },
   voices: []
 }))
-handle('wechat-personal:getRuntimeStatus', () => ({
-  version: 'v0.0.18',
-  state: 'ready',
-  downloadedBytes: 100,
-  totalBytes: 100,
-  progress: 1,
-  platform: 'darwin',
-  architecture: 'arm64',
-  supported: true,
-  removable: true
-}))
 handle('wechat-personal:getStatus', () => ({
   state: 'online',
   platform: process.platform,
@@ -419,8 +407,7 @@ handle('wechat-personal:getStatus', () => ({
   wechatRunning: true,
   wechatPid: 4668,
   boundWechatPid: 4668,
-  oneBotPid: 5401,
-  endpoint: '127.0.0.1:58080',
+  endpoint: '127.0.0.1:4290',
   endpointReady: true,
   wechatVersion: '4.1.11.53',
   runtimeReady: true,
@@ -454,7 +441,7 @@ handle('wechat-personal:getSendCapability', () => ({
     sipDisabled: true,
     wechatRunning: true,
     boundWechatPid: 4668,
-    endpoint: '127.0.0.1:58080',
+    endpoint: '127.0.0.1:4290',
     endpointReady: true,
     runtimeReady: true,
     attachReady: true,
@@ -474,11 +461,6 @@ handle('wechat-personal:getSendCapability', () => ({
     ? '个人微信已准备好发送日报'
     : '微信消息发送目前仅支持 macOS 和 Windows'
 }))
-handle('wechat-personal:getKeepProcess', () => keepOneBotProcess)
-handle('wechat-personal:setKeepProcess', (keep) => {
-  keepOneBotProcess = Boolean(keep)
-  return keepOneBotProcess
-})
 handle('scheduled-report:list', () => [...scheduledReportTasks])
 handle('scheduled-report:listExecutions', (taskId) =>
   taskId

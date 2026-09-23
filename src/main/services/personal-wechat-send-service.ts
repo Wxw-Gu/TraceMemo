@@ -1,5 +1,4 @@
-import { app } from 'electron'
-import { execFile, spawn, type ChildProcess } from 'child_process'
+import { execFile } from 'child_process'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import {
   copyFileSync,
@@ -11,7 +10,6 @@ import {
   unlinkSync,
   writeFileSync
 } from 'fs'
-import { createConnection } from 'net'
 import { homedir, tmpdir } from 'os'
 import { delimiter, dirname, extname, join, sep } from 'path'
 import ffmpegStaticPath from 'ffmpeg-static'
@@ -22,30 +20,21 @@ import type {
   PersonalWechatSenderStatus,
   PersonalWechatVoiceDiagnostic
 } from '../../shared/personal-wechat'
-import { isPackagedRuntime } from '../runtime-mode'
-import { loadSettings, updateSettings } from './settings-store'
+import { loadSettings } from './settings-store'
 import { SilkAudioDecoder, SilkAudioEncoder } from '../voice-pipeline/audio-decoder'
-import {
-  validateVoicePcm,
-  validateVoiceSilkMetadata,
-  VOICE_FRAME_BYTES,
-  type VoicePcmMetadata
-} from '../voice-pipeline/voice-quality'
 import { appLogger } from '../app-logger'
+import { readLocalAccountIdentity } from './local-account-identity'
+import { macWechatRuntimeManager } from './mac-wechat-runtime-manager'
 
 const execFileAsync = promisify(execFile)
-const DEFAULT_HOST = '127.0.0.1:58080'
 const WINDOWS_LOOPBACK_HOST = '127.0.0.1'
-const START_TIMEOUT_MS = 20_000
 const REQUEST_TIMEOUT_MS = 20_000
-const STOP_TIMEOUT_MS = 3_000
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const MAX_VOICE_BYTES = 20 * 1024 * 1024
-const MAX_PCM_BYTES = 64 * 1024 * 1024
-const VOICE_ENCODER_NAME = 'go-silk'
-const VOICE_ENCODER_VERSION = 'wechat_chatter-v0.0.18'
+// 语音编码由 native runtime 内的 SILK 实现完成，不再是外部编码器进程。
+const VOICE_ENCODER_NAME = 'silk'
+const VOICE_ENCODER_VERSION = 'tm-wechat-native'
 let latestVoiceDiagnostic: PersonalWechatVoiceDiagnostic | null = null
-const WECHAT_APP_PATH = '/Applications/WeChat.app'
 const WECHAT_FILES_ROOT = join(
   homedir(),
   'Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files'
@@ -73,226 +62,6 @@ function windowsHookHost(port?: unknown): string | null {
   return configuredPort ? `${WINDOWS_LOOPBACK_HOST}:${configuredPort}` : null
 }
 
-export interface RuntimeLayout {
-  root: string
-  executable: string
-  workingDirectory: string
-  configDirectory: string
-  logPath: string
-}
-
-export type PersonalWechatHookReadiness = 'unknown' | 'initializing' | 'ready' | 'failed'
-
-export function parsePersonalWechatHookLog(log: string): {
-  readiness: PersonalWechatHookReadiness
-  attached: boolean
-  baseAddress?: string
-  textHookInstalled: boolean
-  textHookReady: boolean
-  imageHookInstalled: boolean
-  imageHookReady: boolean
-  messageListenerReady: boolean
-  boundWechatPid?: number
-  error?: string
-} {
-  let readiness: PersonalWechatHookReadiness = 'unknown'
-  let attached = false
-  let baseAddress: string | undefined
-  let textHookInstalled = false
-  let textHookReady = false
-  let imageHookInstalled = false
-  let imageHookReady = false
-  let messageListenerReady = false
-  let boundWechatPid: number | undefined
-  let error: string | undefined
-  for (const line of log.split(/\r?\n/)) {
-    if (!line.trim()) continue
-    try {
-      const entry = JSON.parse(line) as {
-        payload?: string
-        err?: string
-        message?: string
-        PID?: number
-        type?: string
-        result?: string | number
-      }
-      const text = `${entry.payload || ''} ${entry.err || ''} ${entry.message || ''}`
-      // wechat_chatter writes the task receipt and its result as two separate
-      // JSON log records: the first has type=send_image, while the next has
-      // the result and the Chinese result message but no type field.
-      if (
-        (entry.type === 'send_image' || text.includes('发送图片任务执行结果')) &&
-        String(entry.result) === '1'
-      ) {
-        imageHookInstalled = true
-        imageHookReady = true
-      }
-      if (
-        (entry.type === 'image' || text.includes('上传图片任务执行结果')) &&
-        String(entry.result) === '0'
-      ) {
-        imageHookInstalled = true
-      }
-      if (text.includes('使用指定的微信进程 PID')) {
-        readiness = 'unknown'
-        attached = false
-        baseAddress = undefined
-        textHookInstalled = false
-        textHookReady = false
-        imageHookInstalled = false
-        imageHookReady = false
-        messageListenerReady = false
-        boundWechatPid = Number(entry.PID) || undefined
-        error = undefined
-      } else if (
-        text.includes("Cannot find 'req2buf' keyword") ||
-        text.includes('Attach 失败') ||
-        text.includes('unable to intercept function')
-      ) {
-        readiness = 'failed'
-        error = entry.err || entry.message
-      } else if (text.includes('成功 Attach 微信进程')) {
-        attached = true
-        boundWechatPid = Number(entry.PID) || boundWechatPid
-      } else if (text.includes('Base address from range:')) {
-        baseAddress = text.match(/Base address from range:\s*(0x[0-9a-f]+)/i)?.[1]
-      } else if (text.includes('WeChat core module base:')) {
-        baseAddress = text.match(/WeChat core module base:\s*(0x[0-9a-f]+)/i)?.[1]
-      } else if (text.includes('triggerX0 或 triggerX1Payload 尚未初始化')) {
-        readiness = 'initializing'
-        error = '微信发送能力尚未就绪，消息没有发出'
-      } else if (
-        text.includes('捕获到有效 StartTask 上下文') ||
-        text.includes('捕获到 StartTask 调用')
-      ) {
-        readiness = 'ready'
-        textHookReady = true
-        error = undefined
-      } else if (text.includes('Dynamic Text Message Setup Complete')) {
-        textHookInstalled = true
-        if (readiness === 'unknown') readiness = 'initializing'
-      } else if (text.includes('捕获到图片上传上下文')) {
-        imageHookReady = true
-      } else if (text.includes('图片上传 Hook Setup Complete')) {
-        imageHookInstalled = true
-      } else if (text.includes('HTTP 服务启动在')) {
-        messageListenerReady = true
-      } else if (text.includes('发送数据')) {
-        messageListenerReady = true
-      }
-    } catch {
-      // Ignore non-JSON or partially written log lines.
-    }
-  }
-  return {
-    readiness,
-    attached,
-    ...(baseAddress ? { baseAddress } : {}),
-    textHookInstalled,
-    textHookReady,
-    imageHookInstalled,
-    imageHookReady,
-    messageListenerReady,
-    ...(boundWechatPid ? { boundWechatPid } : {}),
-    ...(error ? { error } : {})
-  }
-}
-
-interface PreflightResult {
-  status: PersonalWechatSenderStatus
-  runtime?: RuntimeLayout
-}
-
-export function deriveMacSendCapabilities(input: {
-  attached: boolean
-  baseAddressReady: boolean
-  textHookInstalled: boolean
-  textHookReady: boolean
-  imageHookInstalled: boolean
-  imagePathBound: boolean
-}): Pick<PersonalWechatSenderStatus, 'canSend' | 'canSendText' | 'canSendImage' | 'canSendVoice'> {
-  const baseReady = input.attached && input.baseAddressReady && input.textHookInstalled
-  const canSendText = baseReady && input.textHookReady
-  const mediaUploadReady = canSendText && input.imageHookInstalled
-  const canSendImage = mediaUploadReady && input.imagePathBound
-  const canSendVoice = mediaUploadReady
-  return {
-    canSend: canSendText || canSendImage || canSendVoice,
-    canSendText,
-    canSendImage,
-    canSendVoice
-  }
-}
-
-function toConfigFileName(version: string): string {
-  return `${version.replace(/\./g, '_')}_mac.json`
-}
-
-function runtimeCandidates(): string[] {
-  const override = String(process.env['WECHAT_CHATTER_RUNTIME_DIR'] || '').trim()
-  const relative = ['connectors', 'wechat-personal', `${process.platform}-${process.arch}`]
-  const downloaded = join(app.getPath('userData'), ...relative)
-  const packaged = join(process.resourcesPath, 'resources', ...relative)
-  const development = join(app.getAppPath(), 'resources', ...relative)
-  const ordered = isPackagedRuntime()
-    ? [downloaded, packaged, development]
-    : [downloaded, development, packaged]
-  return override ? [override, ...ordered] : ordered
-}
-
-export function findPersonalWechatRuntime(candidates = runtimeCandidates()): RuntimeLayout | null {
-  for (const root of candidates) {
-    const nestedExecutable = join(root, 'onebot', 'onebot')
-    const flatExecutable = join(root, 'onebot')
-    if (existsSync(nestedExecutable) && existsSync(join(root, 'onebot', 'script.js'))) {
-      return {
-        root,
-        executable: nestedExecutable,
-        workingDirectory: join(root, 'onebot'),
-        configDirectory: join(root, 'wechat_version'),
-        logPath: join(root, 'onebot', 'log', 'macos.log')
-      }
-    }
-    if (existsSync(flatExecutable) && existsSync(join(root, 'script.js'))) {
-      return {
-        root,
-        executable: flatExecutable,
-        workingDirectory: root,
-        configDirectory: join(root, 'wechat_version'),
-        logPath: join(root, 'log', 'macos.log')
-      }
-    }
-  }
-  return null
-}
-
-export function buildPersonalWechatOneBotRequest(
-  request: PersonalWechatSendRequest,
-  fileBase64?: string
-): {
-  endpoint: string
-  body: Record<string, unknown>
-} {
-  const target = request.to.trim()
-  const isGroup = request.isGroup || target.endsWith('@chatroom')
-  const message =
-    request.type === 'text'
-      ? [{ type: 'text', data: { text: request.text.trim() } }]
-      : [
-          {
-            type: request.type === 'voice' ? 'record' : 'image',
-            data: { file: `base64://${fileBase64 || ''}` }
-          }
-        ]
-  return {
-    endpoint: isGroup ? '/send_group_msg' : '/send_private_msg',
-    body: {
-      ...(isGroup ? { group_id: target } : { user_id: target }),
-      message
-    }
-  }
-}
-
 export function buildPersonalWechatRuntimePath(): string {
   const existing = String(process.env['PATH'] || '')
   const bundledFfmpeg = String(ffmpegStaticPath || '')
@@ -302,161 +71,16 @@ export function buildPersonalWechatRuntimePath(): string {
   return [dirname(bundledFfmpeg), existing].filter(Boolean).join(delimiter)
 }
 
-export function buildPersonalWechatRuntimePythonPath(runtimeRoot: string): string {
-  return [join(runtimeRoot, 'python'), String(process.env['PYTHONPATH'] || '')]
-    .filter(Boolean)
-    .join(delimiter)
-}
-
 /**
- * Build the same environment used when TraceMemo starts OneBot.
- * Keep this in one place so runtime checks cannot accidentally inspect a
- * different Python or ffmpeg than the sender process.
+ * Build the environment used by TraceMemo's local voice encoding helpers.
+ * Keep this in one place so environment checks cannot accidentally inspect a
+ * different ffmpeg than the sender process.
  */
-export function buildPersonalWechatRuntimeEnvironment(runtimeRoot?: string): NodeJS.ProcessEnv {
+export function buildPersonalWechatRuntimeEnvironment(): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    PATH: buildPersonalWechatRuntimePath(),
-    ...(runtimeRoot ? { PYTHONPATH: buildPersonalWechatRuntimePythonPath(runtimeRoot) } : {})
+    PATH: buildPersonalWechatRuntimePath()
   }
-}
-
-function bundledFfmpegExecutable(): string {
-  const bundledFfmpeg = String(ffmpegStaticPath || '')
-    .replace('app.asar', 'app.asar.unpacked')
-    .trim()
-  return bundledFfmpeg && existsSync(bundledFfmpeg) ? bundledFfmpeg : 'ffmpeg'
-}
-
-async function convertAudioToPcm(audioData: Buffer): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      bundledFfmpegExecutable(),
-      ['-v', 'error', '-i', 'pipe:0', '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1'],
-      {
-        env: buildPersonalWechatRuntimeEnvironment(),
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true
-      }
-    )
-    const chunks: Buffer[] = []
-    let total = 0
-    let stderr = ''
-    child.stdout.on('data', (chunk: Buffer) => {
-      total += chunk.length
-      if (total > MAX_PCM_BYTES) {
-        child.kill()
-        reject(new Error('转换后的语音 PCM 过大'))
-        return
-      }
-      chunks.push(chunk)
-    })
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8').slice(0, 2_000)
-    })
-    child.once('error', (error) => reject(new Error(`ffmpeg 转换失败：${error.message}`)))
-    child.once('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`ffmpeg 转换失败${stderr ? `：${stderr.trim()}` : ''}`))
-        return
-      }
-      resolve(Buffer.concat(chunks))
-    })
-    child.stdin.end(audioData)
-  })
-}
-
-async function runtimeVoiceLogSnapshot(): Promise<{ path: string; offset: number } | undefined> {
-  const runtime = findPersonalWechatRuntime()
-  const runningOneBot = await readOneBotProcessInfo()
-  // Prefer the runtime discovered by TraceMemo itself. Its path may contain
-  // spaces (for example, "Application Support"), so parsing `ps` output with
-  // a whitespace-delimited regex can produce a non-existent log path.
-  const executable =
-    runtime?.executable &&
-    runningOneBot &&
-    (runningOneBot.command === runtime.executable ||
-      runningOneBot.command.startsWith(`${runtime.executable} `))
-      ? runtime.executable
-      : runningOneBot?.command.match(/^(.*\/onebot(?:\/onebot)?)(?:\s|$)/)?.[1]
-  const processLogPath = executable ? join(dirname(executable), 'log', 'macos.log') : undefined
-  const logPath = processLogPath && existsSync(processLogPath) ? processLogPath : runtime?.logPath
-  if (!logPath || !existsSync(logPath)) return undefined
-  try {
-    return { path: logPath, offset: statSync(logPath).size }
-  } catch {
-    return undefined
-  }
-}
-
-function readVoiceRuntimeEvidence(snapshot?: { path: string; offset: number }): {
-  uploadResult?: string
-  uploadDataLen?: number
-  durationMs?: number
-  sendResult?: string
-} {
-  if (!snapshot || !existsSync(snapshot.path)) return {}
-  try {
-    const data = readFileSync(snapshot.path)
-    const lines = data
-      .subarray(Math.min(snapshot.offset, data.length))
-      .toString('utf8')
-      .split(/\r?\n/)
-    const evidence: {
-      uploadResult?: string
-      uploadDataLen?: number
-      durationMs?: number
-      sendResult?: string
-    } = {}
-    for (const line of lines) {
-      if (!line.trim()) continue
-      try {
-        const entry = JSON.parse(line) as Record<string, unknown>
-        const message = `${String(entry.msg || '')} ${String(entry.message || '')}`
-        if (message.includes('上传语音任务执行结果')) {
-          if (entry.result !== undefined) evidence.uploadResult = String(entry.result)
-          if (entry.silk_len !== undefined) evidence.uploadDataLen = Number(entry.silk_len)
-          if (entry.duration_ms !== undefined) evidence.durationMs = Number(entry.duration_ms)
-        }
-        if (message.includes('发送语音任务执行结果') && entry.result !== undefined) {
-          evidence.sendResult = String(entry.result)
-        }
-      } catch {
-        // Ignore a partially-written runtime log line.
-      }
-    }
-    return evidence
-  } catch {
-    return {}
-  }
-}
-
-async function waitForVoiceRuntimeEvidence(
-  snapshot: { path: string; offset: number } | undefined,
-  timeoutMs = 6_000
-): Promise<{
-  uploadResult?: string
-  uploadDataLen?: number
-  durationMs?: number
-  sendResult?: string
-}> {
-  if (!snapshot) return {}
-  const startedAt = Date.now()
-  let evidence = readVoiceRuntimeEvidence(snapshot)
-  while (Date.now() - startedAt < timeoutMs) {
-    // The OneBot HTTP handler acknowledges the task before its worker writes
-    // the upload/send callbacks to disk. Poll the request's log suffix so a
-    // successful asynchronous send is not reported as a validation failure.
-    if (
-      evidence.uploadResult !== undefined &&
-      (evidence.uploadResult !== '0' || evidence.sendResult !== undefined)
-    ) {
-      return evidence
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    evidence = readVoiceRuntimeEvidence(snapshot)
-  }
-  return evidence
 }
 
 const VOICE_DIAGNOSTIC_KEYS = new Set([
@@ -534,35 +158,6 @@ function logVoiceAttempt(
       ...allowedDetails
     }
   })
-}
-
-function createWavBuffer(pcm: Buffer, sampleRate: number, channels: number): Buffer {
-  const header = Buffer.alloc(44)
-  header.write('RIFF', 0)
-  header.writeUInt32LE(36 + pcm.length, 4)
-  header.write('WAVE', 8)
-  header.write('fmt ', 12)
-  header.writeUInt32LE(16, 16)
-  header.writeUInt16LE(1, 20)
-  header.writeUInt16LE(channels, 22)
-  header.writeUInt32LE(sampleRate, 24)
-  header.writeUInt32LE(sampleRate * channels * 2, 28)
-  header.writeUInt16LE(channels * 2, 32)
-  header.writeUInt16LE(16, 34)
-  header.write('data', 36)
-  header.writeUInt32LE(pcm.length, 40)
-  return Buffer.concat([header, pcm])
-}
-
-async function prepareVoiceFile(filePath: string): Promise<Buffer> {
-  const data = readFileSync(filePath)
-  if (!data.subarray(0, 10).equals(Buffer.from('\x02#!SILK_V3'))) return data
-  const decoded = await new SilkAudioDecoder().decode({
-    data,
-    codec: 'silk',
-    sourceHash: createHash('sha256').update(data).digest('hex')
-  })
-  return createWavBuffer(decoded.pcm, decoded.sampleRate, decoded.channels)
 }
 
 async function detectVoiceDurationMs(filePath: string): Promise<number | undefined> {
@@ -683,26 +278,36 @@ export function prepareWindowsImageFile(filePath: string): {
   return { filePath: temporaryPath, temporary: true }
 }
 
-async function readWechatVersion(): Promise<string> {
-  const { stdout } = await execFileAsync('/usr/libexec/PlistBuddy', [
-    '-c',
-    'Print :WeChatBundleVersion',
-    join(WECHAT_APP_PATH, 'Contents', 'Info.plist')
-  ])
-  return stdout.trim()
-}
-
-async function readWechatPid(): Promise<number | undefined> {
-  try {
-    const { stdout } = await execFileAsync('/usr/bin/pgrep', ['-x', 'WeChat'])
-    const pid = Number(stdout.trim().split(/\s+/)[0])
-    return Number.isInteger(pid) && pid > 0 ? pid : undefined
-  } catch {
-    return undefined
+function prepareMacWechatImageFile(filePath: string): { filePath: string; md5: string } {
+  /* Stage the image in WeChat's temporary image directory using the
+   * filename/hash layout required by the macOS native send path:
+   * - stage inside the active account's ImageTemp tree selected by
+   *   findWechatImagePath(), not an arbitrary readable sandbox directory;
+   * - append a per-send salt before calculating MD5, so the staged image and
+   *   the MD5 passed to the CDN task describe the same unique byte stream. */
+  const temporaryRoot = findWechatImagePath()
+  if (!temporaryRoot) throw new Error('无法定位当前微信账号的图片临时目录')
+  mkdirSync(temporaryRoot, { recursive: true })
+  const extension = extname(filePath).toLowerCase()
+  const safeExtension = /^\.[a-z0-9]{1,8}$/.test(extension) ? extension.slice(1) : 'png'
+  const source = readFileSync(filePath)
+  const salt = Buffer.from(
+    `\n#md5_salt_${process.hrtime.bigint()}_${Math.floor(Math.random() * 10_000)}#`,
+    'utf8'
+  )
+  const staged = Buffer.concat([source, salt])
+  const temporaryPath = join(
+    temporaryRoot,
+    `${randomBytes(8).toString('hex')}_${Math.floor(Date.now() / 1000)}.${safeExtension}`
+  )
+  writeFileSync(temporaryPath, staged, { mode: 0o644 })
+  return {
+    filePath: temporaryPath,
+    md5: createHash('md5').update(staged).digest('hex')
   }
 }
 
-/** Locate the current account's temporary image directory required by the upstream hook. */
+/** Locate the current account's temporary image directory consumed by the image send path. */
 export function findWechatImagePath(
   root = WECHAT_FILES_ROOT,
   now = new Date()
@@ -735,80 +340,6 @@ export function findWechatImagePath(
     return selected ? `${selected}${sep}` : undefined
   } catch {
     return undefined
-  }
-}
-
-async function isSipDisabled(): Promise<boolean> {
-  try {
-    const { stdout, stderr } = await execFileAsync('/usr/bin/csrutil', ['status'])
-    return `${stdout}\n${stderr}`.toLowerCase().includes('disabled')
-  } catch {
-    return false
-  }
-}
-
-interface OneBotProcessInfo {
-  pid: number
-  boundWechatPid?: number
-  imagePath?: string
-  command: string
-}
-
-async function readOneBotProcessInfo(): Promise<OneBotProcessInfo | undefined> {
-  try {
-    const { stdout } = await execFileAsync('/usr/sbin/lsof', [
-      '-nP',
-      '-t',
-      `-iTCP:${DEFAULT_HOST.split(':')[1]}`,
-      '-sTCP:LISTEN'
-    ])
-    const pid = Number(stdout.trim().split(/\s+/)[0])
-    if (!Number.isInteger(pid) || pid <= 0) return undefined
-    const { stdout: commandOutput } = await execFileAsync('/bin/ps', [
-      '-p',
-      String(pid),
-      '-o',
-      'command='
-    ])
-    const command = commandOutput.trim()
-    if (!/(^|\/)onebot(?:\s|$)/.test(command)) return undefined
-    const boundWechatPid = Number(command.match(/-wechat_pid=(\d+)/)?.[1]) || undefined
-    const imagePath = command.match(/-image_path=(\S+)/)?.[1]
-    return {
-      pid,
-      ...(boundWechatPid ? { boundWechatPid } : {}),
-      ...(imagePath ? { imagePath } : {}),
-      command
-    }
-  } catch {
-    return undefined
-  }
-}
-
-async function terminateOneBot(info: OneBotProcessInfo): Promise<void> {
-  if (!/(^|\/)onebot(?:\s|$)/.test(info.command)) return
-  await terminateProcess(info.pid)
-}
-
-async function terminateProcess(pid: number): Promise<void> {
-  try {
-    process.kill(pid, 'SIGTERM')
-  } catch {
-    return
-  }
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < STOP_TIMEOUT_MS) {
-    try {
-      process.kill(pid, 0)
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    } catch {
-      return
-    }
-  }
-  try {
-    process.kill(pid, 'SIGKILL')
-  } catch {
-    // The process exited between the last liveness check and the forced stop.
   }
 }
 
@@ -948,7 +479,10 @@ function safeFileSize(target: string): number {
  * **隐私约束**：只允许输出类型、字节数、HTTP 状态码、hook 的 `ret` 这类结构性字段。
  * 文件名、完整路径、wxid、群名、消息正文不进日志。
  */
-function logSendDiagnostic(stage: string, detail: Record<string, string | number | boolean | null>): void {
+function logSendDiagnostic(
+  stage: string,
+  detail: Record<string, string | number | boolean | null>
+): void {
   try {
     if (!loadSettings().debugEnabled) return
   } catch {
@@ -1015,94 +549,11 @@ async function requestWindowsHook(
 }
 
 export class PersonalWechatSendService {
-  private child: ChildProcess | null = null
-  private startPromise: Promise<PersonalWechatSenderStatus> | null = null
-  private lastError = ''
-  private voiceSendTail: Promise<void> = Promise.resolve()
-  private keepOneBotProcess = Boolean(loadSettings().keepPersonalWechatProcess)
-
-  getKeepOneBotProcess(): boolean {
-    return this.keepOneBotProcess
-  }
-
-  setKeepOneBotProcess(keep: boolean): boolean {
-    this.keepOneBotProcess = keep
-    updateSettings({ keepPersonalWechatProcess: keep })
-    return this.keepOneBotProcess
-  }
-
   async getStatus(): Promise<PersonalWechatSenderStatus> {
-    if (process.platform === 'win32') return this.getWindowsStatus()
-    const preflight = await this.preflight()
-    const [endpointReady, oneBot] = await Promise.all([
-      this.isEndpointOnline(),
-      readOneBotProcessInfo()
-    ])
-    const hook = this.readHookReadiness(preflight.runtime)
-    const boundWechatPid = oneBot?.boundWechatPid || hook.boundWechatPid
-    const boundToCurrentWechat = Boolean(
-      preflight.status.wechatPid && boundWechatPid === preflight.status.wechatPid
-    )
-    const common = {
-      ...preflight.status,
-      endpointReady,
-      ...(oneBot?.pid ? { oneBotPid: oneBot.pid } : {}),
-      ...(boundWechatPid ? { boundWechatPid } : {}),
-      attachReady: hook.attached,
-      ...(hook.baseAddress ? { baseAddress: hook.baseAddress } : {}),
-      baseAddressReady: Boolean(hook.baseAddress),
-      textHookInstalled: hook.textHookInstalled,
-      textHookReady: hook.textHookReady,
-      imageHookInstalled: hook.imageHookInstalled,
-      imageHookReady: hook.imageHookReady,
-      messageListenerReady: hook.messageListenerReady
-    }
-    if (!endpointReady) return common
-    if (!boundToCurrentWechat) {
-      return {
-        ...common,
-        state: 'hook_not_ready',
-        canSend: false,
-        canSendText: false,
-        canSendImage: false,
-        message: 'OneBot 仍绑定旧微信进程，请点击“绑定微信”'
-      }
-    }
-    if (hook.readiness === 'failed') {
-      return {
-        ...common,
-        state: 'error',
-        canSend: false,
-        canSendText: false,
-        canSendImage: false,
-        message: '微信发送能力初始化失败，请尝试重新绑定',
-        ...(hook.error ? { error: hook.error } : {})
-      }
-    }
-    const imagePathBound = Boolean(oneBot?.imagePath)
-    // All send types use the captured native task context. Media no longer
-    // waits for a real image upload event because the runtime resolves the
-    // CDN manager during cold start.
-    const capabilities = deriveMacSendCapabilities({
-      attached: hook.attached,
-      baseAddressReady: Boolean(hook.baseAddress),
-      textHookInstalled: hook.textHookInstalled,
-      textHookReady: hook.textHookReady,
-      imageHookInstalled: hook.imageHookInstalled,
-      imagePathBound
-    })
-    return {
-      ...common,
-      state: capabilities.canSend ? 'online' : 'hook_not_ready',
-      ...capabilities,
-      message:
-        hook.imageHookInstalled && preflight.status.imagePath && !imagePathBound
-          ? 'OneBot 尚未绑定微信图片目录，请点击“绑定微信”'
-          : capabilities.canSend
-            ? '个人微信发送能力已就绪'
-            : '个人微信已绑定，正在初始化发送能力…',
-      ...(hook.error ? { error: hook.error } : {})
-    }
+    // macOS 发送能力完全由 native runtime（tm-wechat-host）提供，
+    // 这里保持同源，避免出现第二套状态判断。
+    if (process.platform === 'darwin') return macWechatRuntimeManager.buildSenderStatus()
+    return this.getWindowsStatus()
   }
 
   async checkWindowsStatus(port?: string): Promise<PersonalWechatSenderStatus> {
@@ -1126,300 +577,20 @@ export class PersonalWechatSendService {
 
   async send(request: PersonalWechatSendRequest): Promise<PersonalWechatSendResult> {
     if (process.platform === 'win32') return this.sendWindows(request)
-    const requestId = randomUUID()
-    if (request.type !== 'voice') return this.sendInternal(request, requestId)
-
-    // OneBot's voice upload/callback bridge still uses process-wide Frida
-    // fields. Serialize voice requests here so duration, Silk length and CDN
-    // callback data cannot cross between two concurrent sends.
-    const previous = this.voiceSendTail
-    let release!: () => void
-    this.voiceSendTail = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    await previous
-    try {
-      return await this.sendInternal(request, requestId)
-    } finally {
-      release()
+    if (process.platform === 'darwin') {
+      if (request.type === 'text') return this.sendMacText(request)
+      if (request.type === 'image') return this.sendMacImage(request)
+      if (request.type === 'voice') return this.sendMacVoice(request)
     }
-  }
-
-  private async sendInternal(
-    request: PersonalWechatSendRequest,
-    requestId: string
-  ): Promise<PersonalWechatSendResult> {
-    const to = String(request?.to || '').trim()
-    if (!to) {
-      const status = await this.getStatus()
-      return { success: false, status, error: '接收者不能为空' }
-    }
-    let fileBase64: string | undefined
-    let voicePcm: VoicePcmMetadata | undefined
-    let runtimeSnapshot: { path: string; offset: number } | undefined
-    if (request.type === 'text') {
-      const text = String(request.text || '').trim()
-      if (!text) {
-        const status = await this.getStatus()
-        return { success: false, status, error: '文字内容不能为空' }
-      }
-      if (text.length > 2_000) {
-        const status = await this.getStatus()
-        return { success: false, status, error: '消息不能超过 2000 个字符' }
-      }
-      request = { ...request, to, text }
-    } else {
-      const filePath = String(request.filePath || '').trim()
-      if (!filePath || !existsSync(filePath)) {
-        const status = await this.getStatus()
-        return {
-          success: false,
-          status,
-          error: `请选择有效的${request.type === 'voice' ? '语音' : '图片'}文件`
-        }
-      }
-      const size = statSync(filePath).size
-      const maxBytes = request.type === 'voice' ? MAX_VOICE_BYTES : MAX_IMAGE_BYTES
-      if (size <= 0 || size > maxBytes) {
-        const status = await this.getStatus()
-        return {
-          success: false,
-          status,
-          error: `${request.type === 'voice' ? '语音' : '图片'}必须小于 20 MB`
-        }
-      }
-      let fileData: Buffer
-      try {
-        fileData =
-          request.type === 'voice' ? await prepareVoiceFile(filePath) : readFileSync(filePath)
-        const useLegacyVoicePath = request.type === 'voice' && request.voiceSendMode === 'legacy'
-        if (request.type === 'voice' && !useLegacyVoicePath) {
-          const sourceInputBytes = fileData.length
-          const pcm = await convertAudioToPcm(fileData)
-          const alignedPcmBytes = Math.floor(pcm.length / VOICE_FRAME_BYTES) * VOICE_FRAME_BYTES
-          const alignedPcm = pcm.subarray(0, alignedPcmBytes)
-          voicePcm = validateVoicePcm(alignedPcm)
-          // The bundled Go encoder consumes 20ms frames. Sending an aligned
-          // WAV makes the duration in the eventual protobuf match its output.
-          fileData = createWavBuffer(alignedPcm, voicePcm.sampleRate, voicePcm.channels)
-          logVoiceAttempt(requestId, 'prepared', {
-            input_bytes: sourceInputBytes,
-            normalized_input_bytes: fileData.length,
-            pcm_size: voicePcm.pcmSize,
-            sample_rate: voicePcm.sampleRate,
-            channels: voicePcm.channels,
-            input_duration_ms: voicePcm.durationMs,
-            voice_send_mode: 'normalized'
-          })
-        } else if (request.type === 'voice') {
-          logVoiceAttempt(requestId, 'prepared', {
-            input_bytes: fileData.length,
-            normalized_input_bytes: fileData.length,
-            voice_send_mode: 'legacy'
-          })
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        if (request.type === 'voice') {
-          logVoiceAttempt(requestId, 'failed', { failure_phase: 'pcm_validation', error: message })
-        }
-        const status = await this.getStatus()
-        return { success: false, status, error: message }
-      }
-      fileBase64 = fileData.toString('base64')
-      request = { ...request, to, filePath }
-    }
-
-    const status = await this.ensureRunning()
-    const typeReady =
-      request.type === 'text'
-        ? status.canSendText
-        : request.type === 'voice'
-          ? status.canSendVoice
-          : status.canSendImage
-    if (!typeReady) {
-      const guidance = status.message || '个人微信发送能力正在初始化，请稍后重试'
-      return { success: false, status, error: status.error || guidance }
-    }
-
-    const oneBot = buildPersonalWechatOneBotRequest(request, fileBase64)
-    if (request.type === 'voice') runtimeSnapshot = await runtimeVoiceLogSnapshot()
-    try {
-      const response = await requestWithTimeout(
-        `http://${DEFAULT_HOST}${oneBot.endpoint}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(oneBot.body)
-        },
-        request.type === 'voice' ? 60_000 : REQUEST_TIMEOUT_MS
-      )
-      const responseText = await response.text()
-      if (!response.ok) throw new Error(responseText || `HTTP ${response.status}`)
-      const parsed = responseText ? (JSON.parse(responseText) as { status?: string }) : {}
-      if (parsed.status && parsed.status !== 'ok') throw new Error(responseText)
-      if (request.type === 'voice') {
-        const evidence = await waitForVoiceRuntimeEvidence(runtimeSnapshot)
-        try {
-          if (evidence.uploadResult !== '0') throw new Error('未确认微信语音上传结果')
-          if (evidence.sendResult !== '1') throw new Error('未确认微信语音发送结果')
-          if (evidence.uploadDataLen === undefined || evidence.durationMs === undefined) {
-            throw new Error('未获取到微信 Silk 音频元数据')
-          }
-          validateVoiceSilkMetadata(evidence.uploadDataLen, evidence.durationMs)
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          logVoiceAttempt(requestId, 'failed', {
-            failure_phase: 'silk_validation',
-            upload_result: evidence.uploadResult,
-            upload_data_len: evidence.uploadDataLen,
-            silk_duration_ms: evidence.durationMs,
-            send_result: evidence.sendResult,
-            error: message
-          })
-          const failedStatus = await this.getStatus()
-          return {
-            success: false,
-            status: { ...failedStatus, state: 'error', error: message },
-            error: message
-          }
-        }
-        logVoiceAttempt(requestId, 'completed', {
-          pcm_size: voicePcm?.pcmSize,
-          input_duration_ms: voicePcm?.durationMs,
-          upload_result: evidence.uploadResult,
-          upload_data_len: evidence.uploadDataLen,
-          silk_duration_ms: evidence.durationMs,
-          send_result: evidence.sendResult
-        })
-      }
-      return { success: true, status: await this.getStatus() }
-    } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error)
-      if (request.type === 'voice') {
-        const evidence = await waitForVoiceRuntimeEvidence(runtimeSnapshot, 1_000)
-        // OneBot may finish the asynchronous upload/send after its HTTP
-        // request has timed out. If the runtime log proves that this voice was
-        // uploaded and sent successfully, do not report a false failure.
-        const runtimeSendSucceeded =
-          evidence.uploadResult === '0' &&
-          evidence.sendResult === '1' &&
-          evidence.uploadDataLen !== undefined &&
-          evidence.durationMs !== undefined
-        if (runtimeSendSucceeded) {
-          try {
-            validateVoiceSilkMetadata(evidence.uploadDataLen!, evidence.durationMs!)
-            this.lastError = ''
-            logVoiceAttempt(requestId, 'completed', {
-              pcm_size: voicePcm?.pcmSize,
-              input_duration_ms: voicePcm?.durationMs,
-              upload_result: evidence.uploadResult,
-              upload_data_len: evidence.uploadDataLen,
-              silk_duration_ms: evidence.durationMs,
-              send_result: evidence.sendResult
-            })
-            return { success: true, status: await this.getStatus() }
-          } catch {
-            // Keep the transport error below when the runtime metadata is
-            // present but fails the same Silk validation as the normal path.
-          }
-        }
-        logVoiceAttempt(requestId, 'failed', {
-          failure_phase: 'http_send',
-          pcm_size: voicePcm?.pcmSize,
-          input_duration_ms: voicePcm?.durationMs,
-          upload_result: evidence.uploadResult,
-          upload_data_len: evidence.uploadDataLen,
-          silk_duration_ms: evidence.durationMs,
-          send_result: evidence.sendResult,
-          error: this.lastError
-        })
-      }
-      const failedStatus = await this.getStatus()
-      return {
-        success: false,
-        status: { ...failedStatus, state: 'error', error: this.lastError },
-        error: `发送失败：${this.lastError}`
-      }
+    return {
+      success: false,
+      status: await this.getStatus(),
+      error: '当前系统暂不支持个人微信发送'
     }
   }
 
   async rebind(): Promise<PersonalWechatSenderStatus> {
-    if (process.platform === 'win32') return this.getWindowsStatus()
-    const preflight = await this.preflight()
-    if (!preflight.runtime || !preflight.status.configPath || !preflight.status.wechatPid) {
-      return preflight.status
-    }
-    const currentStatus = await this.getStatus()
-    const oneBot = await readOneBotProcessInfo()
-    if (
-      oneBot?.boundWechatPid === preflight.status.wechatPid &&
-      currentStatus.attachReady &&
-      currentStatus.baseAddressReady &&
-      currentStatus.textHookInstalled &&
-      currentStatus.imageHookInstalled &&
-      (!preflight.status.imagePath || Boolean(oneBot.imagePath)) &&
-      currentStatus.state !== 'error'
-    ) {
-      return {
-        ...currentStatus,
-        message: '当前 OneBot 已绑定此微信进程，无需重复注入'
-      }
-    }
-    if (oneBot) await terminateOneBot(oneBot)
-    this.child = null
-    this.startPromise = null
-    this.lastError = ''
-    let status = await this.startRuntime()
-    const retryableHookFailure =
-      status.state === 'error' &&
-      /unable to intercept function|cannot find ['"]req2buf|hook 初始化失败/i.test(
-        `${status.error || ''} ${status.message || ''}`
-      )
-    if (!retryableHookFailure) return status
-    const failedOneBot = await readOneBotProcessInfo()
-    if (failedOneBot) await terminateOneBot(failedOneBot)
-    this.child = null
-    this.lastError = ''
-    await new Promise((resolve) => setTimeout(resolve, 1_500))
-    status = await this.startRuntime()
-    return status
-  }
-
-  async terminate(force = false): Promise<void> {
-    if (process.platform === 'win32') return
-    if (this.keepOneBotProcess && !force) {
-      this.child = null
-      this.startPromise = null
-      this.lastError = ''
-      return
-    }
-    const trackedPid = this.child?.pid
-    const oneBot = await readOneBotProcessInfo()
-    if (oneBot) await terminateOneBot(oneBot)
-    if (trackedPid && trackedPid !== oneBot?.pid) await terminateProcess(trackedPid)
-    this.child = null
-    this.startPromise = null
-    this.lastError = ''
-  }
-
-  /** Restart the existing OneBot runtime after an environment change. */
-  async restartRuntime(): Promise<PersonalWechatSenderStatus> {
-    if (process.platform === 'win32') return this.getWindowsStatus()
-    await this.terminate(true)
-    return this.rebind()
-  }
-
-  private async ensureRunning(): Promise<PersonalWechatSenderStatus> {
-    const currentStatus = await this.getStatus()
-    if (currentStatus.state === 'online' || currentStatus.state === 'hook_not_ready') {
-      return currentStatus
-    }
-    if (this.startPromise) return this.startPromise
-    this.startPromise = this.startRuntime().finally(() => {
-      this.startPromise = null
-    })
-    return this.startPromise
+    return this.getWindowsStatus()
   }
 
   private async getWindowsStatus(port?: string): Promise<PersonalWechatSenderStatus> {
@@ -1474,6 +645,207 @@ export class PersonalWechatSendService {
         state: 'wechat_not_running',
         message: '未检测到 Windows 微信发送能力，请先启动并登录微信',
         error: error instanceof Error ? error.message : String(error)
+      }
+    }
+  }
+
+  /*
+   * macOS native runtime 的文字发送：HTTP POST /sendText 到 tm-wechat-host。
+   * 绑定状态由 host 侧保证；未绑定/未就绪时返回与旧契约一致的结果结构。
+   */
+  private async sendMacText(
+    request: Extract<PersonalWechatSendRequest, { type: 'text' }>
+  ): Promise<PersonalWechatSendResult> {
+    await macWechatRuntimeManager.ensureStarted()
+    const initialStatus = await macWechatRuntimeManager.buildSenderStatus()
+    if (!initialStatus.canSendText) {
+      return {
+        success: false,
+        status: initialStatus,
+        error: initialStatus.message || '微信发送能力未就绪'
+      }
+    }
+
+    const payload = JSON.stringify({
+      to: request.to,
+      text: request.text,
+      isGroup: Boolean(request.isGroup)
+    })
+    const response = await fetch(`http://127.0.0.1:${macWechatRuntimeManager.getPort()}/sendText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      signal: AbortSignal.timeout(40_000)
+    }).catch(() => null)
+
+    if (response === null || !response.ok) {
+      const status = await macWechatRuntimeManager.buildSenderStatus()
+      return {
+        success: false,
+        status,
+        error: `发送请求失败（HTTP ${response?.status ?? '无响应'}）`
+      }
+    }
+
+    const result = (await response.json()) as { code: number; ok: boolean; message: string }
+    const resultStatus = await macWechatRuntimeManager.buildSenderStatus()
+    if (!result.ok) {
+      return { success: false, status: resultStatus, error: result.message || '发送失败' }
+    }
+    return { success: true, status: resultStatus }
+  }
+
+  /*
+   * Resolve the bound account's own wxid from the local WeChat data root.
+   * The media proto embeds the sender, and the mac runtime does not learn it
+   * from inbound traffic, so it is read from
+   * the on-disk account identity instead.
+   */
+  private async resolveMacSenderWxid(): Promise<string> {
+    const identity = readLocalAccountIdentity(WECHAT_FILES_ROOT)
+    return identity?.wxid ?? ''
+  }
+
+  private async postMacHost(
+    path: string,
+    body: Record<string, unknown>,
+    timeoutMs: number
+  ): Promise<{ code: number; ok: boolean; message: string } | null> {
+    const response = await fetch(`http://127.0.0.1:${macWechatRuntimeManager.getPort()}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs)
+    }).catch(() => null)
+    if (response === null || !response.ok) return null
+    return (await response.json().catch(() => null)) as {
+      code: number
+      ok: boolean
+      message: string
+    } | null
+  }
+
+  private async sendMacImage(
+    request: Extract<PersonalWechatSendRequest, { type: 'image' }>
+  ): Promise<PersonalWechatSendResult> {
+    await macWechatRuntimeManager.ensureStarted()
+    const initialStatus = await macWechatRuntimeManager.buildSenderStatus()
+    const fail = async (error: string): Promise<PersonalWechatSendResult> => {
+      const status = await macWechatRuntimeManager.buildSenderStatus()
+      return { success: false, status, error }
+    }
+    if (!initialStatus.canSendImage) {
+      return fail('微信发送能力未就绪')
+    }
+    const filePath = String(request.filePath || '').trim()
+    if (!filePath || !existsSync(filePath)) return fail('请选择有效的图片文件')
+
+    const sender = await this.resolveMacSenderWxid()
+    if (!sender) return fail('无法识别当前微信账号 wxid')
+
+    let uploadPath = ''
+    try {
+      const prepared = prepareMacWechatImageFile(filePath)
+      uploadPath = prepared.filePath
+      const upload = await this.postMacHost(
+        '/uploadImage',
+        { to: request.to, md5: prepared.md5, filePath: uploadPath },
+        20_000
+      )
+      if (!upload || !upload.ok) {
+        return fail(upload?.message || '图片上传失败')
+      }
+      const sent = await this.postMacHost('/sendImage', { sender, to: request.to }, 50_000)
+      if (!sent || !sent.ok) {
+        return fail(sent?.message || '图片发送失败')
+      }
+      const status = await macWechatRuntimeManager.buildSenderStatus()
+      return { success: true, status }
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (uploadPath) {
+        try {
+          unlinkSync(uploadPath)
+        } catch {
+          // Upload staging cleanup is best effort.
+        }
+      }
+    }
+  }
+
+  private async sendMacVoice(
+    request: Extract<PersonalWechatSendRequest, { type: 'voice' }>
+  ): Promise<PersonalWechatSendResult> {
+    const requestId = randomUUID()
+    await macWechatRuntimeManager.ensureStarted()
+    const initialStatus = await macWechatRuntimeManager.buildSenderStatus()
+    const fail = async (
+      error: string,
+      failurePhase = 'preflight'
+    ): Promise<PersonalWechatSendResult> => {
+      logVoiceAttempt(requestId, 'failed', { failure_phase: failurePhase, error })
+      const status = await macWechatRuntimeManager.buildSenderStatus()
+      return { success: false, status, error }
+    }
+    if (!initialStatus.canSendVoice) {
+      return fail('微信发送能力未就绪')
+    }
+    const filePath = String(request.filePath || '').trim()
+    if (!filePath || !existsSync(filePath)) return fail('请选择有效的语音文件')
+
+    const sender = await this.resolveMacSenderWxid()
+    if (!sender) return fail('无法识别当前微信账号 wxid')
+
+    /* Reuse the Windows SILK preparation: it already normalizes any input to
+     * SILK and reports the duration. */
+    let temporaryVoicePath: string | undefined
+    try {
+      const prepared = await prepareWindowsVoiceFile(filePath)
+      temporaryVoicePath = prepared.temporary ? prepared.filePath : undefined
+      const silkData = readFileSync(prepared.filePath)
+      const requestedDuration = Number(request.durationMs)
+      const rawDuration =
+        Number.isFinite(requestedDuration) && requestedDuration > 0
+          ? requestedDuration
+          : prepared.durationMs
+      if (!rawDuration || !Number.isFinite(rawDuration)) {
+        return fail('无法计算语音时长', 'duration')
+      }
+      const durationMs = Math.max(1, Math.min(60_000, Math.round(rawDuration)))
+      logVoiceAttempt(requestId, 'prepared', {
+        input_bytes: statSync(filePath).size,
+        normalized_input_bytes: silkData.length,
+        silk_duration_ms: durationMs
+      })
+
+      const upload = await this.postMacHost(
+        '/uploadVoice',
+        {
+          to: request.to,
+          filePath: prepared.filePath,
+          audioDataHex: silkData.toString('hex'),
+          voiceDurationMs: durationMs
+        },
+        30_000
+      )
+      if (!upload || !upload.ok) {
+        return fail(upload?.message || '语音上传失败', 'upload')
+      }
+      const sent = await this.postMacHost('/sendVoice', { sender, to: request.to }, 50_000)
+      if (!sent || !sent.ok) {
+        return fail(sent?.message || '语音发送失败', 'send')
+      }
+      const status = await macWechatRuntimeManager.buildSenderStatus()
+      logVoiceAttempt(requestId, 'completed', { send_result: '0' })
+      return { success: true, status }
+    } finally {
+      if (temporaryVoicePath) {
+        try {
+          unlinkSync(temporaryVoicePath)
+        } catch {
+          // 临时语音只做尽力清理，清理失败不应覆盖真实发送结果。
+        }
       }
     }
   }
@@ -1599,273 +971,6 @@ export class PersonalWechatSendService {
         } catch {
           // Temporary files are best-effort cleanup only.
         }
-      }
-    }
-  }
-
-  private async startRuntime(): Promise<PersonalWechatSenderStatus> {
-    const preflight = await this.preflight()
-    if (!preflight.runtime || !preflight.status.configPath) {
-      return preflight.status
-    }
-
-    try {
-      const { personalWechatVoiceEnvironmentService } =
-        await import('./personal-wechat-voice-environment-service')
-      const environment = await personalWechatVoiceEnvironmentService.check()
-      if (!environment.pilk.ready) {
-        appLogger.write({
-          level: 'warn',
-          scope: 'VoiceRuntime',
-          message: 'WARNING: pilk unavailable, OneBot may fallback to go-silk.',
-          details: {
-            python: environment.python.executable,
-            pythonReady: environment.python.ready,
-            ffmpegReady: environment.ffmpeg.ready,
-            runtimeReady: environment.runtimeReady
-          }
-        })
-      }
-    } catch (error) {
-      appLogger.write({
-        level: 'warn',
-        scope: 'VoiceRuntime',
-        message: 'Voice encoding environment check failed before OneBot start',
-        details: { error: error instanceof Error ? error.message : String(error) }
-      })
-    }
-
-    const pid = preflight.status.wechatPid
-    const imagePath = findWechatImagePath()
-    this.lastError = ''
-    const child = spawn(
-      preflight.runtime.executable,
-      [
-        '-type=local',
-        `-receive_host=${DEFAULT_HOST}`,
-        `-wechat_conf=${preflight.status.configPath}`,
-        `-wechat_pid=${pid}`,
-        ...(imagePath ? [`-image_path=${imagePath}`] : []),
-        '-send_interval=1000',
-        '-log_level=info'
-      ],
-      {
-        cwd: preflight.runtime.workingDirectory,
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        env: buildPersonalWechatRuntimeEnvironment(preflight.runtime.root)
-      }
-    )
-    this.child = child
-    child.unref()
-    child.once('error', (error) => {
-      this.lastError = error.message
-    })
-    child.once('exit', (code) => {
-      if (this.child === child) this.child = null
-      if (code && !this.lastError) this.lastError = `发送服务退出（code=${code}）`
-    })
-
-    const startedAt = Date.now()
-    while (Date.now() - startedAt < START_TIMEOUT_MS) {
-      const status = await this.getStatus()
-      if (status.state === 'online') return status
-      if (status.state === 'hook_not_ready' && status.attachReady && status.baseAddressReady) {
-        return status
-      }
-      if (status.state === 'error') return status
-      if (this.child?.exitCode !== null && this.child?.exitCode !== undefined) break
-      await new Promise((resolve) => setTimeout(resolve, 300))
-    }
-    const status = await this.preflight()
-    return {
-      ...status.status,
-      state: 'error',
-      canSend: false,
-      message: '个人微信发送服务启动失败',
-      error: this.lastError || '启动超时，请查看应用日志'
-    }
-  }
-
-  private async preflight(): Promise<PreflightResult> {
-    const base = {
-      platform: process.platform,
-      arch: process.arch,
-      sipDisabled: false,
-      wechatRunning: false,
-      runtimeReady: false,
-      endpoint: DEFAULT_HOST,
-      endpointReady: false,
-      attachReady: false,
-      baseAddressReady: false,
-      textHookInstalled: false,
-      textHookReady: false,
-      imageHookInstalled: false,
-      imageHookReady: false,
-      messageListenerReady: false,
-      canSend: false,
-      canSendText: false,
-      canSendImage: false,
-      canSendVoice: false
-    }
-    if (process.platform !== 'darwin' || process.arch !== 'arm64') {
-      return {
-        status: {
-          ...base,
-          state: 'unsupported_platform',
-          message:
-            process.platform === 'darwin'
-              ? 'Intel Mac 不支持个人微信发送'
-              : '当前系统不支持个人微信发送'
-        }
-      }
-    }
-
-    const [sipDisabled, wechatPid] = await Promise.all([isSipDisabled(), readWechatPid()])
-    if (!wechatPid) {
-      return {
-        status: {
-          ...base,
-          sipDisabled,
-          state: 'wechat_not_running',
-          message: '请先启动并登录 macOS 微信'
-        }
-      }
-    }
-    if (!sipDisabled) {
-      return {
-        status: {
-          ...base,
-          wechatRunning: true,
-          wechatPid,
-          state: 'sip_enabled',
-          message: '当前 SIP 未关闭，无法直接连接微信进程'
-        }
-      }
-    }
-
-    let wechatVersion = ''
-    try {
-      wechatVersion = await readWechatVersion()
-    } catch (error) {
-      return {
-        status: {
-          ...base,
-          sipDisabled,
-          wechatRunning: true,
-          wechatPid,
-          state: 'error',
-          message: '无法读取微信精确版本',
-          error: error instanceof Error ? error.message : String(error)
-        }
-      }
-    }
-
-    const runtime = findPersonalWechatRuntime()
-    if (!runtime) {
-      return {
-        status: {
-          ...base,
-          sipDisabled,
-          wechatRunning: true,
-          wechatPid,
-          wechatVersion,
-          state: 'runtime_missing',
-          message: '个人微信发送组件尚未安装，请前往“设置 → 智能能力 → 微信发送”下载'
-        }
-      }
-    }
-    const configPath = join(runtime.configDirectory, toConfigFileName(wechatVersion))
-    if (!existsSync(configPath)) {
-      return {
-        runtime,
-        status: {
-          ...base,
-          sipDisabled,
-          wechatRunning: true,
-          wechatPid,
-          wechatVersion,
-          runtimeReady: true,
-          executablePath: runtime.executable,
-          state: 'unsupported_version',
-          message: `当前微信版本 ${wechatVersion} 暂不支持，请前往微信发送设置查看支持的版本`,
-          error: `缺少 ${configPath}`
-        }
-      }
-    }
-
-    const imagePath = findWechatImagePath()
-    return {
-      runtime,
-      status: {
-        ...base,
-        sipDisabled,
-        wechatRunning: true,
-        wechatPid,
-        wechatVersion,
-        runtimeReady: true,
-        executablePath: runtime.executable,
-        configPath,
-        ...(imagePath ? { imagePath } : {}),
-        state: this.child && this.child.exitCode === null ? 'starting' : 'stopped',
-        message: this.lastError || '尚未绑定当前微信，可点击“绑定微信”'
-      }
-    }
-  }
-
-  private async isEndpointOnline(): Promise<boolean> {
-    try {
-      const [host, portText] = DEFAULT_HOST.split(':')
-      const port = Number(portText)
-      await new Promise<void>((resolve, reject) => {
-        const socket = createConnection({ host, port })
-        const timer = setTimeout(() => {
-          socket.destroy()
-          reject(new Error('timeout'))
-        }, 800)
-        socket.once('connect', () => {
-          clearTimeout(timer)
-          socket.destroy()
-          resolve()
-        })
-        socket.once('error', (error) => {
-          clearTimeout(timer)
-          socket.destroy()
-          reject(error)
-        })
-      })
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  private readHookReadiness(
-    runtime?: RuntimeLayout
-  ): ReturnType<typeof parsePersonalWechatHookLog> {
-    if (!runtime || !existsSync(runtime.logPath)) {
-      return {
-        readiness: 'unknown',
-        attached: false,
-        textHookInstalled: false,
-        textHookReady: false,
-        imageHookInstalled: false,
-        imageHookReady: false,
-        messageListenerReady: false
-      }
-    }
-    try {
-      return parsePersonalWechatHookLog(readFileSync(runtime.logPath, 'utf8'))
-    } catch {
-      return {
-        readiness: 'unknown',
-        attached: false,
-        textHookInstalled: false,
-        textHookReady: false,
-        imageHookInstalled: false,
-        imageHookReady: false,
-        messageListenerReady: false
       }
     }
   }

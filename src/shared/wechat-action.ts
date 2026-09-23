@@ -23,6 +23,10 @@ export type WechatActionPurpose =
   | 'manual_image'
   /** 用户手动发送文本。 */
   | 'manual_text'
+  /** 用户确认后的日报图片；进入 automation 队列以复用 3 秒发送间隔。 */
+  | 'manual_report_image'
+  /** 日报图片成功后的后置词；只有图片 sent 后才会创建。 */
+  | 'manual_report_postfix'
   /**
    * Automation v1 的两个用途。
    *

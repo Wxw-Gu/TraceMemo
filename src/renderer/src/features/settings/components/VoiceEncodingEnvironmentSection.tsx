@@ -77,12 +77,8 @@ export function VoiceEncodingEnvironmentSection({
         onNotice(
           result.environment.message || 'pilk 已安装，但仍有语音编码环境未就绪。请重新检查。'
         )
-      } else if (result.restarted) {
-        onNotice('语音编码环境已修复，语音发送服务已重启')
-      } else if (result.restartError) {
-        onNotice(`语音编码环境已修复，但语音发送服务重启失败：${result.restartError}`)
       } else {
-        onNotice('语音编码环境已修复。重新启动语音发送服务后生效。')
+        onNotice('语音编码环境已修复。')
       }
     } catch (error) {
       onNotice(error instanceof Error ? error.message : 'pilk 安装失败')

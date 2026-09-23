@@ -39,9 +39,8 @@ export interface AppSettings {
   showStartupProgress: boolean
   ttsSelectedVoiceId: string
   ttsModel: TextToSpeechModel
-  /** Keep a running personal-WeChat OneBot process across app restarts. */
-  keepPersonalWechatProcess?: boolean
   windowsWechatPort: string
+  reportImagePostfixText: string
   /**
    * Query Agent 是否为桌面「问问微信」与 Agent Hub 查询类问题的主路径。
    * 默认开启；关闭后回退到 Legacy AI Search Pipeline（仅作 runtime regression 时的回退开关，
@@ -130,8 +129,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   showStartupProgress: true,
   ttsSelectedVoiceId: '',
   ttsModel: 's2.1-pro-free',
-  keepPersonalWechatProcess: false,
   windowsWechatPort: '',
+  reportImagePostfixText: '今日日报',
   queryAgentEnabled: true
 }
 
@@ -150,7 +149,10 @@ export function loadSettings(): AppSettings {
   if (cache) return cache
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
-      const raw = fs.readJsonSync(SETTINGS_FILE) as Partial<AppSettings>
+      const stored = fs.readJsonSync(SETTINGS_FILE) as Partial<AppSettings> & {
+        keepPersonalWechatProcess?: unknown
+      }
+      const { keepPersonalWechatProcess: retiredKeepProcess, ...raw } = stored
       cache = { ...DEFAULT_SETTINGS, ...raw }
       if (raw.autoLogin === undefined) {
         const hasSavedDatabaseKey = fs.existsSync(
@@ -176,7 +178,7 @@ export function loadSettings(): AppSettings {
       }
       // 防撤回已下线（设置入口已隐藏）：历史版本可能把它持久化为 true。
       // 这里强制收敛为 false 并回写磁盘，确保旧的撤回监听与撤回日志不会继续运行。
-      if (cache.recallProtectionEnabled) {
+      if (cache.recallProtectionEnabled || retiredKeepProcess !== undefined) {
         cache.recallProtectionEnabled = false
         saveSettings(cache)
       }
@@ -192,7 +194,11 @@ export function loadSettings(): AppSettings {
 export function saveSettings(next: AppSettings): AppSettings {
   // 防撤回已下线：所有写入路径（含 settings:set 补丁）统一收敛为 false，
   // 避免遗留入口或旧版本把它重新打开。
-  cache = { ...next, recallProtectionEnabled: false }
+  const sanitized = { ...next } as AppSettings & {
+    keepPersonalWechatProcess?: unknown
+  }
+  delete sanitized.keepPersonalWechatProcess
+  cache = { ...sanitized, recallProtectionEnabled: false }
   try {
     ensureDir()
     fs.writeJsonSync(SETTINGS_FILE, cache, { spaces: 2 })

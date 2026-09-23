@@ -93,11 +93,6 @@ import type {
   ScheduledReportUpdateInput
 } from '../shared/scheduled-report'
 import type {
-  PersonalWechatRuntimeDownloadResult,
-  PersonalWechatRuntimeProgressEvent,
-  PersonalWechatRuntimeStatus
-} from '../shared/personal-wechat-runtime'
-import type {
   PersonalWechatVoiceEncodingEnvironment,
   PersonalWechatVoiceEncodingEnvironmentResult
 } from '../shared/personal-wechat-voice-runtime'
@@ -322,7 +317,10 @@ declare global {
       getAutomationStatus: () => Promise<AutomationStatusSummary>
       listAutomationRules: () => Promise<AutomationRule[]>
       createAutomationRule: (draft: AutomationRuleDraft) => Promise<AutomationRule>
-      updateAutomationRule: (id: string, draft: AutomationRuleDraft) => Promise<AutomationRule | null>
+      updateAutomationRule: (
+        id: string,
+        draft: AutomationRuleDraft
+      ) => Promise<AutomationRule | null>
       deleteAutomationRule: (id: string) => Promise<boolean>
       setAutomationRuleEnabled: (id: string, enabled: boolean) => Promise<AutomationRule | null>
       listAutomationExecutions: (query?: { limit?: number }) => Promise<AutomationExecution[]>
@@ -544,6 +542,7 @@ declare global {
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
+          reportImagePostfixText: string
           imageXorKey: string
           imageAesKey: string
         }
@@ -584,6 +583,7 @@ declare global {
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
+          reportImagePostfixText: string
           imageXorKey: string
           imageAesKey: string
         }
@@ -607,6 +607,7 @@ declare global {
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
+          reportImagePostfixText: string
           imageXorKey: string
           imageAesKey: string
         }>
@@ -720,21 +721,11 @@ declare global {
       onImageTextIndexStatus: (callback: (status: ImageTextIndexStatus) => void) => () => void
       getPersonalWechatSenderStatus: () => Promise<PersonalWechatSenderStatus>
       getPersonalWechatSendCapability: () => Promise<PersonalWechatSendCapability>
-      getPersonalWechatKeepOneBotProcess: () => Promise<boolean>
-      setPersonalWechatKeepOneBotProcess: (keep: boolean) => Promise<boolean>
       checkPersonalWechatSenderStatus: (port?: string) => Promise<PersonalWechatSenderStatus>
       checkPersonalWechatVoiceEncodingEnvironment: () => Promise<PersonalWechatVoiceEncodingEnvironment>
       installPersonalWechatPilk: () => Promise<PersonalWechatVoiceEncodingEnvironmentResult>
       openPersonalWechatVoicePythonDownload: () => Promise<{ success: boolean; error?: string }>
       openPersonalWechatVoiceFfmpegDownload: () => Promise<{ success: boolean; error?: string }>
-      getPersonalWechatRuntimeStatus: () => Promise<PersonalWechatRuntimeStatus>
-      downloadPersonalWechatRuntime: () => Promise<PersonalWechatRuntimeDownloadResult>
-      cancelPersonalWechatRuntimeDownload: () => Promise<{ success: boolean }>
-      removePersonalWechatRuntime: () => Promise<PersonalWechatRuntimeStatus>
-      openPersonalWechatRuntimeDirectory: () => Promise<{ success: boolean; error?: string }>
-      onPersonalWechatRuntimeProgress: (
-        callback: (status: PersonalWechatRuntimeProgressEvent) => void
-      ) => () => void
       rebindPersonalWechatSender: () => Promise<PersonalWechatSenderStatus>
       sendGeneratedTtsVoice: (
         request: PersonalWechatGeneratedTtsVoiceRequest
