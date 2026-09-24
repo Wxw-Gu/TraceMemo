@@ -180,6 +180,8 @@ export interface GroupSnapshot {
   roomId: string
   memberCount: number
   groupName?: string
+  /** 只读 roominfo（contact.db / chatroom）；字段可能随版本缺失。 */
+  roomInfo?: GroupRoomInfo
   members: {
     wxid: string
     nickname: string
@@ -188,6 +190,18 @@ export interface GroupSnapshot {
     remark: string
     avatar: string
   }[]
+}
+
+/** 群 roominfo 只读字段（列名兼容多版本；缺失则为 undefined）。 */
+export interface GroupRoomInfo {
+  roomId: string
+  owner?: string
+  announcement?: string
+  announcementEditor?: string
+  maxMemberCount?: number
+  chatName?: string
+  openImAccountType?: string
+  isOpenIm?: boolean
 }
 
 export interface GroupMembershipSnapshot {
@@ -1007,7 +1021,7 @@ export function getGroupSnapshot(userMd5: string): GroupSnapshot | null {
       avatar: member.m_nsHeadImgUrl || ''
     }))
 
-  return { roomId, memberCount: members.length, members }
+  return { roomId, memberCount: members.length, members, roomInfo: wcdb4Client.getRoomInfo(roomId) || undefined }
 }
 
 export async function getGroupSnapshotAsync(userMd5: string): Promise<GroupSnapshot | null> {
@@ -1032,7 +1046,8 @@ export async function getGroupSnapshotAsync(userMd5: string): Promise<GroupSnaps
     roomId,
     groupName: session?.nickname || undefined,
     memberCount: members.length,
-    members
+    members,
+    roomInfo: (await wcdb4Client.getRoomInfoAsync(roomId)) || undefined
   }
 }
 

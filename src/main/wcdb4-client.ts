@@ -5,6 +5,51 @@ import crypto from 'crypto'
 import { createRequire } from 'module'
 import { createConnection, Socket } from 'net'
 import { getResourceRoots } from './resource-paths'
+
+export type RoomInfoRow = {
+  roomId: string
+  owner?: string
+  announcement?: string
+  announcementEditor?: string
+  maxMemberCount?: number
+  chatName?: string
+  openImAccountType?: string
+  isOpenIm?: boolean
+}
+
+function pickString(row: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = row[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  }
+  return undefined
+}
+
+export function normalizeRoomInfoRow(chatroomId: string, row: Record<string, unknown>): RoomInfoRow {
+  const openImAccountType =
+    pickString(row, ['openim_acct_type', 'openimAcctType', 'openim_type']) || undefined
+  const maxRaw = pickString(row, ['max_member_count', 'maxMemberCount', 'member_max'])
+  return {
+    roomId: chatroomId,
+    owner: pickString(row, ['roomowner', 'room_owner', 'owner', 'owner_id']),
+    announcement: pickString(row, [
+      'textannouncement',
+      'announcement',
+      'announcement_',
+      'chatroomannouncement'
+    ]),
+    announcementEditor: pickString(row, [
+      'announcement_editor',
+      'announcement_editor_',
+      'announcementeditor'
+    ]),
+    maxMemberCount: maxRaw && Number.isFinite(Number(maxRaw)) ? Number(maxRaw) : undefined,
+    chatName: pickString(row, ['chatroomnick', 'chat_name', 'chatroom_name', 'displayname']),
+    openImAccountType,
+    isOpenIm: openImAccountType ? openImAccountType !== '0' && openImAccountType !== '' : undefined
+  }
+}
 import { wcdbDebugLog } from './wcdb-debug'
 import type { ImageMessageCountProbe } from '../shared/image-text-index'
 import { imageTextWindowToSeconds } from '../shared/image-text-index'
@@ -2676,6 +2721,42 @@ export class Wcdb4Client {
 
   getAccountRoot(): string {
     return this.accountRoot
+  }
+
+
+  /**
+   * 只读 roominfo（contact.db / chatroom 或兼容列名）。
+   */
+  getRoomInfo(chatroomId: string): RoomInfoRow | null {
+    if (!this.wcdbExecQuery || !chatroomId.endsWith('@chatroom')) return null
+    const escaped = chatroomId.replace(/'/g, "''")
+    const sql = `SELECT * FROM chatroom WHERE chatroomname = '${escaped}' LIMIT 1`
+    try {
+      const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+        this.wcdbExecQuery!(handle, 'contact', '', sql, outJson)
+      )
+      return rows?.[0] ? normalizeRoomInfoRow(chatroomId, rows[0]) : null
+    } catch {
+      return null
+    }
+  }
+
+  async getRoomInfoAsync(chatroomId: string): Promise<RoomInfoRow | null> {
+    if (!this.wcdbExecQuery || !chatroomId.endsWith('@chatroom')) return null
+    const escaped = chatroomId.replace(/'/g, "''")
+    const sql = `SELECT * FROM chatroom WHERE chatroomname = '${escaped}' LIMIT 1`
+    try {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+        'contact',
+        '',
+        sql
+      )
+      return rows?.[0] ? normalizeRoomInfoRow(chatroomId, rows[0]) : null
+    } catch (error) {
+      console.warn('[WCDB4] getRoomInfoAsync failed:', error)
+      return null
+    }
   }
 
   /** 只读列收藏（favorite.db / fav_db_item），供导出与搜索。 */
