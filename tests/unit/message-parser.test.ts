@@ -207,6 +207,80 @@ describe('message parser', () => {
     })
   })
 
+  it('unmasks packed local_type low 32 bits', () => {
+    const packed = 1 + 5 * 0x100000000
+    expect(parseMessageContent('plain text body', packed)).toEqual({
+      type: 'text',
+      content: 'plain text body'
+    })
+  })
+
+  it('parses patMsg into system text', () => {
+    const xml = [
+      '<msg><appmsg>',
+      '<patMsg>',
+      '<template><![CDATA[$from$拍了拍$to$$pat$]]></template>',
+      '<fromusername><![CDATA[alice]]></fromusername>',
+      '<tousername><![CDATA[bob]]></tousername>',
+      '<pat><![CDATA[的头像]]></pat>',
+      '</patMsg>',
+      '</appmsg></msg>'
+    ].join('')
+    const parsed = parseMessageContent(xml, 49)
+    expect(parsed).toMatchObject({
+      type: 'system',
+      content: 'alice拍了拍bob的头像'
+    })
+  })
+
+  it('parses findernamecard as a read-only share card', () => {
+    const xml = [
+      '<msg><appmsg>',
+      '<type>51</type>',
+      '<title><![CDATA[视频号]]></title>',
+      '<findernamecard>',
+      '<username><![CDATA[finder_ab12]]></username>',
+      '<nickname><![CDATA[示例视频号]]></nickname>',
+      '</findernamecard>',
+      '</appmsg></msg>'
+    ].join('')
+    const parsed = parseMessageContent(xml, 49)
+    expect(parsed).toMatchObject({
+      type: 'share',
+      title: '示例视频号',
+      appname: '视频号',
+      typeVal: '51'
+    })
+  })
+
+  it('falls back to product item share without a title', () => {
+    const xml = [
+      '<msg><appmsg>',
+      '<type>2000</type>',
+      '<productitem>',
+      '<productName><![CDATA[测试商品]]></productName>',
+      '<sellingPrice><![CDATA[￥9.9]]></sellingPrice>',
+      '</productitem>',
+      '</appmsg></msg>'
+    ].join('')
+    const parsed = parseMessageContent(xml, 49)
+    expect(parsed).toMatchObject({
+      type: 'share',
+      title: '测试商品',
+      des: '￥9.9',
+      typeVal: '2000'
+    })
+  })
+
+  it('renders friend verify local_type 37 as system text', () => {
+    const xml = '<msg><nickname><![CDATA[新朋友]]></nickname><content><![CDATA[我是群里的]]></content></msg>'
+    const parsed = parseMessageContent(xml, 37)
+    expect(parsed).toMatchObject({
+      type: 'system',
+      content: '新朋友 · 我是群里的'
+    })
+  })
+
   it('parses transfer wcpayinfo fields (type 2000)', () => {
     // 2026-09 真机转账采样字段名（含微信原文 transcationid 拼写）
     const xml = [

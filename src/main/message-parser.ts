@@ -163,10 +163,26 @@ export type ParsedContent =
   | SystemContent
   | UnknownContent
 
+/**
+ * `local_type` 可能是打包 u64：低 32 位为类型枚举，高 32 位为标志/子类型。
+ */
+export function normalizeLocalType(messageType: number | string): number {
+  try {
+    const value =
+      typeof messageType === 'number'
+        ? BigInt(Math.trunc(messageType))
+        : BigInt(String(messageType).trim())
+    return Number(value & 0xffffffffn)
+  } catch {
+    const fallback = Number(messageType)
+    return Number.isFinite(fallback) ? Math.trunc(fallback) : 0
+  }
+}
+
 export function parseMessageContent(content: string, messageType: number): ParsedContent {
-  // Voice rows may keep their binary payload outside msgContent, so an empty
+  const localType = normalizeLocalType(messageType)
   // content string is still a valid voice message.
-  if (messageType === 34) {
+  if (localType === 34) {
     const duration = parseVoiceDurationSeconds(content)
     return duration === undefined ? { type: 'voice' } : { type: 'voice', duration }
   }
@@ -176,11 +192,15 @@ export function parseMessageContent(content: string, messageType: number): Parse
 
   const normalized = content.trim()
 
-  switch (messageType) {
+  switch (localType) {
     case 1:
       return { type: 'text', content: normalized }
     case 3:
       return parseImageMessage(normalized)
+    case 17:
+      return parseForwardBundle(normalized)
+    case 37:
+      return parseFriendVerifyMessage(normalized)
     case 42:
       return parseCardMessage(normalized)
     case 43:
@@ -197,7 +217,7 @@ export function parseMessageContent(content: string, messageType: number): Parse
     case 10002:
       return parseSystemMessage(normalized)
     default:
-      return { type: 'unknown', raw: normalized, messageType }
+      return { type: 'unknown', raw: normalized, messageType: localType }
   }
 }
 
@@ -521,6 +541,15 @@ function parseLocationMessage(content: string): ParsedContent {
 function parseShareMessage(content: string): ParsedContent {
   const appMsgType = extractAppMsgType(content)
   const isFileMessage = appMsgType === '6' || appMsgType === '74'
+  if (/<patMsg\b/i.test(content) || /sysmsg[^>]+type=["']pat["']/i.test(content)) {
+    return parsePatMessage(content)
+  }
+  if (/<findernamecard\b/i.test(content)) {
+    return parseFinderNameCard(content)
+  }
+  if (/<productitem\b/i.test(content) && !extractXmlValue(content, 'title')) {
+    return parseProductItem(content)
+  }
   if (appMsgType === '19') {
     return parseForwardBundle(content)
   }
@@ -601,6 +630,7 @@ function parseShareMessage(content: string): ParsedContent {
   const typeVal = extractXmlValue(content, 'type') || ''
 
   if (!title && !url) {
+    if (/<productitem\b/i.test(content)) return parseProductItem(content)
     return { type: 'unknown', raw: content }
   }
 
@@ -665,6 +695,83 @@ function extractSendIdFromUrl(url?: string): string | undefined {
   } catch {
     return /sendid=(\d+)/i.exec(url)?.[1]
   }
+}
+
+/** 拍一拍（`HandlePatMsg` / `<patMsg>`）→ 系统文案。 */
+function parsePatMessage(content: string): ParsedContent {
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const template =
+    extractXmlValue(decoded, 'template') ||
+    extractXmlValue(decoded, 'pattemplate') ||
+    extractXmlValue(decoded, 'plain') ||
+    ''
+  const from = extractXmlValue(decoded, 'fromusername') || extractXmlValue(decoded, 'fromuser')
+  const to = extractXmlValue(decoded, 'tousername') || extractXmlValue(decoded, 'touser')
+  const pat = extractXmlValue(decoded, 'pat') || extractXmlValue(decoded, 'patted')
+  const text =
+    normalizeSystemText(
+      template.replace(/\$from\$/g, from || '').replace(/\$to\$/g, to || '').replace(/\$pat\$/g, pat || '')
+    ) || normalizeSystemText(decoded.replace(/<[^>]+>/g, ' ')) || '拍了拍'
+  return { type: 'system', content: text, raw: content }
+}
+
+/** 视频号名片（`<findernamecard>`）→ 只读 share。 */
+function parseFinderNameCard(content: string): ParsedContent {
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const username = extractXmlValue(decoded, 'username') || extractXmlValue(decoded, 'finderUsername')
+  const nickname = extractXmlValue(decoded, 'nickname') || extractXmlValue(decoded, 'finderNickname')
+  const title = nickname || username || extractXmlValue(decoded, 'title') || '视频号名片'
+  const url = decodeXmlUrl(extractXmlValue(decoded, 'url') || extractXmlValue(decoded, 'appPageUrl') || '')
+  return {
+    type: 'share',
+    title,
+    des: username && nickname ? username : undefined,
+    url: url || '',
+    appname: '视频号',
+    typeVal: extractAppMsgType(content) || 'findernamecard'
+  }
+}
+
+/** 商品卡（`<productitem>`）→ 只读 share。 */
+function parseProductItem(content: string): ParsedContent {
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const title =
+    extractXmlValue(decoded, 'productName') ||
+    extractXmlValue(decoded, 'product_name') ||
+    extractXmlValue(decoded, 'title') ||
+    '商品'
+  const des =
+    extractXmlValue(decoded, 'productDesc') ||
+    extractXmlValue(decoded, 'sellingPrice') ||
+    extractXmlValue(decoded, 'referdes')
+  const url = decodeXmlUrl(extractXmlValue(decoded, 'url') || extractXmlValue(decoded, 'productUrl') || '')
+  return {
+    type: 'share',
+    title,
+    des: des || undefined,
+    url: url || '',
+    appname: extractXmlValue(decoded, 'sellername') || '商品',
+    typeVal: extractAppMsgType(content) || 'productitem'
+  }
+}
+
+/** 好友验证（local_type=37）→ 系统文案，避免 unknown 黑块。 */
+function parseFriendVerifyMessage(content: string): ParsedContent {
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const text = extractSysmsgTemplateText(decoded)
+  if (text) return { type: 'system', content: text, raw: content }
+  const nickname = extractXmlValue(decoded, 'nickname') || extractXmlValue(decoded, 'NickName')
+  const username = extractXmlValue(decoded, 'username') || extractXmlValue(decoded, 'UserName')
+  const contentText =
+    extractXmlValue(decoded, 'content') ||
+    extractXmlValue(decoded, 'bighead') ||
+    extractXmlValue(decoded, 'source')
+  const label = normalizeSystemText(
+    [nickname || username ? `${nickname || username}` : '', contentText || '好友验证消息']
+      .filter(Boolean)
+      .join(' · ')
+  )
+  return { type: 'system', content: label || '好友验证消息', raw: content }
 }
 
 function parseShareArticles(content: string): ShareArticle[] {
