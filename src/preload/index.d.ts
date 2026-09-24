@@ -155,6 +155,37 @@ import type {
   TextToSpeechSettingsResult
 } from '../shared/text-to-speech'
 
+export type TransferPaymentInfo = {
+  paySubtype?: string
+  amountText?: string
+  transcationId?: string
+  transferId?: string
+  invalidTime?: string
+  beginTransferTime?: string
+  effectiveDate?: string
+  payMemo?: string
+  receiverUsername?: string
+  payerUsername?: string
+  transferStatus?: string
+  transferStatusText?: string
+}
+
+export type RedPacketPaymentInfo = {
+  templateId?: string
+  receiveTitle?: string
+  sendTitle?: string
+  sceneText?: string
+  senderDes?: string
+  receiverDes?: string
+  iconUrl?: string
+  nativeUrl?: string
+  sendId?: string
+  hbType?: string
+  hbStatus?: string
+  receiveStatus?: string
+  redPacketStatusText?: string
+}
+
 export type ParsedContent =
   | { type: 'text'; content: string }
   | { type: 'voice'; duration?: number }
@@ -167,6 +198,7 @@ export type ParsedContent =
       url: string
       appname?: string
       typeVal?: string
+      transfer?: TransferPaymentInfo
     }
   | {
       type: 'miniProgram'
@@ -178,7 +210,13 @@ export type ParsedContent =
       thumbDatName?: string
       thumbDataUrl?: string
     }
-  | { type: 'redPacket'; title: string; description?: string; url?: string }
+  | {
+      type: 'redPacket'
+      title: string
+      description?: string
+      url?: string
+      pay?: RedPacketPaymentInfo
+    }
   | { type: 'voip'; duration?: number; status: string; roomType?: number }
   | { type: 'image'; md5?: string; datName?: string; aeskey?: string; encrypVer?: number }
   | {

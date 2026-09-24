@@ -1,3 +1,5 @@
+import { describeRedPacketStatus, describeTransferStatus } from '../shared/payment-status'
+
 type TextContent = { type: 'text'; content: string }
 type VoiceContent = { type: 'voice'; duration?: number }
 type LocationContent = {
@@ -22,6 +24,40 @@ type ShareContent = {
   appname?: string
   typeVal?: string
   articles?: ShareArticle[]
+  transfer?: TransferPaymentInfo
+}
+
+type TransferPaymentInfo = {
+  paySubtype?: string
+  amountText?: string
+  transcationId?: string
+  transferId?: string
+  invalidTime?: string
+  beginTransferTime?: string
+  effectiveDate?: string
+  payMemo?: string
+  receiverUsername?: string
+  payerUsername?: string
+  transferStatus?: string
+  /** `transfer_status` 展示文案（只读）。 */
+  transferStatusText?: string
+}
+
+type RedPacketPaymentInfo = {
+  templateId?: string
+  receiveTitle?: string
+  sendTitle?: string
+  sceneText?: string
+  senderDes?: string
+  receiverDes?: string
+  iconUrl?: string
+  nativeUrl?: string
+  sendId?: string
+  hbType?: string
+  hbStatus?: string
+  receiveStatus?: string
+  /** `hb_status` / `receive_status` 展示文案（只读）。 */
+  redPacketStatusText?: string
 }
 type ForwardedMessageItem = {
   messageType: number
@@ -51,6 +87,7 @@ type RedPacketContent = {
   title: string
   description?: string
   url?: string
+  pay?: RedPacketPaymentInfo
 }
 type VoipContent = { type: 'voip'; duration?: number; status: string; roomType?: number }
 type ImageContent = {
@@ -522,12 +559,25 @@ function parseShareMessage(content: string): ParsedContent {
     }
   }
 
-  if (appMsgType === '2001') {
+  if (appMsgType === '2001' || /mmpayhb|receivehongbao|wxpay:\/\/c2cbizmessagehandler\/hongbao/i.test(content)) {
+    const pay = parseWcpayInfo(content)
+    const url = decodeXmlUrl(extractXmlValue(content, 'url')) || undefined
     return {
       type: 'redPacket',
-      title: extractXmlValue(content, 'title') || '微信红包',
-      description: extractXmlValue(content, 'des') || '恭喜发财，大吉大利',
-      url: decodeXmlUrl(extractXmlValue(content, 'url')) || undefined
+      title:
+        pay.sendTitle ||
+        pay.receiveTitle ||
+        extractXmlValue(content, 'title') ||
+        '微信红包',
+      description:
+        extractXmlValue(content, 'des') ||
+        pay.sceneText ||
+        '恭喜发财，大吉大利',
+      url,
+      pay: {
+        ...pay,
+        sendId: pay.sendId || extractSendIdFromUrl(url)
+      }
     }
   }
 
@@ -557,7 +607,55 @@ function parseShareMessage(content: string): ParsedContent {
     url,
     appname,
     typeVal,
-    articles: articles.length > 1 ? articles : undefined
+    articles: articles.length > 1 ? articles : undefined,
+    transfer: typeVal === '2000' ? parseWcpayInfo(content) : undefined
+  }
+}
+
+/** 只读解析 `<wcpayinfo>`（转账 / 红包展示字段；不做支付）。 */
+function parseWcpayInfo(content: string): TransferPaymentInfo & RedPacketPaymentInfo {
+  const block = /<wcpayinfo>([\s\S]*?)<\/wcpayinfo>/i.exec(content)?.[1] || content
+  const val = (tag: string): string | undefined => {
+    const raw = extractXmlValue(block, tag)
+    return raw ? decodeXmlEntities(raw) || undefined : undefined
+  }
+  const transferStatus = val('transfer_status')
+  const hbStatus = val('hb_status')
+  const receiveStatus = val('receive_status')
+  return {
+    paySubtype: val('paysubtype'),
+    amountText: val('feedesc'),
+    transcationId: val('transcationid'),
+    transferId: val('transferid'),
+    invalidTime: val('invalidtime'),
+    beginTransferTime: val('begintransfertime'),
+    effectiveDate: val('effectivedate'),
+    payMemo: val('pay_memo') || undefined,
+    receiverUsername: val('receiver_username'),
+    payerUsername: val('payer_username'),
+    transferStatus,
+    transferStatusText: describeTransferStatus(transferStatus),
+    templateId: val('templateid'),
+    receiveTitle: val('receivertitle'),
+    sendTitle: val('sendertitle'),
+    sceneText: val('scenetext'),
+    senderDes: val('senderdes'),
+    receiverDes: val('receiverdes'),
+    iconUrl: decodeXmlUrl(val('iconurl') || '') || undefined,
+    nativeUrl: val('nativeurl'),
+    hbType: val('hb_type'),
+    hbStatus,
+    receiveStatus,
+    redPacketStatusText: describeRedPacketStatus(hbStatus, receiveStatus)
+  }
+}
+
+function extractSendIdFromUrl(url?: string): string | undefined {
+  if (!url) return undefined
+  try {
+    return new URL(url).searchParams.get('sendid') || undefined
+  } catch {
+    return /sendid=(\d+)/i.exec(url)?.[1]
   }
 }
 

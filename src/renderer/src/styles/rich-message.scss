@@ -364,6 +364,43 @@
   line-height: 16px;
 }
 
+.transfer-message {
+  width: min(280px, 48vw);
+  overflow: hidden;
+  border: 1px solid var(--wxex-border);
+  border-radius: 6px;
+  background: var(--wxex-bg-elevated);
+  color: var(--wxex-text-primary);
+  padding: 12px 14px;
+}
+
+.transfer-kicker {
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.transfer-title {
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.transfer-meta {
+  margin-top: 6px;
+  color: var(--wxex-text-primary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.transfer-footer {
+  margin-top: 8px;
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
 .red-packet-message {
   width: min(280px, 48vw);
   overflow: hidden;

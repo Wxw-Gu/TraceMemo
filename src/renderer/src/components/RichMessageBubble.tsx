@@ -158,7 +158,22 @@ function CardBubble({ data }: { data: Extract<ParsedContent, { type: 'card' }> }
 }
 
 function ShareBubble({ data }: { data: Extract<ParsedContent, { type: 'share' }> }): JSX.Element {
-  const { title, des, url, appname, articles } = data
+  const { title, des, url, appname, articles, transfer, typeVal } = data
+
+  if (String(typeVal) === '2000' || transfer) {
+    const pay = transfer || {}
+    const meta = [pay.amountText, pay.payMemo ? `备注:${pay.payMemo}` : '', pay.transferStatusText]
+      .filter(Boolean)
+      .join(' · ')
+    return (
+      <div className="transfer-message">
+        <div className="transfer-kicker">微信转账</div>
+        <div className="transfer-title">{title || '微信转账'}</div>
+        <div className="transfer-meta">{meta || des || '转账消息'}</div>
+        {pay.transferId ? <div className="transfer-footer">单号 {pay.transferId}</div> : null}
+      </div>
+    )
+  }
 
   if (articles?.length) {
     return (
@@ -254,6 +269,8 @@ function RedPacketBubble({
   const handleClick = (): void => {
     if (data.url) window.open(data.url, '_blank')
   }
+  const statusText = data.pay?.redPacketStatusText
+  const blurb = data.description || data.pay?.sceneText || '恭喜发财，大吉大利'
 
   return (
     <div
@@ -266,7 +283,7 @@ function RedPacketBubble({
         </span>
         <span className="red-packet-copy">
           <strong>{data.title}</strong>
-          <small>{data.description || '恭喜发财，大吉大利'}</small>
+          <small>{statusText ? `${blurb} · ${statusText}` : blurb}</small>
         </span>
       </div>
       <div className="red-packet-footer">微信红包</div>

@@ -1172,13 +1172,37 @@ const renderExportScript = (name: string): string => `
   }
   const renderPaymentContent = (data, kind) => {
     const isTransfer = kind === 'transfer'
+    const pay = (isTransfer ? data.transfer : data.pay) || {}
+    const amount = pay.amountText
+    const memo = pay.payMemo
+    const statusText = isTransfer ? pay.transferStatusText : pay.redPacketStatusText
+    const meta = [amount, memo ? '备注:' + memo : '', statusText]
+      .filter(Boolean)
+      .join(' · ')
+    const title = isTransfer
+      ? (data.title || '微信转账')
+      : (pay.sendTitle || pay.receiveTitle || data.title || '微信红包')
+    const blurb =
+      data.description ||
+      data.des ||
+      (isTransfer ? '转账消息' : (pay.sceneText || '恭喜发财，大吉大利'))
+    // 状态/金额/备注始终单独露出，避免被消息原文 des 盖住。
+    const description = meta
+      ? (blurb && blurb !== meta ? blurb + ' · ' + meta : meta)
+      : blurb
+    const footerBits = isTransfer
+      ? [pay.paySubtype === '3' ? '收款' : pay.paySubtype === '1' || pay.paySubtype === '4' ? '转账' : '',
+         pay.transferId ? '单号 ' + pay.transferId : '']
+      : [pay.hbType ? '类型 ' + pay.hbType : '', pay.sendId ? 'sendid ' + pay.sendId : '']
     return '<div class="structured-content payment-content ' + (isTransfer ? 'transfer' : 'red-packet') +
       '" data-rich-kind="' + (isTransfer ? 'transfer' : 'redPacket') + '">' +
       '<div class="structured-kicker">' + (isTransfer ? '微信转账' : '微信红包') + '</div>' +
-      '<div class="structured-title">' + displayText(data.title || (isTransfer ? '微信转账' : '微信红包')) + '</div>' +
-      '<div class="structured-description">' +
-      displayText(data.description || data.des || (isTransfer ? '转账消息' : '恭喜发财，大吉大利')) +
-      '</div></div>'
+      '<div class="structured-title">' + displayText(title) + '</div>' +
+      '<div class="structured-description">' + displayText(description) + '</div>' +
+      (footerBits.filter(Boolean).length
+        ? '<div class="structured-footer">' + displayText(footerBits.filter(Boolean).join(' · ')) + '</div>'
+        : '') +
+      '</div>'
   }
   const renderVoipContent = (data) => {
     const title = Number(data.roomType) === 1 ? '视频通话' : '语音通话'

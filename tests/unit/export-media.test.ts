@@ -457,6 +457,74 @@ describe('export media', () => {
     expect(html).toContain("if (event.key === 'Escape')")
     expect(html).toContain('closeLightbox()')
   })
+
+  it('always surfaces transfer and red-packet amount, memo and status wording', () => {
+    const html = renderExportPage('支付可读导出')
+    const dom = new JSDOM(html, { runScripts: 'outside-only' })
+    const messages: Message[] = [
+      {
+        ...messageForArchive('transfer-paid', 'fixture', '支付可读导出', '收到转账2900.00元。', 1),
+        type: '转账',
+        contentData: {
+          type: 'share',
+          typeVal: '2000',
+          title: '微信转账',
+          des: '收到转账2900.00元。',
+          url: '',
+          transfer: {
+            amountText: '￥2900.00',
+            payMemo: '房租',
+            transferStatus: '2',
+            transferStatusText: '已收款',
+            transferId: '1000050001202609130232821248942',
+            paySubtype: '3'
+          }
+        }
+      },
+      {
+        ...messageForArchive('hb-claimed', 'fixture', '支付可读导出', '我给你发了一个红包，赶紧去拆!', 2),
+        type: '微信红包',
+        contentData: {
+          type: 'redPacket',
+          title: '中秋快乐',
+          description: '我给你发了一个红包，赶紧去拆!',
+          pay: {
+            sendTitle: '中秋快乐',
+            sceneText: '微信红包',
+            hbStatus: '1',
+            redPacketStatusText: '已领取',
+            sendId: '1000039801202609247176036834007',
+            hbType: '1'
+          }
+        }
+      }
+    ]
+    Object.assign(dom.window, {
+      __WECHAT_EXPORT__: {
+        version: 1,
+        sourceId: 'fixture',
+        name: '支付可读导出',
+        exportedAt: '2026-09-24T12:00:00.000Z',
+        messages
+      }
+    })
+
+    dom.window.eval(inlineScriptOf(html))
+
+    const cards = [...dom.window.document.querySelectorAll('.payment-content')]
+    expect(cards).toHaveLength(2)
+    const transfer = cards.find((node) => node.classList.contains('transfer'))!
+    const redPacket = cards.find((node) => node.classList.contains('red-packet'))!
+    // 即使消息带 des，金额/备注/状态也不能被盖住。
+    expect(transfer.textContent).toContain('￥2900.00')
+    expect(transfer.textContent).toContain('备注:房租')
+    expect(transfer.textContent).toContain('已收款')
+    expect(transfer.textContent).toContain('收到转账2900.00元。')
+    expect(transfer.textContent).toContain('单号 1000050001202609130232821248942')
+    expect(redPacket.textContent).toContain('已领取')
+    expect(redPacket.textContent).toContain('我给你发了一个红包，赶紧去拆!')
+    dom.window.close()
+  })
 })
 
 function messageForArchive(

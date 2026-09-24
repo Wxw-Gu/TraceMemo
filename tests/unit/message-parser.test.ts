@@ -206,4 +206,88 @@ describe('message parser', () => {
       messageType: 999
     })
   })
+
+  it('parses transfer wcpayinfo fields (type 2000)', () => {
+    // 2026-09 真机转账采样字段名（含微信原文 transcationid 拼写）
+    const xml = [
+      '<msg><appmsg appid="" sdkver="">',
+      '<title><![CDATA[微信转账]]></title>',
+      '<des><![CDATA[收到转账2900.00元。]]></des>',
+      '<type>2000</type>',
+      '<url><![CDATA[https://support.weixin.qq.com/upgrade]]></url>',
+      '<wcpayinfo>',
+      '<paysubtype>3</paysubtype>',
+      '<feedesc><![CDATA[￥2900.00]]></feedesc>',
+      '<transcationid><![CDATA[53010003370089202609134087894875]]></transcationid>',
+      '<transferid><![CDATA[1000050001202609130232821248942]]></transferid>',
+      '<invalidtime><![CDATA[1789348128]]></invalidtime>',
+      '<begintransfertime><![CDATA[1789261728]]></begintransfertime>',
+      '<effectivedate><![CDATA[1]]></effectivedate>',
+      '<pay_memo><![CDATA[房租]]></pay_memo>',
+      '<receiver_username><![CDATA[wxid_receiver]]></receiver_username>',
+      '<payer_username><![CDATA[]]></payer_username>',
+      '<transfer_status>2</transfer_status>',
+      '</wcpayinfo></appmsg></msg>'
+    ].join('')
+    const parsed = parseMessageContent(xml, 49)
+    expect(parsed).toMatchObject({
+      type: 'share',
+      typeVal: '2000',
+      title: '微信转账',
+      transfer: {
+        paySubtype: '3',
+        amountText: '￥2900.00',
+        transcationId: '53010003370089202609134087894875',
+        transferId: '1000050001202609130232821248942',
+        invalidTime: '1789348128',
+        beginTransferTime: '1789261728',
+        effectiveDate: '1',
+        payMemo: '房租',
+        receiverUsername: 'wxid_receiver',
+        transferStatus: '2',
+        transferStatusText: '已收款'
+      }
+    })
+  })
+
+  it('parses red packet wcpayinfo fields (type 2001 / mmpayhb)', () => {
+    const xml = [
+      '<msg><appmsg appid="" sdkver="">',
+      '<title><![CDATA[中秋快乐]]></title>',
+      '<des><![CDATA[我给你发了一个红包，赶紧去拆!]]></des>',
+      '<type>2001</type>',
+      '<wcpayinfo>',
+      '<templateid><![CDATA[7a2a165d31da7fce6dd77e05c300028a]]></templateid>',
+      '<url><![CDATA[https://wxapp.tenpay.com/mmpayhb/wxhb_personalreceive?msgtype=1&sendid=1000039801202609247176036834007&sign=abc]]></url>',
+      '<iconurl><![CDATA[https://wx.gtimg.com/hongbao/1800/hb.png]]></iconurl>',
+      '<receivertitle><![CDATA[恭喜发财，大吉大利]]></receivertitle>',
+      '<sendertitle><![CDATA[中秋快乐，望重置]]></sendertitle>',
+      '<scenetext><![CDATA[微信红包]]></scenetext>',
+      '<senderdes><![CDATA[查看红包]]></senderdes>',
+      '<receiverdes><![CDATA[领取红包]]></receiverdes>',
+      '<nativeurl><![CDATA[wxpay://c2cbizmessagehandler/hongbao/receivehongbao?sendid=1]]></nativeurl>',
+      '<hb_type>1</hb_type>',
+      '<hb_status>1</hb_status>',
+      '<receive_status>2</receive_status>',
+      '</wcpayinfo></appmsg></msg>'
+    ].join('')
+    const parsed = parseMessageContent(xml, 49)
+    expect(parsed).toMatchObject({
+      type: 'redPacket',
+      title: '中秋快乐，望重置',
+      pay: {
+        templateId: '7a2a165d31da7fce6dd77e05c300028a',
+        receiveTitle: '恭喜发财，大吉大利',
+        sendTitle: '中秋快乐，望重置',
+        sceneText: '微信红包',
+        senderDes: '查看红包',
+        receiverDes: '领取红包',
+        sendId: '1000039801202609247176036834007',
+        hbType: '1',
+        hbStatus: '1',
+        receiveStatus: '2',
+        redPacketStatusText: '已领取'
+      }
+    })
+  })
 })

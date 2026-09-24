@@ -97,6 +97,43 @@ type ShareContent = {
   appname?: string
   typeVal?: string
   articles?: ShareArticle[]
+  /** `wcpayinfo` when typeVal === '2000' (微信转账). Display/export only. */
+  transfer?: TransferPaymentInfo
+}
+
+/** 转账 `wcpayinfo` 字段（只读展示；不含支付操作）。 */
+export type TransferPaymentInfo = {
+  paySubtype?: string
+  amountText?: string
+  transcationId?: string
+  transferId?: string
+  invalidTime?: string
+  beginTransferTime?: string
+  effectiveDate?: string
+  payMemo?: string
+  receiverUsername?: string
+  payerUsername?: string
+  transferStatus?: string
+  /** `transfer_status` 展示文案（只读）。 */
+  transferStatusText?: string
+}
+
+/** 红包 `wcpayinfo` 字段（只读展示）。 */
+export type RedPacketPaymentInfo = {
+  templateId?: string
+  receiveTitle?: string
+  sendTitle?: string
+  sceneText?: string
+  senderDes?: string
+  receiverDes?: string
+  iconUrl?: string
+  nativeUrl?: string
+  sendId?: string
+  hbType?: string
+  hbStatus?: string
+  receiveStatus?: string
+  /** 展示文案（只读）。 */
+  redPacketStatusText?: string
 }
 export type ForwardedMessageItem = {
   messageType: number
@@ -126,6 +163,8 @@ type RedPacketContent = {
   title: string
   description?: string
   url?: string
+  /** `wcpayinfo` 展示字段（只读）。 */
+  pay?: RedPacketPaymentInfo
 }
 type VoipContent = { type: 'voip'; duration?: number; status: string; roomType?: number }
 type ImageContent = {
