@@ -227,6 +227,9 @@ describe('message parser', () => {
       '<receiver_username><![CDATA[wxid_receiver]]></receiver_username>',
       '<payer_username><![CDATA[]]></payer_username>',
       '<transfer_status>2</transfer_status>',
+      '<trans_id><![CDATA[trans-fixture-1]]></trans_id>',
+      '<fee_type><![CDATA[CNY]]></fee_type>',
+      '<refund_bank_type><![CDATA[1]]></refund_bank_type>',
       '</wcpayinfo></appmsg></msg>'
     ].join('')
     const parsed = parseMessageContent(xml, 49)
@@ -245,7 +248,10 @@ describe('message parser', () => {
         payMemo: '房租',
         receiverUsername: 'wxid_receiver',
         transferStatus: '2',
-        transferStatusText: '已收款'
+        transferStatusText: '已收款',
+        transId: 'trans-fixture-1',
+        feeType: 'CNY',
+        refundBankType: '1'
       }
     })
   })

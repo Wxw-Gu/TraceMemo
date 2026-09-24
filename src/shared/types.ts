@@ -116,6 +116,11 @@ export type TransferPaymentInfo = {
   transferStatus?: string
   /** `transfer_status` 展示文案（只读）。 */
   transferStatusText?: string
+  /** `trans_id` / `fee_type` / `transfer_attach` / `refund_bank_type`（若消息带；只读透传）。 */
+  transId?: string
+  feeType?: string
+  transferAttach?: string
+  refundBankType?: string
 }
 
 /** 红包 `wcpayinfo` 字段（只读展示）。 */

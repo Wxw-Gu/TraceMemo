@@ -41,6 +41,10 @@ type TransferPaymentInfo = {
   transferStatus?: string
   /** `transfer_status` 展示文案（只读）。 */
   transferStatusText?: string
+  transId?: string
+  feeType?: string
+  transferAttach?: string
+  refundBankType?: string
 }
 
 type RedPacketPaymentInfo = {
@@ -635,6 +639,10 @@ function parseWcpayInfo(content: string): TransferPaymentInfo & RedPacketPayment
     payerUsername: val('payer_username'),
     transferStatus,
     transferStatusText: describeTransferStatus(transferStatus),
+    transId: val('trans_id'),
+    feeType: val('fee_type'),
+    transferAttach: val('transfer_attach'),
+    refundBankType: val('refund_bank_type'),
     templateId: val('templateid'),
     receiveTitle: val('receivertitle'),
     sendTitle: val('sendertitle'),
