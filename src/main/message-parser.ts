@@ -195,8 +195,12 @@ export function parseMessageContent(content: string, messageType: number): Parse
   switch (localType) {
     case 1:
       return { type: 'text', content: normalized }
+    case 2:
+      return parseLegacyType2(normalized)
     case 3:
       return parseImageMessage(normalized)
+    case 8:
+      return parseLegacyType8(normalized)
     case 17:
       return parseForwardBundle(normalized)
     case 37:
@@ -559,6 +563,12 @@ function parseShareMessage(content: string): ParsedContent {
   if (looksLikeKefuCard(content)) {
     return parseKefuCard(content)
   }
+  if (looksLikeStreamVideo(content)) {
+    return parseStreamVideoCard(content)
+  }
+  if (looksLikeGiftCard(content)) {
+    return parseGiftCard(content)
+  }
   if (appMsgType === '19') {
     return parseForwardBundle(content)
   }
@@ -643,6 +653,8 @@ function parseShareMessage(content: string): ParsedContent {
     if (looksLikeMusicShare(content)) return parseMusicShareCard(content)
     if (looksLikeSubscribeCard(content)) return parseSubscribeCard(content)
     if (looksLikeKefuCard(content)) return parseKefuCard(content)
+    if (looksLikeStreamVideo(content)) return parseStreamVideoCard(content)
+    if (looksLikeGiftCard(content)) return parseGiftCard(content)
     return { type: 'unknown', raw: content }
   }
 
@@ -802,6 +814,111 @@ function looksLikeKefuCard(content: string): boolean {
   return /opencustomerservicemsg|wa_app_kefu_message|kefumenu|kf_order|kf_user_|ChatKfTemplate|AppReaderTemplate|template_header/i.test(
     content
   )
+}
+
+/** 流视频 / 长视频卡（`streamvideotitle` / `finderMegaVideo`）。 */
+function looksLikeStreamVideo(content: string): boolean {
+  return /streamvideotitle|streamvideoword|streamvideoweburl|streamvideothumb|finderMegaVideo|finderLiveInvite/i.test(
+    content
+  )
+}
+
+/**
+ * 礼物 / 礼品卡（`csgift` / `giftcarditem`）。
+ * 只读展示；**不**调用 `acceptgiftcard` / `preacceptgiftcard` / `getcardgiftinfo`。
+ */
+function looksLikeGiftCard(content: string): boolean {
+  return /<csgift\b|<ecsgift\b|<giftcarditem\b|<giftcard\b|giftcarditem|acceptgiftcard/i.test(content)
+}
+
+/** 流视频卡 → 只读 share。 */
+function parseStreamVideoCard(content: string): ParsedContent {
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const title =
+    extractXmlValue(decoded, 'streamvideotitle') ||
+    extractXmlValue(decoded, 'title') ||
+    extractXmlValue(decoded, 'sourcetitle') ||
+    '视频'
+  const des =
+    extractXmlValue(decoded, 'streamvideoword') ||
+    extractXmlValue(decoded, 'des') ||
+    extractXmlValue(decoded, 'contentdescshowtext') ||
+    undefined
+  const url =
+    decodeXmlUrl(
+      extractXmlValue(decoded, 'streamvideoweburl') ||
+        extractXmlValue(decoded, 'url') ||
+        extractXmlValue(decoded, 'weburl')
+    ) || ''
+  return {
+    type: 'share',
+    title,
+    des,
+    url,
+    appname: /finderMegaVideo|finderLiveInvite/i.test(content) ? '视频号' : '视频',
+    typeVal: extractAppMsgType(content) || 'streamvideo'
+  }
+}
+
+/** 礼物 / 礼品卡 → 只读 share（无 title 时 system 文案）。 */
+function parseGiftCard(content: string): ParsedContent {
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const title =
+    extractXmlValue(decoded, 'title') ||
+    extractXmlValue(decoded, 'gifttitle') ||
+    extractXmlValue(decoded, 'cardtitle') ||
+    extractXmlValue(decoded, 'brandname')
+  const des =
+    extractXmlValue(decoded, 'des') ||
+    extractXmlValue(decoded, 'giftwording') ||
+    extractXmlValue(decoded, 'cardwording') ||
+    extractXmlValue(decoded, 'description')
+  const url = decodeXmlUrl(extractXmlValue(decoded, 'url') || extractXmlValue(decoded, 'cardurl') || '')
+  if (!title && !des) {
+    return {
+      type: 'system',
+      content: normalizeSystemText(decoded.replace(/<[^>]+>/g, ' ')) || '礼物卡',
+      raw: content
+    }
+  }
+  return {
+    type: 'share',
+    title: title || '礼物卡',
+    des: des || undefined,
+    url: url || '',
+    appname: extractXmlValue(decoded, 'brandname') || '礼物',
+    typeVal: extractAppMsgType(content) || 'giftcard'
+  }
+}
+
+/**
+ * local_type=2：真机 histogram 未采到；按内容形态尽量落到 system/text，
+ * 否则保留 unknown（见 wechat-message-type-coverage.md）。
+ */
+function parseLegacyType2(content: string): ParsedContent {
+  if (/<sysmsg\b|<patMsg\b|revoke/i.test(content)) {
+    return parseSystemMessage(content)
+  }
+  if (!/<[a-zA-Z!]/.test(content)) {
+    return { type: 'text', content }
+  }
+  return parseSystemMessage(content)
+}
+
+/**
+ * local_type=8：社区多见于 GIF/大表情变体；无真机样本时按 sticker → image → system
+ * 逐级尝试，避免直接黑块。
+ */
+function parseLegacyType8(content: string): ParsedContent {
+  const sticker = parseStickerMessage(content)
+  if (sticker.type === 'sticker' && sticker.md5) return sticker
+  const image = parseImageMessage(content)
+  if (image.type === 'image' && (image.md5 || image.datName)) return image
+  if (/<sysmsg\b|<emoji\b|<msg\b/i.test(content)) {
+    const system = parseSystemMessage(content)
+    if (system.type === 'system' && system.content && system.content !== content) return system
+  }
+  return { type: 'unknown', raw: content, messageType: 8 }
 }
 
 /** 音乐 / 听歌分享（`musicShareItem` / `ListenItem` / `songalbumurl`）→ 只读 share。 */

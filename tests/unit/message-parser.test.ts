@@ -343,6 +343,60 @@ describe('message parser', () => {
     })
   })
 
+  it('parses stream video cards', () => {
+    const xml = [
+      '<msg><appmsg>',
+      '<type>51</type>',
+      '<streamvideotitle><![CDATA[户外长视频]]></streamvideotitle>',
+      '<streamvideoword><![CDATA[点击播放]]></streamvideoword>',
+      '<streamvideoweburl><![CDATA[https://finder.example/v/1]]></streamvideoweburl>',
+      '<finderMegaVideo></finderMegaVideo>',
+      '</appmsg></msg>'
+    ].join('')
+    expect(parseMessageContent(xml, 49)).toMatchObject({
+      type: 'share',
+      title: '户外长视频',
+      des: '点击播放',
+      url: 'https://finder.example/v/1',
+      appname: '视频号',
+      typeVal: '51'
+    })
+  })
+
+  it('parses gift cards without enabling accept actions', () => {
+    const xml = [
+      '<msg><appmsg>',
+      '<title><![CDATA[生日礼物卡]]></title>',
+      '<des><![CDATA[送你一张礼物卡]]></des>',
+      '<giftcarditem><brandname><![CDATA[示例品牌]]></brandname></giftcarditem>',
+      '</appmsg></msg>'
+    ].join('')
+    expect(parseMessageContent(xml, 49)).toMatchObject({
+      type: 'share',
+      title: '生日礼物卡',
+      des: '送你一张礼物卡',
+      appname: '示例品牌',
+      typeVal: 'giftcard'
+    })
+  })
+
+  it('maps legacy local_type 2 and 8 without dropping content', () => {
+    expect(parseMessageContent('plain status line', 2)).toEqual({
+      type: 'text',
+      content: 'plain status line'
+    })
+    const gifLike =
+      '<msg><emoji md5="abcdefabcdefabcdefabcdefabcdefab" cdnurl="https://e.example/a.gif" /></msg>'
+    expect(parseMessageContent(gifLike, 8)).toMatchObject({
+      type: 'sticker',
+      md5: 'abcdefabcdefabcdefabcdefabcdefab'
+    })
+    expect(parseMessageContent('opaque type8', 8)).toMatchObject({
+      type: 'unknown',
+      messageType: 8
+    })
+  })
+
   it('parses transfer wcpayinfo fields (type 2000)', () => {
     // 2026-09 真机转账采样字段名（含微信原文 transcationid 拼写）
     const xml = [
