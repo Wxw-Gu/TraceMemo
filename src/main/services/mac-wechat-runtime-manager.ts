@@ -492,6 +492,20 @@ class MacWechatRuntimeManager {
    * circular import.
    */
   async buildSenderStatus(): Promise<PersonalWechatSenderStatus> {
+    /*
+     * Lazy-start the host from status reads.
+     *
+     * Every UI surface discovers the runtime through this method, and the
+     * setup guide renders "正在检查 发送运行时…" while runtimeReady is false —
+     * where runtimeReady means lifecycle === 'online'. If nothing here brings a
+     * stopped host up, opening the app (with WeChat already logged in, so no
+     * send is ever attempted) leaves that step spinning forever: the check can
+     * never succeed because the check itself is what should start the host.
+     * Starting it never touches WeChat, so doing it from a read is safe.
+     */
+    if (this.lifecycle === 'stopped') {
+      await this.ensureStarted().catch(() => undefined)
+    }
     /* Self-heal the status card too: if WeChat was restarted, drop the stale
      * restartRequired before it is read into the UI as an error. */
     try {
