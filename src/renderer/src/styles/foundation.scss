@@ -90,6 +90,38 @@ body {
   width: 100%;
   margin-top: 18px;
   -webkit-app-region: no-drag;
+  /*
+   * 导航项是固定高（58px × 9 项 + gap ≈ 570px），窗口高度不足时外层
+   * `.app-primary-rail` 是 overflow: hidden，溢出的按钮会被直接裁掉、点不到。
+   * `min-height: 0` 是让本行能在垂直方向收缩（flex 子项默认 min-height: auto，
+   * 会拒绝收缩到内容高度以下），否则 overflow-y 不会生效。
+   * `overflow-x: hidden` 确保不产生横向滚动条。
+   */
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /*
+   * 刻意**不用** `scrollbar-gutter: stable`（项目其他滚动容器在用）：
+   * 预留滚动条槽位会永久吃掉 ~15px，把最宽 48px 的「问问微信」标签裁掉。
+   * 这里改用自定义细滚动条 —— classic 默认滚动条在这个窄列里非常显眼。
+   * 注意**不要**再设置 `scrollbar-width`：标准属性一旦存在会覆盖 `::-webkit-scrollbar`。
+   */
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.16);
+    border-radius: 2px;
+
+    &:hover {
+      background: rgba(0, 0, 0, 0.28);
+    }
+  }
 }
 
 .primary-nav-item {

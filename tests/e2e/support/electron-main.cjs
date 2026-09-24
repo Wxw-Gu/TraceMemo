@@ -1322,7 +1322,11 @@ for (const channel of [
 
 app.whenReady().then(() => {
   const window = new BrowserWindow({
-    // Keep the E2E window aligned with createWindow() in src/main/index.ts.
+    /*
+     * E2E 窗口**刻意固定** 1400×800，不再跟随 `createWindow()`
+     * （后者已改为按屏幕工作区 60% 计算初始尺寸）：visual 基线是按这个尺寸
+     * 评审入库的，若跟随真实逻辑，截图尺寸会随 runner 屏幕浮动、基线永远对不上。
+     */
     width: 1400,
     height: 800,
     show: false,

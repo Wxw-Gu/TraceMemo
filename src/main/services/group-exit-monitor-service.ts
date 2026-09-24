@@ -112,8 +112,9 @@ class GroupExitMonitorService {
   getState(): GroupExitMonitorState {
     this.ensureLoaded()
     return {
+      // this.events 恒为「新在前」，所以这里取到的就是**最新**的 MAX_EVENTS 条。
       events: this.events.slice(0, MAX_EVENTS),
-      /** 永久保留的事件总数（`events` 只是最近一批）。 */
+      /** 永久保留的事件总数（`events` 只是最新的一批）。 */
       totalEventCount: this.events.length,
       enabled: this.enabled,
       running: this.enabled && this.active && chat.isReady(),
@@ -794,10 +795,16 @@ class GroupExitMonitorService {
       const legacy = normalizeEvents(stored.events)
       if (legacy.length && !fromDisk.length) {
         // 老版本把事件塞在状态文件里 —— 一次性迁移过去，避免这批历史丢失。
-        this.rewriteEventsToDisk(legacy)
-        this.events = legacy
+        // 落盘按时间**升序**（旧 → 新），与之后 append 的方向一致，避免在
+        // append-only 文件开头留下一段方向相反的旧历史（历史行序错乱的来源）。
+        this.rewriteEventsToDisk(
+          [...legacy].sort((left, right) => left.detectedAt - right.detectedAt)
+        )
+        this.events = sortEventsNewestFirst(legacy)
       } else {
-        this.events = normalizeEvents(fromDisk)
+        // 磁盘行序不保证时间有序（迁移段与追加段方向相反），读回后必须显式重建
+        // 「新在前」这个内存不变量，否则列表顶部会恒为最旧的一批。
+        this.events = sortEventsNewestFirst(normalizeEvents(fromDisk))
       }
       this.actionGateway.registerMemberEvents?.(this.events)
       this.lastReadAt = Number(stored.lastReadAt) || 0
@@ -817,7 +824,7 @@ class GroupExitMonitorService {
     } catch {
       // 首次启动或状态文件损坏时从空记录开始 —— 但事件在独立文件里，
       // 不该被状态文件的问题连累，仍然读回来。
-      this.events = normalizeEvents(this.readEventsFromDisk())
+      this.events = sortEventsNewestFirst(normalizeEvents(this.readEventsFromDisk()))
       this.enabled = true
       this.lastReadAt = 0
       this.monitorSelectionConfigured = true
@@ -1051,6 +1058,21 @@ function normalizeEvents(
     // 不再按 MAX_EVENTS 截断：事件是永久保留的，截在这里等于每次启动都丢掉历史。
   }
   return normalized
+}
+
+/**
+ * 事件在内存里恒定保持「**新在前**」。
+ *
+ * 这个不变量有三个依赖方：`recordExit` 的 `[event, ...this.events]` 写入方向、
+ * `listEvents()` 的 `.reverse()`（它假定内存是倒序，反转后得到升序）、
+ * 以及 `getState()` 的 `slice(0, MAX_EVENTS)`（要求取到的是**最新**的一批）。
+ *
+ * 必须显式重建它：磁盘是 append-only，行序由「迁移写入的历史 + 之后追加的新事件」
+ * 决定，两段方向相反，整体不保证时间有序。直接信任文件行序会让列表顶部恒为最旧的
+ * 一批，并让 `slice(0, MAX_EVENTS)` 恰好把最新的事件截掉。
+ */
+function sortEventsNewestFirst(events: GroupExitMonitorEvent[]): GroupExitMonitorEvent[] {
+  return [...events].sort((left, right) => right.detectedAt - left.detectedAt)
 }
 
 function normalizeNotificationStatus(value: unknown): GroupExitNotificationStatus {
