@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { describeFavoriteType, favoriteRecordToContent } from '../../src/shared/favorites'
+import {
+  describeFavoriteType,
+  favoriteRecordToContent,
+  favoriteRowToContent,
+  parseFavItemXml
+} from '../../src/shared/favorites'
 
 describe('favorites type map', () => {
   it('labels known MM_FAV names and numeric fallbacks', () => {
@@ -56,5 +61,36 @@ describe('favorites type map', () => {
       type: 'share',
       typeVal: 'note'
     })
+  })
+
+  it('parses favitem XML from favorite.db content', () => {
+    const xml = [
+      '<favitem type="1"><ctrlflag>0</ctrlflag><version>0</version>',
+      '<desc><![CDATA[收藏文字]]></desc>',
+      '<source sourcetype="22"><fromusr>wxid_a</fromusr></source>',
+      '</favitem>'
+    ].join('')
+    expect(parseFavItemXml(xml)).toMatchObject({
+      type: '1',
+      description: '收藏文字'
+    })
+    const web = [
+      '<favitem type="5"><source><link><![CDATA[https://example.com/a]]></link></source>',
+      '<datalist count="1"><dataitem datatype="5"><datatitle><![CDATA[标题]]></datatitle>',
+      '<datadesc><![CDATA[摘要]]></datadesc></dataitem></datalist></favitem>'
+    ].join('')
+    expect(parseFavItemXml(web)).toMatchObject({
+      type: '5',
+      title: '标题',
+      description: '摘要',
+      url: 'https://example.com/a'
+    })
+    expect(
+      favoriteRowToContent({
+        local_id: 9,
+        type: 5,
+        content: web
+      })
+    ).toMatchObject({ type: 'share', title: '标题', typeVal: '5' })
   })
 })

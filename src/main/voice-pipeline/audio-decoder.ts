@@ -126,5 +126,54 @@ export class AudioDecoderRegistry {
 }
 
 export function createDefaultAudioDecoderRegistry(): AudioDecoderRegistry {
-  return new AudioDecoderRegistry().register(new SilkAudioDecoder())
+  return new AudioDecoderRegistry()
+    .register(new SilkAudioDecoder())
+    .register(new AmrAudioDecoder())
+}
+
+/**
+ * V3 AMR：外部 `ffmpeg` 解码为 PCM（MultiMediaDyn `CAMRDecoder` 未导出）。
+ */
+export class AmrAudioDecoder implements VoiceAudioDecoder {
+  readonly codec = 'amr'
+
+  async decode(source: EncodedVoiceSource): Promise<DecodedVoiceAudio> {
+    const { spawn } = await import('child_process')
+    const { tmpdir } = await import('os')
+    const { promises: fs } = await import('fs')
+    const { randomBytes } = await import('crypto')
+    const stamp = randomBytes(8).toString('hex')
+    const inPath = join(tmpdir(), `tracememo-amr-in-${stamp}.amr`)
+    const outPath = join(tmpdir(), `tracememo-amr-out-${stamp}.wav`)
+    await fs.writeFile(inPath, source.data)
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          'ffmpeg',
+          ['-y', '-i', inPath, '-f', 'wav', '-acodec', 'pcm_s16le', '-ar', '8000', '-ac', '1', outPath],
+          { stdio: ['ignore', 'ignore', 'pipe'] }
+        )
+        let err = ''
+        child.stderr.on('data', (chunk) => {
+          err += String(chunk)
+        })
+        child.on('error', reject)
+        child.on('close', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`ffmpeg amr decode failed: ${err.slice(-200)}`))
+        })
+      })
+      const wav = await fs.readFile(outPath)
+      const pcm = wav.length > 44 && wav.toString('ascii', 0, 4) === 'RIFF' ? wav.subarray(44) : wav
+      return {
+        pcm,
+        sampleRate: 8000,
+        channels: 1,
+        sourceHash: source.sourceHash
+      }
+    } finally {
+      await fs.rm(inPath, { force: true })
+      await fs.rm(outPath, { force: true })
+    }
+  }
 }

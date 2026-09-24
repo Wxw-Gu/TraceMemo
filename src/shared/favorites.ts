@@ -1,5 +1,79 @@
 import type { ParsedContent } from './types'
 
+function xmlValue(xml: string, tag: string): string | undefined {
+  const match = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i').exec(xml)
+  const raw = match?.[1]?.replace(/^<!\[CDATA\[([\s\S]*?)\]\]>$/, '$1').trim()
+  return raw || undefined
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+/**
+ * 解析 `fav_db_item.content` 的 `<favitem>` XML → `FavoriteRecord`（只读）。
+ * 覆盖真机 2026-09-24 样本形态：desc/title/link/locitem/dataitem/appbranditem/finderFeed。
+ */
+export function parseFavItemXml(content: string | null | undefined): FavoriteRecord {
+  const xml = String(content || '')
+  const typeMatch = /<favitem[^>]*\stype="(\d+)"/i.exec(xml)
+  const type = typeMatch?.[1]
+  const title = decodeXmlEntities(xmlValue(xml, 'title') || '')
+  const desc = decodeXmlEntities(xmlValue(xml, 'desc') || xmlValue(xml, 'datadesc') || '')
+  const datatitle = decodeXmlEntities(xmlValue(xml, 'datatitle') || '')
+  const link = decodeXmlEntities(xmlValue(xml, 'link') || xmlValue(xml, 'datacdnurl') || '')
+  const poiname = decodeXmlEntities(xmlValue(xml, 'poiname') || '')
+  const label = decodeXmlEntities(xmlValue(xml, 'label') || '')
+  const lat = Number(xmlValue(xml, 'lat'))
+  const lng = Number(xmlValue(xml, 'lng'))
+  const dataid = xmlValue(xml, 'dataid')
+  const datatype = xmlValue(xml, 'datatype')
+  const duration = Number(xmlValue(xml, 'duration') || xmlValue(xml, 'voicelength'))
+  const appname =
+    decodeXmlEntities(
+      xmlValue(xml, 'appbrandnick') ||
+        xmlValue(xml, 'appname') ||
+        xmlValue(xml, 'sourcedisplayname') ||
+        ''
+    ) || undefined
+  return {
+    type,
+    dataType: datatype,
+    title: title || datatitle || undefined,
+    description: desc || undefined,
+    url: link || undefined,
+    appName: appname,
+    poiname: poiname || undefined,
+    label: label || undefined,
+    lat: Number.isFinite(lat) ? lat : undefined,
+    lng: Number.isFinite(lng) ? lng : undefined,
+    md5: dataid,
+    duration: Number.isFinite(duration) && duration > 0 ? duration : undefined,
+    raw: xml
+  }
+}
+
+/** `fav_db_item` 行 → 可读卡片（导出/搜索共用）。 */
+export function favoriteRowToContent(row: {
+  local_id?: number | string
+  server_id?: number | string
+  type?: number | string
+  content?: string | null
+  update_time?: number | string
+  fromusr?: string | null
+  realchatname?: string | null
+}): ParsedContent {
+  const record = parseFavItemXml(row.content)
+  if (!record.type && row.type !== undefined) record.type = row.type
+  record.favId = row.local_id ?? row.server_id
+  return favoriteRecordToContent(record)
+}
+
 /**
  * 收藏类型（`MM_FAV_ITEM_TYPE_*` / `MM_FAV_DATA_TYPE_*`）只读映射。
  * 名称来自 wechat.dylib 导出名；数字为枚举顺序推断，未知值原样回退。

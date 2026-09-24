@@ -2678,6 +2678,27 @@ export class Wcdb4Client {
     return this.accountRoot
   }
 
+  /** 只读列收藏（favorite.db / fav_db_item），供导出与搜索。 */
+  async listFavoriteItems(limit = 200): Promise<Record<string, unknown>[]> {
+    if (!this.wcdbExecQuery) return []
+    const sql = `SELECT local_id, server_id, type, update_time, content, fromusr, realchatname FROM fav_db_item ORDER BY update_time DESC LIMIT ${Math.max(
+      1,
+      Math.min(1000, limit)
+    )}`
+    try {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+        'favorite',
+        path.join(this.accountRoot, 'db_storage/favorite/favorite.db'),
+        sql
+      )
+      return Array.isArray(rows) ? rows : []
+    } catch (error) {
+      console.warn('[WCDB4] listFavoriteItems failed:', error)
+      return []
+    }
+  }
+
   getKey(): string {
     return this.key
   }

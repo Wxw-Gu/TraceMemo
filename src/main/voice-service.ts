@@ -328,25 +328,41 @@ const VOICE_DISK_DIRS = [
   'msg/History',
   'Message',
   'MsgAndFiles',
-  'VoiceTemp'
+  'VoiceTemp',
+  // 真机布局（2026-09-24）：cache/YYYY-MM/Message/<md5>/VoiceTemp/
+  'cache'
 ]
 
-/** 语音磁盘候选路径（扩展名/目录与 GetMsgAudioPath 对齐）。 */
+/** 语音磁盘候选路径（扩展名/目录与 GetMsgAudioPath / VoiceTemp 对齐）。 */
 export async function listVoiceDiskCandidates(accountRoot: string): Promise<string[]> {
   const out: string[] = []
-  for (const rel of VOICE_DISK_DIRS) {
-    const dir = join(accountRoot, rel)
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (out.length > 200 || depth > 6) return
     let names: string[]
     try {
       names = await fs.readdir(dir)
     } catch {
-      continue
+      return
     }
     for (const name of names) {
+      const full = join(dir, name)
+      let stat: Awaited<ReturnType<typeof fs.stat>>
+      try {
+        stat = await fs.stat(full)
+      } catch {
+        continue
+      }
+      if (stat.isDirectory()) {
+        await walk(full, depth + 1)
+        continue
+      }
       const ext = name.slice(name.lastIndexOf('.')).toLowerCase()
       if (!VOICE_DISK_EXTS.has(ext)) continue
-      out.push(join(dir, name))
+      out.push(full)
     }
+  }
+  for (const rel of VOICE_DISK_DIRS) {
+    await walk(join(accountRoot, rel), 0)
     if (out.length > 200) break
   }
   return out
