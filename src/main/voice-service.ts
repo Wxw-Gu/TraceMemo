@@ -1,4 +1,6 @@
 import { createHash } from 'crypto'
+import { promises as fs } from 'fs'
+import { join } from 'path'
 import { Wcdb4Client } from './wcdb4-client'
 import {
   createDefaultAudioDecoderRegistry,
@@ -211,6 +213,17 @@ export class VoiceService {
       svrId || 0
     )
     if (!voiceResult.success || !voiceResult.hex) {
+      const disk = await this.resolveFromDisk(sessionId, localId, createTime, svrId)
+      if (disk?.length) {
+        return {
+          success: true,
+          source: {
+            data: disk,
+            codec: 'silk',
+            sourceHash: createHash('sha256').update(disk).digest('hex')
+          }
+        }
+      }
       return { success: false, error: voiceResult.error || '获取语音数据失败' }
     }
 
@@ -237,6 +250,38 @@ export class VoiceService {
       candidates.push(sessionId.replace('@chatroom', ''))
     }
     return candidates
+  }
+
+  /**
+   * V2：旁路 `wcdb_get_voice_data`，在账号目录下找语音文件
+   * （`GetMsgAudioPath` 同域：Message / MsgAndFiles / VoiceTemp）。
+   */
+  private async resolveFromDisk(
+    sessionId: string,
+    localId: number,
+    createTime: number,
+    svrId?: string | number
+  ): Promise<Buffer | null> {
+    const accountRoot = this.wcdb4Client.getAccountRoot?.()
+    if (!accountRoot) return null
+    const needles = [
+      String(localId),
+      String(createTime),
+      svrId !== undefined && svrId !== null && String(svrId) !== '0' ? String(svrId) : '',
+      sessionId.replace(/@chatroom$/, '')
+    ].filter(Boolean)
+    const files = await listVoiceDiskCandidates(accountRoot)
+    for (const file of files) {
+      const name = file.toLowerCase()
+      if (!needles.some((needle) => needle && name.includes(needle.toLowerCase()))) continue
+      try {
+        const data = await fs.readFile(file)
+        if (data.length) return data
+      } catch {
+        // try next candidate
+      }
+    }
+    return null
   }
 
   private decodeVoiceBlob(hex: string): Buffer | null {
@@ -273,4 +318,36 @@ export class VoiceService {
     header.writeUInt32LE(pcmLength, 40)
     return Buffer.concat([header, pcmData])
   }
+}
+
+const VOICE_DISK_EXTS = new Set(['.aud', '.silk', '.amr'])
+const VOICE_DISK_DIRS = [
+  'msg/Message',
+  'msg/MsgAndFiles',
+  'msg/VoiceTemp',
+  'msg/History',
+  'Message',
+  'MsgAndFiles',
+  'VoiceTemp'
+]
+
+/** 语音磁盘候选路径（扩展名/目录与 GetMsgAudioPath 对齐）。 */
+export async function listVoiceDiskCandidates(accountRoot: string): Promise<string[]> {
+  const out: string[] = []
+  for (const rel of VOICE_DISK_DIRS) {
+    const dir = join(accountRoot, rel)
+    let names: string[]
+    try {
+      names = await fs.readdir(dir)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      const ext = name.slice(name.lastIndexOf('.')).toLowerCase()
+      if (!VOICE_DISK_EXTS.has(ext)) continue
+      out.push(join(dir, name))
+    }
+    if (out.length > 200) break
+  }
+  return out
 }
