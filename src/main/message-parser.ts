@@ -550,6 +550,15 @@ function parseShareMessage(content: string): ParsedContent {
   if (/<productitem\b/i.test(content) && !extractXmlValue(content, 'title')) {
     return parseProductItem(content)
   }
+  if (looksLikeMusicShare(content)) {
+    return parseMusicShareCard(content)
+  }
+  if (looksLikeSubscribeCard(content)) {
+    return parseSubscribeCard(content)
+  }
+  if (looksLikeKefuCard(content)) {
+    return parseKefuCard(content)
+  }
   if (appMsgType === '19') {
     return parseForwardBundle(content)
   }
@@ -631,6 +640,9 @@ function parseShareMessage(content: string): ParsedContent {
 
   if (!title && !url) {
     if (/<productitem\b/i.test(content)) return parseProductItem(content)
+    if (looksLikeMusicShare(content)) return parseMusicShareCard(content)
+    if (looksLikeSubscribeCard(content)) return parseSubscribeCard(content)
+    if (looksLikeKefuCard(content)) return parseKefuCard(content)
     return { type: 'unknown', raw: content }
   }
 
@@ -772,6 +784,137 @@ function parseFriendVerifyMessage(content: string): ParsedContent {
       .join(' · ')
   )
   return { type: 'system', content: label || '好友验证消息', raw: content }
+}
+
+function looksLikeMusicShare(content: string): boolean {
+  return /songalbumurl|songlyric|musicShareItem|tingListenItem|ListenItem|music_share_item|musicurl|<songlyri|<songalbu/i.test(
+    content
+  )
+}
+
+function looksLikeSubscribeCard(content: string): boolean {
+  return /subscribeMessage|subscribe_msg|SubscribeMsg|updatablemsg|wadynamicpageinf|OnSubscriptionCustom/i.test(
+    content
+  )
+}
+
+function looksLikeKefuCard(content: string): boolean {
+  return /opencustomerservicemsg|wa_app_kefu_message|kefumenu|kf_order|kf_user_|ChatKfTemplate|AppReaderTemplate|template_header/i.test(
+    content
+  )
+}
+
+/** 音乐 / 听歌分享（`musicShareItem` / `ListenItem` / `songalbumurl`）→ 只读 share。 */
+function parseMusicShareCard(content: string): ParsedContent {
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const title =
+    extractXmlValue(decoded, 'title') ||
+    extractXmlValue(decoded, 'songname') ||
+    extractXmlValue(decoded, 'musicTitle') ||
+    '音乐分享'
+  const des =
+    extractXmlValue(decoded, 'des') ||
+    extractXmlValue(decoded, 'singername') ||
+    extractXmlValue(decoded, 'albumname') ||
+    undefined
+  const url =
+    decodeXmlUrl(
+      extractXmlValue(decoded, 'url') ||
+        extractXmlValue(decoded, 'musicurl') ||
+        extractXmlValue(decoded, 'streamweburl') ||
+        extractXmlValue(decoded, 'weburl')
+    ) || ''
+  const appname =
+    extractXmlValue(decoded, 'appname') ||
+    extractXmlValue(decoded, 'publisher') ||
+    (looksLikeListenItem(content) ? '听一听' : '音乐')
+  return {
+    type: 'share',
+    title,
+    des,
+    url,
+    appname,
+    typeVal: extractAppMsgType(content) || 'music'
+  }
+}
+
+function looksLikeListenItem(content: string): boolean {
+  return /tingListenItem|ListenItem|MMLISTEN_ITEM_TYPE/i.test(content)
+}
+
+/**
+ * 订阅号 / 可更新消息模板（`subscribeMessage` / `updatablemsg`）→ 只读 share。
+ * 模板头 `template_header` / `template_detail` 作标题与摘要。
+ */
+function parseSubscribeCard(content: string): ParsedContent {
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const title =
+    extractXmlValue(decoded, 'template_header') ||
+    extractXmlValue(decoded, 'title') ||
+    extractXmlValue(decoded, 'templatetitle') ||
+    '订阅消息'
+  const des =
+    extractXmlValue(decoded, 'template_detail') ||
+    extractXmlValue(decoded, 'des') ||
+    extractXmlValue(decoded, 'digest') ||
+    undefined
+  const url =
+    decodeXmlUrl(
+      extractXmlValue(decoded, 'url') ||
+        extractXmlValue(decoded, 'jumpUrl') ||
+        extractXmlValue(decoded, 'weburl')
+    ) || ''
+  return {
+    type: 'share',
+    title,
+    des,
+    url,
+    appname: extractXmlValue(decoded, 'appname') || '订阅消息',
+    typeVal: extractAppMsgType(content) || 'subscribe'
+  }
+}
+
+/**
+ * 客服 / 门店模板卡（`opencustomerservicemsg` / `wa_app_kefu_message` / `kefumenu`）
+ * → 只读 share；无 title 时退化为 system 文案，避免 unknown 黑块。
+ */
+function parseKefuCard(content: string): ParsedContent {
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const title =
+    extractXmlValue(decoded, 'template_header') ||
+    extractXmlValue(decoded, 'title') ||
+    extractXmlValue(decoded, 'kf_title') ||
+    extractXmlValue(decoded, 'templatetitle')
+  const des =
+    extractXmlValue(decoded, 'template_detail') ||
+    extractXmlValue(decoded, 'kf_order_text') ||
+    extractXmlValue(decoded, 'des') ||
+    extractXmlValue(decoded, 'content')
+  const url =
+    decodeXmlUrl(
+      extractXmlValue(decoded, 'url') ||
+        extractXmlValue(decoded, 'jumpUrl') ||
+        extractXmlValue(decoded, 'weburl')
+    ) || ''
+  const appname =
+    extractXmlValue(decoded, 'kf_user_name') ||
+    extractXmlValue(decoded, 'appname') ||
+    '客服消息'
+  if (!title && !des) {
+    return {
+      type: 'system',
+      content: normalizeSystemText(decoded.replace(/<[^>]+>/g, ' ')) || '客服消息',
+      raw: content
+    }
+  }
+  return {
+    type: 'share',
+    title: title || '客服消息',
+    des: des || undefined,
+    url: url || '',
+    appname,
+    typeVal: extractAppMsgType(content) || 'kefu'
+  }
 }
 
 function parseShareArticles(content: string): ShareArticle[] {

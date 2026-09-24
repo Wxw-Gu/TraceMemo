@@ -281,6 +281,68 @@ describe('message parser', () => {
     })
   })
 
+  it('parses music share cards from song/album fields', () => {
+    const xml = [
+      '<msg><appmsg>',
+      '<type>3</type>',
+      '<title><![CDATA[晴天]]></title>',
+      '<des><![CDATA[周杰伦]]></des>',
+      '<url><![CDATA[https://music.example/song]]></url>',
+      '<songalbumurl><![CDATA[https://music.example/cover]]></songalbumurl>',
+      '<songlyric><![CDATA[故事的小黄花]]></songlyric>',
+      '</appmsg></msg>'
+    ].join('')
+    const parsed = parseMessageContent(xml, 49)
+    expect(parsed).toMatchObject({
+      type: 'share',
+      title: '晴天',
+      des: '周杰伦',
+      url: 'https://music.example/song',
+      appname: '音乐',
+      typeVal: '3'
+    })
+  })
+
+  it('parses subscribe template cards', () => {
+    const clean = [
+      '<msg><appmsg>',
+      '<template_header><![CDATA[服务通知]]></template_header>',
+      '<template_detail><![CDATA[您的订单已发货]]></template_detail>',
+      '<url><![CDATA[https://mp.example/notice]]></url>',
+      '<updatablemsg></updatablemsg>',
+      '</appmsg></msg>'
+    ].join('')
+    const parsed = parseMessageContent(clean, 49)
+    expect(parsed).toMatchObject({
+      type: 'share',
+      title: '服务通知',
+      des: '您的订单已发货',
+      appname: '订阅消息',
+      typeVal: 'subscribe'
+    })
+  })
+
+  it('parses kefu template cards and falls back to system text', () => {
+    const card = [
+      '<msg><appmsg>',
+      '<template_header><![CDATA[店铺客服]]></template_header>',
+      '<template_detail><![CDATA[点击查看订单]]></template_detail>',
+      '<opencustomerservicemsg></opencustomerservicemsg>',
+      '</appmsg></msg>'
+    ].join('')
+    expect(parseMessageContent(card, 49)).toMatchObject({
+      type: 'share',
+      title: '店铺客服',
+      des: '点击查看订单',
+      typeVal: 'kefu'
+    })
+    const menu = '<msg><appmsg><kefumenu></kefumenu></appmsg></msg>'
+    expect(parseMessageContent(menu, 49)).toMatchObject({
+      type: 'system',
+      content: '客服消息'
+    })
+  })
+
   it('parses transfer wcpayinfo fields (type 2000)', () => {
     // 2026-09 真机转账采样字段名（含微信原文 transcationid 拼写）
     const xml = [
