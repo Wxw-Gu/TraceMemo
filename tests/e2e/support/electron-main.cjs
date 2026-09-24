@@ -289,9 +289,6 @@ let groupExitMonitorState = {
   monitoredGroupCount: 2,
   monitorSelectionConfigured: true,
   monitoredRoomIds: ['group_regular@chatroom', 'group_folded@chatroom'],
-  notificationRoomIds: [],
-  notificationTemplate:
-    '[退群监测]\n\n用户: {user}\n\n群备注: {groupRemark}\n\n微信号: {wxid}\n\n人数: {previousCount} -> {currentCount}\n\n退群时间: {time}',
   lastCheckedAt: fixtureNowMs - 30 * 1000,
   lastReadAt: 0,
   unreadCount: 1
@@ -304,30 +301,17 @@ const cloneGroupExitMonitorState = () => ({
   ).length
 })
 handle('group-exit-monitor:getState', () => cloneGroupExitMonitorState())
-handle('group-exit-monitor:setGroups', (roomIds, notificationRoomIds) => {
+// 只保存**监控范围**：通知配置已迁到自动化规则。
+handle('group-exit-monitor:setGroups', (roomIds) => {
   const selected = Array.isArray(roomIds)
     ? roomIds.filter((roomId) => typeof roomId === 'string' && roomId.endsWith('@chatroom'))
-    : []
-  const notifications = Array.isArray(notificationRoomIds)
-    ? notificationRoomIds.filter(
-        (roomId) => typeof roomId === 'string' && selected.includes(roomId)
-      )
     : []
   groupExitMonitorState = {
     ...groupExitMonitorState,
     monitorSelectionConfigured: true,
     monitoredRoomIds: [...new Set(selected)],
-    notificationRoomIds: [...new Set(notifications)],
     monitoredGroupCount: selected.length,
     lastCheckedAt: fixtureNowMs
-  }
-  return cloneGroupExitMonitorState()
-})
-handle('group-exit-monitor:setTemplate', (template) => {
-  if (typeof template !== 'string' || !template.trim()) throw new Error('模板不能为空')
-  groupExitMonitorState = {
-    ...groupExitMonitorState,
-    notificationTemplate: template.trim()
   }
   return cloneGroupExitMonitorState()
 })
@@ -356,6 +340,133 @@ handle('group-exit-monitor:markRead', (readAt) => {
     )
   }
   return cloneGroupExitMonitorState()
+})
+
+// ---- Automation v1（@我生成日报）----
+//
+// 这组桩只服务 UI / 视觉评审：让自动化首页拿到一份确定性的规则与群列表，
+// 而不是整页挂着「自动化接口尚未就绪」。
+// 它**不**参与任何真实发送，也**不**代表自动化功能已迁移。
+const automationGroupOptions = () =>
+  contacts
+    .filter(
+      (contact) =>
+        contact.type === 'group' || String(contact.m_nsUsrName || '').endsWith('@chatroom')
+    )
+    .map((contact) => ({
+      id: contact.m_nsUsrName,
+      name: contact.m_nsNickName || contact.m_nsUsrName
+    }))
+
+const builtinDailyReportRule = () => ({
+  id: 'builtin-mention-me-daily-report',
+  name: '@我生成日报',
+  enabled: true,
+  ruleType: 'daily_report',
+  trigger: 'message',
+  scope: 'group',
+  conditions: {
+    requireMentionMe: true,
+    keyword: '日报',
+    keywordMatchMode: 'contains',
+    conversationIds: [],
+    ignoreSelf: true
+  },
+  actions: [
+    { type: 'replyText', enabled: true, text: '收到，正在生成今日日报' },
+    { type: 'generateReport', enabled: true },
+    { type: 'sendReportImage', enabled: true }
+  ],
+  cooldownSeconds: 60,
+  replyDelaySeconds: 2,
+  createdAt: fixtureNowMs,
+  updatedAt: fixtureNowMs
+})
+
+/*
+ * ⚠️ 这里的默认值必须与 `src/shared/automation.ts` 的
+ * `createDefaultLeaveNotificationRule()` **逐字一致**。
+ *
+ * 它扮演"一个全新安装的 main 进程"：一旦漂移，E2E 与截图验证的就不是真实默认行为。
+ * 由 `tests/integration/automation-default-contract.test.ts` 锁住。
+ */
+let leaveNotificationRule = {
+  id: 'builtin-leave-notification',
+  name: '退群通知',
+  enabled: true,
+  ruleType: 'leave_notification',
+  trigger: 'message',
+  scope: 'group',
+  conditions: {
+    requireMentionMe: false,
+    keyword: '',
+    keywordMatchMode: 'contains',
+    conversationIds: [],
+    ignoreSelf: true
+  },
+  actions: [],
+  cooldownSeconds: 0,
+  replyDelaySeconds: 2,
+  leaveNotification: {
+    // 默认目标 = 当前群聊（旧退群监控通知的原始行为）。
+    target: { type: 'source_chat' },
+    template:
+      '[退群监测]\n\n群聊: {groupName}\n\n用户: {user}\n\n群备注: {groupRemark}\n\n微信号: {wxid}\n\n人数: {previousCount} -> {currentCount}\n\n退群时间: {time}'
+  },
+  createdAt: fixtureNowMs,
+  updatedAt: fixtureNowMs
+}
+
+/** 「指定好友」候选：个人联系人，排除群 / 公众号 / 文件传输助手 / 自己。 */
+const sendableContactOptions = () =>
+  contacts
+    .filter(
+      (contact) =>
+        contact.type !== 'group' &&
+        !String(contact.m_nsUsrName || '').endsWith('@chatroom') &&
+        !String(contact.m_nsUsrName || '').startsWith('gh_') &&
+        contact.m_nsUsrName !== 'filehelper'
+    )
+    .map((contact) => ({
+      id: contact.m_nsUsrName,
+      name: contact.m_nsNickName || contact.m_nsUsrName
+    }))
+
+handle('automation:getStatus', () => ({
+  listening: connected,
+  listeningDegraded: false,
+  todayExecutions: connected ? 3 : 0,
+  todaySuccesses: connected ? 3 : 0,
+  sendCapability: {
+    supported: personalWechatSupported,
+    ready: connected,
+    canSendText: connected,
+    canSendImage: connected,
+    message: connected ? '个人微信发送能力已就绪' : '尚未绑定个人微信发送能力'
+  }
+}))
+handle('automation:listRules', () => [
+  builtinDailyReportRule(),
+  structuredClone(leaveNotificationRule)
+])
+handle('automation:listGroups', () => automationGroupOptions())
+handle('automation:listExecutions', () => [])
+handle('automation:clearExecutions', () => true)
+handle('automation:listSendableContacts', () => sendableContactOptions())
+handle('automation:saveLeaveNotificationRule', (draft) => {
+  leaveNotificationRule = {
+    ...leaveNotificationRule,
+    ...(draft && typeof draft === 'object' ? draft : {}),
+    id: 'builtin-leave-notification',
+    ruleType: 'leave_notification',
+    updatedAt: fixtureNowMs
+  }
+  if (leaveNotificationRule.leaveNotification) {
+    const { targetNeedsReview, ...rest } = leaveNotificationRule.leaveNotification
+    void targetNeedsReview
+    leaveNotificationRule.leaveNotification = rest
+  }
+  return structuredClone(leaveNotificationRule)
 })
 
 const scheduledReportTasks = []

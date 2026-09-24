@@ -73,14 +73,6 @@ describe('preload IPC contract', () => {
     expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:setEnabled', false)
     await api.setGroupExitMonitorGroups(['room@chatroom'])
     expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:setGroups', ['room@chatroom'])
-    await api.setGroupExitMonitorGroups(['room@chatroom'], ['room@chatroom'])
-    expect(invoke).toHaveBeenLastCalledWith(
-      'group-exit-monitor:setGroups',
-      ['room@chatroom'],
-      ['room@chatroom']
-    )
-    await api.setGroupExitMonitorNotificationTemplate('用户: {user}')
-    expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:setTemplate', '用户: {user}')
     await api.checkGroupExitMonitorNow()
     expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:checkNow')
     await api.clearGroupExitMonitorEvents()
@@ -89,6 +81,24 @@ describe('preload IPC contract', () => {
     expect(invoke).toHaveBeenLastCalledWith('group-exit-monitor:markRead', 123)
     await api.listWechatActionLogs()
     expect(invoke).toHaveBeenLastCalledWith('wechat-action-log:list')
+
+    // 退群通知：保存走 singleton upsert，联系人候选由 main 侧过滤。
+    const leaveDraft = {
+      name: '退群通知',
+      enabled: true,
+      ruleType: 'leave_notification',
+      trigger: 'message',
+      scope: 'group',
+      conditions: {},
+      actions: [],
+      cooldownSeconds: 0,
+      replyDelaySeconds: 2,
+      leaveNotification: { target: { type: 'file_transfer' }, template: '[退群监测]' }
+    } as never
+    await api.saveLeaveNotificationRule(leaveDraft)
+    expect(invoke).toHaveBeenLastCalledWith('automation:saveLeaveNotificationRule', leaveDraft)
+    await api.listSendableContacts()
+    expect(invoke).toHaveBeenLastCalledWith('automation:listSendableContacts')
 
     await api.getImage('fixture-md5', 'fixture.dat', 'fixture-session', {
       force: true,

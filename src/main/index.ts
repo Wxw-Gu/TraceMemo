@@ -113,6 +113,10 @@ import { agentHubService } from './services/agent-hub-service'
 import { WechatConnectorService } from './services/wechat-ilink'
 import { wechatSendGateway } from './services/wechat-send-gateway'
 import { groupExitMonitorService } from './services/group-exit-monitor-service'
+import {
+  filterSendableFriendContacts,
+  leaveNotificationContactDisplayName
+} from './services/leave-notification-target'
 import { MessageListenerService } from './services/message-listener-service'
 import { automationRuleStore } from './services/automation-rule-store'
 import { automationExecutionLogService } from './services/automation-execution-log-service'
@@ -1043,6 +1047,32 @@ app.whenReady().then(async () => {
          */
         let automationListening = false
         initAutomationService(wcdb4Client, { isListening: () => automationListening })
+        /**
+         * 退群通知的唯一通路：**退群监控只负责产生事件，自动化负责发送**。
+         *
+         * `handleGroupExit` 自己吞掉异常，这里再兜一层 `.catch` 是防御性的 ——
+         * 未捕获的 rejection 会污染监控循环，而退群事实早就已经记录成功了。
+         */
+        groupExitMonitorService.setGroupExitHandler((event) => {
+          try {
+            return getAutomationService()
+              .handleGroupExit(event)
+              .catch((error) => {
+                console.warn(
+                  `[Automation] handleGroupExit failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                )
+              })
+          } catch (error) {
+            console.warn(
+              `[Automation] 退群通知未初始化，已跳过本次事件: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+            return undefined
+          }
+        })
         messageListener.onMessage((message) => {
           // 日志只允许出现「类型 / 群或私聊 / 是否自己发 / @ 数量」这类不可逆标识，
           // 不含 wxid、昵称、群名、正文与 source。
@@ -1623,16 +1653,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('group-exit-monitor:setEnabled', (_, enabled: boolean) =>
     groupExitMonitorService.setEnabled(enabled === true)
   )
-  ipcMain.handle(
-    'group-exit-monitor:setGroups',
-    (_, roomIds: string[], notificationRoomIds?: string[]) =>
-      groupExitMonitorService.setMonitoredRoomIds(
-        Array.isArray(roomIds) ? roomIds : [],
-        Array.isArray(notificationRoomIds) ? notificationRoomIds : []
-      )
-  )
-  ipcMain.handle('group-exit-monitor:setTemplate', (_, template: unknown) =>
-    groupExitMonitorService.setNotificationTemplate(template)
+  /**
+   * 保存**监控范围**。
+   *
+   * 只有一个参数：旧版第二个参数（通知群聊）已经迁到「自动化 → 退群通知」，
+   * 退群监控不再持有任何通知配置。
+   */
+  ipcMain.handle('group-exit-monitor:setGroups', (_, roomIds: string[]) =>
+    groupExitMonitorService.setMonitoredRoomIds(Array.isArray(roomIds) ? roomIds : [])
   )
   ipcMain.handle('group-exit-monitor:checkNow', () => groupExitMonitorService.checkNow())
   /**
@@ -1655,9 +1683,6 @@ app.whenReady().then(async () => {
     })
   })
   ipcMain.handle('group-exit-monitor:clearEvents', () => groupExitMonitorService.clearEvents())
-  ipcMain.handle('group-exit-monitor:resendEvent', (_, eventId: string) =>
-    groupExitMonitorService.resendEvent(eventId)
-  )
   ipcMain.handle('group-exit-monitor:markRead', (_, readAt?: number) =>
     groupExitMonitorService.markRead(readAt)
   )
@@ -1698,6 +1723,35 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('automation:clearExecutions', () => automationExecutionLogService.clear())
   ipcMain.handle('automation:listGroups', () => tryAutomationService()?.listGroups() ?? [])
+  /**
+   * 保存「退群通知」规则（singleton upsert）。
+   *
+   * 单独一个通道而不是复用 `updateRule`：这条规则是系统规则，
+   * 保存语义是"存在即更新、不存在即创建"，且 id 固定 —— 不允许渲染层自己拼 id。
+   */
+  ipcMain.handle('automation:saveLeaveNotificationRule', (_, draft: unknown) =>
+    automationRuleStore.saveLeaveNotificationRule(draft)
+  )
+  /**
+   * 「指定好友」的可选项。
+   *
+   * 过滤（群聊 / 公众号 / 文件传输助手 / 自己）在 main 侧完成 ——
+   * 只有这里知道当前登录账号是谁，渲染层再筛一遍必然会漂移。
+   */
+  ipcMain.handle('automation:listSendableContacts', () => {
+    try {
+      const selfWxid = String(chat.getSelfAccountInfo()?.wxid || '')
+      return filterSendableFriendContacts(chat.listContacts(), selfWxid).map((contact) => ({
+        id: String(contact.m_nsUsrName || ''),
+        name: leaveNotificationContactDisplayName(contact)
+      }))
+    } catch (error) {
+      console.warn(
+        `[Automation] 读取可选联系人失败: ${error instanceof Error ? error.message : String(error)}`
+      )
+      return []
+    }
+  })
   ipcMain.handle('automation:getStatus', async () => {
     const service = tryAutomationService()
     if (service) return service.getStatus()
@@ -2715,11 +2769,21 @@ app.on('before-quit', (event) => {
       chat.closeChatDbForQuit().catch(() => false),
       voiceRecognition?.dispose().catch(() => undefined),
       knowledgeSearchService?.dispose().catch(() => undefined),
-      process.platform === 'darwin'
-        ? macWechatRuntimeManager.shutdown().catch((error) => {
-            console.warn('[Shutdown] macOS native WeChat runtime cleanup failed:', error)
-          })
-        : Promise.resolve()
+      /*
+       * Deliberately do NOT stop the macOS native runtime here.
+       *
+       * The host is designed to outlive TraceMemo ("保留发送能力进程"): keeping
+       * it alive preserves the bound frida session, so relaunching the app —
+       * including every dev-mode restart — re-adopts it and works immediately
+       * instead of forcing the user to bind WeChat again.
+       *
+       * Stopping it on quit threw that away and, worse, gave teardown a chance
+       * to hang mid-unload while the app was already exiting. The host has its
+       * own lifecycle instead: it exits itself once WeChat is gone ("stale" ->
+       * self-shutdown), and it can be restarted explicitly from the settings
+       * card ("重新加载组件").
+       */
+      Promise.resolve()
     ])
     if (!nativeCallsDrained) {
       console.warn('[Shutdown] WCDB async calls did not fully drain before quit')

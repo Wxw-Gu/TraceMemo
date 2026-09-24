@@ -44,7 +44,7 @@ vi.mock('../../src/main/services/personal-wechat-send-service', () => ({
 }))
 
 import { GroupExitMonitorService } from '../../src/main/services/group-exit-monitor-service'
-import { GROUP_EXIT_NOTIFICATION_TEMPLATE } from '../../src/shared/group-exit-monitor'
+import type { GroupMemberExitedEvent } from '../../src/shared/group-exit-event'
 
 const member = { wxid: 'wxid_member', wechatNickname: '微信名', groupNickname: '群内名' }
 const otherMember = { wxid: 'wxid_other', wechatNickname: '另一个人' }
@@ -93,14 +93,12 @@ function writeBaseline(
     roomId: string
     groupName: string
     members: Array<{ wxid: string; [key: string]: string }>
-  }>,
-  notificationRoomIds: string[] = []
+  }>
 ): void {
   writeJsonSync(join(mocks.userData, 'group-exit-monitor.json'), {
     accountRoot: 'fixture-account',
     events: [],
     monitoredRoomIds: snapshots.map((snapshot) => snapshot.roomId),
-    notificationRoomIds,
     snapshots: snapshots.map((snapshot) => ({
       contactId: `${snapshot.roomId}-md5`,
       roomId: snapshot.roomId,
@@ -135,36 +133,16 @@ describe('GroupExitMonitorService', () => {
     }
   })
 
-  it('persists a validated custom template in the monitor state file', () => {
-    const service = new GroupExitMonitorService()
-    const template = '[退群监测]\n用户: {user}'
-
-    const state = service.setNotificationTemplate(template)
-    expect(state.notificationTemplate).toBe(template)
-    expect(readJsonSync(join(mocks.userData, 'group-exit-monitor.json')).notificationTemplate).toBe(
-      template
-    )
-    expect(() => service.setNotificationTemplate('用户: {unknown}')).toThrow('不支持的占位符')
-  })
-
-  it('migrates the previous default notification template', () => {
-    writeJsonSync(join(mocks.userData, 'group-exit-monitor.json'), {
-      notificationTemplate:
-        '[退群监测]\n\n用户: {user}\n\n群备注: {groupRemark}\n\n微信号: {wxid}\n\n退群时间: {time}'
-    })
-
-    const service = new GroupExitMonitorService()
-
-    expect(service.getState().notificationTemplate).toBe(GROUP_EXIT_NOTIFICATION_TEMPLATE)
-  })
+  /*
+   * 模板相关的用例（保存 / 归一化 / 渲染）**已随迁移移出本文件**：
+   * 模板现在属于自动化规则，由 `leave-notification-*` 那组测试覆盖。
+   * 退群监控不再持有模板，所以这里没有任何模板可测。
+   */
 
   it('persists OFF without checking contact changes or deleting configuration', async () => {
     vi.useFakeTimers()
     installGroupDb()
-    writeBaseline(
-      [{ roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }],
-      ['room@chatroom']
-    )
+    writeBaseline([{ roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }])
     const service = new GroupExitMonitorService()
     await service.setEnabled(false)
     await service.start(true)
@@ -176,8 +154,7 @@ describe('GroupExitMonitorService', () => {
     const stored = readJsonSync(join(mocks.userData, 'group-exit-monitor.json'))
     expect(stored).toMatchObject({
       enabled: false,
-      monitoredRoomIds: ['room@chatroom'],
-      notificationRoomIds: ['room@chatroom']
+      monitoredRoomIds: ['room@chatroom']
     })
     expect(stored.snapshots[0].members).toEqual([member, otherMember])
     vi.useRealTimers()
@@ -186,8 +163,7 @@ describe('GroupExitMonitorService', () => {
   it('rebuilds the current baseline when re-enabled without reporting paused exits', async () => {
     installGroupDb()
     writeBaseline(
-      [{ roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }],
-      ['room@chatroom']
+      [{ roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }]
     )
     const service = new GroupExitMonitorService()
     await service.setEnabled(false)
@@ -344,33 +320,26 @@ describe('GroupExitMonitorService', () => {
     ).toMatchObject({ roomId: 'A@chatroom', groupName: '测试群A' })
   })
 
-  it('uses one resolved group name for both 3-to-1 events and Gateway notification recipients', async () => {
+  it('uses one resolved group name for both 3-to-1 events and the emitted leave events', async () => {
     installGroupDb()
     const departed = { wxid: 'wxid_departed', groupNickname: '离群一' }
     const secondDeparted = { wxid: 'wxid_second_departed', groupNickname: '离群二' }
-    writeBaseline(
-      [
-        {
-          roomId: 'A@chatroom',
-          groupName: 'A@chatroom',
-          members: [member, departed, secondDeparted]
-        }
-      ],
-      ['A@chatroom']
-    )
+    writeBaseline([
+      {
+        roomId: 'A@chatroom',
+        groupName: 'A@chatroom',
+        members: [member, departed, secondDeparted]
+      }
+    ])
     mocks.chat.getGroupNamesAsync.mockResolvedValue({ 'A@chatroom': '测试群A' })
     mocks.chat.getGroupMemberIdsBatchAsync.mockResolvedValue([
       { roomId: 'A@chatroom', status: 'ok', memberIds: [member.wxid] }
     ])
-    const requests: Array<{ recipient?: { name?: string } }> = []
-    const actionGateway = {
-      execute: vi.fn(async (request: { recipient?: { name?: string } }) => {
-        requests.push(request)
-        return { status: 'sent', actionId: 'action-1', decision: 'allow' }
-      }),
-      registerMemberEvent: vi.fn()
-    }
-    const service = new GroupExitMonitorService({ actionGateway })
+    const emitted: GroupMemberExitedEvent[] = []
+    const service = new GroupExitMonitorService()
+    service.setGroupExitHandler((event) => {
+      emitted.push(event)
+    })
 
     await service.start(true)
 
@@ -393,8 +362,10 @@ describe('GroupExitMonitorService', () => {
         })
       ])
     )
-    expect(requests).toHaveLength(2)
-    expect(requests.every((request) => request.recipient?.name === '测试群A')).toBe(true)
+    // 事件里的群名与存储里的一致 —— 通知目标要显示的就是这个名字。
+    expect(emitted).toHaveLength(2)
+    expect(emitted.every((event) => event.groupName === '测试群A')).toBe(true)
+    expect(emitted.every((event) => event.conversationId === 'A@chatroom')).toBe(true)
     expect(mocks.chat.getGroupSnapshotAsync).not.toHaveBeenCalled()
   })
 
@@ -559,15 +530,18 @@ describe('GroupExitMonitorService', () => {
     warn.mockRestore()
   })
 
-  it('keeps snapshots when only notification settings change', async () => {
+  it('keeps snapshots when the monitor scope is re-saved', async () => {
     writeBaseline([{ roomId: 'room@chatroom', groupName: '测试群', members: [member] }])
     const service = new GroupExitMonitorService()
     service.getState()
 
-    await service.setMonitoredRoomIds(['room@chatroom'], ['room@chatroom'])
+    await service.setMonitoredRoomIds(['room@chatroom'])
 
     const stored = readJsonSync(join(mocks.userData, 'group-exit-monitor.json'))
-    expect(stored.notificationRoomIds).toEqual(['room@chatroom'])
+    expect(stored.monitoredRoomIds).toEqual(['room@chatroom'])
+    // 通知配置已经不在这个文件里了 —— 迁到自动化规则后不允许双写。
+    expect(stored.notificationRoomIds).toBeUndefined()
+    expect(stored.notificationTemplate).toBeUndefined()
     expect(stored.snapshots).toHaveLength(1)
     expect(stored.snapshots[0].members).toEqual([member])
   })
@@ -756,33 +730,50 @@ describe('GroupExitMonitorService', () => {
     vi.useRealTimers()
   })
 
-  it('renders the saved template before sending a group notification', async () => {
+  /**
+   * 迁移后的分工：**退群监控只产生事件，发送完全归自动化**。
+   *
+   * 它不再读发送能力、不再调 `WechatActionGateway`、也不在事件上记发送状态。
+   */
+  it('hands the exit event to automation and never touches the send path itself', async () => {
     installGroupDb()
-    writeBaseline(
-      [{ roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }],
-      ['room@chatroom']
-    )
-    mocks.capability.getPersonalWechatSendCapability.mockResolvedValue({
-      ready: true,
-      capabilities: { text: true }
-    })
-    mocks.sender.send.mockResolvedValue({ success: true })
+    writeBaseline([
+      { roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }
+    ])
     mocks.chat.getGroupMemberIdsBatchAsync.mockResolvedValue([
       { roomId: 'room@chatroom', status: 'ok', memberIds: [member.wxid] }
     ])
+    const emitted: GroupMemberExitedEvent[] = []
     const service = new GroupExitMonitorService()
-    service.setNotificationTemplate('退群: {user}/{groupRemark}/{wxid}')
-    await service.start(true)
-
-    expect(mocks.sender.send).toHaveBeenCalledWith({
-      type: 'text',
-      to: 'room@chatroom',
-      isGroup: true,
-      text: '退群: 另一个人/未设置/wxid_other'
+    service.setGroupExitHandler((event) => {
+      emitted.push(event)
     })
+    await service.start(true)
+    const state = service.getState()
+
+    expect(state.events[0]).toMatchObject({ memberWxid: 'wxid_other' })
+    // 事件上不再有发送状态字段（发送结果归自动化执行日志）。
+    expect(state.events[0]).not.toHaveProperty('notificationStatus')
+    expect(state.events[0]).not.toHaveProperty('notification')
+    expect(emitted).toHaveLength(1)
+    expect(emitted[0]).toMatchObject({
+      eventId: state.events[0].id,
+      conversationId: 'room@chatroom',
+      memberId: 'wxid_other',
+      previousCount: 2,
+      currentCount: 1
+    })
+    // 监控自己不发送、也不去问发送能力。
+    expect(mocks.sender.send).not.toHaveBeenCalled()
+    expect(mocks.capability.getPersonalWechatSendCapability).not.toHaveBeenCalled()
   })
 
-  it('records an exit without creating a send action when notification is disabled', async () => {
+  /*
+   * 处理器抛错**不能**污染监控循环：退群事实已经落盘，
+   * 通知失败是自动化那边的事（§「退群事实已检测成功 ≠ 通知发送成功」）。
+   * 未捕获的 rejection 也会让整个 diff 循环挂掉。
+   */
+  it('keeps recording exits when the automation handler rejects', async () => {
     installGroupDb()
     writeBaseline([
       { roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }
@@ -791,72 +782,39 @@ describe('GroupExitMonitorService', () => {
       { roomId: 'room@chatroom', status: 'ok', memberIds: [member.wxid] }
     ])
     const service = new GroupExitMonitorService()
-    await service.start(true)
-    const state = service.getState()
-
-    expect(state.events[0]).toMatchObject({
-      memberWxid: 'wxid_other',
-      notificationStatus: 'not_requested'
+    service.setGroupExitHandler(async () => {
+      throw new Error('通知发送失败')
     })
-    expect(mocks.sender.send).not.toHaveBeenCalled()
-    expect(mocks.capability.getPersonalWechatSendCapability).not.toHaveBeenCalled()
+
+    await service.start(true)
+    // 让 handler 的 rejection 落地。
+    await Promise.resolve()
+
+    const state = service.getState()
+    expect(state.events).toHaveLength(1)
+    expect(state.events[0]).toMatchObject({ memberWxid: 'wxid_other' })
+    expect(state.lastCheckedAt).toBeDefined()
   })
 
-  it('微信发送能力不可用时仍保留退群事件', async () => {
+  it('does not re-emit the same snapshot diff when checked again', async () => {
     installGroupDb()
-    writeBaseline(
-      [{ roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }],
-      ['room@chatroom']
-    )
-    mocks.capability.getPersonalWechatSendCapability.mockResolvedValue({
-      ready: false,
-      supported: true,
-      status: 'needs_binding',
-      capabilities: { text: false, image: false, voice: false },
-      senderStatus: {},
-      message: '当前微信发送能力不可用'
-    })
+    writeBaseline([
+      { roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }
+    ])
     mocks.chat.getGroupMemberIdsBatchAsync.mockResolvedValue([
       { roomId: 'room@chatroom', status: 'ok', memberIds: [member.wxid] }
     ])
+    const emitted: GroupMemberExitedEvent[] = []
     const service = new GroupExitMonitorService()
-    await service.start(true)
-    const state = service.getState()
-
-    expect(state.events[0]).toMatchObject({
-      notificationStatus: 'failed',
-      notification: {
-        status: 'failed',
-        errorCode: 'SEND_CAPABILITY_UNAVAILABLE'
-      }
+    service.setGroupExitHandler((event) => {
+      emitted.push(event)
     })
-    expect(mocks.sender.send).not.toHaveBeenCalled()
-  })
-
-  it('does not send twice when the same snapshot diff is checked again', async () => {
-    installGroupDb()
-    writeBaseline(
-      [{ roomId: 'room@chatroom', groupName: '测试群', members: [member, otherMember] }],
-      ['room@chatroom']
-    )
-    mocks.capability.getPersonalWechatSendCapability.mockResolvedValue({
-      ready: true,
-      capabilities: { text: true, image: false, voice: false },
-      supported: true,
-      status: 'ready',
-      senderStatus: {},
-      message: 'ready'
-    })
-    mocks.sender.send.mockResolvedValue({ success: true })
-    mocks.chat.getGroupMemberIdsBatchAsync.mockResolvedValue([
-      { roomId: 'room@chatroom', status: 'ok', memberIds: [member.wxid] }
-    ])
-    const service = new GroupExitMonitorService()
     await service.start(true)
     await service.checkNow()
     await service.checkNow()
 
-    expect(mocks.sender.send).toHaveBeenCalledOnce()
+    // 快照已更新 ⇒ 后续检查没有新的 diff，也就不会重复投递事件。
+    expect(emitted).toHaveLength(1)
     expect(service.getState().events).toHaveLength(1)
   })
 

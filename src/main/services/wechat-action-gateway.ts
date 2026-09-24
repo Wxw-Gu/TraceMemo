@@ -13,7 +13,6 @@ import type {
   WechatActionAuditRecord,
   WechatActionContent,
   WechatActionErrorCode,
-  WechatActionMemberEventReference,
   WechatActionRequest,
   WechatActionResult
 } from '../../shared/wechat-action'
@@ -25,12 +24,14 @@ const MAX_CONTENT_PREVIEW_LENGTH = 240
 export const AUTOMATION_SEND_INTERVAL_MS = 3_000
 const AUTOMATION_PURPOSE_ALLOWLIST = new Set([
   'scheduled_report',
-  'member_left_notification',
-  // Automation v1（@我生成日报）。必须与 `src/shared/automation.ts` 的
+  // Automation（@我生成日报）。必须与 `src/shared/automation.ts` 的
   // `AUTOMATION_SEND_PURPOSE` 保持一致，否则会被下面 evaluateWechatActionPolicy
   // 以 ACTION_NOT_ALLOWED 拦下 —— 那是有意的闸门，不是 bug。
   'automation_reply',
   'automation_report',
+  // 退群通知（由 Automation 发出）。目标可以是群 / 自己 / 文件传输助手 / 指定好友，
+  // 所以**不绑定**任何 "只能发回原群" 的作用域锁。
+  'automation_leave_notification',
   'manual_report_image',
   'manual_report_postfix'
 ])
@@ -49,12 +50,6 @@ export interface ReportImageSequenceResult {
 export interface WechatActionGatewayDependencies {
   getCapability?: () => Promise<PersonalWechatSendCapability>
   send?: (request: PersonalWechatSendRequest) => Promise<PersonalWechatSendResult>
-  getMemberEvent?: (
-    sourceId: string
-  ) =>
-    | WechatActionMemberEventReference
-    | Promise<WechatActionMemberEventReference | undefined>
-    | undefined
   getUserDataPath?: () => string
   now?: () => Date
   wait?: (milliseconds: number) => Promise<void>
@@ -63,10 +58,6 @@ export interface WechatActionGatewayDependencies {
 interface LoadedAuditState {
   path: string
   records: WechatActionAuditRecord[]
-}
-
-export interface WechatActionPolicyContext {
-  memberEvent?: WechatActionMemberEventReference
 }
 
 const defaultDependencies = (): Required<
@@ -98,7 +89,6 @@ export class WechatActionGateway {
       WechatActionGatewayDependencies,
       'getCapability' | 'send' | 'getUserDataPath' | 'now' | 'wait'
     >
-  private readonly memberEvents = new Map<string, WechatActionMemberEventReference>()
   private readonly inFlight = new Map<string, Promise<WechatActionResult>>()
   private auditState: LoadedAuditState | null = null
   private automationSendTail: Promise<void> = Promise.resolve()
@@ -106,22 +96,6 @@ export class WechatActionGateway {
 
   constructor(deps: WechatActionGatewayDependencies = {}) {
     this.deps = { ...defaultDependencies(), ...deps }
-  }
-
-  /** 记录退群事件，发送通知前可确认事件所属群聊。 */
-  registerMemberEvent(event: WechatActionMemberEventReference): void {
-    const id = String(event?.id || '').trim()
-    const roomId = String(event?.roomId || '').trim()
-    if (!id || !roomId) return
-    this.memberEvents.set(id, { id, roomId })
-  }
-
-  registerMemberEvents(events: WechatActionMemberEventReference[]): void {
-    for (const event of events) this.registerMemberEvent(event)
-  }
-
-  clearMemberEvents(): void {
-    this.memberEvents.clear()
   }
 
   /**
@@ -196,8 +170,7 @@ export class WechatActionGateway {
       )
     }
 
-    const eventContext = await this.resolveEventContext(request)
-    const policy = evaluateWechatActionPolicy(request, eventContext)
+    const policy = evaluateWechatActionPolicy(request)
     if (policy.decision !== 'allow') {
       return this.finishBlocked(
         actionId,
@@ -291,28 +264,6 @@ export class WechatActionGateway {
     return queued
   }
 
-  private async resolveEventContext(
-    request: WechatActionRequest
-  ): Promise<WechatActionPolicyContext> {
-    if (request.purpose !== 'member_left_notification') return {}
-    const sourceId = String(request.sourceId || '').trim()
-    if (!sourceId) return {}
-    let memberEvent: WechatActionMemberEventReference | undefined = this.memberEvents.get(sourceId)
-    if (!memberEvent && this.deps.getMemberEvent) {
-      let resolved: WechatActionMemberEventReference | undefined
-      try {
-        resolved = await this.deps.getMemberEvent(sourceId)
-      } catch {
-        resolved = undefined
-      }
-      if (resolved && String(resolved.id || '').trim() === sourceId) {
-        memberEvent = { id: String(resolved.id), roomId: String(resolved.roomId) }
-        this.registerMemberEvent(memberEvent)
-      }
-    }
-    return memberEvent ? { memberEvent } : {}
-  }
-
   private async findExisting(idempotencyKey: string): Promise<WechatActionResult | undefined> {
     const state = this.loadAuditState()
     const existing = state.records.find((record) => record.idempotencyKey === idempotencyKey)
@@ -331,9 +282,6 @@ export class WechatActionGateway {
   private idempotencyKey(request: WechatActionRequest): string | undefined {
     const explicit = String(request.idempotencyKey || '').trim()
     if (explicit) return explicit
-    if (request.purpose === 'member_left_notification' && request.sourceId) {
-      return `member_left_notification:${request.sourceId}`
-    }
     if (request.origin === 'scheduled_report' && request.executionId) {
       return `scheduled_report:${request.executionId}`
     }
@@ -480,10 +428,7 @@ export class WechatActionGateway {
   }
 }
 
-export function evaluateWechatActionPolicy(
-  request: WechatActionRequest,
-  context: WechatActionPolicyContext = {}
-): PolicyDecision {
+export function evaluateWechatActionPolicy(request: WechatActionRequest): PolicyDecision {
   if (!request || typeof request !== 'object') {
     return {
       decision: 'block',
@@ -512,29 +457,6 @@ export function evaluateWechatActionPolicy(
       source: 'deterministic',
       reasonCode: 'ACTION_NOT_ALLOWED',
       reason: `自动化动作不允许执行 purpose=${request.purpose}`
-    }
-  }
-  if (request.purpose === 'member_left_notification') {
-    if (
-      !request.sourceId ||
-      !context.memberEvent ||
-      context.memberEvent.id !== request.sourceId ||
-      !context.memberEvent.roomId
-    ) {
-      return {
-        decision: 'block',
-        source: 'deterministic',
-        reasonCode: 'INVALID_REQUEST',
-        reason: '退群通知必须关联已记录的退群事件'
-      }
-    }
-    if (request.recipient.type !== 'group' || request.recipient.id !== context.memberEvent.roomId) {
-      return {
-        decision: 'block',
-        source: 'deterministic',
-        reasonCode: 'RECIPIENT_SCOPE_VIOLATION',
-        reason: '退群通知只能发送回原事件所在群聊'
-      }
     }
   }
   return { decision: 'allow', source: 'deterministic' }

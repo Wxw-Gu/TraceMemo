@@ -2,19 +2,17 @@ import { app, BrowserWindow } from 'electron'
 import fs from 'fs-extra'
 import path from 'path'
 import * as chat from './chat-service'
-import { wechatActionGateway, type WechatActionGateway } from './wechat-action-gateway'
 import {
-  buildMemberLeftNotification,
   findRemovedGroupMembers,
   groupExitMemberName,
-  normalizeGroupExitNotificationTemplate,
-  validateGroupExitNotificationTemplate,
   type GroupExitMonitorEvent,
   type GroupExitMonitorMember,
-  type GroupExitNotificationStatus,
-  type GroupExitNotificationState,
   type GroupExitMonitorState
 } from '../../shared/group-exit-monitor'
+import {
+  toGroupMemberExitedEvent,
+  type GroupMemberExitedEvent
+} from '../../shared/group-exit-event'
 
 type StoredState = {
   enabled?: boolean
@@ -23,9 +21,14 @@ type StoredState = {
   lastReadAt?: number
   monitorSelectionConfigured?: boolean
   monitoredRoomIds?: string[]
-  notificationRoomIds?: string[]
-  notificationTemplate?: unknown
   snapshots?: Partial<StoredGroupSnapshot>[]
+  /*
+   * 历史遗留字段（`notificationRoomIds` / `notificationTemplate`）**刻意不再声明**。
+   *
+   * 它们已经迁到「自动化 → 退群通知」规则里，本服务运行期不再读、不再写。
+   * 旧状态文件原样保留在磁盘上（迁移时另有一份 backup），只是没有任何读取方 ——
+   * 这是"不双读"的落地方式。迁移逻辑在 `automation-rule-store.ts`。
+   */
 }
 
 type GroupSnapshotRecord = {
@@ -67,17 +70,20 @@ const DUPLICATE_WINDOW_MS = 2 * 60 * 1000
  */
 const MAX_EVENTS = 500
 
+/**
+ * 退群事件处理器。
+ *
+ * 由主进程注入成 `automationService.handleGroupExit` —— 本服务**不再自己发送**。
+ * 契约：**必须自己吞掉异常**（实现方负责），本服务也会再兜一层。
+ */
+export type GroupExitEventHandler = (event: GroupMemberExitedEvent) => void | Promise<void>
+
 export interface GroupExitMonitorServiceDependencies {
-  actionGateway?: GroupExitActionGateway
+  onGroupExit?: GroupExitEventHandler
 }
 
-type GroupExitActionGateway = Pick<WechatActionGateway, 'execute'> &
-  Partial<
-    Pick<WechatActionGateway, 'registerMemberEvent' | 'registerMemberEvents' | 'clearMemberEvents'>
-  >
-
 class GroupExitMonitorService {
-  private readonly actionGateway: GroupExitActionGateway
+  private onGroupExit: GroupExitEventHandler | undefined
   private active = false
   private enabled = true
   private nativeMonitorActive = false
@@ -95,7 +101,6 @@ class GroupExitMonitorService {
   private events: GroupExitMonitorEvent[] = []
   private monitorSelectionConfigured = true
   private monitoredRoomIds = new Set<string>()
-  private notificationRoomIds = new Set<string>()
   private loaded = false
   private accountRoot = ''
   private groupNamesByRoomId = new Map<string, string>()
@@ -103,10 +108,19 @@ class GroupExitMonitorService {
   private eventSequence = 0
   private scopeGeneration = 0
   private legacyFallbackLogged = false
-  private notificationTemplate = normalizeGroupExitNotificationTemplate(undefined)
 
   constructor(deps: GroupExitMonitorServiceDependencies = {}) {
-    this.actionGateway = deps.actionGateway || wechatActionGateway
+    this.onGroupExit = deps.onGroupExit
+  }
+
+  /**
+   * 注入退群事件处理器（主进程在 AutomationService 初始化后调用）。
+   *
+   * 用 setter 而不是构造参数：AutomationService 依赖 `Wcdb4Client`，
+   * 要等数据库解锁后才存在，而本服务是模块级单例。
+   */
+  setGroupExitHandler(handler: GroupExitEventHandler | undefined): void {
+    this.onGroupExit = handler
   }
 
   getState(): GroupExitMonitorState {
@@ -122,8 +136,6 @@ class GroupExitMonitorService {
       monitoredGroupCount: this.snapshots.size,
       monitorSelectionConfigured: this.monitorSelectionConfigured,
       monitoredRoomIds: Array.from(this.monitoredRoomIds),
-      notificationRoomIds: Array.from(this.notificationRoomIds),
-      notificationTemplate: this.notificationTemplate,
       lastCheckedAt: this.lastCheckedAt,
       lastReadAt: this.lastReadAt,
       unreadCount: this.events.filter((event) => event.detectedAt > this.lastReadAt).length
@@ -143,13 +155,11 @@ class GroupExitMonitorService {
       (this.accountRoot && !sameAccountRoot(currentRoot, this.accountRoot)) ||
       (!this.accountRoot && this.snapshots.size > 0)
     ) {
-      this.actionGateway.clearMemberEvents?.()
       this.events = []
       this.rewriteEventsToDisk([])
       this.lastReadAt = 0
       this.monitorSelectionConfigured = true
       this.monitoredRoomIds.clear()
-      this.notificationRoomIds.clear()
       this.snapshots.clear()
       this.groupNamesByRoomId.clear()
     }
@@ -220,10 +230,13 @@ class GroupExitMonitorService {
     return this.getState()
   }
 
-  async setMonitoredRoomIds(
-    roomIds: string[],
-    notificationRoomIds: string[] = []
-  ): Promise<GroupExitMonitorState> {
+  /**
+   * 保存**监控范围**。
+   *
+   * 参数只剩监控目标 —— 旧版第二个参数（通知群聊）已经迁到自动化规则里，
+   * 本服务不再持有任何通知配置。
+   */
+  async setMonitoredRoomIds(roomIds: string[]): Promise<GroupExitMonitorState> {
     this.ensureLoaded()
     this.eventSequence += 1
     this.scopeGeneration += 1
@@ -237,10 +250,6 @@ class GroupExitMonitorService {
     }
     this.monitoredRoomIds = nextMonitoredRoomIds
     this.groupNamesRefreshPending = true
-    const requestedNotifications = normalizeRoomIds(notificationRoomIds)
-    this.notificationRoomIds = new Set(
-      Array.from(requestedNotifications).filter((roomId) => this.monitoredRoomIds.has(roomId))
-    )
     this.lastCheckedAt = undefined
     this.save()
     this.broadcast()
@@ -270,18 +279,6 @@ class GroupExitMonitorService {
     this.save()
     this.broadcast()
     if (enabled && this.active && chat.isReady()) await this.check()
-    return this.getState()
-  }
-
-  setNotificationTemplate(value: unknown): GroupExitMonitorState {
-    this.ensureLoaded()
-    const result = validateGroupExitNotificationTemplate(value)
-    if (!result.valid || !result.template) {
-      throw new Error(result.error || '退群监测模板无效')
-    }
-    this.notificationTemplate = result.template
-    this.save()
-    this.broadcast()
     return this.getState()
   }
 
@@ -320,7 +317,6 @@ class GroupExitMonitorService {
     this.events = []
     // 磁盘上的 append-only 历史也要清掉，否则下次启动又读回来了。
     this.rewriteEventsToDisk([])
-    this.actionGateway.clearMemberEvents?.()
     this.lastReadAt = Date.now()
     this.save()
     this.broadcast()
@@ -443,7 +439,7 @@ class GroupExitMonitorService {
     groups: GroupMembershipRecord[],
     scopeGeneration: number
   ): Promise<number> {
-    const notifications: Array<{ group: GroupSnapshotRecord; event: GroupExitMonitorEvent }> = []
+    const exits: GroupExitMonitorEvent[] = []
     let changedGroups = 0
     for (const membership of groups) {
       if (!this.enabled || !this.active || scopeGeneration !== this.scopeGeneration) {
@@ -474,10 +470,9 @@ class GroupExitMonitorService {
       if (previous && next.members.length < previous.members.length) {
         const removed = findRemovedGroupMembers(previous.members, next.members)
         for (const member of removed) {
+          // 一人一条事件、一条通知 —— 保持既有产品语义，不聚合。
           const event = this.recordExit(next, member, previous.members.length, next.members.length)
-          if (event && this.notificationRoomIds.has(next.roomId)) {
-            notifications.push({ group: next, event })
-          }
+          if (event) exits.push(event)
         }
       }
 
@@ -492,12 +487,11 @@ class GroupExitMonitorService {
       return changedGroups
     }
     this.lastCheckedAt = Date.now()
-    // 先把事件和新基线作为同一检查点落盘，再执行可失败的通知动作。
+    // 先把事件和新基线作为同一检查点落盘，再交给自动化。
+    // 「退群事实已记录」与「通知发送成功」是两件独立的事。
     this.save()
     this.broadcast()
-    if (notifications.length) {
-      await Promise.all(notifications.map(({ group, event }) => this.notifyGroup(group, event)))
-    }
+    for (const event of exits) this.emitGroupExit(event)
     return changedGroups
   }
 
@@ -633,10 +627,8 @@ class GroupExitMonitorService {
       currentCount,
       delta: currentCount - previousCount,
       message,
-      detectedAt,
-      notificationStatus: 'not_requested'
+      detectedAt
     }
-    this.actionGateway.registerMemberEvent?.(event)
     // 内存按时间倒序（新事件在前）；磁盘**只追加这一条**，不重写历史。
     // 这里不再有 `.slice(0, MAX_EVENTS)` —— 事件是永久保留的。
     this.events = [event, ...this.events]
@@ -647,81 +639,35 @@ class GroupExitMonitorService {
     return event
   }
 
-  private async notifyGroup(
-    group: GroupSnapshotRecord,
-    event: GroupExitMonitorEvent,
-    idempotencyKey = `member_left_notification:${event.id}`
-  ): Promise<void> {
-    event.notificationStatus = 'pending'
-    event.notification = { status: 'pending' }
-    this.save()
-    this.broadcast()
+  /**
+   * 把退群事件交给自动化 —— **不等待**。
+   *
+   * 三条约束：
+   * 1. **绝不 await**：快照扫描与成员 diff 不能被微信发送耗时拖住；
+   * 2. **异常必须被捕获**：`void promise` 漏掉 `.catch` 会变成 unhandled rejection；
+   * 3. **不影响退群事实**：事件与快照在同一检查点已经先落盘，通知失败不回滚记录。
+   */
+  private emitGroupExit(event: GroupExitMonitorEvent): void {
+    const handler = this.onGroupExit
+    if (!handler) return
     try {
-      const result = await this.actionGateway.execute({
-        idempotencyKey,
-        origin: 'member_monitor',
-        purpose: 'member_left_notification',
-        triggerType: 'automation',
-        sourceId: event.id,
-        recipient: {
-          type: 'group',
-          id: group.roomId,
-          name: group.groupName
-        },
-        content: {
-          type: 'text',
-          text: buildMemberLeftNotification(event, this.notificationTemplate)
-        },
-        metadata: {
-          memberId: event.memberWxid,
-          memberName: event.memberName,
-          detectedAt: event.detectedAt,
-          eventType: 'member_left',
-          eventRoomId: event.roomId
-        }
-      })
-      const notification: GroupExitNotificationState = {
-        status: result.status,
-        actionId: result.actionId,
-        decision: result.decision,
-        ...(result.errorCode ? { errorCode: result.errorCode } : {}),
-        ...(result.reason ? { reason: result.reason } : {}),
-        startedAt: result.startedAt,
-        finishedAt: result.finishedAt
-      }
-      event.notificationStatus = result.status
-      event.notification = notification
-      if (result.status !== 'sent') {
+      void Promise.resolve(
+        handler(toGroupMemberExitedEvent(event))
+      ).catch((error) => {
         console.warn(
-          `[GroupMonitor] 群聊通知未发送 roomId=${group.roomId} status=${result.status} code=${result.errorCode || ''}`
+          `[GroupMonitor] 退群通知处理失败 eventId=${event.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
         )
-      }
+      })
     } catch (error) {
-      event.notificationStatus = 'failed'
-      event.notification = {
-        status: 'failed',
-        errorCode: 'UNKNOWN',
-        reason: error instanceof Error ? error.message : String(error)
-      }
+      // handler 同步抛出的情况（`handleGroupExit` 本身不抛，这里是防御性兜底）。
       console.warn(
-        `[GroupMonitor] 群聊通知异常 roomId=${group.roomId}:`,
-        error instanceof Error ? error.message : String(error)
+        `[GroupMonitor] 退群通知处理异常 eventId=${event.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       )
-    } finally {
-      this.save()
-      this.broadcast()
     }
-  }
-
-  async resendEvent(eventId: string): Promise<GroupExitMonitorState> {
-    const event = this.events.find((item) => item.id === eventId)
-    if (!event) throw new Error('退群动态不存在')
-    await this.notifyGroup(
-      { roomId: event.roomId, groupName: event.groupName } as GroupSnapshotRecord,
-      event,
-      `member_left_notification:${event.id}:retry:${Date.now()}`
-    )
-    return this.getState()
   }
 
   private filePath(): string {
@@ -806,20 +752,11 @@ class GroupExitMonitorService {
         // 「新在前」这个内存不变量，否则列表顶部会恒为最旧的一批。
         this.events = sortEventsNewestFirst(normalizeEvents(fromDisk))
       }
-      this.actionGateway.registerMemberEvents?.(this.events)
       this.lastReadAt = Number(stored.lastReadAt) || 0
       this.accountRoot = String(stored.accountRoot || '')
       // 没有显式范围时按空范围处理，保留已有选择。
       this.monitorSelectionConfigured = true
       this.monitoredRoomIds = normalizeRoomIds(stored.monitoredRoomIds || [])
-      this.notificationRoomIds = new Set(
-        Array.from(normalizeRoomIds(stored.notificationRoomIds || [])).filter((roomId) =>
-          this.monitoredRoomIds.has(roomId)
-        )
-      )
-      this.notificationTemplate = normalizeGroupExitNotificationTemplate(
-        stored.notificationTemplate
-      )
       this.snapshots = normalizeSnapshots(stored.snapshots, this.monitoredRoomIds)
     } catch {
       // 首次启动或状态文件损坏时从空记录开始 —— 但事件在独立文件里，
@@ -829,8 +766,6 @@ class GroupExitMonitorService {
       this.lastReadAt = 0
       this.monitorSelectionConfigured = true
       this.monitoredRoomIds.clear()
-      this.notificationRoomIds.clear()
-      this.notificationTemplate = normalizeGroupExitNotificationTemplate(undefined)
       this.snapshots.clear()
     }
   }
@@ -849,8 +784,6 @@ class GroupExitMonitorService {
           lastReadAt: this.lastReadAt,
           monitorSelectionConfigured: this.monitorSelectionConfigured,
           monitoredRoomIds: Array.from(this.monitoredRoomIds),
-          notificationRoomIds: Array.from(this.notificationRoomIds),
-          notificationTemplate: this.notificationTemplate,
           snapshots: Array.from(this.snapshots.values(), toStoredSnapshot)
         },
         { spaces: 2 }
@@ -1047,15 +980,11 @@ function normalizeEvents(
         ? Number(value.delta)
         : currentCount - previousCount,
       message: String(value.message || `${memberName}退出了${groupName}`),
-      detectedAt,
-      ...(value.notificationStatus
-        ? { notificationStatus: normalizeNotificationStatus(value.notificationStatus) }
-        : {}),
-      ...(value.notification && typeof value.notification === 'object'
-        ? { notification: normalizeNotification(value.notification) }
-        : {})
+      detectedAt
     })
     // 不再按 MAX_EVENTS 截断：事件是永久保留的，截在这里等于每次启动都丢掉历史。
+    // 历史上的 `notificationStatus` / `notification` 字段被**丢弃**：
+    // 通知状态已归 Automation 执行日志，退群监控不再持有它。
   }
   return normalized
 }
@@ -1073,28 +1002,6 @@ function normalizeEvents(
  */
 function sortEventsNewestFirst(events: GroupExitMonitorEvent[]): GroupExitMonitorEvent[] {
   return [...events].sort((left, right) => right.detectedAt - left.detectedAt)
-}
-
-function normalizeNotificationStatus(value: unknown): GroupExitNotificationStatus {
-  const status = String(value || '').trim()
-  return status === 'pending' || status === 'sent' || status === 'blocked' || status === 'failed'
-    ? status
-    : 'not_requested'
-}
-
-function normalizeNotification(value: object): GroupExitNotificationState {
-  const input = value as Partial<GroupExitNotificationState>
-  return {
-    status: normalizeNotificationStatus(input.status),
-    ...(input.actionId ? { actionId: String(input.actionId) } : {}),
-    ...(input.decision === 'allow' || input.decision === 'block'
-      ? { decision: input.decision }
-      : {}),
-    ...(input.errorCode ? { errorCode: String(input.errorCode) } : {}),
-    ...(input.reason ? { reason: String(input.reason) } : {}),
-    ...(input.startedAt ? { startedAt: String(input.startedAt) } : {}),
-    ...(input.finishedAt ? { finishedAt: String(input.finishedAt) } : {})
-  }
 }
 
 function isContactEvent(rawPayload: string): boolean {

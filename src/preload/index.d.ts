@@ -304,14 +304,10 @@ declare global {
         limit?: number
       }) => Promise<GroupExitMonitorEvent[]>
       setGroupExitMonitorEnabled: (enabled: boolean) => Promise<GroupExitMonitorState>
-      setGroupExitMonitorGroups: (
-        roomIds: string[],
-        notificationRoomIds?: string[]
-      ) => Promise<GroupExitMonitorState>
-      setGroupExitMonitorNotificationTemplate: (template: string) => Promise<GroupExitMonitorState>
+      /** 保存**监控范围**。通知配置已迁到「自动化 → 退群通知」。 */
+      setGroupExitMonitorGroups: (roomIds: string[]) => Promise<GroupExitMonitorState>
       checkGroupExitMonitorNow: () => Promise<GroupExitMonitorState>
       clearGroupExitMonitorEvents: () => Promise<GroupExitMonitorState>
-      resendGroupExitMonitorEvent: (eventId: string) => Promise<GroupExitMonitorState>
       markGroupExitMonitorRead: (readAt?: number) => Promise<GroupExitMonitorState>
       listWechatActionLogs: () => Promise<ActionLogEntry[]>
       getAutomationStatus: () => Promise<AutomationStatusSummary>
@@ -326,6 +322,10 @@ declare global {
       listAutomationExecutions: (query?: { limit?: number }) => Promise<AutomationExecution[]>
       clearAutomationExecutions: () => Promise<boolean>
       listAutomationGroups: () => Promise<Array<{ id: string; name: string }>>
+      /** 保存「退群通知」规则（singleton upsert）。 */
+      saveLeaveNotificationRule: (draft: AutomationRuleDraft) => Promise<AutomationRule>
+      /** 「指定好友」的可选项；已在 main 侧过滤掉群聊 / 公众号 / 文件传输助手 / 自己。 */
+      listSendableContacts: () => Promise<Array<{ id: string; name: string }>>
       onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => () => void
       search: (keyword: string) => Promise<string | null>
       searchKnowledge: (request: KnowledgeSearchIpcRequest) => Promise<KnowledgeSearchIpcResult>

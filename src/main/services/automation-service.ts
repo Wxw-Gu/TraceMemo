@@ -1,18 +1,25 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   matchAutomationRule,
   type AutomationMatchInput
 } from '../../shared/automation-matcher'
-import type {
-  AutomationExecution,
-  AutomationRule,
-  AutomationStatusSummary
+import {
+  AUTOMATION_SEND_PURPOSE,
+  BUILTIN_LEAVE_NOTIFICATION_RULE_ID,
+  type AutomationExecution,
+  type AutomationRule,
+  type AutomationStatusSummary
 } from '../../shared/automation'
+import type { GroupMemberExitedEvent } from '../../shared/group-exit-event'
 import type { PersonalWechatSendCapability } from '../../shared/personal-wechat'
 import type { Wcdb4Client } from '../wcdb4-client'
 import type { NormalizedIncomingMessage } from './message-listener-service'
-import { listContacts } from './chat-service'
+import { getSelfAccountInfo, listContacts } from './chat-service'
 import { getPersonalWechatSendCapability } from './personal-wechat-capability-service'
+import {
+  resolveLeaveNotificationTarget,
+  type LeaveNotificationTargetResolution
+} from './leave-notification-target'
 import {
   automationRuleStore,
   type AutomationRuleStore
@@ -80,6 +87,37 @@ const CLAIM_MAX_ENTRIES = 5_000
 /** 自己的 username 候选集缓存时长 —— 这个值几乎不变，没必要每条消息都查。 */
 const SELF_USERNAME_TTL_MS = 30_000
 
+/**
+ * 退群事件幂等表的容量上限。
+ *
+ * 退群是低频事件，这里不需要 MessageListener 那种 5000 级容量；
+ * 但同样要有界，避免长跑期间无界增长。
+ */
+const EXIT_CLAIM_MAX_ENTRIES = 1_000
+
+/**
+ * 由 `ruleId + eventId` 推出**确定性** executionId。
+ *
+ * 为什么要确定而不是 `randomUUID()`：幂等必须跨进程重启成立。
+ * 同一 eventId 重新投递时算出同一个 executionId，`ExecutionLog.record()` 按 id 覆盖，
+ * 于是"同一事件只产生一条 execution"在重启后依然成立。
+ */
+export function leaveNotificationExecutionId(ruleId: string, eventId: string): string {
+  return createHash('sha1')
+    .update(`leave_notification\u0001${ruleId}\u0001${eventId}`)
+    .digest('hex')
+}
+
+/**
+ * 退群通知的发送幂等键。
+ *
+ * **必须由 eventId 派生**（而不是 executionId 派生）：gateway 的审计是落盘的，
+ * 用 eventId 才能让"重启后重复投递同一事件"被持久层直接短路掉。
+ */
+export function leaveNotificationIdempotencyKey(eventId: string): string {
+  return `${AUTOMATION_SEND_PURPOSE.leaveNotification}:${eventId}`
+}
+
 export interface AutomationServiceDependencies {
   ruleStore?: AutomationRuleStore
   executionLog?: AutomationExecutionLogService
@@ -106,6 +144,13 @@ export class AutomationService {
 
   /** `ruleId:sessionId:localId` → 登记时间。 */
   private readonly claims = new Map<string, ClaimEntry>()
+  /**
+   * 退群事件幂等表：`ruleId:eventId` → 登记时间。
+   *
+   * 与消息型 `claims` 分开：退群事件没有 `localId` 这个概念，
+   * 硬塞进同一张表会让两边的 key 语义混在一起。
+   */
+  private readonly exitClaims = new Map<string, ClaimEntry>()
   /**
    * Automation rule ↔ conversation gate。
    *
@@ -247,8 +292,149 @@ export class AutomationService {
     }
   }
 
-  /** 「在哪些聊天生效」的可选项。`id` 必须是 `xxx@chatroom`，与 message.sessionId 对齐。 */
-  listGroups(): Array<{ id: string; name: string }> {
+  /**
+   * 退群事件入口。**绝不抛** —— 它挂在 `GroupExitMonitorService` 的回调上，
+   * 抛出去会污染监控循环（退群事实已经记录成功，不能被通知失败连累）。
+   *
+   * 与 `handleMessage` 的分工：
+   * - 消息型规则：MessageListener → handleMessage → 动作链；
+   * - 退群通知：GroupExitMonitor → **本入口** → 单次文本发送。
+   *
+   * 三层闸门（缺一不可）：
+   * 1. `enabled === false` → 不执行，**且不创建 execution**（§「没有执行：不创建」）；
+   * 2. `targetNeedsReview` → 迁移过来但目标无法无损映射，同样不执行、不创建记录；
+   * 3. `ruleId + eventId` 幂等 → 同一事件即使重复投递也只发送一次。
+   */
+  async handleGroupExit(event: GroupMemberExitedEvent): Promise<void> {
+    const eventId = String(event?.eventId || '').trim()
+    let rule: AutomationRule | undefined
+    try {
+      rule = this.ruleStore.getRule(BUILTIN_LEAVE_NOTIFICATION_RULE_ID)
+    } catch (error) {
+      this.warn(`读取退群通知规则失败: ${errorText(error)}`)
+      return
+    }
+    if (!rule || rule.ruleType !== 'leave_notification' || !rule.leaveNotification) return
+    if (!eventId) {
+      this.warn('退群事件缺少事件 id，已跳过本次通知')
+      return
+    }
+    // ① 关闭：不执行、不创建失败记录。
+    if (!rule.enabled) return
+    // ② 迁移遗留的"目标待重选"：同样不算一次执行，由 UI 提示用户处理。
+    if (rule.leaveNotification.targetNeedsReview) {
+      this.warn(`退群通知目标待重新选择，已跳过本次通知 ruleId=${rule.id}`)
+      return
+    }
+    // ③ 幂等（内存快路径）。跨重启那一层由确定性 executionId + gateway 审计兜住。
+    if (!this.claimGroupExit(rule.id, eventId)) return
+
+    const executionId = leaveNotificationExecutionId(rule.id, eventId)
+    const startedAt = this.now()
+    const sourceDisplayName = String(event.groupName || '').trim() || '群聊'
+
+    // 目标解析与发送能力预检都放在 runner 之外，runner 只负责"跑成步骤"。
+    const resolution = this.resolveLeaveTarget(rule, event)
+    const sendBlockedReason = await this.leaveNotificationCapabilityError()
+
+    let result: Awaited<ReturnType<AutomationActionRunner['runLeaveNotification']>>
+    try {
+      result = await this.runner.runLeaveNotification({
+        executionId,
+        event,
+        config: rule.leaveNotification,
+        resolution,
+        sourceDisplayName,
+        ...(sendBlockedReason ? { sendBlockedReason } : {})
+      })
+    } catch (error) {
+      result = {
+        steps: [],
+        status: 'failed',
+        errorSummary: `执行过程异常：${errorText(error)}`
+      }
+    }
+
+    this.executionLog.record(
+      this.buildExecution({
+        executionId,
+        rule,
+        startedAt,
+        sourceDisplayName,
+        status: result.status,
+        durationMs: this.now() - startedAt,
+        steps: result.steps,
+        ...(result.errorSummary ? { errorSummary: result.errorSummary } : {})
+      })
+    )
+
+    // 隐私红线：日志只允许 ruleId / executionId / 状态 / 耗时 / 步骤状态与目标类型。
+    // 群名、昵称、wxid、模板正文一律不进日志。
+    const trail = result.steps.map((step) => `${step.key}=${step.status}`).join(' ')
+    this.info(
+      `executed ruleId=${rule.id} executionId=${executionId} status=${result.status}` +
+        ` durationMs=${this.now() - startedAt}${trail ? ` ${trail}` : ''}`
+    )
+  }
+
+  /** 解析退群通知目标（联系人清单 / 自身身份都取自既有能力，不另建一套）。 */
+  private resolveLeaveTarget(
+    rule: AutomationRule,
+    event: GroupMemberExitedEvent
+  ): LeaveNotificationTargetResolution {
+    let contacts: ReturnType<typeof listContacts> = []
+    try {
+      contacts = listContacts()
+    } catch (error) {
+      this.warn(`读取联系人失败: ${errorText(error)}`)
+    }
+    let selfWxid = ''
+    try {
+      selfWxid = String(getSelfAccountInfo()?.wxid || '')
+    } catch (error) {
+      this.warn(`读取当前账号失败: ${errorText(error)}`)
+    }
+    return resolveLeaveNotificationTarget({
+      config: rule.leaveNotification,
+      event,
+      contacts,
+      selfWxid
+    })
+  }
+
+  /** 退群通知只需要文字能力。缺失时给出用户能看懂的一句说明。 */
+  private async leaveNotificationCapabilityError(): Promise<string | undefined> {
+    let capability: PersonalWechatSendCapability | null = null
+    try {
+      capability = await this.getCapability()
+    } catch {
+      return '暂时无法获知微信发送能力，本次退群通知未发送。'
+    }
+    if (!capability?.supported) {
+      return capability?.message || '当前系统不支持微信消息发送'
+    }
+    if (!capability.capabilities?.text) {
+      return '当前环境无法发送文字，本次退群通知未发送。'
+    }
+    return undefined
+  }
+
+  /** 退群事件幂等登记（原子 check + 写入，中间无 await）。 */
+  private claimGroupExit(ruleId: string, eventId: string): boolean {
+    const key = `${ruleId}:${eventId}`
+    const now = this.now()
+    if (this.exitClaims.has(key)) return false
+    this.exitClaims.set(key, { at: now })
+    if (this.exitClaims.size > EXIT_CLAIM_MAX_ENTRIES) {
+      for (const [entryKey, entry] of this.exitClaims) {
+        if (this.exitClaims.size <= EXIT_CLAIM_MAX_ENTRIES) break
+        if (now - entry.at > CLAIM_TTL_MS) this.exitClaims.delete(entryKey)
+      }
+    }
+    return true
+  }
+
+  /** 「在哪些聊天生效」的可选项。`id` 必须是 `xxx@chatroom`，与 message.sessionId 对齐。 */  listGroups(): Array<{ id: string; name: string }> {
     try {
       return listContacts()
         .filter((contact) => contact.type === 'group' || contact.m_nsUsrName?.endsWith('@chatroom'))

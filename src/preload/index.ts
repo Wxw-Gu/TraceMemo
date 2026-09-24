@@ -182,21 +182,13 @@ const api = {
     ipcRenderer.invoke('group-exit-monitor:listEvents', query),
   setGroupExitMonitorEnabled: (enabled: boolean): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:setEnabled', enabled),
-  setGroupExitMonitorGroups: (
-    roomIds: string[],
-    notificationRoomIds?: string[]
-  ): Promise<GroupExitMonitorState> =>
-    notificationRoomIds === undefined
-      ? ipcRenderer.invoke('group-exit-monitor:setGroups', roomIds)
-      : ipcRenderer.invoke('group-exit-monitor:setGroups', roomIds, notificationRoomIds),
-  setGroupExitMonitorNotificationTemplate: (template: string): Promise<GroupExitMonitorState> =>
-    ipcRenderer.invoke('group-exit-monitor:setTemplate', template),
+  /** 保存**监控范围**。通知配置已迁到自动化规则，这里不再有第二个参数。 */
+  setGroupExitMonitorGroups: (roomIds: string[]): Promise<GroupExitMonitorState> =>
+    ipcRenderer.invoke('group-exit-monitor:setGroups', roomIds),
   checkGroupExitMonitorNow: (): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:checkNow'),
   clearGroupExitMonitorEvents: (): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:clearEvents'),
-  resendGroupExitMonitorEvent: (eventId: string): Promise<GroupExitMonitorState> =>
-    ipcRenderer.invoke('group-exit-monitor:resendEvent', eventId),
   markGroupExitMonitorRead: (readAt?: number): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:markRead', readAt),
   listWechatActionLogs: (): Promise<ActionLogEntry[]> =>
@@ -220,6 +212,16 @@ const api = {
   /** 「在哪些聊天生效」的可选项。`id` 为 `xxx@chatroom`，与规则内 conversationIds 同口径。 */
   listAutomationGroups: (): Promise<Array<{ id: string; name: string }>> =>
     ipcRenderer.invoke('automation:listGroups'),
+  /**
+   * 保存「退群通知」规则（singleton upsert，id 由 main 侧固定，渲染层不拼 id）。
+   */
+  saveLeaveNotificationRule: (draft: AutomationRuleDraft): Promise<AutomationRule> =>
+    ipcRenderer.invoke('automation:saveLeaveNotificationRule', draft),
+  /**
+   * 「指定好友」的可选项。已在 main 侧过滤掉群聊 / 公众号 / 文件传输助手 / 自己。
+   */
+  listSendableContacts: (): Promise<Array<{ id: string; name: string }>> =>
+    ipcRenderer.invoke('automation:listSendableContacts'),
   onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: GroupExitMonitorState): void =>
       callback(state)
