@@ -14,7 +14,8 @@ import {
   Menu,
   Tray,
   dialog,
-  protocol
+  protocol,
+  screen
 } from 'electron'
 import { dirname, extname, join } from 'path'
 import { existsSync, promises as fsPromises } from 'fs'
@@ -504,9 +505,29 @@ async function createLocalMediaResponse(request: Request, filePath: string): Pro
 
 function createWindow(): void {
   // 创建浏览器窗口
+  /*
+   * 初始尺寸按当前屏幕工作区的 60% 计算，不再用固定 1400×800。
+   * 两个夹逼都是必要的：
+   * - 下限：小屏上 60% 会算出比原固定值更小的窗口（1920×1080 的工作区高度
+   *   只有 ~985，60% 才 591 高），反而比改动前更糟；高度下限取 900，
+   *   即「高度拉大一点」的诉求。
+   * - 上限：不能超过工作区本身，否则初始尺寸会把标题栏顶出屏幕。
+   */
+  const { workAreaSize } = screen.getPrimaryDisplay()
+  const initialWidth = Math.min(
+    Math.max(Math.round(workAreaSize.width * 0.6), 1400),
+    workAreaSize.width
+  )
+  const initialHeight = Math.min(
+    Math.max(Math.round(workAreaSize.height * 0.6), 900),
+    workAreaSize.height
+  )
   const mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 800,
+    width: initialWidth,
+    height: initialHeight,
+    minWidth: 960,
+    minHeight: 640,
+    center: true,
     show: false,
     autoHideMenuBar: true,
     icon: appIconPath,

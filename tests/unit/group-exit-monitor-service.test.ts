@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, readJsonSync, rmSync, writeJsonSync } from 'fs-extra'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readJsonSync,
+  rmSync,
+  writeFileSync,
+  writeJsonSync
+} from 'fs-extra'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -47,6 +55,37 @@ function installGroupDb(): void {
     invalidateGroupNicknameCache: vi.fn()
   }
   mocks.chat.getChatDb.mockReturnValue({ getWcdb4Client: () => client })
+}
+
+/** 写真实形态的 append-only 事件文件：一行一条，文件顺序即传入顺序。 */
+function writePersistedEvents(detectedAtList: number[]): void {
+  writeFileSync(
+    join(mocks.userData, 'group-exit-monitor-events.jsonl'),
+    detectedAtList
+      .map((detectedAt, index) => `${JSON.stringify(persistedEvent(index, detectedAt))}\n`)
+      .join(''),
+    'utf8'
+  )
+}
+
+/** 一条能通过 normalizeEvents 校验的持久化事件（人数必须是净减少）。 */
+function persistedEvent(index: number, detectedAt: number): Record<string, unknown> {
+  return {
+    id: `room@chatroom:wxid_member_${index}:${detectedAt}:${index}`,
+    contactId: 'room@chatroom-md5',
+    roomId: 'room@chatroom',
+    groupName: '测试群',
+    memberWxid: `wxid_member_${index}`,
+    memberName: `成员${index}`,
+    wechatName: `成员${index}`,
+    groupRemark: '',
+    contactRemark: '',
+    previousCount: 40 + index,
+    currentCount: 39 + index,
+    delta: -1,
+    message: `成员${index}退出了测试群`,
+    detectedAt
+  }
 }
 
 function writeBaseline(
@@ -819,5 +858,48 @@ describe('GroupExitMonitorService', () => {
 
     expect(mocks.sender.send).toHaveBeenCalledOnce()
     expect(service.getState().events).toHaveLength(1)
+  })
+
+  /*
+   * 回归：append-only 文件的物理行序不保证时间有序 —— 迁移写入的一段是倒序
+   * （新 → 旧），之后 append 的新事件是正序。内存必须显式重建「新在前」，
+   * 否则列表顶部恒为最旧的一批（实测：09-20 的事件一直占第一条，
+   * 09-21~09-23 的 46 条被排到第 211 位之后，看起来像「新事件全丢了」）。
+   */
+  it('returns newest events first even when the append-only file mixes both directions', () => {
+    const base = Date.parse('2026-09-20T19:00:00+08:00')
+    // 迁移段：倒序（新 → 旧）
+    const migrated = [base, base - 60_000, base - 120_000]
+    // 追加段：正序（旧 → 新）
+    const appended = [base + 86_400_000, base + 172_800_000]
+    writeBaseline([])
+    writePersistedEvents([...migrated, ...appended])
+
+    const state = new GroupExitMonitorService().getState()
+
+    expect(state.events.map((event) => event.detectedAt)).toEqual(
+      [...migrated, ...appended].sort((left, right) => right - left)
+    )
+    // 修复前这里会是迁移段的首条（base），正是用户看到的「顶部恒为 09-20」。
+    expect(state.events[0].detectedAt).toBe(base + 172_800_000)
+  })
+
+  /*
+   * 回归：state 回传上限必须截「最新」而不是「最旧」。
+   * 磁盘是 append-only，新事件在文件末尾；未排序时 slice(0, 500) 会恰好把
+   * 最新的事件全部挡在界面之外（按 11 条/天估算约 2026-10-16 触发）。
+   */
+  it('keeps the newest events when history exceeds the state payload limit', () => {
+    const base = Date.parse('2026-09-20T00:00:00+08:00')
+    const total = 520
+    writeBaseline([])
+    writePersistedEvents(Array.from({ length: total }, (_, index) => base + index * 60_000))
+
+    const state = new GroupExitMonitorService().getState()
+
+    expect(state.totalEventCount).toBe(total)
+    expect(state.events).toHaveLength(500)
+    expect(state.events[0].detectedAt).toBe(base + (total - 1) * 60_000)
+    expect(state.events[state.events.length - 1].detectedAt).toBe(base + (total - 500) * 60_000)
   })
 })
