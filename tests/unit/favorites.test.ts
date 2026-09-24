@@ -7,6 +7,11 @@ describe('favorites type map', () => {
     expect(describeFavoriteType('IMG')).toBe('图片')
     expect(describeFavoriteType('FINDER_FEED')).toBe('视频号')
     expect(describeFavoriteType(2)).toBe('图片')
+    // 真机 fav_db_item.type
+    expect(describeFavoriteType(14)).toBe('聊天记录')
+    expect(describeFavoriteType(18)).toBe('笔记/图文')
+    expect(describeFavoriteType(19)).toBe('小程序')
+    expect(describeFavoriteType(20)).toBe('视频号')
     expect(describeFavoriteType('99-custom')).toBe('99-custom')
     expect(describeFavoriteType(undefined)).toBeUndefined()
   })

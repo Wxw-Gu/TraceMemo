@@ -26,27 +26,26 @@ const FAV_TYPE_TEXT: Record<string, string> = {
   '7': '音乐',
   file: '文件',
   '8': '文件',
-  book: '书籍',
-  '9': '书籍',
-  goods: '商品',
-  general_product: '商品',
-  '10': '商品',
-  card: '卡券',
-  sharecard: '名片',
+  // 真机 fav_db_item.type（2026-09-24 直方图）：
   record: '聊天记录',
   embeded_record: '聊天记录',
-  tv: '视频',
-  sight: '视频',
-  music_mv: '音乐视频',
-  note: '笔记',
+  '14': '聊天记录',
+  sight: '小视频/名片',
+  sharecard: '名片',
+  '16': '小视频/名片',
+  note: '笔记/图文',
+  '18': '笔记/图文',
   weapp: '小程序',
   liteapp: '小程序',
+  '19': '小程序',
   finder: '视频号',
   finder_feed: '视频号',
   finder_live: '视频号直播',
   finder_video: '视频号',
   finder_name_card: '视频号名片',
+  '20': '视频号',
   finder_shop_window_shared: '商品橱窗',
+  music_mv: '音乐视频',
   ting: '听一听',
   ting_list: '听一听',
   collection: '合集',
@@ -112,7 +111,8 @@ export function favoriteRecordToContent(record: FavoriteRecord): ParsedContent {
     key === 'sight' ||
     key === 'tv' ||
     key === 'music_mv' ||
-    key === '4'
+    key === '4' ||
+    key === '16'
   ) {
     return {
       type: 'video',
@@ -131,7 +131,7 @@ export function favoriteRecordToContent(record: FavoriteRecord): ParsedContent {
       lng: record.lng ?? 0
     }
   }
-  if (key === 'weapp' || key === 'liteapp') {
+  if (key === 'weapp' || key === 'liteapp' || key === '19') {
     return {
       type: 'miniProgram',
       title,
@@ -139,7 +139,7 @@ export function favoriteRecordToContent(record: FavoriteRecord): ParsedContent {
       appName: record.appName || '小程序'
     }
   }
-  if (key === 'record' || key === 'embeded_record') {
+  if (key === 'record' || key === 'embeded_record' || key === '14') {
     return {
       type: 'forwardBundle',
       title: title || '聊天记录',
