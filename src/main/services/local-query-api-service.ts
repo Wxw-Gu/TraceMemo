@@ -320,10 +320,22 @@ export class LocalQueryApiService {
     | ((conversationId: string, messageId: string) => { state: string; text: string } | undefined)
     | undefined
 
+  /** 收藏关键词检索（favorite.db，只读）。 */
+  private favoritesSearch:
+    | ((query: string, limit: number) => Promise<Array<{ text: string; timestamp?: number }>>)
+    | undefined
+
   constructor(
     private readonly knowledge?: KnowledgeSearchService,
     private readonly nowProvider: () => Date = () => new Date()
   ) {}
+
+  /** 注入收藏检索（`FavoritesService.searchHits`），供 `search_messages` 合并只读命中。 */
+  setFavoritesSearchProvider(
+    provider: (query: string, limit: number) => Promise<Array<{ text: string; timestamp?: number }>>
+  ): void {
+    this.favoritesSearch = provider
+  }
 
   /**
    * 注入图片文字索引覆盖度提供者。
@@ -507,14 +519,30 @@ export class LocalQueryApiService {
       enrichmentMs,
       ...(knowledgeTiming ? { knowledge: knowledgeTiming } : {})
     }
+    let favoriteEvidence: QueryEvidenceItem[] = []
+    if (this.favoritesSearch && !targetView) {
+      try {
+        const hits = await this.favoritesSearch(request.query, Math.min(10, limit))
+        favoriteEvidence = hits.map((hit, index) => ({
+          messageRef: `fav-${index}`,
+          conversationName: '收藏',
+          timestamp: hit.timestamp ?? 0,
+          sender: '收藏',
+          sourceKind: 'other' as QueryMessageType,
+          text: hit.text
+        }))
+      } catch {
+        favoriteEvidence = []
+      }
+    }
     return {
       status: 'completed' as const,
       ...(targetView ? { target: targetView } : {}),
       resolvedTimeRange: range,
       coverage: { state: this.searchCoverage(found, requestedEnd) },
       probeCount: probes.length,
-      evidenceCount: found.evidence.size,
-      evidence: Array.from(found.evidence.values()).slice(0, limit),
+      evidenceCount: found.evidence.size + favoriteEvidence.length,
+      evidence: [...Array.from(found.evidence.values()).slice(0, limit), ...favoriteEvidence],
       scope: corpus.scope,
       indexLatestAt: found.indexLatestAt,
       sourceLatestAt: found.sourceLatestAt,

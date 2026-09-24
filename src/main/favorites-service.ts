@@ -30,6 +30,34 @@ export class FavoritesService {
       } as Message
     })
   }
+
+  /** 只读关键词搜索收藏文本（title/desc/正文）。 */
+  async search(query: string, limit = 50): Promise<ParsedContent[]> {
+    const needle = String(query || '').trim().toLowerCase()
+    if (!needle) return []
+    const items = await this.listContents(500)
+    return items.filter((item) => textOf(item).toLowerCase().includes(needle)).slice(0, limit)
+  }
+
+  /** Local Query API 适配：只要文本与时间戳。 */
+  async searchHits(
+    query: string,
+    limit = 20
+  ): Promise<Array<{ text: string; timestamp?: number }>> {
+    const rows = await this.wcdb4Client.listFavoriteItems(500)
+    const needle = String(query || '').trim().toLowerCase()
+    if (!needle) return []
+    return rows
+      .map((row) => {
+        const content = favoriteRowToContent(row)
+        return {
+          text: textOf(content),
+          timestamp: Number(row.update_time) || undefined
+        }
+      })
+      .filter((hit) => hit.text.toLowerCase().includes(needle))
+      .slice(0, limit)
+  }
 }
 
 function textOf(content: ParsedContent): string {

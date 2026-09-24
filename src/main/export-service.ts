@@ -25,6 +25,7 @@ import { mergeCachedSelfInfo, type CachedSelfInfo } from './services/bootstrap-c
 import type { VoiceRecognitionUseCase } from './voice-pipeline/voice-recognition-use-case'
 import { imageFileQuality } from '../shared/image-quality'
 import { resolveMemberName } from '../shared/member-names'
+import { FavoritesService } from './favorites-service'
 import { filesystemSafeName } from '../shared/contact-name'
 
 const jobs = new Set<string>()
@@ -852,6 +853,28 @@ async function runSingleExport(
         total: targets.length,
         percent: Math.max(1, Math.round(((targetOrder + 1) / targets.length) * 10))
       })
+    }
+    if (request.includeFavorites) {
+      const wcdb = chat.getChatDb()?.getWcdb4Client()
+      if (wcdb) {
+        try {
+          const favoriteMessages = await new FavoritesService(wcdb).listExportMessages(500)
+          for (const [messageOrder, message] of favoriteMessages.entries()) {
+            if (!request.kinds.includes(kindOf(message))) continue
+            messageEntries.push({
+              message: {
+                ...message,
+                exportConversationId: 'favorites',
+                exportConversationName: '收藏'
+              },
+              targetOrder: targets.length,
+              messageOrder
+            })
+          }
+        } catch (error) {
+          console.warn('[export] favorites merge skipped:', error)
+        }
+      }
     }
     const messages = messageEntries
       .sort((left, right) => {

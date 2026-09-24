@@ -771,6 +771,13 @@ app.whenReady().then(async () => {
   localQueryApiService.setImageOcrEntryProvider((conversationId, messageId) =>
     imageTextIndexService.getConversationOcr(conversationId).get(messageId)
   )
+  // 收藏只读检索：search_messages 合并 favorite.db 命中（无库时返回空）。
+  localQueryApiService.setFavoritesSearchProvider(async (query, limit) => {
+    const wcdb = chat.getChatDb()?.getWcdb4Client()
+    if (!wcdb) return []
+    const { FavoritesService } = await import('./favorites-service')
+    return new FavoritesService(wcdb).searchHits(query, limit)
+  })
   setLocalQueryApiService(localQueryApiService)
   // Query Agent：生产 Runtime 只在这里实例化一次，桌面问问微信与 Agent Hub 共用同一个实例。
   queryAgentService = new QueryAgentService(

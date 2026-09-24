@@ -38,6 +38,8 @@ export interface ExportRequest {
   kinds: ExportMessageKind[]
   includeMedia: boolean
   includeVoiceTranscripts?: boolean
+  /** 合并本机收藏（favorite.db）只读卡片。 */
+  includeFavorites?: boolean
   preferOriginal?: boolean
   fallbackThumbnail?: boolean
   keepMissing?: boolean
