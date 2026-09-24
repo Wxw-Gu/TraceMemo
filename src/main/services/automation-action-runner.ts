@@ -8,8 +8,13 @@ import {
   type AutomationAction,
   type AutomationRule,
   type AutomationStep,
-  type AutomationStepKey
+  type AutomationStepKey,
+  type LeaveNotificationConfig
 } from '../../shared/automation'
+import {
+  renderLeaveNotificationText,
+  type GroupMemberExitedEvent
+} from '../../shared/group-exit-event'
 import type { WechatActionContent, WechatActionRequest, WechatActionResult } from '../../shared/wechat-action'
 import {
   generateAgentGroupReport,
@@ -17,6 +22,7 @@ import {
   type AgentGroupReportResult
 } from './agent-group-report-service'
 import { wechatActionGateway } from './wechat-action-gateway'
+import type { LeaveNotificationTargetResolution } from './leave-notification-target'
 
 /**
  * AutomationActionRunner —— 把一次命中跑成**步骤序列**。
@@ -31,6 +37,14 @@ import { wechatActionGateway } from './wechat-action-gateway'
 
 /** 一步执行完毕后，后续步骤的处置方式。 */
 const STEP_ORDER: AutomationStepKey[] = ['received', 'matched', 'reply', 'report', 'send']
+
+/** 退群通知的步骤顺序（与消息型规则**不共用**）。 */
+const LEAVE_NOTIFICATION_STEP_ORDER: AutomationStepKey[] = [
+  'exit_received',
+  'exit_matched',
+  'exit_target',
+  'exit_send'
+]
 
 /**
  * 前置步骤失败时，后续步骤的 `skipReason`。
@@ -63,6 +77,30 @@ export interface AutomationRunResult {
   status: 'success' | 'failed'
   errorSummary?: string
   pngPath?: string
+}
+
+/**
+ * 退群通知的执行输入。
+ *
+ * 目标解析与发送能力预检都由 `AutomationService` 在调用前完成，
+ * 这里只负责"把它跑成步骤序列" —— 于是**所有步骤构造只在一处**，
+ * 不会出现"服务拼一半、runner 拼一半"的裂口。
+ */
+export interface LeaveNotificationRunInput {
+  executionId: string
+  event: GroupMemberExitedEvent
+  config: LeaveNotificationConfig
+  resolution: LeaveNotificationTargetResolution
+  /** 事件来源的显示名（群名 / 「群聊」）。**不含 wxid**。 */
+  sourceDisplayName: string
+  /** 发送能力缺失时的一句话说明；有值时 `exit_send` 直接判失败。 */
+  sendBlockedReason?: string
+}
+
+export interface LeaveNotificationRunResult {
+  steps: AutomationStep[]
+  status: 'success' | 'failed'
+  errorSummary?: string
 }
 
 export interface AutomationActionRunnerDependencies {
@@ -233,6 +271,93 @@ export class AutomationActionRunner {
     }
     markSuccess(sendStep, this.now())
     return { steps, status: 'success', pngPath }
+  }
+
+  /**
+   * 退群通知：把「检测到成员退出」这件事跑成一次发送。
+   *
+   * 与 `run()` 的差别：没有动作链、没有回复等待、没有 cooldown
+   * （退群是低频事件，且**不能被时间窗合并** —— 两个成员先后退出就是两条通知）。
+   */
+  async runLeaveNotification(input: LeaveNotificationRunInput): Promise<LeaveNotificationRunResult> {
+    const steps = LEAVE_NOTIFICATION_STEP_ORDER.map((key) => createStep(key))
+    const stepAt = (key: AutomationStepKey): AutomationStep =>
+      steps.find((step) => step.key === key) as AutomationStep
+
+    markSuccess(stepAt('exit_received'), this.now())
+    markSuccess(stepAt('exit_matched'), this.now())
+
+    // ---- 目标解析失败：不许 fallback 到任何地方，直接判失败 ----
+    if (!input.resolution.ok) {
+      markFailed(stepAt('exit_target'), this.now(), input.resolution.error)
+      markSkipped(stepAt('exit_send'), '没有可用的通知目标，未发送。')
+      return { steps, status: 'failed', errorSummary: input.resolution.error }
+    }
+    const targetStep = stepAt('exit_target')
+    targetStep.status = 'success'
+    targetStep.startedAt = this.now()
+    targetStep.finishedAt = targetStep.startedAt
+    targetStep.durationMs = 0
+    // 用户可读的目标名（例如「文件传输助手」「张三」「我」）—— 不带任何 id。
+    targetStep.detail = input.resolution.target.displayName
+
+    const sendStep = stepAt('exit_send')
+
+    // ---- 发送能力缺失：如实判失败（退群事实本身仍然是成功的） ----
+    if (input.sendBlockedReason) {
+      markFailed(sendStep, this.now(), input.sendBlockedReason)
+      return { steps, status: 'failed', errorSummary: input.sendBlockedReason }
+    }
+
+    const text = renderLeaveNotificationText(input.event, input.config.template).trim()
+    if (!text) {
+      const error = '通知内容为空，未发送。'
+      markFailed(sendStep, this.now(), error)
+      return { steps, status: 'failed', errorSummary: error }
+    }
+
+    sendStep.status = 'running'
+    sendStep.startedAt = this.now()
+    const sent = await this.sendLeaveNotification(input, text)
+    if (!sent.ok) {
+      markFailed(sendStep, this.now(), sent.error || '发送退群通知失败')
+      return { steps, status: 'failed', errorSummary: sendStep.error }
+    }
+    markSuccess(sendStep, this.now())
+    return { steps, status: 'success' }
+  }
+
+  /**
+   * 退群通知的统一发送出口。
+   *
+   * **必须走 `WechatActionGateway`**：幂等 + 3 秒发送间隔 + 审计落盘都在那里，
+   * 直接调个人微信发送会绕过全部三样。Automation 层也不允许知道
+   * OneBot / WCHook / native host / Windows hook 的存在。
+   *
+   * 幂等键由 **eventId** 派生（不是 executionId）：审计是落盘的，
+   * 于是"重启后重复投递同一退群事件"会被持久层直接短路。
+   */
+  private async sendLeaveNotification(
+    input: LeaveNotificationRunInput,
+    text: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (!input.resolution.ok) return { ok: false, error: input.resolution.error }
+    try {
+      const result = await this.executeAction({
+        idempotencyKey: `${AUTOMATION_SEND_PURPOSE.leaveNotification}:${input.event.eventId}`,
+        origin: AUTOMATION_SEND_ORIGIN,
+        purpose: AUTOMATION_SEND_PURPOSE.leaveNotification,
+        triggerType: 'automation',
+        executionId: input.executionId,
+        sourceId: input.event.eventId,
+        recipient: input.resolution.target.recipient,
+        content: { type: 'text', text }
+      })
+      if (result.status === 'sent') return { ok: true }
+      return { ok: false, error: actionErrorMessage(result.errorCode, result.reason) }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   /**

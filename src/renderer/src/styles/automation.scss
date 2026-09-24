@@ -227,6 +227,13 @@
     background: var(--wxex-bg-app);
     opacity: 0.72;
   }
+
+  // 视觉稿卡片：虚线边框表示"还没有真实配置"。
+  // 刻意不降透明度 —— 它需要被当成正常的一张卡来评估信息架构。
+  &.preview {
+    border-style: dashed;
+    background: var(--wxex-bg-app);
+  }
 }
 
 .automation-rule-card-main {
@@ -266,6 +273,14 @@
   &.off {
     background: color-mix(in srgb, var(--wxex-text-muted) 18%, transparent);
     color: var(--wxex-text-secondary);
+  }
+
+  // 「退群通知」尚未迁移真实功能，状态如实写「待配置」——
+  // 不给它 success 色，避免和真正在跑的规则混淆。
+  &.pending {
+    border: 1px dashed color-mix(in srgb, var(--wxex-text-muted) 45%, transparent);
+    background: transparent;
+    color: var(--wxex-text-muted);
   }
 }
 
@@ -1178,4 +1193,293 @@
   justify-content: flex-end;
   gap: 8px;
   margin-top: 6px;
+}
+
+// ---------------------------------------------------------------------------
+// 规则类型（@我生成日报 / 退群通知）
+// ---------------------------------------------------------------------------
+//
+// 只是「规则」内部的一层导航。视觉继续用现有 token，
+// 这里不引入第二套配色，也不做卡片化的 Dashboard 重构。
+
+.automation-rule-type-shell {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.automation-rule-type-tabs {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.automation-rule-type-label {
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.automation-rule-type-note {
+  margin: 0;
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+// ---------------------------------------------------------------------------
+// 退群通知编辑器
+// ---------------------------------------------------------------------------
+
+.automation-leave-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+// 只读的「已监控群聊」摘要：范围归退群监控管，这里不重复维护一份选择状态。
+.automation-leave-groups-card {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-sm);
+  background: var(--wxex-bg-app);
+
+  > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  strong {
+    color: var(--wxex-text-primary);
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 22px;
+  }
+
+  small {
+    color: var(--wxex-text-muted);
+    font-size: 12px;
+    line-height: 17px;
+  }
+}
+
+// 「通知发送到哪里」四选一。
+.automation-leave-targets {
+  gap: 2px;
+}
+
+// 单选项一行：radio + （可选）标题/说明两行。
+// 联系人单选也复用同一行样式，所以只有一处定义。
+.automation-leave-radio {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 8px;
+
+  label {
+    display: block;
+    color: var(--wxex-text-primary);
+    font-size: 13px;
+    line-height: 18px;
+    cursor: pointer;
+  }
+
+  &.option {
+    padding: 7px 10px;
+    border-radius: var(--wxex-radius-sm);
+
+    &:hover {
+      background: var(--wxex-bg-app);
+    }
+  }
+}
+
+.automation-leave-radio-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+
+  small {
+    color: var(--wxex-text-muted);
+    font-size: 12px;
+    line-height: 17px;
+    overflow-wrap: anywhere;
+  }
+}
+
+.automation-leave-contact-picker {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.automation-leave-contact-list {
+  display: flex;
+  min-width: 0;
+  max-height: 200px;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-sm);
+  background: var(--wxex-bg-app);
+}
+
+.automation-leave-template {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.automation-leave-template-editor {
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 19px;
+}
+
+.automation-leave-template-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+}
+
+.automation-leave-template-chips {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.automation-leave-template-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--wxex-border);
+  border-radius: 999px;
+  background: var(--wxex-bg-app);
+  color: var(--wxex-text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--wxex-brand) 40%, var(--wxex-border));
+    background: var(--wxex-brand-soft);
+    color: var(--wxex-brand);
+  }
+}
+
+.automation-leave-template-count {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.automation-leave-template-note {
+  margin: 0;
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+// ---------------------------------------------------------------------------
+// 退群通知效果预览
+// ---------------------------------------------------------------------------
+
+.automation-preview-chat-title {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--wxex-border);
+  color: var(--wxex-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+// 退群监控产生的系统事件，不是聊天消息 —— 所以居中、弱化，不做成气泡。
+.automation-preview-system {
+  margin: 0;
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+// 通知模板是多行文本，必须保留换行，否则 JSON 式内容会糊成一行。
+.automation-chat-bubble.pre {
+  white-space: pre-wrap;
+}
+
+// 退群通知的「已解析目标」（文件传输助手 / 我 / 张三…）——
+// 只显示用户能理解的称呼，不含任何 id。
+.automation-step-detail {
+  margin: 4px 0 0;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * 需要「正文 + 说明 + 一个动作按钮」的提示块。
+ *
+ * 用 grid 而不是靠 inline-block 自然换行：按钮必须**独占一行**
+ * （历史要求：不靠 fixed width / transform 之类手段凑布局）。
+ */
+.automation-notice-stack {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+
+  p {
+    margin: 0;
+    color: var(--wxex-text-primary);
+    font-size: 13px;
+    line-height: 19px;
+  }
+
+  small {
+    color: var(--wxex-text-secondary);
+    font-size: 12px;
+    line-height: 18px;
+  }
+}
+
+/*
+ * 「正在编辑：<规则名>」。
+ *
+ * 必须显眼且与保存目标同源：用户报过"从退群通知切到日报后保存，却改到了日报"，
+ * 根因就是编辑目标不可见 —— 界面只显示表单，不显示它在改哪条规则。
+ */
+.automation-editing-target {
+  margin: 0 0 6px;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+
+  strong {
+    color: var(--wxex-text-primary);
+    font-weight: 600;
+  }
 }

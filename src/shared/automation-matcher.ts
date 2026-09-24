@@ -32,6 +32,7 @@ export interface AutomationMatchInput {
 }
 
 export type AutomationMatchFailure =
+  | 'rule_type'
   | 'disabled'
   | 'self'
   | 'scope'
@@ -52,6 +53,15 @@ export function matchAutomationRule(
   /** 自己的 username 候选集（`getMyUsernameCandidates()`）。 */
   selfUsernames: readonly string[]
 ): AutomationMatchResult {
+  // **规则类型闸门放在最前面。**
+  //
+  // 「退群通知」的空关键词 + 不要求 @我，会让它命中**每一条群消息** ——
+  // 那是最坏的一类 bug：用户什么都没配，规则却开始乱跑。
+  // 类型分派必须在这里一处解决，预览与真实执行才会一致。
+  if (rule.ruleType === 'leave_notification') {
+    return { matched: false, reason: 'rule_type' }
+  }
+
   if (!rule.enabled) return { matched: false, reason: 'disabled' }
 
   // 防死循环第一道闸：自己发的消息默认不触发。

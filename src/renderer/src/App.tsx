@@ -45,8 +45,8 @@ import { switchGeneratedReportTemplate } from './utils/report-template-switch'
 import { runtimePlatform, supportsPersonalWechatSend } from './utils/runtime-environment'
 import { useToast } from './components/ui'
 import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
-import { GroupExitMonitorWorkspace } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
-import { AutomationWorkspace } from './features/automation/AutomationWorkspace'
+import { GroupExitMonitorWorkspace, type GroupExitMonitorOpenViewRequest } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
+import { AutomationWorkspace, type AutomationOpenRuleRequest } from './features/automation/AutomationWorkspace'
 import { selectContactAvatarRefreshUsernames } from './utils/contact-avatar'
 import {
   buildContactSearchIndex,
@@ -258,6 +258,17 @@ function App(): React.ReactElement {
   const [databaseEnvironment, setDatabaseEnvironment] = useState<DatabaseKeyEnvironment>()
   const connectionOperationRef = React.useRef(0)
   const [activePage, setActivePage] = useState<AppPage>('archive')
+  /**
+   * 「退群监控 ⇄ 自动化」之间的跨页深链。
+   *
+   * 项目没有 react-router，一级菜单就是 `activePage` 这一份 state，
+   * 所以深链同样是 state —— 用一个单调递增的 requestId 表达"又点了一次"，
+   * 子页面据此重新落位（同一个对象引用不会重复触发 effect）。
+   */
+  const [automationOpenRuleRequest, setAutomationOpenRuleRequest] =
+    React.useState<AutomationOpenRuleRequest | null>(null)
+  const [exitMonitorOpenViewRequest, setExitMonitorOpenViewRequest] =
+    React.useState<GroupExitMonitorOpenViewRequest | null>(null)
   const [archiveJumpTime, setArchiveJumpTime] = useState<number | null>(null)
   /**
    * 精确跳转目标（规范化后的消息 id）。
@@ -1655,6 +1666,23 @@ function App(): React.ReactElement {
     setActivePage('agent-hub')
   }
 
+  /**
+   * 「退群监控 → 退群通知自动化」。
+   *
+   * 直接落到「自动化 → 规则 → 退群通知」，不是只跳到自动化首页。
+   * 这是纯导航：不改退群监控的任何配置，也不触发任何发送。
+   */
+  const openLeaveNotificationAutomation = (): void => {
+    setAutomationOpenRuleRequest({ ruleType: 'leave_notification', requestId: Date.now() })
+    setActivePage('automation')
+  }
+
+  /** 「自动化 → 退群通知 → 管理监控群聊 / 查看群聊」：回到退群监控的管理群聊页。 */
+  const openExitMonitorGroups = (): void => {
+    setExitMonitorOpenViewRequest({ view: 'manage', requestId: Date.now() })
+    setActivePage('exit-monitor')
+  }
+
   const dismissFirstUseWelcome = (): void => {
     try {
       localStorage.setItem(FIRST_USE_WELCOME_SEEN_KEY, '1')
@@ -2097,6 +2125,8 @@ function App(): React.ReactElement {
             dbReady={isDatabaseConnected}
             contacts={contacts}
             onOpenSendSettings={openWechatSendSettings}
+            openViewRequest={exitMonitorOpenViewRequest}
+            onOpenLeaveNotificationAutomation={openLeaveNotificationAutomation}
           />
         )
       case 'automation':
@@ -2104,6 +2134,8 @@ function App(): React.ReactElement {
           <AutomationWorkspace
             dbReady={isDatabaseConnected}
             onOpenSendSettings={openWechatSendSettings}
+            onOpenExitMonitorGroups={openExitMonitorGroups}
+            openRuleRequest={automationOpenRuleRequest}
           />
         )
       case 'agent-hub':

@@ -4,6 +4,7 @@ import type {
   AutomationRuleDraft,
   AutomationStatusSummary
 } from '../../../../../shared/automation'
+import type { GroupExitMonitorState } from '../../../../../shared/group-exit-monitor'
 
 /**
  * `window.api` 的薄封装。
@@ -91,5 +92,31 @@ export const automationApi = {
 
   clearExecutions: (): Promise<boolean> => invoke('clearAutomationExecutions', false),
 
-  listGroups: (): Promise<AutomationGroupOption[]> => invoke('listAutomationGroups', [])
+  listGroups: (): Promise<AutomationGroupOption[]> => invoke('listAutomationGroups', []),
+
+  /** 保存「退群通知」规则（singleton upsert，id 由 main 侧固定）。 */
+  saveLeaveNotificationRule: (draft: AutomationRuleDraft): Promise<AutomationRule | null> =>
+    invoke<AutomationRule | null>('saveLeaveNotificationRule', null, draft),
+
+  /**
+   * 「指定好友」的可选项。
+   *
+   * 过滤（群聊 / 公众号 / 文件传输助手 / 自己）在 main 侧完成 ——
+   * 那里才知道当前登录账号是谁。渲染层不再筛一遍，避免两套规则漂移。
+   */
+  listSendableContacts: (): Promise<AutomationGroupOption[]> =>
+    invoke('listSendableContacts', []),
+
+  /**
+   * 真实已监控群聊数量。
+   *
+   * 数据源是**退群监控**，自动化不维护副本（§「Automation 不做二次 group filter」）。
+   * 取数与退群监控页保持同一表达式，否则两个页面会对同一个数字给出不同答案。
+   */
+  async getMonitoredGroupCount(): Promise<number> {
+    const state = await invoke<GroupExitMonitorState | null>('getGroupExitMonitorState', null)
+    if (!state) return 0
+    if (state.monitorSelectionConfigured) return (state.monitoredRoomIds || []).length
+    return Number(state.monitoredGroupCount) || 0
+  }
 }

@@ -127,6 +127,9 @@ export function ExecutionDetailDrawer({
                           </>
                         )}
                       </div>
+                      {step.detail ? (
+                        <p className="automation-step-detail">{step.detail}</p>
+                      ) : null}
                       {step.error ? <p className="automation-step-error">{step.error}</p> : null}
                     </div>
                   </li>

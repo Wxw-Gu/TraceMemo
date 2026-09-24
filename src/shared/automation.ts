@@ -5,6 +5,8 @@
  * 第一版不做：regex、IF/ELSE 嵌套、可视化编排、Webhook、通用 AI 机器人。
  */
 
+import { normalizeGroupExitNotificationTemplate } from './group-exit-monitor'
+
 /** 触发事件类型。第一版只支持「收到消息」。 */
 export type AutomationTriggerType = 'message'
 
@@ -18,6 +20,49 @@ export type KeywordMatchMode = 'contains' | 'exact' | 'prefix'
 
 /** 消息来源过滤。 */
 export type AutomationMessageScope = 'group' | 'direct' | 'all'
+
+/**
+ * 规则类型。
+ *
+ * 决定**这条规则由什么驱动、有哪些字段有意义**：
+ * - `daily_report`：消息驱动，条件 + 动作链（@我生成日报）；
+ * - `leave_notification`：退群事件驱动，通知目标 + 模板（退群通知）。
+ *
+ * ⚠️ 这是一条**硬分派**：`matchAutomationRule` 会直接拒绝非 `daily_report` 的规则，
+ * 否则一条 keyword 为空的退群通知会命中**每一条群消息**。
+ */
+export type AutomationRuleType = 'daily_report' | 'leave_notification'
+
+/** 规则类型的界面标签（Tab 与首页卡片共用一处文案）。 */
+export const AUTOMATION_RULE_TYPE_LABELS: Record<AutomationRuleType, string> = {
+  daily_report: '@我生成日报',
+  leave_notification: '退群通知'
+}
+
+/** 退群通知发到哪里。刻意只有这四种。 */
+export type LeaveNotificationTargetType = 'source_chat' | 'self' | 'file_transfer' | 'contact'
+
+export interface LeaveNotificationTarget {
+  type: LeaveNotificationTargetType
+  /**
+   * `contact` 时必填。
+   *
+   * **稳定 id（wxid）**，不是显示昵称 —— 昵称会改，改完就发错人。
+   */
+  contactId?: string
+}
+
+export interface LeaveNotificationConfig {
+  target: LeaveNotificationTarget
+  template: string
+  /**
+   * 迁移时旧配置**无法无损映射**的标记（旧「通知群聊」是 per-group 多值，
+   * 新目标是单值）。为 true 时：规则不执行发送，UI 提示用户重选目标。
+   *
+   * 只有迁移会把它置为 true，用户手动保存一次即清除。
+   */
+  targetNeedsReview?: boolean
+}
 
 export interface AutomationConditions {
   /** 必须**真正** @我（走 source → atuserlist，不是正文里的 @昵称）。 */
@@ -44,6 +89,8 @@ export interface AutomationRule {
   id: string
   name: string
   enabled: boolean
+  /** 规则类型。缺省视为 `daily_report`（历史 rules.json 没有这个字段）。 */
+  ruleType: AutomationRuleType
   trigger: AutomationTriggerType
   scope: AutomationMessageScope
   conditions: AutomationConditions
@@ -61,6 +108,8 @@ export interface AutomationRule {
    * `normalizeReplyDelaySeconds()` 处理 ⇒ 缺省即默认 2 秒，不是「不等待」。
    */
   replyDelaySeconds: number
+  /** `ruleType === 'leave_notification'` 时必填。 */
+  leaveNotification?: LeaveNotificationConfig
   createdAt: number
   updatedAt: number
 }
@@ -68,8 +117,26 @@ export interface AutomationRule {
 /** 执行步骤状态。`skipped` 用于「上一步失败所以这一步不做」。 */
 export type AutomationStepStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped'
 
-/** 执行步骤键。只有**真正进入执行**的规则才会有步骤。 */
-export type AutomationStepKey = 'received' | 'matched' | 'reply' | 'report' | 'send'
+/**
+ * 执行步骤键。
+ *
+ * 分两族，**不共用**：
+ * - 消息型（`daily_report`）：received / matched / reply / report / send
+ * - 退群型（`leave_notification`）：exit_received / exit_matched / exit_target / exit_send
+ *
+ * 不共用的理由：给退群通知渲染一个「回复确认 已跳过」的步骤是纯噪声，
+ * 用户会以为规则配错了。
+ */
+export type AutomationStepKey =
+  | 'received'
+  | 'matched'
+  | 'reply'
+  | 'report'
+  | 'send'
+  | 'exit_received'
+  | 'exit_matched'
+  | 'exit_target'
+  | 'exit_send'
 
 export interface AutomationStep {
   key: AutomationStepKey
@@ -79,6 +146,13 @@ export interface AutomationStep {
   startedAt?: number
   finishedAt?: number
   durationMs?: number
+  /**
+   * 用户可读的**细节**（例如已解析的通知目标显示名「文件传输助手」）。
+   *
+   * ⚠️ 展示层契约：只允许放用户能理解的名称。
+   * **禁止** wxid / chatroom id / localId / serverId / 文件路径 / 原始 payload。
+   */
+  detail?: string
   /** 用户可读的错误信息。**禁止**含 wxid / 文件路径 / 原始 payload。 */
   error?: string
   /**
@@ -143,7 +217,15 @@ export const AUTOMATION_SEND_PURPOSE = {
   /** 触发确认文字回复。 */
   reply: 'automation_reply',
   /** 日报图片。 */
-  report: 'automation_report'
+  report: 'automation_report',
+  /**
+   * 退群通知文字。
+   *
+   * 刻意**不复用**历史 purpose `member_left_notification`：那一个被 WechatActionGateway
+   * 的作用域锁绑死在「只能发回事件所在群」，而现在的目标可以是自己 / 文件传输助手 /
+   * 指定好友。用新 purpose 才能真正解除那个锁，同时让旧 purpose 变成无生产者的历史值。
+   */
+  leaveNotification: 'automation_leave_notification'
 } as const
 
 /** 审计日志里的来源标识（`WechatActionOrigin`）。 */
@@ -194,6 +276,7 @@ export function automationIdempotencyKey(
 export interface AutomationRuleDraft {
   name: string
   enabled: boolean
+  ruleType: AutomationRuleType
   trigger: AutomationTriggerType
   scope: AutomationMessageScope
   conditions: AutomationConditions
@@ -201,6 +284,8 @@ export interface AutomationRuleDraft {
   cooldownSeconds: number
   /** 命中后等多久再回复确认（秒）。0 = 立刻回复。 */
   replyDelaySeconds: number
+  /** `ruleType === 'leave_notification'` 时的通知配置。 */
+  leaveNotification?: LeaveNotificationConfig
 }
 
 /** 顶部状态条数据（全部来自 main 侧真实能力，UI 不做平台判断）。 */
@@ -244,33 +329,41 @@ export const AUTOMATION_RULE_TEMPLATES: AutomationRuleTemplate[] = [
     name: '定时发送日报',
     description: '按固定时间自动生成并发送群日报',
     available: false,
-    unavailableReason: '沿用现有「定时日报」能力，本轮不迁移'
-  },
-  {
-    id: 'member-exit-notice',
-    name: '退群通知',
-    description: '群成员退出时自动发送通知',
-    available: false,
-    unavailableReason: '现有「退群监控」已具备该能力，本轮不迁移'
+    unavailableReason: ''
   },
   {
     id: 'keyword-reply',
     name: '关键词自动回复',
     description: '消息命中关键词时自动回复指定内容',
     available: false,
-    unavailableReason: '本轮验收对象为「@我生成日报」，关键词模板下一轮开放'
+    unavailableReason: ''
   }
 ]
 
 /** 内置规则 id。固定值，便于升级时不重复创建。 */
 export const BUILTIN_DAILY_REPORT_RULE_ID = 'builtin-mention-me-daily-report'
 
+/**
+ * 内置「退群通知」规则 id。
+ *
+ * 这是一个 **singleton / system rule**：保存永远按这个 id upsert，
+ * 不允许"每打开一次编辑页多一条规则"。
+ */
+export const BUILTIN_LEAVE_NOTIFICATION_RULE_ID = 'builtin-leave-notification'
+
+/** 退群通知的默认展示名。 */
+export const LEAVE_NOTIFICATION_RULE_NAME = '退群通知'
+
 export const AUTOMATION_STEP_LABELS: Record<AutomationStepKey, string> = {
   received: '收到消息',
   matched: '规则匹配',
   reply: '回复确认',
   report: '生成日报',
-  send: '发送日报图片'
+  send: '发送日报图片',
+  exit_received: '检测到成员退出',
+  exit_matched: '规则匹配',
+  exit_target: '确定通知目标',
+  exit_send: '发送退群通知'
 }
 
 /**
@@ -316,8 +409,80 @@ export function matchKeyword(
   return haystack.includes(needle)
 }
 
+/**
+ * 退群通知的四种发送目标（展示层单一来源）。
+ *
+ * UI 单选项与首页卡片摘要都从这里取文案，避免同一句话在两个文件里各写一份、慢慢漂移。
+ * **顺序即界面顺序**：`当前群聊` 排第一，因为它也是默认值。
+ */
+export const LEAVE_NOTIFICATION_TARGET_OPTIONS: ReadonlyArray<{
+  type: LeaveNotificationTargetType
+  label: string
+  description: string
+}> = [
+  {
+    type: 'source_chat',
+    label: '当前群聊',
+    description: '将通知发送到发生成员退出的群聊。'
+  },
+  {
+    type: 'file_transfer',
+    label: '文件传输助手',
+    description: '将通知发送到文件传输助手。'
+  },
+  {
+    type: 'self',
+    label: '发给自己',
+    description: '将通知发送到当前登录微信账号自己的会话。'
+  },
+  {
+    type: 'contact',
+    label: '指定好友',
+    description: '将通知发送给一个指定联系人。'
+  }
+]
+
+/**
+ * 新安装 / 无历史配置时的默认目标。
+ *
+ * 「当前群聊」= 旧「退群监控」通知的原始行为（通知发回事件所在群），
+ * 所以它既是默认值、也排在选项第一位。
+ */
+export const LEAVE_NOTIFICATION_DEFAULT_TARGET_TYPE: LeaveNotificationTargetType = 'source_chat'
+
+/** 目标类型 → 界面短标签。 */
+export function leaveNotificationTargetLabel(type: LeaveNotificationTargetType): string {
+  return LEAVE_NOTIFICATION_TARGET_OPTIONS.find((option) => option.type === type)?.label ?? ''
+}
+
+/**
+ * 「范围」摘要：退群通知覆盖多少个已监控群聊。
+ *
+ * 数字**必须**来自退群监控（`GroupExitMonitorState`），自动化不维护副本。
+ */
+export function describeMonitoredScope(monitoredCount: number): string {
+  return `${Math.max(0, Math.floor(Number(monitoredCount) || 0))} 个已监控群聊`
+}
+
+/**
+ * 目标的一句话描述（首页卡片摘要用）。
+ *
+ * `contact` 需要外部把联系人显示名传进来 —— shared 不读通讯录。
+ * 名字拿不到时如实说「未选择好友」，不伪造一个收件人。
+ */
+export function describeLeaveNotificationTarget(
+  config: LeaveNotificationConfig | undefined,
+  contactDisplayName?: string
+): string {
+  const target = config?.target
+  if (!target) return '未配置'
+  if (target.type === 'contact') return contactDisplayName?.trim() || '未选择好友'
+  return leaveNotificationTargetLabel(target.type)
+}
+
 /** 触发条件的一句话摘要（UI 展示用，不含任何内部 id）。 */
 export function describeRuleTrigger(rule: AutomationRule): string {
+  if (rule.ruleType === 'leave_notification') return '检测到群成员退出'
   const parts: string[] = []
   if (rule.conditions.requireMentionMe) parts.push('@我')
   if (rule.conditions.keyword.trim()) {
@@ -328,6 +493,7 @@ export function describeRuleTrigger(rule: AutomationRule): string {
 
 /** 动作链的一句话摘要。 */
 export function describeRuleActions(rule: AutomationRule): string {
+  if (rule.ruleType === 'leave_notification') return '发送退群通知'
   const labels: Record<AutomationActionType, string> = {
     replyText: '回复确认',
     generateReport: '生成日报',
@@ -354,6 +520,7 @@ export function createDefaultDailyReportRule(now: number): AutomationRule {
     id: BUILTIN_DAILY_REPORT_RULE_ID,
     name: '@我生成日报',
     enabled: true,
+    ruleType: 'daily_report',
     trigger: 'message',
     scope: 'group',
     conditions: {
@@ -375,10 +542,66 @@ export function createDefaultDailyReportRule(now: number): AutomationRule {
   }
 }
 
+/** 构造内置规则「退群通知」（singleton，固定 id）。 */
+export function createDefaultLeaveNotificationRule(
+  now: number,
+  options: {
+    template?: string
+    target?: LeaveNotificationTarget
+    enabled?: boolean
+    targetNeedsReview?: boolean
+  } = {}
+): AutomationRule {
+  return {
+    id: BUILTIN_LEAVE_NOTIFICATION_RULE_ID,
+    name: LEAVE_NOTIFICATION_RULE_NAME,
+    // 规则级启停是**唯一**开关；退群通知没有第二个"发送"开关。
+    enabled: options.enabled !== false,
+    ruleType: 'leave_notification',
+    // 由退群事件驱动，不参与消息匹配。这两个字段保留只是为了 schema 完整。
+    trigger: 'message',
+    scope: 'group',
+    conditions: {
+      requireMentionMe: false,
+      keyword: '',
+      keywordMatchMode: 'contains',
+      conversationIds: [],
+      ignoreSelf: true
+    },
+    // 退群通知没有动作链，动作由 leaveNotification 表达。
+    actions: [],
+    // 不套用消息型规则的 cooldown：两次退群不能被 60 秒窗口合并。
+    cooldownSeconds: 0,
+    replyDelaySeconds: AUTOMATION_REPLY_DELAY_DEFAULT_SECONDS,
+    leaveNotification: {
+      target: options.target ?? { type: LEAVE_NOTIFICATION_DEFAULT_TARGET_TYPE },
+      template: normalizeLeaveNotificationTemplate(options.template),
+      ...(options.targetNeedsReview ? { targetNeedsReview: true } : {})
+    },
+    createdAt: now,
+    updatedAt: now
+  }
+}
+
+/**
+ * 模板归一化。
+ *
+ * 复用退群监控那份校验/归一化（含 legacy 模板升级），保证
+ * 「模板规则只有一处实现」——迁移不产生第二套占位符解析。
+ */
+export function normalizeLeaveNotificationTemplate(value: unknown): string {
+  return normalizeGroupExitNotificationTemplate(value)
+}
+
 /** 归一化用户提交的草稿：把未知值收敛成合法值，避免脏数据落盘。 */
-export function normalizeRuleDraft(input: unknown, fallbackName = '未命名自动化'): AutomationRuleDraft {
+export function normalizeRuleDraft(
+  input: unknown,
+  fallbackName = '未命名自动化'
+): AutomationRuleDraft {
   const raw = (input ?? {}) as Partial<AutomationRuleDraft>
   const conditions = (raw.conditions ?? {}) as Partial<AutomationConditions>
+  const ruleType: AutomationRuleType =
+    raw.ruleType === 'leave_notification' ? 'leave_notification' : 'daily_report'
   const keywordMatchMode: KeywordMatchMode =
     conditions.keywordMatchMode === 'exact' || conditions.keywordMatchMode === 'prefix'
       ? conditions.keywordMatchMode
@@ -393,14 +616,18 @@ export function normalizeRuleDraft(input: unknown, fallbackName = '未命名自�
       enabled: action.enabled !== false,
       ...(typeof action.text === 'string' ? { text: action.text } : {})
     }))
-    .filter((action) =>
-      action.type === 'replyText' || action.type === 'generateReport' || action.type === 'sendReportImage'
+    .filter(
+      (action) =>
+        action.type === 'replyText' ||
+        action.type === 'generateReport' ||
+        action.type === 'sendReportImage'
     )
   const cooldown = Number(raw.cooldownSeconds)
-  return {
+  const base = {
     name: String(raw.name ?? '').trim() || fallbackName,
     enabled: raw.enabled !== false,
-    trigger: 'message',
+    ruleType,
+    trigger: 'message' as AutomationTriggerType,
     scope,
     conditions: {
       requireMentionMe: conditions.requireMentionMe !== false,
@@ -414,5 +641,38 @@ export function normalizeRuleDraft(input: unknown, fallbackName = '未命名自�
     actions: normalizedActions,
     cooldownSeconds: Number.isFinite(cooldown) ? Math.max(0, Math.floor(cooldown)) : 60,
     replyDelaySeconds: normalizeReplyDelaySeconds(raw.replyDelaySeconds)
+  }
+  if (ruleType !== 'leave_notification') return base
+  return { ...base, leaveNotification: normalizeLeaveNotificationConfig(raw.leaveNotification) }
+}
+
+/**
+ * 收敛退群通知配置。
+ *
+ * 目标是**必填**的：缺失一律回落到默认目标（文件传输助手），
+ * 而不是留一个"没有目标"的规则 —— 那种规则在运行时只能失败。
+ * `contact` 缺 contactId 时同样回落，避免存下一条永远发不出去的规则。
+ */
+export function normalizeLeaveNotificationConfig(input: unknown): LeaveNotificationConfig {
+  const raw = (input ?? {}) as Partial<LeaveNotificationConfig>
+  const targetRaw = (raw.target ?? {}) as Partial<LeaveNotificationTarget>
+  const allowed: LeaveNotificationTargetType[] = ['source_chat', 'self', 'file_transfer', 'contact']
+  const type: LeaveNotificationTargetType = allowed.includes(
+    targetRaw.type as LeaveNotificationTargetType
+  )
+    ? (targetRaw.type as LeaveNotificationTargetType)
+    : LEAVE_NOTIFICATION_DEFAULT_TARGET_TYPE
+  const contactId = String(targetRaw.contactId ?? '').trim()
+  // `contact` 但没有 id → 回落默认目标；宁可发到文件助手，也不能存一条必然失败的规则。
+  const effectiveType: LeaveNotificationTargetType =
+    type === 'contact' && !contactId ? LEAVE_NOTIFICATION_DEFAULT_TARGET_TYPE : type
+  return {
+    target: {
+      type: effectiveType,
+      ...(effectiveType === 'contact' ? { contactId } : {})
+    },
+    template: normalizeLeaveNotificationTemplate(raw.template),
+    // 用户手动保存一次即视为已确认目标，清除迁移提示。
+    ...(raw.targetNeedsReview === true ? { targetNeedsReview: true } : {})
   }
 }
