@@ -4,7 +4,13 @@ import { Checkbox } from '../ui'
 
 interface MessageTypeSelectorProps {
   value: SummaryMessageType[]
-  counts: Record<SummaryMessageType, number>
+  /**
+   * 每类消息的条数。
+   *
+   * 可选：`自动化 → 定时日报` 的编辑器没有真实消息统计，
+   * 不传就不显示数字，而不是显示一排假的 0。
+   */
+  counts?: Record<SummaryMessageType, number>
   disabled: boolean
   onChange: (value: SummaryMessageType[]) => void
 }
@@ -49,7 +55,7 @@ export function MessageTypeSelector({
               <b>{option.label}</b>
               <small>{option.description}</small>
             </span>
-            <em>{counts[option.value]}</em>
+            {counts ? <em>{counts[option.value]}</em> : null}
           </label>
         ))}
       </div>

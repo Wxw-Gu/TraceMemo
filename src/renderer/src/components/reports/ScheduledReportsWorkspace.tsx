@@ -58,6 +58,8 @@ interface ScheduledReportsWorkspaceProps {
   onOpenAgentHub: () => void
   onOpenModelSettings?: () => void
   onNotice: (message: string, variant?: 'default' | 'success' | 'warning' | 'destructive') => void
+  /** 纯导航：跳到「自动化 → 规则 → 定时日报」；不改动本页任何数据。 */
+  onOpenAutomation?: () => void
 }
 
 const rangeLabel = (range: ScheduledReportRange): string =>
@@ -578,7 +580,8 @@ export function ScheduledReportsWorkspace({
   onOpenWechatSettings,
   onOpenAgentHub,
   onOpenModelSettings,
-  onNotice
+  onNotice,
+  onOpenAutomation
 }: ScheduledReportsWorkspaceProps): React.ReactElement {
   const [capability, setCapability] = React.useState<PersonalWechatSendCapability | null>(null)
   const [capabilityError, setCapabilityError] = React.useState(false)
@@ -862,6 +865,15 @@ export function ScheduledReportsWorkspace({
         <div>
           <h1>定时日报</h1>
           <p>每天自动生成群聊日报，并发送到指定微信群。</p>
+          {onOpenAutomation ? (
+            <button
+              type="button"
+              className="report-scheduled-automation-entry"
+              onClick={onOpenAutomation}
+            >
+              在自动化中配置 →
+            </button>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
           <div className="flex items-center gap-2">

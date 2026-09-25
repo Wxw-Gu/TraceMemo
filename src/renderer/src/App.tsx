@@ -1677,6 +1677,16 @@ function App(): React.ReactElement {
     setActivePage('automation')
   }
 
+  /**
+   * 「日报 → 定时日报 → 在自动化中配置」。
+   *
+   * 纯导航：直接落到「自动化 → 规则 → 定时日报」的规则列表。
+   */
+  const openScheduledReportAutomation = (): void => {
+    setAutomationOpenRuleRequest({ ruleType: 'scheduled_report', requestId: Date.now() })
+    setActivePage('automation')
+  }
+
   /** 「自动化 → 退群通知 → 管理监控群聊 / 查看群聊」：回到退群监控的管理群聊页。 */
   const openExitMonitorGroups = (): void => {
     setExitMonitorOpenViewRequest({ view: 'manage', requestId: Date.now() })
@@ -2009,6 +2019,7 @@ function App(): React.ReactElement {
             onNotice={(message, variant) =>
               toast({ description: message, variant, duration: 3200 })
             }
+            onOpenAutomation={openScheduledReportAutomation}
           />
         ) : reportWorkspaceView === 'result' ? (
           <div className="report-center-page">
@@ -2136,6 +2147,7 @@ function App(): React.ReactElement {
             onOpenSendSettings={openWechatSendSettings}
             onOpenExitMonitorGroups={openExitMonitorGroups}
             openRuleRequest={automationOpenRuleRequest}
+            onOpenModelSettings={openModelSettings}
           />
         )
       case 'agent-hub':

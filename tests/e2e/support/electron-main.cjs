@@ -469,7 +469,55 @@ handle('automation:saveLeaveNotificationRule', (draft) => {
   return structuredClone(leaveNotificationRule)
 })
 
-const scheduledReportTasks = []
+/*
+ * 定时日报任务。
+ *
+ * 默认**为空**（既有 E2E 依赖这个初始状态）。
+ * `WXE_E2E_SCHEDULED_FIXTURE=1` 启动时注入三条任务，
+ * 让「自动化 → 定时日报」的列表与卡片走**真实读取路径**，而不是在渲染层塞假数据。
+ */
+const scheduledReportTasks =
+  process.env.WXE_E2E_SCHEDULED_FIXTURE === '1'
+    ? [
+        {
+          id: 'fixture-scheduled-1',
+          name: 'TraceMemo 每日晚报',
+          group: 'TraceMemo 交流群',
+          scheduleTime: '18:21',
+          reportRange: 'today',
+          target: 'TraceMemo 管理群',
+          enabled: true,
+          createdAt: new Date(fixtureNowMs - 86_400_000).toISOString(),
+          updatedAt: new Date(fixtureNowMs - 86_400_000).toISOString(),
+          lastRunAt: new Date(fixtureNowMs - 86_400_000).toISOString(),
+          nextRunAt: new Date(fixtureNowMs + 3_600_000).toISOString()
+        },
+        {
+          id: 'fixture-scheduled-2',
+          name: '技术交流群日报',
+          group: '技术交流群',
+          scheduleTime: '09:00',
+          reportRange: 'yesterday',
+          target: '技术交流群',
+          enabled: true,
+          createdAt: new Date(fixtureNowMs - 172_800_000).toISOString(),
+          updatedAt: new Date(fixtureNowMs - 172_800_000).toISOString(),
+          nextRunAt: new Date(fixtureNowMs + 64_800_000).toISOString()
+        },
+        {
+          id: 'fixture-scheduled-3',
+          name: 'AI 编程讨论群日报',
+          group: 'AI 编程讨论群',
+          scheduleTime: '21:30',
+          reportRange: 'recent24h',
+          target: 'TechMemo 归档群',
+          enabled: false,
+          createdAt: new Date(fixtureNowMs - 259_200_000).toISOString(),
+          updatedAt: new Date(fixtureNowMs - 259_200_000).toISOString(),
+          nextRunAt: new Date(fixtureNowMs + 86_400_000).toISOString()
+        }
+      ]
+    : []
 const scheduledReportExecutions = []
 const generatedReports = []
 let scheduledReportNotificationEnabled = false

@@ -1483,3 +1483,195 @@
     font-weight: 600;
   }
 }
+
+/* ---------- 定时日报（只读）---------- */
+
+/* 标题下的引导语，与卡片区之间留一点呼吸。 */
+.automation-section-lead {
+  margin: -2px 0 2px;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.automation-scheduled-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 6px 0 2px;
+}
+
+/* 「执行时间」的 时:分 —— 两个窄输入 + 冒号。 */
+.automation-scheduled-time {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  input {
+    width: 56px;
+    text-align: center;
+  }
+
+  > span {
+    color: var(--wxex-text-muted);
+    font-size: 13px;
+  }
+}
+
+/*
+ * 预览里的执行流程：定时触发 → 生成日报 → 发送图片。
+ * 定时日报是一次「任务」而不是一段对话，用流程表达比微信气泡准确。
+ */
+.automation-preview-flow {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 12px;
+  list-style: none;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-md);
+  background: var(--wxex-bg-app);
+}
+
+.automation-preview-flow-step {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.automation-preview-flow-time {
+  color: var(--wxex-primary);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.automation-preview-flow-title {
+  color: var(--wxex-text-primary);
+  font-size: 13px;
+  line-height: 19px;
+  font-weight: 600;
+}
+
+.automation-preview-flow-step small {
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+}
+
+.automation-preview-flow-arrow {
+  padding-left: 1px;
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+  line-height: 12px;
+}
+
+/* 日报图片的形状示意（不是真实截图，也不触发生成）。 */
+.automation-preview-report-card {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 0;
+  padding: 12px;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-md);
+  background: var(--wxex-bg-elevated);
+}
+
+.automation-preview-report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--wxex-text-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.automation-preview-report-line {
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--wxex-text-muted) 22%, transparent);
+
+  &.wide {
+    width: 82%;
+  }
+
+  &.short {
+    width: 46%;
+  }
+}
+
+.automation-preview-footnote {
+  margin: 10px 0 0;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+/* 「日报 → 定时日报」页顶部的入口，跳到「自动化 → 规则 → 定时日报」。 */
+.report-scheduled-automation-entry {
+  margin-top: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--wxex-primary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+  text-align: left;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+/* ---------- 定时日报编辑器 ---------- */
+
+/* 「← 返回定时日报」：回的是规则列表，不是自动化首页。 */
+.automation-editor-back {
+  align-self: flex-start;
+  margin-bottom: 2px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--wxex-primary);
+  }
+}
+
+/* 模型配置：说明在左，「更改模型」在右。 */
+.automation-model-row {
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.automation-scheduled-timeout {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  input {
+    width: 84px;
+  }
+
+  > span {
+    color: var(--wxex-text-muted);
+    font-size: 13px;
+  }
+}
+
+.automation-editor-footnote {
+  margin: 4px 0 0;
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
