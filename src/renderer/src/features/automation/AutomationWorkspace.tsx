@@ -5,7 +5,6 @@ import {
   type AutomationExecution,
   type AutomationRule,
   type AutomationRuleDraft,
-  type AutomationRuleType,
   type AutomationStatusSummary
 } from '../../../../shared/automation'
 import {
@@ -19,7 +18,21 @@ import { RuleListPanel } from './RuleListPanel'
 import { RuleEditorPanel } from './RuleEditorPanel'
 import { ExecutionLogPanel } from './ExecutionLogPanel'
 import { ExecutionDetailDrawer } from './ExecutionDetailDrawer'
-import { AutomationRuleTypeTabs } from './AutomationRuleTypeTabs'
+import {
+  AutomationRuleTypeTabs,
+  type AutomationRuleTabType
+} from './AutomationRuleTypeTabs'
+import { ScheduledReportEditor } from './ScheduledReportEditor'
+import { ScheduledReportRuleList } from './ScheduledReportRuleList'
+import type { ScheduledReportTask } from '../../../../shared/scheduled-report'
+import {
+  createEmptyScheduledReportDraft,
+  createDraftFromTask,
+  formatNextRunAt,
+  loadScheduledReportTasks,
+  resolveGroupDisplayName,
+  type ScheduledReportDraft
+} from './model/scheduled-report-preview'
 import {
   LeaveNotificationEditor,
   type LeaveNotificationSaveInput
@@ -42,7 +55,7 @@ type AutomationTab = 'rules' | 'logs'
 
 /** 由「退群监控」深链过来时的请求：直接打开指定规则类型。 */
 export interface AutomationOpenRuleRequest {
-  ruleType: AutomationRuleType
+  ruleType: AutomationRuleTabType
   /** 每次点击都要能重新触发，所以带一个自增/时间戳。 */
   requestId: number
 }
@@ -53,6 +66,8 @@ export interface AutomationWorkspaceProps {
   onOpenSendSettings?: () => void
   /** 「管理监控群聊 →」：跳到退群监控的管理群聊页（纯导航）。 */
   onOpenExitMonitorGroups?: () => void
+  /** 「更改模型」：复用现有的模型设置入口（定时日报的模型配置）。 */
+  onOpenModelSettings?: () => void
   /** 深链请求（来自退群监控页的「退群通知自动化」入口）。 */
   openRuleRequest?: AutomationOpenRuleRequest | null
 }
@@ -60,13 +75,15 @@ export interface AutomationWorkspaceProps {
 interface EditorState {
   mode: 'create' | 'edit'
   rule: AutomationRule | null
-  ruleType: AutomationRuleType
+  /** 用 Tab 类型：定时日报只在本层存在，不进真实 `AutomationRule`。 */
+  ruleType: AutomationRuleTabType
 }
 
 export function AutomationWorkspace({
   dbReady,
   onOpenSendSettings,
   onOpenExitMonitorGroups,
+  onOpenModelSettings,
   openRuleRequest
 }: AutomationWorkspaceProps): React.ReactElement {
   const { toast } = useToast()
@@ -152,12 +169,6 @@ export function AutomationWorkspace({
   const leaveNotificationRule =
     rules.find((item) => item.id === BUILTIN_LEAVE_NOTIFICATION_RULE_ID) ?? null
 
-  /** 「正在编辑」显示的名字（与保存目标同源）。 */
-  const editorTargetName = React.useMemo((): string => {
-    if (!editor) return ''
-    if (editor.ruleType === 'leave_notification') return leaveNotificationRule?.name ?? '退群通知'
-    return dailyReportTarget?.name ?? '新建自动化'
-  }, [editor, leaveNotificationRule, dailyReportTarget])
 
   /** 「指定好友」目标的显示名（首页卡片用；拿不到时留空，不伪造）。 */
   const leaveContactName = React.useMemo((): string => {
@@ -182,6 +193,102 @@ export function AutomationWorkspace({
       null
     )
   }, [rules])
+
+  /*
+   * ---------- 定时日报（只读）----------
+   *
+   * 数据是**只读**拿到的真实任务；所有写操作（保存 / 立即执行 / 启停 / 删除）
+   * 一律不落盘、不调 scheduler、不生成日报。详见 `model/scheduled-report-preview.ts`。
+   */
+  const [scheduledTasks, setScheduledTasks] = React.useState<ScheduledReportTask[]>([])
+  const [scheduledLoading, setScheduledLoading] = React.useState(true)
+  /** `null` = 看列表；非空 = 在编辑器里（`taskId` 为 `null` 表示新建）。 */
+  const [scheduledEditor, setScheduledEditor] = React.useState<{ taskId: string | null } | null>(
+    null
+  )
+  const [scheduledDraft, setScheduledDraft] = React.useState<ScheduledReportDraft | null>(null)
+
+  /** 「正在编辑」显示的名字（与保存目标同源）。 */
+  const editorTargetName = React.useMemo((): string => {
+    if (!editor) return ''
+    if (editor.ruleType === 'leave_notification') return leaveNotificationRule?.name ?? '退群通知'
+    if (editor.ruleType === 'scheduled_report') {
+      return scheduledDraft?.name?.trim() || '新建定时日报'
+    }
+    return dailyReportTarget?.name ?? '新建自动化'
+  }, [editor, leaveNotificationRule, dailyReportTarget, scheduledDraft])
+
+  React.useEffect(() => {
+    let disposed = false
+    setScheduledLoading(true)
+    void loadScheduledReportTasks()
+      .then((tasks) => {
+        if (!disposed) setScheduledTasks(tasks)
+      })
+      .finally(() => {
+        if (!disposed) setScheduledLoading(false)
+      })
+    return () => {
+      disposed = true
+    }
+  }, [])
+
+  /** 首页汇总卡：数量 + 最近一次执行时间（加载中先不显示，避免闪一个"0 条"）。 */
+  const scheduledSummary = React.useMemo(() => {
+    if (scheduledLoading) return null
+    const running = scheduledTasks.filter((task) => task.enabled)
+    const nextRunAt = running
+      .map((task) => task.nextRunAt)
+      .filter((value) => Boolean(value))
+      .sort()[0]
+    return {
+      total: scheduledTasks.length,
+      running: running.length,
+      nextRunLabel: nextRunAt ? formatNextRunAt(nextRunAt) : '—'
+    }
+  }, [scheduledTasks, scheduledLoading])
+
+  /** 群标识 → 显示名（列表与预览共用，保证任何地方都不出现裸 id）。 */
+  const resolveScheduledGroupDisplay = React.useCallback(
+    (raw: string): string => resolveGroupDisplayName(raw, groups),
+    [groups]
+  )
+
+  const PREVIEW_NOTICE = 'UI 预览模式，配置暂未保存'
+
+  const openScheduledEditor = (task: ScheduledReportTask | null): void => {
+    setScheduledDraft(task ? createDraftFromTask(task) : createEmptyScheduledReportDraft())
+    setScheduledEditor({ taskId: task?.id ?? null })
+  }
+
+  const closeScheduledEditor = (): void => {
+    setScheduledEditor(null)
+    setScheduledDraft(null)
+  }
+
+  /** 保存：只提示，绝不 create/update。 */
+  const handleScheduledSave = (): void => {
+    toast({ description: PREVIEW_NOTICE, duration: 3200 })
+    closeScheduledEditor()
+  }
+
+  /** 立即执行：不碰 scheduler / 生成 / 发送。 */
+  const handleScheduledRunNow = (_task: ScheduledReportTask): void => {
+    toast({ description: 'UI 预览模式，不会执行真实日报任务', duration: 3200 })
+  }
+
+  /** 启停：只改本地列表，不写 store。 */
+  const handleScheduledToggle = (task: ScheduledReportTask, enabled: boolean): void => {
+    setScheduledTasks((current) =>
+      current.map((item) => (item.id === task.id ? { ...item, enabled } : item))
+    )
+    toast({ description: PREVIEW_NOTICE, duration: 3200 })
+  }
+
+  /** 删除：直接提示，避免用户以为任务真被删了。 */
+  const handleScheduledDelete = (_task: ScheduledReportTask): void => {
+    toast({ description: 'UI 预览模式，不会删除现有任务', duration: 3200 })
+  }
 
   const handleToggle = async (rule: AutomationRule, enabled: boolean): Promise<void> => {
     setBusyRuleId(rule.id)
@@ -397,6 +504,13 @@ export function AutomationWorkspace({
             value={editor.ruleType}
             onValueChange={(next) => {
               if (next === editor.ruleType) return
+              // 离开定时日报时清掉它的编辑态，下次进来回到列表。
+              closeScheduledEditor()
+              if (next === 'scheduled_report') {
+                // 定时日报是**多条**规则：先给列表，不直接进编辑器。
+                setEditor({ mode: 'edit', rule: null, ruleType: 'scheduled_report' })
+                return
+              }
               if (next === 'leave_notification') {
                 // 退群通知是 singleton：编辑目标就是它自己，不依赖规则列表。
                 setEditor({ mode: 'edit', rule: null, ruleType: 'leave_notification' })
@@ -418,9 +532,11 @@ export function AutomationWorkspace({
             编辑目标必须**可见**。
             保存的目标与这里显示的名字来自**同一个变量** —— 不允许 UI 显示一个、保存改另一个。
           */}
-          <p className="automation-editing-target" data-testid="automation-editing-target">
-            正在编辑：<strong>{editorTargetName}</strong>
-          </p>
+          {editor.ruleType !== 'scheduled_report' || scheduledEditor ? (
+            <p className="automation-editing-target" data-testid="automation-editing-target">
+              正在编辑：<strong>{editorTargetName}</strong>
+            </p>
+          ) : null}
 
           {editor.ruleType === 'daily_report' ? (
             /*
@@ -442,6 +558,33 @@ export function AutomationWorkspace({
                 saving={saving}
                 onCancel={() => setEditor(null)}
                 onSave={(draft) => void handleSave(draft)}
+              />
+            )
+          ) : editor.ruleType === 'scheduled_report' ? (
+            scheduledEditor && scheduledDraft ? (
+              <ScheduledReportEditor
+                // 换一条任务就重建编辑器，避免把上一条的草稿带过来。
+                key={scheduledEditor.taskId ?? 'new'}
+                initialDraft={scheduledDraft}
+                groups={groups}
+                sendableContacts={sendableContacts}
+                saving={saving}
+                onBack={closeScheduledEditor}
+                onCancel={closeScheduledEditor}
+                onSave={handleScheduledSave}
+                {...(onOpenModelSettings ? { onOpenModelSettings } : {})}
+              />
+            ) : (
+              <ScheduledReportRuleList
+                tasks={scheduledTasks}
+                loading={scheduledLoading}
+                busyTaskId={null}
+                resolveGroupDisplay={resolveScheduledGroupDisplay}
+                onCreate={() => openScheduledEditor(null)}
+                onEdit={openScheduledEditor}
+                onRunNow={handleScheduledRunNow}
+                onToggle={handleScheduledToggle}
+                onDelete={handleScheduledDelete}
               />
             )
           ) : leaveNotificationRule ? (
@@ -516,6 +659,10 @@ export function AutomationWorkspace({
                   contactName: leaveContactName
                 }
               : null
+          }
+          scheduledReport={scheduledSummary}
+          onManageScheduledReport={() =>
+            setEditor({ mode: 'edit', rule: null, ruleType: 'scheduled_report' })
           }
           onToggle={(rule, enabled) => void handleToggle(rule, enabled)}
           onEdit={(rule) => {

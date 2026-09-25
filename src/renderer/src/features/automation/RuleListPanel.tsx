@@ -29,18 +29,32 @@ export interface LeaveNotificationCardModel {
   contactName: string
 }
 
+/**
+ * 定时日报在首页的**汇总卡**数据。
+ *
+ * 它是多条规则，不能像 singleton 那样当成一条展示（也不能给它一个启停开关）。
+ */
+export interface ScheduledReportCardModel {
+  total: number
+  running: number
+  nextRunLabel: string
+}
+
 export interface RuleListPanelProps {
   rules: AutomationRule[]
   groups: Array<{ id: string; name: string }>
   loading: boolean
   busyRuleId: string | null
   leaveNotification: LeaveNotificationCardModel | null
+  scheduledReport: ScheduledReportCardModel | null
   onToggle: (rule: AutomationRule, enabled: boolean) => void
   onEdit: (rule: AutomationRule) => void
   onDelete: (rule: AutomationRule) => void
   onCreate: () => void
   /** 打开「退群通知」规则类型。 */
   onEditLeaveNotification: () => void
+  /** 打开「定时日报」规则类型（多条，所以是"管理"而不是"编辑"）。 */
+  onManageScheduledReport: () => void
 }
 
 /** 把规则里的 conversationIds 翻成群名；找不到时显示占位而不是裸 id。 */
@@ -72,11 +86,13 @@ export function RuleListPanel({
   loading,
   busyRuleId,
   leaveNotification,
+  scheduledReport,
   onToggle,
   onEdit,
   onDelete,
   onCreate,
-  onEditLeaveNotification
+  onEditLeaveNotification,
+  onManageScheduledReport
 }: RuleListPanelProps): React.ReactElement {
   // 退群通知有自己的卡片，别在「已配置的自动化」里重复渲染一遍。
   const configuredRules = rules.filter((rule) => rule.id !== BUILTIN_LEAVE_NOTIFICATION_RULE_ID)
@@ -203,6 +219,36 @@ export function RuleListPanel({
                   />
                   <Button variant="outline" size="sm" onClick={onEditLeaveNotification}>
                     编辑
+                  </Button>
+                </div>
+              </article>
+            ) : null}
+            {scheduledReport ? (
+              <article className="automation-rule-card">
+                <div className="automation-rule-card-main">
+                  <div className="automation-rule-card-title">
+                    <h3>定时日报</h3>
+                    {/* 汇总卡：它代表多条规则，所以只报数量，不给单个启停开关。 */}
+                    <span
+                      className={`automation-rule-state ${scheduledReport.running > 0 ? 'on' : 'off'}`}
+                    >
+                      {scheduledReport.total} 条规则 · {scheduledReport.running} 条运行中
+                    </span>
+                  </div>
+                  <dl className="automation-rule-meta">
+                    <div>
+                      <dt>触发</dt>
+                      <dd>按设定时间</dd>
+                    </div>
+                    <div>
+                      <dt>下次执行</dt>
+                      <dd>{scheduledReport.nextRunLabel}</dd>
+                    </div>
+                  </dl>
+                </div>
+                <div className="automation-rule-card-side">
+                  <Button variant="outline" size="sm" onClick={onManageScheduledReport}>
+                    管理定时日报 →
                   </Button>
                 </div>
               </article>
