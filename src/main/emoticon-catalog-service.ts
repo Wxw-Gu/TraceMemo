@@ -20,6 +20,9 @@ export class EmoticonCatalogService {
     const rows = await this.wcdb4Client.listNonStoreEmoticons(limit)
     return rows.map((row, index) => {
       const item = parseNonStoreEmoticonRow(row)
+      const contentData = emoticonItemToContent(item) as ParsedContent
+      // HTML 导出直接可预览：优先缩略图 URL；本地复制走 sticker 解析链。
+      const previewUrl = item.thumbUrl || item.cdnUrl || item.encryptUrl
       return {
         id: `emo-${item.md5 || index}`,
         from: 'emoticon',
@@ -29,7 +32,10 @@ export class EmoticonCatalogService {
         isSender: false,
         createTime: 0,
         name: '表情包',
-        contentData: emoticonItemToContent(item) as ParsedContent
+        contentData,
+        exportMediaType: 'sticker' as const,
+        exportMediaName: item.caption || item.md5 || 'sticker',
+        exportMediaUrl: previewUrl
       } as Message
     })
   }

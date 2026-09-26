@@ -5,6 +5,7 @@ import {
   parseEmoticonPackageRow,
   parseNonStoreEmoticonRow
 } from '../../src/shared/emoticon'
+import { EmoticonCatalogService } from '../../src/main/emoticon-catalog-service'
 
 describe('emoticon catalog parse', () => {
   it('maps non-store rows to sticker content', () => {
@@ -26,5 +27,24 @@ describe('emoticon catalog parse', () => {
     expect(parseEmoticonPackageRow({ package_name_: '绝望小人8动态版' })).toMatchObject({
       packageName: '绝望小人8动态版'
     })
+  })
+
+  it('sets sticker preview fields on export messages', async () => {
+    const service = new EmoticonCatalogService({
+      listNonStoreEmoticons: async () => [
+        {
+          type: 3,
+          md5: 'cd'.repeat(16),
+          caption: '你好',
+          thumb_url: 'https://cdn.example/t2',
+          cdn_url: 'https://cdn.example/c2'
+        }
+      ]
+    } as never)
+    const [message] = await service.listExportMessages(1)
+    expect(message.exportMediaType).toBe('sticker')
+    expect(message.exportMediaUrl).toBe('https://cdn.example/t2')
+    expect(message.exportMediaName).toBe('你好')
+    expect(message.contentData).toMatchObject({ type: 'sticker', md5: 'cd'.repeat(16) })
   })
 })
