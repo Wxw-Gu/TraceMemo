@@ -28,6 +28,7 @@ import { resolveMemberName } from '../shared/member-names'
 import { FavoritesService } from './favorites-service'
 import { SnsTimelineService } from './sns-timeline-service'
 import { FMessageService } from './f-message-service'
+import { EmoticonCatalogService } from './emoticon-catalog-service'
 import { filesystemSafeName } from '../shared/contact-name'
 
 const jobs = new Set<string>()
@@ -919,6 +920,28 @@ async function runSingleExport(
           }
         } catch (error) {
           console.warn('[export] fmessage merge skipped:', error)
+        }
+      }
+    }
+    if (request.includeEmoticon) {
+      const wcdb = chat.getChatDb()?.getWcdb4Client()
+      if (wcdb) {
+        try {
+          const emoMessages = await new EmoticonCatalogService(wcdb).listExportMessages(500)
+          for (const [messageOrder, message] of emoMessages.entries()) {
+            if (!request.kinds.includes(kindOf(message))) continue
+            messageEntries.push({
+              message: {
+                ...message,
+                exportConversationId: 'emoticon',
+                exportConversationName: '表情包'
+              },
+              targetOrder: targets.length + 3,
+              messageOrder
+            })
+          }
+        } catch (error) {
+          console.warn('[export] emoticon merge skipped:', error)
         }
       }
     }

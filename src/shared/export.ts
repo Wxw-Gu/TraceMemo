@@ -44,6 +44,8 @@ export interface ExportRequest {
   includeSnsTimeline?: boolean
   /** 合并好友申请（general.db FMessageTable）。 */
   includeFMessage?: boolean
+  /** 合并表情目录（emoticon.db）。 */
+  includeEmoticon?: boolean
   preferOriginal?: boolean
   fallbackThumbnail?: boolean
   keepMissing?: boolean

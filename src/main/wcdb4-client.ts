@@ -2786,6 +2786,48 @@ export class Wcdb4Client {
     }
   }
 
+  /** 只读表情目录（emoticon.db / 非商店表情）。 */
+  async listNonStoreEmoticons(limit = 500): Promise<Record<string, unknown>[]> {
+    if (!this.wcdbExecQuery) return []
+    const sql = `SELECT type, md5, caption, product_id, thumb_url, cdn_url, encrypt_url FROM kNonStoreEmoticonTable LIMIT ${Math.max(
+      1,
+      Math.min(2000, limit)
+    )}`
+    try {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+        'contact',
+        path.join(this.accountRoot, 'db_storage/emoticon/emoticon.db'),
+        sql
+      )
+      return Array.isArray(rows) ? rows : []
+    } catch (error) {
+      console.warn('[WCDB4] listNonStoreEmoticons failed:', error)
+      return []
+    }
+  }
+
+  /** 只读表情商店包（名称/下载状态）。 */
+  async listEmoticonPackages(limit = 100): Promise<Record<string, unknown>[]> {
+    if (!this.wcdbExecQuery) return []
+    const sql = `SELECT package_id_, package_name_, payment_status_, download_status_, introduction_ FROM kStoreEmoticonPackageTable LIMIT ${Math.max(
+      1,
+      Math.min(500, limit)
+    )}`
+    try {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+        'contact',
+        path.join(this.accountRoot, 'db_storage/emoticon/emoticon.db'),
+        sql
+      )
+      return Array.isArray(rows) ? rows : []
+    } catch (error) {
+      console.warn('[WCDB4] listEmoticonPackages failed:', error)
+      return []
+    }
+  }
+
   /** 只读好友申请（general.db / FMessageTable）。 */
   async listFMessageItems(limit = 200): Promise<Record<string, unknown>[]> {
     if (!this.wcdbExecQuery) return []
