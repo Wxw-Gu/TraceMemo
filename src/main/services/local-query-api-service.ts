@@ -325,17 +325,25 @@ export class LocalQueryApiService {
     | ((query: string, limit: number) => Promise<Array<{ text: string; timestamp?: number }>>)
     | undefined
 
+  /** 表情目录关键词检索（emoticon.db，只读）。 */
+  private emoticonSearch:
+    | ((query: string, limit: number) => Promise<Array<{ text: string; timestamp?: number }>>)
+    | undefined
+
+  /** 好友申请关键词检索（FMessageTable，只读）。 */
+  private fMessageSearch:
+    | ((query: string, limit: number) => Promise<Array<{ text: string; timestamp?: number }>>)
+    | undefined
+
+  /** 朋友圈关键词检索（sns.db，只读）。 */
+  private snsSearch:
+    | ((query: string, limit: number) => Promise<Array<{ text: string; timestamp?: number }>>)
+    | undefined
+
   constructor(
     private readonly knowledge?: KnowledgeSearchService,
     private readonly nowProvider: () => Date = () => new Date()
   ) {}
-
-  /** 注入收藏检索（`FavoritesService.searchHits`），供 `search_messages` 合并只读命中。 */
-  setFavoritesSearchProvider(
-    provider: (query: string, limit: number) => Promise<Array<{ text: string; timestamp?: number }>>
-  ): void {
-    this.favoritesSearch = provider
-  }
 
   /**
    * 注入图片文字索引覆盖度提供者。
@@ -345,6 +353,31 @@ export class LocalQueryApiService {
    */
   setImageTextCoverageProvider(provider: () => ImageTextIndexCoverage | null): void {
     this.imageTextCoverage = provider
+  }
+
+  /** 注入收藏检索（`FavoritesService.search`），供 `search_messages` 合并只读命中。 */
+  setFavoritesSearchProvider(
+    provider: (query: string, limit: number) => Promise<Array<{ text: string; timestamp?: number }>>
+  ): void {
+    this.favoritesSearch = provider
+  }
+
+  setSnsSearchProvider(
+    provider: (query: string, limit: number) => Promise<Array<{ text: string; timestamp?: number }>>
+  ): void {
+    this.snsSearch = provider
+  }
+
+  setFMessageSearchProvider(
+    provider: (query: string, limit: number) => Promise<Array<{ text: string; timestamp?: number }>>
+  ): void {
+    this.fMessageSearch = provider
+  }
+
+  setEmoticonSearchProvider(
+    provider: (query: string, limit: number) => Promise<Array<{ text: string; timestamp?: number }>>
+  ): void {
+    this.emoticonSearch = provider
   }
 
   /** 注入单条图片消息的 OCR 派生文本解析器（只读；见 `imageOcrEntry` 的约束）。 */
@@ -535,14 +568,63 @@ export class LocalQueryApiService {
         favoriteEvidence = []
       }
     }
+    let snsEvidence: QueryEvidenceItem[] = []
+    if (this.snsSearch && !targetView) {
+      try {
+        const hits = await this.snsSearch(request.query, Math.min(10, limit))
+        snsEvidence = hits.map((hit, index) => ({
+          messageRef: `sns-${index}`,
+          conversationName: '朋友圈',
+          timestamp: hit.timestamp ?? 0,
+          sender: '朋友圈',
+          sourceKind: 'other' as QueryMessageType,
+          text: hit.text
+        }))
+      } catch {
+        snsEvidence = []
+      }
+    }
+    let fMessageEvidence: QueryEvidenceItem[] = []
+    if (this.fMessageSearch && !targetView) {
+      try {
+        const hits = await this.fMessageSearch(request.query, Math.min(10, limit))
+        fMessageEvidence = hits.map((hit, index) => ({
+          messageRef: `fmsg-${index}`,
+          conversationName: '好友申请',
+          timestamp: hit.timestamp ?? 0,
+          sender: '好友申请',
+          sourceKind: 'system' as QueryMessageType,
+          text: hit.text
+        }))
+      } catch {
+        fMessageEvidence = []
+      }
+    }
+    let emoticonEvidence: QueryEvidenceItem[] = []
+    if (this.emoticonSearch && !targetView) {
+      try {
+        const hits = await this.emoticonSearch(request.query, Math.min(10, limit))
+        emoticonEvidence = hits.map((hit, index) => ({
+          messageRef: `emo-${index}`,
+          conversationName: '表情包',
+          timestamp: hit.timestamp ?? 0,
+          sender: '表情包',
+          sourceKind: 'other' as QueryMessageType,
+          text: hit.text
+        }))
+      } catch {
+        emoticonEvidence = []
+      }
+    }
+    const evidence = [...Array.from(found.evidence.values()).slice(0, limit), ...favoriteEvidence, ...snsEvidence, ...fMessageEvidence, ...emoticonEvidence]
     return {
       status: 'completed' as const,
       ...(targetView ? { target: targetView } : {}),
       resolvedTimeRange: range,
       coverage: { state: this.searchCoverage(found, requestedEnd) },
       probeCount: probes.length,
-      evidenceCount: found.evidence.size + favoriteEvidence.length,
-      evidence: [...Array.from(found.evidence.values()).slice(0, limit), ...favoriteEvidence],
+      evidenceCount: evidence.length,
+      evidence,
       scope: corpus.scope,
       indexLatestAt: found.indexLatestAt,
       sourceLatestAt: found.sourceLatestAt,
