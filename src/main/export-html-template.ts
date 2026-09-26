@@ -1266,8 +1266,11 @@ const renderExportScript = (name: string): string => `
       : message.voiceTranscriptError
         ? '<div class="voice-transcript error">' + esc(message.voiceTranscriptError) + '</div>'
         : ''
-    const mediaStatus = message.exportMediaError
-      ? '<div class="media-status">' + esc(message.exportMediaError) + '</div>'
+    const mediaStatusParts = []
+    if (message.exportMediaError) mediaStatusParts.push(message.exportMediaError)
+    if (message.exportMediaStatus) mediaStatusParts.push(message.exportMediaStatus)
+    const mediaStatus = mediaStatusParts.length
+      ? '<div class="media-status">' + esc(mediaStatusParts.join(' · ')) + '</div>'
       : ''
     const quote = data.type === 'quote'
       ? '<div class="quote-reference"><strong>' + esc(data.quotedSender || '引用消息') + '</strong><span>' + esc(data.quotedContent || '[引用消息]') + '</span></div>'

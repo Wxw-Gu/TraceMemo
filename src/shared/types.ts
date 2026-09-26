@@ -50,6 +50,8 @@ export interface Message {
   exportMediaQuality?: ExportImageQuality
   exportShowAvatar?: boolean
   exportMediaError?: string
+  /** `message_resource` 落地状态摘要（如「图片/缩略 · 已落地 · 1024B」）。 */
+  exportMediaStatus?: string
   exportAvatarUrl?: string
   exportConversationId?: string
   exportConversationName?: string

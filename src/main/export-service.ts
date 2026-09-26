@@ -561,6 +561,29 @@ export async function pruneHtmlArchiveResources(
 const keepMediaError = (request: ExportRequest, message: Message, error: string): void => {
   if (request.keepMissing !== false) message.exportMediaError = error
 }
+
+/** 只读：从 message_resource 补「已落地/未落地」摘要（失败静默）。 */
+async function attachMediaResourceStatus(message: Message): Promise<void> {
+  const wcdb = chat.getChatDb()?.getWcdb4Client()
+  if (!wcdb) return
+  try {
+    const rows = await wcdb.getMediaResourceStatus(message.localId, message.createTime)
+    if (!rows.length) return
+    const { mediaResourceSummary } = await import('../shared/media-resource')
+    const parts = rows.map((row) => mediaResourceSummary(row))
+    message.exportMediaStatus = Array.from(new Set(parts)).join('；')
+  } catch {
+    // ignore
+  }
+}
+
+async function enrichMediaStatus(messages: Message[]): Promise<void> {
+  const targets = messages.filter((m) => m.exportMediaError || !m.exportMediaUrl)
+  const limited = targets.slice(0, 300)
+  for (const message of limited) {
+    await attachMediaResourceStatus(message)
+  }
+}
 function decodeDataUrl(data: string): { extension: string; buffer: Buffer } | null {
   const match = /^data:([^;]+);base64,(.+)$/s.exec(data)
   if (!match) return null
@@ -1633,6 +1656,7 @@ async function runSingleExport(
           percent: mediaPercent(index + 1)
         })
       }
+      await enrichMediaStatus(messages)
       const mergedMessages = mergeHtmlArchiveMessages(
         previousMessages,
         messages,

@@ -2786,6 +2786,41 @@ export class Wcdb4Client {
     }
   }
 
+  /** 只读媒体资源状态（message_resource.db）。 */
+  async getMediaResourceStatus(
+    messageLocalId: number | string | undefined,
+    messageCreateTime: number | string | undefined,
+    messageLocalType?: number | string
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.wcdbExecQuery || messageLocalId === undefined || messageCreateTime === undefined) {
+      return []
+    }
+    const localId = Number(messageLocalId)
+    const createTime = Number(messageCreateTime)
+    if (!Number.isFinite(localId) || !Number.isFinite(createTime)) return []
+    const typeFilter =
+      messageLocalType !== undefined && messageLocalType !== ''
+        ? ` AND i.message_local_type = ${Number(messageLocalType) || 0}`
+        : ''
+    const sql =
+      `SELECT d.type, d.size, d.status, d.data_index FROM MessageResourceDetail d ` +
+      `JOIN MessageResourceInfo i ON d.message_id = i.message_id ` +
+      `WHERE i.message_local_id = ${localId} AND i.message_create_time = ${createTime}${typeFilter} ` +
+      `LIMIT 8`
+    try {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+        'message',
+        path.join(this.accountRoot, 'db_storage/message/message_resource.db'),
+        sql
+      )
+      return Array.isArray(rows) ? rows : []
+    } catch (error) {
+      console.warn('[WCDB4] getMediaResourceStatus failed:', error)
+      return []
+    }
+  }
+
   /** 只读表情目录（emoticon.db / 非商店表情）。 */
   async listNonStoreEmoticons(limit = 500): Promise<Record<string, unknown>[]> {
     if (!this.wcdbExecQuery) return []
