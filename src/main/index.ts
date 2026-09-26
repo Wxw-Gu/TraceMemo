@@ -778,6 +778,24 @@ app.whenReady().then(async () => {
     const { FavoritesService } = await import('./favorites-service')
     return new FavoritesService(wcdb).searchHits(query, limit)
   })
+  localQueryApiService.setSnsSearchProvider(async (query, limit) => {
+    const wcdb = chat.getChatDb()?.getWcdb4Client()
+    if (!wcdb) return []
+    const { SnsTimelineService } = await import('./sns-timeline-service')
+    return new SnsTimelineService(wcdb).searchHits(query, limit)
+  })
+  localQueryApiService.setFMessageSearchProvider(async (query, limit) => {
+    const wcdb = chat.getChatDb()?.getWcdb4Client()
+    if (!wcdb) return []
+    const { FMessageService } = await import('./f-message-service')
+    return new FMessageService(wcdb).searchHits(query, limit)
+  })
+  localQueryApiService.setEmoticonSearchProvider(async (query, limit) => {
+    const wcdb = chat.getChatDb()?.getWcdb4Client()
+    if (!wcdb) return []
+    const { EmoticonCatalogService } = await import('./emoticon-catalog-service')
+    return new EmoticonCatalogService(wcdb).searchHits(query, limit)
+  })
   setLocalQueryApiService(localQueryApiService)
   // Query Agent：生产 Runtime 只在这里实例化一次，桌面问问微信与 Agent Hub 共用同一个实例。
   queryAgentService = new QueryAgentService(
