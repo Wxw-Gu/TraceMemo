@@ -11,6 +11,9 @@ export type RoomInfoRow = {
   owner?: string
   announcement?: string
   announcementEditor?: string
+  announcementPublishTime?: number
+  chatRoomStatus?: number
+  memberCount?: number
   maxMemberCount?: number
   chatName?: string
   openImAccountType?: string
@@ -2751,13 +2754,21 @@ export class Wcdb4Client {
         this.wcdbExecQuery!(handle, 'contact', '', sql, outJson)
       )
       const row = rows?.[0]
-      if (!row) return base
+      const memberCount = this.readChatroomMemberCount(chatroomId)
+      if (!row && memberCount === undefined) return base
+      const publishRaw = row ? pickString(row, ['announcement_publish_time_', 'announcement_publish_time']) : undefined
+      const statusRaw = row ? pickString(row, ['chat_room_status_', 'chat_room_status']) : undefined
       return {
         roomId: chatroomId,
         owner: base?.owner,
-        announcement: pickString(row, ['announcement_', 'announcement']) || base?.announcement,
+        announcement: (row && pickString(row, ['announcement_', 'announcement'])) || base?.announcement,
         announcementEditor:
-          pickString(row, ['announcement_editor_', 'announcement_editor']) || base?.announcementEditor,
+          (row && pickString(row, ['announcement_editor_', 'announcement_editor'])) || base?.announcementEditor,
+        announcementPublishTime:
+          publishRaw && Number.isFinite(Number(publishRaw)) ? Number(publishRaw) : base?.announcementPublishTime,
+        chatRoomStatus:
+          statusRaw && Number.isFinite(Number(statusRaw)) ? Number(statusRaw) : base?.chatRoomStatus,
+        memberCount: memberCount ?? base?.memberCount,
         maxMemberCount: base?.maxMemberCount,
         chatName: base?.chatName,
         openImAccountType: base?.openImAccountType,
@@ -2765,6 +2776,21 @@ export class Wcdb4Client {
       }
     } catch {
       return base
+    }
+  }
+
+  private readChatroomMemberCount(chatroomId: string): number | undefined {
+    if (!this.wcdbExecQuery) return undefined
+    const escaped = chatroomId.replace(/'/g, "''")
+    const sql = `SELECT COUNT(*) AS n FROM chatroom_member WHERE room_id IN (SELECT id FROM chat_room WHERE username = '${escaped}')`
+    try {
+      const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+        this.wcdbExecQuery!(handle, 'contact', '', sql, outJson)
+      )
+      const n = Number(rows?.[0]?.n)
+      return Number.isFinite(n) ? n : undefined
+    } catch {
+      return undefined
     }
   }
 
