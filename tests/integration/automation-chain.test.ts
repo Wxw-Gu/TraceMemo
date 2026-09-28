@@ -22,7 +22,10 @@ vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [] }
 }))
 
-import { AUTOMATION_SEND_PURPOSE } from '../../src/shared/automation'
+import {
+  AUTOMATION_SEND_PURPOSE,
+  BUILTIN_DAILY_REPORT_RULE_ID
+} from '../../src/shared/automation'
 import type {
   PersonalWechatSendCapability,
   PersonalWechatSendRequest
@@ -272,5 +275,54 @@ describe('automation end-to-end chain', () => {
     const chain = buildChain()
     await chain.service.handleMessage(message({ content: '@我 今日日报', mentionTargets: [] }))
     expect(chain.sends).toHaveLength(0)
+  })
+
+  it('同一条 store 里存在定时日报规则时，@我消息只触发 @我日报规则（规则类型硬分派）', async () => {
+    const chain = buildChain()
+
+    // 定时日报是**时间驱动**，不参与消息匹配。硬分派一旦写错，它的
+    // 「空关键词 + 不要求 @我」会让它命中**每一条群消息** ——
+    // 这正是这条用例要守住的边界。
+    const scheduled = chain.store.createRule({
+      name: '每天 09:00 的定时日报',
+      enabled: true,
+      ruleType: 'scheduled_report',
+      trigger: 'message',
+      scope: 'group',
+      conditions: {
+        requireMentionMe: false,
+        keyword: '',
+        keywordMatchMode: 'contains',
+        conversationIds: [],
+        ignoreSelf: true
+      },
+      actions: [],
+      cooldownSeconds: 0,
+      replyDelaySeconds: 0,
+      scheduledReport: {
+        schedule: { time: '09:00' },
+        report: {
+          sourceConversationId: GROUP_ID,
+          range: 'yesterday',
+          messageTypes: ['text'],
+          templateId: 'v1',
+          memberNameMode: 'groupNickname',
+          timeoutSeconds: 300
+        },
+        target: { type: 'file_transfer' }
+      }
+    })
+    expect(scheduled.ruleType).toBe('scheduled_report')
+
+    await chain.service.handleMessage(message())
+
+    // 只有 @我日报那条留下执行记录；定时日报规则**一条都没有**。
+    const records = chain.log.list()
+    expect(records).toHaveLength(1)
+    expect(records[0].ruleId).toBe(BUILTIN_DAILY_REPORT_RULE_ID)
+    expect(records.some((record) => record.ruleId === scheduled.id)).toBe(false)
+
+    // 发送也只有 @我日报的那两次（确认文字 + 日报图片），没有第三条。
+    expect(chain.sends.map((send) => send.type)).toEqual(['text', 'image'])
   })
 })

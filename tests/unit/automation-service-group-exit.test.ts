@@ -201,6 +201,65 @@ describe('AutomationService.handleGroupExit', () => {
     expect(harness.executions).toHaveLength(0)
   })
 
+  /*
+   * 「通知范围」＝历史「退群监控 → 通知群聊」的第二层。
+   * 缺了它，规则一启用就等于给全部已监控群聊发通知 —— 就是那个被报回来的问题。
+   */
+  it('范围 = 仅选中的群聊：勾中的群照常发送', async () => {
+    const harness = createHarness({
+      config: { notifyScope: 'selected', notifyRoomIds: ['room@chatroom'] }
+    })
+
+    await harness.service.handleGroupExit(exitEvent())
+
+    expect(harness.requests).toHaveLength(1)
+    expect(harness.executions).toHaveLength(1)
+  })
+
+  it('范围 = 仅选中的群聊：没勾的群不发，且不创建 execution', async () => {
+    const harness = createHarness({
+      config: { notifyScope: 'selected', notifyRoomIds: ['other@chatroom'] }
+    })
+
+    await harness.service.handleGroupExit(exitEvent())
+
+    expect(harness.requests).toHaveLength(0)
+    // 被范围排除**不是**"一次失败的执行"，所以不能留失败记录吓人。
+    expect(harness.executions).toHaveLength(0)
+  })
+
+  it('范围 = 全部已监控群聊：不筛群，照常发送', async () => {
+    const harness = createHarness({ config: { notifyScope: 'all', notifyRoomIds: [] } })
+
+    await harness.service.handleGroupExit(exitEvent())
+
+    expect(harness.requests).toHaveLength(1)
+  })
+
+  /*
+   * 范围判定必须在幂等**之前**：否则被排除的群会白白占用该事件的幂等位，
+   * 用户随后补勾了那个群，同一个事件反而再也发不出去。
+   */
+  it('范围外不占用幂等位：补勾之后同一事件仍能发出', async () => {
+    const harness = createHarness({
+      config: { notifyScope: 'selected', notifyRoomIds: [] }
+    })
+
+    await harness.service.handleGroupExit(exitEvent())
+    expect(harness.requests).toHaveLength(0)
+    expect(harness.executions).toHaveLength(0)
+
+    harness.setRule(
+      createDefaultLeaveNotificationRule(NOW, {
+        notifyScope: 'selected',
+        notifyRoomIds: ['room@chatroom']
+      })
+    )
+    await harness.service.handleGroupExit(exitEvent())
+
+    expect(harness.requests).toHaveLength(1)
+  })
+
   it('缺少 eventId 时直接跳过，绝不发送', async () => {
     const harness = createHarness()
 
@@ -260,7 +319,7 @@ describe('AutomationService.handleGroupExit', () => {
   })
 
   /*
-   * §「旧联系人失效」：不偷偷发给别人，execution 记 failed，Gateway 一次都不调。
+   * 「旧联系人失效」：不偷偷发给别人，execution 记 failed，Gateway 一次都不调。
    */
   it('指定好友已不存在 → execution failed 且不调用 Gateway', async () => {
     const harness = createHarness({
@@ -353,7 +412,7 @@ describe('AutomationService.handleGroupExit', () => {
   })
 
   /*
-   * §「不同事件」：同群两个成员先后退出就是两条通知。
+   * 不同事件：同群两个成员先后退出就是两条通知。
    * 退群通知**不复用**消息型规则的 cooldown，否则第二次会被时间窗吞掉。
    */
   it('不同 eventId 各自执行一次，不被合并', async () => {

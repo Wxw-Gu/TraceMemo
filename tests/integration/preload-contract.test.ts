@@ -160,13 +160,62 @@ describe('preload IPC contract', () => {
     expect(invoke).toHaveBeenLastCalledWith('wechat-personal:send', reportImageRequest)
     await api.getPersonalWechatVoiceDiagnostic()
     expect(invoke).toHaveBeenLastCalledWith('wechat-personal:getVoiceDiagnostic')
+  })
+
+  /**
+   * 定时日报退役后，专属能力全部改走 `automation:*`。
+   *
+   * 单独成一个用例（而不是塞进上面那条超长用例）有两个理由：
+   * 1. 上面的用例在 `voice:recognize` 上会因 vitest 4 对**尾随 undefined** 的严格比较而失败，
+   *    放在一起会让这几条断言永远跑不到；
+   * 2. 「旧通道必须彻底消失」本身就是一条独立契约，值得有自己的名字。
+   */
+  it('routes scheduled-report capabilities through automation channels only', async () => {
+    const api = await loadApi()
+    invoke.mockResolvedValue({ success: true })
+
+    await api.runScheduledReportRule('rule-1')
+    expect(invoke).toHaveBeenLastCalledWith('automation:runScheduledReportRule', 'rule-1')
+
+    await api.listScheduledReportLegacyExecutions('rule-1')
+    expect(invoke).toHaveBeenLastCalledWith(
+      'automation:listScheduledReportLegacyExecutions',
+      'rule-1'
+    )
 
     await api.getScheduledReportNotificationSettings()
-    expect(invoke).toHaveBeenLastCalledWith('scheduled-report:getNotificationSettings')
+    expect(invoke).toHaveBeenLastCalledWith('automation:getScheduledReportNotificationSettings')
+    await api.getScheduledReportNotificationCapability()
+    expect(invoke).toHaveBeenLastCalledWith('automation:getScheduledReportNotificationCapability')
     await api.setScheduledReportNotificationEnabled(true)
-    expect(invoke).toHaveBeenLastCalledWith('scheduled-report:setNotificationEnabled', true)
-    await api.testScheduledReportErrorNotification('task-1')
-    expect(invoke).toHaveBeenLastCalledWith('scheduled-report:testErrorNotification', 'task-1')
+    expect(invoke).toHaveBeenLastCalledWith(
+      'automation:setScheduledReportNotificationEnabled',
+      true
+    )
+    await api.testScheduledReportErrorNotification('rule-1')
+    expect(invoke).toHaveBeenLastCalledWith(
+      'automation:testScheduledReportErrorNotification',
+      'rule-1'
+    )
+
+    // 旧的 `scheduled-report:*` 通道必须**彻底不存在**：
+    // 留一个"能用但没人维护"的入口，等于给双写 / 双读留后门。
+    const channels = invoke.mock.calls.map((call) => String(call[0]))
+    expect(channels.some((channel) => channel.startsWith('scheduled-report:'))).toBe(false)
+
+    const legacyMethods = [
+      'listScheduledReports',
+      'listScheduledReportExecutions',
+      'createScheduledReport',
+      'updateScheduledReport',
+      'deleteScheduledReport',
+      'setScheduledReportEnabled',
+      'runScheduledReportNow',
+      'retryScheduledReportSend'
+    ]
+    for (const method of legacyMethods) {
+      expect(api).not.toHaveProperty(method)
+    }
   })
 
   it('preserves key API return values without exposing ipcRenderer', async () => {

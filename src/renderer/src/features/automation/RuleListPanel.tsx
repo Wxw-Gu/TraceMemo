@@ -2,8 +2,8 @@ import * as React from 'react'
 import {
   AUTOMATION_RULE_TEMPLATES,
   BUILTIN_LEAVE_NOTIFICATION_RULE_ID,
+  describeLeaveNotificationNotifyScope,
   describeLeaveNotificationTarget,
-  describeMonitoredScope,
   describeRuleActions,
   describeRuleTrigger,
   type AutomationRule
@@ -192,8 +192,13 @@ export function RuleListPanel({
                       <dd>{describeRuleTrigger(leaveRule)}</dd>
                     </div>
                     <div>
-                      <dt>范围</dt>
-                      <dd>{describeMonitoredScope(leaveNotification?.monitoredCount ?? 0)}</dd>
+                      <dt>通知范围</dt>
+                      <dd>
+                        {describeLeaveNotificationNotifyScope(
+                          leaveRule.leaveNotification,
+                          leaveNotification?.monitoredCount ?? 0
+                        )}
+                      </dd>
                     </div>
                     <div>
                       <dt>动作</dt>

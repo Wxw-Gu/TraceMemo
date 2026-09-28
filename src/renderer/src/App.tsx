@@ -18,7 +18,6 @@ import { ReportInfoPanel } from './components/reports/ReportInfoPanel'
 import { ReportSourceSidebar } from './components/reports/ReportSourceSidebar'
 import { ReportTaskStatusPanel } from './components/reports/ReportTaskStatusPanel'
 import { ReportViewer } from './components/reports/ReportViewer'
-import { ScheduledReportsWorkspace } from './components/reports/ScheduledReportsWorkspace'
 import { ReportTemplateMarketWorkspace } from './components/reports/ReportTemplateMarketWorkspace'
 import { contactDisplayName } from './components/reports/types'
 import type { GeneratedReportRecord, ReportWorkspaceView } from './components/reports/types'
@@ -42,8 +41,8 @@ import { isRelevantMessageMonitorEvent, parseWcdbMonitorEvent } from './utils/me
 import { enrichQuotedMessages } from './utils/quoted-messages'
 import type { ReportTemplateSelectionId } from '../../shared/report-templates'
 import { switchGeneratedReportTemplate } from './utils/report-template-switch'
-import { runtimePlatform, supportsPersonalWechatSend } from './utils/runtime-environment'
-import { useToast } from './components/ui'
+import { runtimePlatform } from './utils/runtime-environment'
+import { Button, useToast } from './components/ui'
 import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
 import { GroupExitMonitorWorkspace, type GroupExitMonitorOpenViewRequest } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
 import { AutomationWorkspace, type AutomationOpenRuleRequest } from './features/automation/AutomationWorkspace'
@@ -280,7 +279,7 @@ function App(): React.ReactElement {
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>('account-database')
   const [reportSourceContact, setReportSourceContact] = useState<Contact | null>(null)
   const [reportWorkspaceView, setReportWorkspaceView] = useState<ReportWorkspaceView>('result')
-  const [reportSection, setReportSection] = useState<'today' | 'scheduled' | 'market'>('today')
+  const [reportSection, setReportSection] = useState<'today' | 'market'>('today')
   const [generatedReports, setGeneratedReports] = useState<GeneratedReportRecord[]>([])
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null)
   const [latestGeneratedReportId, setLatestGeneratedReportId] = useState<string | null>(null)
@@ -1678,9 +1677,10 @@ function App(): React.ReactElement {
   }
 
   /**
-   * 「日报 → 定时日报 → 在自动化中配置」。
+   * 「定时日报」已正式迁入自动化，日报页只保留「今日日报 | 社区模板市场」两个 Tab。
    *
-   * 纯导航：直接落到「自动化 → 规则 → 定时日报」的规则列表。
+   * 这里仍然留一个导航入口：用户是从日报页产生"要定时发日报"这个念头的，
+   * 不给路会显得功能被删了。它**不是**第三个 Tab，只是一句去处的说明。
    */
   const openScheduledReportAutomation = (): void => {
     setAutomationOpenRuleRequest({ ruleType: 'scheduled_report', requestId: Date.now() })
@@ -1980,22 +1980,6 @@ function App(): React.ReactElement {
         <button
           type="button"
           role="tab"
-          aria-selected={reportSection === 'scheduled'}
-          aria-disabled={!supportsPersonalWechatSend}
-          className={`${reportSection === 'scheduled' ? 'active' : ''} ${!supportsPersonalWechatSend ? 'unsupported' : ''}`}
-          onClick={() => {
-            if (!supportsPersonalWechatSend) {
-              toast({ description: '定时日报目前仅支持 macOS 和 Windows。', duration: 3200 })
-              return
-            }
-            setReportSection('scheduled')
-          }}
-        >
-          定时日报{!supportsPersonalWechatSend && <small>仅 macOS / Windows</small>}
-        </button>
-        <button
-          type="button"
-          role="tab"
           aria-selected={reportSection === 'market'}
           className={reportSection === 'market' ? 'active' : ''}
           onClick={() => setReportSection('market')}
@@ -2003,23 +1987,25 @@ function App(): React.ReactElement {
           社区模板市场
         </button>
       </div>
+      {/*
+        「定时日报已并入自动化」的指引条。
+
+        这里以前是裸 `<p>` + 裸 `<button>`，并且挂了 `.report-workspace-hint` /
+        `.report-workspace-hint-link` 两个**样式表里根本不存在**的类 ——
+        于是就成了一条没样式的文字 + 一个长得不像系统里任何按钮的按钮。
+        现在补上真实样式，按钮统一走 UI 组件库。
+      */}
+      <div className="report-workspace-hint">
+        <span>需要「定时日报」？它已经并入「自动化」，可以按时间自动生成并发送日报。</span>
+        <Button variant="link" size="sm" onClick={openScheduledReportAutomation}>
+          去自动化配置 →
+        </Button>
+      </div>
       <div className="report-workspace-body">
         {reportSection === 'market' ? (
           <ReportTemplateMarketWorkspace
             value={reportGeneration.templateId}
             onChange={reportGeneration.setTemplateId}
-          />
-        ) : reportSection === 'scheduled' ? (
-          <ScheduledReportsWorkspace
-            contacts={contacts}
-            platformSupported={supportsPersonalWechatSend}
-            onOpenWechatSettings={openWechatSendSettings}
-            onOpenAgentHub={openAgentHub}
-            onOpenModelSettings={openModelSettings}
-            onNotice={(message, variant) =>
-              toast({ description: message, variant, duration: 3200 })
-            }
-            onOpenAutomation={openScheduledReportAutomation}
           />
         ) : reportWorkspaceView === 'result' ? (
           <div className="report-center-page">
@@ -2137,6 +2123,7 @@ function App(): React.ReactElement {
             contacts={contacts}
             onOpenSendSettings={openWechatSendSettings}
             openViewRequest={exitMonitorOpenViewRequest}
+            onOpenViewRequestHandled={() => setExitMonitorOpenViewRequest(null)}
             onOpenLeaveNotificationAutomation={openLeaveNotificationAutomation}
           />
         )
@@ -2148,6 +2135,7 @@ function App(): React.ReactElement {
             onOpenExitMonitorGroups={openExitMonitorGroups}
             openRuleRequest={automationOpenRuleRequest}
             onOpenModelSettings={openModelSettings}
+            onOpenAgentHub={openAgentHub}
           />
         )
       case 'agent-hub':

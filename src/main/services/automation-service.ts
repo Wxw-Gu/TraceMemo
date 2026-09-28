@@ -6,9 +6,12 @@ import {
 import {
   AUTOMATION_SEND_PURPOSE,
   BUILTIN_LEAVE_NOTIFICATION_RULE_ID,
+  leaveNotificationCoversRoom,
   type AutomationExecution,
+  type AutomationExecutionTrigger,
   type AutomationRule,
-  type AutomationStatusSummary
+  type AutomationStatusSummary,
+  type ScheduledRuleRunOutcome
 } from '../../shared/automation'
 import type { GroupMemberExitedEvent } from '../../shared/group-exit-event'
 import type { PersonalWechatSendCapability } from '../../shared/personal-wechat'
@@ -21,6 +24,11 @@ import {
   type LeaveNotificationTargetResolution
 } from './leave-notification-target'
 import {
+  resolveScheduledReportTarget,
+  scheduledReportSourceDisplayName
+} from './scheduled-report-target'
+import type { AutomationTargetContact } from './automation-wechat-target'
+import {
   automationRuleStore,
   type AutomationRuleStore
 } from './automation-rule-store'
@@ -32,7 +40,6 @@ import {
   automationActionRunner,
   type AutomationActionRunner
 } from './automation-action-runner'
-
 /**
  * AutomationService —— Automation v1 的编排层。
  *
@@ -118,6 +125,26 @@ export function leaveNotificationIdempotencyKey(eventId: string): string {
   return `${AUTOMATION_SEND_PURPOSE.leaveNotification}:${eventId}`
 }
 
+/**
+ * 定时日报的**确定性** executionId。
+ *
+ * 由 `ruleId + 槽位` 推出（不是 `randomUUID`）：同一个每日槽位即使因为
+ * 崩溃重启被重复触发，也算出同一个 executionId ——
+ * `ExecutionLog.record()` 按 id 覆盖，`WechatActionGateway` 的落盘幂等键
+ * （`automation_scheduled_report:<executionId>`）直接把第二次发送短路掉。
+ *
+ * **手动执行不算槽位**：每次都应该是独立的一次执行，否则用户连点两次
+ * 「立即执行」会因为幂等而被静默吞掉。
+ */
+export function scheduledReportExecutionId(ruleId: string, slot: string): string {
+  return createHash('sha1')
+    .update(`scheduled_report\u0001${ruleId}\u0001${slot}`)
+    .digest('hex')
+}
+
+/** 定时日报一次执行的结果（定义在 shared 层，便于 IPC / 渲染层共用）。 */
+export type { ScheduledRuleRunOutcome }
+
 export interface AutomationServiceDependencies {
   ruleStore?: AutomationRuleStore
   executionLog?: AutomationExecutionLogService
@@ -158,6 +185,16 @@ export class AutomationService {
    * 群 A 的「@我生成日报」被触发后，群 B 的同一条规则、或同群里的**另一条规则**都不受影响。
    */
   private readonly gates = new Map<string, ConversationRuleGate>()
+
+  /**
+   * 定时日报的 `ruleId inFlight` 锁。
+   *
+   * **刻意不用 `gates`（conversation gate）**：定时日报的触发与"某个会话刚被触发过"
+   * 没有关系，套 60 秒 cooldown 会莫名其妙吞掉当天的补跑。
+   * 这里只要一条最朴素的约束：**同一条规则同时最多一个 execution**；
+   * 不同规则之间互不影响（可以并行）。
+   */
+  private readonly scheduledInFlight = new Set<string>()
 
   /** 仅用于诊断统计（`[Automation] blockedMessages=N`），**不进用户执行日志**。 */
   private blockedMessageCount = 0
@@ -300,10 +337,16 @@ export class AutomationService {
    * - 消息型规则：MessageListener → handleMessage → 动作链；
    * - 退群通知：GroupExitMonitor → **本入口** → 单次文本发送。
    *
-   * 三层闸门（缺一不可）：
-   * 1. `enabled === false` → 不执行，**且不创建 execution**（§「没有执行：不创建」）；
-   * 2. `targetNeedsReview` → 迁移过来但目标无法无损映射，同样不执行、不创建记录；
-   * 3. `ruleId + eventId` 幂等 → 同一事件即使重复投递也只发送一次。
+   * 四层闸门（缺一不可）：
+   * 1. `enabled === false` → 不执行，**且不创建 execution**；
+   * 2. `targetNeedsReview` → 存量迁移遗留的"目标待重选"，同样不执行、不创建记录；
+   * 3. **通知范围**（`notifyScope` / `notifyRoomIds`）→ 事件所在群不在二次勾选范围内则跳过。
+   *    这是旧版「退群监控 → 通知群聊」的第二层，缺了它规则一启用就全量通知；
+   *    同样**不创建 execution** —— 被范围排除不是"一次失败的执行"。
+   * 4. `ruleId + eventId` 幂等 → 同一事件即使重复投递也只发送一次。
+   *
+   * 闸门顺序有意如此：范围判定放在幂等**之前**，否则一个被排除的群会白白占用
+   * 该事件的幂等位（用户随后真的补勾了那个群，反而发不出去）。
    */
   async handleGroupExit(event: GroupMemberExitedEvent): Promise<void> {
     const eventId = String(event?.eventId || '').trim()
@@ -326,7 +369,12 @@ export class AutomationService {
       this.warn(`退群通知目标待重新选择，已跳过本次通知 ruleId=${rule.id}`)
       return
     }
-    // ③ 幂等（内存快路径）。跨重启那一层由确定性 executionId + gateway 审计兜住。
+    // ③ 通知范围：这个群没被勾选就不归本规则管（与 UI 共用 shared 同一份判定）。
+    if (!leaveNotificationCoversRoom(rule.leaveNotification, event.conversationId)) {
+      this.info(`退群通知范围外，已跳过本次通知 ruleId=${rule.id}`)
+      return
+    }
+    // ④ 幂等（内存快路径）。跨重启那一层由确定性 executionId + gateway 审计兜住。
     if (!this.claimGroupExit(rule.id, eventId)) return
 
     const executionId = leaveNotificationExecutionId(rule.id, eventId)
@@ -382,8 +430,26 @@ export class AutomationService {
     rule: AutomationRule,
     event: GroupMemberExitedEvent
   ): LeaveNotificationTargetResolution {
-    let contacts: ReturnType<typeof listContacts> = []
+    const { contacts, selfWxid } = this.resolveTargetContext()
+    return resolveLeaveNotificationTarget({
+      config: rule.leaveNotification,
+      event,
+      contacts,
+      selfWxid
+    })
+  }
+
+  /**
+   * 联系人清单 + 当前登录 wxid。
+   *
+   * 退群通知与定时日报**共用这一处**：两份都要"把目标解析成可发送对象"，
+   * 解析所需的数据源（通讯录 / 当前账号）必须只有一个出口，
+   * 否则两边会慢慢长成两套判定。
+   */
+  private resolveTargetContext(): { contacts: AutomationTargetContact[]; selfWxid: string } {
+    let contacts: AutomationTargetContact[] = []
     try {
+      // `FormattedContact` 结构上就满足 `AutomationTargetContact`，不需要断言。
       contacts = listContacts()
     } catch (error) {
       this.warn(`读取联系人失败: ${errorText(error)}`)
@@ -394,12 +460,172 @@ export class AutomationService {
     } catch (error) {
       this.warn(`读取当前账号失败: ${errorText(error)}`)
     }
-    return resolveLeaveNotificationTarget({
-      config: rule.leaveNotification,
-      event,
-      contacts,
-      selfWxid
-    })
+    return { contacts, selfWxid }
+  }
+
+  /**
+   * 定时日报执行入口。**scheduler 与「立即执行」共用这一条**。
+   *
+   * ```text
+   * Scheduler ─┐
+   *            ├─→ executeScheduledRule(ruleId, { trigger, scheduledSlot })
+   * 手动执行 ───┘        ↓ resolveScheduledReportTarget
+   *                      ↓ runner.runScheduledReport（生成 → 落库 → 解析目标 → Gateway 发图）
+   *                      ↓ ExecutionLog.record（trigger = schedule | manual）
+   * ```
+   *
+   * 三层闸门（与退群通知同口径，但**不套 conversation gate / cooldown**）：
+   * 1. `enabled === false` → 不执行、不创建记录；
+   * 2. `targetNeedsReview` → 目标无法无损映射，不执行、不创建记录；
+   * 3. `ruleId inFlight` → 同一条规则同时最多一个 execution（不同规则可并行）。
+   */
+  async executeScheduledRule(
+    ruleId: string,
+    options: { trigger: 'schedule' | 'manual'; scheduledSlot?: string }
+  ): Promise<ScheduledRuleRunOutcome> {
+    const key = String(ruleId || '').trim()
+    if (!key) return { executed: false, reason: 'missing_rule' }
+
+    let rule: AutomationRule | undefined
+    try {
+      rule = this.ruleStore.getRule(key)
+    } catch (error) {
+      this.warn(`读取定时日报规则失败: ${errorText(error)}`)
+      return { executed: false, reason: 'store_error' }
+    }
+    if (!rule || rule.ruleType !== 'scheduled_report' || !rule.scheduledReport) {
+      return { executed: false, reason: 'rule_not_found' }
+    }
+    if (!rule.enabled) return { executed: false, reason: 'disabled' }
+    if (rule.scheduledReport.targetNeedsReview) {
+      this.warn(`定时日报目标待重新选择，已跳过 ruleId=${rule.id}`)
+      return { executed: false, reason: 'target_needs_review' }
+    }
+
+    // 并发保护：同一条规则同时最多一个执行。冲突时**直接返回**，不排队 ——
+    // 排队会让"18:00 那次没跑完"变成"18:00 和 18:01 各发一份"。
+    if (this.scheduledInFlight.has(rule.id)) {
+      return { executed: false, reason: 'in_flight' }
+    }
+    this.scheduledInFlight.add(rule.id)
+
+    const scheduledSlot = String(options.scheduledSlot || '').trim()
+    try {
+      const startedAt = this.now()
+      const executionId =
+        options.trigger === 'schedule' && scheduledSlot
+          ? scheduledReportExecutionId(rule.id, scheduledSlot)
+          : randomUUID()
+
+      const { contacts, selfWxid } = this.resolveTargetContext()
+      const resolution = resolveScheduledReportTarget({
+        config: rule.scheduledReport,
+        contacts,
+        selfWxid
+      })
+      const sourceDisplayName = scheduledReportSourceDisplayName(rule.scheduledReport, contacts)
+      const sendBlockedReason = await this.scheduledReportCapabilityError()
+
+      let result: Awaited<ReturnType<AutomationActionRunner['runScheduledReport']>>
+      try {
+        result = await this.runner.runScheduledReport({
+          executionId,
+          rule,
+          config: rule.scheduledReport,
+          resolution,
+          sourceDisplayName,
+          trigger: options.trigger === 'manual' ? 'manual' : 'schedule',
+          ...(sendBlockedReason ? { sendBlockedReason } : {})
+        })
+      } catch (error) {
+        result = {
+          steps: [],
+          status: 'failed',
+          errorSummary: `执行过程异常：${errorText(error)}`,
+          reportGenerated: false
+        }
+      }
+
+      this.executionLog.record(
+        this.buildExecution({
+          executionId,
+          rule,
+          startedAt,
+          sourceDisplayName,
+          trigger: options.trigger,
+          status: result.status,
+          durationMs: this.now() - startedAt,
+          steps: result.steps,
+          ...(result.errorSummary ? { errorSummary: result.errorSummary } : {})
+        })
+      )
+
+      this.recordScheduledRun(rule.id, {
+        trigger: options.trigger,
+        ...(scheduledSlot ? { scheduledSlot } : {}),
+        finishedAt: new Date(this.now()).toISOString()
+      })
+
+      // 隐私红线：日志只允许 ruleId / executionId / 触发方式 / 状态 / 耗时 / 步骤状态。
+      // 群名、昵称、wxid、日报正文、图片路径一律不进日志。
+      const trail = result.steps.map((step) => `${step.key}=${step.status}`).join(' ')
+      this.info(
+        `executed ruleId=${rule.id} executionId=${executionId} trigger=${options.trigger}` +
+          ` status=${result.status} durationMs=${this.now() - startedAt}${trail ? ` ${trail}` : ''}`
+      )
+
+      return {
+        executed: true,
+        executionId,
+        status: result.status,
+        reportGenerated: result.reportGenerated,
+        ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+        ...(result.errorSummary ? { errorSummary: result.errorSummary } : {})
+      }
+    } finally {
+      this.scheduledInFlight.delete(rule.id)
+    }
+  }
+
+  /**
+   * 写调度游标。
+   *
+   * - `lastRunAt`：**任何一次执行**（含手动）都会更新 —— UI 的"最近执行"要如实反映；
+   * - `lastScheduledSlot`：**只有定时触发**才消费槽位。
+   *   手动执行若也写它，会把今天已经安排好的那次定时执行一起吞掉。
+   */
+  private recordScheduledRun(
+    ruleId: string,
+    input: { trigger: 'schedule' | 'manual'; scheduledSlot?: string; finishedAt: string }
+  ): void {
+    try {
+      this.ruleStore.setScheduledReportRuntime(ruleId, {
+        lastRunAt: input.finishedAt,
+        ...(input.trigger === 'schedule' && input.scheduledSlot
+          ? { lastScheduledSlot: input.scheduledSlot }
+          : {})
+      })
+    } catch (error) {
+      // 游标写失败不影响本次执行 —— 但必须留痕，否则"同一天重复补跑"会变成无声故障。
+      this.warn(`写入定时日报调度游标失败 ruleId=${ruleId}: ${errorText(error)}`)
+    }
+  }
+
+  /** 定时日报只需要图片能力。缺失时给出用户能看懂的一句说明。 */
+  private async scheduledReportCapabilityError(): Promise<string | undefined> {
+    let capability: PersonalWechatSendCapability | null = null
+    try {
+      capability = await this.getCapability()
+    } catch {
+      return '暂时无法获知微信发送能力，本次定时日报未发送。'
+    }
+    if (!capability?.supported) {
+      return capability?.message || '当前系统不支持微信消息发送'
+    }
+    if (!capability.capabilities?.image) {
+      return '当前环境无法发送图片，本次定时日报未发送。'
+    }
+    return undefined
   }
 
   /** 退群通知只需要文字能力。缺失时给出用户能看懂的一句说明。 */
@@ -565,6 +791,8 @@ export class AutomationService {
     rule: AutomationRule
     startedAt: number
     sourceDisplayName: string
+    /** 触发方式。旧调用点不传时为 `undefined` —— 读盘不猜测。 */
+    trigger?: AutomationExecutionTrigger
     status: AutomationExecution['status']
     durationMs: number
     steps: AutomationExecution['steps']
@@ -575,6 +803,7 @@ export class AutomationService {
       ruleId: input.rule.id,
       ruleName: input.rule.name,
       triggerTime: input.startedAt,
+      ...(input.trigger ? { trigger: input.trigger } : {}),
       sourceDisplayName: input.sourceDisplayName,
       status: input.status,
       durationMs: input.durationMs,

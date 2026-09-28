@@ -1,7 +1,10 @@
 import path from 'node:path'
 import { app } from 'electron'
 import fs from 'fs-extra'
-import type { AutomationExecution } from '../../shared/automation'
+import type {
+  AutomationExecution,
+  AutomationExecutionTrigger
+} from '../../shared/automation'
 
 /**
  * AutomationExecutionLogService —— **用户层**执行日志。
@@ -24,6 +27,8 @@ export interface AutomationExecutionLogDependencies {
 
 const EXECUTION_STATUSES: AutomationExecution['status'][] = ['running', 'success', 'failed']
 
+const EXECUTION_TRIGGERS: AutomationExecutionTrigger[] = ['message', 'exit', 'schedule', 'manual']
+
 function normalizeExecution(value: unknown): AutomationExecution | null {
   if (!value || typeof value !== 'object') return null
   const record = value as Partial<AutomationExecution>
@@ -34,6 +39,17 @@ function normalizeExecution(value: unknown): AutomationExecution | null {
     ruleId: String(record.ruleId || ''),
     ruleName: String(record.ruleName || ''),
     triggerTime: Number(record.triggerTime) || 0,
+    /*
+     * `trigger` 必须在这里**显式透传**。
+     *
+     * 这个归一化是白名单式的：没列出来的字段会被静默丢掉。定时日报的
+     * 「本次是定时跑的还是用户点的立即执行」全靠这个字段区分，
+     * 漏掉它就会变成"写的时候有、读出来永远没有"—— 而且没有任何报错。
+     * 旧记录没有这个字段，保持 `undefined`（读盘不猜测）。
+     */
+    ...(EXECUTION_TRIGGERS.includes(record.trigger as AutomationExecutionTrigger)
+      ? { trigger: record.trigger as AutomationExecutionTrigger }
+      : {}),
     sourceDisplayName: String(record.sourceDisplayName || ''),
     // 不认识的 status（含历史遗留值）一律降级成 `running`，绝不凭空造出成功/失败。
     status: EXECUTION_STATUSES.includes(record.status as AutomationExecution['status'])

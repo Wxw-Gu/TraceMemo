@@ -52,13 +52,12 @@ import type {
 } from '../shared/personal-wechat'
 import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
 import type {
-  ScheduledReportCreateInput,
   ScheduledReportExecution,
+  ScheduledReportNotification,
+  ScheduledReportNotificationCapability,
   ScheduledReportNotificationSettings,
   ScheduledReportNotificationSettingsResult,
-  ScheduledReportResult,
-  ScheduledReportTask,
-  ScheduledReportUpdateInput
+  ScheduledReportResult
 } from '../shared/scheduled-report'
 import type {
   PersonalWechatVoiceEncodingEnvironment,
@@ -71,7 +70,8 @@ import type {
   AutomationExecution,
   AutomationRule,
   AutomationRuleDraft,
-  AutomationStatusSummary
+  AutomationStatusSummary,
+  ScheduledRuleRunOutcome
 } from '../shared/automation'
 import type { GroupMemberStatsQuery, GroupMemberStatsResult } from '../shared/group-stats'
 import type { ActionLogEntry } from '../shared/action-log'
@@ -572,44 +572,30 @@ const api = {
   sendPersonalWechatMessage: (
     request: PersonalWechatSendRequest
   ): Promise<PersonalWechatSendResult> => ipcRenderer.invoke('wechat-personal:send', request),
-  listScheduledReports: (): Promise<ScheduledReportTask[]> =>
-    ipcRenderer.invoke('scheduled-report:list'),
-  listScheduledReportExecutions: (taskId?: string): Promise<ScheduledReportExecution[]> =>
-    ipcRenderer.invoke('scheduled-report:listExecutions', taskId),
+  /**
+   * 定时日报（Automation 的 `scheduled_report` 规则类型）。
+   *
+   * 规则 CRUD 复用上面的 `automation:*` 通道；这里只暴露三块专属能力：
+   * 立即执行、微信异常通知、旧执行记录只读存档。
+   */
+  runScheduledReportRule: (
+    ruleId: string
+  ): Promise<{ success: boolean; error?: string; data?: ScheduledRuleRunOutcome }> =>
+    ipcRenderer.invoke('automation:runScheduledReportRule', ruleId),
+  listScheduledReportLegacyExecutions: (ruleId?: string): Promise<ScheduledReportExecution[]> =>
+    ipcRenderer.invoke('automation:listScheduledReportLegacyExecutions', ruleId),
   getScheduledReportNotificationSettings: (): Promise<ScheduledReportNotificationSettings> =>
-    ipcRenderer.invoke('scheduled-report:getNotificationSettings'),
+    ipcRenderer.invoke('automation:getScheduledReportNotificationSettings'),
+  getScheduledReportNotificationCapability: (): Promise<ScheduledReportNotificationCapability> =>
+    ipcRenderer.invoke('automation:getScheduledReportNotificationCapability'),
   setScheduledReportNotificationEnabled: (
     enabled: boolean
   ): Promise<ScheduledReportNotificationSettingsResult> =>
-    ipcRenderer.invoke('scheduled-report:setNotificationEnabled', enabled),
-  createScheduledReport: (
-    request: ScheduledReportCreateInput
-  ): Promise<ScheduledReportResult<ScheduledReportTask>> =>
-    ipcRenderer.invoke('scheduled-report:create', request),
-  updateScheduledReport: (
-    taskId: string,
-    request: ScheduledReportUpdateInput
-  ): Promise<ScheduledReportResult<ScheduledReportTask>> =>
-    ipcRenderer.invoke('scheduled-report:update', taskId, request),
-  deleteScheduledReport: (taskId: string): Promise<ScheduledReportResult<{ deletedId: string }>> =>
-    ipcRenderer.invoke('scheduled-report:delete', taskId),
-  setScheduledReportEnabled: (
-    taskId: string,
-    enabled: boolean
-  ): Promise<ScheduledReportResult<ScheduledReportTask>> =>
-    ipcRenderer.invoke('scheduled-report:setEnabled', taskId, enabled),
-  runScheduledReportNow: (
-    taskId: string
-  ): Promise<ScheduledReportResult<ScheduledReportExecution>> =>
-    ipcRenderer.invoke('scheduled-report:runNow', taskId),
-  retryScheduledReportSend: (
-    executionId: string
-  ): Promise<ScheduledReportResult<ScheduledReportExecution>> =>
-    ipcRenderer.invoke('scheduled-report:retrySend', executionId),
+    ipcRenderer.invoke('automation:setScheduledReportNotificationEnabled', enabled),
   testScheduledReportErrorNotification: (
-    taskId: string
-  ): Promise<ScheduledReportResult<ScheduledReportExecution>> =>
-    ipcRenderer.invoke('scheduled-report:testErrorNotification', taskId),
+    ruleId: string
+  ): Promise<ScheduledReportResult<ScheduledReportNotification>> =>
+    ipcRenderer.invoke('automation:testScheduledReportErrorNotification', ruleId),
   getPersonalWechatVoiceDiagnostic: (): Promise<PersonalWechatVoiceDiagnostic | null> =>
     ipcRenderer.invoke('wechat-personal:getVoiceDiagnostic'),
   getAgentHubStatus: () => ipcRenderer.invoke('agent-hub:getStatus'),

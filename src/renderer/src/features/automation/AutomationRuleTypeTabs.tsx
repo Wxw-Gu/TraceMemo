@@ -5,11 +5,10 @@ import { AUTOMATION_RULE_TYPE_LABELS, type AutomationRuleType } from '../../../.
 /**
  * Tab 上能出现的规则类型。
  *
- * `scheduled_report` **只存在于这一层**：真实 `AutomationRule.ruleType`
- * 仍然只有 `daily_report` / `leave_notification`
- * —— 不往真实 schema 里塞一个还不存在的类型。
+ * `scheduled_report` 是真实的 `AutomationRuleType`；这个别名只为让调用点的
+ * 语义更清楚 —— 它等价于 `AutomationRuleType`。
  */
-export type AutomationRuleTabType = AutomationRuleType | 'scheduled_report'
+export type AutomationRuleTabType = AutomationRuleType
 
 /**
  * Tab 顺序 = 触发方式的演进：消息触发 → 时间触发 → 系统事件触发。
@@ -20,11 +19,7 @@ const RULE_TABS: AutomationRuleTabType[] = [
   'leave_notification'
 ]
 
-const TAB_LABELS: Record<AutomationRuleTabType, string> = {
-  daily_report: AUTOMATION_RULE_TYPE_LABELS.daily_report,
-  scheduled_report: '定时日报',
-  leave_notification: AUTOMATION_RULE_TYPE_LABELS.leave_notification
-}
+const TAB_LABELS: Record<AutomationRuleTabType, string> = AUTOMATION_RULE_TYPE_LABELS
 
 /**
  * AutomationRuleTypeTabs —— 编辑器上方的**规则类型切换**。

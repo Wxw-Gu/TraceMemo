@@ -55,10 +55,10 @@ export function matchAutomationRule(
 ): AutomationMatchResult {
   // **规则类型闸门放在最前面。**
   //
-  // 「退群通知」的空关键词 + 不要求 @我，会让它命中**每一条群消息** ——
+  // 「退群通知」与「定时日报」的空关键词 + 不要求 @我，会让它们命中**每一条群消息** ——
   // 那是最坏的一类 bug：用户什么都没配，规则却开始乱跑。
   // 类型分派必须在这里一处解决，预览与真实执行才会一致。
-  if (rule.ruleType === 'leave_notification') {
+  if (rule.ruleType !== 'daily_report') {
     return { matched: false, reason: 'rule_type' }
   }
 

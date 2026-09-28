@@ -135,10 +135,6 @@ import type {
   PersonalWechatSendResult,
   PersonalWechatSenderStatus
 } from '../shared/personal-wechat'
-import type {
-  ScheduledReportCreateInput,
-  ScheduledReportUpdateInput
-} from '../shared/scheduled-report'
 import { isTruthyDebugFlag } from '../shared/debug-flags'
 import { TextToSpeechSettingsService } from './services/text-to-speech-settings-service'
 import type {
@@ -1047,6 +1043,30 @@ app.whenReady().then(async () => {
          */
         let automationListening = false
         initAutomationService(wcdb4Client, { isListening: () => automationListening })
+
+        /**
+         * 旧「定时日报任务」迁移所需的会话解析器。
+         *
+         * **必须在数据库就绪之后注入**：旧 `task.group` 可能是会话 md5、群名或 roomId
+         * 三种形态，只有 `resolveMd5` 能收敛成稳定会话 id。
+         * 注入前若渲染层已经读过一次规则（`automation:listRules`），迁移会**整体推迟**
+         * 而不落盘 —— 注入这一步会立刻补跑（见 `AutomationRuleStore.setLegacyConversationResolver`）。
+         *
+         * 这样设计的原因：拿不到解析器时如果把旧数据判成「无法无损映射」，
+         * 用户的定时日报会被**无辜停用**，而事实只是"数据库还没打开"。
+         */
+        automationRuleStore.setLegacyConversationResolver((raw) => {
+          const key = String(raw || '').trim()
+          if (!key) return undefined
+          // 已经是稳定会话 id 就直接用，不查库。
+          if (key.endsWith('@chatroom')) return key
+          try {
+            const username = String(chat.resolveMd5(key)?.m_nsUsrName || '').trim()
+            return username || undefined
+          } catch {
+            return undefined
+          }
+        })
         /**
          * 退群通知的唯一通路：**退群监控只负责产生事件，自动化负责发送**。
          *
@@ -1993,44 +2013,58 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('wechat-personal:getSendCapability', () => getPersonalWechatSendCapability())
-  ipcMain.handle('scheduled-report:list', () => scheduledReportService.listTasks())
-  ipcMain.handle('scheduled-report:listExecutions', (_, taskId?: string) =>
-    scheduledReportService.listExecutions(taskId)
+
+  /**
+   * 定时日报（Automation 的 `scheduled_report` 规则类型）。
+   *
+   * 规则本身的 CRUD 走上面的 `automation:*`；这里只补三块**专属**能力：
+   * 1. 「立即执行」—— 走 `AutomationService.executeScheduledRule(ruleId,'manual')`，
+   *    与 scheduler 触发**同一条链路**（生成 → 落库 → 解析目标 → Gateway 发图）；
+   * 2. 微信异常通知 —— 定时日报失败时的 Agent Hub 推送，随功能保留；
+   * 3. 旧执行记录**只读存档** —— 旧记录无法无损转换，原样保留给 UI 展示。
+   */
+  ipcMain.handle('automation:runScheduledReportRule', async (_, ruleId: string) => {
+    const service = tryAutomationService()
+    if (!service) return { success: false, error: '数据库尚未就绪，暂时无法执行定时日报' }
+    const outcome = await service.executeScheduledRule(String(ruleId || ''), { trigger: 'manual' })
+    if (outcome.executed) {
+      return { success: outcome.status !== 'failed', data: outcome }
+    }
+    // 「没执行」的每一种原因都要能翻译成用户看得懂的一句话 —— 否则点了按钮没反应，无从排查。
+    const skipMessages: Record<string, string> = {
+      missing_rule: '规则 id 无效',
+      rule_not_found: '未找到这条定时日报规则',
+      disabled: '这条定时日报已停用，请先启用再执行',
+      target_needs_review: '这条规则的发送目标需要重新选择后才能执行',
+      in_flight: '这条规则正在执行中，请稍后再试',
+      store_error: '读取规则失败，请稍后再试'
+    }
+    return {
+      success: false,
+      error: skipMessages[outcome.reason || ''] || '定时日报未执行',
+      data: outcome
+    }
+  })
+  ipcMain.handle('automation:listScheduledReportLegacyExecutions', (_, ruleId?: string) =>
+    scheduledReportService.listLegacyExecutions(ruleId)
   )
-  ipcMain.handle('scheduled-report:getNotificationSettings', () =>
+  ipcMain.handle('automation:getScheduledReportNotificationSettings', () =>
     scheduledReportService.getNotificationSettings()
   )
-  ipcMain.handle('scheduled-report:setNotificationEnabled', (_, enabled: boolean) =>
+  ipcMain.handle('automation:getScheduledReportNotificationCapability', () =>
+    scheduledReportService.checkNotificationCapability()
+  )
+  ipcMain.handle('automation:setScheduledReportNotificationEnabled', (_, enabled: boolean) =>
     scheduledReportService.setNotificationEnabled(Boolean(enabled))
   )
-  ipcMain.handle('scheduled-report:create', (_, request: ScheduledReportCreateInput) =>
-    scheduledReportService.createTask(request)
-  )
-  ipcMain.handle(
-    'scheduled-report:update',
-    (_, taskId: string, request: ScheduledReportUpdateInput) =>
-      scheduledReportService.updateTask(taskId, request)
-  )
-  ipcMain.handle('scheduled-report:delete', (_, taskId: string) =>
-    scheduledReportService.deleteTask(taskId)
-  )
-  ipcMain.handle('scheduled-report:setEnabled', (_, taskId: string, enabled: boolean) =>
-    scheduledReportService.setTaskEnabled(taskId, Boolean(enabled))
-  )
-  ipcMain.handle('scheduled-report:runNow', (_, taskId: string) =>
-    scheduledReportService.runScheduledReportNow(taskId)
-  )
-  ipcMain.handle('scheduled-report:retrySend', (_, executionId: string) =>
-    scheduledReportService.retryScheduledReportSend(executionId)
-  )
-  ipcMain.handle('scheduled-report:testErrorNotification', (_, taskId: string) => {
+  ipcMain.handle('automation:testScheduledReportErrorNotification', (_, ruleId: string) => {
     if (!isTruthyDebugFlag(import.meta.env.VITE_SCHEDULED_REPORT_DEBUG)) {
       return Promise.resolve({
         success: false,
         error: '调试测试按钮未开启，请在 .env 中设置 VITE_SCHEDULED_REPORT_DEBUG=true。'
       })
     }
-    return scheduledReportService.testScheduledReportErrorNotification(taskId)
+    return scheduledReportService.testScheduledReportErrorNotification(ruleId)
   })
 
   ipcMain.handle('report:reveal', async (_, filePath: string) => {

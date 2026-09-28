@@ -6,6 +6,15 @@
  */
 
 import { normalizeGroupExitNotificationTemplate } from './group-exit-monitor'
+import {
+  isSelectableReportTemplateId,
+  type SelectableReportTemplateId
+} from './report-templates'
+import type {
+  ScheduledReportMemberNameMode,
+  ScheduledReportMessageType,
+  ScheduledReportRange
+} from './scheduled-report'
 
 /** 触发事件类型。第一版只支持「收到消息」。 */
 export type AutomationTriggerType = 'message'
@@ -26,16 +35,18 @@ export type AutomationMessageScope = 'group' | 'direct' | 'all'
  *
  * 决定**这条规则由什么驱动、有哪些字段有意义**：
  * - `daily_report`：消息驱动，条件 + 动作链（@我生成日报）；
+ * - `scheduled_report`：时间驱动，日程 + 日报配置 + 发送目标（定时日报）；
  * - `leave_notification`：退群事件驱动，通知目标 + 模板（退群通知）。
  *
- * ⚠️ 这是一条**硬分派**：`matchAutomationRule` 会直接拒绝非 `daily_report` 的规则，
- * 否则一条 keyword 为空的退群通知会命中**每一条群消息**。
+ * ⚠️ 这是一条**硬分派**：`matchAutomationRule` 只放行 `daily_report`，
+ * 否则一条 keyword 为空的定时/退群规则会命中**每一条群消息**。
  */
-export type AutomationRuleType = 'daily_report' | 'leave_notification'
+export type AutomationRuleType = 'daily_report' | 'scheduled_report' | 'leave_notification'
 
 /** 规则类型的界面标签（Tab 与首页卡片共用一处文案）。 */
 export const AUTOMATION_RULE_TYPE_LABELS: Record<AutomationRuleType, string> = {
   daily_report: '@我生成日报',
+  scheduled_report: '定时日报',
   leave_notification: '退群通知'
 }
 
@@ -52,16 +63,350 @@ export interface LeaveNotificationTarget {
   contactId?: string
 }
 
+/**
+ * 退群通知的**通知范围** —— 对「退群监控 → 管理群聊」选中集合的二次筛选。
+ *
+ * 旧版这里是 `notificationRoomIds`（per-group 多值）：管理群聊选 N 个群，
+ * 通知群聊再从这 N 个里勾子集。迁移到自动化时被压成单值目标，二次筛选能力随之丢失，
+ * 于是"规则一启用就全量通知"。本字段把它恢复回来 —— 语义与旧版逐字对齐：
+ *
+ * - `all`      = 全部已监控群聊。**旧规则缺字段时的归一化结果**，保持既有行为不变。
+ * - `selected` = 仅 `notifyRoomIds` 里的群。
+ */
+export type LeaveNotificationNotifyScope = 'all' | 'selected'
+
 export interface LeaveNotificationConfig {
   target: LeaveNotificationTarget
   template: string
   /**
-   * 迁移时旧配置**无法无损映射**的标记（旧「通知群聊」是 per-group 多值，
-   * 新目标是单值）。为 true 时：规则不执行发送，UI 提示用户重选目标。
+   * 通知范围：哪些**已监控**群聊值得发通知。
+   *
+   * 与 `target` **正交**，两者回答的是不同问题：
+   * - `target`      → 通知**发到哪里**（当前群聊 / 自己 / 文件助手 / 指定好友）
+   * - `notifyScope` → **哪些群的退群**才值得发
+   */
+  notifyScope: LeaveNotificationNotifyScope
+  /**
+   * `notifyScope === 'selected'` 时生效的已监控群聊子集（roomId，即 `xxx@chatroom`）。
+   *
+   * 选中的 id 在本字段里**记住**，所以「全部 ⇄ 仅选中」来回切换不会丢掉用户的勾选；
+   * 但它只在 `notifyScope === 'selected'` 时被读取 —— `notifyScope` 是唯一权威。
+   *
+   * 范围外的 id 不具备危害：未被监控的群不会产生退群事件，自然永不命中。
+   */
+  notifyRoomIds: string[]
+  /**
+   * 迁移时旧配置**无法无损映射**的标记。
+   *
+   * ⚠️ 退群通知的迁移**已经不再产生**它（子集现在可无损表达，见
+   * `leave-notification-migration.ts`）。保留只为两件事：
+   * 1. 存量安装里**已经落盘**的 `targetNeedsReview: true` 仍要拦发送，等用户重选；
+   * 2. 定时日报迁移确实还需要它（`scheduled_report` 的跨群目标是新产品不支持的形态）。
+   *
+   * 为 true 时：规则不执行发送，UI 提示用户重选目标。用户手动保存一次即清除。
+   */
+  targetNeedsReview?: boolean
+}
+
+/**
+ * 定时日报发到哪里。刻意只有这四种，**不提供「指定另一个群聊」** ——
+ * 生成 A 群日报却发到 B 群是最容易让人误解的配置。
+ */
+export type ScheduledReportTargetType = 'source_chat' | 'self' | 'file_transfer' | 'contact'
+
+export interface ScheduledReportTarget {
+  type: ScheduledReportTargetType
+  /** `contact` 时必填：**稳定 id（wxid / username）**，不是昵称。 */
+  contactId?: string
+}
+
+/**
+ * 定时日报的规则配置。
+ *
+ * 字段一一对应历史「定时日报任务」的既有能力，
+ * 没有任何"按 UI 猜出来的"配置，也没有丢掉任何一项已有能力。
+ */
+export interface ScheduledReportAutomationConfig {
+  schedule: {
+    /** `HH:mm`，**每天一次**。当前只支持每日。 */
+    time: string
+  }
+  report: {
+    /**
+     * 日报来源群的**稳定会话 id**（`xxx@chatroom`）。
+     *
+     * ⚠️ 迁移过来的老数据可能仍是旧形态（会话 md5 / 群名）—— 那是历史事实，
+     * 不在这里"猜着改"；运行期解析失败会如实报错（不静默换群）。
+     */
+    sourceConversationId: string
+    range: ScheduledReportRange
+    messageTypes: ScheduledReportMessageType[]
+    templateId: SelectableReportTemplateId
+    memberNameMode: ScheduledReportMemberNameMode
+    timeoutSeconds: number
+  }
+  target: ScheduledReportTarget
+  /**
+   * 日报图片**发送成功之后**再补发的一句话（「后置词」）。
+   *
+   * 与「手动发送日报图片」里的后置词是同一件事，但这里是**按规则存**：
+   * 定时日报按群发，A 群和 B 群想跟的话未必一样；统一塞进全局设置反而更别扭。
+   *
+   * 空字符串 = 只发图片。存量规则迁移过来就是空（`normalizeScheduledReportConfig`
+   * 不再凭空补默认值）—— 「上线后突然多出一条文本消息」是绝不能接受的静默行为变化。
+   */
+  postfixText?: string
+  /**
+   * 迁移时旧目标**无法无损映射**的标记（例如"生成 A 群日报 → 发 B 群"，
+   * 或旧目标解析不到）。为 true 时：规则不执行、不创建记录，UI 提示重选目标。
    *
    * 只有迁移会把它置为 true，用户手动保存一次即清除。
    */
   targetNeedsReview?: boolean
+  /**
+   * 迁移保留的**旧目标原文**。仅供用户在编辑器里看清"原来配的是哪个"，
+   * **永远不会**被当作发送目标使用。
+   */
+  legacyTarget?: string
+  /** 迁移保留的**旧来源群原文**（同理，只作展示）。 */
+  legacySourceGroup?: string
+  /**
+   * 最近一次执行的完成时间（ISO）。**调度游标，不是用户配置**：
+   * 由 scheduler 写，`updateRule` 会保留它，草稿改不动它。
+   */
+  lastRunAt?: string
+  /**
+   * 已消费的每日槽位（ISO）。**幂等标记，不是用户配置**。
+   * 用于避免同一天重复补跑、以及重启后重复执行同一槽位。
+   */
+  lastScheduledSlot?: string
+}
+
+/** 定时日报的四种发送目标（展示层单一来源）。 */
+export const SCHEDULED_REPORT_TARGET_OPTIONS: ReadonlyArray<{
+  type: ScheduledReportTargetType
+  label: string
+  description: string
+}> = [
+  {
+    type: 'source_chat',
+    label: '发送到日报来源群',
+    description: '把生成的日报发送回用于生成日报的那个群。'
+  },
+  {
+    type: 'file_transfer',
+    label: '文件传输助手',
+    description: '将生成的日报发送到文件传输助手。'
+  },
+  {
+    type: 'self',
+    label: '发给自己',
+    description: '将生成的日报发送到当前登录微信账号自己的会话。'
+  },
+  {
+    type: 'contact',
+    label: '指定好友',
+    description: '将生成的日报发送给一个指定联系人。'
+  }
+]
+
+/**
+ * 新建定时日报的默认目标：文件传输助手。
+ *
+ * 与退群通知不同（那边默认「当前群聊」）：
+ * 定时日报新建时**绝不能默认发回群里** —— 用户还没确认过就自动往群里发日报，
+ * 是最容易造成打扰的一类默认值。
+ */
+export const SCHEDULED_REPORT_DEFAULT_TARGET_TYPE: ScheduledReportTargetType = 'file_transfer'
+
+/** 目标类型 → 界面短标签。 */
+export function scheduledReportTargetLabel(type: ScheduledReportTargetType): string {
+  return SCHEDULED_REPORT_TARGET_OPTIONS.find((option) => option.type === type)?.label ?? ''
+}
+
+/** 日报范围的界面文案（与旧「定时日报」页面逐字一致）。 */
+export const SCHEDULED_REPORT_RANGE_LABELS: Record<ScheduledReportRange, string> = {
+  today: '今日',
+  yesterday: '昨日',
+  '7days': '近 7 天',
+  recent24h: '最近24小时'
+}
+
+export function scheduledReportRangeLabel(range: ScheduledReportRange): string {
+  return SCHEDULED_REPORT_RANGE_LABELS[range] ?? SCHEDULED_REPORT_RANGE_LABELS.today
+}
+
+/** 成员名称选项（与旧页面一致）。 */
+export const SCHEDULED_REPORT_MEMBER_NAME_OPTIONS: ReadonlyArray<{
+  value: ScheduledReportMemberNameMode
+  label: string
+}> = [
+  { value: 'groupNickname', label: '群昵称' },
+  { value: 'wechatNickname', label: '微信昵称' },
+  { value: 'remark', label: '通讯录备注' }
+]
+
+export const SCHEDULED_REPORT_MEMBER_NAME_LABELS: Record<ScheduledReportMemberNameMode, string> = {
+  groupNickname: '群昵称',
+  wechatNickname: '微信昵称',
+  remark: '通讯录备注'
+}
+
+export const SCHEDULED_REPORT_DEFAULT_TIME = '18:30'
+export const SCHEDULED_REPORT_DEFAULT_RANGE: ScheduledReportRange = 'today'
+export const SCHEDULED_REPORT_DEFAULT_TEMPLATE_ID: SelectableReportTemplateId = 'v1'
+export const SCHEDULED_REPORT_DEFAULT_MEMBER_NAME_MODE: ScheduledReportMemberNameMode =
+  'groupNickname'
+export const SCHEDULED_REPORT_DEFAULT_TIMEOUT_SECONDS = 300
+export const SCHEDULED_REPORT_MIN_TIMEOUT_SECONDS = 30
+export const SCHEDULED_REPORT_MAX_TIMEOUT_SECONDS = 1800
+
+/**
+ * 后置词长度上限。
+ *
+ * 与手动发送日报图片那个输入框（`ReportImagePostfixInput` 的 `maxLength`）
+ * **必须一致**：同一句话在两个入口能存下不同长度，是最没道理的一种不一致。
+ */
+export const SCHEDULED_REPORT_POSTFIX_MAX_LENGTH = 200
+
+/** 全部消息类型（新建时的默认：与旧页面一致，全选）。 */
+export const SCHEDULED_REPORT_ALL_MESSAGE_TYPES: ScheduledReportMessageType[] = [
+  'text',
+  'image',
+  'sticker',
+  'video',
+  'voice',
+  'share',
+  'system'
+]
+
+const SCHEDULED_REPORT_RANGES: ScheduledReportRange[] = ['today', 'yesterday', '7days', 'recent24h']
+
+/** `HH:mm` 校验。 */
+export function isValidScheduleTime(value: unknown): boolean {
+  return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(value ?? '').trim())
+}
+
+/** 任意输入 → 合法 `HH:mm`；非法回落到默认时间。 */
+export function normalizeScheduleTime(value: unknown): string {
+  return isValidScheduleTime(value) ? String(value).trim() : SCHEDULED_REPORT_DEFAULT_TIME
+}
+
+/**
+ * 归一化「后置词」。
+ *
+ * 去首尾空白 + 截断到上限。**空就是空** —— 绝不回落到
+ * `DEFAULT_REPORT_IMAGE_POSTFIX_TEXT`，那会让每一条存量规则在上线后
+ * 突然多发出一句文本，属于静默的行为变化。
+ */
+export function normalizeScheduledReportPostfixText(input: unknown): string {
+  return String(input ?? '')
+    .trim()
+    .slice(0, SCHEDULED_REPORT_POSTFIX_MAX_LENGTH)
+}
+
+/**
+ * 下一次执行时刻（本地时间）。
+ *
+ * **source of truth 是 `schedule.time`**：这个函数是纯派生，
+ * `nextRunAt` 不再作为可写配置持久化。
+ */
+export function calculateNextRunAt(scheduleTime: string, from: Date = new Date()): string {
+  if (!isValidScheduleTime(scheduleTime)) throw new Error('执行时间必须是 HH:mm')
+  const [hour, minute] = String(scheduleTime).trim().split(':').map(Number)
+  const next = new Date(from)
+  next.setHours(hour, minute, 0, 0)
+  if (next.getTime() <= from.getTime()) next.setDate(next.getDate() + 1)
+  return next.toISOString()
+}
+
+/** 收敛定时日报配置：未知值一律回落到安全默认，绝不落一条跑不起来的规则。 */
+export function normalizeScheduledReportConfig(
+  input: unknown
+): ScheduledReportAutomationConfig {
+  const raw = (input ?? {}) as Partial<ScheduledReportAutomationConfig>
+  const scheduleRaw = (raw.schedule ?? {}) as Partial<ScheduledReportAutomationConfig['schedule']>
+  const reportRaw = (raw.report ?? {}) as Partial<ScheduledReportAutomationConfig['report']>
+  const targetRaw = (raw.target ?? {}) as Partial<ScheduledReportTarget>
+
+  const allowedTargets: ScheduledReportTargetType[] = [
+    'source_chat',
+    'self',
+    'file_transfer',
+    'contact'
+  ]
+  const targetType: ScheduledReportTargetType = allowedTargets.includes(
+    targetRaw.type as ScheduledReportTargetType
+  )
+    ? (targetRaw.type as ScheduledReportTargetType)
+    : SCHEDULED_REPORT_DEFAULT_TARGET_TYPE
+  const contactId = String(targetRaw.contactId ?? '').trim()
+  // `contact` 但没有 id → 回落默认目标（与退群通知同口径）：宁可发文件助手，
+  // 也不能存一条必然失败的规则。
+  const effectiveTargetType: ScheduledReportTargetType =
+    targetType === 'contact' && !contactId ? SCHEDULED_REPORT_DEFAULT_TARGET_TYPE : targetType
+
+  const range: ScheduledReportRange = SCHEDULED_REPORT_RANGES.includes(
+    reportRaw.range as ScheduledReportRange
+  )
+    ? (reportRaw.range as ScheduledReportRange)
+    : SCHEDULED_REPORT_DEFAULT_RANGE
+
+  const messageTypes = Array.isArray(reportRaw.messageTypes)
+    ? (reportRaw.messageTypes
+        .map((type) => String(type))
+        .filter((type) =>
+          SCHEDULED_REPORT_ALL_MESSAGE_TYPES.includes(type as ScheduledReportMessageType)
+        ) as ScheduledReportMessageType[])
+    : []
+  const effectiveMessageTypes: ScheduledReportMessageType[] = messageTypes.length
+    ? messageTypes
+    : ['text']
+
+  const memberNameMode: ScheduledReportMemberNameMode =
+    reportRaw.memberNameMode === 'wechatNickname' || reportRaw.memberNameMode === 'remark'
+      ? reportRaw.memberNameMode
+      : SCHEDULED_REPORT_DEFAULT_MEMBER_NAME_MODE
+
+  const rawTimeout = Number(reportRaw.timeoutSeconds)
+  const timeoutSeconds = Number.isFinite(rawTimeout)
+    ? Math.max(
+        SCHEDULED_REPORT_MIN_TIMEOUT_SECONDS,
+        Math.min(SCHEDULED_REPORT_MAX_TIMEOUT_SECONDS, Math.round(rawTimeout))
+      )
+    : SCHEDULED_REPORT_DEFAULT_TIMEOUT_SECONDS
+
+  const legacyTarget = String(raw.legacyTarget ?? '').trim()
+  const legacySourceGroup = String(raw.legacySourceGroup ?? '').trim()
+  const lastRunAt = String(raw.lastRunAt ?? '').trim()
+  const lastScheduledSlot = String(raw.lastScheduledSlot ?? '').trim()
+  const postfixText = normalizeScheduledReportPostfixText(raw.postfixText)
+
+  return {
+    schedule: { time: normalizeScheduleTime(scheduleRaw.time) },
+    report: {
+      sourceConversationId: String(reportRaw.sourceConversationId ?? '').trim(),
+      range,
+      messageTypes: effectiveMessageTypes,
+      // 必须**校验**而不是只兜空值：旧 tasks.json 里可能存着本版本已经没有的模板 id，
+      // 原样透传会得到一条"配置看着在、运行期生成不出来"的规则。
+      templateId: isSelectableReportTemplateId(reportRaw.templateId)
+        ? reportRaw.templateId
+        : SCHEDULED_REPORT_DEFAULT_TEMPLATE_ID,
+      memberNameMode,
+      timeoutSeconds
+    },
+    target: {
+      type: effectiveTargetType,
+      ...(effectiveTargetType === 'contact' ? { contactId } : {})
+    },
+    ...(postfixText ? { postfixText } : {}),
+    ...(raw.targetNeedsReview === true ? { targetNeedsReview: true } : {}),
+    ...(legacyTarget ? { legacyTarget } : {}),
+    ...(legacySourceGroup ? { legacySourceGroup } : {}),
+    ...(lastRunAt ? { lastRunAt } : {}),
+    ...(lastScheduledSlot ? { lastScheduledSlot } : {})
+  }
 }
 
 export interface AutomationConditions {
@@ -110,6 +455,8 @@ export interface AutomationRule {
   replyDelaySeconds: number
   /** `ruleType === 'leave_notification'` 时必填。 */
   leaveNotification?: LeaveNotificationConfig
+  /** `ruleType === 'scheduled_report'` 时必填。 */
+  scheduledReport?: ScheduledReportAutomationConfig
   createdAt: number
   updatedAt: number
 }
@@ -120,12 +467,18 @@ export type AutomationStepStatus = 'pending' | 'running' | 'success' | 'failed' 
 /**
  * 执行步骤键。
  *
- * 分两族，**不共用**：
+ * 分三族，**不共用**：
  * - 消息型（`daily_report`）：received / matched / reply / report / send
+ * - 定时型（`scheduled_report`）：schedule_triggered / report_generating / report_generated /
+ *   send_resolved / report_sent
  * - 退群型（`leave_notification`）：exit_received / exit_matched / exit_target / exit_send
  *
- * 不共用的理由：给退群通知渲染一个「回复确认 已跳过」的步骤是纯噪声，
+ * 不共用的理由：给定时日报渲染一个「回复确认 已跳过」的步骤是纯噪声，
  * 用户会以为规则配错了。
+ *
+ * ⚠️ 定时型的步骤键**刻意拆开「生成中 / 已生成」与「确定目标 / 已发送」**：
+ * 「生成成功但发送失败」要求用户能一眼看出**日报确实生成了**，只是没发出去。
+ * 合成一步就没法表达这件事。
  */
 export type AutomationStepKey =
   | 'received'
@@ -133,6 +486,11 @@ export type AutomationStepKey =
   | 'reply'
   | 'report'
   | 'send'
+  | 'schedule_triggered'
+  | 'report_generating'
+  | 'report_generated'
+  | 'send_resolved'
+  | 'report_sent'
   | 'exit_received'
   | 'exit_matched'
   | 'exit_target'
@@ -188,11 +546,33 @@ export interface AutomationStep {
  */
 export type AutomationExecutionStatus = 'running' | 'success' | 'failed'
 
+/**
+ * 一次执行是**被什么触发**的。
+ *
+ * - `message`：群里出现符合条件的消息（@我生成日报）；
+ * - `exit`：检测到群成员退出（退群通知）；
+ * - `schedule`：到了设定时间（定时日报）；
+ * - `manual`：用户在列表里点了「立即执行」（定时日报）。
+ *
+ * 区分 `schedule` 与 `manual` 是硬要求：否则看日志没人知道"为什么 17:03 跑了一次"。
+ * 旧记录没有这个字段（读盘时保持 `undefined`，不猜测、不编造）。
+ */
+export type AutomationExecutionTrigger = 'message' | 'exit' | 'schedule' | 'manual'
+
+export const AUTOMATION_EXECUTION_TRIGGER_LABELS: Record<AutomationExecutionTrigger, string> = {
+  message: '收到消息',
+  exit: '检测到成员退出',
+  schedule: '定时任务',
+  manual: '手动立即执行'
+}
+
 export interface AutomationExecution {
   executionId: string
   ruleId: string
   ruleName: string
   triggerTime: number
+  /** 触发方式。旧记录缺省（`undefined`）—— 读盘不猜测。 */
+  trigger?: AutomationExecutionTrigger
   /**
    * 来源的**显示名**（群名 / 联系人昵称）。
    *
@@ -204,6 +584,31 @@ export interface AutomationExecution {
   steps: AutomationStep[]
   /** 失败时的一句话摘要。 */
   errorSummary?: string
+}
+
+/**
+ * 定时日报一次执行的结果（scheduler 与「立即执行」共用）。
+ *
+ * 放在 shared 层是因为它要跨三层：`AutomationService` 产出 → IPC 回执 → 渲染层提示。
+ */
+export interface ScheduledRuleRunOutcome {
+  /** 是否真的跑了一次。false 时 `reason` 说明为什么没跑。 */
+  executed: boolean
+  /** 本次执行的 id（定时触发时为**确定性** id，同一槽位重启后不变）。 */
+  executionId?: string
+  status?: AutomationExecutionStatus
+  /** 日报是否已生成并落库（`false` 且 `status==='failed'` 表示"根本没生成出来"）。 */
+  reportGenerated?: boolean
+  /** 底层生成错误的机器可读码（如 `NO_MESSAGES`）。 */
+  errorCode?: string
+  /** 失败时用户可读的一句话摘要。 */
+  errorSummary?: string
+  /**
+   * 未执行的原因（机器可读）：
+   * `missing_rule` / `rule_not_found` / `disabled` / `target_needs_review` /
+   * `in_flight` / `store_error` / `database_not_ready`。
+   */
+  reason?: string
 }
 
 /**
@@ -225,7 +630,21 @@ export const AUTOMATION_SEND_PURPOSE = {
    * 的作用域锁绑死在「只能发回事件所在群」，而现在的目标可以是自己 / 文件传输助手 /
    * 指定好友。用新 purpose 才能真正解除那个锁，同时让旧 purpose 变成无生产者的历史值。
    */
-  leaveNotification: 'automation_leave_notification'
+  leaveNotification: 'automation_leave_notification',
+  /**
+   * 定时日报的图片发送。
+   *
+   * 刻意**不复用**历史 purpose `scheduled_report`：那一个由已退役的旧定时日报链路发出，
+   * 保留它只为了让历史审计记录仍可读。新链路用新 purpose，便于在审计里区分两代实现。
+   */
+  scheduledReport: 'automation_scheduled_report',
+  /**
+   * 定时日报的**后置词**发送（图片 sent 之后补发的那条文本）。
+   *
+   * 与图片用**不同的 purpose**：两条消息是两次独立发送，各自要有自己的幂等位 ——
+   * 共用一个 key 会让「图片先发成功、后置词那次被短路」变成常态。
+   */
+  scheduledReportPostfix: 'automation_scheduled_report_postfix'
 } as const
 
 /** 审计日志里的来源标识（`WechatActionOrigin`）。 */
@@ -286,6 +705,8 @@ export interface AutomationRuleDraft {
   replyDelaySeconds: number
   /** `ruleType === 'leave_notification'` 时的通知配置。 */
   leaveNotification?: LeaveNotificationConfig
+  /** `ruleType === 'scheduled_report'` 时的日报配置。 */
+  scheduledReport?: ScheduledReportAutomationConfig
 }
 
 /** 顶部状态条数据（全部来自 main 侧真实能力，UI 不做平台判断）。 */
@@ -310,27 +731,20 @@ export interface AutomationStatusSummary {
 /**
  * 规则列表里的**模板入口**。
  *
- * `available: false` 表示该能力本轮**尚未接通** —— UI 必须显示为「未启用 / 即将支持」，
- * 不允许伪装成可运行。这是防止设计稿倒逼假数据的硬约束。
+ * `available: false` 表示该能力**尚未接通** —— UI 必须显示为「未启用 / 即将支持」，
+ * 不得伪装成可运行；否则设计稿会倒逼出假数据。
  */
 export interface AutomationRuleTemplate {
   id: string
   name: string
   description: string
-  /** 本轮是否已接通的真实能力。 */
+  /** 该能力是否已经真正接通。 */
   available: boolean
   /** 未接通时的说明文案。 */
   unavailableReason?: string
 }
 
 export const AUTOMATION_RULE_TEMPLATES: AutomationRuleTemplate[] = [
-  {
-    id: 'scheduled-report',
-    name: '定时发送日报',
-    description: '按固定时间自动生成并发送群日报',
-    available: false,
-    unavailableReason: ''
-  },
   {
     id: 'keyword-reply',
     name: '关键词自动回复',
@@ -360,6 +774,11 @@ export const AUTOMATION_STEP_LABELS: Record<AutomationStepKey, string> = {
   reply: '回复确认',
   report: '生成日报',
   send: '发送日报图片',
+  schedule_triggered: '定时任务触发',
+  report_generating: '生成日报',
+  report_generated: '日报已生成',
+  send_resolved: '确定发送目标',
+  report_sent: '发送日报',
   exit_received: '检测到成员退出',
   exit_matched: '规则匹配',
   exit_target: '确定通知目标',
@@ -450,18 +869,80 @@ export const LEAVE_NOTIFICATION_TARGET_OPTIONS: ReadonlyArray<{
  */
 export const LEAVE_NOTIFICATION_DEFAULT_TARGET_TYPE: LeaveNotificationTargetType = 'source_chat'
 
+/**
+ * 通知范围的默认值：全部已监控群聊。
+ *
+ * 选 `all` 而不是 `selected`：新装用户还没做过二次勾选，此时"不通知任何群"
+ * 会让规则看起来启用了却永远静默 —— 与旧版 `source_chat` 的既有行为也不一致。
+ */
+export const LEAVE_NOTIFICATION_DEFAULT_NOTIFY_SCOPE: LeaveNotificationNotifyScope = 'all'
+
+/**
+ * 归一化「通知群聊」子集。
+ *
+ * 去重 + 去空白 + 丢非字符串。**不**在这里与监控范围求交集 ——
+ * shared 读不到退群监控的状态，硬做只会得到第二份"监控范围"的真相。
+ */
+export function normalizeLeaveNotificationRoomIds(input: unknown): string[] {
+  if (!Array.isArray(input)) return []
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const value of input) {
+    if (typeof value !== 'string') continue
+    const roomId = value.trim()
+    if (!roomId || seen.has(roomId)) continue
+    seen.add(roomId)
+    result.push(roomId)
+  }
+  return result
+}
+
 /** 目标类型 → 界面短标签。 */
 export function leaveNotificationTargetLabel(type: LeaveNotificationTargetType): string {
   return LEAVE_NOTIFICATION_TARGET_OPTIONS.find((option) => option.type === type)?.label ?? ''
 }
 
 /**
- * 「范围」摘要：退群通知覆盖多少个已监控群聊。
+ * 「范围」摘要：退群监控覆盖多少个已监控群聊。
  *
  * 数字**必须**来自退群监控（`GroupExitMonitorState`），自动化不维护副本。
  */
 export function describeMonitoredScope(monitoredCount: number): string {
   return `${Math.max(0, Math.floor(Number(monitoredCount) || 0))} 个已监控群聊`
+}
+
+/**
+ * 「通知范围」摘要：二次筛选之后的实际覆盖面。
+ *
+ * 与 `describeMonitoredScope` 的区别就是这一层筛选：
+ * 前者说"监控了几个群"，这里说"其中几个会发通知"。
+ */
+export function describeLeaveNotificationNotifyScope(
+  config: LeaveNotificationConfig | undefined,
+  monitoredCount: number
+): string {
+  const monitored = Math.max(0, Math.floor(Number(monitoredCount) || 0))
+  if (config?.notifyScope !== 'selected') return `${monitored} 个已监控群聊（全部）`
+  const selected = normalizeLeaveNotificationRoomIds(config.notifyRoomIds).length
+  // 一个都没勾 = 明确"不通知任何群"，如实说，不退回"全部"。
+  if (!selected) return '未选中任何群聊'
+  return `${selected} / ${monitored} 个已监控群聊`
+}
+
+/**
+ * 判定某个群是否在通知范围内。
+ *
+ * main（执行闸门）与 UI（预览/摘要）共用这一处，避免"界面说会发、实际不发"。
+ */
+export function leaveNotificationCoversRoom(
+  config: LeaveNotificationConfig | undefined,
+  roomId: string
+): boolean {
+  if (!config) return false
+  if (config.notifyScope !== 'selected') return true
+  const target = String(roomId || '').trim()
+  if (!target) return false
+  return normalizeLeaveNotificationRoomIds(config.notifyRoomIds).includes(target)
 }
 
 /**
@@ -480,9 +961,24 @@ export function describeLeaveNotificationTarget(
   return leaveNotificationTargetLabel(target.type)
 }
 
+/** 目标的一句话描述（首页卡片摘要用）。 */
+export function describeScheduledReportTarget(
+  config: ScheduledReportAutomationConfig | undefined,
+  contactDisplayName?: string
+): string {
+  const target = config?.target
+  if (!target) return '未配置'
+  if (target.type === 'contact') return contactDisplayName?.trim() || '未选择好友'
+  return scheduledReportTargetLabel(target.type)
+}
+
 /** 触发条件的一句话摘要（UI 展示用，不含任何内部 id）。 */
 export function describeRuleTrigger(rule: AutomationRule): string {
   if (rule.ruleType === 'leave_notification') return '检测到群成员退出'
+  if (rule.ruleType === 'scheduled_report') {
+    const time = rule.scheduledReport?.schedule?.time
+    return time ? `每天 ${time}` : '按设定时间'
+  }
   const parts: string[] = []
   if (rule.conditions.requireMentionMe) parts.push('@我')
   if (rule.conditions.keyword.trim()) {
@@ -494,6 +990,11 @@ export function describeRuleTrigger(rule: AutomationRule): string {
 /** 动作链的一句话摘要。 */
 export function describeRuleActions(rule: AutomationRule): string {
   if (rule.ruleType === 'leave_notification') return '发送退群通知'
+  if (rule.ruleType === 'scheduled_report') {
+    return `生成并发送${scheduledReportRangeLabel(
+      rule.scheduledReport?.report?.range ?? SCHEDULED_REPORT_DEFAULT_RANGE
+    )}日报`
+  }
   const labels: Record<AutomationActionType, string> = {
     replyText: '回复确认',
     generateReport: '生成日报',
@@ -550,6 +1051,8 @@ export function createDefaultLeaveNotificationRule(
     target?: LeaveNotificationTarget
     enabled?: boolean
     targetNeedsReview?: boolean
+    notifyScope?: LeaveNotificationNotifyScope
+    notifyRoomIds?: string[]
   } = {}
 ): AutomationRule {
   return {
@@ -576,6 +1079,9 @@ export function createDefaultLeaveNotificationRule(
     leaveNotification: {
       target: options.target ?? { type: LEAVE_NOTIFICATION_DEFAULT_TARGET_TYPE },
       template: normalizeLeaveNotificationTemplate(options.template),
+      // 新装 / 无历史配置 = 全部已监控群聊都通知（与旧版"每个群都勾上"等价）。
+      notifyScope: options.notifyScope ?? LEAVE_NOTIFICATION_DEFAULT_NOTIFY_SCOPE,
+      notifyRoomIds: normalizeLeaveNotificationRoomIds(options.notifyRoomIds),
       ...(options.targetNeedsReview ? { targetNeedsReview: true } : {})
     },
     createdAt: now,
@@ -593,6 +1099,59 @@ export function normalizeLeaveNotificationTemplate(value: unknown): string {
   return normalizeGroupExitNotificationTemplate(value)
 }
 
+/** 定时日报规则的默认展示名。 */
+export const SCHEDULED_REPORT_RULE_NAME = '定时日报'
+
+/** 新建定时日报时的默认名字（与旧页面「<群名> · 每日日报」同风格）。 */
+export function suggestedScheduledReportName(groupDisplayName?: string): string {
+  const name = String(groupDisplayName ?? '').trim()
+  return name ? `${name} · 每日日报` : SCHEDULED_REPORT_RULE_NAME
+}
+
+/**
+ * 构造一条「定时日报」规则。
+ *
+ * ⚠️ 这**不是** singleton —— 定时日报是 0..N 条，
+ * 所以这里没有固定 id，id 一律由 store 生成 / 由迁移复用旧 taskId。
+ */
+export function createDefaultScheduledReportRule(
+  now: number,
+  options: {
+    id?: string
+    name?: string
+    enabled?: boolean
+    config?: ScheduledReportAutomationConfig
+  } = {}
+): AutomationRule {
+  const baseConfig = normalizeScheduledReportConfig(
+    options.config ?? { schedule: { time: SCHEDULED_REPORT_DEFAULT_TIME } }
+  )
+  return {
+    id: options.id ?? '',
+    name: options.name?.trim() || SCHEDULED_REPORT_RULE_NAME,
+    enabled: options.enabled !== false,
+    ruleType: 'scheduled_report',
+    // 由时间驱动，不参与消息匹配。这两个字段保留只是为了 schema 完整。
+    trigger: 'message',
+    scope: 'group',
+    conditions: {
+      requireMentionMe: false,
+      keyword: '',
+      keywordMatchMode: 'contains',
+      conversationIds: [],
+      ignoreSelf: true
+    },
+    // 定时日报没有动作链，动作由 scheduledReport 表达。
+    actions: [],
+    // 不套用消息型规则的 cooldown：定时规则有自己的 ruleId inFlight 锁。
+    cooldownSeconds: 0,
+    replyDelaySeconds: AUTOMATION_REPLY_DELAY_DEFAULT_SECONDS,
+    scheduledReport: baseConfig,
+    createdAt: now,
+    updatedAt: now
+  }
+}
+
 /** 归一化用户提交的草稿：把未知值收敛成合法值，避免脏数据落盘。 */
 export function normalizeRuleDraft(
   input: unknown,
@@ -601,7 +1160,11 @@ export function normalizeRuleDraft(
   const raw = (input ?? {}) as Partial<AutomationRuleDraft>
   const conditions = (raw.conditions ?? {}) as Partial<AutomationConditions>
   const ruleType: AutomationRuleType =
-    raw.ruleType === 'leave_notification' ? 'leave_notification' : 'daily_report'
+    raw.ruleType === 'leave_notification'
+      ? 'leave_notification'
+      : raw.ruleType === 'scheduled_report'
+        ? 'scheduled_report'
+        : 'daily_report'
   const keywordMatchMode: KeywordMatchMode =
     conditions.keywordMatchMode === 'exact' || conditions.keywordMatchMode === 'prefix'
       ? conditions.keywordMatchMode
@@ -642,8 +1205,13 @@ export function normalizeRuleDraft(
     cooldownSeconds: Number.isFinite(cooldown) ? Math.max(0, Math.floor(cooldown)) : 60,
     replyDelaySeconds: normalizeReplyDelaySeconds(raw.replyDelaySeconds)
   }
-  if (ruleType !== 'leave_notification') return base
-  return { ...base, leaveNotification: normalizeLeaveNotificationConfig(raw.leaveNotification) }
+  if (ruleType === 'leave_notification') {
+    return { ...base, leaveNotification: normalizeLeaveNotificationConfig(raw.leaveNotification) }
+  }
+  if (ruleType === 'scheduled_report') {
+    return { ...base, scheduledReport: normalizeScheduledReportConfig(raw.scheduledReport) }
+  }
+  return base
 }
 
 /**
@@ -652,6 +1220,9 @@ export function normalizeRuleDraft(
  * 目标是**必填**的：缺失一律回落到默认目标（文件传输助手），
  * 而不是留一个"没有目标"的规则 —— 那种规则在运行时只能失败。
  * `contact` 缺 contactId 时同样回落，避免存下一条永远发不出去的规则。
+ *
+ * `notifyScope` 缺失 → 回落 `all`（**不是** `selected`）：已经落盘的规则
+ * 都是在"没有二次筛选"的版本下保存的，默认成 `selected` 会让它们静默停发。
  */
 export function normalizeLeaveNotificationConfig(input: unknown): LeaveNotificationConfig {
   const raw = (input ?? {}) as Partial<LeaveNotificationConfig>
@@ -672,6 +1243,8 @@ export function normalizeLeaveNotificationConfig(input: unknown): LeaveNotificat
       ...(effectiveType === 'contact' ? { contactId } : {})
     },
     template: normalizeLeaveNotificationTemplate(raw.template),
+    notifyScope: raw.notifyScope === 'selected' ? 'selected' : LEAVE_NOTIFICATION_DEFAULT_NOTIFY_SCOPE,
+    notifyRoomIds: normalizeLeaveNotificationRoomIds(raw.notifyRoomIds),
     // 用户手动保存一次即视为已确认目标，清除迁移提示。
     ...(raw.targetNeedsReview === true ? { targetNeedsReview: true } : {})
   }

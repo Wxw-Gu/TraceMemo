@@ -5,24 +5,30 @@ import {
   DEFAULT_REPLY_TEXT,
   automationIdempotencyKey,
   normalizeReplyDelaySeconds,
+  scheduledReportRangeLabel,
   type AutomationAction,
+  type AutomationExecutionTrigger,
   type AutomationRule,
   type AutomationStep,
   type AutomationStepKey,
-  type LeaveNotificationConfig
+  type LeaveNotificationConfig,
+  type ScheduledReportAutomationConfig
 } from '../../shared/automation'
 import {
   renderLeaveNotificationText,
   type GroupMemberExitedEvent
 } from '../../shared/group-exit-event'
 import type { WechatActionContent, WechatActionRequest, WechatActionResult } from '../../shared/wechat-action'
+import type { SaveGeneratedReportRequest, SaveGeneratedReportResult } from '../../shared/report-history'
 import {
   generateAgentGroupReport,
   type AgentGroupReportRequest,
   type AgentGroupReportResult
 } from './agent-group-report-service'
 import { wechatActionGateway } from './wechat-action-gateway'
-import type { LeaveNotificationTargetResolution } from './leave-notification-target'
+import { saveGeneratedReport } from '../report-history-service'
+import { getContactAvatars, resolveMd5 } from './chat-service'
+import type { AutomationTargetResolution } from './automation-wechat-target'
 
 /**
  * AutomationActionRunner —— 把一次命中跑成**步骤序列**。
@@ -47,12 +53,35 @@ const LEAVE_NOTIFICATION_STEP_ORDER: AutomationStepKey[] = [
 ]
 
 /**
+ * 定时日报的步骤顺序（与另外两族**不共用**）。
+ *
+ * 「生成中 / 已生成」与「确定目标 / 已发送」**刻意拆成四步**：
+ * 用户必须能一眼看出"日报确实生成了，只是没发出去" —— 合成两步就表达不了。
+ */
+const SCHEDULED_REPORT_STEP_ORDER: AutomationStepKey[] = [
+  'schedule_triggered',
+  'report_generating',
+  'report_generated',
+  'send_resolved',
+  'report_sent'
+]
+
+/**
  * 前置步骤失败时，后续步骤的 `skipReason`。
  *
  * 必须写清「是因为前面那步没成」，否则用户看到一连串「已跳过」会以为是规则没配好。
  */
 const SKIPPED_AFTER_REPLY_FAILURE = '前置步骤失败（回复确认未成功），本次不再继续。'
 const SKIPPED_AFTER_REPORT_FAILURE = '前置步骤失败（日报未生成），没有图片可发送。'
+
+/**
+ * 定时日报「生成 / 落库」失败时，后续步骤的 `skipReason`。
+ *
+ * 与 `SKIPPED_AFTER_REPORT_FAILURE` 的区别：那条说的是「@我日报没图可发」，
+ * 这条说的是「定时日报这一步就没跑起来」—— 文案分开，避免用户混淆两条链路。
+ */
+const SKIPPED_AFTER_SCHEDULED_GENERATION_FAILURE =
+  '前置步骤失败（定时日报未生成或未保存），本次未发送。'
 
 /**
  * 规则启用了「发送日报图片」，但手上没有图片文件。
@@ -90,7 +119,7 @@ export interface LeaveNotificationRunInput {
   executionId: string
   event: GroupMemberExitedEvent
   config: LeaveNotificationConfig
-  resolution: LeaveNotificationTargetResolution
+  resolution: AutomationTargetResolution
   /** 事件来源的显示名（群名 / 「群聊」）。**不含 wxid**。 */
   sourceDisplayName: string
   /** 发送能力缺失时的一句话说明；有值时 `exit_send` 直接判失败。 */
@@ -103,12 +132,69 @@ export interface LeaveNotificationRunResult {
   errorSummary?: string
 }
 
+/**
+ * 定时日报的执行输入。
+ *
+ * 与退群通知同构：目标解析、来源显示名、发送能力预检都在 `AutomationService`
+ * 调用前算好，runner 只负责"跑成步骤序列"。
+ */
+export interface ScheduledReportRunInput {
+  executionId: string
+  rule: AutomationRule
+  config: ScheduledReportAutomationConfig
+  resolution: AutomationTargetResolution
+  /** 日报来源群的显示名（群名 / 「日报来源群」）。**不含 roomId**。 */
+  sourceDisplayName: string
+  /**
+   * 本次触发方式。
+   *
+   * 只影响**发送节流口径**：定时触发算 `automation`（纳入发送节流），
+   * 用户在页面上点「立即执行」算 `user`（与旧定时日报的手动执行一致）。
+   * 执行日志里的 `trigger` 由 `AutomationService` 单独记录，不从这里读。
+   */
+  trigger: Extract<AutomationExecutionTrigger, 'schedule' | 'manual'>
+  /** 发送能力缺失时的一句话说明；有值时 `report_sent` 直接判失败。 */
+  sendBlockedReason?: string
+}
+
+export interface ScheduledReportRunResult {
+  steps: AutomationStep[]
+  status: 'success' | 'failed'
+  errorSummary?: string
+  /**
+   * 日报是否**已经生成并落库**。
+   *
+   * 这是「生成成功但发送失败」的判据：`reportGenerated === true && status === 'failed'`
+   * 就是"日报在，只是没发出去"。日报本身已进日报历史，不会被丢掉。
+   */
+  reportGenerated: boolean
+  /** 生成出来的 PNG（仅在内存里传递，**不落执行日志**）。 */
+  pngPath?: string
+  /**
+   * 底层生成错误的**机器可读码**（例如 `NO_MESSAGES`）。
+   *
+   * 用途只有一个：让上层区分「真的失败了」和「这一天没有消息可生成」——
+   * 后者不该给用户推微信异常通知。
+   */
+  errorCode?: string
+}
+
 export interface AutomationActionRunnerDependencies {
   generateReport?: (request: AgentGroupReportRequest) => Promise<AgentGroupReportResult>
   executeAction?: (request: WechatActionRequest) => Promise<WechatActionResult>
   now?: () => number
   /** 延迟实现。默认真 sleep；单测注入即时 resolve 的假实现，避免真的等 2 秒。 */
   delay?: (ms: number) => Promise<void>
+  /** 日报落库（日报历史）。与旧定时日报**复用同一个**实现，不复制。 */
+  saveGeneratedReport?: (request: SaveGeneratedReportRequest) => Promise<SaveGeneratedReportResult>
+  /** 把日报来源群标识解析成联系人（拿头像 / 显示名）。 */
+  resolveReportContact?: (raw: string) => {
+    md5?: string
+    m_nsUsrName?: string
+    m_nsNickName?: string
+    avatar?: string
+  } | null
+  getContactAvatars?: (usernames: string[]) => Promise<Record<string, string>>
 }
 
 /** 策略层的错误码 → 用户可读短句。UI 直接展示这些文案，不做二次翻译。 */
@@ -161,6 +247,13 @@ export class AutomationActionRunner {
   private readonly executeAction: (request: WechatActionRequest) => Promise<WechatActionResult>
   private readonly now: () => number
   private readonly delay: (ms: number) => Promise<void>
+  private readonly saveGeneratedReport: (
+    request: SaveGeneratedReportRequest
+  ) => Promise<SaveGeneratedReportResult>
+  private readonly resolveReportContact: NonNullable<
+    AutomationActionRunnerDependencies['resolveReportContact']
+  >
+  private readonly getContactAvatars: (usernames: string[]) => Promise<Record<string, string>>
 
   constructor(dependencies: AutomationActionRunnerDependencies = {}) {
     this.generateReport = dependencies.generateReport ?? generateAgentGroupReport
@@ -169,6 +262,9 @@ export class AutomationActionRunner {
     this.delay =
       dependencies.delay ??
       ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+    this.saveGeneratedReport = dependencies.saveGeneratedReport ?? saveGeneratedReport
+    this.resolveReportContact = dependencies.resolveReportContact ?? ((raw) => resolveMd5(raw))
+    this.getContactAvatars = dependencies.getContactAvatars ?? ((ids) => getContactAvatars(ids))
   }
 
   async run(input: AutomationRunInput): Promise<AutomationRunResult> {
@@ -271,6 +367,224 @@ export class AutomationActionRunner {
     }
     markSuccess(sendStep, this.now())
     return { steps, status: 'success', pngPath }
+  }
+
+  /**
+   * 定时日报：把一次「到点触发 / 手动立即执行」跑成一次生成 + 一次发送。
+   *
+   * 与旧 `ScheduledReportService.executeTask` 的行为对齐（**不重写日报能力**）：
+   * 1. 先生成（含落库进日报历史）—— 发送能力不足**也照常生成**（旧语义如此）；
+   * 2. 再解析目标 —— 解析失败**不 fallback**，直接判失败；
+   * 3. 最后经 `WechatActionGateway` 发图片 —— 仍然是**发图片**，不退化成纯文本。
+   *
+   * 「生成成功但发送失败」是可表达的：`report_generated` 为 success、
+   * `report_sent` 为 failed，整体 `failed`，且 `reportGenerated === true`。
+   */
+  async runScheduledReport(input: ScheduledReportRunInput): Promise<ScheduledReportRunResult> {
+    const steps = SCHEDULED_REPORT_STEP_ORDER.map((key) => createStep(key))
+    const stepAt = (key: AutomationStepKey): AutomationStep =>
+      steps.find((step) => step.key === key) as AutomationStep
+
+    markSuccess(stepAt('schedule_triggered'), this.now())
+
+    // ---- 生成日报（含落进日报历史）----
+    const generatingStep = stepAt('report_generating')
+    generatingStep.status = 'running'
+    generatingStep.startedAt = this.now()
+    let generated: AgentGroupReportResult
+    try {
+      generated = await this.generateReport({
+        group: input.config.report.sourceConversationId,
+        range: input.config.report.range,
+        messageTypes: input.config.report.messageTypes,
+        templateId: input.config.report.templateId,
+        memberNameMode: input.config.report.memberNameMode,
+        timeoutSeconds: input.config.report.timeoutSeconds
+      })
+    } catch (error) {
+      generated = {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
+    if (!generated.success || !generated.pngPath) {
+      // 生成失败就**不发**：绝不生成空图片、也绝不退而求其次发上一张旧图。
+      const reason = generated.error || '日报生成失败'
+      markFailed(generatingStep, this.now(), reason)
+      markSkipped(stepAt('report_generated'), SKIPPED_AFTER_SCHEDULED_GENERATION_FAILURE)
+      markSkipped(stepAt('send_resolved'), SKIPPED_AFTER_SCHEDULED_GENERATION_FAILURE)
+      markSkipped(stepAt('report_sent'), SKIPPED_AFTER_SCHEDULED_GENERATION_FAILURE)
+      return {
+        steps,
+        status: 'failed',
+        errorSummary: reason,
+        reportGenerated: false,
+        ...(generated.errorCode ? { errorCode: generated.errorCode } : {})
+      }
+    }
+
+    let pngPath = generated.pngPath
+    try {
+      const reportContact = this.resolveReportContact(input.config.report.sourceConversationId)
+      let contactAvatar = reportContact?.avatar
+      if (!contactAvatar && reportContact?.m_nsUsrName) {
+        try {
+          const avatars = await this.getContactAvatars([reportContact.m_nsUsrName])
+          contactAvatar = avatars[reportContact.m_nsUsrName]
+        } catch (error) {
+          console.warn('[Automation] 日报群头像补全失败:', error)
+        }
+      }
+      const savedHistory = await this.saveGeneratedReport({
+        contactId: reportContact?.md5 || input.config.report.sourceConversationId,
+        contactName:
+          generated.groupName || reportContact?.m_nsNickName || input.sourceDisplayName || '群聊',
+        contactAvatar,
+        source: 'scheduled',
+        dateRange: generated.reportMetadata?.dateRange || scheduledReportRangeLabel(input.config.report.range),
+        reportDate: generated.reportMetadata?.reportDate,
+        messageCount: generated.messageCount ?? generated.reportMetadata?.messageCount ?? 0,
+        generatedAt: new Date(this.now()).toISOString(),
+        htmlPath: generated.htmlPath,
+        pngPath: generated.pngPath,
+        duration: generated.duration,
+        modelName: generated.modelName,
+        tokenUsage: generated.tokenUsage,
+        reportSnapshot: generated.reportSnapshot,
+        reportMetadata: generated.reportMetadata,
+        templateId: input.config.report.templateId
+      })
+      if (!savedHistory.success) {
+        throw new Error(savedHistory.error || '日报历史保存失败')
+      }
+      const recordPath = savedHistory.record?.pngPath || generated.pngPath
+      if (!recordPath) throw new Error('日报历史未返回可发送的 PNG 文件')
+      pngPath = recordPath
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      markFailed(generatingStep, this.now(), reason)
+      markSkipped(stepAt('report_generated'), SKIPPED_AFTER_SCHEDULED_GENERATION_FAILURE)
+      markSkipped(stepAt('send_resolved'), SKIPPED_AFTER_SCHEDULED_GENERATION_FAILURE)
+      markSkipped(stepAt('report_sent'), SKIPPED_AFTER_SCHEDULED_GENERATION_FAILURE)
+      return { steps, status: 'failed', errorSummary: reason, reportGenerated: false }
+    }
+    markSuccess(generatingStep, this.now())
+
+    const generatedStep = stepAt('report_generated')
+    markSuccess(generatedStep, this.now())
+    const messageCount = generated.messageCount ?? 0
+    if (messageCount > 0) generatedStep.detail = `共 ${messageCount} 条消息`
+
+    // ---- 目标解析失败：不许 fallback 到任何地方，直接判失败 ----
+    const targetStep = stepAt('send_resolved')
+    if (!input.resolution.ok) {
+      markFailed(targetStep, this.now(), input.resolution.error)
+      markSkipped(stepAt('report_sent'), '没有可用的发送目标，本次未发送。')
+      return {
+        steps,
+        status: 'failed',
+        errorSummary: input.resolution.error,
+        reportGenerated: true,
+        pngPath
+      }
+    }
+    targetStep.status = 'success'
+    targetStep.startedAt = this.now()
+    targetStep.finishedAt = targetStep.startedAt
+    targetStep.durationMs = 0
+    // 用户可读的目标名（例如「文件传输助手」「张三」「我」）—— 不带任何 id。
+    targetStep.detail = input.resolution.target.displayName
+
+    const sendStep = stepAt('report_sent')
+
+    // ---- 发送能力缺失：日报已生成，如实判失败（不回滚、不隐藏）----
+    if (input.sendBlockedReason) {
+      markFailed(sendStep, this.now(), input.sendBlockedReason)
+      return {
+        steps,
+        status: 'failed',
+        errorSummary: input.sendBlockedReason,
+        reportGenerated: true,
+        pngPath
+      }
+    }
+
+    sendStep.status = 'running'
+    sendStep.startedAt = this.now()
+    const sent = await this.sendScheduledReportImage(input, pngPath)
+    if (!sent.ok) {
+      markFailed(sendStep, this.now(), sent.error || '发送日报失败')
+      return {
+        steps,
+        status: 'failed',
+        errorSummary: sendStep.error,
+        reportGenerated: true,
+        pngPath
+      }
+    }
+    markSuccess(sendStep, this.now())
+    return { steps, status: 'success', reportGenerated: true, pngPath }
+  }
+
+  /**
+   * 定时日报的统一发送出口。
+   *
+   * **必须走 `WechatActionGateway`**：幂等 + 3 秒发送间隔 + 审计落盘都在那里。
+   * Automation 层不允许知道 OneBot / WCHook / native host / Windows hook 的存在。
+   */
+  private async sendScheduledReportImage(
+    input: ScheduledReportRunInput,
+    pngPath: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (!input.resolution.ok) return { ok: false, error: input.resolution.error }
+    // 定时触发走 automation（纳入发送节流）；用户手动执行走 user（不纳入节流）。
+    const triggerType = input.trigger === 'manual' ? 'user' : 'automation'
+    try {
+      const result = await this.executeAction({
+        idempotencyKey: `${AUTOMATION_SEND_PURPOSE.scheduledReport}:${input.executionId}`,
+        origin: AUTOMATION_SEND_ORIGIN,
+        purpose: AUTOMATION_SEND_PURPOSE.scheduledReport,
+        triggerType,
+        executionId: input.executionId,
+        recipient: input.resolution.target.recipient,
+        content: { type: 'image', path: pngPath }
+      })
+      if (result.status !== 'sent') {
+        return { ok: false, error: actionErrorMessage(result.errorCode, result.reason) }
+      }
+
+      /*
+       * 后置词：**只在图片明确 sent 之后**才发，图片失败时严格短路 ——
+       * 与 `WechatActionGateway.executeReportImageSequence`（手动发送）同一口径。
+       * 空字符串 = 用户只要图片，什么都不补发。
+       *
+       * 独立 purpose + 独立幂等位：共用一个 key 会让「图片发成功、后置词被
+       * 幂等短路」变成常态。
+       */
+      const postfixText = String(input.config.postfixText || '').trim()
+      if (!postfixText) return { ok: true }
+
+      const postfix = await this.executeAction({
+        idempotencyKey: `${AUTOMATION_SEND_PURPOSE.scheduledReportPostfix}:${input.executionId}`,
+        origin: AUTOMATION_SEND_ORIGIN,
+        purpose: AUTOMATION_SEND_PURPOSE.scheduledReportPostfix,
+        triggerType,
+        executionId: input.executionId,
+        recipient: input.resolution.target.recipient,
+        content: { type: 'text', text: postfixText }
+      })
+      if (postfix.status === 'sent') return { ok: true }
+      // 绝不吞掉：图片确实发出去了，但这一次执行**没有完成**，必须如实报出来。
+      return {
+        ok: false,
+        error: `日报图片已发送，但后置词发送失败：${actionErrorMessage(
+          postfix.errorCode,
+          postfix.reason
+        )}`
+      }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   /**

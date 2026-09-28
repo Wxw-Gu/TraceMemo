@@ -2,8 +2,17 @@ import type {
   AutomationExecution,
   AutomationRule,
   AutomationRuleDraft,
-  AutomationStatusSummary
+  AutomationStatusSummary,
+  ScheduledRuleRunOutcome
 } from '../../../../../shared/automation'
+import type {
+  ScheduledReportExecution,
+  ScheduledReportNotification,
+  ScheduledReportNotificationCapability,
+  ScheduledReportNotificationSettings,
+  ScheduledReportNotificationSettingsResult,
+  ScheduledReportResult
+} from '../../../../../shared/scheduled-report'
 import type { GroupExitMonitorState } from '../../../../../shared/group-exit-monitor'
 
 /**
@@ -110,7 +119,7 @@ export const automationApi = {
   /**
    * 真实已监控群聊数量。
    *
-   * 数据源是**退群监控**，自动化不维护副本（§「Automation 不做二次 group filter」）。
+   * 数据源是**退群监控**，自动化不维护副本（不做二次群过滤）。
    * 取数与退群监控页保持同一表达式，否则两个页面会对同一个数字给出不同答案。
    */
   async getMonitoredGroupCount(): Promise<number> {
@@ -118,5 +127,73 @@ export const automationApi = {
     if (!state) return 0
     if (state.monitorSelectionConfigured) return (state.monitoredRoomIds || []).length
     return Number(state.monitoredGroupCount) || 0
-  }
+  },
+
+  /**
+   * 真实已监控群聊清单（含显示名），供退群通知做**二次勾选**。
+   *
+   * 与 `getMonitoredGroupCount` **同一处取数**：清单和数字必须来自同一个快照，
+   * 否则会出现"卡片说 5 个群、勾选列表只有 3 个"这种自相矛盾的界面。
+   *
+   * 名字从群列表里取（`listAutomationGroups`）。取不到的 roomId **保留原样**而不是丢掉 ——
+   * 那个群仍然被监控着，丢掉它等于悄悄缩小用户的范围。
+   *
+   * 未显式设置监控范围时返回空数组：此时没有"被监控的群"这个集合，
+   * 二次筛选无从谈起，由调用方退化成"全部"并如实说明。
+   */
+  async getMonitoredGroups(): Promise<AutomationGroupOption[]> {
+    const [state, groups] = await Promise.all([
+      invoke<GroupExitMonitorState | null>('getGroupExitMonitorState', null),
+      invoke<AutomationGroupOption[]>('listAutomationGroups', [])
+    ])
+    if (!state?.monitorSelectionConfigured) return []
+    const nameById = new Map(groups.map((group) => [group.id, group.name]))
+    return (state.monitoredRoomIds || [])
+      .map((roomId) => ({ id: roomId, name: nameById.get(roomId) || roomId }))
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+  },
+
+  /** 定时日报「立即执行」：与 scheduler 走同一条执行链路（manual trigger）。 */
+  runScheduledReportRule: (
+    ruleId: string
+  ): Promise<{ success: boolean; error?: string; data?: ScheduledRuleRunOutcome }> =>
+    invoke<{ success: boolean; error?: string; data?: ScheduledRuleRunOutcome }>(
+      'runScheduledReportRule',
+      { success: false, error: '定时日报执行接口尚未就绪' },
+      ruleId
+    ),
+
+  /**
+   * 旧执行记录**只读存档**。
+   *
+   * 旧记录是 7 态 + stage 模型，新执行日志是 3 态 + 通用步骤 —— 两者无法无损互转，
+   * 所以历史记录原样保留、只读展示，不迁进新日志。
+   */
+  listScheduledReportLegacyExecutions: (ruleId?: string): Promise<ScheduledReportExecution[]> =>
+    invoke('listScheduledReportLegacyExecutions', [], ruleId),
+
+  /** 微信异常通知（随定时日报功能保留的全局能力）。 */
+  getScheduledReportNotificationSettings: (): Promise<ScheduledReportNotificationSettings> =>
+    invoke('getScheduledReportNotificationSettings', { enabled: false }),
+
+  getScheduledReportNotificationCapability: (): Promise<ScheduledReportNotificationCapability> =>
+    invoke('getScheduledReportNotificationCapability', { ready: false }),
+
+  setScheduledReportNotificationEnabled: (
+    enabled: boolean
+  ): Promise<ScheduledReportNotificationSettingsResult> =>
+    invoke<ScheduledReportNotificationSettingsResult>(
+      'setScheduledReportNotificationEnabled',
+      { success: false, data: { enabled: false }, error: '异常通知设置接口尚未就绪' },
+      enabled
+    ),
+
+  testScheduledReportErrorNotification: (
+    ruleId: string
+  ): Promise<ScheduledReportResult<ScheduledReportNotification>> =>
+    invoke<ScheduledReportResult<ScheduledReportNotification>>(
+      'testScheduledReportErrorNotification',
+      { success: false, error: '调试接口尚未就绪' },
+      ruleId
+    )
 }

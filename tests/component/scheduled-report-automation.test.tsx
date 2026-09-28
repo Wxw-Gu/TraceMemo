@@ -8,82 +8,95 @@ import {
   AutomationWorkspace,
   type AutomationOpenRuleRequest
 } from '../../src/renderer/src/features/automation/AutomationWorkspace'
-import { ScheduledReportsWorkspace } from '../../src/renderer/src/components/reports/ScheduledReportsWorkspace'
 import {
   createDefaultDailyReportRule,
-  createDefaultLeaveNotificationRule
+  createDefaultLeaveNotificationRule,
+  createDefaultScheduledReportRule,
+  normalizeScheduledReportConfig,
+  type AutomationRule
 } from '../../src/shared/automation'
-import type { ScheduledReportTask } from '../../src/shared/scheduled-report'
+import { SUMMARY_TYPE_OPTIONS } from '../../src/renderer/src/utils/group-report'
 
 /**
  * 「自动化 → 规则 → 定时日报」。
  *
- * 这一组测试要守住的核心不是"界面长什么样"，而是**边界**：
- * 任何写操作都不许落到真实定时日报系统上
- * （create / update / delete / setEnabled / runNow / retry / 异常通知开关）。
+ * 迁移前这一组测试守的是**边界**（"任何写操作都不许落盘"）。
+ * 迁移后 `scheduled_report` 已经是真实的自动化规则类型，边界随之反转：
+ * 现在要守的是**写真的发生、且写在正确的通道上**：
+ * - 保存 → `createAutomationRule` / `updateAutomationRule`，且 `ruleType === 'scheduled_report'`；
+ * - 立即执行 → `runScheduledReportRule`（与 scheduler 同一条链路）；
+ * - 启停 → `setAutomationRuleEnabled`；
+ * - 删除 → `deleteAutomationRule`；
+ * - 且**没有任何** `scheduled-report:*` 旧通道残留。
  */
 
-const TASKS: ScheduledReportTask[] = [
-  {
-    id: 'task-1',
+const RULES_FIXTURE: AutomationRule[] = [
+  createDefaultScheduledReportRule(Date.now(), {
+    id: 'rule-1',
     name: 'TraceMemo 每日晚报',
-    group: 'TraceMemo 交流群',
-    scheduleTime: '18:21',
-    reportRange: 'today',
-    target: 'TraceMemo 管理群',
-    enabled: true,
-    createdAt: '2026-09-01T00:00:00.000Z',
-    updatedAt: '2026-09-01T00:00:00.000Z',
-    nextRunAt: '2026-09-24T10:21:00.000Z'
-  },
-  {
-    id: 'task-2',
+    config: normalizeScheduledReportConfig({
+      schedule: { time: '18:21' },
+      report: {
+        sourceConversationId: 'g1@chatroom',
+        range: 'today',
+        messageTypes: ['text', 'image'],
+        templateId: 'v1',
+        memberNameMode: 'groupNickname',
+        timeoutSeconds: 300
+      },
+      target: { type: 'source_chat' }
+    })
+  }),
+  createDefaultScheduledReportRule(Date.now(), {
+    id: 'rule-2',
     name: '技术交流群日报',
-    group: '技术交流群',
-    scheduleTime: '09:00',
-    reportRange: 'yesterday',
-    target: '技术交流群',
     enabled: false,
-    createdAt: '2026-09-01T00:00:00.000Z',
-    updatedAt: '2026-09-01T00:00:00.000Z',
-    nextRunAt: '2026-09-25T01:00:00.000Z'
-  }
+    config: normalizeScheduledReportConfig({
+      schedule: { time: '09:00' },
+      report: {
+        sourceConversationId: 'g2@chatroom',
+        range: 'yesterday',
+        templateId: 'v1',
+        memberNameMode: 'groupNickname',
+        timeoutSeconds: 300
+      },
+      target: { type: 'file_transfer' }
+    })
+  })
 ]
 
 interface Spies {
-  createScheduledReport: ReturnType<typeof vi.fn>
-  updateScheduledReport: ReturnType<typeof vi.fn>
-  deleteScheduledReport: ReturnType<typeof vi.fn>
-  setScheduledReportEnabled: ReturnType<typeof vi.fn>
-  runScheduledReportNow: ReturnType<typeof vi.fn>
-  retryScheduledReportSend: ReturnType<typeof vi.fn>
-  testScheduledReportErrorNotification: ReturnType<typeof vi.fn>
-  listScheduledReports: ReturnType<typeof vi.fn>
+  createRule: ReturnType<typeof vi.fn>
+  updateRule: ReturnType<typeof vi.fn>
+  deleteRule: ReturnType<typeof vi.fn>
+  setEnabled: ReturnType<typeof vi.fn>
+  runScheduled: ReturnType<typeof vi.fn>
+  setNotification: ReturnType<typeof vi.fn>
 }
 
-/** 所有"写操作"的集合：任何一条被调用都说明界面越界了。 */
-function writeSpies(spies: Spies): Array<[string, ReturnType<typeof vi.fn>]> {
-  return [
-    ['createScheduledReport', spies.createScheduledReport],
-    ['updateScheduledReport', spies.updateScheduledReport],
-    ['deleteScheduledReport', spies.deleteScheduledReport],
-    ['setScheduledReportEnabled', spies.setScheduledReportEnabled],
-    ['runScheduledReportNow', spies.runScheduledReportNow],
-    ['retryScheduledReportSend', spies.retryScheduledReportSend],
-    ['testScheduledReportErrorNotification', spies.testScheduledReportErrorNotification]
-  ]
-}
-
-function installApi(tasks: ScheduledReportTask[] = TASKS): Spies {
+function installApi(rules: AutomationRule[] = RULES_FIXTURE): Spies {
   const spies: Spies = {
-    listScheduledReports: vi.fn().mockResolvedValue(tasks),
-    createScheduledReport: vi.fn(),
-    updateScheduledReport: vi.fn(),
-    deleteScheduledReport: vi.fn(),
-    setScheduledReportEnabled: vi.fn(),
-    runScheduledReportNow: vi.fn(),
-    retryScheduledReportSend: vi.fn(),
-    testScheduledReportErrorNotification: vi.fn()
+    createRule: vi.fn().mockImplementation((draft: unknown) =>
+      Promise.resolve({
+        ...(draft as AutomationRule),
+        id: 'rule-new',
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      })
+    ),
+    updateRule: vi.fn().mockImplementation((id: string, draft: unknown) =>
+      Promise.resolve({ ...(draft as AutomationRule), id, createdAt: 0, updatedAt: 0 })
+    ),
+    deleteRule: vi.fn().mockResolvedValue(true),
+    setEnabled: vi.fn().mockImplementation((id: string, enabled: boolean) => {
+      const found = rules.find((rule) => rule.id === id)
+      return Promise.resolve(found ? { ...found, enabled } : null)
+    }),
+    runScheduled: vi.fn().mockResolvedValue({
+      success: true,
+      data: { executed: true, executionId: 'exec-1', status: 'success', reportGenerated: true }
+    }),
+    setNotification: vi.fn().mockResolvedValue({ success: true, data: { enabled: true } })
   }
 
   window.api = {
@@ -102,12 +115,17 @@ function installApi(tasks: ScheduledReportTask[] = TASKS): Spies {
     }),
     listAutomationRules: vi.fn().mockResolvedValue([
       createDefaultDailyReportRule(Date.now()),
-      createDefaultLeaveNotificationRule(Date.now())
+      createDefaultLeaveNotificationRule(Date.now()),
+      ...rules
     ]),
+    createAutomationRule: spies.createRule,
+    updateAutomationRule: spies.updateRule,
+    deleteAutomationRule: spies.deleteRule,
+    setAutomationRuleEnabled: spies.setEnabled,
     listAutomationGroups: vi.fn().mockResolvedValue([
-      { id: 'g1', name: 'TraceMemo 交流群' },
-      { id: 'g2', name: '技术交流群' },
-      { id: 'g3', name: 'TraceMemo 管理群' }
+      { id: 'g1@chatroom', name: 'TraceMemo 交流群' },
+      { id: 'g2@chatroom', name: '技术交流群' },
+      { id: 'g3@chatroom', name: 'TraceMemo 管理群' }
     ]),
     listAutomationExecutions: vi.fn().mockResolvedValue([]),
     listSendableContacts: vi.fn().mockResolvedValue([]),
@@ -123,11 +141,15 @@ function installApi(tasks: ScheduledReportTask[] = TASKS): Spies {
       unreadCount: 0
     }),
     onGroupExitMonitorState: vi.fn(() => () => undefined),
-    // 旧「日报 → 定时日报」页面 mount 时会读这几项；只读、与预览无关。
-    listScheduledReportExecutions: vi.fn().mockResolvedValue([]),
-    getPersonalWechatSendCapability: vi.fn().mockResolvedValue(null),
+    runScheduledReportRule: spies.runScheduled,
+    listScheduledReportLegacyExecutions: vi.fn().mockResolvedValue([]),
     getScheduledReportNotificationSettings: vi.fn().mockResolvedValue({ enabled: false }),
-    ...spies
+    getScheduledReportNotificationCapability: vi.fn().mockResolvedValue({
+      ready: false,
+      error: '需要先连接 Agent Hub 微信机器人，才能接收异常通知。'
+    }),
+    setScheduledReportNotificationEnabled: spies.setNotification,
+    testScheduledReportErrorNotification: vi.fn().mockResolvedValue({ success: true })
   } as unknown as typeof window.api
 
   return spies
@@ -174,11 +196,29 @@ describe('自动化 · 规则类型 Tab（定时日报）', () => {
     expect(await screen.findByRole('heading', { name: '定时日报' })).toBeVisible()
     expect(screen.getByText('按设定时间自动生成日报，并发送到指定微信会话。')).toBeVisible()
     expect(screen.getByText('2 条规则')).toBeVisible()
-    // 列表态不该出现编辑器的保存按钮。
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull()
   })
 
-  it('列表按真实字段渲染（触发 / 日报 / 来源 / 发送到 / 下次执行）', async () => {
+  it('列表层有「返回规则列表」入口，不切 tab 也能退出', async () => {
+    installApi()
+    renderWorkspace()
+    await openScheduledTab()
+    const user = userEvent.setup()
+
+    /*
+     * 这里以前是个死胡同：定时日报先落列表，而列表只有新建/编辑/立即执行/删除，
+     * 页面级「新建自动化」又因编辑态被隐藏，顶部 规则/执行日志 切换条同样被隐藏 ——
+     * 唯一的出路竟然是切到别的规则类型 tab，再从那边的「取消」绕回来。
+     */
+    const back = await screen.findByRole('button', { name: /返回规则列表/ })
+    await user.click(back)
+
+    // 回到规则面板（三个类型卡片），本类型的 tab 条随之消失。
+    expect(await screen.findByText('退群通知')).toBeVisible()
+    expect(screen.queryByRole('radio', { name: '定时日报' })).toBeNull()
+  })
+
+  it('列表按真实规则字段渲染（触发 / 日报 / 来源 / 模板 / 发送到）', async () => {
     installApi()
     renderWorkspace()
     await openScheduledTab()
@@ -194,41 +234,53 @@ describe('自动化 · 规则类型 Tab（定时日报）', () => {
       ['日报', '今日'],
       ['来源', 'TraceMemo 交流群'],
       ['模板', '经典日报'],
-      // target 与来源群不同 ⇒ 显示 target 的群名；相同时会显示「日报来源群」。
-      ['发送到', 'TraceMemo 管理群'],
+      ['发送到', '发送到日报来源群（TraceMemo 交流群）'],
       ['下次执行', expect.any(String)]
     ])
-    // 暂停的任务下一次执行显示破折号，而不是一个会误导的时间。
+
+    // 暂停的规则不再给出"下次执行"时间，避免误导。
     const paused = (await screen.findByText('技术交流群日报')).closest('article') as HTMLElement
     expect(paused.textContent).toContain('已暂停')
     expect(within(paused).getByText('—')).toBeVisible()
-    // 这条的 target 与来源群相同 ⇒ 用「日报来源群」这种语义文案，而不是重复群名。
-    expect(paused.textContent).toContain('日报来源群')
+    expect(paused.textContent).toContain('文件传输助手')
   })
 })
 
-describe('定时日报 · 编辑器与预览联动', () => {
-  it('点「+ 新建定时日报」进入编辑器（三段 + 预览）', async () => {
-    installApi()
+describe('定时日报 · 真写入', () => {
+  it('保存新规则 → createAutomationRule，且 ruleType 与完整配置都对', async () => {
+    const spies = installApi()
     renderWorkspace()
     await openScheduledTab()
-
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
 
-    expect(screen.getByRole('heading', { name: '1 · 什么时候触发' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: '2 · 生成什么日报' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: '3 · 生成后发送到哪里' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: '效果预览' })).toBeVisible()
-    // 只有一个开关：规则级启停。
-    expect(screen.getAllByRole('switch')).toHaveLength(1)
+    await user.type(screen.getByLabelText('定时日报任务名称'), '新的定时日报')
+    await user.click(
+      within(screen.getByRole('radiogroup', { name: '日报来源' })).getByRole('radio', {
+        name: '技术交流群'
+      })
+    )
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(spies.createRule).toHaveBeenCalledTimes(1))
+    const draft = spies.createRule.mock.calls[0][0] as {
+      name: string
+      ruleType: string
+      scheduledReport: { report: { sourceConversationId: string }; target: { type: string } }
+    }
+    expect(draft.name).toBe('新的定时日报')
+    expect(draft.ruleType).toBe('scheduled_report')
+    // 来源群存的是**稳定会话 id**，不是群名。
+    expect(draft.scheduledReport.report.sourceConversationId).toBe('g2@chatroom')
+    // 新建默认发到文件传输助手（不会误打扰群聊）。
+    expect(draft.scheduledReport.target.type).toBe('file_transfer')
+    expect(spies.updateRule).not.toHaveBeenCalled()
   })
 
-  it('点卡片「编辑」进入编辑器，并带出该任务的值', async () => {
-    installApi()
+  it('编辑既有规则 → updateAutomationRule（不是新建）', async () => {
+    const spies = installApi()
     renderWorkspace()
     await openScheduledTab()
-
     const user = userEvent.setup()
     const card = (await screen.findByText('TraceMemo 每日晚报')).closest('article') as HTMLElement
     await user.click(within(card).getByRole('button', { name: '编辑' }))
@@ -236,103 +288,31 @@ describe('定时日报 · 编辑器与预览联动', () => {
     expect(screen.getByLabelText('定时日报任务名称')).toHaveValue('TraceMemo 每日晚报')
     expect(screen.getByLabelText('执行时间小时')).toHaveValue('18')
     expect(screen.getByLabelText('执行时间分钟')).toHaveValue('21')
-    expect(
-      within(screen.getByRole('radiogroup', { name: '日报来源' })).getByRole('radio', {
-        name: 'TraceMemo 交流群'
-      })
-    ).toBeChecked()
+
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(spies.updateRule).toHaveBeenCalledTimes(1))
+    expect(spies.updateRule.mock.calls[0][0]).toBe('rule-1')
+    expect(spies.createRule).not.toHaveBeenCalled()
   })
 
-  /*
-   * 任务里存的群名与群列表是两个数据源，不保证一致
-   * （群被移出监控、或列表来源变了）。这时**必须回显当前值**，
-   * 否则编辑已有任务会出现"一串群里没有任何一项被选中"。
-   */
-  it('来源群不在群列表里时，仍会作为候选项被选中', async () => {
-    installApi([{ ...TASKS[0], group: '已不在列表的群', target: '已不在列表的群' }])
-    renderWorkspace()
-    await openScheduledTab()
-
-    const user = userEvent.setup()
-    const card = (await screen.findByText('TraceMemo 每日晚报')).closest('article') as HTMLElement
-    await user.click(within(card).getByRole('button', { name: '编辑' }))
-
-    expect(
-      within(screen.getByRole('radiogroup', { name: '日报来源' })).getByRole('radio', {
-        name: '已不在列表的群'
-      })
-    ).toBeChecked()
-  })
-
-  it('改执行时间 → 预览与「预计下次执行」同时更新', async () => {
-    installApi()
-    renderWorkspace()
-    await openScheduledTab()
-    const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
-
-    const hourInput = screen.getByLabelText('执行时间小时')
-    await user.clear(hourInput)
-    await user.type(hourInput, '07')
-    const minuteInput = screen.getByLabelText('执行时间分钟')
-    await user.clear(minuteInput)
-    await user.type(minuteInput, '05')
-
-    expect(screen.getByTestId('scheduled-next-run').textContent).toMatch(/0?7:05/)
-    const facts = document.querySelector('.automation-preview-facts')?.textContent ?? ''
-    expect(facts).toContain('每天 07:05')
-  })
-
-  it('改日报来源 → 预览的生成目标跟着变', async () => {
-    installApi()
-    renderWorkspace()
-    await openScheduledTab()
-    const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
-
-    await user.click(
-      within(screen.getByRole('radiogroup', { name: '日报来源' })).getByRole('radio', {
-        name: '技术交流群'
-      })
-    )
-
-    const flow = document.querySelector('.automation-preview-flow')?.textContent ?? ''
-    expect(flow).toContain('技术交流群')
-    const facts = document.querySelector('.automation-preview-facts')?.textContent ?? ''
-    expect(facts).toContain('技术交流群')
-  })
-
-  it('发送目标是四选一，且**没有**「指定群聊」这种"发到另一个群"的选项', async () => {
-    installApi()
-    renderWorkspace()
-    await openScheduledTab()
-    const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
-
-    const group = screen.getByRole('radiogroup', { name: '生成后发送到哪里' })
-    const labels = Array.from(group.querySelectorAll('label')).map((el) => el.textContent?.trim())
-    expect(labels).toEqual(['文件传输助手', '发送到日报来源群', '发给自己', '指定好友'])
-    expect(screen.queryByRole('radio', { name: '指定群聊' })).toBeNull()
-
-    // 新建默认 = 文件传输助手（不会误打扰群聊）。
-    expect(screen.getByRole('radio', { name: '文件传输助手' })).toBeChecked()
-  })
-
-  it('保存只提示，不调用任何真实写接口', async () => {
+  it('缺名称 / 缺来源群时**不允许保存**，并说明原因', async () => {
     const spies = installApi()
     renderWorkspace()
     await openScheduledTab()
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
-    await user.click(screen.getByRole('button', { name: '保存' }))
 
-    expect(await screen.findByText('UI 预览模式，配置暂未保存')).toBeVisible()
-    for (const [name, spy] of writeSpies(spies)) {
-      expect(spy, `${name} 不该被调用`).not.toHaveBeenCalled()
-    }
+    expect(screen.getByTestId('scheduled-save-blocker')).toHaveTextContent('请填写任务名称')
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+
+    await user.type(screen.getByLabelText('定时日报任务名称'), '有名字了')
+    expect(screen.getByTestId('scheduled-save-blocker')).toHaveTextContent('请选择日报来源群')
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+
+    expect(spies.createRule).not.toHaveBeenCalled()
   })
 
-  it('「立即执行」不触发真实执行', async () => {
+  it('「立即执行」走 runScheduledReportRule（与 scheduler 同一条链路）', async () => {
     const spies = installApi()
     renderWorkspace()
     await openScheduledTab()
@@ -340,13 +320,10 @@ describe('定时日报 · 编辑器与预览联动', () => {
     const card = (await screen.findByText('TraceMemo 每日晚报')).closest('article') as HTMLElement
     await user.click(within(card).getByRole('button', { name: '立即执行' }))
 
-    expect(await screen.findByText('UI 预览模式，不会执行真实日报任务')).toBeVisible()
-    for (const [name, spy] of writeSpies(spies)) {
-      expect(spy, `${name} 不该被调用`).not.toHaveBeenCalled()
-    }
+    await waitFor(() => expect(spies.runScheduled).toHaveBeenCalledWith('rule-1'))
   })
 
-  it('toggle 只改本地状态并提示，不写回 store', async () => {
+  it('toggle 真写 setAutomationRuleEnabled', async () => {
     const spies = installApi()
     renderWorkspace()
     await openScheduledTab()
@@ -354,16 +331,10 @@ describe('定时日报 · 编辑器与预览联动', () => {
     const card = (await screen.findByText('TraceMemo 每日晚报')).closest('article') as HTMLElement
 
     await user.click(within(card).getByRole('switch'))
-
-    expect(await screen.findByText('UI 预览模式，配置暂未保存')).toBeVisible()
-    expect(within(card).getByText('已暂停')).toBeVisible()
-    expect(spies.setScheduledReportEnabled).not.toHaveBeenCalled()
-    for (const [name, spy] of writeSpies(spies)) {
-      expect(spy, `${name} 不该被调用`).not.toHaveBeenCalled()
-    }
+    await waitFor(() => expect(spies.setEnabled).toHaveBeenCalledWith('rule-1', false))
   })
 
-  it('删除只是提示，不移除任务', async () => {
+  it('删除要经过确认弹层，确认后才真删', async () => {
     const spies = installApi()
     renderWorkspace()
     await openScheduledTab()
@@ -371,24 +342,50 @@ describe('定时日报 · 编辑器与预览联动', () => {
     const card = (await screen.findByText('TraceMemo 每日晚报')).closest('article') as HTMLElement
     await user.click(within(card).getByRole('button', { name: '删除' }))
 
-    expect(await screen.findByText('UI 预览模式，不会删除现有任务')).toBeVisible()
-    expect(screen.getByText('TraceMemo 每日晚报')).toBeVisible()
-    for (const [name, spy] of writeSpies(spies)) {
-      expect(spy, `${name} 不该被调用`).not.toHaveBeenCalled()
-    }
+    const dialog = await screen.findByRole('alertdialog', { name: '删除自动化' })
+    expect(dialog).toHaveTextContent('删除「TraceMemo 每日晚报」？')
+    expect(spies.deleteRule).not.toHaveBeenCalled()
+
+    await user.click(within(dialog).getByRole('button', { name: '删除' }))
+    await waitFor(() => expect(spies.deleteRule).toHaveBeenCalledWith('rule-1'))
   })
 
-  it('任务列表为空时给空态与新建入口', async () => {
-    installApi([])
+  it('不再有任何旧的 scheduled-report:* 通道被调用', async () => {
+    installApi()
     renderWorkspace()
     await openScheduledTab()
 
-    expect(await screen.findByText('还没有定时日报')).toBeVisible()
-    expect(screen.getAllByRole('button', { name: '+ 新建定时日报' }).length).toBeGreaterThan(0)
+    const api = window.api as unknown as Record<string, unknown>
+    for (const legacy of [
+      'listScheduledReports',
+      'createScheduledReport',
+      'updateScheduledReport',
+      'deleteScheduledReport',
+      'setScheduledReportEnabled',
+      'runScheduledReportNow',
+      'retryScheduledReportSend'
+    ]) {
+      expect(api[legacy], `旧通道 ${legacy} 仍然存在于 preload 契约里`).toBeUndefined()
+    }
   })
 })
 
 describe('定时日报 · 完整日报配置（不丢旧能力）', () => {
+  it('新建时「纳入的消息类型」默认只勾选文本', async () => {
+    installApi()
+    renderWorkspace()
+    await openScheduledTab()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
+
+    // 逐个断言，而不是只看"有没有被勾"：默认值改了方向的话，全选也是"有被勾"。
+    for (const option of SUMMARY_TYPE_OPTIONS) {
+      const box = screen.getByRole('checkbox', { name: option.label })
+      if (option.value === 'text') expect(box).toBeChecked()
+      else expect(box).not.toBeChecked()
+    }
+  })
+
   it('Section 2 承载旧「定时日报」的全部日报配置', async () => {
     installApi()
     renderWorkspace()
@@ -405,25 +402,7 @@ describe('定时日报 · 完整日报配置（不丢旧能力）', () => {
     expect(screen.getByText('模型配置')).toBeVisible()
     expect(screen.getByText('更改模型')).toBeVisible()
     expect(screen.getByText('日报内容')).toBeVisible()
-  })
-
-  it('纳入的消息类型用旧页面的真实类型与说明（默认全选）', async () => {
-    installApi()
-    renderWorkspace()
-    await openScheduledTab()
-    const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
-
     expect(screen.getByText('纳入的消息类型')).toBeVisible()
-    expect(screen.getByText('至少选择一种')).toBeVisible()
-
-    // 七类都来自 SUMMARY_TYPE_OPTIONS，不是新写的一套。
-    for (const label of ['文本', '图片', '表情包', '视频', '语音', '分享/引用', '系统消息']) {
-      expect(screen.getByRole('checkbox', { name: label })).toBeVisible()
-    }
-    // 旧页面默认全选。
-    expect(screen.getByRole('checkbox', { name: '文本' })).toBeChecked()
-    expect(screen.getByRole('checkbox', { name: '系统消息' })).toBeChecked()
   })
 
   it('成员名称保留旧页面的三个选项', async () => {
@@ -440,31 +419,24 @@ describe('定时日报 · 完整日报配置（不丢旧能力）', () => {
   })
 })
 
-describe('定时日报 · 返回与四选一发送目标', () => {
-  it('新建页有「← 返回定时日报」，点击回到规则列表', async () => {
+describe('定时日报 · 四选一发送目标', () => {
+  it('只有四选一，且**没有**「指定群聊」这种"发到另一个群"的选项', async () => {
     installApi()
     renderWorkspace()
     await openScheduledTab()
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
 
-    await user.click(screen.getByRole('button', { name: '← 返回定时日报' }))
-    // 回到「定时日报」列表，而不是自动化首页。
-    expect(await screen.findByText('2 条规则')).toBeVisible()
-    expect(screen.getByRole('radio', { name: '定时日报' })).toBeChecked()
-  })
-
-  it('编辑页也有返回入口，点击回到规则列表', async () => {
-    installApi()
-    renderWorkspace()
-    await openScheduledTab()
-    const user = userEvent.setup()
-    const card = (await screen.findByText('TraceMemo 每日晚报')).closest('article') as HTMLElement
-    await user.click(within(card).getByRole('button', { name: '编辑' }))
-    expect(screen.getByRole('button', { name: '← 返回定时日报' })).toBeVisible()
-
-    await user.click(screen.getByRole('button', { name: '← 返回定时日报' }))
-    expect(await screen.findByText('2 条规则')).toBeVisible()
+    const group = screen.getByRole('radiogroup', { name: '生成后发送到哪里' })
+    const labels = Array.from(group.querySelectorAll('label')).map((el) => el.textContent?.trim())
+    expect(labels).toEqual([
+      '发送到日报来源群',
+      '文件传输助手',
+      '发给自己',
+      '指定好友'
+    ])
+    expect(screen.queryByRole('radio', { name: '指定群聊' })).toBeNull()
+    expect(screen.getByRole('radio', { name: '文件传输助手' })).toBeChecked()
   })
 
   it('只有「指定好友」才展开好友选择器', async () => {
@@ -473,6 +445,14 @@ describe('定时日报 · 返回与四选一发送目标', () => {
     await openScheduledTab()
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
+    // 先把名称 / 来源群补齐：阻断提示是有优先级的（名称 → 来源群 → 指定好友），
+    // 否则这里看到的是「请填写任务名称」，断言就打偏了。
+    await user.type(screen.getByLabelText('定时日报任务名称'), '发给指定好友的日报')
+    await user.click(
+      within(screen.getByRole('radiogroup', { name: '日报来源' })).getByRole('radio', {
+        name: '技术交流群'
+      })
+    )
 
     for (const label of ['文件传输助手', '发送到日报来源群', '发给自己']) {
       await user.click(screen.getByRole('radio', { name: label }))
@@ -481,77 +461,80 @@ describe('定时日报 · 返回与四选一发送目标', () => {
 
     await user.click(screen.getByRole('radio', { name: '指定好友' }))
     expect(screen.getByPlaceholderText('搜索好友')).toBeVisible()
-  })
-
-  it('Preview 随发送目标变化，且「发送到日报来源群」显示来源群名', async () => {
-    installApi()
-    renderWorkspace()
-    await openScheduledTab()
-    const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
-
-    await user.click(
-      within(screen.getByRole('radiogroup', { name: '日报来源' })).getByRole('radio', {
-        name: '技术交流群'
-      })
+    // 选了「指定好友」却没选人 → 不允许保存（否则运行期必然失败）。
+    expect(screen.getByTestId('scheduled-save-blocker')).toHaveTextContent(
+      '请选择要发送的指定好友'
     )
-
-    const targetOf = (): string => {
-      const rows = Array.from(document.querySelectorAll('.automation-preview-facts > div'))
-      const row = rows.find((item) => item.querySelector('dt')?.textContent === '发送目标')
-      return row?.querySelector('dd')?.textContent ?? ''
-    }
-
-    expect(targetOf()).toBe('文件传输助手')
-    await user.click(screen.getByRole('radio', { name: '发送到日报来源群' }))
-    expect(targetOf()).toBe('技术交流群')
-    await user.click(screen.getByRole('radio', { name: '发给自己' }))
-    expect(targetOf()).toBe('我')
-  })
-
-  it('Preview 随来源群与模板变化', async () => {
-    installApi()
-    renderWorkspace()
-    await openScheduledTab()
-    const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
-
-    await user.click(
-      within(screen.getByRole('radiogroup', { name: '日报来源' })).getByRole('radio', {
-        name: '技术交流群'
-      })
-    )
-    const flow = document.querySelector('.automation-preview-flow')?.textContent ?? ''
-    expect(flow).toContain('技术交流群')
-    expect(flow).toContain('经典日报')
-
-    await user.click(screen.getByLabelText('日报模板'))
-    // 选项文案来自 REPORT_TEMPLATES 的 `label · name`。
-    await user.click(await screen.findByRole('option', { name: /Mobile 01/ }))
-    expect(document.querySelector('.automation-preview-flow')?.textContent).not.toContain('经典日报')
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
   })
 })
 
-describe('定时日报 · 不向用户暴露内部标识', () => {
+describe('定时日报 · 迁移遗留与内部标识', () => {
+  it('targetNeedsReview 的规则在列表上明确提示"需要重选目标"', async () => {
+    const needsReview = createDefaultScheduledReportRule(Date.now(), {
+      id: 'rule-review',
+      name: '旧规则',
+      enabled: false,
+      config: {
+        ...normalizeScheduledReportConfig({}),
+        target: { type: 'source_chat' },
+        targetNeedsReview: true,
+        legacyTarget: '某个旧群'
+      }
+    })
+    installApi([needsReview])
+    renderWorkspace()
+    await openScheduledTab()
+
+    const card = (await screen.findByText('旧规则')).closest('article') as HTMLElement
+    expect(card.textContent).toContain('发送目标需要重新选择')
+    expect(card.textContent).toContain('某个旧群')
+    // 目标待重选时不允许执行（执行必然失败）。
+    expect(within(card).getByRole('button', { name: '立即执行' })).toBeDisabled()
+  })
+
   it('列表把 room id / hash 解析成显示名，绝不显示裸 id', async () => {
-    // 合成值：形态与真实 room id / hash 相同（纯数字 + @chatroom、32 位十六进制），
-    // 但取值本身可一眼辨认是假数据。与仓库其它测试保持一致。
     const FAKE_ROOM_ID = '12345678@chatroom'
     const FAKE_GROUP_HASH = '0123456789abcdef0123456789abcdef'
-
     installApi([
-      { ...TASKS[0], group: FAKE_ROOM_ID, target: FAKE_ROOM_ID },
-      { ...TASKS[1], group: FAKE_GROUP_HASH }
+      createDefaultScheduledReportRule(Date.now(), {
+        id: 'rule-internal',
+        name: '内部标识规则',
+        config: normalizeScheduledReportConfig({
+          report: { sourceConversationId: FAKE_ROOM_ID, messageTypes: ['text'] }
+        })
+      }),
+      createDefaultScheduledReportRule(Date.now(), {
+        id: 'rule-internal-2',
+        name: '内部标识规则 2',
+        config: normalizeScheduledReportConfig({
+          report: { sourceConversationId: FAKE_GROUP_HASH, messageTypes: ['text'] }
+        })
+      })
     ])
     renderWorkspace()
     await openScheduledTab()
 
-    await screen.findByText('TraceMemo 每日晚报')
+    await screen.findByText('内部标识规则')
     const body = document.body.textContent ?? ''
     expect(body).not.toContain(FAKE_ROOM_ID)
     expect(body).not.toContain(FAKE_GROUP_HASH.slice(0, 12))
-    // 对不上群名时给中性文案，而不是把 id 当名字。
     expect(screen.getAllByText('未知群聊').length).toBeGreaterThan(0)
+  })
+})
+
+describe('定时日报 · 微信异常通知入口', () => {
+  it('编辑器里保留异常通知开关，并给出 Agent Hub 的去处', async () => {
+    installApi()
+    renderWorkspace()
+    await openScheduledTab()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
+
+    expect(screen.getByRole('heading', { name: '微信异常通知' })).toBeVisible()
+    expect(
+      screen.getByText('需要先连接 Agent Hub 微信机器人，才能接收异常通知。')
+    ).toBeVisible()
   })
 })
 
@@ -563,7 +546,6 @@ describe('定时日报 · 首页汇总卡', () => {
     const card = (await screen.findByText('定时日报')).closest('article') as HTMLElement
     expect(card.textContent).toContain('2 条规则 · 1 条运行中')
     expect(card.textContent).toContain('按设定时间')
-    // 汇总卡不该有单个启停开关。
     expect(within(card).queryByRole('switch')).toBeNull()
 
     await userEvent.setup().click(within(card).getByRole('button', { name: '管理定时日报 →' }))
@@ -571,7 +553,7 @@ describe('定时日报 · 首页汇总卡', () => {
   })
 })
 
-describe('定时日报 · 深链与旧页面', () => {
+describe('定时日报 · 深链', () => {
   it('深链直接落到「自动化 → 规则 → 定时日报」', async () => {
     installApi()
 
@@ -592,38 +574,15 @@ describe('定时日报 · 深链与旧页面', () => {
     expect(await screen.findByText('2 条规则')).toBeVisible()
     expect(screen.getByRole('radio', { name: '定时日报' })).toBeChecked()
   })
-
-  it('旧「日报 → 定时日报」页面仍在，且入口能触发跳转', async () => {
-    installApi()
-    const onOpenAutomation = vi.fn()
-
-    render(
-      <ToastProvider>
-        <ScheduledReportsWorkspace
-          contacts={[]}
-          onOpenWechatSettings={() => {}}
-          onOpenAgentHub={() => {}}
-          onNotice={() => {}}
-          onOpenAutomation={onOpenAutomation}
-        />
-      </ToastProvider>
-    )
-
-    expect(screen.getByRole('heading', { name: '定时日报' })).toBeVisible()
-
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: '在自动化中配置 →' }))
-    expect(onOpenAutomation).toHaveBeenCalledTimes(1)
-  })
 })
 
-/** 让 `waitFor` 在本文件被使用（空态/异步断言需要）。 */
-describe('定时日报 · 异步加载', () => {
-  it('加载完成后不再显示 loading', async () => {
-    installApi()
+describe('定时日报 · 空态', () => {
+  it('没有规则时给空态与新建入口', async () => {
+    installApi([])
     renderWorkspace()
     await openScheduledTab()
 
-    await waitFor(() => expect(screen.queryByText('正在读取定时日报…')).toBeNull())
+    expect(await screen.findByText('还没有定时日报')).toBeVisible()
+    expect(screen.getAllByRole('button', { name: '+ 新建定时日报' }).length).toBeGreaterThan(0)
   })
 })

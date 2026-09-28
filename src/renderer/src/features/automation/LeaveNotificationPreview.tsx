@@ -1,5 +1,6 @@
 import * as React from 'react'
 import {
+  describeLeaveNotificationNotifyScope,
   describeMonitoredScope,
   leaveNotificationTargetLabel,
   type LeaveNotificationConfig
@@ -98,6 +99,10 @@ export function LeaveNotificationPreview({
         <div>
           <dt>监控来源</dt>
           <dd>{describeMonitoredScope(monitoredCount)}</dd>
+        </div>
+        <div>
+          <dt>通知范围</dt>
+          <dd>{describeLeaveNotificationNotifyScope(config, monitoredCount)}</dd>
         </div>
         <div>
           <dt>通知目标</dt>

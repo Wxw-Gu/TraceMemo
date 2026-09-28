@@ -14,7 +14,9 @@ import {
 } from '../../components/ui'
 import { MessageTypeSelector } from '../../components/reports/MessageTypeSelector'
 import {
+  DEFAULT_REPORT_IMAGE_POSTFIX_TEXT,
   SCHEDULED_REPORT_MEMBER_NAME_OPTIONS,
+  SCHEDULED_REPORT_POSTFIX_MAX_LENGTH,
   SCHEDULED_REPORT_RANGE_OPTIONS,
   SCHEDULED_REPORT_TARGET_OPTIONS,
   SCHEDULED_REPORT_TEMPLATE_SELECT_OPTIONS,
@@ -24,9 +26,8 @@ import {
   resolveGroupDisplayName,
   type ScheduledReportDraft,
   type ScheduledReportTargetType
-} from './model/scheduled-report-preview'
+} from './model/scheduled-report-model'
 import { LeaveNotificationTargetPicker } from './LeaveNotificationTargetPicker'
-import { ScheduledReportPreview } from './ScheduledReportPreview'
 
 /**
  * ScheduledReportEditor —— 「自动化 → 规则 → 定时日报」的编辑器。
@@ -36,7 +37,7 @@ import { ScheduledReportPreview } from './ScheduledReportPreview'
  * Section 2 承载完整的日报配置（纳入的消息类型 / 日报内容 / 模型配置 /
  * 日报模板 / 成员名称 / 生成超时），字段全部来自真实模型 —— 不发明，也不删减。
  *
- * 草稿只存在 renderer local state，保存不落盘（由父层提示）。
+ * 草稿仍然是 renderer local state，但**保存是真的落盘**（父层调 `automation:*`）。
  */
 
 export interface ScheduledReportEditorProps {
@@ -52,6 +53,15 @@ export interface ScheduledReportEditorProps {
   onSave: (draft: ScheduledReportDraft) => void
   /** 复用现有的模型配置入口。 */
   onOpenModelSettings?: () => void
+  /**
+   * 迁移遗留的旧目标原文（只作展示）。
+   *
+   * 有值时说明这条规则是迁移过来的、当时的目标无法自动对应 ——
+   * 界面必须让用户**看见原来的目标是什么**再重选。
+   */
+  legacyTarget?: string
+  /** 微信异常通知的入口（底部一块，与退群通知同一套开关组件）。 */
+  notificationSlot?: React.ReactNode
 }
 
 export function ScheduledReportEditor({
@@ -62,7 +72,9 @@ export function ScheduledReportEditor({
   onBack,
   onCancel,
   onSave,
-  onOpenModelSettings
+  onOpenModelSettings,
+  legacyTarget,
+  notificationSlot
 }: ScheduledReportEditorProps): React.ReactElement {
   const [draft, setDraft] = React.useState<ScheduledReportDraft>(initialDraft)
   const [groupFilter, setGroupFilter] = React.useState('')
@@ -101,23 +113,20 @@ export function ScheduledReportEditor({
   }
 
   /*
-   * 候选群 = 自动化现有的群列表 **并上** 当前任务已在用的来源群。
+   * 候选群 = 自动化现有的群列表 **并上** 当前规则已在用的来源群。
    *
-   * 任务里存的群标识与群列表是两个数据源，不保证一致；不并的话，
-   * 编辑已有任务会出现"当前来源群在列表里找不到、于是没有任何一项被选中"。
+   * ⚠️ `value` 一律是**稳定会话 id**（`xxx@chatroom`），不是群名 ——
+   * 群名会改，把群名当 id 存下来的规则改一次名就发错群。
+   * 迁移过来的老规则里可能仍是群名 / md5，这时作为"额外候选项"补进列表，
+   * 界面上用可读名展示，**绝不把裸标识印给用户**。
    */
   const groupOptions = React.useMemo(() => {
-    const known = new Set(groups.map((group) => group.name))
-    // 去重：不去重会生成两条同 id 的候选项，React 重复 key 会让渲染错乱。
+    const known = new Set(groups.map((group) => group.id))
     const extras = Array.from(
-      new Set(
-        [initialDraft.group, initialDraft.target].filter(
-          (value) => Boolean(value) && !known.has(value)
-        )
-      )
-    ).map((value) => ({ id: `current:${value}`, name: value }))
+      new Set([initialDraft.group].filter((value) => Boolean(value) && !known.has(value)))
+    ).map((value) => ({ id: value, name: resolveGroupDisplayName(value, groups) }))
     return [...groups, ...extras]
-  }, [groups, initialDraft.group, initialDraft.target])
+  }, [groups, initialDraft.group])
 
   const visibleGroups = React.useMemo(() => {
     const needle = groupFilter.trim().toLowerCase()
@@ -128,14 +137,24 @@ export function ScheduledReportEditor({
     )
   }, [groupOptions, groupFilter])
 
-  const selectedContactName =
-    sendableContacts.find((contact) => contact.id === draft.targetContactId)?.name ?? ''
+  /**
+   * 保存前置校验。
+   *
+   * 不允许存一条跑不起来的规则：没有名称 / 没有来源群 / 选了「指定好友」
+   * 却没选人，这三种在运行期必然失败，与其让用户过几天在日志里发现，不如现在说清。
+   */
+  const saveBlocker = !draft.name.trim()
+    ? '请填写任务名称'
+    : !draft.group
+      ? '请选择日报来源群'
+      : draft.targetType === 'contact' && !draft.targetContactId
+        ? '请选择要发送的指定好友'
+        : ''
 
   const selectTargetType = (next: ScheduledReportTargetType): void => {
-    // 「发送到日报来源群」的目标跟随来源群；其余目标清空，避免看起来已经选好了。
+    // 切换目标类型时清空已选联系人，避免看起来"已经选好了"却发不出去。
     patch({
       targetType: next,
-      target: next === 'source_chat' ? draft.group : '',
       targetContactId: next === 'contact' ? draft.targetContactId : ''
     })
   }
@@ -163,11 +182,28 @@ export function ScheduledReportEditor({
           <Button variant="ghost" onClick={onCancel} disabled={saving}>
             取消
           </Button>
-          <Button onClick={() => onSave(draft)} disabled={saving}>
+          <Button
+            onClick={() => onSave(draft)}
+            disabled={saving || Boolean(saveBlocker)}
+            title={saveBlocker || undefined}
+          >
             {saving ? '保存中…' : '保存'}
           </Button>
         </div>
       </header>
+
+      {saveBlocker ? (
+        <p className="automation-notice warning" role="status" data-testid="scheduled-save-blocker">
+          {saveBlocker}
+        </p>
+      ) : null}
+
+      {legacyTarget ? (
+        <p className="automation-notice warning" role="status" data-testid="scheduled-legacy-target">
+          这条规则是升级前创建的，当时的发送目标（{legacyTarget}）无法自动对应到新的选项。
+          请重新选择发送目标后再保存。
+        </p>
+      ) : null}
 
       <div className="automation-editor-body">
         <div className="automation-editor-form">
@@ -244,12 +280,7 @@ export function ScheduledReportEditor({
               <small>生成哪个群的日报。</small>
               <RadioGroup
                 value={draft.group}
-                onValueChange={(value) =>
-                  patch({
-                    group: value,
-                    target: draft.targetType === 'source_chat' ? value : draft.target
-                  })
-                }
+                onValueChange={(value) => patch({ group: value })}
                 aria-label="日报来源"
                 className="automation-leave-contact-picker"
               >
@@ -265,7 +296,7 @@ export function ScheduledReportEditor({
                   ) : (
                     visibleGroups.map((group) => (
                       <div key={group.id} className="automation-leave-radio option">
-                        <RadioGroupItem value={group.name} id={`scheduled-source-${group.id}`} />
+                        <RadioGroupItem value={group.id} id={`scheduled-source-${group.id}`} />
                         <label htmlFor={`scheduled-source-${group.id}`}>{group.name}</label>
                       </div>
                     ))
@@ -421,6 +452,20 @@ export function ScheduledReportEditor({
               </div>
             ) : null}
 
+            {/* 后置词：从「手动发送日报图片」那个输入框原样搬运过来，只是改成按规则存。 */}
+            <div className="automation-field">
+              <span className="automation-field-label">发送后置词</span>
+              <Input
+                aria-label="发送后置词"
+                value={draft.postfixText}
+                maxLength={SCHEDULED_REPORT_POSTFIX_MAX_LENGTH}
+                placeholder={DEFAULT_REPORT_IMAGE_POSTFIX_TEXT}
+                disabled={saving}
+                onChange={(event) => patch({ postfixText: event.target.value })}
+              />
+              <small>图片确认发送成功后，会发送一条文本消息；留空则只发图片。</small>
+            </div>
+
             <p className="automation-editor-footnote">
               微信数据库和聊天记录默认从本机读取。所选内容将发送至你配置的模型服务进行处理，
               TraceMemo 本身不额外保存或转发内容。
@@ -428,11 +473,9 @@ export function ScheduledReportEditor({
           </section>
         </div>
 
-        <ScheduledReportPreview
-          draft={draft}
-          groupLabel={resolveGroupDisplayName(draft.group, groups)}
-          contactName={selectedContactName}
-        />
+        <aside className="automation-editor-side">
+          {notificationSlot}
+        </aside>
       </div>
     </div>
   )

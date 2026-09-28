@@ -39,6 +39,13 @@ interface GroupExitMonitorWorkspaceProps {
   onOpenSendSettings?: () => void
   /** 深链请求：直接落到「退群监控 → 管理群聊」。 */
   openViewRequest?: GroupExitMonitorOpenViewRequest | null
+  /**
+   * 深链请求已被消费（父层据此把它清掉）。
+   *
+   * **不给这个回调，深链就会变成常驻状态**：本组件在切换一级菜单时会被卸载，
+   * 而请求还挂在父层，于是下次正常点「退群监控」也会被重放，直接落到「管理群聊」。
+   */
+  onOpenViewRequestHandled?: () => void
   /** 「退群通知自动化 →」：跳到自动化里对应的规则类型（纯导航）。 */
   onOpenLeaveNotificationAutomation?: () => void
 }
@@ -307,6 +314,7 @@ export function GroupExitMonitorWorkspace({
   contacts = [],
   onOpenSendSettings,
   openViewRequest,
+  onOpenViewRequestHandled,
   onOpenLeaveNotificationAutomation
 }: GroupExitMonitorWorkspaceProps): React.ReactElement {
   const [state, setState] = React.useState<GroupExitMonitorState>(EMPTY_STATE)
@@ -383,11 +391,19 @@ export function GroupExitMonitorWorkspace({
     }
   }, [])
 
-  // 「自动化 → 退群通知 → 管理监控群聊」深链过来时，直接落到管理群聊页。
+  /**
+   * 「自动化 → 退群通知 → 管理监控群聊」深链过来时，直接落到管理群聊页。
+   *
+   * 请求是**一次性的**：落位之后立刻回报父层把它清掉。以前只 `setView` 不回报，
+   * 请求就一直留在父层；而 `renderCurrentWorkspace()` 是 switch，切一级菜单会卸载
+   * 本组件 —— 于是下次正常点「退群监控」时，这条陈旧的 `{view:'manage'}` 被重放，
+   * 用户看到的就是"点退群监控却进了管理群聊"。
+   */
   React.useEffect(() => {
     if (!openViewRequest) return
     setView(openViewRequest.view)
-  }, [openViewRequest])
+    onOpenViewRequestHandled?.()
+  }, [openViewRequest, onOpenViewRequestHandled])
 
   /**
    * 「复制退群信息」用的模板。
@@ -631,7 +647,7 @@ export function GroupExitMonitorWorkspace({
           <SendCapabilityStatus capability={sendCapability} />
           {/*
             发送能力不完整时给一个可操作的去处。
-            §「规则仍然可以保存」：这里只提示，不阻断任何编辑。
+            这里只提示，不阻断任何编辑。
           */}
           {sendCapability &&
           !(sendCapability.ready && sendCapability.capabilities?.text) &&

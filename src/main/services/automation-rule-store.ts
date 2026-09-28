@@ -6,15 +6,22 @@ import {
   BUILTIN_LEAVE_NOTIFICATION_RULE_ID,
   createDefaultDailyReportRule,
   createDefaultLeaveNotificationRule,
+  createDefaultScheduledReportRule,
   normalizeRuleDraft,
   type AutomationRule,
-  type AutomationRuleType
+  type AutomationRuleType,
+  type ScheduledReportAutomationConfig
 } from '../../shared/automation'
 import {
   planLeaveNotificationMigration,
   type LeaveNotificationMigrationPlan,
   type LegacyLeaveNotificationState
 } from './leave-notification-migration'
+import {
+  planScheduledReportMigrationBatch,
+  type LegacyScheduledReportTask,
+  type ScheduledReportMigrationSummary
+} from './scheduled-report-migration'
 import {
   GROUP_EXIT_NOTIFICATION_TEMPLATE_MAX_LENGTH,
   insertGroupNamePlaceholder
@@ -26,12 +33,10 @@ import {
  * 存储形态刻意做到最简：一个 JSON 文件（`{userData}/automation/rules.json`）。
  * 规则总量是个位数到几十条，引入数据库只会增加迁移负担。
  *
- * **内置规则的播种标记（`builtinSeeded`）单独存**：
+ * **一次性标记全部单独存**（`builtinSeeded` / `leaveNotificationMigrated` /
+ * `notificationTemplateUpgraded` / `scheduledReportMigrated`）：
  * 如果靠"文件里有没有那条内置规则"来判断是否播种，用户一旦删掉它，
- * 下次启动就会被重新塞回来 —— 用户会认为删除功能坏了。
- *
- * 退群通知的迁移标记（`leaveNotificationMigrated`）同理：迁移**只允许跑一次**，
- * 否则用户删掉退群通知规则后重启又被塞回来。
+ * 下次启动就会被重新塞回来 —— 用户会认为删除功能坏了。迁移同理。
  */
 
 const STORAGE_DIR = 'automation'
@@ -39,7 +44,11 @@ const RULES_FILE = 'rules.json'
 const MIGRATION_BACKUP_FILE = 'leave-notification-migration-backup.json'
 /** 旧退群监控的状态文件（迁移时读一次，之后运行期不再读）。 */
 const LEGACY_MONITOR_FILE = 'group-exit-monitor.json'
-const CURRENT_VERSION = 3
+/** 旧定时日报的**任务**文件（迁移时读一次，之后运行期不再读）。 */
+const LEGACY_SCHEDULED_DIR = 'scheduled-reports'
+const LEGACY_SCHEDULED_TASKS_FILE = 'tasks.json'
+const SCHEDULED_MIGRATION_BACKUP_FILE = 'scheduled-report-migration-backup.json'
+const CURRENT_VERSION = 4
 
 interface StoredRules {
   version: number
@@ -54,12 +63,27 @@ interface StoredRules {
    * 于是用户主动删掉那一行后、下次启动又会被补回来 —— 删不掉的东西最烦人。
    */
   notificationTemplateUpgraded: boolean
+  /**
+   * 旧「定时日报」任务是否已经迁移过。
+   *
+   * ⚠️ 与其它标记有一点不同：迁移需要**把旧群标识解析成稳定会话 id**，
+   * 而那需要数据库。数据库没就绪时这一位**保持 false**，等解析器注入后再补跑 ——
+   * 否则会把每一条规则都误判成"目标无法确认"。
+   */
+  scheduledReportMigrated: boolean
   rules: AutomationRule[]
 }
 
 export interface AutomationRuleStoreDependencies {
   userDataPath?: () => string
   now?: () => number
+  /**
+   * 迁移旧定时日报时，把 legacy 群标识（会话 md5 / 群名 / roomId）解析成
+   * **稳定会话 id**（`xxx@chatroom`）。解析不到返回 `undefined`。
+   *
+   * 不注入 ⇒ 迁移**推迟**（不写任何规则、不置标记）。
+   */
+  resolveLegacyConversationId?: (raw: string) => string | undefined
 }
 
 function emptyState(): StoredRules {
@@ -68,19 +92,24 @@ function emptyState(): StoredRules {
     builtinSeeded: false,
     leaveNotificationMigrated: false,
     notificationTemplateUpgraded: false,
+    scheduledReportMigrated: false,
     rules: []
   }
 }
 
 function normalizeRuleType(value: unknown): AutomationRuleType {
-  return value === 'leave_notification' ? 'leave_notification' : 'daily_report'
+  return value === 'leave_notification'
+    ? 'leave_notification'
+    : value === 'scheduled_report'
+      ? 'scheduled_report'
+      : 'daily_report'
 }
 
 /**
  * 单条规则的读盘归一化。
  *
  * 走 `normalizeRuleDraft` —— 它覆盖了 `AutomationRule` 除 id / 时间戳之外的**全部**字段，
- * 所以这是无损的，同时自动补上历史 rules.json 缺失的 `ruleType` / `leaveNotification`。
+ * 所以这是无损的，同时自动补上历史 rules.json 缺失的 `ruleType` / 各类 config。
  */
 function normalizeStoredRule(value: unknown): AutomationRule | null {
   if (!value || typeof value !== 'object') return null
@@ -92,8 +121,9 @@ function normalizeStoredRule(value: unknown): AutomationRule | null {
     {
       ...raw,
       ruleType,
-      // 历史 daily_report 规则没有 leaveNotification；反过来也要避免脏字段落盘。
-      ...(ruleType === 'leave_notification' ? { leaveNotification: raw.leaveNotification } : {})
+      // 历史规则没有这些字段；反过来也要避免脏字段落盘。
+      ...(ruleType === 'leave_notification' ? { leaveNotification: raw.leaveNotification } : {}),
+      ...(ruleType === 'scheduled_report' ? { scheduledReport: raw.scheduledReport } : {})
     },
     String(raw.name || '').trim() || '未命名自动化'
   )
@@ -106,6 +136,9 @@ function normalizeStoredRule(value: unknown): AutomationRule | null {
     updatedAt,
     ...(normalized.ruleType === 'leave_notification' && normalized.leaveNotification
       ? { leaveNotification: normalized.leaveNotification }
+      : {}),
+    ...(normalized.ruleType === 'scheduled_report' && normalized.scheduledReport
+      ? { scheduledReport: normalized.scheduledReport }
       : {})
   }
 }
@@ -115,7 +148,6 @@ function normalizeStoredRule(value: unknown): AutomationRule | null {
  *
  * **为什么替他填**：模板里原先根本没有群名变量（`{groupRemark}` 是成员在本群的昵称）。
  * 目标一旦不是「当前群聊」，通知就等于「张三退群了」—— 收件人不知道是哪个群。
- * 模板是用户已保存的数据，让他自己去发现"少一个变量"是不合理的。
  *
  * **为什么只跑一次**：靠"模板里有没有 `{groupName}`"判断会导致用户删掉后被反复补回来。
  * 所以由 `notificationTemplateUpgraded` 标记保证一次性；用户之后删掉不会回来。
@@ -139,7 +171,24 @@ function upgradeLeaveNotificationTemplate(rules: AutomationRule[]): {
   return { rules: next, count }
 }
 
-/** 读盘容错：任何字段可疑都降级成安全值，绝不因为一个坏文件让功能整体不可用。 */function normalizeStored(value: unknown): StoredRules {
+/**
+ * 调度游标（`lastRunAt` / `lastScheduledSlot`）**由 scheduler 拥有**，草稿改不动它们。
+ *
+ * 保存规则时一律从 `current` 取，而不是从草稿取 —— 否则用户进一次编辑页保存，
+ * 就会把"已消费的槽位"抹掉，导致当天重复补跑一次日报。
+ */
+function pickScheduledReportRuntime(
+  current: ScheduledReportAutomationConfig | undefined
+): Partial<ScheduledReportAutomationConfig> {
+  if (!current) return {}
+  return {
+    ...(current.lastRunAt ? { lastRunAt: current.lastRunAt } : {}),
+    ...(current.lastScheduledSlot ? { lastScheduledSlot: current.lastScheduledSlot } : {})
+  }
+}
+
+/** 读盘容错：任何字段可疑都降级成安全值，绝不因为一个坏文件让功能整体不可用。 */
+function normalizeStored(value: unknown): StoredRules {
   if (!value || typeof value !== 'object') return emptyState()
   const input = value as Partial<StoredRules>
   const rules = Array.isArray(input.rules)
@@ -152,6 +201,7 @@ function upgradeLeaveNotificationTemplate(rules: AutomationRule[]): {
     builtinSeeded: input.builtinSeeded === true,
     leaveNotificationMigrated: input.leaveNotificationMigrated === true,
     notificationTemplateUpgraded: input.notificationTemplateUpgraded === true,
+    scheduledReportMigrated: input.scheduledReportMigrated === true,
     rules
   }
 }
@@ -163,10 +213,31 @@ export class AutomationRuleStore {
   private loaded = false
   /** 迁移结果，供启动日志/报告读取（不含任何 id）。 */
   private lastMigrationPlan: LeaveNotificationMigrationPlan | null = null
+  private lastScheduledMigrationSummary: ScheduledReportMigrationSummary | null = null
+  private legacyConversationResolver: ((raw: string) => string | undefined) | null
 
   constructor(dependencies: AutomationRuleStoreDependencies = {}) {
     this.userDataPath = dependencies.userDataPath ?? (() => app.getPath('userData'))
     this.now = dependencies.now ?? (() => Date.now())
+    this.legacyConversationResolver = dependencies.resolveLegacyConversationId ?? null
+  }
+
+  /**
+   * 注入 / 替换旧定时日报迁移所需的会话解析器（数据库就绪后由 main 调用）。
+   *
+   * 若之前因为"解析器不可用"推迟了迁移，这里会**立刻补跑**并落盘。
+   */
+  setLegacyConversationResolver(resolver: (raw: string) => string | undefined): void {
+    this.legacyConversationResolver = resolver
+    if (!this.loaded) return
+    if (this.state.scheduledReportMigrated) return
+    if (this.runScheduledReportMigration(this.state)) this.persist()
+  }
+
+  /** 旧定时日报迁移是否仍在等待解析器（仅用于启动日志与测试断言）。 */
+  hasPendingScheduledReportMigration(): boolean {
+    this.ensureLoaded()
+    return !this.state.scheduledReportMigrated && this.readLegacyScheduledTasks().length > 0
   }
 
   listRules(): AutomationRule[] {
@@ -185,6 +256,12 @@ export class AutomationRuleStore {
   getLastLeaveNotificationMigration(): LeaveNotificationMigrationPlan | null {
     this.ensureLoaded()
     return this.lastMigrationPlan ? { ...this.lastMigrationPlan } : null
+  }
+
+  /** 上一次旧定时日报迁移的统计（未迁移时为 null）。 */
+  getLastScheduledReportMigration(): ScheduledReportMigrationSummary | null {
+    this.ensureLoaded()
+    return this.lastScheduledMigrationSummary ? { ...this.lastScheduledMigrationSummary } : null
   }
 
   createRule(draft: unknown): AutomationRule {
@@ -219,11 +296,26 @@ export class AutomationRuleStore {
       ...(current.ruleType === 'leave_notification' && normalized.leaveNotification
         ? { leaveNotification: normalized.leaveNotification }
         : {}),
+      ...(current.ruleType === 'scheduled_report' && normalized.scheduledReport
+        ? {
+            scheduledReport: {
+              ...normalized.scheduledReport,
+              ...pickScheduledReportRuntime(current.scheduledReport)
+            }
+          }
+        : {}),
       createdAt: current.createdAt,
       updatedAt: this.now()
     }
     // 切类型时不能留下另一种类型才认识的字段。
-    if (rule.ruleType === 'daily_report') delete rule.leaveNotification
+    if (rule.ruleType === 'daily_report') {
+      delete rule.leaveNotification
+      delete rule.scheduledReport
+    } else if (rule.ruleType === 'leave_notification') {
+      delete rule.scheduledReport
+    } else {
+      delete rule.leaveNotification
+    }
     this.state.rules = this.state.rules.map((item, at) => (at === index ? rule : item))
     this.persist()
     return structuredClone(rule)
@@ -275,6 +367,38 @@ export class AutomationRuleStore {
     return this.updateRule(id, { ...rule, enabled: enabled === true })
   }
 
+  /**
+   * 写**调度游标**（`lastRunAt` / `lastScheduledSlot`）。
+   *
+   * 刻意不走 `updateRule`：这不是用户配置编辑，走草稿归一化会顺带触碰别的字段，
+   * 也可能被"草稿里没这个字段"给抹掉。这里只允许改这两个键。
+   */
+  setScheduledReportRuntime(
+    id: string,
+    patch: { lastRunAt?: string; lastScheduledSlot?: string }
+  ): AutomationRule | undefined {
+    this.ensureLoaded()
+    const key = String(id || '').trim()
+    const index = this.state.rules.findIndex((rule) => rule.id === key)
+    if (index < 0) return undefined
+    const current = this.state.rules[index]
+    if (current.ruleType !== 'scheduled_report' || !current.scheduledReport) return undefined
+    const next: AutomationRule = {
+      ...current,
+      scheduledReport: {
+        ...current.scheduledReport,
+        ...(patch.lastRunAt !== undefined ? { lastRunAt: patch.lastRunAt } : {}),
+        ...(patch.lastScheduledSlot !== undefined
+          ? { lastScheduledSlot: patch.lastScheduledSlot }
+          : {})
+      },
+      updatedAt: this.now()
+    }
+    this.state.rules = this.state.rules.map((item, at) => (at === index ? next : item))
+    this.persist()
+    return structuredClone(next)
+  }
+
   private ensureLoaded(): void {
     if (this.loaded) return
     this.loaded = true
@@ -301,6 +425,7 @@ export class AutomationRuleStore {
         console.log(`[Automation] 退群通知模板已补上群名变量（${upgraded.count} 条）`)
       }
     }
+    this.runScheduledReportMigration(stored)
     stored.version = CURRENT_VERSION
     this.state = stored
     this.persist()
@@ -326,9 +451,108 @@ export class AutomationRuleStore {
         template: plan.template,
         target: plan.target,
         enabled: plan.enabled,
-        targetNeedsReview: plan.targetNeedsReview
+        // 二次勾选（旧「通知群聊」）逐字保留，迁移不再是有损的。
+        notifyScope: plan.notifyScope,
+        notifyRoomIds: plan.notifyRoomIds
       })
     ]
+  }
+
+  /**
+   * 旧「定时日报」任务 → `scheduled_report` 规则。**只跑一次**。
+   *
+   * 返回 `true` 表示本次真的做了迁移并需要落盘。
+   * **解析器不可用时返回 `false` 且不置标记** —— 迁移推迟到数据库就绪后补跑。
+   */
+  private runScheduledReportMigration(stored: StoredRules): boolean {
+    if (stored.scheduledReportMigrated) return false
+    const tasks = this.readLegacyScheduledTasks()
+    if (!tasks.length) {
+      // 全新安装 / 从没用过旧定时日报：没有历史可迁，直接置位。
+      stored.scheduledReportMigrated = true
+      console.log('[Automation] 定时日报迁移 outcome=fresh_install')
+      return true
+    }
+    const resolver = this.legacyConversationResolver
+    if (!resolver) {
+      console.log(
+        `[Automation] 定时日报迁移已推迟：数据库尚未就绪，无法解析旧群标识（待迁 ${tasks.length} 条）`
+      )
+      return false
+    }
+    const { plans, summary } = planScheduledReportMigrationBatch(tasks, resolver, this.now())
+    this.lastScheduledMigrationSummary = summary
+    this.writeScheduledMigrationBackup(tasks, summary)
+    const existing = new Set(stored.rules.map((rule) => rule.id))
+    const migrated: AutomationRule[] = []
+    for (const plan of plans) {
+      // 幂等：同一 id 已存在就不再插入（重复执行迁移也不会多出规则）。
+      if (existing.has(plan.ruleId)) continue
+      existing.add(plan.ruleId)
+      migrated.push({
+        ...createDefaultScheduledReportRule(plan.createdAt, {
+          id: plan.ruleId,
+          name: plan.name,
+          enabled: plan.enabled,
+          config: plan.config
+        }),
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt
+      })
+    }
+    stored.rules = [...stored.rules, ...migrated]
+    stored.scheduledReportMigrated = true
+    // 只记数量与判定分布，**禁止**出现群名 / roomId / 群主昵称。
+    console.log(
+      `[Automation] 定时日报迁移 outcome=done total=${summary.total} migrated=${migrated.length}` +
+        ` lossless=${summary.lossless} needsReview=${summary.needsReview}` +
+        ` duplicatesSkipped=${summary.duplicatesSkipped}`
+    )
+    return true
+  }
+
+  /**
+   * 读旧定时日报**任务**文件。
+   *
+   * 只读、只在这里读一次；运行期其余代码**不再读** legacy（避免双读）。
+   * 读失败视为"没有历史任务"，不抛。
+   */
+  private readLegacyScheduledTasks(): LegacyScheduledReportTask[] {
+    try {
+      const value = fs.readJsonSync(
+        path.join(this.userDataPath(), LEGACY_SCHEDULED_DIR, LEGACY_SCHEDULED_TASKS_FILE)
+      ) as unknown
+      return Array.isArray(value) ? (value as LegacyScheduledReportTask[]) : []
+    } catch {
+      return []
+    }
+  }
+
+  /** 迁移前把旧任务**原样**落一份 backup（不做不可逆覆盖）。 */
+  private writeScheduledMigrationBackup(
+    tasks: LegacyScheduledReportTask[],
+    summary: ScheduledReportMigrationSummary
+  ): void {
+    try {
+      const filePath = path.join(
+        this.userDataPath(),
+        STORAGE_DIR,
+        SCHEDULED_MIGRATION_BACKUP_FILE
+      )
+      fs.ensureDirSync(path.dirname(filePath))
+      fs.writeJsonSync(
+        filePath,
+        {
+          migratedAt: this.now(),
+          summary,
+          // 备份里保留原始字段：这是**用户数据**，不是日志，不进任何用户可见界面。
+          legacyTasks: tasks
+        },
+        { spaces: 2 }
+      )
+    } catch (error) {
+      console.warn(`[Automation] 写入定时日报迁移备份失败: ${errorText(error)}`)
+    }
   }
 
   /**
@@ -358,7 +582,7 @@ export class AutomationRuleStore {
   /**
    * 迁移前把旧配置原样落一份 backup。
    *
-   * §「不要不可逆直接覆盖」：旧状态文件本身也**不删**，只是不再被运行时代码读取。
+   * 不做不可逆覆盖：旧状态文件本身也**不删**，只是不再被运行时代码读取。
    */
   private writeMigrationBackup(
     legacy: LegacyLeaveNotificationState,
@@ -381,15 +605,14 @@ export class AutomationRuleStore {
           applied: {
             enabled: plan.enabled,
             targetType: plan.target.type,
-            targetNeedsReview: plan.targetNeedsReview
+            notifyScope: plan.notifyScope,
+            notifyRoomIds: plan.notifyRoomIds
           }
         },
         { spaces: 2 }
       )
     } catch (error) {
-      console.warn(
-        `[Automation] 写入退群通知迁移备份失败: ${errorText(error)}`
-      )
+      console.warn(`[Automation] 写入退群通知迁移备份失败: ${errorText(error)}`)
     }
   }
 

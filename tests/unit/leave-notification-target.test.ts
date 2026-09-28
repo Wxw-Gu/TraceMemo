@@ -45,6 +45,23 @@ const contacts: LeaveNotificationCandidateContact[] = [
   { m_nsUsrName: 'wxid_self', m_nsNickName: '我自己', type: 'user' }
 ]
 
+/**
+ * 构造一份合法配置。
+ *
+ * 本文件关心的是**目标解析**，通知范围（`notifyScope`）与之正交，
+ * 所以在这里统一补默认值 —— 契约再新增字段时也只改这一处，
+ * 不必去逐个补十几处字面量（那才是漏字段的根源）。
+ */
+function config(overrides: Partial<LeaveNotificationConfig> = {}): LeaveNotificationConfig {
+  return {
+    target: { type: 'source_chat' },
+    template: '',
+    notifyScope: 'all',
+    notifyRoomIds: [],
+    ...overrides
+  }
+}
+
 function resolve(
   config: LeaveNotificationConfig,
   overrides: { selfWxid?: string; event?: GroupMemberExitedEvent } = {}
@@ -59,7 +76,7 @@ function resolve(
 
 describe('leaveNotificationTarget · 四种目标', () => {
   it('当前群聊 = 事件所在群，不是"最后活跃会话"', () => {
-    const result = resolve({ target: { type: 'source_chat' }, template: '' })
+    const result = resolve(config())
 
     expect(result).toEqual({
       ok: true,
@@ -71,23 +88,42 @@ describe('leaveNotificationTarget · 四种目标', () => {
   })
 
   it('当前群聊在群名缺失时用中性称呼，不回落成 roomId', () => {
-    const result = resolveLeaveNotificationTarget({
-      config: { target: { type: 'source_chat' }, template: '' },
+    // 事件里没带群名，但本地联系人表里有这个群 ⇒ 用会话昵称，
+    // 比「当前群聊」更具体，且**仍然不是** roomId。
+    const withNickname = resolveLeaveNotificationTarget({
+      config: config(),
       event: { ...EVENT, groupName: undefined },
       contacts,
       selfWxid: 'wxid_self'
     })
+    expect(withNickname.ok).toBe(true)
+    if (withNickname.ok) {
+      expect(withNickname.target.recipient.name).toBe('测试群')
+      expect(withNickname.target.displayName).toBe('测试群')
+    }
 
-    expect(result.ok).toBe(true)
-    if (result.ok) {
-      expect(result.target.recipient.name).toBe('当前群聊')
-      expect(result.target.displayName).toBe('发生退群事件的群聊')
+    // 群名与联系人表**都**拿不到 ⇒ 退到中性称呼。
+    // 唯一不能发生的事是把 roomId / wxid 当显示名吐出去。
+    const fallback = resolveLeaveNotificationTarget({
+      config: config(),
+      event: { ...EVENT, groupName: undefined },
+      contacts: [],
+      selfWxid: 'wxid_self'
+    })
+    expect(fallback.ok).toBe(true)
+    if (fallback.ok) {
+      expect(fallback.target.recipient.name).toBe('当前群聊')
+      expect(fallback.target.displayName).toBe('发生退群事件的群聊')
+      // `recipient.id` 本来就该是真实会话 id（发送要用它），
+      // 这条断言约束的是**显示名**：不许把 id 当称呼给人看。
+      expect(fallback.target.recipient.name).not.toContain('@chatroom')
+      expect(fallback.target.displayName).not.toContain('@chatroom')
     }
   })
 
   it('当前群聊在缺少 conversationId 时直接失败', () => {
     const result = resolveLeaveNotificationTarget({
-      config: { target: { type: 'source_chat' }, template: '' },
+      config: config(),
       event: { ...EVENT, conversationId: '' },
       contacts,
       selfWxid: 'wxid_self'
@@ -97,7 +133,7 @@ describe('leaveNotificationTarget · 四种目标', () => {
   })
 
   it('发给自己 = 当前登录账号的真实 wxid', () => {
-    const result = resolve({ target: { type: 'self' }, template: '' }, { selfWxid: 'wxid_me' })
+    const result = resolve(config({ target: { type: 'self' } }), { selfWxid: 'wxid_me' })
 
     expect(result).toEqual({
       ok: true,
@@ -113,7 +149,7 @@ describe('leaveNotificationTarget · 四种目标', () => {
    * 那会让用户以为"发给自己"生效了，实际消息去了别处。
    */
   it('拿不到自身身份时失败，且不 fallback 文件传输助手', () => {
-    const result = resolve({ target: { type: 'self' }, template: '' }, { selfWxid: '' })
+    const result = resolve(config({ target: { type: 'self' } }), { selfWxid: '' })
 
     expect(result.ok).toBe(false)
     if (!result.ok) {
@@ -123,7 +159,7 @@ describe('leaveNotificationTarget · 四种目标', () => {
   })
 
   it('文件传输助手用协议级固定身份，不靠昵称搜索', () => {
-    const result = resolve({ target: { type: 'file_transfer' }, template: '' })
+    const result = resolve(config({ target: { type: 'file_transfer' } }))
 
     expect(result.ok).toBe(true)
     if (result.ok) {
@@ -136,10 +172,9 @@ describe('leaveNotificationTarget · 四种目标', () => {
   })
 
   it('指定好友用稳定 id，显示名用备注', () => {
-    const result = resolve({
-      target: { type: 'contact', contactId: 'wxid_friend' },
-      template: ''
-    })
+    const result = resolve(
+      config({ target: { type: 'contact', contactId: 'wxid_friend' } })
+    )
 
     expect(result).toEqual({
       ok: true,
@@ -153,14 +188,14 @@ describe('leaveNotificationTarget · 四种目标', () => {
 
 describe('leaveNotificationTarget · 失效与非法', () => {
   it('联系人不在了 → 失败，且不往别处发', () => {
-    const result = resolve({ target: { type: 'contact', contactId: 'wxid_gone' }, template: '' })
+    const result = resolve(config({ target: { type: 'contact', contactId: 'wxid_gone' } }))
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toContain('已不存在或当前无法发送')
   })
 
   it('还没选好友 → 失败并提示重新选择', () => {
-    const result = resolve({ target: { type: 'contact' }, template: '' })
+    const result = resolve(config({ target: { type: 'contact' } }))
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toContain('还没有选择通知联系人')
@@ -173,7 +208,7 @@ describe('leaveNotificationTarget · 失效与非法', () => {
       WECHAT_FILE_HELPER_USERNAME,
       'wxid_self'
     ]) {
-      const result = resolve({ target: { type: 'contact', contactId }, template: '' })
+      const result = resolve(config({ target: { type: 'contact', contactId } }))
       expect(result.ok).toBe(false)
     }
   })
@@ -188,10 +223,7 @@ describe('leaveNotificationTarget · 失效与非法', () => {
   })
 
   it('未知目标类型 → 失败（不允许静默当成默认值）', () => {
-    const result = resolve({
-      target: { type: 'webhook' as never },
-      template: ''
-    })
+    const result = resolve(config({ target: { type: 'webhook' as never } }))
     expect(result.ok).toBe(false)
   })
 })

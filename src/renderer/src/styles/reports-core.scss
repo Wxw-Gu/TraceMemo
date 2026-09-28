@@ -72,6 +72,33 @@
   flex: 1 1 auto;
 }
 
+/*
+ * 「定时日报已并入自动化」的指引条。
+ *
+ * ⚠️ 这两个类以前只出现在 JSX 里，样式表里**从来没有**对应规则 ——
+ * 所以它一直是一条没样式的裸文字 + 一个没样式的裸按钮。
+ * 现在补上：与 tab 条同宽的柔软信息条，按钮交给 UI 组件库。
+ */
+.report-workspace-hint {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: 0;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--wxex-border);
+  background: var(--wxex-bg-elevated);
+  color: var(--wxex-text-secondary);
+  font: 400 12px/18px var(--wxex-font);
+
+  > span {
+    min-width: 0;
+  }
+}
+
 .report-workspace-body > .report-page,
 .report-workspace-body > .report-center-page {
   height: 100%;

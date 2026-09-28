@@ -220,16 +220,37 @@ describe('AutomationRuleStore', () => {
     })
   })
 
+  /*
+   * 存量安装：早期版本把"部分勾选"判成无法无损映射，于是落盘了
+   * `targetNeedsReview: true`。这个标记会拦发送（`handleGroupExit` 第②道闸门），
+   * 所以**用户重存一次必须能清掉它** —— 否则那条规则永远发不出去。
+   *
+   * 注意种的是"已经落盘的存量状态"，不是靠迁移产出：迁移现在不再产生这个标记了。
+   */
   it('保存退群通知会清掉迁移遗留的「目标待重选」标记', () => {
-    writeLegacyMonitorState({
-      monitoredRoomIds: ['a@chatroom', 'b@chatroom'],
-      notificationRoomIds: ['a@chatroom']
-    })
     const store = new AutomationRuleStore(deps(root))
+    store.saveLeaveNotificationRule({
+      name: '退群通知',
+      enabled: false,
+      ruleType: 'leave_notification',
+      scope: 'group',
+      conditions: {},
+      actions: [],
+      cooldownSeconds: 0,
+      replyDelaySeconds: 2,
+      leaveNotification: {
+        target: { type: 'source_chat' },
+        template: '[退群监测]',
+        notifyScope: 'all',
+        notifyRoomIds: [],
+        targetNeedsReview: true
+      }
+    })
     expect(
       store.getRule(BUILTIN_LEAVE_NOTIFICATION_RULE_ID)?.leaveNotification?.targetNeedsReview
     ).toBe(true)
 
+    // 用户来重存一次：草稿里不带这个标记 ⇒ 归一化后它就该消失。
     store.saveLeaveNotificationRule({
       ...store.getRule(BUILTIN_LEAVE_NOTIFICATION_RULE_ID),
       enabled: true,
@@ -384,14 +405,17 @@ describe('AutomationRuleStore', () => {
       )
 
       expect(leave?.enabled).toBe(false)
-      // 关闭状态下 target 只是占位值（= 默认目标），不会发送任何东西。
+      // 关闭状态下 target 只是占位值（= 「发回本群」），不会发送任何东西。
       expect(leave?.leaveNotification?.target).toEqual({ type: 'source_chat' })
+      // 范围本身也精确：`selected` + 空集 = 「一个群都不通知」。
+      expect(leave?.leaveNotification?.notifyScope).toBe('selected')
+      expect(leave?.leaveNotification?.notifyRoomIds).toEqual([])
       // 用户写的模板内容保留；同一次启动的"补群名"升级会另加一行。
       expect(leave?.leaveNotification?.template).toContain('退群: {user}')
       expect(leave?.leaveNotification?.template).toContain('群聊: {groupName}')
     })
 
-    it('旧配置在每个被监控群都通知 → 无损映射为「当前群聊」且保持启用', () => {
+    it('旧配置在每个被监控群都通知 → 无损映射为「当前群聊」+ 全部范围，且保持启用', () => {
       writeLegacyMonitorState({
         monitoredRoomIds: ['a@chatroom', 'b@chatroom'],
         notificationRoomIds: ['a@chatroom', 'b@chatroom']
@@ -403,15 +427,16 @@ describe('AutomationRuleStore', () => {
 
       expect(leave?.enabled).toBe(true)
       expect(leave?.leaveNotification?.target).toEqual({ type: 'source_chat' })
+      expect(leave?.leaveNotification?.notifyScope).toBe('all')
       expect(leave?.leaveNotification?.targetNeedsReview).toBeUndefined()
     })
 
     /*
-     * 关键的一条：旧「通知群聊」是**逐群**的多值配置，新目标是**单值**。
-     * 只勾了一部分时无法无损映射 —— 这时候：
-     * 不取第一个群、不改写成当前群聊、保持关闭、要求用户重选，并留一份备份。
+     * 关键的一条：旧「通知群聊」是**逐群**的多值配置，恢复 `notifyScope` 之后
+     * 它就是一个正常可表达的字段 —— 所以这里**不再降级成 needs_review**：
+     * 那份勾选被原样保留、规则保持启用、不会再多一次"被无辜停用"的体验。
      */
-    it('旧配置只勾了部分群 → 标记待重选、不发送、留下备份，绝不猜', () => {
+    it('旧配置只勾了部分群 → 原样保留那份子集，保持启用，不做有损改写', () => {
       writeLegacyMonitorState({
         monitoredRoomIds: ['a@chatroom', 'b@chatroom', 'c@chatroom'],
         notificationRoomIds: ['b@chatroom'],
@@ -421,11 +446,13 @@ describe('AutomationRuleStore', () => {
       const store = new AutomationRuleStore(deps(root))
       const leave = store.getRule(BUILTIN_LEAVE_NOTIFICATION_RULE_ID)
 
-      expect(leave?.enabled).toBe(false)
-      expect(leave?.leaveNotification?.targetNeedsReview).toBe(true)
-      // 不回落到「取第一个群」，也不改写成别的具体目标 —— 只留默认占位（当前群聊），
-      // 且因为 enabled=false + targetNeedsReview=true，在用户重选之前不会发送。
+      expect(leave?.enabled).toBe(true)
+      expect(leave?.leaveNotification?.targetNeedsReview).toBeUndefined()
+      // 收件人恒为事件所在群（旧版 notifyGroup 的事实）⇒ target 仍是 source_chat。
       expect(leave?.leaveNotification?.target).toEqual({ type: 'source_chat' })
+      // 二次勾选逐字保留：只通知 b，不多不少。
+      expect(leave?.leaveNotification?.notifyScope).toBe('selected')
+      expect(leave?.leaveNotification?.notifyRoomIds).toEqual(['b@chatroom'])
       // 用户写的模板内容保留；同一次启动的"补群名"升级会另加一行。
       expect(leave?.leaveNotification?.template).toContain('退群: {user}')
       expect(leave?.leaveNotification?.template).toContain('群聊: {groupName}')
@@ -434,10 +461,10 @@ describe('AutomationRuleStore', () => {
         path.join(root, 'automation', 'leave-notification-migration-backup.json')
       )
       expect(backup).toMatchObject({
-        outcome: 'needs_review',
+        outcome: 'lossless_selected_groups',
         legacy: { notificationRoomIds: ['b@chatroom'] }
       })
-      expect(store.getLastLeaveNotificationMigration()?.outcome).toBe('needs_review')
+      expect(store.getLastLeaveNotificationMigration()?.outcome).toBe('lossless_selected_groups')
     })
 
     it('迁移只跑一次：重启两次也只有一条退群通知规则', () => {
@@ -474,6 +501,179 @@ describe('AutomationRuleStore', () => {
 
       expect(fs.pathExistsSync(path.join(root, 'group-exit-monitor.json'))).toBe(true)
     })
+  })
+})
+
+/**
+ * 旧「定时日报任务」→ `scheduled_report` 规则的 store 级迁移。
+ *
+ * 纯映射器的逐字段断言在 `scheduled-report-migration.test.ts`；
+ * 这里只守 store 负责的三件事：**插几条 / 幂等 / 解析器不可用时推迟**。
+ */
+describe('AutomationRuleStore · 定时日报迁移', () => {
+  const legacyTasksFile = (): string => path.join(root, 'scheduled-reports', 'tasks.json')
+  const backupFile = (): string =>
+    path.join(root, 'automation', 'scheduled-report-migration-backup.json')
+
+  /** 与 main 侧注入的真实解析器同口径（`@chatroom` 原样透传）。 */
+  const resolver = (raw: string): string | undefined => {
+    const key = raw.trim()
+    if (!key) return undefined
+    if (key.endsWith('@chatroom')) return key
+    return { 'tech-md5': 'tech@chatroom', 'product-md5': 'product@chatroom' }[key]
+  }
+
+  const writeLegacyTasks = (value: unknown): void => {
+    fs.ensureDirSync(path.dirname(legacyTasksFile()))
+    fs.writeJsonSync(legacyTasksFile(), value)
+  }
+
+  const legacyTasks = (): unknown[] => [
+    {
+      id: 'scheduled_report_a',
+      name: 'A 群日报',
+      group: 'tech-md5',
+      target: 'tech@chatroom',
+      scheduleTime: '09:00',
+      reportRange: 'yesterday',
+      enabled: true,
+      createdAt: '2026-08-01T01:00:00.000Z',
+      updatedAt: '2026-08-01T01:00:00.000Z'
+    },
+    {
+      id: 'scheduled_report_b',
+      name: 'B 群日报',
+      group: 'product-md5',
+      target: 'product@chatroom',
+      scheduleTime: '10:00',
+      reportRange: 'today',
+      enabled: false,
+      createdAt: '2026-08-02T01:00:00.000Z',
+      updatedAt: '2026-08-02T01:00:00.000Z'
+    },
+    {
+      id: 'scheduled_report_c',
+      name: '发到别的群',
+      group: 'tech-md5',
+      target: 'product@chatroom',
+      scheduleTime: '11:00',
+      reportRange: 'today',
+      enabled: true,
+      createdAt: '2026-08-03T01:00:00.000Z',
+      updatedAt: '2026-08-03T01:00:00.000Z'
+    }
+  ]
+
+  beforeEach(() => {
+    fs.removeSync(path.join(root, 'automation'))
+    fs.removeSync(path.join(root, 'scheduled-reports'))
+  })
+
+  it('3 条旧任务 ⇒ 3 条 scheduled_report 规则（连同内置规则一起），且判定分布如实', () => {
+    writeLegacyTasks(legacyTasks())
+    const store = new AutomationRuleStore(deps(root))
+    store.setLegacyConversationResolver(resolver)
+
+    const scheduled = store.listRules().filter((rule) => rule.ruleType === 'scheduled_report')
+    expect(scheduled.map((rule) => rule.id).sort()).toEqual([
+      'scheduled_report_a',
+      'scheduled_report_b',
+      'scheduled_report_c'
+    ])
+
+    const summary = store.getLastScheduledReportMigration()
+    expect(summary).toEqual({
+      total: 3,
+      migrated: 3,
+      lossless: 2,
+      needsReview: 1,
+      duplicatesSkipped: 0
+    })
+
+    // 「发到别的群」那条：不自动改写目标，且必须停用。
+    const needsReview = scheduled.find((rule) => rule.id === 'scheduled_report_c')
+    expect(needsReview?.enabled).toBe(false)
+    expect(needsReview?.scheduledReport?.targetNeedsReview).toBe(true)
+    // 旧任务是启用的，但迁移后必须停用 —— 不能替用户决定发到哪儿。
+    expect(store.getRule('scheduled_report_a')?.enabled).toBe(true)
+  })
+
+  it('二次启动不会重复迁移（仍只有 3 条，不是 6 条）', () => {
+    writeLegacyTasks(legacyTasks())
+
+    const first = new AutomationRuleStore(deps(root))
+    first.setLegacyConversationResolver(resolver)
+    expect(
+      first.listRules().filter((rule) => rule.ruleType === 'scheduled_report')
+    ).toHaveLength(3)
+
+    // 第二个实例 = 重启：从盘上读，旧 tasks.json 仍在原处。
+    const second = new AutomationRuleStore(deps(root))
+    second.setLegacyConversationResolver(resolver)
+    const ids = second
+      .listRules()
+      .filter((rule) => rule.ruleType === 'scheduled_report')
+      .map((rule) => rule.id)
+    expect(ids).toHaveLength(3)
+    expect(new Set(ids).size).toBe(3)
+    // 已迁移标记落盘 ⇒ 不再有待迁任务。
+    expect(second.hasPendingScheduledReportMigration()).toBe(false)
+  })
+
+  it('解析器不可用时**推迟**迁移：不置标记、不插规则、如实报告待迁', () => {
+    writeLegacyTasks(legacyTasks())
+    const store = new AutomationRuleStore(deps(root))
+
+    expect(store.listRules().filter((rule) => rule.ruleType === 'scheduled_report')).toHaveLength(0)
+    expect(store.hasPendingScheduledReportMigration()).toBe(true)
+    expect(store.getLastScheduledReportMigration()).toBeNull()
+
+    // 数据库就绪后注入解析器 ⇒ 立刻补跑。
+    store.setLegacyConversationResolver(resolver)
+    expect(store.listRules().filter((rule) => rule.ruleType === 'scheduled_report')).toHaveLength(3)
+    expect(store.hasPendingScheduledReportMigration()).toBe(false)
+  })
+
+  it('迁移前把旧任务原样落一份 backup（用户数据可回溯）', () => {
+    const tasks = legacyTasks()
+    writeLegacyTasks(tasks)
+
+    const store = new AutomationRuleStore(deps(root))
+    // 先注入解析器、后首次加载：这正是 main 的真实顺序（构造函数不读盘）。
+    // `setLegacyConversationResolver` 在未加载时只记住 resolver，
+    // 迁移推迟到第一次 `ensureLoaded()`，注入顺序不影响结果。
+    store.setLegacyConversationResolver(resolver)
+    store.listRules()
+
+    expect(fs.pathExistsSync(backupFile())).toBe(true)
+    const backup = fs.readJsonSync(backupFile()) as {
+      summary: { migrated: number }
+      legacyTasks: unknown[]
+    }
+    expect(backup.summary.migrated).toBe(3)
+    // 备份里保留**原始字段**（包括旧目标原文），否则出了问题无法回溯。
+    expect(backup.legacyTasks).toEqual(tasks)
+    // 旧 tasks.json 不被删除或改写 —— 迁移必须是可逆的。
+    expect(fs.readJsonSync(legacyTasksFile())).toEqual(tasks)
+  })
+
+  it('没有旧任务时走全新安装路径：不插任何定时日报规则，也不报待迁', () => {
+    const store = new AutomationRuleStore(deps(root))
+    store.setLegacyConversationResolver(resolver)
+
+    expect(store.listRules().filter((rule) => rule.ruleType === 'scheduled_report')).toHaveLength(0)
+    expect(store.hasPendingScheduledReportMigration()).toBe(false)
+    expect(store.getLastScheduledReportMigration()).toBeNull()
+    expect(fs.pathExistsSync(backupFile())).toBe(false)
+  })
+
+  it('旧文件损坏时按「没有旧任务」处理，绝不抛异常挡住启动', () => {
+    fs.ensureDirSync(path.dirname(legacyTasksFile()))
+    fs.writeFileSync(legacyTasksFile(), 'not json at all', 'utf8')
+
+    const store = new AutomationRuleStore(deps(root))
+    store.setLegacyConversationResolver(resolver)
+    expect(store.listRules().filter((rule) => rule.ruleType === 'scheduled_report')).toHaveLength(0)
   })
 })
 

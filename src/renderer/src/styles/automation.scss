@@ -1243,7 +1243,8 @@
   margin-top: 10px;
 }
 
-// 只读的「已监控群聊」摘要：范围归退群监控管，这里不重复维护一份选择状态。
+// 只读的「已监控群聊」摘要：监控范围归退群监控管，这里不重复维护一份选择状态。
+// （本规则只管**二次勾选**：下面 .automation-leave-scope 那一层。）
 .automation-leave-groups-card {
   display: flex;
   min-width: 0;
@@ -1275,6 +1276,26 @@
     font-size: 12px;
     line-height: 17px;
   }
+}
+
+// 「通知范围」二次勾选：全部已监控群聊 / 仅选中的群聊。
+// 复用 .automation-leave-radio 那一套单行样式（radio + 标题/说明两行），
+// 所以这里只补"整块纵向排布 + 选项间距 + 覆盖摘要"。
+.automation-leave-scope {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.automation-leave-scope-options {
+  gap: 2px;
+}
+
+.automation-leave-scope-summary {
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+  line-height: 17px;
 }
 
 // 「通知发送到哪里」四选一。

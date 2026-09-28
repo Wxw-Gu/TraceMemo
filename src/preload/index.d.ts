@@ -84,13 +84,12 @@ import type {
 import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
 import type { GroupMemberStatsQuery, GroupMemberStatsResult } from '../shared/group-stats'
 import type {
-  ScheduledReportCreateInput,
   ScheduledReportExecution,
+  ScheduledReportNotification,
+  ScheduledReportNotificationCapability,
   ScheduledReportNotificationSettings,
   ScheduledReportNotificationSettingsResult,
-  ScheduledReportResult,
-  ScheduledReportTask,
-  ScheduledReportUpdateInput
+  ScheduledReportResult
 } from '../shared/scheduled-report'
 import type {
   PersonalWechatVoiceEncodingEnvironment,
@@ -102,7 +101,8 @@ import type {
   AutomationExecution,
   AutomationRule,
   AutomationRuleDraft,
-  AutomationStatusSummary
+  AutomationStatusSummary,
+  ScheduledRuleRunOutcome
 } from '../shared/automation'
 import type { ActionLogEntry } from '../shared/action-log'
 import type {
@@ -733,35 +733,23 @@ declare global {
       sendPersonalWechatMessage: (
         request: PersonalWechatSendRequest
       ) => Promise<PersonalWechatSendResult>
-      listScheduledReports: () => Promise<ScheduledReportTask[]>
-      listScheduledReportExecutions: (taskId?: string) => Promise<ScheduledReportExecution[]>
+      /** 定时日报：「立即执行」——与 scheduler 走同一条执行链路（manual trigger）。 */
+      runScheduledReportRule: (
+        ruleId: string
+      ) => Promise<{ success: boolean; error?: string; data?: ScheduledRuleRunOutcome }>
+      /** 定时日报：旧执行记录**只读存档**（旧记录无法无损转换，原样展示）。 */
+      listScheduledReportLegacyExecutions: (
+        ruleId?: string
+      ) => Promise<ScheduledReportExecution[]>
+      /** 定时日报：微信异常通知开关与能力检测。 */
       getScheduledReportNotificationSettings: () => Promise<ScheduledReportNotificationSettings>
+      getScheduledReportNotificationCapability: () => Promise<ScheduledReportNotificationCapability>
       setScheduledReportNotificationEnabled: (
         enabled: boolean
       ) => Promise<ScheduledReportNotificationSettingsResult>
-      createScheduledReport: (
-        request: ScheduledReportCreateInput
-      ) => Promise<ScheduledReportResult<ScheduledReportTask>>
-      updateScheduledReport: (
-        taskId: string,
-        request: ScheduledReportUpdateInput
-      ) => Promise<ScheduledReportResult<ScheduledReportTask>>
-      deleteScheduledReport: (
-        taskId: string
-      ) => Promise<ScheduledReportResult<{ deletedId: string }>>
-      setScheduledReportEnabled: (
-        taskId: string,
-        enabled: boolean
-      ) => Promise<ScheduledReportResult<ScheduledReportTask>>
-      runScheduledReportNow: (
-        taskId: string
-      ) => Promise<ScheduledReportResult<ScheduledReportExecution>>
-      retryScheduledReportSend: (
-        executionId: string
-      ) => Promise<ScheduledReportResult<ScheduledReportExecution>>
       testScheduledReportErrorNotification: (
-        taskId: string
-      ) => Promise<ScheduledReportResult<ScheduledReportExecution>>
+        ruleId: string
+      ) => Promise<ScheduledReportResult<ScheduledReportNotification>>
       getPersonalWechatVoiceDiagnostic: () => Promise<PersonalWechatVoiceDiagnostic | null>
       getAgentHubStatus: () => Promise<AgentHubStatus>
       getAgentHubLogs: () => Promise<AgentHubLogEntry[]>

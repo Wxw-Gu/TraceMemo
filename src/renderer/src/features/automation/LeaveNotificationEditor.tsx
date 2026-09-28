@@ -1,14 +1,17 @@
 import * as React from 'react'
-import { Button, RadioGroup, RadioGroupItem, Switch } from '../../components/ui'
+import { Button, Input, RadioGroup, RadioGroupItem, Switch } from '../../components/ui'
 import {
   LEAVE_NOTIFICATION_TARGET_OPTIONS,
-  createDefaultLeaveNotificationRule,
+  describeLeaveNotificationNotifyScope,
+  normalizeLeaveNotificationConfig,
   type AutomationRule,
   type LeaveNotificationConfig,
+  type LeaveNotificationNotifyScope,
   type LeaveNotificationTargetType
 } from '../../../../shared/automation'
 import { insertGroupNamePlaceholder } from '../../../../shared/group-exit-monitor'
 import { LeaveNotificationPreview } from './LeaveNotificationPreview'
+import type { AutomationGroupOption } from './model/api'
 import {
   LeaveNotificationTargetPicker,
   type LeaveNotificationContactOption
@@ -21,9 +24,12 @@ import { LeaveNotificationTemplateEditor } from './LeaveNotificationTemplateEdit
  * 这是**真实配置页**：保存会落盘成一条 singleton 规则（`builtin-leave-notification`），
  * 由 `AutomationService.handleGroupExit` 在退群事件到来时执行。
  *
- * 职责边界在 UI 上一眼可见：
- *   退群监控 = 监测哪些群有人退出（**范围完全由它管**）；自动化 = 检测到之后发到哪。
- * 所以这里**没有**「触发范围」二次筛选，规则级启停也**只有**顶部一处。
+ * 职责边界在 UI 上一眼可见，是**两层**而不是一层：
+ *   退群监控 = 监测哪些群有人退出（范围由它管）；
+ *   本规则   = ① 这批群里**哪些要通知**（二次勾选）；② 通知**发到哪**。
+ *
+ * ① 就是旧版「退群监控 → 通知群聊」的那份逐群勾选。它曾在自动化迁移里被压成单值目标而丢失，
+ * 导致"规则一启用就全量通知"；`notifyScope` 把它恢复回来，所以这里**有**勾选控件。
  */
 
 export interface LeaveNotificationSaveInput {
@@ -38,6 +44,8 @@ export interface LeaveNotificationEditorProps {
   contacts: LeaveNotificationContactOption[]
   /** 真实已监控群聊数量（来自退群监控，自动化不维护副本）。 */
   monitoredCount: number
+  /** 真实已监控群聊清单 —— 二次勾选的候选项，与 `monitoredCount` 同一次取数。 */
+  monitoredGroups: AutomationGroupOption[]
   saving: boolean
   /** 发送能力不完整时的一句话提示；为 undefined 表示能力正常。 */
   sendCapabilityWarning?: string
@@ -47,20 +55,22 @@ export interface LeaveNotificationEditorProps {
   onSave: (input: LeaveNotificationSaveInput) => void
 }
 
+/**
+ * 草稿初值。
+ *
+ * 一律过一遍 `normalizeLeaveNotificationConfig`：它本来就负责"补齐缺失字段 +
+ * 清掉互相矛盾的配置"，所以契约新增字段（例如 `notifyScope`）时这里不会漏。
+ * 手拼字面量就会漏。
+ */
 function initialConfig(rule: AutomationRule): LeaveNotificationConfig {
-  return (
-    rule.leaveNotification ??
-    createDefaultLeaveNotificationRule(Date.now()).leaveNotification ?? {
-      target: { type: 'file_transfer' },
-      template: ''
-    }
-  )
+  return normalizeLeaveNotificationConfig(rule.leaveNotification)
 }
 
 export function LeaveNotificationEditor({
   rule,
   contacts,
   monitoredCount,
+  monitoredGroups,
   saving,
   sendCapabilityWarning,
   onOpenMonitoredGroups,
@@ -69,11 +79,13 @@ export function LeaveNotificationEditor({
 }: LeaveNotificationEditorProps): React.ReactElement {
   const [enabled, setEnabled] = React.useState(rule.enabled)
   const [config, setConfig] = React.useState<LeaveNotificationConfig>(() => initialConfig(rule))
+  const [groupFilter, setGroupFilter] = React.useState('')
 
   // 切换编辑对象 / 保存后回填时重建草稿，避免把上一份改动带过来。
   React.useEffect(() => {
     setEnabled(rule.enabled)
     setConfig(initialConfig(rule))
+    setGroupFilter('')
   }, [rule])
 
   const targetType = config.target.type
@@ -96,6 +108,21 @@ export function LeaveNotificationEditor({
   const missingGroupName =
     targetType !== 'source_chat' && !config.template.includes('{groupName}')
 
+  /** 通知范围（二次勾选）。`config.notifyScope` 是唯一权威，这里只是取短名。 */
+  const notifyScope: LeaveNotificationNotifyScope =
+    config.notifyScope === 'selected' ? 'selected' : 'all'
+
+  const selectedNotifyIds = React.useMemo(
+    () => new Set(config.notifyRoomIds),
+    [config.notifyRoomIds]
+  )
+
+  const visibleMonitoredGroups = React.useMemo(() => {
+    const keyword = groupFilter.trim().toLowerCase()
+    if (!keyword) return monitoredGroups
+    return monitoredGroups.filter((group) => group.name.toLowerCase().includes(keyword))
+  }, [monitoredGroups, groupFilter])
+
   const selectTarget = (next: LeaveNotificationTargetType): void => {
     setConfig((current) => ({
       ...current,
@@ -105,8 +132,40 @@ export function LeaveNotificationEditor({
     }))
   }
 
+  const selectNotifyScope = (next: LeaveNotificationNotifyScope): void => {
+    setConfig((current) => ({ ...current, notifyScope: next }))
+  }
+
+  const toggleNotifyRoom = (roomId: string): void => {
+    setConfig((current) => {
+      const chosen = new Set(current.notifyRoomIds)
+      if (chosen.has(roomId)) chosen.delete(roomId)
+      else chosen.add(roomId)
+      // 按候选项顺序落盘，勾选顺序不影响存下来的结果。
+      const ordered = monitoredGroups
+        .map((group) => group.id)
+        .filter((id) => chosen.has(id))
+      // 候选项还没加载出来时保留原样，避免把用户的勾选静默清空。
+      return {
+        ...current,
+        notifyRoomIds: monitoredGroups.length ? ordered : current.notifyRoomIds
+      }
+    })
+  }
+
   const handleSave = (): void => {
-    onSave({ enabled, config: { ...config, targetNeedsReview: undefined } })
+    onSave({
+      enabled,
+      config: {
+        ...config,
+        // 勾选集收敛到「当前已监控」这一集合内：否则监控范围缩小之后，
+        // 会留下一批界面上看不见、且永远不可能命中的幽灵勾选。
+        notifyRoomIds: monitoredGroups.length
+          ? monitoredGroups.map((group) => group.id).filter((id) => selectedNotifyIds.has(id))
+          : config.notifyRoomIds,
+        targetNeedsReview: undefined
+      }
+    })
   }
 
   return (
@@ -172,9 +231,8 @@ export function LeaveNotificationEditor({
             </div>
 
             {/*
-              只读摘要 + 唯一入口。
-              「哪些群被监控」完全由退群监控决定，本规则不做二次筛选 ——
-              所以这里不给任何勾选控件，只把当前范围如实说出来。
+              第一层：只读的监控范围摘要 + 唯一入口。
+              「哪些群被监控」完全由退群监控决定，本规则不重复维护一份。
             */}
             <div className="automation-leave-groups-card">
               <div>
@@ -191,6 +249,100 @@ export function LeaveNotificationEditor({
                 管理监控群聊 →
               </Button>
             </div>
+
+            {/*
+              第二层：在上面这批已监控群聊里**二次勾选**哪些要通知。
+              这就是旧版「退群监控 → 通知群聊」的那份逐群勾选 ——
+              没有它，规则一启用就等于给全部已监控群聊发通知。
+            */}
+            <div className="automation-inline-row">
+              <div className="automation-leave-scope">
+                <span className="automation-field-label">通知范围</span>
+                <RadioGroup
+                  value={notifyScope}
+                  onValueChange={(value) =>
+                    selectNotifyScope(value as LeaveNotificationNotifyScope)
+                  }
+                  aria-label="通知范围"
+                  className="automation-leave-scope-options"
+                >
+                  <div className="automation-leave-radio option">
+                    <RadioGroupItem value="all" id="leave-scope-all" />
+                    <div className="automation-leave-radio-body">
+                      <label htmlFor="leave-scope-all">全部已监控群聊</label>
+                      <small>任一被监控的群有人退出都发通知。</small>
+                    </div>
+                  </div>
+                  <div className="automation-leave-radio option">
+                    <RadioGroupItem
+                      value="selected"
+                      id="leave-scope-selected"
+                      disabled={!monitoredGroups.length}
+                    />
+                    <div className="automation-leave-radio-body">
+                      <label htmlFor="leave-scope-selected">仅选中的群聊</label>
+                      <small>只对下面勾选的群发通知。</small>
+                    </div>
+                  </div>
+                </RadioGroup>
+                <small className="automation-leave-scope-summary">
+                  当前覆盖：{describeLeaveNotificationNotifyScope(config, monitoredCount)}
+                </small>
+              </div>
+            </div>
+
+            {notifyScope === 'selected' ? (
+              monitoredGroups.length ? (
+                <div className="automation-field">
+                  <div className="automation-section-heading">
+                    <span className="automation-field-label">勾选要通知的群聊</span>
+                    <span className="automation-section-note">
+                      {selectedNotifyIds.size ? `已选 ${selectedNotifyIds.size} 个` : '尚未勾选'}
+                    </span>
+                  </div>
+                  <Input
+                    value={groupFilter}
+                    onChange={(event) => setGroupFilter(event.target.value)}
+                    placeholder="搜索群聊"
+                    aria-label="搜索群聊"
+                  />
+                  <div className="automation-group-list" role="group" aria-label="通知群聊">
+                    {visibleMonitoredGroups.length === 0 ? (
+                      <p className="automation-group-empty">没有匹配「{groupFilter}」的群聊</p>
+                    ) : (
+                      visibleMonitoredGroups.map((group) => {
+                        const checked = selectedNotifyIds.has(group.id)
+                        return (
+                          <label
+                            key={group.id}
+                            className={`automation-group-option ${checked ? 'selected' : ''}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleNotifyRoom(group.id)}
+                            />
+                            <span>{group.name}</span>
+                          </label>
+                        )
+                      })
+                    )}
+                  </div>
+                  {selectedNotifyIds.size === 0 ? (
+                    <p className="automation-section-hint">
+                      <span aria-hidden="true">ⓘ</span>
+                      一个群都没勾选，这条规则不会发送任何通知。
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="automation-section-hint">
+                  <span aria-hidden="true">ⓘ</span>
+                  还没有设置监控范围。请先到「退群监控 → 管理群聊」选择要监控的群，
+                  再回来勾选通知范围。
+                </p>
+              )
+            ) : null}
           </section>
 
           <section className="automation-section">

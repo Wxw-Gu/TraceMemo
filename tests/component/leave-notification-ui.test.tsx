@@ -58,7 +58,11 @@ interface ApiSpies {
 }
 
 function installApi(
-  overrides: { leaveRule?: AutomationRule } = {}
+  overrides: {
+    leaveRule?: AutomationRule
+    /** `listAutomationGroups` 的返回：把 roomId 映射成可读群名。 */
+    automationGroups?: Array<{ id: string; name: string }>
+  } = {}
 ): { spies: ApiSpies; rules: AutomationRule[] } {
   const leaveRule = overrides.leaveRule ?? createDefaultLeaveNotificationRule(Date.now())
   const rules = [createDefaultDailyReportRule(Date.now()), leaveRule]
@@ -92,7 +96,7 @@ function installApi(
       }
     }),
     listAutomationRules: spies.listAutomationRules,
-    listAutomationGroups: vi.fn().mockResolvedValue([]),
+    listAutomationGroups: vi.fn().mockResolvedValue(overrides.automationGroups ?? []),
     listAutomationExecutions: vi.fn().mockResolvedValue([]),
     listSendableContacts: spies.listSendableContacts,
     getGroupExitMonitorState: vi.fn().mockResolvedValue(MONITOR_STATE),
@@ -128,6 +132,7 @@ async function leaveNotificationCard(): Promise<HTMLElement> {
 /** 从自动化首页那张退群通知卡片的「编辑」进编辑器。 */
 async function openLeaveNotificationEditor(overrides: {
   leaveRule?: AutomationRule
+  automationGroups?: Array<{ id: string; name: string }>
 } = {}): Promise<{ spies: ApiSpies }> {
   const user = userEvent.setup()
   const { spies } = installApi(overrides)
@@ -218,12 +223,17 @@ describe('退群通知 · 真实数据', () => {
     expect(screen.queryByRole('radio', { name: '张三' })).toBeNull()
   })
 
-  it('Section 1 没有「触发范围」，只有唯一的「管理监控群聊」入口', async () => {
+  /*
+   * 旧版「退群监控 → 通知群聊」的第二层。它曾在迁移里被删掉，
+   * 导致"规则一启用就全量通知" —— 所以这里锁的是它**必须存在**。
+   */
+  it('Section 1 有「通知范围」二次勾选，且保留唯一的「管理监控群聊」入口', async () => {
     await openLeaveNotificationEditor()
 
+    // 「触发事件」仍不可配（由退群监控驱动），但这不等于不能筛群。
     expect(screen.queryByText('触发范围')).toBeNull()
-    expect(screen.queryByText('全部已监控群聊')).toBeNull()
-    expect(screen.queryByText('指定已监控群聊')).toBeNull()
+    expect(screen.getByRole('radio', { name: '全部已监控群聊' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: '仅选中的群聊' })).toBeEnabled()
     expect(screen.getByRole('button', { name: /管理监控群聊/ })).toBeEnabled()
   })
 
@@ -233,6 +243,88 @@ describe('退群通知 · 真实数据', () => {
     expect(screen.getAllByRole('switch')).toHaveLength(1)
     expect(screen.getByRole('switch', { name: '启用这条自动化' })).toBeVisible()
     expect(screen.queryByText('发送退群通知')).toBeNull()
+  })
+})
+
+const MONITORED_GROUPS = [
+  { id: 'a@chatroom', name: '甲群' },
+  { id: 'b@chatroom', name: '乙群' },
+  { id: 'c@chatroom', name: '丙群' }
+]
+
+/**
+ * 「通知范围」二次勾选 —— 旧版「退群监控 → 通知群聊」的第二层。
+ *
+ * 这组测试锁的是**回归本身**：缺了这一层，规则一启用就等于给全部已监控群聊发通知。
+ */
+describe('退群通知 · 通知范围（二次勾选）', () => {
+  it('默认是「全部已监控群聊」，预览里如实说明覆盖范围', async () => {
+    await openLeaveNotificationEditor({ automationGroups: MONITORED_GROUPS })
+
+    expect(screen.getByRole('radio', { name: '全部已监控群聊' })).toBeChecked()
+    expect(previewFact('通知范围')).toBe('3 个已监控群聊（全部）')
+  })
+
+  it('切到「仅选中的群聊」才列候选，且候选只含已监控的群', async () => {
+    const user = userEvent.setup()
+    await openLeaveNotificationEditor({ automationGroups: MONITORED_GROUPS })
+
+    // 还没切过去时不该出现候选项。
+    expect(screen.queryByRole('checkbox', { name: '甲群' })).toBeNull()
+
+    await user.click(screen.getByRole('radio', { name: '仅选中的群聊' }))
+
+    for (const name of ['甲群', '乙群', '丙群']) {
+      expect(screen.getByRole('checkbox', { name })).not.toBeChecked()
+    }
+    // 一个都没勾 = 明确不通知，而不是悄悄退回"全部"。
+    expect(screen.getByText(/一个群都没勾选/)).toBeVisible()
+  })
+
+  it('勾中的群会被保存成 notifyScope=selected + 那份子集', async () => {
+    const user = userEvent.setup()
+    const { spies } = await openLeaveNotificationEditor({ automationGroups: MONITORED_GROUPS })
+
+    await user.click(screen.getByRole('radio', { name: '仅选中的群聊' }))
+    await user.click(screen.getByRole('checkbox', { name: '甲群' }))
+    await user.click(screen.getByRole('checkbox', { name: '丙群' }))
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(spies.saveLeaveNotificationRule).toHaveBeenCalledTimes(1))
+    const draft = spies.saveLeaveNotificationRule.mock.calls[0][0] as AutomationRule
+    expect(draft.leaveNotification?.notifyScope).toBe('selected')
+    // 落盘顺序按候选项顺序（本文件里候选按群名拼音排），所以这里只比较集合：
+    // 勾选先后不该影响存下来的内容。
+    expect([...(draft.leaveNotification?.notifyRoomIds ?? [])].sort()).toEqual([
+      'a@chatroom',
+      'c@chatroom'
+    ])
+  })
+
+  it('没动过范围时保存下来的是 all，不会顺手把用户缩到子集', async () => {
+    const user = userEvent.setup()
+    const { spies } = await openLeaveNotificationEditor({ automationGroups: MONITORED_GROUPS })
+
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(spies.saveLeaveNotificationRule).toHaveBeenCalledTimes(1))
+    const draft = spies.saveLeaveNotificationRule.mock.calls[0][0] as AutomationRule
+    expect(draft.leaveNotification?.notifyScope).toBe('all')
+  })
+
+  it('旧版迁移过来的子集在界面上是勾好的，不是空选', async () => {
+    await openLeaveNotificationEditor({
+      automationGroups: MONITORED_GROUPS,
+      leaveRule: createDefaultLeaveNotificationRule(Date.now(), {
+        notifyScope: 'selected',
+        notifyRoomIds: ['b@chatroom']
+      })
+    })
+
+    expect(screen.getByRole('radio', { name: '仅选中的群聊' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: '乙群' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: '甲群' })).not.toBeChecked()
+    expect(previewFact('通知范围')).toBe('1 / 3 个已监控群聊')
   })
 })
 
@@ -479,7 +571,10 @@ describe('退群通知 · 群聊名护栏', () => {
     ...createDefaultLeaveNotificationRule(Date.now()),
     leaveNotification: {
       target: { type: 'source_chat' },
-      template: '[退群监测]\n\n用户: {user}'
+      template: '[退群监测]\n\n用户: {user}',
+      // 明确写全：本组用例只关心群名护栏，范围取默认的"全部已监控群聊"。
+      notifyScope: 'all',
+      notifyRoomIds: []
     }
   })
 

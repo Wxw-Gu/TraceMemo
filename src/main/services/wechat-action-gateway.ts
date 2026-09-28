@@ -32,6 +32,12 @@ const AUTOMATION_PURPOSE_ALLOWLIST = new Set([
   // 退群通知（由 Automation 发出）。目标可以是群 / 自己 / 文件传输助手 / 指定好友，
   // 所以**不绑定**任何 "只能发回原群" 的作用域锁。
   'automation_leave_notification',
+  // 定时日报（由 Automation 的 `scheduled_report` 规则发出）。目标是四选一，
+  // 同样**不绑定**任何作用域锁。
+  'automation_scheduled_report',
+  // 定时日报的「后置词」（图片 sent 之后补发的那条文本）。与图片是两个独立
+  // purpose，各自有幂等位 —— 少这一条会被 evaluateWechatActionPolicy 拦下。
+  'automation_scheduled_report_postfix',
   'manual_report_image',
   'manual_report_postfix'
 ])

@@ -27,8 +27,7 @@ export interface ScheduledReportApiDependencies {
     | 'deleteTask'
     | 'setTaskEnabled'
     | 'runScheduledReportNow'
-  > &
-    Partial<Pick<ScheduledReportService, 'retryScheduledReportSend'>>
+  >
   getCapability: () => Promise<PersonalWechatSendCapability>
   listContacts: () => FormattedContact[]
   isDatabaseReady: () => boolean
@@ -250,16 +249,20 @@ export class ScheduledReportApiService {
     return result.data
   }
 
-  async retrySend(executionId: string): Promise<ScheduledReportExecution> {
-    const retry = this.deps.service.retryScheduledReportSend
-    if (!retry) {
-      throw new ScheduledReportApiError(501, 'not_supported', '当前运行时不支持重新发送日报')
-    }
-    const result = await retry.call(this.deps.service, executionId)
-    if (!result.data) {
-      throw new ScheduledReportApiError(404, 'not_found', result.error || '未找到定时日报执行记录')
-    }
-    return result.data
+  /**
+   * 「重新发送」不再支持。
+   *
+   * 日报图片归日报历史所有，发送目标由规则配置决定，「把某次执行记录里那张 PNG
+   * 就地再发一遍」这个语义已经不存在 —— 与其在此伪造一个只对部分规则有效的重发
+   * 语义，不如**明确返回 501**。
+   * 用户的替代路径：在日报历史里手动转发，或对该规则点「立即执行」重跑一次。
+   */
+  async retrySend(_executionId: string): Promise<ScheduledReportExecution> {
+    throw new ScheduledReportApiError(
+      501,
+      'not_supported',
+      '当前运行时不支持重新发送日报；请在 TraceMemo 的自动化页面使用「立即执行」，或从日报历史手动转发。'
+    )
   }
 
   async executions(taskId: string): Promise<ScheduledReportApiExecution[]> {

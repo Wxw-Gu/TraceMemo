@@ -1,8 +1,11 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ReactElement } from 'react'
+import * as React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { GroupExitMonitorWorkspace } from '../../src/renderer/src/features/group-exit-monitor/GroupExitMonitorWorkspace'
+import {
+  GroupExitMonitorWorkspace,
+  type GroupExitMonitorOpenViewRequest
+} from '../../src/renderer/src/features/group-exit-monitor/GroupExitMonitorWorkspace'
 import type { GroupExitMonitorState } from '../../src/shared/group-exit-monitor'
 import { formatGroupExitMonitorTime } from '../../src/shared/group-exit-monitor'
 import type { Contact } from '../../src/shared/types'
@@ -69,7 +72,7 @@ const groups: Contact[] = [
 ]
 
 describe('GroupExitMonitorWorkspace', () => {
-  const renderWorkspace = (element: ReactElement): void => {
+  const renderWorkspace = (element: React.ReactElement): void => {
     render(<TooltipProvider>{element}</TooltipProvider>)
   }
 
@@ -386,5 +389,64 @@ describe('GroupExitMonitorWorkspace', () => {
     await user.click(await screen.findByRole('button', { name: '管理群聊' }))
     expect(screen.getByRole('checkbox', { name: '监控研发群' })).not.toBeChecked()
     expect(screen.getByRole('checkbox', { name: '监控设计群' })).not.toBeChecked()
+  })
+
+  /*
+   * 深链请求必须是**一次性**的。
+   *
+   * 真实拓扑里请求挂在 App，而本组件随一级菜单切换被卸载/重挂。
+   * 修复前 effect 只 `setView` 不回报父层，请求永远不清 —— 于是重挂时
+   * 那条陈旧的 `{view:'manage'}` 被重放，用户看到的现象就是
+   * "点一级菜单退群监控，却跳到了管理群聊"。
+   */
+  it('深链落到「管理群聊」，并立刻回报父层消费掉请求', async () => {
+    const onHandled = vi.fn()
+    renderWorkspace(
+      <GroupExitMonitorWorkspace
+        dbReady
+        openViewRequest={{ view: 'manage', requestId: 1 }}
+        onOpenViewRequestHandled={onHandled}
+      />
+    )
+
+    expect(await screen.findByRole('heading', { name: '管理群聊' })).toBeVisible()
+    await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1))
+  })
+
+  it('请求被消费后重新挂载，回到「退群事件」而不是「管理群聊」', async () => {
+    function Harness(): React.ReactElement {
+      const [request, setRequest] = React.useState<GroupExitMonitorOpenViewRequest | null>({
+        view: 'manage',
+        requestId: 1
+      })
+      const [mounted, setMounted] = React.useState(true)
+      return (
+        <>
+          <button type="button" onClick={() => setMounted((prev) => !prev)}>
+            切换页面
+          </button>
+          {mounted ? (
+            <GroupExitMonitorWorkspace
+              dbReady
+              openViewRequest={request}
+              onOpenViewRequestHandled={() => setRequest(null)}
+            />
+          ) : null}
+        </>
+      )
+    }
+
+    const user = userEvent.setup()
+    renderWorkspace(<Harness />)
+
+    // 第一次：深链确实生效。
+    expect(await screen.findByRole('heading', { name: '管理群聊' })).toBeVisible()
+
+    // 离开再回来（等价于点别的菜单再点「退群监控」）。
+    await user.click(screen.getByRole('button', { name: '切换页面' }))
+    await user.click(screen.getByRole('button', { name: '切换页面' }))
+
+    expect(await screen.findByText('小艾退出了研发群')).toBeVisible()
+    expect(screen.queryByRole('heading', { name: '管理群聊' })).toBeNull()
   })
 })

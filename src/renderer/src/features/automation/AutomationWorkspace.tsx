@@ -2,6 +2,8 @@ import * as React from 'react'
 import {
   BUILTIN_DAILY_REPORT_RULE_ID,
   BUILTIN_LEAVE_NOTIFICATION_RULE_ID,
+  calculateNextRunAt,
+  normalizeScheduledReportConfig,
   type AutomationExecution,
   type AutomationRule,
   type AutomationRuleDraft,
@@ -24,15 +26,15 @@ import {
 } from './AutomationRuleTypeTabs'
 import { ScheduledReportEditor } from './ScheduledReportEditor'
 import { ScheduledReportRuleList } from './ScheduledReportRuleList'
-import type { ScheduledReportTask } from '../../../../shared/scheduled-report'
+import { ScheduledReportNotificationPanel } from './ScheduledReportNotificationPanel'
 import {
+  createDraftFromRule,
   createEmptyScheduledReportDraft,
-  createDraftFromTask,
+  draftToAutomationRuleDraft,
   formatNextRunAt,
-  loadScheduledReportTasks,
   resolveGroupDisplayName,
   type ScheduledReportDraft
-} from './model/scheduled-report-preview'
+} from './model/scheduled-report-model'
 import {
   LeaveNotificationEditor,
   type LeaveNotificationSaveInput
@@ -68,6 +70,8 @@ export interface AutomationWorkspaceProps {
   onOpenExitMonitorGroups?: () => void
   /** 「更改模型」：复用现有的模型设置入口（定时日报的模型配置）。 */
   onOpenModelSettings?: () => void
+  /** 「微信异常通知」依赖 Agent Hub：未就绪时给一个可操作的去处。 */
+  onOpenAgentHub?: () => void
   /** 深链请求（来自退群监控页的「退群通知自动化」入口）。 */
   openRuleRequest?: AutomationOpenRuleRequest | null
 }
@@ -84,6 +88,7 @@ export function AutomationWorkspace({
   onOpenSendSettings,
   onOpenExitMonitorGroups,
   onOpenModelSettings,
+  onOpenAgentHub,
   openRuleRequest
 }: AutomationWorkspaceProps): React.ReactElement {
   const { toast } = useToast()
@@ -96,6 +101,8 @@ export function AutomationWorkspace({
   const [executions, setExecutions] = React.useState<AutomationExecution[]>([])
   const [sendableContacts, setSendableContacts] = React.useState<LeaveNotificationContactOption[]>([])
   const [monitoredGroupCount, setMonitoredGroupCount] = React.useState(0)
+  /** 已监控群聊清单（含显示名）—— 退群通知「通知群聊」二次勾选的候选项。 */
+  const [monitoredGroups, setMonitoredGroups] = React.useState<AutomationGroupOption[]>([])
   const [loading, setLoading] = React.useState(true)
   const [clearing, setClearing] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
@@ -105,22 +112,31 @@ export function AutomationWorkspace({
   const [pendingDelete, setPendingDelete] = React.useState<AutomationRule | null>(null)
 
   const reload = React.useCallback(async (): Promise<void> => {
-    const [nextStatus, nextRules, nextGroups, nextExecutions, nextContacts, nextMonitored] =
-      await Promise.all([
-        automationApi.getStatus(),
-        automationApi.listRules(),
-        automationApi.listGroups(),
-        automationApi.listExecutions(100),
-        // 「指定好友」候选与已监控群聊数量：都来自既有能力，不在自动化里另存一份。
-        automationApi.listSendableContacts(),
-        automationApi.getMonitoredGroupCount()
-      ])
+    const [
+      nextStatus,
+      nextRules,
+      nextGroups,
+      nextExecutions,
+      nextContacts,
+      nextMonitored,
+      nextMonitoredGroups
+    ] = await Promise.all([
+      automationApi.getStatus(),
+      automationApi.listRules(),
+      automationApi.listGroups(),
+      automationApi.listExecutions(100),
+      // 「指定好友」候选、已监控群聊数量与清单：都来自既有能力，不在自动化里另存一份。
+      automationApi.listSendableContacts(),
+      automationApi.getMonitoredGroupCount(),
+      automationApi.getMonitoredGroups()
+    ])
     setStatus(nextStatus)
     setRules(nextRules)
     setGroups(nextGroups)
     setExecutions(nextExecutions)
     setSendableContacts(nextContacts)
     setMonitoredGroupCount(nextMonitored)
+    setMonitoredGroups(nextMonitoredGroups)
   }, [])
 
   React.useEffect(() => {
@@ -195,15 +211,19 @@ export function AutomationWorkspace({
   }, [rules])
 
   /*
-   * ---------- 定时日报（只读）----------
+   * ---------- 定时日报（真实规则，真写入）----------
    *
-   * 数据是**只读**拿到的真实任务；所有写操作（保存 / 立即执行 / 启停 / 删除）
-   * 一律不落盘、不调 scheduler、不生成日报。详见 `model/scheduled-report-preview.ts`。
+   * `scheduled_report` 是真实的 `AutomationRuleType`，所以这一层
+   * **不做任何数据副本**：列表 = `rules.filter(ruleType==='scheduled_report')`，
+   * 保存 / 启停 / 删除 / 立即执行全部经 `automation:*` IPC 落到
+   * `AutomationRuleStore` 与 `AutomationService`。
    */
-  const [scheduledTasks, setScheduledTasks] = React.useState<ScheduledReportTask[]>([])
-  const [scheduledLoading, setScheduledLoading] = React.useState(true)
-  /** `null` = 看列表；非空 = 在编辑器里（`taskId` 为 `null` 表示新建）。 */
-  const [scheduledEditor, setScheduledEditor] = React.useState<{ taskId: string | null } | null>(
+  const scheduledRules = React.useMemo(
+    () => rules.filter((rule) => rule.ruleType === 'scheduled_report'),
+    [rules]
+  )
+  /** `null` = 看列表；非空 = 在编辑器里（`ruleId` 为 `null` 表示新建）。 */
+  const [scheduledEditor, setScheduledEditor] = React.useState<{ ruleId: string | null } | null>(
     null
   )
   const [scheduledDraft, setScheduledDraft] = React.useState<ScheduledReportDraft | null>(null)
@@ -218,47 +238,35 @@ export function AutomationWorkspace({
     return dailyReportTarget?.name ?? '新建自动化'
   }, [editor, leaveNotificationRule, dailyReportTarget, scheduledDraft])
 
-  React.useEffect(() => {
-    let disposed = false
-    setScheduledLoading(true)
-    void loadScheduledReportTasks()
-      .then((tasks) => {
-        if (!disposed) setScheduledTasks(tasks)
-      })
-      .finally(() => {
-        if (!disposed) setScheduledLoading(false)
-      })
-    return () => {
-      disposed = true
-    }
-  }, [])
-
-  /** 首页汇总卡：数量 + 最近一次执行时间（加载中先不显示，避免闪一个"0 条"）。 */
+  /**
+   * 首页汇总卡：数量 / 运行中 / 最近一次「下次执行」。
+   * 数据直接来自真实规则 —— 加载中不显示（避免闪一个假的"0 条"）。
+   */
   const scheduledSummary = React.useMemo(() => {
-    if (scheduledLoading) return null
-    const running = scheduledTasks.filter((task) => task.enabled)
-    const nextRunAt = running
-      .map((task) => task.nextRunAt)
-      .filter((value) => Boolean(value))
-      .sort()[0]
+    if (loading) return null
+    const now = new Date()
+    const running = scheduledRules.filter((rule) => rule.enabled)
+    const nextRuns = running
+      .map((rule) => normalizeScheduledReportConfig(rule.scheduledReport))
+      .filter((config) => !config.targetNeedsReview)
+      .map((config) => calculateNextRunAt(config.schedule.time, now))
+      .sort()
     return {
-      total: scheduledTasks.length,
+      total: scheduledRules.length,
       running: running.length,
-      nextRunLabel: nextRunAt ? formatNextRunAt(nextRunAt) : '—'
+      nextRunLabel: nextRuns.length ? formatNextRunAt(nextRuns[0]) : '—'
     }
-  }, [scheduledTasks, scheduledLoading])
+  }, [scheduledRules, loading])
 
-  /** 群标识 → 显示名（列表与预览共用，保证任何地方都不出现裸 id）。 */
+  /** 群标识 → 显示名（列表与编辑器共用，保证任何地方都不出现裸 id）。 */
   const resolveScheduledGroupDisplay = React.useCallback(
     (raw: string): string => resolveGroupDisplayName(raw, groups),
     [groups]
   )
 
-  const PREVIEW_NOTICE = 'UI 预览模式，配置暂未保存'
-
-  const openScheduledEditor = (task: ScheduledReportTask | null): void => {
-    setScheduledDraft(task ? createDraftFromTask(task) : createEmptyScheduledReportDraft())
-    setScheduledEditor({ taskId: task?.id ?? null })
+  const openScheduledEditor = (rule: AutomationRule | null): void => {
+    setScheduledDraft(rule ? createDraftFromRule(rule) : createEmptyScheduledReportDraft())
+    setScheduledEditor({ ruleId: rule?.id ?? null })
   }
 
   const closeScheduledEditor = (): void => {
@@ -266,28 +274,77 @@ export function AutomationWorkspace({
     setScheduledDraft(null)
   }
 
-  /** 保存：只提示，绝不 create/update。 */
-  const handleScheduledSave = (): void => {
-    toast({ description: PREVIEW_NOTICE, duration: 3200 })
-    closeScheduledEditor()
-  }
-
-  /** 立即执行：不碰 scheduler / 生成 / 发送。 */
-  const handleScheduledRunNow = (_task: ScheduledReportTask): void => {
-    toast({ description: 'UI 预览模式，不会执行真实日报任务', duration: 3200 })
-  }
-
-  /** 启停：只改本地列表，不写 store。 */
-  const handleScheduledToggle = (task: ScheduledReportTask, enabled: boolean): void => {
-    setScheduledTasks((current) =>
-      current.map((item) => (item.id === task.id ? { ...item, enabled } : item))
+  /** 保存：**真的**创建 / 更新一条 `scheduled_report` 规则。 */
+  const handleScheduledSave = async (draft: ScheduledReportDraft): Promise<void> => {
+    if (!scheduledEditor) return
+    const target = scheduledEditor.ruleId
+      ? (scheduledRules.find((rule) => rule.id === scheduledEditor.ruleId) ?? null)
+      : null
+    // 编辑态但目标不存在 ⇒ 报错，绝不静默新建（与 @我日报同一条红线）。
+    if (scheduledEditor.ruleId && !target) {
+      toast({
+        description: '要编辑的定时日报已不存在，请返回列表重新打开',
+        variant: 'destructive',
+        duration: 3600
+      })
+      return
+    }
+    setSaving(true)
+    const payload = draftToAutomationRuleDraft(draft)
+    const saved =
+      scheduledEditor.ruleId && target
+        ? await automationApi.updateRule(target.id, payload)
+        : await automationApi.createRule(payload)
+    setSaving(false)
+    if (!saved) {
+      toast({ description: '保存失败，请稍后重试', variant: 'destructive', duration: 3200 })
+      return
+    }
+    setRules((current) =>
+      current.some((item) => item.id === saved.id)
+        ? current.map((item) => (item.id === saved.id ? saved : item))
+        : [...current, saved]
     )
-    toast({ description: PREVIEW_NOTICE, duration: 3200 })
+    closeScheduledEditor()
+    toast({
+      description: scheduledEditor.ruleId ? `已保存「${saved.name}」` : `已创建「${saved.name}」`,
+      duration: 2800
+    })
+    void automationApi.getStatus().then(setStatus)
   }
 
-  /** 删除：直接提示，避免用户以为任务真被删了。 */
-  const handleScheduledDelete = (_task: ScheduledReportTask): void => {
-    toast({ description: 'UI 预览模式，不会删除现有任务', duration: 3200 })
+  /** 立即执行：走与 scheduler 完全相同的执行链路（manual trigger）。 */
+  const handleScheduledRunNow = async (rule: AutomationRule): Promise<void> => {
+    setBusyRuleId(rule.id)
+    const result = await automationApi.runScheduledReportRule(rule.id)
+    setBusyRuleId(null)
+    toast({
+      description: result.success
+        ? `「${rule.name}」已执行完成`
+        : result.error || '定时日报执行失败，请查看执行日志',
+      variant: result.success ? undefined : 'destructive',
+      duration: 3600
+    })
+    // 执行结果落在 Automation Execution Log，切到日志 tab 就能看到。
+    void reload()
+  }
+
+  /** 启停：真写 store。 */
+  const handleScheduledToggle = async (rule: AutomationRule, enabled: boolean): Promise<void> => {
+    setBusyRuleId(rule.id)
+    const updated = await automationApi.setRuleEnabled(rule.id, enabled)
+    setBusyRuleId(null)
+    if (!updated) {
+      toast({ description: '切换失败，规则状态未改变', variant: 'destructive', duration: 3200 })
+      return
+    }
+    setRules((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+    void automationApi.getStatus().then(setStatus)
+  }
+
+  /** 删除：走统一的确认弹层（与其它规则类型一致）。 */
+  const handleScheduledDelete = (rule: AutomationRule): void => {
+    setPendingDelete(rule)
   }
 
   const handleToggle = async (rule: AutomationRule, enabled: boolean): Promise<void> => {
@@ -563,27 +620,45 @@ export function AutomationWorkspace({
           ) : editor.ruleType === 'scheduled_report' ? (
             scheduledEditor && scheduledDraft ? (
               <ScheduledReportEditor
-                // 换一条任务就重建编辑器，避免把上一条的草稿带过来。
-                key={scheduledEditor.taskId ?? 'new'}
+                // 换一条规则就重建编辑器，避免把上一条的草稿带过来。
+                key={scheduledEditor.ruleId ?? 'new'}
                 initialDraft={scheduledDraft}
                 groups={groups}
                 sendableContacts={sendableContacts}
                 saving={saving}
                 onBack={closeScheduledEditor}
                 onCancel={closeScheduledEditor}
-                onSave={handleScheduledSave}
+                onSave={(draft) => void handleScheduledSave(draft)}
                 {...(onOpenModelSettings ? { onOpenModelSettings } : {})}
+                {...(scheduledEditor.ruleId
+                  ? (() => {
+                      const rule = scheduledRules.find(
+                        (item) => item.id === scheduledEditor.ruleId
+                      )
+                      const legacy = rule?.scheduledReport?.legacyTarget
+                      return legacy ? { legacyTarget: legacy } : {}
+                    })()
+                  : {})}
+                notificationSlot={
+                  <ScheduledReportNotificationPanel
+                    rule={scheduledRules.find((item) => item.id === scheduledEditor.ruleId) ?? null}
+                    {...(onOpenAgentHub ? { onOpenAgentHub } : {})}
+                  />
+                }
               />
             ) : (
               <ScheduledReportRuleList
-                tasks={scheduledTasks}
-                loading={scheduledLoading}
-                busyTaskId={null}
+                rules={scheduledRules}
+                loading={loading}
+                busyRuleId={busyRuleId}
                 resolveGroupDisplay={resolveScheduledGroupDisplay}
+                // 与另外两个类型的「取消」等价：退出本类型，回到规则面板。
+                // 少了这一个，用户在定时日报列表上就只能靠切 tab 绕出去。
+                onBack={() => setEditor(null)}
                 onCreate={() => openScheduledEditor(null)}
                 onEdit={openScheduledEditor}
-                onRunNow={handleScheduledRunNow}
-                onToggle={handleScheduledToggle}
+                onRunNow={(rule) => void handleScheduledRunNow(rule)}
+                onToggle={(rule, enabled) => void handleScheduledToggle(rule, enabled)}
                 onDelete={handleScheduledDelete}
               />
             )
@@ -592,11 +667,12 @@ export function AutomationWorkspace({
               rule={leaveNotificationRule}
               contacts={sendableContacts}
               monitoredCount={monitoredGroupCount}
+              monitoredGroups={monitoredGroups}
               saving={saving}
               {...(capabilityReady
                 ? {}
                 : {
-                    // §「规则仍然可以保存」：只提示，不阻断编辑。
+                    // 只提示，不阻断编辑。
                     sendCapabilityWarning:
                       '当前发送能力未就绪：退群事件仍会被记录，但通知发送会失败。'
                   })}
