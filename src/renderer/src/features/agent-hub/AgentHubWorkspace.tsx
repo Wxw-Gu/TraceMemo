@@ -214,11 +214,11 @@ export function AgentHubWorkspace({
           <ul>
             <li>
               <i />
-              本机 HTTP 通信
+              在主进程内运行，不开放本地端口
             </li>
             <li>
               <i />
-              入站请求鉴权
+              对话记录可回看
             </li>
             <li>
               <i />

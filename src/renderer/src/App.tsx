@@ -1951,7 +1951,6 @@ function App(): React.ReactElement {
         contentFilter={contentFilter}
         onContentFilterChange={setContentFilter}
         onRefresh={() => selectedContact && handleSelectContact(selectedContact, true)}
-        onRefreshData={loadContacts}
         onReloadAvatars={handleReloadCurrentAvatars}
         onLoadOlderMessages={handleLoadOlderMessages}
         onCreateGroupReport={handleOpenReportWorkspace}

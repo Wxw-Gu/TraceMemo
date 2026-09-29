@@ -1008,6 +1008,30 @@ handle('db:getGroupSnapshot', (md5) =>
       }
     : null
 )
+handle('group-stats:getMemberStats', (request) => ({
+  conversationId: request?.userMd5 || 'group-regular-md5',
+  startTime: request?.startTime || 0,
+  endTime: request?.endTime || fixtureNowMs,
+  freshness: 'fresh',
+  complete: true,
+  memberCount: 2,
+  activeMemberCount: 1,
+  silentMemberCount: 1,
+  activeMembers: [
+    {
+      senderId: 'wxid_fixture_member',
+      displayName: '测试成员',
+      groupNickname: '测试成员',
+      messageCount: 1,
+      lastMessageTime: fixtureNowMs
+    }
+  ],
+  silentMembers: [{ senderId: 'wxid_fixture_silent', displayName: '沉默成员', groupNickname: '' }],
+  unattributedMessages: 0,
+  excludedSystemMessages: 0,
+  firstMessageTime: fixtureNowMs,
+  limitations: []
+}))
 handle('db:getImage', (md5, datName, sessionId, options) =>
   md5 === 'unsupported'
     ? { success: false, error: '不支持的 DAT 版本' }

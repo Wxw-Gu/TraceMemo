@@ -34,37 +34,6 @@ describe('chat menus', () => {
     expect(trigger).toHaveFocus()
   })
 
-  it('closes the chat More menu with Escape and invokes refresh data once', async () => {
-    const user = userEvent.setup()
-    const onRefreshData = vi.fn()
-    renderWithTooltip(
-      <ChatHeader
-        contact={contact}
-        isGroupChat
-        loadedCount={3}
-        filteredCount={3}
-        contentFilter=""
-        isAiLoading={false}
-        onContentFilterChange={vi.fn()}
-        onRefresh={vi.fn()}
-        onRefreshData={onRefreshData}
-        onTestSend={vi.fn()}
-        onOpenAiSettings={vi.fn()}
-      />
-    )
-
-    const trigger = screen.getByRole('button', { name: '更多功能' })
-    await user.click(trigger)
-    expect(screen.getByRole('menuitem', { name: '刷新数据' })).toBeVisible()
-    await user.keyboard('{Escape}')
-    expect(screen.queryByRole('menuitem', { name: '刷新数据' })).not.toBeInTheDocument()
-    expect(trigger).toHaveFocus()
-
-    await user.click(trigger)
-    await user.click(screen.getByRole('menuitem', { name: '刷新数据' }))
-    expect(onRefreshData).toHaveBeenCalledOnce()
-  })
-
   it('keeps header search and actions wired to their existing callbacks', async () => {
     const user = userEvent.setup()
     const onContentFilterChange = vi.fn()
@@ -80,7 +49,6 @@ describe('chat menus', () => {
         isAiLoading={false}
         onContentFilterChange={onContentFilterChange}
         onRefresh={onRefresh}
-        onRefreshData={vi.fn()}
         onTestSend={vi.fn()}
         onOpenAiSettings={onOpenAiSettings}
       />

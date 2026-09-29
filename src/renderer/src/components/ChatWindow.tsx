@@ -18,7 +18,6 @@ interface ChatWindowProps {
   contentFilter?: string
   onContentFilterChange?: (keyword: string) => void
   onRefresh?: () => void
-  onRefreshData?: () => void
   onReloadAvatars?: () => Promise<void>
   onLoadOlderMessages?: () => Promise<void>
   onCreateGroupReport?: () => void
@@ -40,7 +39,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   contentFilter,
   onContentFilterChange,
   onRefresh,
-  onRefreshData,
   onReloadAvatars,
   onLoadOlderMessages,
   onCreateGroupReport,
@@ -182,7 +180,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         isAiLoading={isAiLoading}
         onContentFilterChange={onContentFilterChange || (() => undefined)}
         onRefresh={onRefresh}
-        onRefreshData={onRefreshData}
         onTestSend={() => void handleOpenPersonalWechatSend()}
         onOpenAiSettings={onCreateGroupReport || (() => undefined)}
         onOpenLocalIndexSettings={onOpenLocalIndexSettings}

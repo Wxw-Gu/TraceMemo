@@ -4,9 +4,11 @@
 
 TraceMemo 的本地 API 默认监听 `127.0.0.1:6131`。它面向同一台电脑上的 API Center、Reader Skill、CLI 和 Agent，不是公网网关，也不是带用户账户和细粒度权限 Scope 的服务。
 
+它同时包含**写入型**端点：生成报告并渲染 PNG（`/report`）、通过已连接机器人发送微信消息（`/agent/send`）、创建/修改/删除/启停定时日报任务并触发立即执行（`/scheduled-reports*`）。因此这个 Token 相当于本机敏感凭据，而不是一个只读查询键。
+
 ## Bearer Token
 
-新 Agent 配置使用 `TRACEMEMO_API_TOKEN`。v2.2.0 仍兼容读取历史变量 `WECHATEXPLORER_API_TOKEN`，优先级为新变量高于旧变量。
+新 Agent 配置使用 `TRACEMEMO_API_TOKEN`。历史变量名 `WECHATEXPLORER_API_TOKEN` 仍被兼容读取，优先级为新变量高于旧变量；当前没有设定旧变量名的移除时间，新配置不要再使用它。
 
 - `/api/v1/health` 是公开健康检查；
 - 其他所有端点都要求 `Authorization: Bearer <TOKEN>`；
@@ -14,7 +16,8 @@ TraceMemo 的本地 API 默认监听 `127.0.0.1:6131`。它面向同一台电脑
 - Token 由 Electron `safeStorage` 加密保存在用户数据目录的 `local-api-token.bin`；
 - 文件权限设置为 `0600`；
 - 在“API Center”中可以显示、复制和重新生成；
-- 重新生成后旧 Token 立即失效。
+- 重新生成后旧 Token 立即失效；
+- 服务端只认这个 Token，**不接受用环境变量覆盖**——Agent 一侧的环境变量只是把 Token 交给 Agent 自己的方式，不是鉴权来源。
 
 应用不会自动把 Token 写入 Codex、Claude Code、OpenClaw 或其他 Agent 配置。请把它放进 Agent 自己的本地 secret/environment，例如：
 

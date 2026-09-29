@@ -34,12 +34,12 @@ export function ExportIcon({ className }: IconProps): React.ReactElement {
   )
 }
 
-export function MoreIcon({ className }: IconProps): React.ReactElement {
+export function StatsIcon({ className }: IconProps): React.ReactElement {
   return (
     <svg className={className} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <circle cx="5" cy="12" r="1.4" />
-      <circle cx="12" cy="12" r="1.4" />
-      <circle cx="19" cy="12" r="1.4" />
+      <path d="M5.5 19v-6" />
+      <path d="M12 19V5" />
+      <path d="M18.5 19v-9" />
     </svg>
   )
 }

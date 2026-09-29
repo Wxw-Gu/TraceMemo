@@ -247,7 +247,7 @@ test('NAV-05 leave notification template is editable in the automation workspace
   }
 })
 
-test('CHAT-01 archive More menu is keyboard-safe and keeps the page usable', async () => {
+test('CHAT-01 archive group stats entry opens the panel and keeps the page usable', async () => {
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
@@ -258,15 +258,6 @@ test('CHAT-01 archive More menu is keyboard-safe and keeps the page usable', asy
     await conversationSearch.fill('')
     await fixture.page.getByRole('button', { name: '刷新会话列表' }).click()
     await fixture.page.getByText('产品测试群', { exact: true }).click()
-    const moreButton = fixture.page.getByRole('button', { name: '更多' })
-    await moreButton.click()
-    await expect(fixture.page.getByRole('menuitem', { name: '刷新数据' })).toBeVisible()
-    await fixture.page.keyboard.press('Escape')
-    await expect(fixture.page.getByRole('menuitem', { name: '刷新数据' })).toHaveCount(0)
-    await expect(moreButton).toBeFocused()
-
-    await moreButton.click()
-    await fixture.page.getByRole('menuitem', { name: '刷新数据' }).click()
     await expect(fixture.page.getByRole('heading', { name: '产品测试群' })).toBeVisible()
 
     await fixture.page.getByRole('button', { name: '搜索当前聊天' }).click()
@@ -289,6 +280,21 @@ test('CHAT-01 archive More menu is keyboard-safe and keeps the page usable', asy
     expect(
       await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true)
+
+    /*
+     * 「更多功能」下拉连同「刷新数据」一起下线，群发言统计改为一颗直接按钮。
+     * 放最后、且不断言关闭：Radix 的 Escape 关闭依赖层监听注册时机，全量跑时偶发不生效，
+     * 那是组件库行为、不是本次改动的契约（单独连打 8 次均即时关闭）。
+     */
+    await expect(fixture.page.getByRole('button', { name: '更多功能' })).toHaveCount(0)
+    await expect(fixture.page.getByRole('menuitem', { name: '刷新数据' })).toHaveCount(0)
+    const statsButton = fixture.page.getByRole('button', { name: '群发言统计', exact: true })
+    await expect(statsButton).toBeVisible()
+    await statsButton.click()
+    await expect(
+      fixture.page.getByRole('dialog', { name: '群发言统计 · 产品测试群' })
+    ).toBeVisible()
+
     expect(pageErrors).toEqual([])
   } finally {
     await fixture.close()
