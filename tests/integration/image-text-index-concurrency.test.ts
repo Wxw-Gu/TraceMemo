@@ -38,7 +38,13 @@ function makeRoot(): string {
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+  // Windows 上 sqlite 句柄未释放时 unlink 会 EBUSY；retry 吸收瞬时占用，
+  // 免得 teardown 抛错把真正的断言失败盖掉。
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }))
+  )
 })
 
 /** 合法 PNG 头 + 唯一尾部：不同 seed → 不同内容身份（sha256）。 */
@@ -164,8 +170,14 @@ function harness(options: {
   }
 }
 
+/**
+ * 等整遍 pass 结束。
+ *
+ * 必须显式给预算：这组用例里有 1050 张的 pass，Windows runner 比本机慢一个数量级，
+ * 默认 1000ms 会超时（其余 image-text-index 用例组也是显式 15s~60s）。
+ */
 const finishPass = async (service: ImageTextIndexService): Promise<void> => {
-  await vi.waitFor(() => expect(service.isRunning()).toBe(false))
+  await vi.waitFor(() => expect(service.isRunning()).toBe(false), { timeout: 60_000 })
 }
 
 describe('并发契约', () => {
@@ -491,7 +503,7 @@ describe('并发契约', () => {
     })
 
     await restarted.startPass()
-    await vi.waitFor(() => expect(restarted.isRunning()).toBe(false))
+    await vi.waitFor(() => expect(restarted.isRunning()).toBe(false), { timeout: 60_000 })
     expect(recognize2).not.toHaveBeenCalled()
     restarted.resetAccount()
 

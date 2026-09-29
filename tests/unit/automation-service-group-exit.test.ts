@@ -47,6 +47,16 @@ const readyCapability: PersonalWechatSendCapability = {
 
 const NOW = 1_700_000_000_000
 
+/** 本地时区的 `YYYY-MM-DD HH:mm:ss`：`{time}` 按本地时区渲染，写死偏移量只在东八区通过。 */
+function localStamp(epochMs: number): string {
+  const date = new Date(epochMs)
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  )
+}
+
 function exitEvent(overrides: Partial<GroupMemberExitedEvent> = {}): GroupMemberExitedEvent {
   return {
     eventId: 'room@chatroom:wxid_member:1700000000000:1',
@@ -338,7 +348,10 @@ describe('AutomationService.handleGroupExit', () => {
 
   it('发送能力缺失 → execution failed（退群事实不受影响）', async () => {
     const harness = createHarness()
-    harness.setCapability({ ...readyCapability, capabilities: { text: false, image: false, voice: false } })
+    harness.setCapability({
+      ...readyCapability,
+      capabilities: { text: false, image: false, voice: false }
+    })
 
     await harness.service.handleGroupExit(exitEvent())
 
@@ -395,7 +408,7 @@ describe('AutomationService.handleGroupExit', () => {
     if (content.type === 'text') {
       // 群名（{groupName}）与成员群昵称（{groupRemark}）是两个值，不能混。
       expect(content.text).toBe(
-        '产品测试群|微信昵称|群内备注|wxid_member|243->242|2023-11-15 06:13:20'
+        `产品测试群|微信昵称|群内备注|wxid_member|243->242|${localStamp(NOW)}`
       )
     }
   })

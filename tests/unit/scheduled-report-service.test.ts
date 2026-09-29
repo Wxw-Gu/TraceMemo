@@ -36,15 +36,15 @@ const onlineAgentHubStatus = (): AgentHubStatus => ({
 })
 
 const SCHEDULE_TIME = '18:30'
+
+/** 按本地时区构造 ISO 串：调度走 `Date#setHours`，写死偏移量会让用例只在东八区通过。 */
+const localISO = (year: number, month: number, day: number, hour: number, minute: number): string =>
+  new Date(year, month - 1, day, hour, minute, 0, 0).toISOString()
+
 /** 一个"当天 18:30 之后"的时刻，保证当日槽位已到点。 */
-const AFTER_SLOT = new Date('2026-08-27T18:31:00+08:00')
-/**
- * 规则的创建时间：**固定**在 2026-08-20。
- *
- * 必须早于所有参与断言的槽位，否则「槽位晚于创建时间」这道闸会把一切挡住；
- * 也绝不能用 `Date.now()` —— 那样断言会随墙上时钟漂移。
- */
-const CREATED_AT = Date.parse('2026-08-20T00:00:00+08:00')
+const AFTER_SLOT = new Date(2026, 7, 27, 18, 31)
+/** 必须早于所有参与断言的槽位，且固定，不能用 `Date.now()`。 */
+const CREATED_AT = new Date(2026, 7, 20, 0, 0).getTime()
 
 function makeRule(overrides: Partial<AutomationRule> = {}): AutomationRule {
   return {
@@ -114,24 +114,18 @@ describe('定时日报 · 时间计算', () => {
     expect(validateScheduleTime('09:05')).toBe(true)
     expect(validateScheduleTime('24:00')).toBe(false)
     expect(validateScheduleTime('9:5')).toBe(false)
-    const from = new Date('2026-08-27T10:00:00+08:00')
-    expect(calculateNextRunAt('18:30', from)).toBe(
-      new Date('2026-08-27T18:30:00+08:00').toISOString()
-    )
+    const from = new Date(2026, 7, 27, 10, 0)
+    expect(calculateNextRunAt('18:30', from)).toBe(localISO(2026, 8, 27, 18, 30))
     // 已经过了今天的点 ⇒ 顺延到明天。
-    expect(calculateNextRunAt('09:00', from)).toBe(
-      new Date('2026-08-28T09:00:00+08:00').toISOString()
-    )
+    expect(calculateNextRunAt('09:00', from)).toBe(localISO(2026, 8, 28, 9, 0))
   })
 
   it('resolveDueScheduledSlot 给出"已经到点、最近的那个"槽位', () => {
     // 18:31 时，18:30 已经到点 ⇒ 槽位是今天 18:30。
-    expect(resolveDueScheduledSlot(SCHEDULE_TIME, AFTER_SLOT)).toBe(
-      new Date('2026-08-27T18:30:00+08:00').toISOString()
-    )
+    expect(resolveDueScheduledSlot(SCHEDULE_TIME, AFTER_SLOT)).toBe(localISO(2026, 8, 27, 18, 30))
     // 18:29 时，今天的点还没到 ⇒ 最近一个槽位是昨天。
-    expect(resolveDueScheduledSlot(SCHEDULE_TIME, new Date('2026-08-27T18:29:00+08:00'))).toBe(
-      new Date('2026-08-26T18:30:00+08:00').toISOString()
+    expect(resolveDueScheduledSlot(SCHEDULE_TIME, new Date(2026, 7, 27, 18, 29))).toBe(
+      localISO(2026, 8, 26, 18, 30)
     )
   })
 })
@@ -148,7 +142,7 @@ describe('定时日报 · 调度器', () => {
     expect(ruleId).toBe('rule-1')
     expect(options).toEqual({
       trigger: 'schedule',
-      scheduledSlot: new Date('2026-08-27T18:30:00+08:00').toISOString()
+      scheduledSlot: localISO(2026, 8, 27, 18, 30)
     })
   })
 
@@ -159,7 +153,7 @@ describe('定时日报 · 调度器', () => {
           schedule: { time: SCHEDULE_TIME },
           report: { sourceConversationId: 'g1@chatroom', messageTypes: ['text'] }
         }),
-        lastScheduledSlot: new Date('2026-08-27T18:30:00+08:00').toISOString()
+        lastScheduledSlot: localISO(2026, 8, 27, 18, 30)
       }
     })
     const { service, executeRule } = await makeHarness({}, [rule])
@@ -209,12 +203,12 @@ describe('定时日报 · 调度器', () => {
           schedule: { time: SCHEDULE_TIME },
           report: { sourceConversationId: 'g1@chatroom', messageTypes: ['text'] }
         }),
-        lastScheduledSlot: new Date('2026-08-26T18:30:00+08:00').toISOString()
+        lastScheduledSlot: localISO(2026, 8, 26, 18, 30)
       }
     })
     const { service, executeRule } = await makeHarness({}, [rule])
 
-    await service.tick(new Date('2026-08-27T18:29:00+08:00'))
+    await service.tick(new Date(2026, 7, 27, 18, 29))
     await service.settle()
 
     expect(executeRule).not.toHaveBeenCalled()
@@ -224,10 +218,10 @@ describe('定时日报 · 调度器', () => {
     // 今天 12:00 建的规则、执行时间 18:30。今天 18:30 还没到，
     // 最近的槽位是**昨天 18:30** —— 它早于 createdAt，不属于这条规则。
     // 少了这道闸，新建规则会在下一次 15 秒 tick 里立刻发一份昨天的报告。
-    const rule = makeRule({ createdAt: Date.parse('2026-08-27T12:00:00+08:00') })
+    const rule = makeRule({ createdAt: new Date(2026, 7, 27, 12, 0).getTime() })
     const { service, executeRule } = await makeHarness({}, [rule])
 
-    await service.tick(new Date('2026-08-27T18:29:00+08:00'))
+    await service.tick(new Date(2026, 7, 27, 18, 29))
     await service.settle()
 
     expect(executeRule).not.toHaveBeenCalled()
@@ -242,18 +236,18 @@ describe('定时日报 · 调度器', () => {
           schedule: { time: SCHEDULE_TIME },
           report: { sourceConversationId: 'g1@chatroom', messageTypes: ['text'] }
         }),
-        lastScheduledSlot: new Date('2026-08-25T18:30:00+08:00').toISOString()
+        lastScheduledSlot: localISO(2026, 8, 25, 18, 30)
       }
     })
     const { service, executeRule } = await makeHarness({}, [rule])
 
-    await service.tick(new Date('2026-08-27T18:29:00+08:00'))
+    await service.tick(new Date(2026, 7, 27, 18, 29))
     await service.settle()
 
     expect(executeRule).toHaveBeenCalledTimes(1)
     expect(executeRule.mock.calls[0][1]).toEqual({
       trigger: 'schedule',
-      scheduledSlot: new Date('2026-08-26T18:30:00+08:00').toISOString()
+      scheduledSlot: localISO(2026, 8, 26, 18, 30)
     })
   })
 
@@ -264,7 +258,7 @@ describe('定时日报 · 调度器', () => {
           schedule: { time: SCHEDULE_TIME },
           report: { sourceConversationId: 'g1@chatroom', messageTypes: ['text'] }
         }),
-        lastScheduledSlot: new Date('2026-08-27T18:30:00+08:00').toISOString()
+        lastScheduledSlot: localISO(2026, 8, 27, 18, 30)
       }
     })
     const { service, executeRule } = await makeHarness({}, [rule])
@@ -272,7 +266,7 @@ describe('定时日报 · 调度器', () => {
     // 18:31 时最近槽位正好等于游标 ⇒ 不触发；再把时间回拨到 18:29，
     // 槽位退化成 08-26 18:30，仍然**比游标旧** ⇒ 同样不触发。
     await service.tick(AFTER_SLOT)
-    await service.tick(new Date('2026-08-27T18:29:00+08:00'))
+    await service.tick(new Date(2026, 7, 27, 18, 29))
     await service.settle()
 
     expect(executeRule).not.toHaveBeenCalled()

@@ -53,7 +53,7 @@ describe('sticker HTTP failures', () => {
 })
 
 describe('personal WeChat runtime security invariants', () => {
-  it('waits for the macOS native runtime to detach during application shutdown', () => {
+  it('keeps the macOS native runtime alive across application shutdown', () => {
     const mainSource = readFileSync(resolve('src/main/index.ts'), 'utf8')
     const shutdownStart = mainSource.indexOf("app.on('before-quit'")
     const shutdownEnd = mainSource.indexOf('function showMainWindow', shutdownStart)
@@ -62,7 +62,10 @@ describe('personal WeChat runtime security invariants', () => {
     expect(shutdownStart).toBeGreaterThanOrEqual(0)
     expect(shutdownEnd).toBeGreaterThan(shutdownStart)
     expect(shutdownSource).toContain('await Promise.all([')
-    expect(shutdownSource).toContain('macWechatRuntimeManager.shutdown()')
+    // host 要活过 TraceMemo（保留发送能力进程，保住已绑定的 frida 会话），
+    // 所以退出流程里**不得**关掉它 —— 否则每次重启都要重新绑定微信。
+    // 它有自己的生命周期：微信消失后自判 stale 并自退，也可从设置卡片手动重载。
+    expect(shutdownSource).not.toContain('macWechatRuntimeManager.shutdown()')
   })
 
   it('does not install Python packages while preparing the native runtime', () => {

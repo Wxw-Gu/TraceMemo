@@ -38,8 +38,25 @@ const expectContainsTokens = (text: string, tokens: string[]): void => {
 
 const capability = await systemOcrService.getCapability()
 const onWindows = process.platform === 'win32'
+const nativeAvailable = onWindows && capability.available
 const platformGate = onWindows ? it : it.skip
-const nativeGate = onWindows && capability.available ? it : it.skip
+const nativeGate = nativeAvailable ? it : it.skip
+
+/**
+ * Windows 引擎是**按语言包**建识别器的：机器上只有 en-US 时能认英文、认不出中文。
+ * 所以「中文 token」只在确认存在中文识别器时才算硬门槛 —— CI 的 Windows runner
+ * 只装了 en-US，中文识别不能当所有 CI 的硬门槛（文件头的约定）。
+ *
+ * `language` 为 null 表示"跟随系统语言"，无法据以判定，按不可用处理（宁可跳过不可误红）。
+ */
+const nativeChineseGate = nativeAvailable && /^zh/i.test(capability.language ?? '') ? it : it.skip
+
+if (nativeAvailable && !/^zh/i.test(capability.language ?? '')) {
+  console.warn(
+    `[integration] Windows OCR 中文用例跳过：识别器语言为「${capability.language ?? '跟随系统语言'}」，` +
+      '本机未安装中文 OCR 语言包。中文用例需在装有 zh-Hans-CN 识别器的 Windows 机器上通过。'
+  )
+}
 
 describe('Windows System OCR native fidelity', () => {
   platformGate('reports a usable capability on this machine', () => {
@@ -49,7 +66,7 @@ describe('Windows System OCR native fidelity', () => {
     }
   })
 
-  nativeGate('recognizes simplified Chinese text', async () => {
+  nativeChineseGate('recognizes simplified Chinese text', async () => {
     const result = await systemOcrService.recognize({
       imageDataUrl: toDataUrl('system-ocr-zh.png', 'image/png')
     })
@@ -72,7 +89,7 @@ describe('Windows System OCR native fidelity', () => {
     expectContainsTokens(result.text, ['TraceMemo', 'System', 'OCR'])
   })
 
-  nativeGate('recognizes mixed Chinese/English text', async () => {
+  nativeChineseGate('recognizes mixed Chinese/English text', async () => {
     const result = await systemOcrService.recognize({
       imageDataUrl: toDataUrl('system-ocr-mixed.png', 'image/png')
     })

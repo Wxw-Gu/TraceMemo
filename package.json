@@ -61,6 +61,7 @@
     "build:unpack": "npm run build && electron-builder --config electron-builder.yml --dir",
     "build:win": "npm run typecheck && npm run prepare:win-runtime && electron-vite build && electron-builder --config electron-builder.win.yml --win --x64",
     "build:mac:arm64": "npm run typecheck && npm run prepare:ffmpeg:mac:arm64 && electron-vite build && electron-builder --config electron-builder.yml --mac --arm64",
+    "build:mac:arm64:send-runtime": "npm run typecheck && npm run prepare:ffmpeg:mac:arm64 && electron-vite build && cross-env TM_SEND_RUNTIME_BUILD=1 electron-builder --config electron-builder.send-runtime.yml --mac --arm64",
     "build:mac:x64": "npm run typecheck && npm run prepare:ffmpeg:mac:x64 && electron-vite build && electron-builder --config electron-builder.yml --mac --x64",
     "release": "npm run release:mac && npm run release:win",
     "release:mac": "npm run typecheck && electron-vite build && npm run release:mac:arm64 && npm run release:mac:x64",

@@ -60,7 +60,10 @@ const {
   pruneIntelMacKeyTool,
   pruneForeignArchConnectors,
   pruneForeignArchNativeRuntimes,
-  validateRuntimeBinaryArchitecture
+  validateRuntimeBinaryArchitecture,
+  findSendRuntime,
+  enforceSendRuntimeBoundary,
+  default: afterPack
 } = nodeRequire('../../scripts/after-pack.cjs') as {
   pruneIntelMacKeyTool: (
     runtimeResources: string,
@@ -83,6 +86,20 @@ const {
     arch: string,
     label: string
   ) => void
+  findSendRuntime: (runtimeResources: string) => string | null
+  enforceSendRuntimeBoundary: (
+    runtimeResources: string,
+    platform: NodeJS.Platform,
+    bundlesSendRuntime?: boolean
+  ) => string | null
+  default: (context: AfterPackContext) => Promise<void>
+}
+
+type AfterPackContext = {
+  appOutDir: string
+  electronPlatformName: NodeJS.Platform
+  arch?: number
+  packager: { appInfo: { productFilename: string } }
 }
 const { readBinaryArchitectures } = nodeRequire('../../scripts/binary-arch.cjs') as {
   readBinaryArchitectures: (filePath: string) => string[]
@@ -432,6 +449,121 @@ describe('per-architecture macOS packaging', () => {
     expect(() =>
       validateRuntimeBinaryArchitecture(binary, 'darwin', 'arm64', 'Bundled ffmpeg')
     ).not.toThrow()
+  })
+})
+
+describe('send runtime packaging boundary', () => {
+  const boundaryRoot = mkdtempSync(join(tmpdir(), 'wxe-send-runtime-'))
+  afterAll(() => rmSync(boundaryRoot, { recursive: true, force: true }))
+
+  function resourcesWithSendRuntime(name: string, unpacked = false): string {
+    const resources = join(boundaryRoot, name, 'Contents', 'Resources')
+    const runtime = unpacked
+      ? join(resources, 'app.asar.unpacked', 'resources', 'runtime', 'darwin-arm64')
+      : join(resources, 'resources', 'runtime', 'darwin-arm64')
+    mkdirSync(runtime, { recursive: true })
+    writeFileSync(join(runtime, 'tm-wechat-host'), 'fixture')
+    return resources
+  }
+
+  it('accepts a macOS bundle without the send runtime', () => {
+    const resources = join(boundaryRoot, 'clean', 'Contents', 'Resources')
+    mkdirSync(resources, { recursive: true })
+
+    expect(findSendRuntime(resources)).toBeNull()
+    expect(enforceSendRuntimeBoundary(resources, 'darwin', false)).toBeNull()
+  })
+
+  it('fails a bundle that still carries the send runtime', () => {
+    expect(() =>
+      enforceSendRuntimeBoundary(resourcesWithSendRuntime('dirty'), 'darwin', false)
+    ).toThrow(/must not include the WeChat send runtime/)
+  })
+
+  it('detects the send runtime when it lands under app.asar.unpacked', () => {
+    const resources = resourcesWithSendRuntime('unpacked', true)
+
+    expect(findSendRuntime(resources)).toBe(
+      join(resources, 'app.asar.unpacked', 'resources', 'runtime', 'darwin-arm64')
+    )
+    expect(() => enforceSendRuntimeBoundary(resources, 'darwin', false)).toThrow(
+      /must not include the WeChat send runtime/
+    )
+  })
+
+  it('requires the send runtime when the build is configured to bundle it', () => {
+    const missing = join(boundaryRoot, 'runtime-missing', 'Contents', 'Resources')
+    mkdirSync(missing, { recursive: true })
+
+    expect(() => enforceSendRuntimeBoundary(missing, 'darwin', true)).toThrow(
+      /requires the WeChat send runtime/
+    )
+
+    const present = resourcesWithSendRuntime('runtime-ok')
+    expect(enforceSendRuntimeBoundary(present, 'darwin', true)).toBe(
+      join(present, 'resources', 'runtime', 'darwin-arm64')
+    )
+  })
+
+  it('ignores non-macOS bundles', () => {
+    const resources = resourcesWithSendRuntime('win32')
+
+    expect(enforceSendRuntimeBoundary(resources, 'win32', false)).toBeNull()
+    expect(enforceSendRuntimeBoundary(resources, 'win32', true)).toBeNull()
+  })
+
+  it('keeps the send runtime build off the release publishing path', () => {
+    const pkg = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }
+
+    expect(Object.keys(pkg.scripts).filter((name) => name.includes('send-runtime'))).toEqual([
+      'build:mac:arm64:send-runtime'
+    ])
+    expect(pkg.scripts['build:mac:arm64:send-runtime']).toContain('TM_SEND_RUNTIME_BUILD=1')
+    expect(pkg.scripts['build:mac:arm64:send-runtime']).toContain(
+      'electron-builder.send-runtime.yml'
+    )
+    expect(pkg.scripts['build:mac:arm64:send-runtime']).not.toContain('--publish')
+
+    for (const [name, command] of Object.entries(pkg.scripts)) {
+      if (!name.startsWith('release')) continue
+      expect(command).not.toContain('electron-builder.send-runtime.yml')
+      expect(command).not.toContain('TM_SEND_RUNTIME_BUILD')
+    }
+  })
+
+  it('excludes the send runtime in the default builder config', () => {
+    const config = readFileSync(resolve(__dirname, '../../electron-builder.yml'), 'utf8')
+
+    expect(config).toContain("'!runtime/darwin-arm64/**'")
+  })
+
+  // 只测函数是测不出「边界校验有没有被接上去」的。这个 bundle 故意不含 app.asar 与
+  // Reader Skill：一旦 afterPack 把边界校验排到其它校验之后，抛出的就会是
+  // "Missing packaged application archive" 而不是边界错误，用例即失败。
+  it('applies the boundary check inside afterPack ahead of every other validation', async () => {
+    const appOutDir = join(boundaryRoot, 'wired')
+    const runtime = join(
+      appOutDir,
+      'TraceMemo.app',
+      'Contents',
+      'Resources',
+      'resources',
+      'runtime',
+      'darwin-arm64'
+    )
+    mkdirSync(runtime, { recursive: true })
+    writeFileSync(join(runtime, 'tm-wechat-host'), 'fixture')
+
+    await expect(
+      afterPack({
+        appOutDir,
+        electronPlatformName: 'darwin',
+        arch: 3,
+        packager: { appInfo: { productFilename: 'TraceMemo' } }
+      })
+    ).rejects.toThrow(/must not include the WeChat send runtime/)
   })
 })
 

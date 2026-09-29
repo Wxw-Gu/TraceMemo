@@ -262,6 +262,11 @@ describe('派生库句柄的账号身份缓存', () => {
     h.service.resetAccount()
   })
 
+  /**
+   * 显式预算（见结尾 `30_000`）：本用例**故意**烧 ≥700ms 的 sleep，再叠两次真实 SQLite pass——
+   * 本机实测 ~3.9s，已吃掉 vitest 默认 5000ms 的约 80%（Windows 实测 5097ms 越线）。
+   * 内外预算本就该对齐：`runPass` 内部已在等 60_000ms，外层卡默认 5s 是漏写。
+   */
   it('pre-loop cost is excluded from per-image cost', async () => {
     const PRE_LOOP_MS = 400
     const withPreLoop = createHarness({
@@ -308,7 +313,7 @@ describe('派生库句柄的账号身份缓存', () => {
 
     withPreLoop.service.resetAccount()
     control.service.resetAccount()
-  })
+  }, 30_000)
 })
 
 /**

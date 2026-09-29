@@ -34,6 +34,7 @@ extraResources:
     to: resources
     filter:
       - '**/*'
+      - '!runtime/darwin-arm64/**'
   - from: docs/skill/tracememo-reader
     to: skill/tracememo-reader
     filter:

@@ -55,7 +55,10 @@ describe('AgentHubConversationStore', () => {
 
     const conversation = store.get('user-a')
     expect(conversation?.messages.map((item) => item.direction)).toEqual(['in', 'out'])
-    expect(statSync(filePath).mode & 0o777).toBe(0o600)
+    // Windows 没有 POSIX 权限位，chmod 0600 是空操作 ⇒ 只在 POSIX 上断言。
+    if (process.platform !== 'win32') {
+      expect(statSync(filePath).mode & 0o777).toBe(0o600)
+    }
   })
 
   it('保留发送失败的记录与错误码，便于在界面上对账', () => {

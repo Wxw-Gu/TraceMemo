@@ -325,9 +325,70 @@ function pruneForeignArchConnectors(runtimeResources, platform, arch) {
   return removed
 }
 
+/**
+ * 微信发送运行时打包边界
+ */
+const SEND_RUNTIME_RELATIVE = ['resources', 'runtime', 'darwin-arm64']
+const SEND_RUNTIME_ENTRY = 'tm-wechat-host'
+
+function sendRuntimeLocations(runtimeResources) {
+  return [
+    path.join(runtimeResources, ...SEND_RUNTIME_RELATIVE),
+    path.join(runtimeResources, 'app.asar.unpacked', ...SEND_RUNTIME_RELATIVE)
+  ]
+}
+
+function findSendRuntime(runtimeResources) {
+  return (
+    sendRuntimeLocations(runtimeResources).find((directory) =>
+      existsSync(path.join(directory, SEND_RUNTIME_ENTRY))
+    ) || null
+  )
+}
+
+function isSendRuntimeBuild() {
+  return process.env.TM_SEND_RUNTIME_BUILD === '1'
+}
+
+function enforceSendRuntimeBoundary(
+  runtimeResources,
+  platform,
+  bundlesSendRuntime = isSendRuntimeBuild()
+) {
+  if (platform !== 'darwin') return null
+  const found = findSendRuntime(runtimeResources)
+  if (bundlesSendRuntime) {
+    if (!found) {
+      throw new Error(
+        'This macOS build requires the WeChat send runtime but resources/runtime/darwin-arm64 is missing. ' +
+          'Run `pnpm prepare:wechat-native` first, or point TM_NATIVE_RUNTIME_DIR at the artifact.'
+      )
+    }
+    return found
+  }
+  if (found) {
+    throw new Error(
+      'macOS bundle must not include the WeChat send runtime: ' +
+        found +
+        '. Build with `pnpm build:mac:arm64:send-runtime` (TM_SEND_RUNTIME_BUILD=1) when it is required, ' +
+        'or fix the resources filter in electron-builder.yml.'
+    )
+  }
+  return null
+}
+
 exports.default = async function afterPack(context) {
   const runtimeResources = getRuntimeResources(context)
   const arch = normalizeBuilderArch(context.arch)
+  // 边界先判，越早失败越好。
+  const sendRuntime = enforceSendRuntimeBoundary(runtimeResources, context.electronPlatformName)
+  if (context.electronPlatformName === 'darwin') {
+    console.log(
+      sendRuntime
+        ? `[afterPack] send runtime bundled at ${sendRuntime}`
+        : '[afterPack] send runtime excluded'
+    )
+  }
   validateAsarRuntimeDependencies(runtimeResources)
   validateReaderSkillRuntime(runtimeResources)
   validateSilkWasmRuntime(runtimeResources)
@@ -386,3 +447,6 @@ exports.findMacosHelperPaths = findMacosHelperPaths
 exports.isMacosCodeValid = isMacosCodeValid
 exports.signMacosHelpers = signMacosHelpers
 exports.signMacosAppBundle = signMacosAppBundle
+exports.sendRuntimeLocations = sendRuntimeLocations
+exports.findSendRuntime = findSendRuntime
+exports.enforceSendRuntimeBoundary = enforceSendRuntimeBoundary

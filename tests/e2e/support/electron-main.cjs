@@ -445,10 +445,106 @@ handle('automation:getStatus', () => ({
     message: connected ? '个人微信发送能力已就绪' : '尚未绑定个人微信发送能力'
   }
 }))
+/*
+ * 定时日报是 `ruleType === 'scheduled_report'` 的**真规则**：列表由
+ * `automation:listRules` 过滤得到，创建 / 更新走 `automation:createRule` /
+ * `automation:updateRule`。fixture 必须实现这组通道，否则保存后列表读不回来。
+ */
+const scheduledReportRules = []
+let automationRuleSequence = 0
+// 「微信异常通知」是全局开关，新旧两套通道共用同一份状态。
+let scheduledReportNotificationEnabled = false
 handle('automation:listRules', () => [
   builtinDailyReportRule(),
-  structuredClone(leaveNotificationRule)
+  structuredClone(leaveNotificationRule),
+  ...scheduledReportRules.map((rule) => structuredClone(rule))
 ])
+handle('automation:createRule', (draft) => {
+  automationRuleSequence += 1
+  const rule = {
+    ...draft,
+    id: `fixture-scheduled-rule-${automationRuleSequence}`,
+    createdAt: fixtureNowMs,
+    updatedAt: fixtureNowMs
+  }
+  scheduledReportRules.push(rule)
+  return structuredClone(rule)
+})
+// `updateRule` / `setRuleEnabled` 收的是**单个对象**（`{ id, draft }` / `{ id, enabled }`），
+// 与 `createRule(draft)` / `deleteRule(id)` 的位置参数不同 —— preload 就是这么拼的。
+handle('automation:updateRule', (input) => {
+  const { id, draft } = input || {}
+  const index = scheduledReportRules.findIndex((rule) => rule.id === id)
+  if (index < 0) return null
+  scheduledReportRules[index] = {
+    ...scheduledReportRules[index],
+    ...(draft || {}),
+    id,
+    updatedAt: fixtureNowMs
+  }
+  return structuredClone(scheduledReportRules[index])
+})
+handle('automation:deleteRule', (id) => {
+  const index = scheduledReportRules.findIndex((rule) => rule.id === id)
+  if (index < 0) return false
+  scheduledReportRules.splice(index, 1)
+  return true
+})
+handle('automation:setRuleEnabled', (input) => {
+  const { id, enabled } = input || {}
+  const index = scheduledReportRules.findIndex((rule) => rule.id === id)
+  if (index < 0) return null
+  scheduledReportRules[index] = {
+    ...scheduledReportRules[index],
+    enabled: enabled === true,
+    updatedAt: fixtureNowMs
+  }
+  return structuredClone(scheduledReportRules[index])
+})
+
+/*
+ * 微信异常通知（定时日报的全局能力，不是单条规则的配置）。
+ *
+ * 能力判定与 `ScheduledReportService#checkNotificationCapability` 一致：**Agent Hub 离线
+ * 就是不可用**，且要带上那句可操作的原因。fixture 里 Hub 是 offline，所以这里如实回
+ * 不可用 —— 不为了让开关点得动而假装就绪。
+ *
+ * 这四个通道生产环境都有；不注册会被渲染层的降级兜底吞掉，页面看起来"正常"，
+ * 但测的就不是真实文案了。
+ */
+handle('automation:getScheduledReportNotificationSettings', () => ({
+  enabled: scheduledReportNotificationEnabled
+}))
+handle('automation:getScheduledReportNotificationCapability', () =>
+  agentHubStatus().hub === 'online'
+    ? { ready: true, recipient: 'wxid_fixture_self' }
+    : {
+        ready: false,
+        reason: 'agent_hub_offline',
+        error: '需要先连接 Agent Hub 微信机器人，才能接收异常通知。'
+      }
+)
+handle('automation:setScheduledReportNotificationEnabled', (enabled) => {
+  if (enabled && agentHubStatus().hub !== 'online') {
+    scheduledReportNotificationEnabled = false
+    return {
+      success: false,
+      data: { enabled: false },
+      reason: 'agent_hub_offline',
+      error: '需要先连接 Agent Hub 微信机器人，才能接收异常通知。'
+    }
+  }
+  scheduledReportNotificationEnabled = Boolean(enabled)
+  return { success: true, data: { enabled: scheduledReportNotificationEnabled } }
+})
+handle('automation:testScheduledReportErrorNotification', (ruleId) =>
+  scheduledReportRules.some((rule) => rule.id === ruleId)
+    ? {
+        success: true,
+        data: { ruleId, notificationId: 'fixture-notification', sentAt: fixtureNowMs }
+      }
+    : { success: false, error: '未找到这条定时日报规则' }
+)
 handle('automation:listGroups', () => automationGroupOptions())
 handle('automation:listExecutions', () => [])
 handle('automation:clearExecutions', () => true)
@@ -520,7 +616,6 @@ const scheduledReportTasks =
     : []
 const scheduledReportExecutions = []
 const generatedReports = []
-let scheduledReportNotificationEnabled = false
 const scheduledReportNextRun = (scheduleTime) => {
   const [hours, minutes] = String(scheduleTime || '09:00')
     .split(':')
@@ -1296,6 +1391,18 @@ handle('agent-hub:clearLogs', () => ({ success: true }))
 handle('agent-hub:startLogin', () => ({ status: agentHubStatus() }))
 handle('agent-hub:cancelLogin', () => ({ status: agentHubStatus() }))
 handle('agent-hub:disconnect', () => ({ status: agentHubStatus() }))
+
+/*
+ * Agent Hub 对话记录（本机 conversations.json 的只读回看）。
+ *
+ * fixture 里 Hub 是 offline、也没有任何收发记录，所以恒为空 —— 与
+ * `agent-hub:getStatus` 的 offline 状态保持一致。
+ *
+ * 通道**必须**注册：会话面板挂载即调用，缺 handler 会被渲染层记成 pageerror。
+ */
+handle('agent-hub:getConversations', () => [])
+handle('agent-hub:getConversation', () => null)
+handle('agent-hub:clearConversations', () => ({ success: true }))
 handle('image:getConfig', () => ({
   success: true,
   configured: true,

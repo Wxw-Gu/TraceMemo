@@ -118,8 +118,11 @@ describe('preload IPC contract', () => {
       createTime: 1785553200,
       svrId: 'server-11'
     }
+    // preload 把 options 一路透传（不传即显式 undefined），主进程签名是 (reference, options?)。
     await api.recognizeVoice(voiceReference)
-    expect(invoke).toHaveBeenLastCalledWith('voice:recognize', voiceReference)
+    expect(invoke).toHaveBeenLastCalledWith('voice:recognize', voiceReference, undefined)
+    await api.recognizeVoice(voiceReference, { force: true })
+    expect(invoke).toHaveBeenLastCalledWith('voice:recognize', voiceReference, { force: true })
     await api.cancelVoiceRecognition(voiceReference)
     expect(invoke).toHaveBeenLastCalledWith('voice:cancelRecognition', voiceReference)
     await api.downloadVoiceModel()

@@ -197,20 +197,51 @@ test('NAV-04 exit monitor management can save an empty scope and show the setup 
     await expect(fixture.page.getByRole('heading', { name: '管理群聊', exact: true })).toBeVisible()
     await expect(fixture.page.getByText('发送能力已就绪', { exact: true })).toBeVisible()
     await expect(fixture.page.getByRole('checkbox', { name: '监控产品测试群' })).toBeChecked()
-    await fixture.page.getByRole('button', { name: '查看退群监测模板' }).click()
-    await expect(fixture.page.getByLabel('退群监测模板内容')).toHaveValue(/用户: \{user\}/)
-    await expect(fixture.page.getByLabel('退群监测模板内容')).toHaveValue(/群备注: \{groupRemark\}/)
-    const customTemplate = '[退群监测]\n用户: {user}\n群备注: {groupRemark}'
-    await fixture.page.getByLabel('退群监测模板内容').fill(customTemplate)
-    await fixture.page.getByRole('button', { name: '保存模板' }).click()
-    await fixture.page.getByRole('button', { name: '查看退群监测模板' }).click()
-    await expect(fixture.page.getByLabel('退群监测模板内容')).toHaveValue(customTemplate)
-    await fixture.page.keyboard.press('Escape')
     await fixture.page.getByRole('checkbox', { name: '监控产品测试群' }).click()
     await fixture.page.getByRole('checkbox', { name: '监控折叠群聊样本' }).click()
     await fixture.page.getByRole('button', { name: '保存监控群聊' }).click()
     await expect(fixture.page.getByText('还没有设置监控群聊', { exact: true })).toBeVisible()
     await expect(fixture.page.getByRole('button', { name: '选择群聊' })).toBeVisible()
+  } finally {
+    await fixture.close()
+  }
+})
+
+/**
+ * 退群通知的**内容模板**已随「退群通知」一起迁进自动化，管理群聊页只负责
+ * 「监测哪些群」。这条用例锁住新家：模板可编辑、可保存，且真的落库。
+ */
+test('NAV-05 leave notification template is editable in the automation workspace', async () => {
+  const fixture = await launchTestApp()
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.page.getByRole('button', { name: '退群监控' }).click()
+    await fixture.page.getByRole('button', { name: '配置退群通知自动化' }).click()
+
+    await expect(fixture.page.getByRole('heading', { name: '自动化', exact: true })).toBeVisible()
+    await expect(fixture.page.getByRole('heading', { name: '退群通知' })).toBeVisible()
+
+    const template = fixture.page.getByLabel('退群通知模板内容')
+    await expect(template).toHaveValue(/用户: \{user\}/)
+    await expect(template).toHaveValue(/群备注: \{groupRemark\}/)
+
+    const customTemplate = '[退群监测]\n用户: {user}\n群备注: {groupRemark}'
+    await template.fill(customTemplate)
+    await fixture.page.getByRole('button', { name: '保存' }).click()
+    /*
+     * `exact: true` 不能省：Radix 额外渲染一个 `role="status"` 的无障碍播报节点，
+     * 文本是 `Notification 已保存「退群通知」`，且由 `useNextFrame` **下一帧才填** ——
+     * 裸 regex 会命中它造成 strict mode violation，且是否命中取决于帧时序。
+     */
+    await expect(fixture.page.getByText('已保存「退群通知」', { exact: true })).toBeVisible()
+
+    await fixture.page.reload()
+    await fixture.page.getByRole('button', { name: '退群监控' }).click()
+    await fixture.page.getByRole('button', { name: '配置退群通知自动化' }).click()
+    await expect(fixture.page.getByLabel('退群通知模板内容')).toHaveValue(customTemplate)
+
+    expect(pageErrors).toEqual([])
   } finally {
     await fixture.close()
   }
@@ -773,7 +804,7 @@ test('AGENT-01 Agent Hub controls stay usable in the default offline layout', as
     await fixture.page.keyboard.press('Escape')
     await expect(logSource).toBeFocused()
     await expect(fixture.page.getByRole('button', { name: '复制日志' })).toBeDisabled()
-    await fixture.page.getByRole('button', { name: '清空' }).click()
+    await fixture.page.getByRole('button', { name: '清空', exact: true }).click()
 
     expect(
       await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)

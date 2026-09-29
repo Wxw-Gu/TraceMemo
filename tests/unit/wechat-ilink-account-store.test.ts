@@ -58,7 +58,10 @@ describe('wechat-ilink account store', () => {
     expect(path).toBe(
       join(home, '.tracememo', 'wechat-connector', 'accounts', 'bot_abc-im-bot.json')
     )
-    expect(statSync(path).mode & 0o777).toBe(0o600)
+    // Windows 没有 POSIX 权限位，chmod 0600 是空操作 ⇒ 只在 POSIX 上断言。
+    if (process.platform !== 'win32') {
+      expect(statSync(path).mode & 0o777).toBe(0o600)
+    }
     expect(loadAllCredentials(() => home)).toEqual([credentials])
   })
 
@@ -150,7 +153,10 @@ describe('wechat-ilink account store', () => {
       accountsDirectory(() => home),
       `${accountId}.context.json`
     )
-    expect(statSync(path).mode & 0o777).toBe(0o600)
+    // Windows 没有 POSIX 权限位，chmod 0600 是空操作 ⇒ 只在 POSIX 上断言。
+    if (process.platform !== 'win32') {
+      expect(statSync(path).mode & 0o777).toBe(0o600)
+    }
 
     const stored = JSON.parse(readFileSync(path, 'utf8')) as {
       tokens: Record<string, { context_token: string }>

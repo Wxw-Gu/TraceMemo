@@ -45,7 +45,10 @@ describe('WechatInboundInbox', () => {
 
     expect(accepted.map((entry) => entry.messageId)).toEqual(['1', '2'])
     expect(accepted[0].contextToken).toBe('ctx-1')
-    expect(statSync(filePath).mode & 0o777).toBe(0o600)
+    // Windows 没有 POSIX 权限位，chmod 0600 是空操作 ⇒ 只在 POSIX 上断言。
+    if (process.platform !== 'win32') {
+      expect(statSync(filePath).mode & 0o777).toBe(0o600)
+    }
     expect(inbox.size()).toBe(2)
   })
 
@@ -111,6 +114,9 @@ describe('WechatInboundInbox', () => {
 
     const raw = readFileSync(filePath, 'utf8')
     expect(raw).toContain('机密内容')
-    expect(statSync(filePath).mode & 0o777).toBe(0o600)
+    // Windows 没有 POSIX 权限位，chmod 0600 是空操作 ⇒ 只在 POSIX 上断言。
+    if (process.platform !== 'win32') {
+      expect(statSync(filePath).mode & 0o777).toBe(0o600)
+    }
   })
 })
