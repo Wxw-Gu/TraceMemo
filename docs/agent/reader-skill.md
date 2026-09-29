@@ -8,7 +8,7 @@ Reader Skill 是一份给 Agent 的操作说明。安装后，Codex、Claude Cod
 
 Reader Skill 只负责“外部 Agent 主动查询历史微信数据”。它不负责二维码登录、监听微信实时消息、接收机器人消息或管理 Agent Hub。想让机器人收到微信消息后处理并回复，请阅读[Agent Hub](./agent-hub.md)。
 
-正式 Reader Skill 名称和目录是 `tracememo-reader`，新安装使用 `TRACEMEMO_API_TOKEN`。已安装的旧 `wechatexplorer-reader` 可在 v2.2.0 兼容期内继续使用旧变量。
+正式 Reader Skill 名称和目录是 `tracememo-reader`，新安装使用 `TRACEMEMO_API_TOKEN`。已安装的旧 `wechatexplorer-reader` 仍可继续使用旧变量 `WECHATEXPLORER_API_TOKEN`（当前没有设定移除时间），但新安装请使用新名称与新变量名。
 
 ## 推荐安装流程
 
@@ -53,7 +53,12 @@ Reader Skill 可以指导 Agent 使用：
 - 指定会话、日期或时间戳范围的聊天记录；
 - 群成员快照；
 - 结构化日报渲染和按群聊生成总结图片；
+- 定时日报任务的查询、创建、修改、启停、删除、立即执行和执行记录；删除不可逆，Skill 要求先列出唯一任务并取得用户明确确认；
+- 个人微信发送能力状态查询（`/wechat-personal/send-capability`）；
+- `query/*` 一组结构化 Query 端点：`messages`、`search`、`message-context`、`conversation-overview`；
 - Agent Hub 状态检查与已连接机器人发送测试。这里的发送接口是开发者/测试用途，不是实时机器人入口，也不会让 Reader Skill 自动监听微信消息。
+
+注意这个 API 不只是只读的：`/report`、`/agent/send` 和 `/scheduled-reports*` 会写入状态或真的发出微信消息。
 
 端点、参数、错误码和鉴权细节以[Local HTTP API](./api.md)为准。Skill 文件保持短小，避免在多个文档中复制会变化的完整响应 schema。
 

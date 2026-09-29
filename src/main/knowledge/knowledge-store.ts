@@ -13,13 +13,18 @@ import type {
   KnowledgeIndexProgress,
   KnowledgeIndexRequest,
   KnowledgeIndexResult,
+  KnowledgeMemberStatsResult,
   KnowledgeRuntimeStatus,
   KnowledgeNormalizedMessage,
   KnowledgeQuery,
   KnowledgeSearchTimings,
   KnowledgeSearchResult
 } from '../../shared/knowledge'
-import { emptyKnowledgeSearchTimings, KNOWLEDGE_SCHEMA_VERSION } from '../../shared/knowledge'
+import {
+  emptyKnowledgeSearchTimings,
+  KNOWLEDGE_SCHEMA_VERSION,
+  toEvidenceDisplayText
+} from '../../shared/knowledge'
 import { chunkConversation } from './chunker'
 import { normalizeKnowledgeMessage } from './normalizer'
 
@@ -310,6 +315,93 @@ export class KnowledgeStore {
       indexedChunkCount,
       indexLatestAt: this.readIndexLatestAt(),
       timings: emptyKnowledgeSearchTimings()
+    }
+  }
+
+  /**
+   * 单个会话在时间窗内的「按发送者聚合」统计。
+   *
+   * 只回聚合结果、不回消息正文：群员统计只需要「谁说了几条、最后一条是什么时候」，
+   * 把消息逐条搬到主进程再统计会把几十万行推过 IPC 边界。
+   *
+   * 三条硬规则**全部由 SQL 保证**，不指望调用方记得：
+   * 1. `kind <> 'system'`：系统消息不是任何成员的发言（微信侧 10000/10002 在建库时
+   *    已归一为 `kind = 'system'`，见 `knowledge-search-service` 的 kind 映射）；
+   * 2. `sender_id IS NULL` 的行不归给任何人，只计入 `unattributedMessages` ——
+   *    硬塞给某个成员会让「未发言」名单出现错误否定；
+   * 3. 时间窗口是**闭区间**，单位 **epoch 毫秒**，与 knowledge 内部口径一致，
+   *    不经过 WCDB 的秒级边界（跨错单位会静默读到 0 条）。
+   */
+  memberStats(request: {
+    conversationId: string
+    startTime: number
+    endTime: number
+  }): KnowledgeMemberStatsResult {
+    const { conversationId, startTime, endTime } = request
+    const indexLatestAt = this.readIndexLatestAt()
+    const empty: KnowledgeMemberStatsResult = {
+      conversationId,
+      totalMessages: 0,
+      senders: [],
+      unattributedMessages: 0,
+      excludedSystemMessages: 0,
+      earliestMessageTime: null,
+      indexLatestAt
+    }
+    if (!conversationId) return empty
+
+    // 用 `(conversation_id, create_time)` 索引直接命中：这是本查询唯一的访问路径，
+    // 写成全表扫描等价于把单群统计的 26ms 变成 10s。
+    const scope = 'conversation_id = ? AND create_time >= ? AND create_time <= ?'
+    const args = [conversationId, startTime, endTime]
+
+    const count = (extra: string): number => {
+      const row = this.database
+        .prepare(`SELECT COUNT(*) AS n FROM knowledge_messages WHERE ${scope} AND ${extra}`)
+        .get(...args) as DbRow | undefined
+      return Number(row?.n) || 0
+    }
+
+    const rows = asRows(
+      this.database
+        .prepare(
+          `SELECT sender_id,
+                  COUNT(*) AS message_count,
+                  MAX(create_time) AS last_message_time
+             FROM knowledge_messages
+            WHERE ${scope} AND kind <> 'system' AND sender_id IS NOT NULL
+            GROUP BY sender_id
+            ORDER BY message_count DESC, last_message_time DESC`
+        )
+        .all(...args)
+    )
+
+    const senders: KnowledgeMemberStatsResult['senders'] = []
+    for (const row of rows) {
+      const senderId = String(row.sender_id ?? '').trim()
+      if (!senderId) continue
+      senders.push({
+        senderId,
+        messageCount: Number(row.message_count) || 0,
+        lastMessageTime: Number(row.last_message_time) || 0
+      })
+    }
+
+    // 窗口内最早一条消息：**不过滤 kind** —— 群的第一条常常是建群通知，
+    // 那才是用户认知里的「这个群第一条消息」。选「全部」时用它显示真实起点。
+    const earliestRow = this.database
+      .prepare(`SELECT MIN(create_time) AS m FROM knowledge_messages WHERE ${scope}`)
+      .get(...args) as DbRow | undefined
+    const earliestValue = Number(earliestRow?.m)
+
+    return {
+      conversationId,
+      totalMessages: count("kind <> 'system'"),
+      senders,
+      unattributedMessages: count("kind <> 'system' AND sender_id IS NULL"),
+      excludedSystemMessages: count("kind = 'system'"),
+      earliestMessageTime: Number.isFinite(earliestValue) && earliestValue > 0 ? earliestValue : null,
+      indexLatestAt
     }
   }
 
@@ -761,7 +853,8 @@ export class KnowledgeStore {
       evidence: asRows(
         this.database
           .prepare(
-            `SELECT m.conversation_id, m.message_id, m.create_time, m.searchable_text, m.kind, m.sender_id, m.sender_name
+            `SELECT m.conversation_id, m.message_id, m.create_time, m.searchable_text, m.kind, m.sender_id, m.sender_name,
+                    m.image_ocr_text, m.voice_transcript
            FROM knowledge_messages m
            WHERE ${clauses.join(' AND ')}
            ORDER BY m.create_time DESC
@@ -789,7 +882,22 @@ export class KnowledgeStore {
       timestamp: Number(row.create_time),
       messageIds: chunk ? chunk.map((item) => String(item.message_id)) : [messageId],
       sourceKind: String(row.kind) as KnowledgeEvidence['sourceKind'],
-      text: String(row.searchable_text),
+      // 内部前缀（`图片文字：`）绝不能进 Evidence：面向用户与模型的是可读文本，
+      // 来源信息由下面的结构化字段表达。
+      text: toEvidenceDisplayText(String(row.searchable_text)),
+      ...(row.image_ocr_text ? { imageOcrText: String(row.image_ocr_text) } : {}),
+      /*
+       * 来源标记按"这条消息带什么派生内容"判定，与 `sourceKind` 正交：
+       * `image_ocr` = 靠图片里的文字命中，`voice_transcript` = 靠语音转写命中。
+       *
+       * 两者都有时以图片 OCR 为先 —— 图片消息不会同时带语音转写，这里只是取确定值，
+       * 实际不会出现需要二选一的数据。
+       */
+      ...(row.image_ocr_text
+        ? { derivedSource: 'image_ocr' as const }
+        : String(row.voice_transcript || '').trim()
+          ? { derivedSource: 'voice_transcript' as const }
+          : {}),
       score: String(row.kind) === 'system' ? 1 : 0
     }
   }
@@ -899,6 +1007,7 @@ export class KnowledgeStore {
         attachment_json TEXT,
         voice_transcript TEXT,
         voice_transcript_state TEXT,
+        image_ocr_text TEXT,
         PRIMARY KEY (conversation_id, message_id)
       ) STRICT;
       CREATE INDEX IF NOT EXISTS knowledge_messages_conversation_time
@@ -956,6 +1065,14 @@ export class KnowledgeStore {
     )
     if (!messageColumns.has('voice_transcript_state')) {
       this.database.exec('ALTER TABLE knowledge_messages ADD COLUMN voice_transcript_state TEXT')
+    }
+    // 图片 OCR 派生文本单独留一列（不只是埋进 searchable_text）。
+    //
+    // 为什么必须落列而不是从 searchable_text 里截字符串：Evidence 需要回答
+    // "这条结果是不是来自图片里的文字"，并按此给出来源标记与 OCR 片段。
+    // 靠解析前缀来判来源，一旦前缀格式调整就会静默失效。
+    if (!messageColumns.has('image_ocr_text')) {
+      this.database.exec('ALTER TABLE knowledge_messages ADD COLUMN image_ocr_text TEXT')
     }
     this.writeMetaIfMissing('schema_version', String(KNOWLEDGE_SCHEMA_VERSION))
     const storedAccount = this.readMeta('account_id')
@@ -1137,8 +1254,9 @@ export class KnowledgeStore {
     const upsert = this.database.prepare(
       `INSERT INTO knowledge_messages (
         account_id, conversation_id, message_id, create_time, content_hash, searchable_text,
-        kind, sender_id, sender_name, attachment_json, voice_transcript, voice_transcript_state
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        kind, sender_id, sender_name, attachment_json, voice_transcript, voice_transcript_state,
+        image_ocr_text
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(conversation_id, message_id) DO UPDATE SET
         create_time = excluded.create_time,
         content_hash = excluded.content_hash,
@@ -1148,7 +1266,8 @@ export class KnowledgeStore {
         sender_name = excluded.sender_name,
         attachment_json = excluded.attachment_json,
         voice_transcript = excluded.voice_transcript,
-        voice_transcript_state = excluded.voice_transcript_state`
+        voice_transcript_state = excluded.voice_transcript_state,
+        image_ocr_text = excluded.image_ocr_text`
     )
     for (let index = 0; index < messages.length; index += 1) {
       this.assertNotAborted(signal)
@@ -1165,7 +1284,8 @@ export class KnowledgeStore {
         message.senderName ?? null,
         message.attachment ? encodedJson(message.attachment) : null,
         message.voiceTranscript ?? null,
-        message.voiceTranscriptState ?? null
+        message.voiceTranscriptState ?? null,
+        message.imageOcrText ?? null
       )
       if (index % YIELD_EVERY === 0) {
         onProgress(index + 1, 0)

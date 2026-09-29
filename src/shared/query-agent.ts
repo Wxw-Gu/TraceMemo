@@ -1,4 +1,5 @@
 import type { AiSearchPipelineRequest, AiSearchPipelineResult } from './ai-search'
+import type { KnowledgeDerivedSource } from './knowledge'
 import type { QueryCorpusScope } from './local-query-api'
 
 /**
@@ -25,6 +26,15 @@ export interface AskWechatScope {
 
 /** 展示用证据：只含可读字段，不含 wxid / md5 / DB id / raw Tool JSON。 */
 export interface AskWechatEvidenceItem {
+  /**
+   * Host 分配的稳定引用编号（`E1`、`E2`…）。
+   *
+   * 由 Runtime 的 EvidenceCollector 在**模型调用之前**按首次命中顺序分配，并随 Tool Result
+   * 进入模型可见上下文 —— 因此正文里的 `[E#]` 与 UI 证据卡 / 底部引用按钮用的是同一个编号。
+   * UI **不得**再用数组下标自行合成编号：那会在证据被过滤、分页或重排时漂移，
+   * 而且模型无从知道它（inline citation 会因此失效）。
+   */
+  citationId: string
   messageRef: string
   conversationName?: string
   conversationType?: 'user' | 'group'
@@ -33,6 +43,16 @@ export interface AskWechatEvidenceItem {
   timestamp?: number
   messageType?: string
   text?: string
+  /**
+   * 命中所依赖的派生来源（与 `messageType` 正交）。
+   *
+   * 有值 = 这条结果靠**本地派生内容**命中，而不是原始消息本身的文字
+   * （`image_ocr` = 图片里的文字，`voice_transcript` = 语音转写）。
+   * Evidence UI 会据此多挂一个来源标记；authoritative source 仍是原始消息。
+   */
+  derivedSource?: KnowledgeDerivedSource
+  /** 「从图片里读出来的文字」片段，只作命中解释（普通文字消息不会有）。 */
+  imageOcrText?: string
   attachment?: { kind?: string; name?: string; url?: string; sizeBytes?: number }
   /** 产生这条证据的 Tool（诊断 / 分组）。 */
   source: string
@@ -133,6 +153,24 @@ export interface QueryAgentDiagnostics {
   tools: string[]
   totalMs: number
   outcome: AskWechatOutcome
+  /**
+   * 本次查询里**实际取到 OCR 派生文本**的图片消息/证据条数（诊断，不含正文）。
+   *
+   * `0` 配合 `tools` 就能区分两种完全不同的故障：
+   * 图片文字索引没建（索引问题），还是建好了但查询路径没接上（链路问题）。
+   */
+  imageOcrTextCount?: number
+  /** 本次查询里图片文字索引的覆盖度状态（`not_built` / `partial` / `complete` / `failed`）。 */
+  imageOcrCoverageState?: string
+  /**
+   * 用户问题原文。
+   *
+   * 这一条**刻意**包含聊天内容：排查"同一个问题为什么这次答对上次答错"必须知道问的是什么。
+   * 日志只写在用户本机的应用日志目录（设置 → 检索诊断里可查看 / 清空），不上传、不进遥测。
+   */
+  question?: string
+  /** 模型最终回答原文（同上，仅本地日志，用于排查）。 */
+  answer?: string
 }
 
 export type AskWechatOutcome =
@@ -168,6 +206,13 @@ export type AskWechatQueryResult =
       answer: string
       /** 本次回答实际依据的证据（去重、限量）；UI 不允许从 answer 反解析。 */
       evidence: AskWechatEvidenceItem[]
+      /**
+       * Host 侧 citation 校验中被移除的非法编号（additive）。
+       *
+       * 非空表示模型引用了不存在的 `[E#]`，已从 answer 中移除 —— UI 可据此提示
+       * "已移除无法对应证据的引用"，而不是把幻觉编号渲染成可点击的引用。
+       */
+      invalidCitationIds?: string[]
       stats: AskWechatStats
       diagnostics: QueryAgentDiagnostics
     }

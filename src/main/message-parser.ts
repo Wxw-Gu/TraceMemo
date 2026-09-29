@@ -125,7 +125,10 @@ export type ParsedContent =
 export function parseMessageContent(content: string, messageType: number): ParsedContent {
   // Voice rows may keep their binary payload outside msgContent, so an empty
   // content string is still a valid voice message.
-  if (messageType === 34) return { type: 'voice' }
+  if (messageType === 34) {
+    const duration = parseVoiceDurationSeconds(content)
+    return duration === undefined ? { type: 'voice' } : { type: 'voice', duration }
+  }
   if (!content || typeof content !== 'string') {
     return { type: 'unknown', raw: content || '' }
   }
@@ -157,6 +160,33 @@ export function parseMessageContent(content: string, messageType: number): Parse
   }
 }
 
+/**
+ * 语音时长藏在解压后的 message_content 里：`<voicemsg ... voicelength="1600" ...>`，单位毫秒。
+ * Msg_* 表没有 voice_length 列，这是唯一来源。
+ *
+ * `<voicemsg>` 上两个极易混淆的属性（真机实测，同一条 1.6 秒语音，2026-09-20）：
+ *
+ *   - `voicelength="1600"` → **毫秒时长**。这条语音微信气泡显示 2"（1.6 秒四舍五入）。
+ *     **要取的是它。**
+ *   - `length="6672"` → **SILK 编码数据的字节数，与时长无关**。
+ *     已验证：`wcdb_get_voice_data` 取出的 SILK 恰好是 6672 字节，
+ *     解码后为 51200 字节 PCM（1.6 秒）。误取它会算出 6.672 秒，把 2" 显示成 0:07。
+ *
+ * 换算成秒后**刻意保留小数**（1600ms → 1.6）：在这里取整会把精度永久丢掉，
+ * 后面显示层再怎么四舍五入都对不回微信的口径（微信是四舍五入到整秒）。
+ *
+ * 注：`<videomsg length="...">` 的 `length` 同理是字节数，不是时长。
+ */
+function parseVoiceDurationSeconds(content: string): number | undefined {
+  if (!content || typeof content !== 'string') return undefined
+  const decoded = decodeXmlEntities(stripChatroomPrefix(content))
+  const rawLength = extractXmlAttribute(decoded, 'voicemsg', 'voicelength')
+  if (!rawLength) return undefined
+  const milliseconds = Number(rawLength)
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return undefined
+  return milliseconds / 1000
+}
+
 function parseVideoMessage(content: string): ParsedContent {
   const decoded = decodeXmlEntities(stripChatroomPrefix(content))
   const md5 = normalizeMd5(extractXmlAttribute(decoded, 'videomsg', 'md5'))
@@ -181,6 +211,14 @@ function parseSystemMessage(content: string): ParsedContent {
       recall
     }
   }
+  const templateText = extractSysmsgTemplateText(decoded)
+  if (templateText) {
+    return {
+      type: 'system',
+      content: templateText,
+      raw: content
+    }
+  }
   const delChatroomMemberText = extractDelChatroomMemberText(decoded)
   if (delChatroomMemberText) {
     return {
@@ -189,16 +227,19 @@ function parseSystemMessage(content: string): ParsedContent {
       raw: content
     }
   }
+  // <link_list> 里放的是富文本片段（可能含 hidden="1" 的可点击按钮），
+  // 不是消息正文；先剥掉再走通用提取，避免把按钮文案当成整条系统消息。
+  const withoutLinkList = stripSysmsgLinkList(decoded)
   const plainText =
-    extractXmlNodeText(decoded, 'plain') ||
-    extractXmlNodeText(decoded, 'text') ||
-    extractXmlNodeText(decoded, 'title') ||
-    extractXmlValue(decoded, 'plain') ||
-    extractXmlValue(decoded, 'text') ||
-    extractXmlValue(decoded, 'title') ||
+    extractXmlNodeText(withoutLinkList, 'plain') ||
+    extractXmlNodeText(withoutLinkList, 'text') ||
+    extractXmlNodeText(withoutLinkList, 'title') ||
+    extractXmlValue(withoutLinkList, 'plain') ||
+    extractXmlValue(withoutLinkList, 'text') ||
+    extractXmlValue(withoutLinkList, 'title') ||
     ''
 
-  const normalized = normalizeSystemText(plainText || fallbackSystemText(decoded))
+  const normalized = normalizeSystemText(plainText || fallbackSystemText(withoutLinkList))
   return {
     type: 'system',
     content: normalized || '[系统消息]',
@@ -836,6 +877,76 @@ function extractDelChatroomMemberText(xml: string): string {
   const textMatch = /<text[^>]*><!\[CDATA\[([\s\S]*?)\]\]><\/text>/i.exec(xml)
   if (textMatch?.[1]) return textMatch[1].trim()
   return ''
+}
+
+/** 剥掉 <link_list> 区块 —— 其中的文案属于富文本片段，不是消息正文。 */
+function stripSysmsgLinkList(xml: string): string {
+  return String(xml || '').replace(/<link_list\b[\s\S]*?<\/link_list>/gi, ' ')
+}
+
+/**
+ * 微信 4.x 起，部分系统消息改成「模板」格式，正文不再写在 <plain> 里。
+ *
+ * 旧格式（正文就在 <plain>，取到即可）：
+ *
+ *   <sysmsg type="delchatroommember"><delchatroommember>
+ *     <plain><![CDATA["成员昵称"通过扫描你分享的二维码加入群聊]]></plain>
+ *     <link><scene>qrcode</scene><text><![CDATA[撤销]]></text>…</link>
+ *   </delchatroommember></sysmsg>
+ *
+ * 新格式（<plain> 变空，正文挪进 <template>，用 $名称$ 引用 <link_list> 里的 link）：
+ *
+ *   <sysmsg type="sysmsgtemplate"><sysmsgtemplate>
+ *     <content_template type="tmpl_type_profilewithrevokeqrcode">
+ *       <plain><![CDATA[]]></plain>
+ *       <template><![CDATA["$adder$"通过扫描你分享的二维码加入群聊  $revoke$]]></template>
+ *       <link_list>
+ *         <link name="adder" type="link_profile">
+ *           <memberlist><member><nickname><![CDATA[成员昵称]]></nickname></member></memberlist>
+ *         </link>
+ *         <link name="revoke" type="link_revoke_qrcode" hidden="1">
+ *           <title><![CDATA[撤销]]></title>
+ *         </link>
+ *       </link_list>
+ *     </content_template>
+ *   </sysmsgtemplate></sysmsg>
+ *
+ * 两个要点：
+ *   1. 正文取自 <template>，其中的 $名称$ 占位符按 <link_list> 的 link name 回填；
+ *   2. hidden="1" 的 link 在微信里是可点击按钮，纯文本展示时省略其文案。
+ *
+ * 漏掉这段会让新格式消息落进通用提取链：<plain> 为空、又没有 <text>，
+ * 于是取到 <title> —— 也就是那个隐藏按钮的标题，整条系统消息只剩一个按钮名。
+ */
+function extractSysmsgTemplateText(xml: string): string {
+  if (!/<sysmsgtemplate\b|<content_template\b/i.test(xml)) return ''
+
+  const template = extractXmlNodeText(xml, 'template')
+  if (!template) return ''
+
+  const links = new Map<string, { text: string; hidden: boolean }>()
+  const linkPattern = /<link\b([^>]*)>([\s\S]*?)<\/link>/gi
+  let linkMatch: RegExpExecArray | null
+  while ((linkMatch = linkPattern.exec(xml)) !== null) {
+    const name = extractXmlValue(linkMatch[1], 'name')
+    if (!name) continue
+    links.set(name, {
+      // title 用于按钮文案，nickname 用于成员展示名，text 作最后兜底。
+      text:
+        extractXmlNodeText(linkMatch[2], 'title') ||
+        extractXmlNodeText(linkMatch[2], 'nickname') ||
+        extractXmlNodeText(linkMatch[2], 'text') ||
+        '',
+      hidden: /hidden\s*=\s*["']1["']/i.test(linkMatch[1])
+    })
+  }
+
+  const rendered = template.replace(/\$([A-Za-z0-9_]+)\$/g, (_raw, name: string) => {
+    const link = links.get(name)
+    return link && !link.hidden ? link.text : ''
+  })
+
+  return normalizeSystemText(rendered)
 }
 
 function normalizeMd5(value: unknown): string | undefined {

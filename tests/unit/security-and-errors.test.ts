@@ -53,7 +53,7 @@ describe('sticker HTTP failures', () => {
 })
 
 describe('personal WeChat runtime security invariants', () => {
-  it('waits for sender termination during application shutdown', () => {
+  it('keeps the macOS native runtime alive across application shutdown', () => {
     const mainSource = readFileSync(resolve('src/main/index.ts'), 'utf8')
     const shutdownStart = mainSource.indexOf("app.on('before-quit'")
     const shutdownEnd = mainSource.indexOf('function showMainWindow', shutdownStart)
@@ -62,39 +62,19 @@ describe('personal WeChat runtime security invariants', () => {
     expect(shutdownStart).toBeGreaterThanOrEqual(0)
     expect(shutdownEnd).toBeGreaterThan(shutdownStart)
     expect(shutdownSource).toContain('await Promise.all([')
-    expect(shutdownSource).toContain('personalWechatSendService.terminate()')
-    expect(shutdownSource).not.toContain('personalWechatSendService.stop()')
-
-    const senderSource = readFileSync(
-      resolve('src/main/services/personal-wechat-send-service.ts'),
-      'utf8'
-    )
-    expect(senderSource).toContain("process.kill(pid, 'SIGTERM')")
-    expect(senderSource).toContain("process.kill(pid, 'SIGKILL')")
-    expect(senderSource).toContain('const trackedPid = this.child?.pid')
+    // host 要活过 TraceMemo（保留发送能力进程，保住已绑定的 frida 会话），
+    // 所以退出流程里**不得**关掉它 —— 否则每次重启都要重新绑定微信。
+    // 它有自己的生命周期：微信消失后自判 stale 并自退，也可从设置卡片手动重载。
+    expect(shutdownSource).not.toContain('macWechatRuntimeManager.shutdown()')
   })
 
-  it('does not install Python packages while preparing the sender runtime', () => {
-    const runtimeManagerSource = readFileSync(
-      resolve('src/main/services/personal-wechat-runtime-manager.ts'),
-      'utf8'
-    )
+  it('does not install Python packages while preparing the native runtime', () => {
     const preparationScriptSource = readFileSync(
-      resolve('scripts/prepare-wechat-chatter-runtime.cjs'),
+      resolve('scripts/prepare-wechat-native-runtime.cjs'),
       'utf8'
     )
 
-    for (const source of [runtimeManagerSource, preparationScriptSource]) {
-      expect(source).not.toContain('pilk==')
-      expect(source).not.toMatch(/['"]pip['"]/)
-      expect(source).toContain('voiceAudioDataAddr = Memory.alloc(audioLen + 1);')
-      expect(source).toContain('上传前按语音长度重新分配')
-    }
-
-    const senderSource = readFileSync(
-      resolve('src/main/services/personal-wechat-send-service.ts'),
-      'utf8'
-    )
-    expect(senderSource).toContain('buildPersonalWechatRuntimeEnvironment(preflight.runtime.root)')
+    expect(preparationScriptSource).not.toContain('pilk==')
+    expect(preparationScriptSource).not.toMatch(/['"]pip['"]/)
   })
 })

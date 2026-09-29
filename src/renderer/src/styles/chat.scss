@@ -833,6 +833,41 @@
   line-height: 1.55;
 }
 
+.personal-wechat-authorization-warning {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  border-radius: var(--wxex-radius-md);
+  background: color-mix(in srgb, var(--wxex-danger) 9%, var(--wxex-bg-elevated));
+  padding: 9px 11px;
+
+  >span {
+    display: grid;
+    width: 18px;
+    height: 18px;
+    place-items: center;
+    border: 1px solid currentColor;
+    border-radius: 50%;
+    color: var(--wxex-danger);
+    font-size: 11px;
+    font-weight: 750;
+    line-height: 1;
+  }
+
+  p {
+    margin: 0;
+    color: var(--wxex-text-secondary);
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  a {
+    color: var(--wxex-brand);
+    text-decoration: underline;
+  }
+}
+
 .personal-wechat-step-error,
 .personal-wechat-global-error {
   color: var(--wxex-danger) !important;
@@ -905,55 +940,6 @@
     grid-column: 2;
     color: var(--wxex-text-muted);
     font-size: 10px;
-  }
-}
-
-.personal-wechat-diagnostics {
-  border-top: 1px solid var(--wxex-border);
-  padding-top: 12px;
-
-  summary {
-    cursor: pointer;
-    color: var(--wxex-text-secondary);
-    font-size: 11px;
-    font-weight: 600;
-  }
-
-  >p {
-    margin: 8px 0;
-    color: var(--wxex-text-muted);
-    font-size: 10px;
-  }
-
-  dl {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 1px;
-    overflow: hidden;
-    margin: 0;
-    border: 1px solid var(--wxex-border);
-    border-radius: var(--wxex-radius-md);
-    background: var(--wxex-border);
-  }
-
-  dl>div {
-    min-width: 0;
-    background: var(--wxex-bg-main);
-    padding: 7px 9px;
-  }
-
-  dt {
-    color: var(--wxex-text-muted);
-    font-size: 10px;
-  }
-
-  dd {
-    overflow: hidden;
-    margin: 2px 0 0;
-    color: var(--wxex-text-secondary);
-    font-size: 10px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 }
 
@@ -1106,6 +1092,13 @@
 .personal-wechat-global-error {
   border-top: 1px solid color-mix(in srgb, var(--wxex-danger) 18%, transparent);
   padding: 10px 20px 0;
+  font-size: 11px;
+}
+
+.personal-wechat-global-success {
+  border-top: 1px solid color-mix(in srgb, var(--wxex-success) 24%, transparent);
+  padding: 10px 20px 0;
+  color: var(--wxex-success);
   font-size: 11px;
 }
 

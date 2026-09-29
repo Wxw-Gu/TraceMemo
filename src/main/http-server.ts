@@ -3,6 +3,7 @@ import http, { IncomingMessage, ServerResponse, Server } from 'http'
 import {
   isReady,
   listContacts,
+  listContactsAsync,
   listMessages,
   getGroupSnapshot,
   listRecentChat,
@@ -230,21 +231,26 @@ const routes: Record<string, RouteHandler> = {
     })
   },
 
-  '/api/v1/contact': ({ res, url }) => {
+  '/api/v1/contact': async ({ res, url }) => {
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const filter = url.searchParams.get('filter') || undefined
     const type = url.searchParams.get('type') || undefined
-    let contacts = listContacts(filter)
+    // Use the hydrated data source: on macOS the session cache only carries raw
+    // ids until display names / contact identities are hydrated, so the sync
+    // `listContacts` would miss nickname and remark matches (Issue #51).
+    let contacts = await listContactsAsync(filter)
     if (type === 'user' || type === 'group') {
       contacts = contacts.filter((c) => c.type === type)
     }
     sendJson(res, 200, { count: contacts.length, contacts })
   },
 
-  '/api/v1/chatroom': ({ res, url }) => {
+  '/api/v1/chatroom': async ({ res, url }) => {
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const keyword = url.searchParams.get('keyword') || ''
-    let groups = listContacts().filter((c) => c.type === 'group')
+    // Same hydration requirement as /api/v1/contact: group display names are
+    // exactly the fields that stay un-hydrated on macOS.
+    let groups = (await listContactsAsync()).filter((c) => c.type === 'group')
     if (keyword) {
       const lower = keyword.toLowerCase()
       groups = groups.filter(

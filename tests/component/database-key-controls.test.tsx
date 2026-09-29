@@ -84,7 +84,8 @@ describe('database key controls', () => {
 
     expect(screen.getByText('Intel Mac 自动获取')).toBeVisible()
     expect(screen.getByText(/按页面提示操作即可/)).toBeVisible()
-    expect(screen.queryByText(/Frida|Python|SIP|签名/)).not.toBeInTheDocument()
+    // SIP is a user prerequisite, not an implementation detail.
+    expect(screen.queryByText(/Frida|Python|签名/)).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '自动获取密钥' }))
     expect(onDetect).toHaveBeenCalledOnce()
   })

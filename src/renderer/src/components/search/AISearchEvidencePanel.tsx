@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { Button, EmptyState } from '../ui'
+import { derivedSnippetPrefix, evidenceSourceBadges } from './evidenceSourceLabels'
 import type { EvidenceItem } from './searchTypes'
 import { formatMessageTime, messageIdentity, messageText, senderName } from './searchUtils'
 
@@ -47,6 +48,7 @@ export function AISearchEvidencePanel({
           const flashing = evidenceFlash.index === index
           const evidenceLabel = item.evidenceId || `E${index + 1}`
           const evidenceSender = senderName(item.message, item.contact, senderNames)
+          const badges = evidenceSourceBadges(item)
           return (
             <article
               key={`${messageIdentity(item.message)}-${index}-${flashing ? evidenceFlash.nonce : 0}`}
@@ -74,12 +76,42 @@ export function AISearchEvidencePanel({
                 <span className="mt-0.5 block text-[10px] leading-[15px] text-primary">
                   {item.contact.m_nsNickName}
                 </span>
-                {item.sourceKind === 'voice' && (
-                  <span className="block text-[11px] font-semibold text-primary">语音转写</span>
+                {/*
+                  来源标签：消息类型 + 派生来源。
+                  两者正交，最多两个；不做 tooltip，避免把右栏撑成说明文档。
+                */}
+                {badges.length > 0 && (
+                  <span className="mt-1 flex flex-wrap items-center gap-1">
+                    {badges.map((badge) => (
+                      <span
+                        key={badge.key}
+                        data-testid={`evidence-badge-${badge.key}`}
+                        className="rounded-sm bg-accent px-1.5 py-0.5 text-[10px] font-semibold leading-[14px] text-primary"
+                      >
+                        {badge.label}
+                      </span>
+                    ))}
+                  </span>
                 )}
                 <span className="mt-[7px] block overflow-hidden text-[11px] leading-[17px] text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
+                  {/* 派生命中内容必须自报来源，不能被读成群友真发过这段文字。 */}
+                  {derivedSnippetPrefix(item.derivedSource) && (
+                    <span className="font-semibold text-primary">
+                      {derivedSnippetPrefix(item.derivedSource)}
+                    </span>
+                  )}
                   {messageText(item.message)}
                 </span>
+                {/* 命中解释：明确告诉用户"命中的是图里的这段文字"，
+                    避免被读成群友真的发过一条这样的文字消息。 */}
+                {item.derivedSource === 'image_ocr' && item.imageOcrText && (
+                  <span
+                    className="mt-1 block overflow-hidden text-[11px] leading-[17px] text-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]"
+                    data-testid="evidence-image-ocr-snippet"
+                  >
+                    “{item.imageOcrText}”
+                  </span>
+                )}
                 <Button
                   variant="link"
                   size="sm"

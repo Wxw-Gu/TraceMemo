@@ -37,21 +37,29 @@ export class VoicePipeline {
   async run(
     accountId: string,
     reference: VoiceMessageReference,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options?: { force?: boolean }
   ): Promise<{ transcript: string; language?: string; durationMs: number; cached: boolean }> {
     const messageIdentity = voiceMessageIdentity(reference)
-    const compatible = this.transcripts.findCompatible({
-      accountId,
-      messageIdentity,
-      processorVersion: this.audioProcessor.version,
-      ...this.recognizer.metadata
-    })
-    if (compatible?.transcript.trim()) {
-      return {
-        transcript: compatible.transcript.trim(),
-        language: compatible.language,
-        durationMs: compatible.durationMs,
-        cached: true
+    /*
+     * findCompatible 只按消息身份匹配，不含 audio_hash：音频被换掉（例如取音频的
+     * 逻辑修好后）时它仍会命中旧记录。用户主动触发的识别必须跳过它，重新取一次
+     * 音频 —— 音频级缓存 find(key) 带 audio_hash，才是正确的失效机制。
+     */
+    if (!options?.force) {
+      const compatible = this.transcripts.findCompatible({
+        accountId,
+        messageIdentity,
+        processorVersion: this.audioProcessor.version,
+        ...this.recognizer.metadata
+      })
+      if (compatible?.transcript.trim()) {
+        return {
+          transcript: compatible.transcript.trim(),
+          language: compatible.language,
+          durationMs: compatible.durationMs,
+          cached: true
+        }
       }
     }
 

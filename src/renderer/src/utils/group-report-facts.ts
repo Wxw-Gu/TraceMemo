@@ -138,9 +138,13 @@ export const summarySender = (
 export const summaryContent = (message: Message): string => {
   const data = message.contentData
   if (message.type === '语音' || data?.type === 'voice') {
+    // 语音时长来自 <voicemsg voicelength>（毫秒），是带小数的秒（1600ms → 1.6）：
+    // 累加时保留精度，只在显示给人的文案里取整。
+    const durationSec = data?.type === 'voice' ? data.duration : undefined
+    const durationLabel = durationSec ? ` ${Math.round(durationSec)}秒` : ''
     return message.voiceTranscript?.trim()
-      ? `[语音${data?.type === 'voice' && data.duration ? ` ${data.duration}秒` : ''}] ${message.voiceTranscript.trim()}`
-      : `[语音${data?.type === 'voice' && data.duration ? ` ${data.duration}秒` : ''}]`
+      ? `[语音${durationLabel}] ${message.voiceTranscript.trim()}`
+      : `[语音${durationLabel}]`
   }
   if (!data) return message.content?.trim() || `[${message.type || '消息'}]`
 
@@ -567,14 +571,14 @@ const buildMediaSection = async (
     voiceHighlights.push({
       title: '语音输出王',
       sender: voiceLeaderboard[0].sender,
-      note: `共发送 ${voiceLeaderboard[0].count} 条语音，累计 ${voiceLeaderboard[0].durationSec} 秒。`
+      note: `共发送 ${voiceLeaderboard[0].count} 条语音，累计 ${Math.round(voiceLeaderboard[0].durationSec)} 秒。`
     })
   }
   if (bestStreak && bestStreak.count >= 2) {
     voiceHighlights.push({
       title: '连续发言时刻',
       sender: bestStreak.sender,
-      note: `${bestStreak.time} 连发 ${bestStreak.count} 条语音，共 ${bestStreak.duration} 秒。`
+      note: `${bestStreak.time} 连发 ${bestStreak.count} 条语音，共 ${Math.round(bestStreak.duration)} 秒。`
     })
   }
 
@@ -772,7 +776,15 @@ export const buildGroupReportFacts = async (
     footerNote: '基于已读取聊天记录生成；图片、表情等未解析内容默认只按类型与上下文参与日报。',
     heroParticipants: topSpeakers.slice(0, 4).map((speaker) => speaker.name),
     avatars,
-    reportMode
+    reportMode,
+    /**
+     * 会话标识：导出层 `enrichAvatarsFromGroup` 靠它反查群成员快照补头像。
+     *
+     * 必须用 `m_nsUsrName`（群 roomid，形如 `xxx@chatroom`）而不是群名 —— 群名是展示名，
+     * 可能重名或带表情符号；`resolveMd5` 对 roomid / md5 / wxid 都是精确匹配。
+     * 此前这个字段从未被赋值，导致那条 enrich 分支实际是死代码，头像只能靠消息自带的 img。
+     */
+    ...(contact?.m_nsUsrName ? { talker: contact.m_nsUsrName } : {})
   }
 
   const { media, voiceLeaderboard, warnings, imageInsightSummary } = await buildMediaSection(
@@ -802,7 +814,7 @@ export const buildGroupReportFacts = async (
 
   const factsPrompt = [
     `报告模式：${reportMode === 'compact' ? '精简版（30秒可读完）' : '完整版（保留更多上下文）'}`,
-    `消息统计：共 ${transcriptRows.length} 条，活跃成员 ${speakerCounts.size} 人，图片 ${imageCount} 张，表情 ${stickerCount} 条，语音 ${voiceCount} 条（累计 ${voiceDurationSec} 秒）。`,
+    `消息统计：共 ${transcriptRows.length} 条，活跃成员 ${speakerCounts.size} 人，图片 ${imageCount} 张，表情 ${stickerCount} 条，语音 ${voiceCount} 条（累计 ${Math.round(voiceDurationSec)} 秒）。`,
     activeTimeline ? `活跃时段：${activeTimeline}` : '',
     // AI 图片理解结果(由 ImageInsightService 提供,缓存命中或已调用 Vision)
     (media.visionGallery?.length ?? 0) > 0
@@ -816,7 +828,7 @@ export const buildGroupReportFacts = async (
     voiceLeaderboard.length
       ? `语音榜：${voiceLeaderboard
           .slice(0, 3)
-          .map((item) => `${item.sender} ${item.count} 条 / ${item.durationSec} 秒`)
+          .map((item) => `${item.sender} ${item.count} 条 / ${Math.round(item.durationSec)} 秒`)
           .join('；')}`
       : '',
     collectQuestionCandidates(messages, contact, isGroup).length

@@ -1,19 +1,10 @@
 import React, { useState } from 'react'
 import { Contact } from '../../../../shared/types'
-import {
-  Button,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  IconButton,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger
-} from '../ui'
+import { Button, IconButton, Tooltip, TooltipContent, TooltipTrigger } from '../ui'
 import { ConversationContentSearch } from './ConversationContentSearch'
-import { AiIcon, MoreIcon, RefreshIcon, SearchIcon, SendIcon } from './icons'
+import { AiIcon, RefreshIcon, SearchIcon, SendIcon, StatsIcon } from './icons'
 import { supportsPersonalWechatSend } from '../../utils/runtime-environment'
+import { GroupMemberStatsDialog } from '../group-stats/GroupMemberStatsDialog'
 
 interface ChatHeaderProps {
   contact: Contact
@@ -24,9 +15,10 @@ interface ChatHeaderProps {
   isAiLoading: boolean
   onContentFilterChange: (value: string) => void
   onRefresh?: () => void
-  onRefreshData?: () => void
   onTestSend: () => void
   onOpenAiSettings: () => void
+  /** 跳到「设置 · 本地索引」（群统计发现索引没追平时用）。 */
+  onOpenLocalIndexSettings?: () => void
 }
 
 export function ChatHeader({
@@ -38,11 +30,12 @@ export function ChatHeader({
   isAiLoading,
   onContentFilterChange,
   onRefresh,
-  onRefreshData,
   onTestSend,
-  onOpenAiSettings
+  onOpenAiSettings,
+  onOpenLocalIndexSettings
 }: ChatHeaderProps): React.ReactElement {
   const [searchOpen, setSearchOpen] = useState(Boolean(contentFilter))
+  const [statsOpen, setStatsOpen] = useState(false)
   const displayName = contact.m_nsNickName || contact.m_nsUsrName || '未命名会话'
   const typeLabel = isGroupChat ? '群聊' : '联系人'
   const visibleCount = contentFilter ? filteredCount : loadedCount
@@ -91,16 +84,20 @@ export function ChatHeader({
         <IconButton label="刷新聊天记录" variant="ghost" className="h-8 w-8" onClick={onRefresh}>
           <RefreshIcon />
         </IconButton>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <IconButton label="更多" tooltip="" variant="ghost" className="h-8 w-8">
-              <MoreIcon />
-            </IconButton>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => onRefreshData?.()}>刷新数据</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {/* 群发言统计只对群聊有意义；单聊没有「成员名单」这个概念。 */}
+        {isGroupChat ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="chat-header-text-action"
+            aria-label="群发言统计"
+            title="群发言统计"
+            onClick={() => setStatsOpen(true)}
+          >
+            <StatsIcon />
+            <span>群发言统计</span>
+          </Button>
+        ) : null}
         {supportsPersonalWechatSend ? (
           <Button
             variant="outline"
@@ -148,6 +145,14 @@ export function ChatHeader({
           <span>{isAiLoading ? '生成中' : '生成 AI 日报'}</span>
         </Button>
       </div>
+      {isGroupChat ? (
+        <GroupMemberStatsDialog
+          open={statsOpen}
+          onOpenChange={setStatsOpen}
+          contact={contact}
+          onOpenLocalIndexSettings={onOpenLocalIndexSettings}
+        />
+      ) : null}
     </div>
   )
 }

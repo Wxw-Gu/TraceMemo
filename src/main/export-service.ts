@@ -1246,10 +1246,15 @@ async function runSingleExport(
               const wavChannels =
                 audioBuffer.length >= 44 ? audioBuffer.readUInt16LE(22) : 1
               const pcmBytes = Math.max(0, audioBuffer.length - 44)
-              message.voiceDuration = Math.max(
-                1,
-                Math.round(pcmBytes / (wavSampleRate * wavChannels * 2))
-              )
+              // 口径统一：消息解析阶段已从 <voicemsg voicelength> 拿到微信的原始秒数（带小数），
+              // 它是唯一权威来源，不要覆盖。只有拿不到时才退回用 PCM 字节数估算——
+              // 那份估算是整秒、且下限 1 秒（WAV 缺失头部时的兜底），语义不同。
+              if (message.voiceDuration == null) {
+                message.voiceDuration = Math.max(
+                  1,
+                  Math.round(pcmBytes / (wavSampleRate * wavChannels * 2))
+                )
+              }
             } catch (error) {
               keepMediaError(
                 request,

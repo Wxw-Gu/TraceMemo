@@ -377,7 +377,7 @@ describe('AskWechatService — 桌面问问微信主路径', () => {
     expect(result.diagnostics.outcome).toBe('invalid_question')
   })
 
-  it('生产日志只记录形态字段，不含回答内容', async () => {
+  it('本地日志必须包含问题与模型回答原文，方便回放排查', async () => {
     const logs: AskWechatLogRecord[] = []
     const { provider } = providerFactory([answer('BOBO 最近在准备搬家，提到了房租和押金。')])
     const service = new AskWechatService(new QueryAgentService(provider, vi.fn()), {
@@ -388,17 +388,53 @@ describe('AskWechatService — 桌面问问微信主路径', () => {
     await service.ask(request('BOBO 最近在忙什么'))
 
     expect(logs).toHaveLength(1)
-    expect(Object.keys(logs[0].details ?? {}).sort()).toEqual([
-      'entry',
-      'model',
-      'modelCallCount',
-      'outcome',
-      'provider',
-      'toolCallCount',
-      'tools',
-      'totalMs'
-    ])
-    expect(JSON.stringify(logs)).not.toContain('准备搬家')
+    // 形态字段仍然一个不少（排查时既要知道"问了什么"，也要知道"跑了什么工具、多久"）。
+    for (const key of ['entry', 'model', 'modelCallCount', 'outcome', 'provider', 'toolCallCount', 'tools', 'totalMs']) {
+      expect(logs[0].details).toHaveProperty(key)
+    }
+    // 措辞回归：真机上曾出现"图片已识别出文字却答'没有取得 OCR 文字'"，
+    // 当时日志里只有工具名与次数，无法判断是索引没建还是链路没接上。
+    // 现在问答原文进入**本机**日志（不上传、不进遥测），可以直接回放。
+    expect(logs[0].details?.question).toBe('BOBO 最近在忙什么')
+    expect(String(logs[0].details?.answer)).toContain('准备搬家')
+  })
+
+  it('图片 OCR 的两条结构化事实进入诊断（不重复正文）', async () => {
+    const logs: AskWechatLogRecord[] = []
+    const { provider } = providerFactory([answer('那张图里有价格文字。')])
+    const runtime = new QueryAgentService(provider, vi.fn())
+    // 直接在 Runtime 结果里放一条带图片 OCR 的 trace，验证聚合口径。
+    vi.spyOn(runtime, 'run').mockResolvedValue({
+      question: '图里写了什么',
+      provider: 'Fixture',
+      model: 'fixture',
+      modelCallCount: 1,
+      toolCallCount: 1,
+      toolTotalMs: 5,
+      totalMs: 10,
+      modelDurationsMs: [],
+      modelDiagnostics: [],
+      answer: '那张图里有价格文字。',
+      traces: [
+        {
+          toolName: 'query_messages',
+          input: {},
+          durationMs: 5,
+          status: 'completed',
+          imageOcrTextCount: 3,
+          imageOcrCoverageState: 'partial'
+        }
+      ]
+    } as never)
+    const service = new AskWechatService(runtime, {
+      entry: 'desktop',
+      log: (record) => logs.push(record)
+    })
+
+    await service.ask(request('图里写了什么'))
+
+    expect(logs[0].details?.imageOcrTextCount).toBe(3)
+    expect(logs[0].details?.imageOcrCoverageState).toBe('partial')
   })
 
   it('forgetConversation 清掉指定会话的澄清上下文', async () => {
@@ -437,8 +473,8 @@ describe('AskWechatService — 搜索范围（conversationScope）', () => {
 
     expect(seen[0]).toEqual({ kind: 'groups' })
     // 范围说明只描述边界；强制由 Engine 完成（越界 target 会被结构化拒绝）。
-    expect(String(calls[0].messages[1]?.content)).toContain('群聊专属')
-    expect(String(calls[0].messages[1]?.content)).toContain('群成员实际发送的消息')
+    expect(String(calls[0].messages[0]?.content)).toContain('群聊专属')
+    expect(String(calls[0].messages[0]?.content)).toContain('群成员实际发送的消息')
   })
 
   it('没有 scope 时不注入范围说明（保持毕业版本的 messages 形状）', async () => {

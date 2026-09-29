@@ -3,7 +3,13 @@ import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AISearchWorkspace } from '../../src/renderer/src/components/search/AISearchWorkspace'
 import { aiSearchContact, aiSearchGroup, makeSearchResult } from './support/ai-search-fixtures'
-import type { AskWechatQueryResult, AskWechatStats, QueryAgentProgressEvent } from '../../src/shared/query-agent'
+import { makeImageTextIndexApi } from './support/image-text-index-api'
+import type {
+  AskWechatQueryResult,
+  AskWechatStats,
+  QueryAgentProgressEvent
+} from '../../src/shared/query-agent'
+import type { AISearchWorkspaceProps } from '../../src/renderer/src/components/search/searchTypes'
 
 type AnsweredResult = Extract<AskWechatQueryResult, { status: 'answered' }>
 
@@ -25,7 +31,9 @@ const api = {
   runAskWechatQuery: vi.fn(),
   forgetAskWechatConversation: vi.fn(),
   onAskWechatProgress: vi.fn(),
-  cancelKnowledgeIndex: vi.fn()
+  cancelKnowledgeIndex: vi.fn(),
+  // 侧栏新增的「图片文字索引」卡片会读这些桥接。
+  ...makeImageTextIndexApi()
 }
 
 const indexLatestAt = new Date('2026-09-11T11:57:24+08:00').getTime()
@@ -62,7 +70,7 @@ const diagnostics = {
   outcome: 'answered' as const
 }
 
-const makeProps = (): Record<string, unknown> => ({
+const makeProps = (): AISearchWorkspaceProps => ({
   contacts: [aiSearchContact, aiSearchGroup],
   selectedContact: aiSearchContact,
   dbReady: true,
@@ -138,7 +146,7 @@ const answeredResult = (patch: Partial<AnsweredResult> = {}): AnsweredResult => 
 
 describe('AISearchWorkspace — Query Agent 主路径', () => {
   it('Query Agent 开启时用它回答，不再调用 Legacy 检索', async () => {
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await submitQuery('我和 BOBO 第一次聊了什么')
 
     expect(await screen.findByText('你们的第一次聊天是一条问候。')).toBeTruthy()
@@ -152,7 +160,7 @@ describe('AISearchWorkspace — Query Agent 主路径', () => {
     api.runAskWechatQuery.mockResolvedValue(
       answeredResult({ answer: '当前可读取的完整范围里没有找到相关记录。' })
     )
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await submitQuery('BOBO 给我发过文件吗')
 
     expect(await screen.findByText('当前可读取的完整范围里没有找到相关记录。')).toBeTruthy()
@@ -166,7 +174,7 @@ describe('AISearchWorkspace — Query Agent 主路径', () => {
       message: '当前 AI 查询服务暂时不可用，请稍后再试。',
       diagnostics: { ...diagnostics, outcome: 'provider_failure' }
     })
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await submitQuery('BOBO 最近说过什么')
 
     expect(await screen.findByText('当前 AI 查询服务暂时不可用，请稍后再试。')).toBeTruthy()
@@ -180,7 +188,7 @@ describe('AISearchWorkspace — Query Agent 主路径', () => {
       reason: 'runtime_error',
       result: makeSearchResult({ answer: 'Legacy 兜底答案' })
     })
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await submitQuery('BOBO 最近说过什么')
 
     expect(await screen.findByText('Legacy 兜底答案')).toBeTruthy()
@@ -188,7 +196,7 @@ describe('AISearchWorkspace — Query Agent 主路径', () => {
 
   it('Query Agent 关闭时仍走 Legacy 检索（可回退）', async () => {
     api.getAskWechatConfig.mockResolvedValue({ queryAgentEnabled: false })
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await submitQuery('我和测试会话最近聊了什么')
 
     expect(await screen.findByText('测试搜索答案')).toBeTruthy()
@@ -201,7 +209,7 @@ describe('AISearchWorkspace — Query Agent 主路径', () => {
       configurable: true,
       value: { ...api, getAskWechatConfig: undefined, runAskWechatQuery: undefined }
     })
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await submitQuery('我和测试会话最近聊了什么')
 
     expect(await screen.findByText('测试搜索答案')).toBeTruthy()
@@ -211,7 +219,7 @@ describe('AISearchWorkspace — Query Agent 主路径', () => {
 
 describe('AISearchWorkspace — 搜索范围 / 时间 UI / 真实统计与证据', () => {
   it('Query Agent 开启时保留搜索范围、隐藏时间范围，并提示时间写在问题里', async () => {
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
 
     expect(await screen.findByText('搜索范围')).toBeTruthy()
     // 开关是异步解析的：等提示出现，说明 Query Agent 已生效
@@ -228,7 +236,7 @@ describe('AISearchWorkspace — 搜索范围 / 时间 UI / 真实统计与证据
 
   it('Query Agent 关闭时恢复 Legacy 的时间范围控件', async () => {
     api.getAskWechatConfig.mockResolvedValue({ queryAgentEnabled: false })
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
 
     expect(await screen.findByText('时间范围')).toBeTruthy()
     expect(screen.getByText('不限时间')).toBeTruthy()
@@ -236,7 +244,7 @@ describe('AISearchWorkspace — 搜索范围 / 时间 UI / 真实统计与证据
   })
 
   it('把界面选择的搜索范围传给 Query Agent', async () => {
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     const user = userEvent.setup()
     await user.click(await screen.findByText('群聊专属'))
     await submitQuery('最近谁聊过健身')
@@ -252,9 +260,11 @@ describe('AISearchWorkspace — 搜索范围 / 时间 UI / 真实统计与证据
   it('展示真实统计与真实证据，不再显示「知识库已收录 0」', async () => {
     api.runAskWechatQuery.mockResolvedValue(
       answeredResult({
-        answer: '张三最近提过健身。',
+        // 正文带 Host 分配的引用编号：inline [E1] 应可点击并指向同一条证据。
+        answer: '张三最近提过健身[E1]。',
         evidence: [
           {
+            citationId: 'E1',
             messageRef: 'ref-1',
             conversationName: 'TraceMemo 交流群',
             conversationType: 'group',
@@ -275,10 +285,19 @@ describe('AISearchWorkspace — 搜索范围 / 时间 UI / 真实统计与证据
         }
       })
     )
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await submitQuery('最近谁聊过健身')
 
-    expect(await screen.findByText('张三最近提过健身。')).toBeTruthy()
+    // 正文里 [E1] 被渲染成按钮，因此段落自身的直连文本节点是"张三最近提过健身。"
+    const paragraph = await screen.findByText('张三最近提过健身。')
+    // 段落完整文本 = 结论 + Host 分配的 [E1] + 句号：inline citation 真的在正文里，不是死文本
+    expect(paragraph.textContent).toBe('张三最近提过健身[E1]。')
+    // 正文 inline 引用：Host 分配的 E1 是可点击引用，标题指向同一条证据
+    const inlineCitation = screen.getByTitle('查看证据 E1')
+    expect(inlineCitation.textContent).toBe('[E1]')
+    // 底部引用行与正文 inline 引用必须是同一个编号（都来自 Host 的 citationId）
+    const bottomCitations = Array.from(document.querySelectorAll('[data-evidence-id]'))
+    expect(bottomCitations.map((node) => node.getAttribute('data-evidence-id'))).toEqual(['E1'])
     // 群消息证据必须能归属到具体群 + 成员
     expect(screen.getAllByText(/TraceMemo 交流群/).length).toBeGreaterThan(0)
     // 证据卡片把"编号 · 发送者"渲染在同一行内，用正则匹配文本内容
@@ -289,6 +308,26 @@ describe('AISearchWorkspace — 搜索范围 / 时间 UI / 真实统计与证据
     expect(screen.getByText('使用 1 条证据')).toBeTruthy()
     expect(screen.queryByText(/知识库已收录/)).toBeNull()
   })
+
+  it('Host 移除的非法引用不会变成可点击的幻觉引用', async () => {
+    api.runAskWechatQuery.mockResolvedValue(
+      answeredResult({
+        answer: '张三最近提过健身。',
+        evidence: [
+          { citationId: 'E1', messageRef: 'ref-1', sender: '张三', source: 'search_messages' }
+        ],
+        invalidCitationIds: ['E9']
+      })
+    )
+    render(<AISearchWorkspace {...makeProps()} />)
+    await submitQuery('最近谁聊过健身')
+
+    expect(await screen.findByText('张三最近提过健身。')).toBeTruthy()
+    // E9 已被 Host 移除，UI 不应把它渲染成可点击引用
+    expect(screen.queryByTitle('查看证据 E9')).toBeNull()
+    expect(screen.queryByText('[E9]')).toBeNull()
+    expect(screen.getByTestId('query-invalid-citations').textContent).toContain('E9')
+  })
 })
 
 describe('AISearchWorkspace — 知识库新鲜度状态', () => {
@@ -298,7 +337,7 @@ describe('AISearchWorkspace — 知识库新鲜度状态', () => {
       indexLatestAt: new Date('2026-08-26T11:37:24+08:00').getTime(),
       sourceLatestAt: new Date('2026-09-11T11:57:24+08:00').getTime()
     })
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
 
     // ready ≠ fresh：落后时必须说「可用 · 待追新」，并在描述里给出真实覆盖边界，
     // 绝不能用笼统的「已同步」把两件事混为一谈。
@@ -311,7 +350,7 @@ describe('AISearchWorkspace — 知识库新鲜度状态', () => {
   })
 
   it('索引已追平源数据最新时才显示「可用 · 已追至最新」', async () => {
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
 
     expect(await screen.findByText('可用 · 已追至最新')).toBeTruthy()
     expect(screen.queryByText('已同步')).toBeNull()
@@ -343,7 +382,7 @@ describe('AISearchWorkspace — 查询进度与耗时拆解', () => {
           release = resolve
         })
     )
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await userEvent.type(screen.getByRole('textbox'), '最近谁聊过健身')
     await userEvent.click(screen.getByRole('button', { name: /开始分析/ }))
     const requestId = api.runAskWechatQuery.mock.calls[0][0].requestId as string
@@ -377,7 +416,7 @@ describe('AISearchWorkspace — 查询进度与耗时拆解', () => {
           release = resolve
         })
     )
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await userEvent.click(screen.getByRole('button', { name: /当前会话/ }))
     await userEvent.type(screen.getByRole('textbox'), '最近聊了什么')
     await userEvent.click(screen.getByRole('button', { name: /开始分析/ }))
@@ -400,7 +439,7 @@ describe('AISearchWorkspace — 查询进度与耗时拆解', () => {
           release = resolve
         })
     )
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await submitQuery('最近谁聊过健身')
 
     await emitProgress('stale-request-id', { stage: 'generating_answer' })
@@ -429,7 +468,7 @@ describe('AISearchWorkspace — 查询进度与耗时拆解', () => {
         }
       })
     )
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await submitQuery('最近谁聊过健身')
     await screen.findByText('你们的第一次聊天是一条问候。')
 
@@ -442,7 +481,7 @@ describe('AISearchWorkspace — 查询进度与耗时拆解', () => {
   })
 
   it('does not render a timing breakdown when the runtime reported none', async () => {
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await submitQuery('最近谁聊过健身')
     await screen.findByText('你们的第一次聊天是一条问候。')
 
@@ -452,7 +491,7 @@ describe('AISearchWorkspace — 查询进度与耗时拆解', () => {
 
   it('cancelling a query never touches the Knowledge sync abort scope', async () => {
     api.runAskWechatQuery.mockImplementation(() => new Promise(() => undefined))
-    render(<AISearchWorkspace {...(makeProps() as never)} />)
+    render(<AISearchWorkspace {...makeProps()} />)
     await submitQuery('最近谁聊过健身')
 
     await userEvent.click(await screen.findByRole('button', { name: /取消分析/ }))

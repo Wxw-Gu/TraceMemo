@@ -24,6 +24,10 @@ export function normalizeKnowledgeMessage(
   const transcript = compact(source.voiceTranscript)
   if (transcript) sections.push(`语音转写：${transcript}`)
 
+  // 图片 OCR 文本：与语音同样的"固定前缀"约定，让检索与展示都能识别这是派生内容。
+  const imageText = compact(source.imageOcrText)
+  if (imageText) sections.push(`图片文字：${imageText}`)
+
   const attachmentName = compact(source.attachment?.name)
   if (attachmentName) {
     const label = source.attachment?.kind === 'link' ? '链接' : '附件'
@@ -45,6 +49,7 @@ export function normalizeKnowledgeMessage(
         senderId: source.senderId || '',
         kind: source.kind,
         voiceTranscriptState: source.voiceTranscriptState || '',
+        imageOcrState: source.imageOcrState || '',
         searchableText
       })
     )

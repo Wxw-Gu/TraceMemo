@@ -361,3 +361,128 @@ describe('voice pipeline cache lookup', () => {
     repository.close()
   })
 })
+
+/*
+ * force 的语义：用户主动触发时必须绕开 findCompatible（它只按消息身份匹配，
+ * 不含 audio_hash），重新取一次音频；音频级 find(key) 带 audio_hash，保留。
+ */
+describe('voice pipeline force recognition', () => {
+  const forceRoot = mkdtempSync(join(tmpdir(), 'wxe-voice-pipeline-force-'))
+  afterAll(() => rmSync(forceRoot, { recursive: true, force: true }))
+
+  function createPipeline(repository: SqliteTranscriptRepository, transcript: string) {
+    const resolve = vi.fn().mockResolvedValue({
+      data: Buffer.from('encoded'),
+      codec: 'silk',
+      sourceHash: 'fresh-audio'
+    })
+    const decode = vi.fn().mockResolvedValue({
+      pcm: Buffer.from([1, 0]),
+      sampleRate: 16000,
+      channels: 1,
+      sourceHash: 'fresh-audio'
+    })
+    const process = vi.fn().mockReturnValue({
+      samples: new Float32Array([0.1]),
+      sampleRate: 16000,
+      channels: 1,
+      sourceHash: 'fresh-audio',
+      processorVersion: 'processor-v1',
+      durationMs: 1
+    })
+    const recognize = vi.fn().mockResolvedValue({ text: transcript })
+    const pipeline = new VoicePipeline(
+      { resolve },
+      { decode } as never,
+      { version: 'processor-v1', process },
+      {
+        metadata: {
+          recognizerId: 'sensevoice',
+          modelVersion: 'model-v1',
+          modelFingerprint: 'fingerprint-a'
+        },
+        recognize,
+        dispose: vi.fn()
+      },
+      repository
+    )
+    return { pipeline, resolve, decode, process, recognize }
+  }
+
+  function seedStaleTranscript(repository: SqliteTranscriptRepository) {
+    repository.save({
+      accountId: 'account-a',
+      messageIdentity: voiceMessageIdentity(reference),
+      audioHash: 'stale-audio',
+      processorVersion: 'processor-v1',
+      recognizerId: 'sensevoice',
+      modelVersion: 'model-v1',
+      modelFingerprint: 'fingerprint-a',
+      transcript: '旧音频的转写',
+      durationMs: 900,
+      createdAt: 1,
+      updatedAt: 1
+    })
+  }
+
+  const reference = { sessionId: 'session', localId: 1, createTime: 2 }
+
+  it('skips the identity-level cache when force is requested', async () => {
+    const repository = new SqliteTranscriptRepository(join(forceRoot, 'forced.sqlite'))
+    seedStaleTranscript(repository)
+    const findCompatible = vi.spyOn(repository, 'findCompatible')
+    const find = vi.spyOn(repository, 'find')
+    const { pipeline, resolve, recognize } = createPipeline(repository, '正确音频的转写')
+
+    await expect(
+      pipeline.run('account-a', reference, undefined, { force: true })
+    ).resolves.toMatchObject({ transcript: '正确音频的转写', cached: false })
+
+    expect(findCompatible).not.toHaveBeenCalled()
+    expect(resolve).toHaveBeenCalledOnce()
+    expect(find).toHaveBeenCalled()
+    expect(recognize).toHaveBeenCalledOnce()
+    expect(
+      repository.find({
+        accountId: 'account-a',
+        messageIdentity: voiceMessageIdentity(reference),
+        audioHash: 'fresh-audio',
+        processorVersion: 'processor-v1',
+        recognizerId: 'sensevoice',
+        modelVersion: 'model-v1',
+        modelFingerprint: 'fingerprint-a'
+      })?.transcript
+    ).toBe('正确音频的转写')
+    repository.close()
+  })
+
+  it('keeps consulting the identity-level cache without force', async () => {
+    const repository = new SqliteTranscriptRepository(join(forceRoot, 'unchanged.sqlite'))
+    seedStaleTranscript(repository)
+    const findCompatible = vi.spyOn(repository, 'findCompatible')
+    const { pipeline, resolve, decode, process, recognize } = createPipeline(
+      repository,
+      '新转写'
+    )
+
+    await expect(pipeline.run('account-a', reference)).resolves.toMatchObject({
+      transcript: '旧音频的转写',
+      cached: true
+    })
+    expect(findCompatible).toHaveBeenCalledOnce()
+    expect(resolve).not.toHaveBeenCalled()
+    expect(decode).not.toHaveBeenCalled()
+    expect(process).not.toHaveBeenCalled()
+    expect(recognize).not.toHaveBeenCalled()
+    repository.close()
+
+    const explicitFalse = new SqliteTranscriptRepository(join(forceRoot, 'explicit-false.sqlite'))
+    seedStaleTranscript(explicitFalse)
+    const second = createPipeline(explicitFalse, '新转写')
+    await expect(
+      second.pipeline.run('account-a', reference, undefined, { force: false })
+    ).resolves.toMatchObject({ transcript: '旧音频的转写', cached: true })
+    expect(second.resolve).not.toHaveBeenCalled()
+    explicitFalse.close()
+  })
+})

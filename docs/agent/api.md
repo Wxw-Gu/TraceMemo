@@ -24,31 +24,48 @@ curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
 
 不要把 Token 放入 URL、Skill 文件、仓库或命令历史可被共享的脚本中。
 
-新配置必须优先使用 `TRACEMEMO_API_TOKEN`。已安装的旧 Reader Skill 可在 v2.2.0 兼容期内继续读取 `WECHATEXPLORER_API_TOKEN`；如果两个变量都存在，以新变量为准。
+新配置必须优先使用 `TRACEMEMO_API_TOKEN`。应用生成的安装指令仍会提示：尚未升级的旧配置可以继续读取 `WECHATEXPLORER_API_TOKEN`，但新配置必须使用新变量名；如果两个变量都存在，以新变量为准。当前没有设定旧变量名的移除时间。
+
+Token 由应用生成并保存在本机，**不接受用环境变量覆盖**：Agent 侧的环境变量只是把 Token 传给 Agent 自己的方式，不是服务端的鉴权来源。
 
 ## 端点
 
-| 方法 | 路径                         | 作用                                   | 参数/请求体                                                     |
-| ---- | ---------------------------- | -------------------------------------- | --------------------------------------------------------------- |
-| GET  | `/api/v1/health`             | 服务与数据库健康状态                   | 无                                                              |
-| GET  | `/api/v1/current_time`       | 本机时间、时区和 Unix 时间戳           | 无                                                              |
-| GET  | `/api/v1/contact`            | 联系人和群聊列表                       | `filter`、`type=user\|group`                                    |
-| GET  | `/api/v1/chatroom`           | 群聊列表                               | `keyword`                                                       |
-| GET  | `/api/v1/recent_chat`        | 最近会话                               | `limit`，默认 50                                                |
-| GET  | `/api/v1/chatlog`            | 指定会话的聊天记录                     | 必填 `talker`；可选 `time` 或 `startTime`/`endTime`             |
-| GET  | `/api/v1/media/{mediaId}`    | 获取图片消息的二进制资源               | 原样使用 `/chatlog` 返回的 `media.url`，不要用消息 `id` 拼接     |
-| GET  | `/api/v1/group_snapshot`     | 群成员快照                             | 必填 `md5`                                                      |
-| GET  | `/api/v1/resolve`            | 将昵称、wxid 或 md5 解析为会话         | 必填 `q`                                                        |
-| POST | `/api/v1/report`             | 将结构化日报渲染为 HTML 与 PNG         | `GroupReportExportRequest` JSON                                 |
-| GET  | `/api/v1/agent/status`       | Agent Hub、连接器和数据库状态          | 无                                                              |
-| POST | `/api/v1/agent/group-report` | 读取群聊并生成总结图片                 | `{ "group": "群名或标识", "range": "today\|yesterday\|7days" }` |
-| POST | `/api/v1/agent/send`         | 通过已连接机器人测试发送文字或本地图片 | `{ "to": "接收者", "text": "...", "media_url": "..." }`         |
+| 方法   | 路径                                                            | 作用                                   | 参数/请求体                                                     |
+| ------ | --------------------------------------------------------------- | -------------------------------------- | --------------------------------------------------------------- |
+| GET    | `/api/v1/health`                                                | 服务与数据库健康状态                   | 无                                                              |
+| GET    | `/api/v1/current_time`                                          | 本机时间、时区和 Unix 时间戳           | 无                                                              |
+| GET    | `/api/v1/contact`                                               | 联系人和群聊列表                       | `filter`、`type=user\|group`                                    |
+| GET    | `/api/v1/chatroom`                                              | 群聊列表                               | `keyword`                                                       |
+| GET    | `/api/v1/recent_chat`                                           | 最近会话                               | `limit`，默认 50                                                |
+| GET    | `/api/v1/chatlog`                                               | 指定会话的聊天记录                     | 必填 `talker`；可选 `time` 或 `startTime`/`endTime`             |
+| GET    | `/api/v1/media/{mediaId}`                                       | 获取图片消息的二进制资源               | 原样使用 `/chatlog` 返回的 `media.url`，不要用消息 `id` 拼接    |
+| GET    | `/api/v1/group_snapshot`                                        | 群成员快照                             | 必填 `md5`                                                      |
+| GET    | `/api/v1/resolve`                                               | 将昵称、wxid 或 md5 解析为会话         | 必填 `q`                                                        |
+| POST   | `/api/v1/report`                                                | 将结构化日报渲染为 HTML 与 PNG         | `GroupReportExportRequest` JSON                                 |
+| GET    | `/api/v1/agent/status`                                          | Agent Hub、连接器和数据库状态          | 无                                                              |
+| POST   | `/api/v1/agent/group-report`                                    | 读取群聊并生成总结图片                 | `{ "group": "群名或标识", "range": "today\|yesterday\|7days" }` |
+| POST   | `/api/v1/agent/send`                                            | 通过已连接机器人测试发送文字或本地图片 | `{ "to": "接收者", "text": "...", "media_url": "..." }`         |
+| GET    | `/api/v1/wechat-personal/send-capability`                       | 个人微信发送能力状态                   | 无                                                              |
+| GET    | `/api/v1/scheduled-reports`                                     | 定时日报任务列表                       | 无                                                              |
+| POST   | `/api/v1/scheduled-reports`                                     | 创建定时日报任务                       | `ScheduledReportApiCreateRequest` JSON                          |
+| GET    | `/api/v1/scheduled-reports/{id}`                                | 查询单个定时日报任务                   | 无                                                              |
+| PATCH  | `/api/v1/scheduled-reports/{id}`                                | 修改定时日报任务                       | `ScheduledReportApiUpdateRequest` JSON                          |
+| DELETE | `/api/v1/scheduled-reports/{id}`                                | 删除定时日报任务                       | 无                                                              |
+| POST   | `/api/v1/scheduled-reports/{id}/enable`                         | 启用定时日报任务                       | 无                                                              |
+| POST   | `/api/v1/scheduled-reports/{id}/disable`                        | 暂停定时日报任务                       | 无                                                              |
+| POST   | `/api/v1/scheduled-reports/{id}/run`                            | 立即执行一次并返回 execution           | 无                                                              |
+| GET    | `/api/v1/scheduled-reports/{id}/executions`                     | 查询某个任务的执行记录                 | 无                                                              |
+| POST   | `/api/v1/scheduled-reports/executions/{executionId}/retry-send` | 复用已有 PNG 重试发送                  | 无                                                              |
+
+`/api/v1/query/*` 是一组结构化的 Query 端点，见下方[LLM-friendly Query Tool API](#llm-friendly-query-tool-api)。
 
 ### 这些端点与实时机器人有什么关系
 
 - `/api/v1/agent/status` 只用于查询 Agent Hub、微信连接器和数据库状态；
 - `/api/v1/agent/group-report` 由外部 Agent 或脚本主动请求生成群聊总结图片；
 - `/api/v1/agent/send` 是受 Bearer Token 保护的开发者/测试发送入口，用于通过已经连接的机器人发送文字或本地图片；它不是任意群发能力，也不是实时消息订阅接口；
+- `/api/v1/scheduled-reports*` 会**写入**应用状态：创建、修改、删除、启停定时日报任务，以及立刻执行一次。加上 `/report` 和 `/agent/send`，这个 API 并非只读接口——拿到 Token 就能改配置、生成报告并发送微信消息，请按本机敏感凭据对待；
+- `POST /api/v1/scheduled-reports/{id}/run` 与定时触发共用同一条链路：读取群聊 → 生成报告 → 保存 Report History → 尝试发送；
 - 当前 API 没有对外暴露实时入站 webhook。微信消息由应用内部的 Agent Hub 和微信连接器接收、处理和回复。
 
 ## 时间查询
@@ -83,10 +100,12 @@ curl -H "$AUTH" "$BASE/chatlog?talker=技术交流群&time=2026-08-07"
 ## 响应与错误
 
 - `200`：请求成功；
+- `201`：定时日报任务创建成功；
 - `401`：缺少、错误或已失效的 Bearer Token；
 - `400`：参数或 JSON 请求体无效；
 - `422`：媒体标识格式错误，或目标消息不是可读取的图片（`NOT_IMAGE`）；
 - `403`：浏览器 Origin 不在允许的 loopback 列表；
+- `409`：定时日报任务重复（`error === "duplicate"`，响应里会带回已存在的任务），或群聊名称匹配到多个目标（`ambiguous_contact`）；
 - `404`：端点、会话或群聊不存在；媒体标识未登记、已过期、有歧义，或图片文件不存在（`NOT_FOUND`）。媒体请求遇到此状态时，先重新读取 `/chatlog` 并使用新的 `media.url`；若仍失败，再检查本地图片文件是否存在；
 - `503`：数据库或 Agent Hub 尚未就绪；
 - `500`：服务端处理或报告渲染失败。
@@ -154,12 +173,12 @@ curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/convers
 
 `query/messages`、`query/search`、`query/message-context` 和 `query/conversation-overview` 都接受一个可选的 `scope`，用来把检索限制在一个确定的语料边界内：
 
-| scope | 含义 |
-| ----- | ---- |
-| `{"kind":"all"}` | 所有可读会话（默认；省略 `scope` 等价于此） |
-| `{"kind":"groups"}` | 只搜群聊语料，**且包含群成员实际发送的消息**（不是群名称或群元数据） |
-| `{"kind":"contact","conversationId":"…"}` | 只搜该一对一会话 |
-| `{"kind":"current","conversationId":"…"}` | 只搜指定的那个会话（单聊或群聊） |
+| scope                                     | 含义                                                                 |
+| ----------------------------------------- | -------------------------------------------------------------------- |
+| `{"kind":"all"}`                          | 所有可读会话（默认；省略 `scope` 等价于此）                          |
+| `{"kind":"groups"}`                       | 只搜群聊语料，**且包含群成员实际发送的消息**（不是群名称或群元数据） |
+| `{"kind":"contact","conversationId":"…"}` | 只搜该一对一会话                                                     |
+| `{"kind":"current","conversationId":"…"}` | 只搜指定的那个会话（单聊或群聊）                                     |
 
 `conversationId` 是会话标识，可用 `/api/v1/resolve` 或 `/api/v1/contact` 得到。`scope` 一旦给出就是**权威边界**：`target` 落在范围之外会被拒绝（`status: "invalid_tool_arguments"`、`constraint: "target_outside_scope"`），不会静默扩大范围；范围里包含多个会话时，`query/messages` 与 `query/conversation-overview` 必须显式指定 `target`（`constraint: "target_required_for_scope"`）。
 
@@ -186,11 +205,11 @@ curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/convers
 
 `query/search` 依赖本地索引，而本地索引是异步建立的派生数据，可能落后于聊天数据库。因此它的响应会显式给出覆盖口径：
 
-| 字段 | 含义 |
-| ---- | ---- |
-| `indexLatestAt` | 索引目前覆盖到的源数据时间（epoch ms），`null` 表示无法判定 |
-| `sourceLatestAt` | 聊天数据库里最新的活跃时间（epoch ms），`null` 表示无法判定 |
-| `coverage.state` | `complete` 只在索引确实覆盖了所请求的时间范围时出现 |
+| 字段                | 含义                                                                |
+| ------------------- | ------------------------------------------------------------------- |
+| `indexLatestAt`     | 索引目前覆盖到的源数据时间（epoch ms），`null` 表示无法判定         |
+| `sourceLatestAt`    | 聊天数据库里最新的活跃时间（epoch ms），`null` 表示无法判定         |
+| `coverage.state`    | `complete` 只在索引确实覆盖了所请求的时间范围时出现                 |
 | `freshness.catchUp` | 本次为追赶索引做了什么：`none` / `reused` / `completed` / `pending` |
 
 调用方**必须**把 `coverage` 当真：`coverage.state` 不是 `complete` 且 `evidence` 为空时，只能说明"这段范围暂时无法确认"，**不能**下"没有找到"的结论。索引落后时服务端会自动请求一次追赶同步，但不会让请求无限等待；`freshness.catchUp` 为 `pending` 表示追赶仍在后台进行，稍后重试即可拿到更新的覆盖。

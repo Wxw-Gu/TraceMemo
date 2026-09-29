@@ -1,0 +1,246 @@
+/**
+ * 群发言统计面板。
+ *
+ * ⚠️ 这里的样式**故意不写裸 Tailwind 布局类**：`tailwind.config.cjs` 设了
+ * `preflight: false`（项目要保住既有 SCSS），于是 Tailwind 不提供任何基础重置 ——
+ * 一旦用裸 Tailwind 搭结构，`<ol>` 会自带 `list-style` 与 `padding-left`、
+ * `<h3>/<p>` 会自带 margin、`border` 只有 `border-width` 没有 `border-style`
+ * （边框根本不显示）。所以按项目既有惯例：语义化类 + `--wxex-*` 变量。
+ */
+
+/**
+ * 滚动策略：**整个面板只有一层滚动**。
+ *
+ * DialogContent 默认没有任何 max-height / overflow（见 `ui/dialog.tsx`），所以
+ * 滚动条必须由我们自己给且**只给一处**：这里给面板容器，两个名单列表**不再各自滚动**。
+ * 早先的写法是「面板 68vh 滚动 + 每个列表 320px 滚动」，三层滚动条叠在一起互相打架。
+ */
+
+.group-stats-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 62vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  color: var(--wxex-text-primary);
+}
+
+/* ---- 时间范围 ---- */
+
+.group-stats-ranges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.group-stats-custom-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--wxex-text-secondary);
+}
+
+.group-stats-custom-range input {
+  box-sizing: border-box;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--tm-radius-sm, 4px);
+  background: var(--wxex-bg-elevated);
+  color: var(--wxex-text-primary);
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 13px;
+}
+
+/* ---- 状态提示 ---- */
+
+.group-stats-warning,
+.group-stats-error,
+.group-stats-notice,
+.group-stats-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.group-stats-warning {
+  color: var(--wxex-warning);
+}
+
+/** stale 提示行：左侧说明 + 右侧「去建立索引」的去处。 */
+.group-stats-stale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.group-stats-stale .group-stats-warning {
+  flex: 1;
+  min-width: 0;
+}
+
+.group-stats-error {
+  color: var(--wxex-danger);
+}
+
+.group-stats-notice {
+  color: var(--wxex-success);
+}
+
+.group-stats-hint {
+  color: var(--wxex-text-secondary);
+}
+
+/* ---- 概览 ---- */
+
+.group-stats-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.group-stats-metric {
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--tm-radius-md, 6px);
+  background: var(--wxex-bg-elevated);
+  padding: 10px 12px;
+  text-align: center;
+}
+
+.group-stats-metric-label {
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.group-stats-metric-value {
+  color: var(--wxex-text-primary);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.group-stats-range-text {
+  margin: 0;
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+}
+
+/** 群备注副标题：跟在标题下方，与标题同左对齐。 */
+.group-stats-subtitle {
+  margin: 2px 0 0;
+  color: var(--wxex-text-secondary);
+  font-size: 13px;
+  text-align: left;
+}
+
+/* ---- 分节 ---- */
+
+/**
+ * 两个名单用 tab 分开：一次只渲染一个列表，滚动压力减半。
+ * `ui/tabs.tsx` 的类不依赖 Tailwind preflight（全是属性类，不含基础重置），
+ * 所以这里直接复用，只补一个对齐。
+ */
+.group-stats-tabs {
+  display: flex;
+  flex-direction: column;
+}
+
+.group-stats-tabs-list {
+  align-self: flex-start;
+}
+
+.group-stats-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.group-stats-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.group-stats-section-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--wxex-text-primary);
+}
+
+.group-stats-section-head .group-stats-section-count {
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.group-stats-section-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.group-stats-empty {
+  margin: 0;
+  color: var(--wxex-text-secondary);
+  font-size: 13px;
+}
+
+/* ---- 名单 ---- */
+
+.group-stats-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--tm-radius-md, 6px);
+  background: var(--wxex-bg-app);
+  /* 刻意**不**设 max-height / overflow：列表全量展开，
+     滚动交给唯一的 .group-stats-panel。多一层滚动就多一条打架的滚动条。 */
+}
+
+.group-stats-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.group-stats-row + .group-stats-row {
+  border-top: 1px solid var(--wxex-border);
+}
+
+.group-stats-row-name {
+  color: var(--wxex-text-primary);
+  word-break: break-all;
+}
+
+.group-stats-row-index {
+  color: var(--wxex-text-muted);
+  margin-right: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.group-stats-row-meta {
+  flex: none;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.group-stats-notes {
+  margin: 0;
+  color: var(--wxex-text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}

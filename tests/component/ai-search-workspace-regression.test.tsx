@@ -14,6 +14,7 @@ import {
   makePipelineEvidence,
   makeSearchResult
 } from './support/ai-search-fixtures'
+import { makeImageTextIndexApi } from './support/image-text-index-api'
 
 const api = {
   getSettings: vi.fn(),
@@ -28,7 +29,9 @@ const api = {
   startKnowledgeIndex: vi.fn(),
   writeAppLog: vi.fn(),
   revealAppLog: vi.fn(),
-  copyText: vi.fn()
+  copyText: vi.fn(),
+  // 侧栏新增的「图片文字索引」卡片会读这些桥接；漏掉任何一个都会让卡片挂载即抛错。
+  ...makeImageTextIndexApi()
 }
 
 const readyKnowledgeStatus = {

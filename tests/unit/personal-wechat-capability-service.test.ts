@@ -12,7 +12,7 @@ const status = (
   sipDisabled: true,
   wechatRunning: true,
   wechatPid: 123,
-  endpoint: '127.0.0.1:58080',
+  endpoint: '127.0.0.1:4290',
   endpointReady: true,
   runtimeReady: true,
   attachReady: true,
@@ -31,6 +31,27 @@ const status = (
 })
 
 describe('PersonalWechatCapabilityService', () => {
+  it('uses only the native runtime status on macOS', async () => {
+    const legacyGetStatus = vi.fn(async () => status({ state: 'error' }))
+    const nativeStatus = status({
+      state: 'online',
+      boundWechatPid: 123,
+      canSend: true,
+      canSendText: true
+    })
+    const service = new PersonalWechatCapabilityService(
+      { getStatus: legacyGetStatus },
+      'darwin',
+      async () => nativeStatus
+    )
+
+    await expect(service.getPersonalWechatSendCapability()).resolves.toMatchObject({
+      status: 'ready',
+      capabilities: { text: true }
+    })
+    expect(legacyGetStatus).not.toHaveBeenCalled()
+  })
+
   it.each([
     ['unsupported', status({ platform: 'linux' })],
     ['unconfigured', status({ runtimeReady: false, boundWechatPid: undefined })],
@@ -64,7 +85,11 @@ describe('PersonalWechatCapabilityService', () => {
       })
     ]
   ])('maps %s', (expected, senderStatus) => {
-    const service = new PersonalWechatCapabilityService({ getStatus: async () => senderStatus })
+    const service = new PersonalWechatCapabilityService(
+      { getStatus: async () => senderStatus },
+      senderStatus.platform as NodeJS.Platform,
+      async () => senderStatus
+    )
     return expect(service.getPersonalWechatSendCapability()).resolves.toMatchObject({
       status: expected,
       ready: expected === 'ready',

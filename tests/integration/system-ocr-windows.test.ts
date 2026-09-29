@@ -1,0 +1,119 @@
+// 【Windows】System OCR native fidelity。
+//
+// 这是 capability-gated 的原生冒烟测试：
+//   - 只有在「Windows + native 运行时可用 + 有可用 OCR 语言包」时才真正跑；
+//   - CI 环境无法保证 Windows OCR 语言包，所以中文识别不作为所有 CI 的硬门槛
+//     （mock 单元测试才是 mandatory，见 tests/unit/system-ocr-service.test.ts）；
+//   - 在 Windows 真机上必须实际通过。
+//
+// 这个文件断言的是 **Windows 专有**的性质：Windows 引擎标识、以及「引擎只吃 PNG，
+// JPEG 必须走本服务归一化」这条约束。macOS 的对应测试见 system-ocr-macos.test.ts
+// （macOS 不做归一化，不要把这个文件里的约束套到 macOS 上）。
+//
+// fixture 全部是 synthetic 图片（tests/fixtures/ocr/*），不含任何真实聊天数据。
+
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
+import { SYSTEM_OCR_ENGINE_WINDOWS } from '../../src/shared/system-ocr'
+
+vi.mock('../../src/main/image-decrypt-service', () => ({
+  resolveFfmpegExecutable: (): string => 'ffmpeg'
+}))
+
+import { systemOcrService } from '../../src/main/services/system-ocr-service'
+
+const fixtureDirectory = join(__dirname, '..', 'fixtures', 'ocr')
+
+const toDataUrl = (fileName: string, mimeType: string): string =>
+  `data:${mimeType};base64,${readFileSync(join(fixtureDirectory, fileName)).toString('base64')}`
+
+/** 只比较"主要 token"，避免系统字体 / 识别微差造成脆弱测试。 */
+const expectContainsTokens = (text: string, tokens: string[]): void => {
+  const normalized = text.replace(/[\s\u3000]+/g, '').toLowerCase()
+  for (const token of tokens) {
+    expect(normalized).toContain(token.replace(/[\s\u3000]+/g, '').toLowerCase())
+  }
+}
+
+const capability = await systemOcrService.getCapability()
+const onWindows = process.platform === 'win32'
+const nativeAvailable = onWindows && capability.available
+const platformGate = onWindows ? it : it.skip
+const nativeGate = nativeAvailable ? it : it.skip
+
+/**
+ * Windows 引擎是**按语言包**建识别器的：机器上只有 en-US 时能认英文、认不出中文。
+ * 所以「中文 token」只在确认存在中文识别器时才算硬门槛 —— CI 的 Windows runner
+ * 只装了 en-US，中文识别不能当所有 CI 的硬门槛（文件头的约定）。
+ *
+ * `language` 为 null 表示"跟随系统语言"，无法据以判定，按不可用处理（宁可跳过不可误红）。
+ */
+const nativeChineseGate = nativeAvailable && /^zh/i.test(capability.language ?? '') ? it : it.skip
+
+if (nativeAvailable && !/^zh/i.test(capability.language ?? '')) {
+  console.warn(
+    `[integration] Windows OCR 中文用例跳过：识别器语言为「${capability.language ?? '跟随系统语言'}」，` +
+      '本机未安装中文 OCR 语言包。中文用例需在装有 zh-Hans-CN 识别器的 Windows 机器上通过。'
+  )
+}
+
+describe('Windows System OCR native fidelity', () => {
+  platformGate('reports a usable capability on this machine', () => {
+    expect(capability.engine).toBe(SYSTEM_OCR_ENGINE_WINDOWS)
+    if (!capability.available) {
+      console.warn(`[integration] System OCR native smoke skipped: ${capability.message}`)
+    }
+  })
+
+  nativeChineseGate('recognizes simplified Chinese text', async () => {
+    const result = await systemOcrService.recognize({
+      imageDataUrl: toDataUrl('system-ocr-zh.png', 'image/png')
+    })
+    expect(result.success).toBe(true)
+    expectContainsTokens(result.text, ['TraceMemo', '本地', '文字', '识别'])
+    // 语言要么是探测到的语言包，要么是"跟随系统用户语言"（null）。
+    if (capability.language) {
+      expect(result.language).toBe(capability.language)
+    } else {
+      expect(result.language).toBeNull()
+    }
+    expect(result.durationMs).toBeGreaterThan(0)
+  })
+
+  nativeGate('recognizes English text', async () => {
+    const result = await systemOcrService.recognize({
+      imageDataUrl: toDataUrl('system-ocr-en.png', 'image/png')
+    })
+    expect(result.success).toBe(true)
+    expectContainsTokens(result.text, ['TraceMemo', 'System', 'OCR'])
+  })
+
+  nativeChineseGate('recognizes mixed Chinese/English text', async () => {
+    const result = await systemOcrService.recognize({
+      imageDataUrl: toDataUrl('system-ocr-mixed.png', 'image/png')
+    })
+    expect(result.success).toBe(true)
+    expectContainsTokens(result.text, ['TraceMemo', '本地', 'OCR', '2026'])
+  })
+
+  /**
+   * 引擎的 Buffer 输入只接受 PNG，所以 JPEG 必须走本服务的归一化路径。
+   * 这条用例就是那个约束的回归保护。
+   */
+  nativeGate('normalizes a JPEG source before OCR', async () => {
+    const result = await systemOcrService.recognize({
+      imageDataUrl: toDataUrl('system-ocr-mixed.jpg', 'image/jpeg')
+    })
+    expect(result.success).toBe(true)
+    expectContainsTokens(result.text, ['TraceMemo', 'OCR', '2026'])
+  })
+
+  nativeGate('caches an identical repeat request', async () => {
+    const request = { imageDataUrl: toDataUrl('system-ocr-mixed.png', 'image/png') }
+    const first = await systemOcrService.recognize(request)
+    const second = await systemOcrService.recognize(request)
+    expect(first.success).toBe(true)
+    expect(second.fromCache).toBe(true)
+  })
+})

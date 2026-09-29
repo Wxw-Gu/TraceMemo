@@ -1,0 +1,16 @@
+extends: ./electron-builder.yml
+extraResources:
+  - from: build/app-update.yml
+    to: app-update.yml
+  - from: resources
+    to: resources
+    filter:
+      - '**/*'
+  - from: docs/skill/tracememo-reader
+    to: skill/tracememo-reader
+    filter:
+      - '**/*'
+mac:
+  target:
+    - dmg
+    - zip

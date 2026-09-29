@@ -1,6 +1,6 @@
 ---
 name: tracememo-reader
-description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的微信聊天数据和图片媒体。当用户要求查看微信消息、查找联系人或群聊、总结聊天、查看或理解图片、生成群聊总结时使用。此 Skill 由本机 TraceMemo 提供数据，不是 MCP Server。
+description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的微信聊天数据和图片媒体，并管理定时日报任务。当用户要求查看微信消息、查找联系人或群聊、总结聊天、查看或理解图片、生成群聊总结、查询或修改定时日报时使用。此 Skill 由本机 TraceMemo 提供数据，不是 MCP Server。
 ---
 
 # TraceMemo Reader
@@ -27,31 +27,39 @@ description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的�
 
 ## 端点速查
 
-| 方法   | 路径                                | 用途                                              |
-| ------ | ----------------------------------- | ------------------------------------------------- |
-| GET    | `/health`                           | 健康和数据库状态                                  |
-| GET    | `/current_time`                     | 本机时间与时区                                    |
-| GET    | `/contact`                          | 联系人/群聊列表；可传 `filter`、`type`            |
-| GET    | `/chatroom`                         | 群聊列表；可传 `keyword`                          |
-| GET    | `/recent_chat`                      | 最近会话；可传 `limit`                            |
-| GET    | `/chatlog`                          | 会话消息；必填 `talker`，可传 `time` 或时间戳范围 |
-| GET    | `/media/{mediaId}`                  | 按消息返回的 `media.url` 获取图片二进制资源       |
-| GET    | `/group_snapshot`                   | 群成员快照；必填 `md5`                            |
-| GET    | `/resolve`                          | 昵称、wxid、md5 解析；必填 `q`                    |
-| GET    | `/wechat-personal/send-capability`  | 个人微信图片发送能力状态                          |
-| GET    | `/scheduled-reports`                | 查询全部定时日报任务                              |
-| GET    | `/scheduled-reports/:id`            | 查询单个定时日报任务                              |
-| POST   | `/scheduled-reports`                | 创建定时日报任务                                  |
-| PATCH  | `/scheduled-reports/:id`            | 修改定时日报任务                                  |
-| DELETE | `/scheduled-reports/:id`            | 删除定时日报任务（执行前必须获得用户确认）        |
-| POST   | `/scheduled-reports/:id/enable`     | 启用定时日报任务                                  |
-| POST   | `/scheduled-reports/:id/disable`    | 暂停定时日报任务                                  |
-| POST   | `/scheduled-reports/:id/run`        | 立即执行一次并返回 execution                      |
-| GET    | `/scheduled-reports/:id/executions` | 查询执行记录                                      |
-| POST   | `/report`                           | 将已有日报结构渲染为 HTML/PNG                     |
-| GET    | `/agent/status`                     | Agent Hub、连接器和数据库状态                     |
-| POST   | `/agent/group-report`               | 按群和 `today`/`yesterday`/`7days` 生成总结图片   |
-| POST   | `/agent/send`                       | 已连接机器人发送测试                              |
+| 方法   | 路径                                                    | 用途                                              |
+| ------ | ------------------------------------------------------- | ------------------------------------------------- |
+| GET    | `/health`                                               | 健康和数据库状态                                  |
+| GET    | `/current_time`                                         | 本机时间与时区                                    |
+| GET    | `/contact`                                              | 联系人/群聊列表；可传 `filter`、`type`            |
+| GET    | `/chatroom`                                             | 群聊列表；可传 `keyword`                          |
+| GET    | `/recent_chat`                                          | 最近会话；可传 `limit`                            |
+| GET    | `/chatlog`                                              | 会话消息；必填 `talker`，可传 `time` 或时间戳范围 |
+| GET    | `/media/{mediaId}`                                      | 按消息返回的 `media.url` 获取图片二进制资源       |
+| GET    | `/group_snapshot`                                       | 群成员快照；必填 `md5`                            |
+| GET    | `/resolve`                                              | 昵称、wxid、md5 解析；必填 `q`                    |
+| POST   | `/query/messages`                                       | 按目标与时间范围取消息（结构化，不调用 AI）       |
+| POST   | `/query/search`                                         | 受限语义关键词检索（依赖本地索引，见 freshness）  |
+| POST   | `/query/message-context`                                | 用 `messageRef` 取某条消息的前后文                |
+| POST   | `/query/conversation-overview`                          | 按会话与时间范围提取可总结的证据                  |
+| GET    | `/query/capabilities`                                   | Query 端点能力目录                                |
+| GET    | `/wechat-personal/send-capability`                      | 个人微信发送能力状态（文字 / 图片 / 语音）        |
+| GET    | `/scheduled-reports`                                    | 查询全部定时日报任务                              |
+| GET    | `/scheduled-reports/:id`                                | 查询单个定时日报任务                              |
+| POST   | `/scheduled-reports`                                    | 创建定时日报任务                                  |
+| PATCH  | `/scheduled-reports/:id`                                | 修改定时日报任务                                  |
+| DELETE | `/scheduled-reports/:id`                                | 删除定时日报任务（执行前必须获得用户确认）        |
+| POST   | `/scheduled-reports/:id/enable`                         | 启用定时日报任务                                  |
+| POST   | `/scheduled-reports/:id/disable`                        | 暂停定时日报任务                                  |
+| POST   | `/scheduled-reports/:id/run`                            | 立即执行一次并返回 execution                      |
+| GET    | `/scheduled-reports/:id/executions`                     | 查询执行记录                                      |
+| POST   | `/scheduled-reports/executions/:executionId/retry-send` | 复用已有 PNG 重试发送                             |
+| POST   | `/report`                                               | 将已有日报结构渲染为 HTML/PNG                     |
+| GET    | `/agent/status`                                         | Agent Hub、连接器和数据库状态                     |
+| POST   | `/agent/group-report`                                   | 按群和 `today`/`yesterday`/`7days` 生成总结图片   |
+| POST   | `/agent/send`                                           | 已连接机器人发送测试（文字或本地图片）            |
+
+这个 API **不只是只读的**：`/report` 会渲染并写文件，`/agent/send` 会真的发出微信消息，`/scheduled-reports*` 会创建、修改、删除或立刻执行定时任务。这些调用都要先确认用户意图；`DELETE` 与 `/agent/send` 尤其需要用户明确确认。
 
 ## 定时日报管理
 
@@ -78,7 +86,7 @@ description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的�
 }
 ```
 
-如果 API 返回 `409` 且 `error === "duplicate"`，告诉用户相同任务已经存在，不要再次创建。能力状态为 `unsupported`、`unconfigured`、`needs_binding`、`needs_verification` 或 `error` 时，直接说明需要先在 TraceMemo 设置中完成个人微信绑定和消息能力检测。
+如果 API 返回 `409` 且 `error === "duplicate"`，告诉用户相同任务已经存在，不要再次创建。能力状态不是 `ready` 时（`unsupported`、`unconfigured`、`needs_binding`、`initializing` 或 `error`），直接说明需要先在 TraceMemo 的“设置 → 发送能力”里完成个人微信绑定和能力检测，不要继续创建任务。
 
 ### 查看、修改和执行
 
@@ -101,6 +109,20 @@ description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的�
 - 原消息明确写出的内容；
 - 根据多条消息整理出的总结；
 - 没有来源支持的推断。
+
+## 结构化查询（query/\*）
+
+需要按目标 + 时间范围稳定取数时，优先使用 `query/*`，而不是自己拼 `chatlog`：
+
+- `query/messages`：按 `target`、`timeRange`、`direction`、`messageTypes` 取消息；
+- `query/search`：受限语义关键词检索，依赖本地索引；
+- `query/message-context`：用返回的 `messageRef` 取前后文；
+- `query/conversation-overview`：按会话与时间范围提取可总结的证据。
+
+两个要点：
+
+- `messageRef` 是服务端生成的不透明引用，**不要**自行构造 wxid、md5 或数据库路径；
+- `query/search` 依赖异步建立的本地索引。`coverage.state` 不是 `complete` 且 `evidence` 为空时，只能说“这段范围暂时无法确认”，**不能**下“没有找到”的结论。
 
 ## 媒体消息
 

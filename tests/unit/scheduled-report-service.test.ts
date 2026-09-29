@@ -1,111 +1,33 @@
-import { mkdtemp, readFile, writeFile } from 'fs/promises'
+import { mkdtemp, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/tracememo-test-user-data' } }))
+
 import {
-  calculateNextRunAt,
   ScheduledReportService,
+  calculateNextRunAt,
+  resolveDueScheduledSlot,
   validateScheduleTime
 } from '../../src/main/services/scheduled-report-service'
-import type { AgentHubStatus } from '../../src/shared/agent-hub'
-import type { PersonalWechatSendCapability } from '../../src/shared/personal-wechat'
-import type { GeneratedReportRecord } from '../../src/shared/report-history'
-import type {
-  ScheduledReportExecution,
-  ScheduledReportNotification
-} from '../../src/shared/scheduled-report'
 import type { ScheduledReportDependencies } from '../../src/main/services/scheduled-report-service'
+import type { AgentHubStatus } from '../../src/shared/agent-hub'
+import {
+  createDefaultScheduledReportRule,
+  normalizeScheduledReportConfig,
+  type AutomationRule
+} from '../../src/shared/automation'
+import type { ScheduledRuleRunOutcome } from '../../src/shared/automation'
 
-const capability: PersonalWechatSendCapability = {
-  supported: true,
-  ready: true,
-  status: 'ready',
-  capabilities: { text: true, image: true, voice: true },
-  senderStatus: {} as never,
-  message: 'ready'
-}
-
-const unavailableCapability: PersonalWechatSendCapability = {
-  ...capability,
-  ready: false,
-  status: 'initializing',
-  capabilities: { text: false, image: false, voice: false },
-  message: '请先完成微信消息能力检测'
-}
-
-const reportRecord = (pngPath: string): GeneratedReportRecord => ({
-  id: 'report-1',
-  contactId: 'group-md5',
-  contactName: '研发群',
-  dateRange: '昨日',
-  messageCount: 12,
-  generatedAt: '2026-08-27T01:00:00.000Z',
-  reportDate: '2026-08-26',
-  pngPath,
-  htmlPath: `${pngPath}.html`,
-  htmlStatus: 'ready' as const,
-  pngStatus: 'ready' as const
-})
-
-function makeDependencies(overrides: Record<string, unknown> = {}): ScheduledReportDependencies {
-  return {
-    getCapability: async () => capability,
-    generateReport: async () => ({
-      success: true,
-      groupName: '研发群',
-      pngPath: '/tmp/generated.png',
-      messageCount: 12
-    }),
-    saveGeneratedReport: async () => ({
-      success: true,
-      record: reportRecord('/tmp/saved.png')
-    }),
-    send: async () => ({ success: true, status: capability.senderStatus }),
-    sendNotification: async () => ({ success: true, status: 'sent' as const }),
-    getNotificationRecipient: () => 'owner-wxid',
-    isDatabaseReady: () => true,
-    ...overrides
-  }
-}
-
-async function enableNotifications(storageDir: string): Promise<void> {
-  await writeFile(join(storageDir, 'settings.json'), JSON.stringify({ enabled: true }))
-}
-
-// tick() 为保证调度不阻塞而 fire-and-forget 启动执行，测试只能轮询执行记录来等待结束。
-// 该路径耗时几乎全部是临时目录的 JSON 落盘：本地约 16ms，Windows CI（含杀毒扫描）实测
-// 50~120ms，最慢一次耗尽旧的 200ms 预算后误报“未结束”。窗口按最坏观测值留足余量，
-// 但仍在 5s 的 vitest 用例超时之内，保留有界失败而不是无限等待。
-const EXECUTION_WAIT_TIMEOUT_MS = 4_000
-const EXECUTION_WAIT_POLL_INTERVAL_MS = 10
-
-async function runScheduled(
-  service: ScheduledReportService,
-  taskId: string
-): Promise<ScheduledReportExecution> {
-  const task = (await service.listTasks()).find((item) => item.id === taskId)
-  if (!task) throw new Error('scheduled task not found')
-  const scheduledSlot = task.nextRunAt
-  await service.tick(new Date(Date.parse(scheduledSlot) + 1_000))
-  const deadline = Date.now() + EXECUTION_WAIT_TIMEOUT_MS
-  let lastStatus = 'no execution recorded'
-  for (;;) {
-    // 取最新一次执行，而不是数组首项（executions.json 按追加顺序保存）。
-    const latest = (await service.listExecutions(taskId))
-      .slice()
-      .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))[0]
-    if (latest && latest.status !== 'running') return latest
-    lastStatus = latest?.status ?? 'no execution recorded'
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `scheduled execution did not finish within ${EXECUTION_WAIT_TIMEOUT_MS}ms ` +
-          `(slot ${scheduledSlot}, last status: ${lastStatus})`
-      )
-    }
-    await new Promise((resolve) => setTimeout(resolve, EXECUTION_WAIT_POLL_INTERVAL_MS))
-  }
-}
+/**
+ * 定时日报服务（退役后）只剩三件事：调度 / 异常通知 / 旧数据只读存档。
+ *
+ * 这一组测试守的是**任务来源已经换成 AutomationRuleStore**：
+ * - 调度器**只读规则**，执行一律委派给注入的 `executeRule`；
+ * - 槽位已消费 / 已停用 / 目标待重选 / 数据库未就绪 ⇒ **不执行**；
+ * - 定时失败 ⇒ 推异常通知；手动执行 / `NO_MESSAGES` ⇒ **不推**；
+ * - 旧 `tasks.json` / `executions.json` **只读**，且新执行日志按 ruleId 投影。
+ */
 
 const onlineAgentHubStatus = (): AgentHubStatus => ({
   hub: 'online' as const,
@@ -113,863 +35,482 @@ const onlineAgentHubStatus = (): AgentHubStatus => ({
   updatedAt: Date.now()
 })
 
-describe('scheduled report scheduling', () => {
-  it('validates daily HH:mm and computes the next local occurrence', () => {
+const SCHEDULE_TIME = '18:30'
+
+/** 按本地时区构造 ISO 串：调度走 `Date#setHours`，写死偏移量会让用例只在东八区通过。 */
+const localISO = (year: number, month: number, day: number, hour: number, minute: number): string =>
+  new Date(year, month - 1, day, hour, minute, 0, 0).toISOString()
+
+/** 一个"当天 18:30 之后"的时刻，保证当日槽位已到点。 */
+const AFTER_SLOT = new Date(2026, 7, 27, 18, 31)
+/** 必须早于所有参与断言的槽位，且固定，不能用 `Date.now()`。 */
+const CREATED_AT = new Date(2026, 7, 20, 0, 0).getTime()
+
+function makeRule(overrides: Partial<AutomationRule> = {}): AutomationRule {
+  return {
+    ...createDefaultScheduledReportRule(CREATED_AT, {
+      id: 'rule-1',
+      name: '每日晚报',
+      config: normalizeScheduledReportConfig({
+        schedule: { time: SCHEDULE_TIME },
+        report: { sourceConversationId: 'g1@chatroom', messageTypes: ['text'] }
+      })
+    }),
+    ...overrides
+  }
+}
+
+interface Harness {
+  service: ScheduledReportService
+  storageDir: string
+  rules: AutomationRule[]
+  /** **真正注入进 service 的那个** mock（可能来自 `overrides`）。 */
+  executeRule: ReturnType<typeof vi.fn>
+  sendNotification: ReturnType<typeof vi.fn>
+  listExecutions: ReturnType<typeof vi.fn>
+}
+
+async function makeHarness(
+  overrides: Partial<ScheduledReportDependencies> = {},
+  rules: AutomationRule[] = [makeRule()]
+): Promise<Harness> {
+  const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-'))
+  const executeRule = vi.fn(
+    async (): Promise<ScheduledRuleRunOutcome> => ({
+      executed: true,
+      executionId: 'exec-1',
+      status: 'success',
+      reportGenerated: true
+    })
+  )
+  const sendNotification = vi.fn().mockResolvedValue({ success: true, status: 'sent' })
+  const listExecutions = vi.fn().mockReturnValue([])
+  const deps = {
+    storageDir,
+    executeRule,
+    listRules: () => rules,
+    listExecutions,
+    sendNotification,
+    getNotificationRecipient: () => 'owner-wxid',
+    getAgentHubStatus: onlineAgentHubStatus,
+    isDatabaseReady: () => true,
+    now: () => AFTER_SLOT,
+    ...overrides
+  } as unknown as ScheduledReportDependencies
+  const service = new ScheduledReportService(deps)
+  return {
+    service,
+    storageDir,
+    rules,
+    // 用 dep 上的**最终**实现回填，避免 `overrides` 覆盖后断言打空。
+    executeRule: deps.executeRule as unknown as ReturnType<typeof vi.fn>,
+    sendNotification: deps.sendNotification as unknown as ReturnType<typeof vi.fn>,
+    listExecutions: deps.listExecutions as unknown as ReturnType<typeof vi.fn>
+  }
+}
+
+describe('定时日报 · 时间计算', () => {
+  it('校验 HH:mm 并计算下一次本地时刻', () => {
     expect(validateScheduleTime('09:05')).toBe(true)
     expect(validateScheduleTime('24:00')).toBe(false)
-    const from = new Date('2026-08-27T10:00:00+08:00')
-    const expectedNext = new Date(from)
-    expectedNext.setHours(9, 5, 0, 0)
-    if (expectedNext.getTime() <= from.getTime()) expectedNext.setDate(expectedNext.getDate() + 1)
-    expect(calculateNextRunAt('09:05', from)).toBe(expectedNext.toISOString())
-    const expectedSameDay = new Date(from)
-    expectedSameDay.setHours(11, 5, 0, 0)
-    expect(calculateNextRunAt('11:05', from)).toBe(expectedSameDay.toISOString())
+    expect(validateScheduleTime('9:5')).toBe(false)
+    const from = new Date(2026, 7, 27, 10, 0)
+    expect(calculateNextRunAt('18:30', from)).toBe(localISO(2026, 8, 27, 18, 30))
+    // 已经过了今天的点 ⇒ 顺延到明天。
+    expect(calculateNextRunAt('09:00', from)).toBe(localISO(2026, 8, 28, 9, 0))
   })
 
-  it('defaults notification settings to off and persists a successful enablement', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-settings-'))
-    const sendNotification = vi.fn(async () => ({ success: true, status: 'sent' as const }))
-    const service = new ScheduledReportService({
-      storageDir,
-      getAgentHubStatus: onlineAgentHubStatus,
-      getNotificationRecipient: () => 'owner-wxid',
-      sendNotification
-    })
-
-    await expect(service.getNotificationSettings()).resolves.toEqual({ enabled: false })
-    const enabled = await service.setNotificationEnabled(true)
-
-    expect(enabled).toEqual({ success: true, data: { enabled: true } })
-    expect(sendNotification).toHaveBeenCalledWith({
-      to: 'owner-wxid',
-      text: `✅ TraceMemo 定时日报通知已开启
-
-以后定时日报生成或发送出现异常时，
-我会通过这里通知你。`
-    })
-    const restored = new ScheduledReportService({ storageDir })
-    await expect(restored.getNotificationSettings()).resolves.toEqual({ enabled: true })
-    await expect(service.setNotificationEnabled(false)).resolves.toEqual({
-      success: true,
-      data: { enabled: false }
-    })
-    await expect(restored.getNotificationSettings()).resolves.toEqual({ enabled: true })
-    const afterClose = new ScheduledReportService({ storageDir })
-    await expect(afterClose.getNotificationSettings()).resolves.toEqual({ enabled: false })
-  })
-
-  it.each([
-    {
-      name: 'rejects an offline Agent Hub',
-      status: { hub: 'offline' as const, connector: 'online' as const, updatedAt: Date.now() },
-      recipient: 'owner-wxid',
-      reason: 'agent_hub_offline' as const
-    },
-    {
-      name: 'rejects an offline connector',
-      status: { hub: 'online' as const, connector: 'disconnected' as const, updatedAt: Date.now() },
-      recipient: 'owner-wxid',
-      reason: 'connector_offline' as const
-    },
-    {
-      name: 'rejects a missing notification recipient',
-      status: onlineAgentHubStatus(),
-      recipient: undefined,
-      reason: 'recipient_not_bound' as const
-    }
-  ])('$name before saving enabled=true', async ({ status, recipient, reason }) => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-capability-'))
-    const sendNotification = vi.fn()
-    const service = new ScheduledReportService({
-      storageDir,
-      getAgentHubStatus: () => status,
-      getNotificationRecipient: () => recipient,
-      sendNotification
-    })
-
-    const result = await service.setNotificationEnabled(true)
-
-    expect(result).toMatchObject({ success: false, data: { enabled: false }, reason })
-    expect(sendNotification).not.toHaveBeenCalled()
-    await expect(service.getNotificationSettings()).resolves.toEqual({ enabled: false })
-  })
-
-  it('does not enable notifications when the real test send fails', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-send-test-'))
-    const sendNotification = vi.fn(async () => ({
-      success: false,
-      status: 'send_failed' as const,
-      error: '连接器返回 500'
-    }))
-    const service = new ScheduledReportService({
-      storageDir,
-      getAgentHubStatus: onlineAgentHubStatus,
-      getNotificationRecipient: () => 'owner-wxid',
-      sendNotification
-    })
-
-    const result = await service.setNotificationEnabled(true)
-
-    expect(result).toMatchObject({
-      success: false,
-      data: { enabled: false },
-      reason: 'send_failed',
-      error: '连接器返回 500'
-    })
-    await expect(service.getNotificationSettings()).resolves.toEqual({ enabled: false })
-  })
-
-  it('persists lifecycle, executes generation and image sending, and restores tasks', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-'))
-    const now = new Date('2026-08-27T01:00:00.000Z')
-    const generatedPath = join(storageDir, 'report.png')
-    let generated = 0
-    let sent = 0
-    const saveHistory = vi.fn().mockResolvedValue({ success: true })
-    const service = new ScheduledReportService({
-      storageDir,
-      now: () => now,
-      getCapability: async () => capability,
-      generateReport: async () => {
-        generated += 1
-        return { success: true, pngPath: generatedPath }
-      },
-      send: async () => {
-        sent += 1
-        return { success: true, status: capability.senderStatus }
-      },
-      saveGeneratedReport: saveHistory,
-      isDatabaseReady: () => true
-    })
-    const created = await service.createTask({
-      name: '每日群报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-    expect(created.success).toBe(true)
-    expect(created.data?.reportRange).toBe('yesterday')
-    const taskId = created.data!.id
-    const run = await service.runScheduledReportNow(taskId)
-    expect(run.data?.status).toBe('success')
-    expect(generated).toBe(1)
-    expect(sent).toBe(1)
-    expect(saveHistory).toHaveBeenCalledWith(
-      expect.objectContaining({
-        contactName: '研发群',
-        reportDate: undefined,
-        pngPath: generatedPath,
-        messageCount: 0
-      })
-    )
-    expect(await service.listExecutions(taskId)).toHaveLength(1)
-    const restored = new ScheduledReportService({
-      storageDir,
-      getCapability: async () => capability
-    })
-    expect((await restored.listTasks())[0].id).toBe(taskId)
-    await service.setTaskEnabled(taskId, false)
-    expect((await service.listTasks())[0].enabled).toBe(false)
-    await service.deleteTask(taskId)
-    expect(await service.listTasks()).toHaveLength(0)
-    expect(
-      JSON.parse(await readFile(join(storageDir, 'executions.json'), 'utf8'))[0].message
-    ).toContain('微信发送成功')
-  })
-
-  it('passes a selected today range through a scheduled 20:00 execution', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-today-'))
-    let currentTime = new Date(2026, 7, 27, 19, 59, 0)
-    const generateReport = vi.fn(async () => ({
-      success: true,
-      groupName: '研发群',
-      pngPath: '/tmp/generated.png',
-      messageCount: 1
-    }))
-    const service = new ScheduledReportService({
-      storageDir,
-      now: () => currentTime,
-      getCapability: async () => capability,
-      generateReport,
-      saveGeneratedReport: async () => ({ success: true, record: reportRecord('/tmp/saved.png') }),
-      send: async () => ({ success: true, status: capability.senderStatus }),
-      isDatabaseReady: () => true
-    })
-    const created = await service.createTask({
-      name: '今日日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '20:00',
-      reportRange: 'today'
-    })
-    expect(created.success).toBe(true)
-    currentTime = new Date(2026, 7, 27, 20, 0, 0)
-
-    const execution = await runScheduled(service, created.data!.id)
-
-    expect(execution.status).toBe('success')
-    expect(generateReport).toHaveBeenCalledWith(
-      expect.objectContaining({ group: '研发群', range: 'today' })
+  it('resolveDueScheduledSlot 给出"已经到点、最近的那个"槽位', () => {
+    // 18:31 时，18:30 已经到点 ⇒ 槽位是今天 18:30。
+    expect(resolveDueScheduledSlot(SCHEDULE_TIME, AFTER_SLOT)).toBe(localISO(2026, 8, 27, 18, 30))
+    // 18:29 时，今天的点还没到 ⇒ 最近一个槽位是昨天。
+    expect(resolveDueScheduledSlot(SCHEDULE_TIME, new Date(2026, 7, 27, 18, 29))).toBe(
+      localISO(2026, 8, 26, 18, 30)
     )
   })
+})
 
-  it('does not send a generated report when history persistence fails', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-history-'))
-    const generatedPath = join(storageDir, 'report.png')
-    const send = vi.fn().mockResolvedValue({ success: true, status: capability.senderStatus })
-    const service = new ScheduledReportService({
-      storageDir,
-      getCapability: async () => capability,
-      generateReport: async () => ({ success: true, pngPath: generatedPath }),
-      saveGeneratedReport: vi.fn().mockResolvedValue({ success: false, error: '磁盘不可写' }),
-      send,
-      isDatabaseReady: () => true
+describe('定时日报 · 调度器', () => {
+  it('到点且未消费 ⇒ 以 schedule 触发，并把槽位交给 AutomationService', async () => {
+    const { service, executeRule } = await makeHarness()
+
+    await service.tick(AFTER_SLOT)
+    await service.settle()
+
+    expect(executeRule).toHaveBeenCalledTimes(1)
+    const [ruleId, options] = executeRule.mock.calls[0]
+    expect(ruleId).toBe('rule-1')
+    expect(options).toEqual({
+      trigger: 'schedule',
+      scheduledSlot: localISO(2026, 8, 27, 18, 30)
     })
-    const created = await service.createTask({
-      name: '历史失败日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-
-    const result = await service.runScheduledReportNow(created.data!.id)
-
-    expect(result.success).toBe(false)
-    expect(result.data?.error).toContain('report_history_save_failed:磁盘不可写')
-    expect(send).not.toHaveBeenCalled()
   })
 
-  it('records manual failures without creating user notifications', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-manual-error-'))
-    const sendNotification = vi.fn()
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({
-        sendNotification,
-        generateReport: async () => ({
-          success: false,
-          error: 'maximum context length exceeded',
-          errorStage: 'ai' as const
-        })
-      })
-    })
-    const created = await service.createTask({
-      name: '手动失败日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-
-    const result = await service.runScheduledReportNow(created.data!.id)
-
-    expect(result.data).toMatchObject({ status: 'failed', triggerType: 'manual' })
-    expect(result.data?.notificationStatus).toBe('not_needed')
-    expect(sendNotification).not.toHaveBeenCalled()
-    expect(await service.listNotifications()).toHaveLength(0)
-  })
-
-  it('sends a debug scheduled failure notification without generating or sending a report', async () => {
-    const storageDir = await mkdtemp(
-      join(tmpdir(), 'tracememo-scheduled-report-debug-notification-')
-    )
-    await enableNotifications(storageDir)
-    const generateReport = vi.fn()
-    const send = vi.fn()
-    const sendNotification = vi.fn(async () => ({ success: true, status: 'sent' as const }))
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({ generateReport, send, sendNotification })
-    })
-    const created = await service.createTask({
-      name: '调试日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-
-    const result = await service.testScheduledReportErrorNotification(created.data!.id)
-
-    expect(result.success).toBe(true)
-    expect(result.data).toMatchObject({
-      taskId: created.data!.id,
-      triggerType: 'scheduled',
-      status: 'failed',
-      errorCode: 'DEBUG_TEST_NOTIFICATION',
-      notificationStatus: 'sent'
-    })
-    expect(result.data?.technicalMessage).toContain('没有调用 AI')
-    expect(generateReport).not.toHaveBeenCalled()
-    expect(send).not.toHaveBeenCalled()
-    expect(sendNotification).toHaveBeenCalledWith({
-      to: 'owner-wxid',
-      text: expect.stringContaining('定时日报错误通知测试')
-    })
-    expect(await service.listNotifications()).toHaveLength(1)
-  })
-
-  it('turns NO_MESSAGES into a neutral skipped execution without notification', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-no-messages-'))
-    await enableNotifications(storageDir)
-    const sendNotification = vi.fn(async () => ({ success: true, status: 'sent' as const }))
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({
-        sendNotification,
-        getAgentHubStatus: onlineAgentHubStatus,
-        generateReport: async () => ({
-          success: false,
-          error: '所选时间范围没有可总结的消息',
-          errorCode: 'NO_MESSAGES',
-          errorStage: 'data' as const
-        })
-      })
-    })
-    const created = await service.createTask({
-      name: '空消息日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-
-    const execution = await runScheduled(service, created.data!.id)
-
-    expect(execution).toMatchObject({
-      status: 'skipped',
-      errorCode: 'NO_MESSAGES',
-      userTitle: '暂无可生成的日报',
-      userMessage: '所选时间范围内没有可总结的聊天消息。',
-      notificationStatus: 'not_needed'
-    })
-    expect(sendNotification).not.toHaveBeenCalled()
-    expect(await service.listNotifications()).toHaveLength(0)
-  })
-
-  it('suppresses pending notifications when disabled and does not flush them after reopening', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-suppressed-'))
-    await enableNotifications(storageDir)
-    let hubStatus = onlineAgentHubStatus()
-    const sendNotification = vi.fn(async () => ({
-      success: false,
-      status: 'connector_offline' as const,
-      error: '连接器暂时不可用'
-    }))
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({
-        getAgentHubStatus: () => hubStatus,
-        sendNotification,
-        send: async () => ({
-          success: false,
-          status: capability.senderStatus,
-          error: '连接器暂时不可用'
-        })
-      })
-    })
-    const created = await service.createTask({
-      name: '待关闭通知日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-    expect(await service.getNotificationSettings()).toEqual({ enabled: true })
-    const execution = await runScheduled(service, created.data!.id)
-    expect(execution.notificationStatus).toBe('pending')
-    expect(await service.listNotifications()).toEqual([
-      expect.objectContaining({ status: 'pending' })
-    ])
-
-    await expect(service.setNotificationEnabled(false)).resolves.toMatchObject({
-      success: true,
-      data: { enabled: false }
-    })
-    expect(await service.listNotifications()).toEqual([
-      expect.objectContaining({ status: 'suppressed' })
-    ])
-
-    hubStatus = onlineAgentHubStatus()
-    sendNotification.mockResolvedValue({ success: true, status: 'sent' })
-    await expect(service.setNotificationEnabled(true)).resolves.toMatchObject({
-      success: true,
-      data: { enabled: true }
-    })
-    expect(sendNotification).toHaveBeenCalledTimes(2)
-    expect((await service.listNotifications())[0].status).toBe('suppressed')
-  })
-
-  it('suppresses stale pending notifications when already disabled', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-stale-pending-'))
-    const notification: ScheduledReportNotification = {
-      id: 'notification-1',
-      executionId: 'execution-1',
-      taskId: 'task-1',
-      type: 'failure',
-      severity: 'error',
-      title: '日报发送失败',
-      message: '连接器暂时不可用',
-      dedupeKey: 'execution-1:failure',
-      channel: 'agent_hub',
-      recipient: 'owner-wxid',
-      status: 'pending',
-      createdAt: '2026-09-02T02:00:00.000Z',
-      attempts: 0
-    }
-    await writeFile(join(storageDir, 'notifications.json'), JSON.stringify([notification]))
-    const service = new ScheduledReportService({
-      storageDir,
-      now: () => new Date('2026-09-02T03:00:00.000Z')
-    })
-
-    await expect(service.setNotificationEnabled(false)).resolves.toEqual({
-      success: true,
-      data: { enabled: false }
-    })
-    expect(await service.listNotifications()).toEqual([
-      expect.objectContaining({
-        status: 'suppressed',
-        suppressedAt: '2026-09-02T03:00:00.000Z',
-        lastError: '定时日报微信异常通知已关闭。'
-      })
-    ])
-  })
-
-  it('allows creating and executing a report when personal WeChat is unavailable', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-waiting-'))
-    await enableNotifications(storageDir)
-    const generateReport = vi.fn(async () => ({
-      success: true,
-      pngPath: '/tmp/generated.png',
-      groupName: '研发群'
-    }))
-    const saveHistory = vi.fn(async () => ({
-      success: true as const,
-      record: reportRecord('/tmp/saved.png')
-    }))
-    const send = vi.fn()
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({
-        getCapability: async () => unavailableCapability,
-        generateReport,
-        saveGeneratedReport: saveHistory,
-        send
-      })
-    })
-
-    const created = await service.createTask({
-      name: '未发送日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-    expect(created.success).toBe(true)
-
-    const execution = await runScheduled(service, created.data!.id)
-
-    expect(execution).toMatchObject({
-      status: 'waiting_to_send',
-      errorCode: 'WECHAT_SEND_UNAVAILABLE',
-      pngPath: '/tmp/saved.png',
-      reportId: 'report-1',
-      sendStatus: 'unavailable',
-      notificationStatus: 'not_needed'
-    })
-    expect(generateReport).toHaveBeenCalledOnce()
-    expect(saveHistory).toHaveBeenCalledOnce()
-    expect(send).not.toHaveBeenCalled()
-    expect(await service.listNotifications()).toHaveLength(0)
-  })
-
-  it('keeps a generated report waiting without creating a notification when sending is unavailable', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-send-block-'))
-    await enableNotifications(storageDir)
-    const sendAction = vi.fn(async () => ({
-      actionId: 'send-unavailable-action',
-      status: 'failed' as const,
-      decision: 'allow' as const,
-      errorCode: 'SEND_CAPABILITY_UNAVAILABLE' as const,
-      reason: '当前微信发送能力不可用',
-      startedAt: '2026-08-27T01:00:00.000Z',
-      finishedAt: '2026-08-27T01:00:01.000Z'
-    }))
-    const sendNotification = vi.fn()
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({ sendAction, sendNotification })
-    })
-    const created = await service.createTask({
-      name: '发送能力未就绪日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-
-    const execution = await runScheduled(service, created.data!.id)
-
-    expect(execution).toMatchObject({
-      status: 'waiting_to_send',
-      errorCode: 'WECHAT_SEND_UNAVAILABLE',
-      sendStatus: 'unavailable',
-      notificationStatus: 'not_needed',
-      pngPath: '/tmp/saved.png'
-    })
-    expect(sendNotification).not.toHaveBeenCalled()
-    expect(await service.listNotifications()).toHaveLength(0)
-  })
-
-  it('keeps unavailable sending waiting on retry without creating a notification', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-send-retry-'))
-    await enableNotifications(storageDir)
-    const sendAction = vi.fn(async () => ({
-      actionId: 'send-unavailable-action',
-      status: 'failed' as const,
-      decision: 'allow' as const,
-      errorCode: 'SEND_CAPABILITY_UNAVAILABLE' as const,
-      reason: '当前微信发送能力不可用',
-      startedAt: '2026-08-27T01:00:00.000Z',
-      finishedAt: '2026-08-27T01:00:01.000Z'
-    }))
-    const sendNotification = vi.fn()
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({ sendAction, sendNotification })
-    })
-    const created = await service.createTask({
-      name: '发送能力未就绪重试日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-    const first = await runScheduled(service, created.data!.id)
-
-    const retried = await service.retryScheduledReportSend(first.id)
-
-    expect(retried.data).toMatchObject({
-      status: 'waiting_to_send',
-      errorCode: 'WECHAT_SEND_UNAVAILABLE',
-      retryCount: 1,
-      sendStatus: 'unavailable',
-      notificationStatus: 'not_needed'
-    })
-    expect(sendAction).toHaveBeenCalledTimes(2)
-    expect(sendNotification).not.toHaveBeenCalled()
-    expect(await service.listNotifications()).toHaveLength(0)
-  })
-
-  it('keeps notifications pending when no reliable recipient is available', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-no-recipient-'))
-    await enableNotifications(storageDir)
-    const sendNotification = vi.fn()
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({
-        send: async () => ({
-          success: false,
-          status: capability.senderStatus,
-          error: '微信发送失败'
+  it('槽位已消费 ⇒ 不再触发（重启后不重复补跑）', async () => {
+    const rule = makeRule({
+      scheduledReport: {
+        ...normalizeScheduledReportConfig({
+          schedule: { time: SCHEDULE_TIME },
+          report: { sourceConversationId: 'g1@chatroom', messageTypes: ['text'] }
         }),
-        getNotificationRecipient: () => undefined,
-        sendNotification
-      })
-    })
-    const created = await service.createTask({
-      name: '待通知日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-
-    const execution = await runScheduled(service, created.data!.id)
-    const [notification] = await service.listNotifications()
-
-    expect(execution.notificationStatus).toBe('pending')
-    expect(notification).toMatchObject({ status: 'pending', attempts: 0 })
-    expect(notification.recipient).toBeUndefined()
-    expect(sendNotification).not.toHaveBeenCalled()
-  })
-
-  it('keeps notifications pending when Agent Hub delivery fails', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-hub-offline-'))
-    await enableNotifications(storageDir)
-    const sendNotification = vi.fn(async () => ({
-      success: false,
-      status: 'connector_offline' as const,
-      error: 'Agent Hub 连接器不可用'
-    }))
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({
-        send: async () => ({
-          success: false,
-          status: capability.senderStatus,
-          error: '微信发送失败'
-        }),
-        sendNotification
-      })
-    })
-    const created = await service.createTask({
-      name: '连接器异常日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-
-    const execution = await runScheduled(service, created.data!.id)
-    const [notification] = await service.listNotifications()
-
-    expect(execution.notificationStatus).toBe('pending')
-    expect(notification).toMatchObject({
-      status: 'pending',
-      attempts: 1,
-      lastError: 'Agent Hub 连接器不可用'
-    })
-    expect(sendNotification).toHaveBeenCalledOnce()
-  })
-
-  it('keeps the generated artifact when the image send attempt fails', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-partial-'))
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({
-        send: vi.fn(async () => ({
-          success: false,
-          status: capability.senderStatus,
-          error: '连接器响应超时'
-        }))
-      })
-    })
-    const created = await service.createTask({
-      name: '发送失败日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-
-    const result = await service.runScheduledReportNow(created.data!.id)
-
-    expect(result.success).toBe(true)
-    expect(result.data).toMatchObject({
-      status: 'partial_success',
-      errorCode: 'WECHAT_SEND_FAILED',
-      pngPath: '/tmp/saved.png',
-      sendStatus: 'failed',
-      sendTarget: '研发群@chatroom'
-    })
-  })
-
-  it('routes scheduled report sends and retries through the Action Gateway adapter', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-gateway-'))
-    const send = vi.fn()
-    const sendAction = vi
-      .fn()
-      .mockResolvedValueOnce({
-        actionId: 'action-1',
-        status: 'failed' as const,
-        decision: 'allow' as const,
-        errorCode: 'SEND_FAILED' as const,
-        reason: '连接器暂时不可用',
-        startedAt: '2026-08-27T01:00:00.000Z',
-        finishedAt: '2026-08-27T01:00:01.000Z'
-      })
-      .mockResolvedValueOnce({
-        actionId: 'action-2',
-        status: 'sent' as const,
-        decision: 'allow' as const,
-        startedAt: '2026-08-27T01:01:00.000Z',
-        finishedAt: '2026-08-27T01:01:01.000Z'
-      })
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({ send, sendAction })
-    })
-    const created = await service.createTask({
-      name: 'Gateway 日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-
-    const first = await runScheduled(service, created.data!.id)
-    const recovered = await service.retryScheduledReportSend(first.id)
-
-    expect(first).toMatchObject({
-      status: 'partial_success',
-      pngPath: '/tmp/saved.png',
-      sendTarget: '研发群@chatroom'
-    })
-    expect(recovered.data).toMatchObject({ status: 'success', retryCount: 1 })
-    expect(send).not.toHaveBeenCalled()
-    expect(sendAction).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        target: '研发群@chatroom',
-        filePath: '/tmp/saved.png',
-        triggerType: 'scheduled',
-        executionId: first.id,
-        taskId: created.data!.id
-      })
-    )
-    expect(sendAction).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        target: '研发群@chatroom',
-        filePath: '/tmp/saved.png',
-        triggerType: 'scheduled',
-        executionId: first.id,
-        retryCount: 1,
-        taskId: created.data!.id
-      })
-    )
-  })
-
-  it('retries an existing PNG without generating the report again', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-retry-'))
-    await enableNotifications(storageDir)
-    const generateReport = vi.fn(async () => ({
-      success: true,
-      pngPath: '/tmp/generated.png',
-      groupName: '研发群'
-    }))
-    let sendCount = 0
-    const send = vi.fn(async (request: { filePath: string }) => {
-      sendCount += 1
-      if (sendCount === 1) {
-        return { success: false, status: capability.senderStatus, error: '连接器暂时不可用' }
+        lastScheduledSlot: localISO(2026, 8, 27, 18, 30)
       }
-      expect(request.filePath).toBe('/tmp/saved.png')
-      return { success: true, status: capability.senderStatus }
     })
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({ generateReport, send })
-    })
-    const created = await service.createTask({
-      name: '可恢复日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-    const first = { data: await runScheduled(service, created.data!.id) }
-    const recovered = await service.retryScheduledReportSend(first.data!.id)
+    const { service, executeRule } = await makeHarness({}, [rule])
 
-    expect(first.data?.status).toBe('partial_success')
-    expect(recovered).toMatchObject({
-      success: true,
-      data: { status: 'success', sendStatus: 'success', retryCount: 1 }
-    })
-    expect(recovered.data).not.toHaveProperty('error')
-    expect(recovered.data).not.toHaveProperty('errorCode')
-    expect(recovered.data).not.toHaveProperty('failedStage')
-    expect(recovered.data).not.toHaveProperty('technicalMessage')
-    expect(recovered.data).not.toHaveProperty('sendError')
-    expect(generateReport).toHaveBeenCalledOnce()
-    expect(send).toHaveBeenCalledTimes(2)
-    expect((await service.listNotifications()).map((item) => item.type)).toContain('recovery')
+    await service.tick(AFTER_SLOT)
+    await service.settle()
+
+    expect(executeRule).not.toHaveBeenCalled()
   })
 
-  it('deduplicates repeated failure notifications for one execution', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-dedupe-'))
-    await enableNotifications(storageDir)
-    const send = vi.fn(async () => ({
-      success: false,
-      status: capability.senderStatus,
-      error: '连接器暂时不可用'
-    }))
-    const sendNotification = vi.fn(async () => ({ success: true, status: 'sent' as const }))
-    const service = new ScheduledReportService({
-      storageDir,
-      ...makeDependencies({ send, sendNotification })
-    })
-    const created = await service.createTask({
-      name: '重复失败日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-
-    const first = { data: await runScheduled(service, created.data!.id) }
-    const retried = await service.retryScheduledReportSend(first.data!.id)
-
-    expect(retried.data?.status).toBe('partial_success')
-    expect(await service.listNotifications()).toHaveLength(1)
-    expect(sendNotification).toHaveBeenCalledOnce()
+  it('停用的规则不调度', async () => {
+    const { service, executeRule } = await makeHarness({}, [makeRule({ enabled: false })])
+    await service.tick(AFTER_SLOT)
+    await service.settle()
+    expect(executeRule).not.toHaveBeenCalled()
   })
 
-  it('normalizes AI and unknown generation failures without a fake WeChat error', async () => {
-    const contextService = new ScheduledReportService({
-      storageDir: await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-context-')),
-      ...makeDependencies({
-        generateReport: async () => ({
-          success: false,
-          error: 'maximum context length exceeded',
-          errorStage: 'ai' as const
+  it('目标待重选的规则不调度（执行必然失败）', async () => {
+    const rule = makeRule({
+      scheduledReport: {
+        ...normalizeScheduledReportConfig({
+          schedule: { time: SCHEDULE_TIME },
+          report: { sourceConversationId: 'g1@chatroom', messageTypes: ['text'] }
+        }),
+        targetNeedsReview: true
+      }
+    })
+    const { service, executeRule } = await makeHarness({}, [rule])
+    await service.tick(AFTER_SLOT)
+    await service.settle()
+    expect(executeRule).not.toHaveBeenCalled()
+  })
+
+  it('数据库未就绪时不调度', async () => {
+    const { service, executeRule } = await makeHarness({ isDatabaseReady: () => false })
+    await service.tick(AFTER_SLOT)
+    await service.settle()
+    expect(executeRule).not.toHaveBeenCalled()
+  })
+
+  it('今天的点还没到 + 昨天已消费 ⇒ 不触发', async () => {
+    // 规则在昨天 18:30 跑过（游标 = 昨天 18:30），现在是今天 18:29：
+    // 最近的槽位仍然是「昨天 18:30」，但它已经消费过 ⇒ 什么都别做。
+    const rule = makeRule({
+      scheduledReport: {
+        ...normalizeScheduledReportConfig({
+          schedule: { time: SCHEDULE_TIME },
+          report: { sourceConversationId: 'g1@chatroom', messageTypes: ['text'] }
+        }),
+        lastScheduledSlot: localISO(2026, 8, 26, 18, 30)
+      }
+    })
+    const { service, executeRule } = await makeHarness({}, [rule])
+
+    await service.tick(new Date(2026, 7, 27, 18, 29))
+    await service.settle()
+
+    expect(executeRule).not.toHaveBeenCalled()
+  })
+
+  it('槽位早于规则创建时间 ⇒ 不触发（新建规则不会被立刻补发）', async () => {
+    // 今天 12:00 建的规则、执行时间 18:30。今天 18:30 还没到，
+    // 最近的槽位是**昨天 18:30** —— 它早于 createdAt，不属于这条规则。
+    // 少了这道闸，新建规则会在下一次 15 秒 tick 里立刻发一份昨天的报告。
+    const rule = makeRule({ createdAt: new Date(2026, 7, 27, 12, 0).getTime() })
+    const { service, executeRule } = await makeHarness({}, [rule])
+
+    await service.tick(new Date(2026, 7, 27, 18, 29))
+    await service.settle()
+
+    expect(executeRule).not.toHaveBeenCalled()
+  })
+
+  it('停机错过一个槽位 ⇒ 补跑最近那个未消费的槽位（不静默丢一天）', async () => {
+    // 规则 08-20 创建、游标停在 08-25 18:30，08-26 那晚应用没开：
+    // 08-27 18:29 启动时，最近未消费的槽位是 08-26 18:30，应当补上。
+    const rule = makeRule({
+      scheduledReport: {
+        ...normalizeScheduledReportConfig({
+          schedule: { time: SCHEDULE_TIME },
+          report: { sourceConversationId: 'g1@chatroom', messageTypes: ['text'] }
+        }),
+        lastScheduledSlot: localISO(2026, 8, 25, 18, 30)
+      }
+    })
+    const { service, executeRule } = await makeHarness({}, [rule])
+
+    await service.tick(new Date(2026, 7, 27, 18, 29))
+    await service.settle()
+
+    expect(executeRule).toHaveBeenCalledTimes(1)
+    expect(executeRule.mock.calls[0][1]).toEqual({
+      trigger: 'schedule',
+      scheduledSlot: localISO(2026, 8, 26, 18, 30)
+    })
+  })
+
+  it('游标比槽位新（用户改过执行时间）⇒ 旧槽位已过期，不再补', async () => {
+    const rule = makeRule({
+      scheduledReport: {
+        ...normalizeScheduledReportConfig({
+          schedule: { time: SCHEDULE_TIME },
+          report: { sourceConversationId: 'g1@chatroom', messageTypes: ['text'] }
+        }),
+        lastScheduledSlot: localISO(2026, 8, 27, 18, 30)
+      }
+    })
+    const { service, executeRule } = await makeHarness({}, [rule])
+
+    // 18:31 时最近槽位正好等于游标 ⇒ 不触发；再把时间回拨到 18:29，
+    // 槽位退化成 08-26 18:30，仍然**比游标旧** ⇒ 同样不触发。
+    await service.tick(AFTER_SLOT)
+    await service.tick(new Date(2026, 7, 27, 18, 29))
+    await service.settle()
+
+    expect(executeRule).not.toHaveBeenCalled()
+  })
+
+  it('schedule 触发的执行结果不会走 conversation gate（并发由 AutomationService 管）', async () => {
+    // 这里只断言"调度器把两次 tick 都原样交给 executeRule"：
+    // 真正的 ruleId inFlight 去重在 AutomationService，见 automation-service 的单测。
+    const { service, executeRule } = await makeHarness()
+    await service.tick(AFTER_SLOT)
+    await service.tick(AFTER_SLOT)
+    await service.settle()
+    expect(executeRule).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('定时日报 · 立即执行', () => {
+  it('手动执行走 manual，且**不消耗槽位**', async () => {
+    const { service, executeRule } = await makeHarness()
+
+    const result = await service.runScheduledReportNow('rule-1')
+
+    expect(result.success).toBe(true)
+    expect(executeRule).toHaveBeenCalledWith('rule-1', { trigger: 'manual' })
+  })
+
+  it('规则不存在时如实报错，不执行', async () => {
+    const { service, executeRule } = await makeHarness()
+    const result = await service.runScheduledReportNow('missing')
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('未找到')
+    expect(executeRule).not.toHaveBeenCalled()
+  })
+})
+
+describe('定时日报 · 微信异常通知', () => {
+  it('定时执行失败 ⇒ 推一条异常通知（能力开启时）', async () => {
+    const { service, storageDir, executeRule, sendNotification } = await makeHarness({
+      executeRule: vi.fn(async () => ({
+        executed: true,
+        executionId: 'exec-fail',
+        status: 'failed',
+        reportGenerated: false,
+        errorSummary: '日报生成失败'
+      })) as unknown as ScheduledReportDependencies['executeRule']
+    })
+    await writeFile(join(storageDir, 'settings.json'), JSON.stringify({ enabled: true }))
+
+    await service.tick(AFTER_SLOT)
+    await service.settle()
+
+    expect(executeRule).toHaveBeenCalledTimes(1)
+    expect(sendNotification).toHaveBeenCalledTimes(1)
+    const text = sendNotification.mock.calls[0][0].text as string
+    expect(text).toContain('每日晚报')
+    expect(text).toContain('日报生成失败')
+
+    const notifications = await service.listNotifications()
+    expect(notifications).toHaveLength(1)
+    expect(notifications[0].status).toBe('sent')
+  })
+
+  it('NO_MESSAGES 不是"失败"，不打扰用户', async () => {
+    const { service, storageDir, sendNotification } = await makeHarness({
+      executeRule: vi.fn(async () => ({
+        executed: true,
+        executionId: 'exec-empty',
+        status: 'failed',
+        reportGenerated: false,
+        errorCode: 'NO_MESSAGES',
+        errorSummary: '暂无可生成的日报'
+      })) as unknown as ScheduledReportDependencies['executeRule']
+    })
+    await writeFile(join(storageDir, 'settings.json'), JSON.stringify({ enabled: true }))
+
+    await service.tick(AFTER_SLOT)
+    await service.settle()
+
+    expect(sendNotification).not.toHaveBeenCalled()
+    expect(await service.listNotifications()).toHaveLength(0)
+  })
+
+  it('通知关闭时不推送，也不排队', async () => {
+    const { service, sendNotification } = await makeHarness({
+      executeRule: vi.fn(async () => ({
+        executed: true,
+        executionId: 'exec-fail',
+        status: 'failed',
+        reportGenerated: false,
+        errorSummary: '日报生成失败'
+      })) as unknown as ScheduledReportDependencies['executeRule']
+    })
+
+    await service.tick(AFTER_SLOT)
+    await service.settle()
+
+    expect(sendNotification).not.toHaveBeenCalled()
+    expect(await service.listNotifications()).toHaveLength(0)
+  })
+
+  it('手动执行失败**不**推异常通知（与旧行为一致）', async () => {
+    const { service, storageDir, sendNotification } = await makeHarness({
+      executeRule: vi.fn(async () => ({
+        executed: true,
+        executionId: 'exec-manual',
+        status: 'failed',
+        reportGenerated: false,
+        errorSummary: '日报生成失败'
+      })) as unknown as ScheduledReportDependencies['executeRule']
+    })
+    await writeFile(join(storageDir, 'settings.json'), JSON.stringify({ enabled: true }))
+
+    await service.runScheduledReportNow('rule-1')
+
+    expect(sendNotification).not.toHaveBeenCalled()
+  })
+
+  it('开启通知前会先做能力检测并试发一条', async () => {
+    const { service, sendNotification } = await makeHarness(
+      { getAgentHubStatus: () => ({ hub: 'offline', connector: 'disconnected', updatedAt: 0 }) },
+      []
+    )
+    const result = await service.setNotificationEnabled(true)
+    expect(result.success).toBe(false)
+    expect(result.reason).toBe('agent_hub_offline')
+    expect(sendNotification).not.toHaveBeenCalled()
+  })
+
+  it('Agent Hub 在线且已绑定接收者 ⇒ 开启成功并落盘', async () => {
+    const { service, storageDir, sendNotification } = await makeHarness({}, [])
+    const result = await service.setNotificationEnabled(true)
+    expect(result.success).toBe(true)
+    expect(sendNotification).toHaveBeenCalledTimes(1)
+    expect(await service.getNotificationSettings()).toEqual({ enabled: true })
+    // 设置**真的**落盘了（不是只改了内存）。
+    const { readFile } = await import('fs/promises')
+    const raw = await readFile(join(storageDir, 'settings.json'), 'utf8')
+    expect(JSON.parse(raw)).toEqual({ enabled: true })
+  })
+})
+
+describe('定时日报 · 旧数据只读存档', () => {
+  it('旧执行记录原样可读，且按旧 taskId / 新 ruleId 双向匹配', async () => {
+    const { service, storageDir } = await makeHarness()
+    await writeFile(
+      join(storageDir, 'executions.json'),
+      JSON.stringify([
+        {
+          id: 'old-exec-1',
+          taskId: 'scheduled_report_old',
+          startedAt: '2026-08-01T10:00:00.000Z',
+          status: 'success',
+          message: '日报生成成功，微信发送成功'
+        }
+      ])
+    )
+    // 重新建一个实例，确保从盘上读（而不是复用内存）。
+    const fresh = new ScheduledReportService({
+      storageDir,
+      listRules: () => [],
+      isDatabaseReady: () => true
+    })
+
+    const all = await fresh.listLegacyExecutions()
+    expect(all).toHaveLength(1)
+    expect(all[0].id).toBe('old-exec-1')
+
+    const byLegacyId = await fresh.listLegacyExecutions('scheduled_report_old')
+    expect(byLegacyId).toHaveLength(1)
+
+    // 迁移后 ruleId 可能形如 `scheduled-report:<旧 id>`（旧 id 缺失时的确定性映射）。
+    const byMappedId = await fresh.listLegacyExecutions('scheduled-report:scheduled_report_old')
+    expect(byMappedId).toHaveLength(1)
+
+    expect(await fresh.listLegacyExecutions('unrelated')).toHaveLength(0)
+    void service
+  })
+
+  it('项目只读投影只暴露「发回来源群」的规则（旧 HTTP 契约能如实表达的那一种）', async () => {
+    const { service } = await makeHarness({}, [
+      makeRule({
+        id: 'rule-source',
+        // 默认目标是 `file_transfer`，旧 HTTP 契约表达不了 ⇒ 这里显式选「发回来源群」。
+        scheduledReport: normalizeScheduledReportConfig({
+          schedule: { time: SCHEDULE_TIME },
+          report: { sourceConversationId: 'g1@chatroom', messageTypes: ['text'] },
+          target: { type: 'source_chat' }
+        })
+      }),
+      makeRule({
+        id: 'rule-file',
+        scheduledReport: normalizeScheduledReportConfig({
+          schedule: { time: SCHEDULE_TIME },
+          report: { sourceConversationId: 'g2@chatroom', messageTypes: ['text'] },
+          target: { type: 'file_transfer' }
         })
       })
-    })
-    const contextTask = await contextService.createTask({
-      name: '上下文日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-    const contextResult = await contextService.runScheduledReportNow(contextTask.data!.id)
-    expect(contextResult.data).toMatchObject({ errorCode: 'AI_CONTEXT_LIMIT', failedStage: 'ai' })
-    expect(contextResult.data?.error).not.toContain('wechat_not_ready')
+    ])
 
-    const unknownService = new ScheduledReportService({
-      storageDir: await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-unknown-')),
-      ...makeDependencies({
-        generateReport: async () => {
-          throw new Error('unexpected generation failure')
-        }
-      })
-    })
-    const unknownTask = await unknownService.createTask({
-      name: '未知错误日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-    const unknownResult = await unknownService.runScheduledReportNow(unknownTask.data!.id)
-    expect(unknownResult.data).toMatchObject({ errorCode: 'UNKNOWN', failedStage: 'report' })
-    expect(unknownResult.data?.error).not.toContain('wechat_not_ready')
+    const tasks = await service.listTasks()
+    expect(tasks.map((task) => task.id)).toEqual(['rule-source'])
   })
 
-  it('keeps old execution records readable and claims one scheduled slot once', async () => {
-    const storageDir = await mkdtemp(join(tmpdir(), 'tracememo-scheduled-report-compat-'))
-    const oldExecution: ScheduledReportExecution = {
-      id: 'old-execution',
-      taskId: 'old-task',
-      startedAt: '2026-08-27T01:00:00.000Z',
-      finishedAt: '2026-08-27T01:01:00.000Z',
-      status: 'failed',
-      error: 'report_generation_failed:旧错误',
-      message: '旧错误'
-    }
-    await writeFile(join(storageDir, 'executions.json'), JSON.stringify([oldExecution]))
-    const generated = vi.fn(async () => ({ success: true, pngPath: '/tmp/generated.png' }))
-    const service = new ScheduledReportService({
-      storageDir,
-      now: () => new Date('2026-08-27T01:00:00.000Z'),
-      ...makeDependencies({ generateReport: generated })
+  it('新执行日志按 ruleId 投影成旧执行形状（只读）', async () => {
+    const { service } = await makeHarness({
+      listExecutions: (() => [
+        {
+          executionId: 'exec-1',
+          ruleId: 'rule-1',
+          ruleName: '每日晚报',
+          triggerTime: Date.parse('2026-08-27T10:00:00.000Z'),
+          trigger: 'schedule',
+          sourceDisplayName: '每日晚报来源群',
+          status: 'failed' as const,
+          durationMs: 1200,
+          steps: [
+            { key: 'report_generating' as const, label: '生成日报', status: 'failed' as const },
+            { key: 'report_sent' as const, label: '发送日报', status: 'pending' as const }
+          ],
+          errorSummary: '日报生成失败'
+        }
+      ]) as unknown as ScheduledReportDependencies['listExecutions']
     })
-    expect(await service.listExecutions()).toEqual([
-      expect.objectContaining({ triggerType: 'scheduled', retryCount: 0 })
-    ])
-    const created = await service.createTask({
-      name: '幂等日报',
-      group: '研发群',
-      target: '研发群@chatroom',
-      scheduleTime: '09:00'
-    })
-    const dueAt = new Date(created.data!.nextRunAt)
-    await service.tick(new Date(dueAt.getTime() + 1_000))
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    await service.tick(new Date(dueAt.getTime() + 2_000))
 
-    expect(generated).toHaveBeenCalledOnce()
-    expect(
-      (await service.listExecutions()).filter((item) => item.taskId === created.data!.id)
-    ).toHaveLength(1)
+    const executions = await service.listExecutions('rule-1')
+    expect(executions).toHaveLength(1)
+    expect(executions[0].taskId).toBe('rule-1')
+    expect(executions[0].triggerType).toBe('scheduled')
+    expect(executions[0].status).toBe('failed')
+    expect(executions[0].error).toBe('日报生成失败')
+  })
+})
+
+describe('定时日报 · 启动与停止', () => {
+  beforeEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('start 会立刻跑一次 tick，stop 后不再有计时器', async () => {
+    const { service, executeRule } = await makeHarness()
+    await service.start()
+    await service.settle()
+    service.stop()
+
+    expect(executeRule).toHaveBeenCalledTimes(1)
   })
 })

@@ -18,10 +18,11 @@ vi.mock('../../src/main/services/personal-wechat-send-service', () => ({
 
 import {
   AUTOMATION_SEND_INTERVAL_MS,
-  WechatActionGateway
+  WechatActionGateway,
+  toPersonalWechatSendResult
 } from '../../src/main/services/wechat-action-gateway'
 import type { PersonalWechatSendCapability } from '../../src/shared/personal-wechat'
-import type { WechatActionResult } from '../../src/shared/wechat-action'
+import type { WechatActionRequest, WechatActionResult } from '../../src/shared/wechat-action'
 
 const readyCapability: PersonalWechatSendCapability = {
   supported: true,
@@ -50,26 +51,34 @@ describe('WechatActionGateway', () => {
     return new WechatActionGateway({ getUserDataPath: () => userData })
   }
 
-  function memberAction(
+  /**
+   * 退群通知 —— 迁移后由 **Automation** 发出（purpose `automation_leave_notification`）。
+   *
+   * 幂等键由 eventId 派生，与 `AutomationService.leaveNotificationIdempotencyKey` 同口径；
+   * 收件人**不再被锁死在事件所在群**（可以发给自己 / 文件传输助手 / 指定好友）。
+   */
+  function leaveNotificationAction(
     gateway: WechatActionGateway,
-    roomId = 'room@chatroom'
+    recipient: WechatActionRequest['recipient'] = { type: 'group', id: 'room@chatroom' },
+    eventId = 'event-1'
   ): Promise<WechatActionResult> {
-    gateway.registerMemberEvent({ id: 'event-1', roomId: 'room@chatroom' })
     return gateway.execute({
-      origin: 'member_monitor',
-      purpose: 'member_left_notification',
+      idempotencyKey: `automation_leave_notification:${eventId}`,
+      origin: 'automation',
+      purpose: 'automation_leave_notification',
       triggerType: 'automation',
-      sourceId: 'event-1',
-      recipient: { type: 'group', id: roomId },
+      executionId: `exec-${eventId}`,
+      sourceId: eventId,
+      recipient,
       content: { type: 'text', text: '张三已退出群聊' }
     })
   }
 
-  it('allows a valid member action, sends once, and writes an audit record', async () => {
+  it('sends a leave notification once and writes an audit record', async () => {
     const userData = mkdtempSync(join(tmpdir(), 'tracememo-wechat-action-'))
     directories.push(userData)
     const gateway = new WechatActionGateway({ getUserDataPath: () => userData })
-    const result = await memberAction(gateway)
+    const result = await leaveNotificationAction(gateway)
 
     expect(result).toMatchObject({ status: 'sent', decision: 'allow' })
     expect(mocks.sender.send).toHaveBeenCalledOnce()
@@ -82,7 +91,7 @@ describe('WechatActionGateway', () => {
     const audit = readJsonSync(join(userData, 'actions', 'wechat-actions.json'))
     expect(audit).toEqual([
       expect.objectContaining({
-        purpose: 'member_left_notification',
+        purpose: 'automation_leave_notification',
         recipientId: 'room@chatroom',
         sendStatus: 'sent',
         decision: 'allow',
@@ -91,23 +100,70 @@ describe('WechatActionGateway', () => {
     ])
   })
 
-  it('deduplicates the same member event across repeated execution calls', async () => {
+  it('deduplicates the same leave event across repeated execution calls', async () => {
     const gateway = createGateway()
-    const first = await memberAction(gateway)
-    const second = await memberAction(gateway)
+    const first = await leaveNotificationAction(gateway)
+    const second = await leaveNotificationAction(gateway)
 
     expect(second.actionId).toBe(first.actionId)
     expect(mocks.sender.send).toHaveBeenCalledOnce()
   })
 
-  it('blocks a recipient outside the source group', async () => {
+  /**
+   * 迁移的核心：**不再有「只能发回原群」的作用域锁**。
+   * 四种目标必须都能发出去，否则「自己 / 文件传输助手 / 指定好友」形同虚设。
+   */
+  it('allows every leave-notification recipient, not just the source group', async () => {
+    // 四条自动化发送串行且彼此间隔 3 秒 —— 用假定时器推过去，别真的等 9 秒。
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-24T10:00:00.000Z'))
     const gateway = createGateway()
-    const result = await memberAction(gateway, 'other@chatroom')
+    const targets: Array<{ to: string; isGroup: boolean }> = []
+    mocks.sender.send.mockImplementation(async (request: { to: string; isGroup: boolean }) => {
+      targets.push({ to: request.to, isGroup: request.isGroup })
+      return { success: true, status: {} }
+    })
+
+    const pending = [
+      leaveNotificationAction(gateway, { type: 'group', id: 'room@chatroom' }, 'event-1'),
+      leaveNotificationAction(gateway, { type: 'contact', id: 'wxid_self' }, 'event-2'),
+      leaveNotificationAction(gateway, { type: 'contact', id: 'filehelper' }, 'event-3'),
+      leaveNotificationAction(gateway, { type: 'contact', id: 'wxid_friend' }, 'event-4')
+    ]
+    await vi.advanceTimersByTimeAsync(AUTOMATION_SEND_INTERVAL_MS * 4)
+    const results = await Promise.all(pending)
+
+    for (const result of results) {
+      expect(result).toMatchObject({ status: 'sent', decision: 'allow' })
+    }
+    expect(targets).toEqual([
+      { to: 'room@chatroom', isGroup: true },
+      { to: 'wxid_self', isGroup: false },
+      { to: 'filehelper', isGroup: false },
+      { to: 'wxid_friend', isGroup: false }
+    ])
+    vi.useRealTimers()
+  })
+
+  /**
+   * 回归闸门：旧的发送用途**已经在代码上不可能再发出去**。
+   * 退群监控不再产生它，allowlist 也把它摘了 —— 谁要是把它加回来，这里会红。
+   */
+  it('blocks the legacy member_left_notification purpose', async () => {
+    const gateway = createGateway()
+    const result = await gateway.execute({
+      origin: 'member_monitor',
+      purpose: 'member_left_notification',
+      triggerType: 'automation',
+      sourceId: 'event-1',
+      recipient: { type: 'group', id: 'room@chatroom' },
+      content: { type: 'text', text: '张三已退出群聊' }
+    })
 
     expect(result).toMatchObject({
       status: 'blocked',
       decision: 'block',
-      errorCode: 'RECIPIENT_SCOPE_VIOLATION'
+      errorCode: 'ACTION_NOT_ALLOWED'
     })
     expect(mocks.sender.send).not.toHaveBeenCalled()
   })
@@ -134,8 +190,8 @@ describe('WechatActionGateway', () => {
   it('returns INVALID_REQUEST for malformed input without throwing from audit handling', async () => {
     const gateway = createGateway()
     const result = await gateway.execute({
-      origin: 'member_monitor',
-      purpose: 'member_left_notification',
+      origin: 'automation',
+      purpose: 'automation_leave_notification',
       triggerType: 'automation',
       recipient: { type: 'group', id: 'room@chatroom' }
     } as never)
@@ -150,8 +206,8 @@ describe('WechatActionGateway', () => {
   it('returns INVALID_RECIPIENT when the recipient id is missing', async () => {
     const gateway = createGateway()
     const result = await gateway.execute({
-      origin: 'member_monitor',
-      purpose: 'member_left_notification',
+      origin: 'automation',
+      purpose: 'automation_leave_notification',
       triggerType: 'automation',
       sourceId: 'event-1',
       recipient: { type: 'group', id: '' },
@@ -166,30 +222,6 @@ describe('WechatActionGateway', () => {
     expect(mocks.sender.send).not.toHaveBeenCalled()
   })
 
-  it('does not accept an event lookup for a different source id', async () => {
-    const userData = mkdtempSync(join(tmpdir(), 'tracememo-wechat-action-'))
-    directories.push(userData)
-    const gateway = new WechatActionGateway({
-      getUserDataPath: () => userData,
-      getMemberEvent: () => ({ id: 'different-event', roomId: 'room@chatroom' })
-    })
-    const result = await gateway.execute({
-      origin: 'member_monitor',
-      purpose: 'member_left_notification',
-      triggerType: 'automation',
-      sourceId: 'event-1',
-      recipient: { type: 'group', id: 'room@chatroom' },
-      content: { type: 'text', text: '张三已退出群聊' }
-    })
-
-    expect(result).toMatchObject({
-      status: 'blocked',
-      decision: 'block',
-      errorCode: 'INVALID_REQUEST'
-    })
-    expect(mocks.sender.send).not.toHaveBeenCalled()
-  })
-
   it('returns a structured capability failure without sending', async () => {
     const gateway = createGateway()
     mocks.capability.getPersonalWechatSendCapability.mockResolvedValueOnce({
@@ -198,7 +230,7 @@ describe('WechatActionGateway', () => {
       capabilities: { text: false, image: false, voice: false },
       message: '当前微信发送能力不可用'
     })
-    const result = await memberAction(gateway)
+    const result = await leaveNotificationAction(gateway)
 
     expect(result).toMatchObject({
       status: 'failed',
@@ -225,7 +257,7 @@ describe('WechatActionGateway', () => {
   it('converts a transport throw into SEND_FAILED', async () => {
     const gateway = createGateway()
     mocks.sender.send.mockRejectedValueOnce(new Error('connector timeout'))
-    const result = await memberAction(gateway)
+    const result = await leaveNotificationAction(gateway)
 
     expect(result).toMatchObject({
       status: 'failed',
@@ -286,17 +318,10 @@ describe('WechatActionGateway', () => {
       if (sentAt.length === 1) throw new Error('first failed')
       return { success: true, status: {} }
     })
-    const first = memberAction(gateway)
+    const first = leaveNotificationAction(gateway)
     await vi.advanceTimersByTimeAsync(0)
-    gateway.registerMemberEvent({ id: 'event-2', roomId: 'room@chatroom' })
-    const second = gateway.execute({
-      origin: 'member_monitor',
-      purpose: 'member_left_notification',
-      triggerType: 'automation',
-      sourceId: 'event-2',
-      recipient: { type: 'group', id: 'room@chatroom' },
-      content: { type: 'text', text: '李四已退出群聊' }
-    })
+    // 第二条用不同的 eventId → 不同的幂等键，才会真的进队列。
+    const second = leaveNotificationAction(gateway, { type: 'group', id: 'room@chatroom' }, 'event-2')
 
     await vi.advanceTimersByTimeAsync(AUTOMATION_SEND_INTERVAL_MS)
     const results = await Promise.all([first, second])
@@ -304,6 +329,55 @@ describe('WechatActionGateway', () => {
     expect(results.map((result) => result.status)).toEqual(['failed', 'sent'])
     expect(sentAt[1] - sentAt[0]).toBe(AUTOMATION_SEND_INTERVAL_MS)
     vi.useRealTimers()
+  })
+
+  it('sends a report postfix only after the image succeeds and keeps the 3s interval', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-23T09:00:00.000Z'))
+    const gateway = createGateway()
+    const sent: Array<{ type: string; at: number }> = []
+    mocks.sender.send.mockImplementation(async (request: { type: string }) => {
+      sent.push({ type: request.type, at: Date.now() })
+      return { success: true, status: {} }
+    })
+
+    const pending = gateway.executeReportImageSequence({
+      recipient: { type: 'group', id: 'room@chatroom' },
+      imagePath: '/tmp/report.png',
+      postfixText: '今日日报'
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent.map((item) => item.type)).toEqual(['image'])
+
+    await vi.advanceTimersByTimeAsync(AUTOMATION_SEND_INTERVAL_MS - 1)
+    expect(sent).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
+    const result = await pending
+
+    expect(result.image.status).toBe('sent')
+    expect(result.postfix?.status).toBe('sent')
+    expect(sent.map((item) => item.type)).toEqual(['image', 'text'])
+    expect(sent[1].at - sent[0].at).toBe(AUTOMATION_SEND_INTERVAL_MS)
+    vi.useRealTimers()
+  })
+
+  it('does not create the report postfix action when the image fails', async () => {
+    const gateway = createGateway()
+    mocks.sender.send.mockResolvedValueOnce({
+      success: false,
+      status: {},
+      error: 'image failed'
+    })
+
+    const result = await gateway.executeReportImageSequence({
+      recipient: { type: 'group', id: 'room@chatroom' },
+      imagePath: '/tmp/report.png',
+      postfixText: '今日日报'
+    })
+
+    expect(result.image.status).toBe('failed')
+    expect(result.postfix).toBeUndefined()
+    expect(mocks.sender.send).toHaveBeenCalledOnce()
   })
 
   it('lets a user action send immediately while an automatic action is waiting', async () => {
@@ -357,7 +431,7 @@ describe('WechatActionGateway', () => {
       .mockResolvedValueOnce({ ...readyCapability, ready: false })
       .mockResolvedValueOnce(readyCapability)
 
-    await expect(memberAction(gateway)).resolves.toMatchObject({
+    await expect(leaveNotificationAction(gateway)).resolves.toMatchObject({
       status: 'failed',
       errorCode: 'SEND_CAPABILITY_UNAVAILABLE'
     })
@@ -374,5 +448,133 @@ describe('WechatActionGateway', () => {
     expect(mocks.sender.send).toHaveBeenCalledOnce()
     expect(Date.now()).toBe(startedAt)
     vi.useRealTimers()
+  })
+
+  /**
+   * 项目规则：**所有发送都走 WechatActionGateway**。
+   *
+   * 手动发送（`wechat-personal:send`）改造前是直连 `PersonalWechatSendService` 的，
+   * 于是没有审计、没有幂等、也不进 Send Log。这一组锁住改造后的语义。
+   */
+  describe('用户手动发送（triggerType: user）', () => {
+    function manualAction(
+      gateway: WechatActionGateway,
+      overrides: Partial<WechatActionRequest> = {}
+    ): Promise<WechatActionResult> {
+      return gateway.execute({
+        origin: 'user_manual',
+        purpose: 'manual_image',
+        triggerType: 'user',
+        recipient: { type: 'group', id: 'room@chatroom' },
+        content: { type: 'image', path: '/tmp/report.png' },
+        ...overrides
+      } as WechatActionRequest)
+    }
+
+    it('放行、发送一次，并写入审计记录', async () => {
+      const userData = mkdtempSync(join(tmpdir(), 'tracememo-wechat-action-'))
+      directories.push(userData)
+      const gateway = new WechatActionGateway({ getUserDataPath: () => userData })
+
+      const result = await manualAction(gateway)
+
+      expect(result).toMatchObject({ status: 'sent', decision: 'allow' })
+      expect(mocks.sender.send).toHaveBeenCalledWith({
+        type: 'image',
+        to: 'room@chatroom',
+        isGroup: true,
+        filePath: '/tmp/report.png'
+      })
+      const audit = readJsonSync(join(userData, 'actions', 'wechat-actions.json'))
+      expect(audit).toEqual([
+        expect.objectContaining({
+          origin: 'user_manual',
+          purpose: 'manual_image',
+          triggerType: 'user',
+          recipientId: 'room@chatroom',
+          decision: 'allow',
+          sendStatus: 'sent'
+        })
+      ])
+    })
+
+    it('不受 automation 的 purpose allowlist 限制，也不吃 3s 节流', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-09-21T01:00:00.000Z'))
+      const gateway = createGateway()
+
+      const first = await manualAction(gateway)
+      const second = await manualAction(gateway)
+
+      expect(first.status).toBe('sent')
+      expect(second.status).toBe('sent')
+      // 节流只对 triggerType === 'automation' 生效：两次点击必须立刻都发出去。
+      expect(mocks.sender.send).toHaveBeenCalledTimes(2)
+      vi.useRealTimers()
+    })
+
+    it('空文本由规范化拦下，不落到发送层', async () => {
+      const gateway = createGateway()
+      const result = await manualAction(gateway, {
+        purpose: 'manual_text',
+        content: { type: 'text', text: '   ' }
+      })
+
+      expect(result.status).toBe('blocked')
+      expect(result.errorCode).toBe('INVALID_REQUEST')
+      expect(mocks.sender.send).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('toPersonalWechatSendResult', () => {
+    const fallback = { canSend: true } as unknown as Parameters<
+      typeof toPersonalWechatSendResult
+    >[1]
+
+    it('优先返回底层 sendResult（它带着真实的 status）', () => {
+      const underlying = { success: true, status: { canSend: true, marker: 'real' } }
+      expect(
+        toPersonalWechatSendResult(
+          {
+            actionId: 'a1',
+            status: 'sent',
+            decision: 'allow',
+            startedAt: '2026-09-21T01:00:00.000Z',
+            finishedAt: '2026-09-21T01:00:01.000Z',
+            sendResult: underlying
+          },
+          fallback
+        )
+      ).toBe(underlying)
+    })
+
+    it('拿不到 sendResult 时按 action.status 合成', () => {
+      const sent = toPersonalWechatSendResult(
+        {
+          actionId: 'a1',
+          status: 'sent',
+          decision: 'allow',
+          startedAt: '2026-09-21T01:00:00.000Z',
+          finishedAt: '2026-09-21T01:00:01.000Z'
+        },
+        fallback
+      )
+      expect(sent).toEqual({ success: true, status: fallback })
+
+      const blocked = toPersonalWechatSendResult(
+        {
+          actionId: 'a2',
+          status: 'blocked',
+          decision: 'block',
+          errorCode: 'ACTION_NOT_ALLOWED',
+          reason: '自动化动作不允许执行',
+          startedAt: '2026-09-21T01:00:00.000Z',
+          finishedAt: '2026-09-21T01:00:01.000Z'
+        },
+        fallback
+      )
+      expect(blocked.success).toBe(false)
+      expect(blocked.error).toBe('自动化动作不允许执行')
+    })
   })
 })

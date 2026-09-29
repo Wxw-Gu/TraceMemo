@@ -42,7 +42,29 @@ export interface KnowledgeSourceMessage {
   voiceTranscript?: string
   /** Local coverage state only. Error text is never copied into the index. */
   voiceTranscriptState?: 'pending' | 'transcribed' | 'failed'
+  /**
+   * 图片里的文字（本地 System OCR 的派生结果）。
+   *
+   * 与 voiceTranscript 同构：这是 **derived content**，原图片消息仍然是
+   * authoritative source。它绝不写回 message.body，也绝不产生"OCR 消息"。
+   */
+  imageOcrText?: string
+  /** 图片 OCR 的本地状态；与 voiceTranscriptState 一样不含错误正文。 */
+  imageOcrState?: KnowledgeImageOcrState
 }
+
+/** 图片 OCR 的本地覆盖状态（错误详情绝不进索引）。 */
+export type KnowledgeImageOcrState =
+  | 'pending'
+  | 'indexed'
+  | 'empty'
+  | 'metadata_missing'
+  | 'image_missing'
+  | 'decrypt_unavailable'
+  | 'decrypt_failed'
+  | 'decode_failed'
+  | 'ocr_failed'
+  | 'cancelled'
 
 export interface KnowledgeNormalizedMessage extends KnowledgeSourceMessage {
   searchableText: string
@@ -194,7 +216,45 @@ export interface KnowledgeEvidence {
   /** The source type belongs to the original message, not the retrieval method. */
   sourceKind: KnowledgeMessageKind
   text: string
+  /**
+   * 这条证据里「从图片里读出来的文字」（本地 System OCR 的派生结果）。
+   *
+   * 只用于**来源解释**：让用户/模型知道这段内容来自图片，而不是群友真的发了一条文字消息。
+   * authoritative source 始终是原始图片消息 —— 这里不产生任何"OCR 消息"。
+   */
+  imageOcrText?: string
+  /**
+   * 命中所依赖的**派生来源**。
+   *
+   * 有值 = 这条结果依赖本地派生内容才能命中（而不是原始消息本身的文字）。
+   * 与 `sourceKind` 正交：`sourceKind` 说的是原始消息是什么，这里说的是"靠什么搜到的"。
+   */
+  derivedSource?: KnowledgeDerivedSource
   score?: number
+}
+
+/**
+ * 派生来源的种类。
+ *
+ * 用 union 而不是 `isOcr: boolean`：以后接视频字幕 / 文件解析时只需要加一个成员，
+ * 不必给每个消费方再添一个布尔字段。UI 侧的展示文案集中在
+ * `renderer/src/components/search/evidenceSourceLabels.ts`，不在这里。
+ */
+export type KnowledgeDerivedSource = 'image_ocr' | 'voice_transcript'
+
+/**
+ * 证据文本面向用户 / 模型时的可读化处理。
+ *
+ * `searchableText` 里的 `图片文字：` 只是索引期用来区分派生内容的内部标签，
+ * 它**绝不能出现在 Evidence 里**：用户不该看到引擎内部前缀，
+ * 而且"这段文字来自图片"应该由结构化的来源标记表达，而不是靠一个冒号前缀。
+ */
+export function toEvidenceDisplayText(searchableText: string): string {
+  return searchableText
+    .split('\n')
+    .map((line) => line.replace(/^\s*(?:图片文字|OCR|system-ocr)\s*[：:]\s*/i, ''))
+    .join('\n')
+    .trim()
 }
 
 export interface KnowledgeVoiceCoverage {
@@ -432,6 +492,62 @@ export interface KnowledgeStatusRequest {
 }
 
 /**
+ * 单个会话内的「按发送者聚合」统计请求。
+ *
+ * 存在的理由：群员统计（谁说话了、说了多少条、谁一个字没说）只需要
+ * `GROUP BY sender_id` 的聚合结果，**不需要**把消息逐条搬到主进程再算。
+ *
+ * 刻意不做成 `KnowledgeQuery` 的一个分支：检索是「找内容」，这里是「数人头」，
+ * 两者的谓词与返回形状没有交集，塞在一起会让两端都长出用不到的条件分支。
+ */
+export interface KnowledgeMemberStatsRequest {
+  accountId: string
+  databaseRoot: string
+  fts: KnowledgeFtsConfig
+  /** 会话 md5（= `md5(username)`），不是原始 `@chatroom`。 */
+  conversationId: string
+  /** Unix epoch **毫秒**，闭区间。与 knowledge 内部口径一致，不经过 WCDB 的秒级边界。 */
+  startTime: number
+  /** Unix epoch **毫秒**，闭区间。 */
+  endTime: number
+}
+
+/** 单个发送者在指定会话 / 时间窗内的发言聚合。 */
+export interface KnowledgeMemberStatRow {
+  senderId: string
+  messageCount: number
+  /** 该发送者在窗口内最后一条消息的时间（epoch ms）。 */
+  lastMessageTime: number
+}
+
+export interface KnowledgeMemberStatsResult {
+  conversationId: string
+  /** 窗口内、排除系统消息之后的总消息数（**含**未归属消息）。 */
+  totalMessages: number
+  /** 按 `messageCount` 降序。 */
+  senders: KnowledgeMemberStatRow[]
+  /**
+   * 窗口内 `sender_id` 缺失的消息数。
+   *
+   * 这些消息**不得归属任何成员**：把它们硬塞给某个人，会让「未发言」名单出现
+   * 错误否定，而这份名单是会被发到群里的。
+   */
+  unattributedMessages: number
+  /** 窗口内被 `kind = 'system'` 排除的消息数。 */
+  excludedSystemMessages: number
+  /**
+   * 窗口内**最早一条消息**的时间（epoch ms），**不过滤 kind**。
+   *
+   * 用途：选「全部」时向用户显示真实的数据起点（「本机这个群第一条消息是什么时候」），
+   * 而不是含糊的「全部历史」。刻意不过滤系统消息 —— 群的第一条往往就是建群通知，
+   * 那才是用户认知里的「第一条」。
+   */
+  earliestMessageTime: number | null
+  /** 派生索引里最新一条消息的时间（epoch ms）；null 表示无法判定。 */
+  indexLatestAt: number | null
+}
+
+/**
  * 索引「已覆盖到的源数据时间」与源数据「当前最新活跃时间」之间允许的固定落差。
  *
  * 两侧都来自消息的 create_time（索引侧 = 完整 pass 扫到的最大 create_time，
@@ -455,7 +571,16 @@ export function isKnowledgeFresh(
 
 export interface KnowledgeWorkerRequest {
   version: 1
-  type: 'index' | 'preflight' | 'search' | 'status' | 'remove' | 'cancel' | 'close' | 'highWater'
+  type:
+    | 'index'
+    | 'preflight'
+    | 'search'
+    | 'status'
+    | 'remove'
+    | 'cancel'
+    | 'close'
+    | 'highWater'
+    | 'memberStats'
   requestId: string
   /** Parent monotonic wall-clock used only for transport timing. */
   sentAt?: number
@@ -464,6 +589,7 @@ export interface KnowledgeWorkerRequest {
     | KnowledgeCapacityPreflightRequest
     | KnowledgeSearchRequest
     | KnowledgeStatusRequest
+    | KnowledgeMemberStatsRequest
     | { accountId: string; databaseRoot: string }
     | { targetRequestId: string }
     | Record<string, never>
@@ -479,6 +605,7 @@ export interface KnowledgeWorkerResponse {
     | KnowledgeCapacityPreflight
     | KnowledgeSearchResult
     | KnowledgeRuntimeStatus
+    | KnowledgeMemberStatsResult
     | { removed: true }
   error?: string
   transport?: {

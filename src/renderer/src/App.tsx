@@ -18,7 +18,6 @@ import { ReportInfoPanel } from './components/reports/ReportInfoPanel'
 import { ReportSourceSidebar } from './components/reports/ReportSourceSidebar'
 import { ReportTaskStatusPanel } from './components/reports/ReportTaskStatusPanel'
 import { ReportViewer } from './components/reports/ReportViewer'
-import { ScheduledReportsWorkspace } from './components/reports/ScheduledReportsWorkspace'
 import { ReportTemplateMarketWorkspace } from './components/reports/ReportTemplateMarketWorkspace'
 import { contactDisplayName } from './components/reports/types'
 import type { GeneratedReportRecord, ReportWorkspaceView } from './components/reports/types'
@@ -42,10 +41,11 @@ import { isRelevantMessageMonitorEvent, parseWcdbMonitorEvent } from './utils/me
 import { enrichQuotedMessages } from './utils/quoted-messages'
 import type { ReportTemplateSelectionId } from '../../shared/report-templates'
 import { switchGeneratedReportTemplate } from './utils/report-template-switch'
-import { runtimePlatform, supportsPersonalWechatSend } from './utils/runtime-environment'
-import { useToast } from './components/ui'
+import { runtimePlatform } from './utils/runtime-environment'
+import { Button, useToast } from './components/ui'
 import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
-import { GroupExitMonitorWorkspace } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
+import { GroupExitMonitorWorkspace, type GroupExitMonitorOpenViewRequest } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
+import { AutomationWorkspace, type AutomationOpenRuleRequest } from './features/automation/AutomationWorkspace'
 import { selectContactAvatarRefreshUsernames } from './utils/contact-avatar'
 import {
   buildContactSearchIndex,
@@ -257,6 +257,17 @@ function App(): React.ReactElement {
   const [databaseEnvironment, setDatabaseEnvironment] = useState<DatabaseKeyEnvironment>()
   const connectionOperationRef = React.useRef(0)
   const [activePage, setActivePage] = useState<AppPage>('archive')
+  /**
+   * 「退群监控 ⇄ 自动化」之间的跨页深链。
+   *
+   * 项目没有 react-router，一级菜单就是 `activePage` 这一份 state，
+   * 所以深链同样是 state —— 用一个单调递增的 requestId 表达"又点了一次"，
+   * 子页面据此重新落位（同一个对象引用不会重复触发 effect）。
+   */
+  const [automationOpenRuleRequest, setAutomationOpenRuleRequest] =
+    React.useState<AutomationOpenRuleRequest | null>(null)
+  const [exitMonitorOpenViewRequest, setExitMonitorOpenViewRequest] =
+    React.useState<GroupExitMonitorOpenViewRequest | null>(null)
   const [archiveJumpTime, setArchiveJumpTime] = useState<number | null>(null)
   /**
    * 精确跳转目标（规范化后的消息 id）。
@@ -268,7 +279,7 @@ function App(): React.ReactElement {
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>('account-database')
   const [reportSourceContact, setReportSourceContact] = useState<Contact | null>(null)
   const [reportWorkspaceView, setReportWorkspaceView] = useState<ReportWorkspaceView>('result')
-  const [reportSection, setReportSection] = useState<'today' | 'scheduled' | 'market'>('today')
+  const [reportSection, setReportSection] = useState<'today' | 'market'>('today')
   const [generatedReports, setGeneratedReports] = useState<GeneratedReportRecord[]>([])
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null)
   const [latestGeneratedReportId, setLatestGeneratedReportId] = useState<string | null>(null)
@@ -1639,8 +1650,47 @@ function App(): React.ReactElement {
     setActivePage('settings')
   }
 
+  /**
+   * 跳到「设置 · 本地索引」。
+   *
+   * 用在群统计这类场景：结果不完整的原因是索引没追平，用户需要一个**可操作的去处**，
+   * 而不是只看到一句「结果可能不完整」却不知道去哪解决。
+   */
+  const openLocalIndexSettings = (): void => {
+    setSettingsCategory('local-index')
+    setActivePage('settings')
+  }
+
   const openAgentHub = (): void => {
     setActivePage('agent-hub')
+  }
+
+  /**
+   * 「退群监控 → 退群通知自动化」。
+   *
+   * 直接落到「自动化 → 规则 → 退群通知」，不是只跳到自动化首页。
+   * 这是纯导航：不改退群监控的任何配置，也不触发任何发送。
+   */
+  const openLeaveNotificationAutomation = (): void => {
+    setAutomationOpenRuleRequest({ ruleType: 'leave_notification', requestId: Date.now() })
+    setActivePage('automation')
+  }
+
+  /**
+   * 「定时日报」已正式迁入自动化，日报页只保留「今日日报 | 社区模板市场」两个 Tab。
+   *
+   * 这里仍然留一个导航入口：用户是从日报页产生"要定时发日报"这个念头的，
+   * 不给路会显得功能被删了。它**不是**第三个 Tab，只是一句去处的说明。
+   */
+  const openScheduledReportAutomation = (): void => {
+    setAutomationOpenRuleRequest({ ruleType: 'scheduled_report', requestId: Date.now() })
+    setActivePage('automation')
+  }
+
+  /** 「自动化 → 退群通知 → 管理监控群聊 / 查看群聊」：回到退群监控的管理群聊页。 */
+  const openExitMonitorGroups = (): void => {
+    setExitMonitorOpenViewRequest({ view: 'manage', requestId: Date.now() })
+    setActivePage('exit-monitor')
   }
 
   const dismissFirstUseWelcome = (): void => {
@@ -1901,12 +1951,12 @@ function App(): React.ReactElement {
         contentFilter={contentFilter}
         onContentFilterChange={setContentFilter}
         onRefresh={() => selectedContact && handleSelectContact(selectedContact, true)}
-        onRefreshData={loadContacts}
         onReloadAvatars={handleReloadCurrentAvatars}
         onLoadOlderMessages={handleLoadOlderMessages}
         onCreateGroupReport={handleOpenReportWorkspace}
         onOpenTextToSpeechSettings={openTextToSpeechSettings}
         onOpenPersonalWechatSettings={openWechatSendSettings}
+        onOpenLocalIndexSettings={openLocalIndexSettings}
         isAiLoading={reportGeneration.isGenerating}
         jumpToTime={archiveJumpTime}
         jumpToMessageId={archiveJumpMessageId}
@@ -1929,22 +1979,6 @@ function App(): React.ReactElement {
         <button
           type="button"
           role="tab"
-          aria-selected={reportSection === 'scheduled'}
-          aria-disabled={!supportsPersonalWechatSend}
-          className={`${reportSection === 'scheduled' ? 'active' : ''} ${!supportsPersonalWechatSend ? 'unsupported' : ''}`}
-          onClick={() => {
-            if (!supportsPersonalWechatSend) {
-              toast({ description: '定时日报目前仅支持 macOS 和 Windows。', duration: 3200 })
-              return
-            }
-            setReportSection('scheduled')
-          }}
-        >
-          定时日报{!supportsPersonalWechatSend && <small>仅 macOS / Windows</small>}
-        </button>
-        <button
-          type="button"
-          role="tab"
           aria-selected={reportSection === 'market'}
           className={reportSection === 'market' ? 'active' : ''}
           onClick={() => setReportSection('market')}
@@ -1952,22 +1986,25 @@ function App(): React.ReactElement {
           社区模板市场
         </button>
       </div>
+      {/*
+        「定时日报已并入自动化」的指引条。
+
+        这里以前是裸 `<p>` + 裸 `<button>`，并且挂了 `.report-workspace-hint` /
+        `.report-workspace-hint-link` 两个**样式表里根本不存在**的类 ——
+        于是就成了一条没样式的文字 + 一个长得不像系统里任何按钮的按钮。
+        现在补上真实样式，按钮统一走 UI 组件库。
+      */}
+      <div className="report-workspace-hint">
+        <span>需要「定时日报」？它已经并入「自动化」，可以按时间自动生成并发送日报。</span>
+        <Button variant="link" size="sm" onClick={openScheduledReportAutomation}>
+          去自动化配置 →
+        </Button>
+      </div>
       <div className="report-workspace-body">
         {reportSection === 'market' ? (
           <ReportTemplateMarketWorkspace
             value={reportGeneration.templateId}
             onChange={reportGeneration.setTemplateId}
-          />
-        ) : reportSection === 'scheduled' ? (
-          <ScheduledReportsWorkspace
-            contacts={contacts}
-            platformSupported={supportsPersonalWechatSend}
-            onOpenWechatSettings={openWechatSendSettings}
-            onOpenAgentHub={openAgentHub}
-            onOpenModelSettings={openModelSettings}
-            onNotice={(message, variant) =>
-              toast({ description: message, variant, duration: 3200 })
-            }
           />
         ) : reportWorkspaceView === 'result' ? (
           <div className="report-center-page">
@@ -2084,10 +2121,24 @@ function App(): React.ReactElement {
             dbReady={isDatabaseConnected}
             contacts={contacts}
             onOpenSendSettings={openWechatSendSettings}
+            openViewRequest={exitMonitorOpenViewRequest}
+            onOpenViewRequestHandled={() => setExitMonitorOpenViewRequest(null)}
+            onOpenLeaveNotificationAutomation={openLeaveNotificationAutomation}
+          />
+        )
+      case 'automation':
+        return (
+          <AutomationWorkspace
+            dbReady={isDatabaseConnected}
+            onOpenSendSettings={openWechatSendSettings}
+            onOpenExitMonitorGroups={openExitMonitorGroups}
+            openRuleRequest={automationOpenRuleRequest}
+            onOpenModelSettings={openModelSettings}
+            onOpenAgentHub={openAgentHub}
           />
         )
       case 'agent-hub':
-        return <AgentHubWorkspace />
+        return <AgentHubWorkspace selfInfo={selfInfo} />
       case 'api':
         return (
           <ApiWorkspace

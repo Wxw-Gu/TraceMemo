@@ -20,6 +20,7 @@ describe('mapAskWechatEvidence', () => {
   it('群消息证据保留群名与成员，且不泄露 md5', () => {
     const [item] = mapAskWechatEvidence([
       {
+        citationId: 'E1',
         messageRef: 'ref-1',
         conversationName: 'TraceMemo 交流群',
         conversationType: 'group',
@@ -39,8 +40,19 @@ describe('mapAskWechatEvidence', () => {
     expect(item.contact.md5).not.toMatch(/^[0-9a-f]{32}$/)
   })
 
+  it('证据编号直接消费 Host 的 citationId，不用数组下标合成', () => {
+    const mapped = mapAskWechatEvidence([
+      { citationId: 'E3', messageRef: 'ref-3', source: 'search_messages' },
+      { citationId: 'E7', messageRef: 'ref-7', source: 'search_messages' }
+    ])
+    // 下标是 0/1；若还在自行编号就会得到 E1/E2 —— 那会让正文 [E3] 指向别的证据。
+    expect(mapped.map((entry) => entry.evidenceId)).toEqual(['E3', 'E7'])
+  })
+
   it('缺少群名时给出可读回退，而不是把群消息归成"群聊"', () => {
-    const [item] = mapAskWechatEvidence([{ messageRef: 'ref-2', source: 'conversation_overview' }])
+    const [item] = mapAskWechatEvidence([
+      { citationId: 'E1', messageRef: 'ref-2', source: 'conversation_overview' }
+    ])
     expect(item.contact.m_nsNickName).toBe('未命名会话')
   })
 })

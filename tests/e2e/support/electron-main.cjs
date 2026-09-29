@@ -21,7 +21,6 @@ const personalWechatSupported = process.platform === 'darwin' || process.platfor
 const unsignedMacUpdate = process.env.WXE_E2E_UNSIGNED_MAC_UPDATE === '1'
 const fixtureNowMs =
   Number.isFinite(configuredNow) && configuredNow > 0 ? configuredNow : Date.now()
-let keepOneBotProcess = false
 
 const formatFixtureDateTime = (timestampSeconds) => {
   const date = new Date(timestampSeconds * 1000)
@@ -290,9 +289,6 @@ let groupExitMonitorState = {
   monitoredGroupCount: 2,
   monitorSelectionConfigured: true,
   monitoredRoomIds: ['group_regular@chatroom', 'group_folded@chatroom'],
-  notificationRoomIds: [],
-  notificationTemplate:
-    '[退群监测]\n\n用户: {user}\n\n群备注: {groupRemark}\n\n微信号: {wxid}\n\n人数: {previousCount} -> {currentCount}\n\n退群时间: {time}',
   lastCheckedAt: fixtureNowMs - 30 * 1000,
   lastReadAt: 0,
   unreadCount: 1
@@ -305,30 +301,17 @@ const cloneGroupExitMonitorState = () => ({
   ).length
 })
 handle('group-exit-monitor:getState', () => cloneGroupExitMonitorState())
-handle('group-exit-monitor:setGroups', (roomIds, notificationRoomIds) => {
+// 只保存**监控范围**：通知配置已迁到自动化规则。
+handle('group-exit-monitor:setGroups', (roomIds) => {
   const selected = Array.isArray(roomIds)
     ? roomIds.filter((roomId) => typeof roomId === 'string' && roomId.endsWith('@chatroom'))
-    : []
-  const notifications = Array.isArray(notificationRoomIds)
-    ? notificationRoomIds.filter(
-        (roomId) => typeof roomId === 'string' && selected.includes(roomId)
-      )
     : []
   groupExitMonitorState = {
     ...groupExitMonitorState,
     monitorSelectionConfigured: true,
     monitoredRoomIds: [...new Set(selected)],
-    notificationRoomIds: [...new Set(notifications)],
     monitoredGroupCount: selected.length,
     lastCheckedAt: fixtureNowMs
-  }
-  return cloneGroupExitMonitorState()
-})
-handle('group-exit-monitor:setTemplate', (template) => {
-  if (typeof template !== 'string' || !template.trim()) throw new Error('模板不能为空')
-  groupExitMonitorState = {
-    ...groupExitMonitorState,
-    notificationTemplate: template.trim()
   }
   return cloneGroupExitMonitorState()
 })
@@ -359,10 +342,280 @@ handle('group-exit-monitor:markRead', (readAt) => {
   return cloneGroupExitMonitorState()
 })
 
-const scheduledReportTasks = []
+// ---- Automation v1（@我生成日报）----
+//
+// 这组桩只服务 UI / 视觉评审：让自动化首页拿到一份确定性的规则与群列表，
+// 而不是整页挂着「自动化接口尚未就绪」。
+// 它**不**参与任何真实发送，也**不**代表自动化功能已迁移。
+const automationGroupOptions = () =>
+  contacts
+    .filter(
+      (contact) =>
+        contact.type === 'group' || String(contact.m_nsUsrName || '').endsWith('@chatroom')
+    )
+    .map((contact) => ({
+      id: contact.m_nsUsrName,
+      name: contact.m_nsNickName || contact.m_nsUsrName
+    }))
+
+const builtinDailyReportRule = () => ({
+  id: 'builtin-mention-me-daily-report',
+  name: '@我生成日报',
+  enabled: true,
+  ruleType: 'daily_report',
+  trigger: 'message',
+  scope: 'group',
+  conditions: {
+    requireMentionMe: true,
+    keyword: '日报',
+    keywordMatchMode: 'contains',
+    conversationIds: [],
+    ignoreSelf: true
+  },
+  actions: [
+    { type: 'replyText', enabled: true, text: '收到，正在生成今日日报' },
+    { type: 'generateReport', enabled: true },
+    { type: 'sendReportImage', enabled: true }
+  ],
+  cooldownSeconds: 60,
+  replyDelaySeconds: 2,
+  createdAt: fixtureNowMs,
+  updatedAt: fixtureNowMs
+})
+
+/*
+ * ⚠️ 这里的默认值必须与 `src/shared/automation.ts` 的
+ * `createDefaultLeaveNotificationRule()` **逐字一致**。
+ *
+ * 它扮演"一个全新安装的 main 进程"：一旦漂移，E2E 与截图验证的就不是真实默认行为。
+ * 由 `tests/integration/automation-default-contract.test.ts` 锁住。
+ */
+let leaveNotificationRule = {
+  id: 'builtin-leave-notification',
+  name: '退群通知',
+  enabled: true,
+  ruleType: 'leave_notification',
+  trigger: 'message',
+  scope: 'group',
+  conditions: {
+    requireMentionMe: false,
+    keyword: '',
+    keywordMatchMode: 'contains',
+    conversationIds: [],
+    ignoreSelf: true
+  },
+  actions: [],
+  cooldownSeconds: 0,
+  replyDelaySeconds: 2,
+  leaveNotification: {
+    // 默认目标 = 当前群聊（旧退群监控通知的原始行为）。
+    target: { type: 'source_chat' },
+    template:
+      '[退群监测]\n\n群聊: {groupName}\n\n用户: {user}\n\n群备注: {groupRemark}\n\n微信号: {wxid}\n\n人数: {previousCount} -> {currentCount}\n\n退群时间: {time}'
+  },
+  createdAt: fixtureNowMs,
+  updatedAt: fixtureNowMs
+}
+
+/** 「指定好友」候选：个人联系人，排除群 / 公众号 / 文件传输助手 / 自己。 */
+const sendableContactOptions = () =>
+  contacts
+    .filter(
+      (contact) =>
+        contact.type !== 'group' &&
+        !String(contact.m_nsUsrName || '').endsWith('@chatroom') &&
+        !String(contact.m_nsUsrName || '').startsWith('gh_') &&
+        contact.m_nsUsrName !== 'filehelper'
+    )
+    .map((contact) => ({
+      id: contact.m_nsUsrName,
+      name: contact.m_nsNickName || contact.m_nsUsrName
+    }))
+
+handle('automation:getStatus', () => ({
+  listening: connected,
+  listeningDegraded: false,
+  todayExecutions: connected ? 3 : 0,
+  todaySuccesses: connected ? 3 : 0,
+  sendCapability: {
+    supported: personalWechatSupported,
+    ready: connected,
+    canSendText: connected,
+    canSendImage: connected,
+    message: connected ? '个人微信发送能力已就绪' : '尚未绑定个人微信发送能力'
+  }
+}))
+/*
+ * 定时日报是 `ruleType === 'scheduled_report'` 的**真规则**：列表由
+ * `automation:listRules` 过滤得到，创建 / 更新走 `automation:createRule` /
+ * `automation:updateRule`。fixture 必须实现这组通道，否则保存后列表读不回来。
+ */
+const scheduledReportRules = []
+let automationRuleSequence = 0
+// 「微信异常通知」是全局开关，新旧两套通道共用同一份状态。
+let scheduledReportNotificationEnabled = false
+handle('automation:listRules', () => [
+  builtinDailyReportRule(),
+  structuredClone(leaveNotificationRule),
+  ...scheduledReportRules.map((rule) => structuredClone(rule))
+])
+handle('automation:createRule', (draft) => {
+  automationRuleSequence += 1
+  const rule = {
+    ...draft,
+    id: `fixture-scheduled-rule-${automationRuleSequence}`,
+    createdAt: fixtureNowMs,
+    updatedAt: fixtureNowMs
+  }
+  scheduledReportRules.push(rule)
+  return structuredClone(rule)
+})
+// `updateRule` / `setRuleEnabled` 收的是**单个对象**（`{ id, draft }` / `{ id, enabled }`），
+// 与 `createRule(draft)` / `deleteRule(id)` 的位置参数不同 —— preload 就是这么拼的。
+handle('automation:updateRule', (input) => {
+  const { id, draft } = input || {}
+  const index = scheduledReportRules.findIndex((rule) => rule.id === id)
+  if (index < 0) return null
+  scheduledReportRules[index] = {
+    ...scheduledReportRules[index],
+    ...(draft || {}),
+    id,
+    updatedAt: fixtureNowMs
+  }
+  return structuredClone(scheduledReportRules[index])
+})
+handle('automation:deleteRule', (id) => {
+  const index = scheduledReportRules.findIndex((rule) => rule.id === id)
+  if (index < 0) return false
+  scheduledReportRules.splice(index, 1)
+  return true
+})
+handle('automation:setRuleEnabled', (input) => {
+  const { id, enabled } = input || {}
+  const index = scheduledReportRules.findIndex((rule) => rule.id === id)
+  if (index < 0) return null
+  scheduledReportRules[index] = {
+    ...scheduledReportRules[index],
+    enabled: enabled === true,
+    updatedAt: fixtureNowMs
+  }
+  return structuredClone(scheduledReportRules[index])
+})
+
+/*
+ * 微信异常通知（定时日报的全局能力，不是单条规则的配置）。
+ *
+ * 能力判定与 `ScheduledReportService#checkNotificationCapability` 一致：**Agent Hub 离线
+ * 就是不可用**，且要带上那句可操作的原因。fixture 里 Hub 是 offline，所以这里如实回
+ * 不可用 —— 不为了让开关点得动而假装就绪。
+ *
+ * 这四个通道生产环境都有；不注册会被渲染层的降级兜底吞掉，页面看起来"正常"，
+ * 但测的就不是真实文案了。
+ */
+handle('automation:getScheduledReportNotificationSettings', () => ({
+  enabled: scheduledReportNotificationEnabled
+}))
+handle('automation:getScheduledReportNotificationCapability', () =>
+  agentHubStatus().hub === 'online'
+    ? { ready: true, recipient: 'wxid_fixture_self' }
+    : {
+        ready: false,
+        reason: 'agent_hub_offline',
+        error: '需要先连接 Agent Hub 微信机器人，才能接收异常通知。'
+      }
+)
+handle('automation:setScheduledReportNotificationEnabled', (enabled) => {
+  if (enabled && agentHubStatus().hub !== 'online') {
+    scheduledReportNotificationEnabled = false
+    return {
+      success: false,
+      data: { enabled: false },
+      reason: 'agent_hub_offline',
+      error: '需要先连接 Agent Hub 微信机器人，才能接收异常通知。'
+    }
+  }
+  scheduledReportNotificationEnabled = Boolean(enabled)
+  return { success: true, data: { enabled: scheduledReportNotificationEnabled } }
+})
+handle('automation:testScheduledReportErrorNotification', (ruleId) =>
+  scheduledReportRules.some((rule) => rule.id === ruleId)
+    ? {
+        success: true,
+        data: { ruleId, notificationId: 'fixture-notification', sentAt: fixtureNowMs }
+      }
+    : { success: false, error: '未找到这条定时日报规则' }
+)
+handle('automation:listGroups', () => automationGroupOptions())
+handle('automation:listExecutions', () => [])
+handle('automation:clearExecutions', () => true)
+handle('automation:listSendableContacts', () => sendableContactOptions())
+handle('automation:saveLeaveNotificationRule', (draft) => {
+  leaveNotificationRule = {
+    ...leaveNotificationRule,
+    ...(draft && typeof draft === 'object' ? draft : {}),
+    id: 'builtin-leave-notification',
+    ruleType: 'leave_notification',
+    updatedAt: fixtureNowMs
+  }
+  if (leaveNotificationRule.leaveNotification) {
+    const { targetNeedsReview, ...rest } = leaveNotificationRule.leaveNotification
+    void targetNeedsReview
+    leaveNotificationRule.leaveNotification = rest
+  }
+  return structuredClone(leaveNotificationRule)
+})
+
+/*
+ * 定时日报任务。
+ *
+ * 默认**为空**（既有 E2E 依赖这个初始状态）。
+ * `WXE_E2E_SCHEDULED_FIXTURE=1` 启动时注入三条任务，
+ * 让「自动化 → 定时日报」的列表与卡片走**真实读取路径**，而不是在渲染层塞假数据。
+ */
+const scheduledReportTasks =
+  process.env.WXE_E2E_SCHEDULED_FIXTURE === '1'
+    ? [
+        {
+          id: 'fixture-scheduled-1',
+          name: 'TraceMemo 每日晚报',
+          group: 'TraceMemo 交流群',
+          scheduleTime: '18:21',
+          reportRange: 'today',
+          target: 'TraceMemo 管理群',
+          enabled: true,
+          createdAt: new Date(fixtureNowMs - 86_400_000).toISOString(),
+          updatedAt: new Date(fixtureNowMs - 86_400_000).toISOString(),
+          lastRunAt: new Date(fixtureNowMs - 86_400_000).toISOString(),
+          nextRunAt: new Date(fixtureNowMs + 3_600_000).toISOString()
+        },
+        {
+          id: 'fixture-scheduled-2',
+          name: '技术交流群日报',
+          group: '技术交流群',
+          scheduleTime: '09:00',
+          reportRange: 'yesterday',
+          target: '技术交流群',
+          enabled: true,
+          createdAt: new Date(fixtureNowMs - 172_800_000).toISOString(),
+          updatedAt: new Date(fixtureNowMs - 172_800_000).toISOString(),
+          nextRunAt: new Date(fixtureNowMs + 64_800_000).toISOString()
+        },
+        {
+          id: 'fixture-scheduled-3',
+          name: 'AI 编程讨论群日报',
+          group: 'AI 编程讨论群',
+          scheduleTime: '21:30',
+          reportRange: 'recent24h',
+          target: 'TechMemo 归档群',
+          enabled: false,
+          createdAt: new Date(fixtureNowMs - 259_200_000).toISOString(),
+          updatedAt: new Date(fixtureNowMs - 259_200_000).toISOString(),
+          nextRunAt: new Date(fixtureNowMs + 86_400_000).toISOString()
+        }
+      ]
+    : []
 const scheduledReportExecutions = []
 const generatedReports = []
-let scheduledReportNotificationEnabled = false
 const scheduledReportNextRun = (scheduleTime) => {
   const [hours, minutes] = String(scheduleTime || '09:00')
     .split(':')
@@ -400,17 +653,6 @@ handle('tts:getSettings', () => ({
   },
   voices: []
 }))
-handle('wechat-personal:getRuntimeStatus', () => ({
-  version: 'v0.0.18',
-  state: 'ready',
-  downloadedBytes: 100,
-  totalBytes: 100,
-  progress: 1,
-  platform: 'darwin',
-  architecture: 'arm64',
-  supported: true,
-  removable: true
-}))
 handle('wechat-personal:getStatus', () => ({
   state: 'online',
   platform: process.platform,
@@ -419,8 +661,7 @@ handle('wechat-personal:getStatus', () => ({
   wechatRunning: true,
   wechatPid: 4668,
   boundWechatPid: 4668,
-  oneBotPid: 5401,
-  endpoint: '127.0.0.1:58080',
+  endpoint: '127.0.0.1:4290',
   endpointReady: true,
   wechatVersion: '4.1.11.53',
   runtimeReady: true,
@@ -454,7 +695,7 @@ handle('wechat-personal:getSendCapability', () => ({
     sipDisabled: true,
     wechatRunning: true,
     boundWechatPid: 4668,
-    endpoint: '127.0.0.1:58080',
+    endpoint: '127.0.0.1:4290',
     endpointReady: true,
     runtimeReady: true,
     attachReady: true,
@@ -474,11 +715,6 @@ handle('wechat-personal:getSendCapability', () => ({
     ? '个人微信已准备好发送日报'
     : '微信消息发送目前仅支持 macOS 和 Windows'
 }))
-handle('wechat-personal:getKeepProcess', () => keepOneBotProcess)
-handle('wechat-personal:setKeepProcess', (keep) => {
-  keepOneBotProcess = Boolean(keep)
-  return keepOneBotProcess
-})
 handle('scheduled-report:list', () => [...scheduledReportTasks])
 handle('scheduled-report:listExecutions', (taskId) =>
   taskId
@@ -772,6 +1008,30 @@ handle('db:getGroupSnapshot', (md5) =>
       }
     : null
 )
+handle('group-stats:getMemberStats', (request) => ({
+  conversationId: request?.userMd5 || 'group-regular-md5',
+  startTime: request?.startTime || 0,
+  endTime: request?.endTime || fixtureNowMs,
+  freshness: 'fresh',
+  complete: true,
+  memberCount: 2,
+  activeMemberCount: 1,
+  silentMemberCount: 1,
+  activeMembers: [
+    {
+      senderId: 'wxid_fixture_member',
+      displayName: '测试成员',
+      groupNickname: '测试成员',
+      messageCount: 1,
+      lastMessageTime: fixtureNowMs
+    }
+  ],
+  silentMembers: [{ senderId: 'wxid_fixture_silent', displayName: '沉默成员', groupNickname: '' }],
+  unattributedMessages: 0,
+  excludedSystemMessages: 0,
+  firstMessageTime: fixtureNowMs,
+  limitations: []
+}))
 handle('db:getImage', (md5, datName, sessionId, options) =>
   md5 === 'unsupported'
     ? { success: false, error: '不支持的 DAT 版本' }
@@ -1155,6 +1415,18 @@ handle('agent-hub:clearLogs', () => ({ success: true }))
 handle('agent-hub:startLogin', () => ({ status: agentHubStatus() }))
 handle('agent-hub:cancelLogin', () => ({ status: agentHubStatus() }))
 handle('agent-hub:disconnect', () => ({ status: agentHubStatus() }))
+
+/*
+ * Agent Hub 对话记录（本机 conversations.json 的只读回看）。
+ *
+ * fixture 里 Hub 是 offline、也没有任何收发记录，所以恒为空 —— 与
+ * `agent-hub:getStatus` 的 offline 状态保持一致。
+ *
+ * 通道**必须**注册：会话面板挂载即调用，缺 handler 会被渲染层记成 pageerror。
+ */
+handle('agent-hub:getConversations', () => [])
+handle('agent-hub:getConversation', () => null)
+handle('agent-hub:clearConversations', () => ({ success: true }))
 handle('image:getConfig', () => ({
   success: true,
   configured: true,
@@ -1340,7 +1612,11 @@ for (const channel of [
 
 app.whenReady().then(() => {
   const window = new BrowserWindow({
-    // Keep the E2E window aligned with createWindow() in src/main/index.ts.
+    /*
+     * E2E 窗口**刻意固定** 1400×800，不再跟随 `createWindow()`
+     * （后者已改为按屏幕工作区 60% 计算初始尺寸）：visual 基线是按这个尺寸
+     * 评审入库的，若跟随真实逻辑，截图尺寸会随 runner 屏幕浮动、基线永远对不上。
+     */
     width: 1400,
     height: 800,
     show: false,

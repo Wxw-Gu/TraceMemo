@@ -86,7 +86,8 @@ export class AskWechatService {
       const diagnostics = this.diagnostics(
         { provider: '', model: '', modelCallCount: 0, toolCallCount: 0, traces: [] },
         startedAt,
-        'runtime_error'
+        'runtime_error',
+        { question }
       )
       this.writeLog('error', `Query Agent Runtime 异常（${this.options.entry}）`, diagnostics)
       return this.fallback(request, 'runtime_error', diagnostics)
@@ -97,13 +98,13 @@ export class AskWechatService {
         engine: 'query-agent',
         status: 'error',
         message: EMPTY_QUESTION_MESSAGE,
-        diagnostics: this.diagnostics(result, startedAt, 'invalid_question')
+        diagnostics: this.diagnostics(result, startedAt, 'invalid_question', { question })
       }
     }
 
     if (result.errorKind === 'provider_unavailable' || result.errorKind === 'provider_failure') {
       const outcome: AskWechatOutcome = result.errorKind
-      const diagnostics = this.diagnostics(result, startedAt, outcome)
+      const diagnostics = this.diagnostics(result, startedAt, outcome, { question })
       this.writeLog('warn', `查询 Provider 不可用（${this.options.entry}）`, diagnostics)
       return {
         engine: 'query-agent',
@@ -114,13 +115,13 @@ export class AskWechatService {
     }
 
     if (result.errorKind === 'tool_limit') {
-      const diagnostics = this.diagnostics(result, startedAt, 'tool_limit')
+      const diagnostics = this.diagnostics(result, startedAt, 'tool_limit', { question })
       this.writeLog('warn', `查询超出工具调用上限（${this.options.entry}）`, diagnostics)
       return this.fallback(request, 'runtime_error', diagnostics)
     }
 
     if (!result.answer?.trim()) {
-      const diagnostics = this.diagnostics(result, startedAt, 'runtime_error')
+      const diagnostics = this.diagnostics(result, startedAt, 'runtime_error', { question })
       this.writeLog('warn', `Query Agent 未返回回答（${this.options.entry}）`, diagnostics)
       return this.fallback(request, 'runtime_error', diagnostics)
     }
@@ -128,14 +129,19 @@ export class AskWechatService {
     const answer = result.answer.trim()
     // 澄清回答也记录：下一句（"是 BOBO"）需要接得上上文。
     this.memory.record(conversationKey, question, answer)
-    const diagnostics = this.diagnostics(result, startedAt, 'answered')
+    const diagnostics = this.diagnostics(result, startedAt, 'answered', { question, answer })
     this.writeLog('info', `Query Agent 回答完成（${this.options.entry}）`, diagnostics)
     return {
       engine: 'query-agent',
       status: 'answered',
       answer,
       // 直接透传 Runtime 收集的真实证据：UI 不允许从 answer 文本反解析。
+      // citationId 由 Runtime 分配，Adapter 不改写、不重编号。
       evidence: (result.evidence || []) as AskWechatEvidenceItem[],
+      // Host 侧 citation 校验中被移除的非法编号（非空 = 模型引用过不存在的 E#）。
+      ...(result.invalidCitationIds?.length
+        ? { invalidCitationIds: result.invalidCitationIds }
+        : {}),
       stats: buildAskWechatStats(result, request.scope, startedAt),
       diagnostics
     }
@@ -167,7 +173,12 @@ export class AskWechatService {
         requestId: request.requestId,
         text: request.text
       })
-      this.writeLog('warn', `Query Agent 失败后回退 Legacy（${this.options.entry}）`, diagnostics, reason)
+      this.writeLog(
+        'warn',
+        `Query Agent 失败后回退 Legacy（${this.options.entry}）`,
+        diagnostics,
+        reason
+      )
       return { engine: 'legacy', status: 'legacy', reason, result: legacyResult }
     } catch {
       this.writeLog('error', `Legacy fallback 也失败（${this.options.entry}）`, diagnostics, reason)
@@ -187,17 +198,35 @@ export class AskWechatService {
     > &
       Partial<Pick<QueryAgentResult, 'totalMs'>>,
     startedAt: number,
-    outcome: AskWechatOutcome
+    outcome: AskWechatOutcome,
+    /**
+     * 问答原文（可选）。只在本地应用日志里用，不上传、不进遥测。
+     *
+     * 排查这类"同一问题时对时错"的故障，光有工具名与次数是不够的 ——
+     * 必须能对着"问题 + 模型回答"回放，否则无法判断是理解错了、链路断了，还是索引没建。
+     */
+    content?: { question?: string; answer?: string }
   ): QueryAgentDiagnostics {
+    const traces = result.traces || []
+    // 图片 OCR 的两条结构化事实：不回读正文，只统计"取到了几条"与"当时覆盖度是多少"。
+    const imageOcrTextCount = traces.reduce((sum, trace) => sum + (trace.imageOcrTextCount || 0), 0)
+    const coverageState = traces
+      .map((trace) => trace.imageOcrCoverageState)
+      .filter((value): value is string => typeof value === 'string')
+      .at(-1)
     return {
       entry: this.options.entry,
       provider: result.provider,
       model: result.model,
       modelCallCount: result.modelCallCount,
       toolCallCount: result.toolCallCount,
-      tools: (result.traces || []).map((trace) => trace.toolName),
+      tools: traces.map((trace) => trace.toolName),
       totalMs: result.totalMs || Date.now() - startedAt,
-      outcome
+      outcome,
+      ...(imageOcrTextCount > 0 ? { imageOcrTextCount } : {}),
+      ...(coverageState ? { imageOcrCoverageState: coverageState } : {}),
+      ...(content?.question ? { question: content.question } : {}),
+      ...(content?.answer ? { answer: content.answer } : {})
     }
   }
 
@@ -245,9 +274,7 @@ export function buildAskWechatStats(
   const totalMs = result.totalMs || Date.now() - startedAt
   // 真实拆解：模型总耗时直接来自每次模型调用的测量；本地查询 = 所有 Tool 的 durationMs 之和。
   // 两者不互相推算（用 total - model 反推会把"框架开销"混进"本地查询"，那是另一种谎）。
-  const modelDurationsMs = (result.modelDurationsMs || []).filter((value) =>
-    Number.isFinite(value)
-  )
+  const modelDurationsMs = (result.modelDurationsMs || []).filter((value) => Number.isFinite(value))
   const toolDurationsMs = (result.traces || [])
     .map((trace) => trace.durationMs)
     .filter((value) => Number.isFinite(value))

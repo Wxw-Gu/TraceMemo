@@ -72,6 +72,33 @@
   flex: 1 1 auto;
 }
 
+/*
+ * 「定时日报已并入自动化」的指引条。
+ *
+ * ⚠️ 这两个类以前只出现在 JSX 里，样式表里**从来没有**对应规则 ——
+ * 所以它一直是一条没样式的裸文字 + 一个没样式的裸按钮。
+ * 现在补上：与 tab 条同宽的柔软信息条，按钮交给 UI 组件库。
+ */
+.report-workspace-hint {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: 0;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--wxex-border);
+  background: var(--wxex-bg-elevated);
+  color: var(--wxex-text-secondary);
+  font: 400 12px/18px var(--wxex-font);
+
+  > span {
+    min-width: 0;
+  }
+}
+
 .report-workspace-body > .report-page,
 .report-workspace-body > .report-center-page {
   height: 100%;
@@ -1605,6 +1632,167 @@
   justify-content: flex-end;
 }
 
+/* 本地图片文字识别（System OCR，本地 Runtime，与 AI 图片理解刻意区分） */
+.local-ocr-test {
+  display: grid;
+  gap: 16px;
+}
+
+.local-ocr-test > header,
+.local-ocr-test > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.local-ocr-test h2,
+.local-ocr-test h3,
+.local-ocr-test p {
+  margin: 0;
+}
+
+.local-ocr-test h2 {
+  color: var(--wxex-text-primary);
+  font-size: 15px;
+}
+
+.local-ocr-test header p,
+.local-ocr-runtime,
+.local-ocr-upload small,
+.local-ocr-hint {
+  margin-top: 4px;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+}
+
+.local-ocr-capability {
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: var(--wxex-bg-sidebar);
+  color: var(--wxex-text-secondary);
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.local-ocr-capability.supported {
+  background: var(--wxex-brand-soft);
+  color: var(--wxex-brand);
+}
+
+.local-ocr-notice {
+  border-left: 3px solid var(--wxex-danger);
+  padding: 9px 11px;
+  background: color-mix(in srgb, var(--wxex-danger) 12%, transparent);
+  color: var(--wxex-danger);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.local-ocr-upload {
+  display: flex;
+  min-height: 112px;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  border: 1px dashed var(--wxex-border);
+  border-radius: var(--wxex-radius-md);
+  padding: 14px;
+  background: var(--wxex-bg-sidebar);
+  color: var(--wxex-text-primary);
+  text-align: center;
+  cursor: pointer;
+}
+
+.local-ocr-upload:hover {
+  border-color: var(--wxex-brand);
+  background: var(--wxex-brand-soft);
+}
+
+.local-ocr-upload input {
+  display: none;
+}
+
+.local-ocr-upload.has-image {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.local-ocr-upload img {
+  width: 112px;
+  height: 82px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.local-ocr-upload strong,
+.local-ocr-upload small {
+  display: block;
+}
+
+.local-ocr-privacy {
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.local-ocr-error {
+  border-left: 3px solid var(--wxex-danger);
+  padding: 9px 11px;
+  background: color-mix(in srgb, var(--wxex-danger) 12%, transparent);
+  color: var(--wxex-danger);
+  font-size: 12px;
+}
+
+.local-ocr-result {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--wxex-border);
+  border-radius: var(--wxex-radius-md);
+  padding: 14px;
+  background: var(--wxex-bg-sidebar);
+}
+
+.local-ocr-result dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.local-ocr-result dt {
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+}
+
+.local-ocr-result dd {
+  margin: 4px 0 0;
+  color: var(--wxex-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.local-ocr-text {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--wxex-border);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--wxex-bg-app);
+  color: var(--wxex-text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.local-ocr-test > footer {
+  justify-content: flex-end;
+}
+
 .report-history-sidebar {
   display: flex;
   min-width: 0;
@@ -1687,4 +1875,207 @@
   overflow-x: hidden;
   overflow-y: auto;
   padding: 0 10px 12px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Agent Hub 对话记录（收发回看）                                       */
+/* 与运行日志明确分工：日志只记流程与故障，这里保存完整收发内容。        */
+/* 全部使用主题 token，因此浅色 / 深色自动适配，不需要单独覆写。        */
+/* ------------------------------------------------------------------ */
+.agent-hub-conversation-card {
+  max-width: 1080px;
+  margin: 16px auto 0;
+  padding: 20px 22px;
+}
+.agent-hub-conversation-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.agent-hub-conversation-heading h2 {
+  margin-top: 3px;
+}
+.agent-hub-conversation-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-hub-conversation-count {
+  color: var(--wxex-text-muted);
+  font: 500 12px/18px var(--wxex-font);
+}
+.agent-hub-conversation-body {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+  min-height: 340px;
+  border: 1px solid hsl(var(--tm-border-subtle));
+  border-radius: var(--wxex-radius-md);
+  overflow: hidden;
+}
+.agent-hub-conversation-list {
+  min-width: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 8px;
+  border-right: 1px solid hsl(var(--tm-border-subtle));
+}
+.agent-hub-conversation-list-empty {
+  padding: 12px 8px;
+  color: var(--wxex-text-muted);
+  font: 13px/20px var(--wxex-font);
+}
+.agent-hub-conversation-item {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-areas: 'avatar copy' 'avatar time';
+  gap: 2px 10px;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--wxex-radius-md);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--wxex-font);
+}
+.agent-hub-conversation-item:hover {
+  background: var(--wxex-bg-sidebar);
+}
+.agent-hub-conversation-item.is-active {
+  background: var(--wxex-brand-soft);
+}
+.agent-hub-conversation-avatar {
+  grid-area: avatar;
+  align-self: center;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+.agent-hub-conversation-avatar.is-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--wxex-bg-sidebar);
+  color: var(--wxex-text-secondary);
+  font: 600 13px/1 var(--wxex-font);
+}
+.agent-hub-conversation-avatar.is-fallback.is-self {
+  background: var(--wxex-brand-soft);
+  color: var(--wxex-brand);
+}
+.agent-hub-conversation-item-copy {
+  grid-area: copy;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.agent-hub-conversation-item-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--wxex-text-primary);
+  font: 700 13px/18px var(--wxex-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-hub-conversation-item-preview {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--wxex-text-muted);
+  font: 12px/17px var(--wxex-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-hub-conversation-item-time {
+  grid-area: time;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--wxex-text-muted);
+  font: 11px/16px var(--wxex-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-hub-conversation-note {
+  margin: 10px 4px 0;
+  color: var(--wxex-text-muted);
+  font: 11px/16px var(--wxex-font);
+}
+.agent-hub-conversation-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 14px 16px;
+  background: var(--wxex-bg-main);
+}
+.agent-hub-conversation-thread-empty {
+  margin: auto;
+  color: var(--wxex-text-muted);
+  font: 13px/20px var(--wxex-font);
+  text-align: center;
+}
+.agent-hub-message {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.agent-hub-message.is-out {
+  flex-direction: row-reverse;
+}
+.agent-hub-message-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  max-width: min(78%, 560px);
+}
+.agent-hub-message.is-out .agent-hub-message-main {
+  align-items: flex-end;
+}
+.agent-hub-message-bubble {
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 12px;
+  border: 1px solid hsl(var(--tm-border-subtle));
+  border-radius: var(--wxex-radius-md);
+  background: var(--wxex-bg-elevated);
+  color: var(--wxex-text-primary);
+  font: 13px/20px var(--wxex-font);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.agent-hub-message.is-out .agent-hub-message-bubble {
+  border-color: transparent;
+  background: var(--wxex-brand-soft);
+}
+.agent-hub-message-meta {
+  display: flex;
+  gap: 6px;
+  color: var(--wxex-text-muted);
+  font: 11px/16px var(--wxex-font);
+}
+.agent-hub-message-meta .is-failed {
+  color: var(--wxex-danger);
+}
+.agent-hub-bot-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border-radius: 50%;
+  background: var(--wxex-ai-soft);
+  color: var(--wxex-ai);
+}
+@media (max-width: 900px) {
+  .agent-hub-conversation-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .agent-hub-conversation-list {
+    max-height: 220px;
+    border-right: 0;
+    border-bottom: 1px solid hsl(var(--tm-border-subtle));
+  }
 }

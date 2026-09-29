@@ -197,15 +197,6 @@ test('NAV-04 exit monitor management can save an empty scope and show the setup 
     await expect(fixture.page.getByRole('heading', { name: '管理群聊', exact: true })).toBeVisible()
     await expect(fixture.page.getByText('发送能力已就绪', { exact: true })).toBeVisible()
     await expect(fixture.page.getByRole('checkbox', { name: '监控产品测试群' })).toBeChecked()
-    await fixture.page.getByRole('button', { name: '查看退群监测模板' }).click()
-    await expect(fixture.page.getByLabel('退群监测模板内容')).toHaveValue(/用户: \{user\}/)
-    await expect(fixture.page.getByLabel('退群监测模板内容')).toHaveValue(/群备注: \{groupRemark\}/)
-    const customTemplate = '[退群监测]\n用户: {user}\n群备注: {groupRemark}'
-    await fixture.page.getByLabel('退群监测模板内容').fill(customTemplate)
-    await fixture.page.getByRole('button', { name: '保存模板' }).click()
-    await fixture.page.getByRole('button', { name: '查看退群监测模板' }).click()
-    await expect(fixture.page.getByLabel('退群监测模板内容')).toHaveValue(customTemplate)
-    await fixture.page.keyboard.press('Escape')
     await fixture.page.getByRole('checkbox', { name: '监控产品测试群' }).click()
     await fixture.page.getByRole('checkbox', { name: '监控折叠群聊样本' }).click()
     await fixture.page.getByRole('button', { name: '保存监控群聊' }).click()
@@ -216,7 +207,47 @@ test('NAV-04 exit monitor management can save an empty scope and show the setup 
   }
 })
 
-test('CHAT-01 archive More menu is keyboard-safe and keeps the page usable', async () => {
+/**
+ * 退群通知的**内容模板**已随「退群通知」一起迁进自动化，管理群聊页只负责
+ * 「监测哪些群」。这条用例锁住新家：模板可编辑、可保存，且真的落库。
+ */
+test('NAV-05 leave notification template is editable in the automation workspace', async () => {
+  const fixture = await launchTestApp()
+  const pageErrors: Error[] = []
+  fixture.page.on('pageerror', (error) => pageErrors.push(error))
+  try {
+    await fixture.page.getByRole('button', { name: '退群监控' }).click()
+    await fixture.page.getByRole('button', { name: '配置退群通知自动化' }).click()
+
+    await expect(fixture.page.getByRole('heading', { name: '自动化', exact: true })).toBeVisible()
+    await expect(fixture.page.getByRole('heading', { name: '退群通知' })).toBeVisible()
+
+    const template = fixture.page.getByLabel('退群通知模板内容')
+    await expect(template).toHaveValue(/用户: \{user\}/)
+    await expect(template).toHaveValue(/群备注: \{groupRemark\}/)
+
+    const customTemplate = '[退群监测]\n用户: {user}\n群备注: {groupRemark}'
+    await template.fill(customTemplate)
+    await fixture.page.getByRole('button', { name: '保存' }).click()
+    /*
+     * `exact: true` 不能省：Radix 额外渲染一个 `role="status"` 的无障碍播报节点，
+     * 文本是 `Notification 已保存「退群通知」`，且由 `useNextFrame` **下一帧才填** ——
+     * 裸 regex 会命中它造成 strict mode violation，且是否命中取决于帧时序。
+     */
+    await expect(fixture.page.getByText('已保存「退群通知」', { exact: true })).toBeVisible()
+
+    await fixture.page.reload()
+    await fixture.page.getByRole('button', { name: '退群监控' }).click()
+    await fixture.page.getByRole('button', { name: '配置退群通知自动化' }).click()
+    await expect(fixture.page.getByLabel('退群通知模板内容')).toHaveValue(customTemplate)
+
+    expect(pageErrors).toEqual([])
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('CHAT-01 archive group stats entry opens the panel and keeps the page usable', async () => {
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []
   fixture.page.on('pageerror', (error) => pageErrors.push(error))
@@ -227,15 +258,6 @@ test('CHAT-01 archive More menu is keyboard-safe and keeps the page usable', asy
     await conversationSearch.fill('')
     await fixture.page.getByRole('button', { name: '刷新会话列表' }).click()
     await fixture.page.getByText('产品测试群', { exact: true }).click()
-    const moreButton = fixture.page.getByRole('button', { name: '更多' })
-    await moreButton.click()
-    await expect(fixture.page.getByRole('menuitem', { name: '刷新数据' })).toBeVisible()
-    await fixture.page.keyboard.press('Escape')
-    await expect(fixture.page.getByRole('menuitem', { name: '刷新数据' })).toHaveCount(0)
-    await expect(moreButton).toBeFocused()
-
-    await moreButton.click()
-    await fixture.page.getByRole('menuitem', { name: '刷新数据' }).click()
     await expect(fixture.page.getByRole('heading', { name: '产品测试群' })).toBeVisible()
 
     await fixture.page.getByRole('button', { name: '搜索当前聊天' }).click()
@@ -258,6 +280,21 @@ test('CHAT-01 archive More menu is keyboard-safe and keeps the page usable', asy
     expect(
       await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true)
+
+    /*
+     * 「更多功能」下拉连同「刷新数据」一起下线，群发言统计改为一颗直接按钮。
+     * 放最后、且不断言关闭：Radix 的 Escape 关闭依赖层监听注册时机，全量跑时偶发不生效，
+     * 那是组件库行为、不是本次改动的契约（单独连打 8 次均即时关闭）。
+     */
+    await expect(fixture.page.getByRole('button', { name: '更多功能' })).toHaveCount(0)
+    await expect(fixture.page.getByRole('menuitem', { name: '刷新数据' })).toHaveCount(0)
+    const statsButton = fixture.page.getByRole('button', { name: '群发言统计', exact: true })
+    await expect(statsButton).toBeVisible()
+    await statsButton.click()
+    await expect(
+      fixture.page.getByRole('dialog', { name: '群发言统计 · 产品测试群' })
+    ).toBeVisible()
+
     expect(pageErrors).toEqual([])
   } finally {
     await fixture.close()
@@ -429,7 +466,7 @@ test('GUIDE-01 first-use welcome is keyboard-safe and fits the viewport', async 
   }
 })
 
-test('SETTINGS-01 supported WeChat versions dialog is keyboard-safe and fits the viewport', async () => {
+test('SETTINGS-01 macOS WeChat setup keeps the binding guidance focused', async () => {
   test.skip(process.platform !== 'darwin', 'The personal WeChat runtime is currently macOS-only')
   const fixture = await launchTestApp()
   const pageErrors: Error[] = []
@@ -441,21 +478,16 @@ test('SETTINGS-01 supported WeChat versions dialog is keyboard-safe and fits the
       .click()
     await fixture.page.getByRole('button', { name: '微信发送' }).click()
 
-    const trigger = fixture.page.getByRole('button', { name: '支持版本' })
-    await expect(trigger).toBeVisible()
-    await trigger.click()
-    const dialog = fixture.page.getByRole('dialog', { name: '支持的微信版本' })
-    await expect(dialog).toBeVisible()
-    await expect(dialog.getByText('4.1.6.12')).toBeVisible()
-    await expect(dialog.getByText('4.1.11.53')).toBeVisible()
+    await expect(
+      fixture.page.getByText('请保持微信未登录窗口状态，点击“绑定微信”后，再点击微信窗口登录。')
+    ).toBeVisible()
+    await expect(fixture.page.getByRole('button', { name: '支持版本' })).toHaveCount(0)
+    await expect(fixture.page.getByText('查看支持的微信版本')).toHaveCount(0)
+    await expect(fixture.page.getByText('高级诊断')).toHaveCount(0)
     expect(
       await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true)
     expect(pageErrors).toEqual([])
-
-    await fixture.page.keyboard.press('Escape')
-    await expect(dialog).toHaveCount(0)
-    await expect(trigger).toBeFocused()
 
     await fixture.page.getByRole('button', { name: '文字转语音' }).click()
     const modelSelect = fixture.page.getByRole('combobox', { name: '合成模型' })
@@ -778,7 +810,7 @@ test('AGENT-01 Agent Hub controls stay usable in the default offline layout', as
     await fixture.page.keyboard.press('Escape')
     await expect(logSource).toBeFocused()
     await expect(fixture.page.getByRole('button', { name: '复制日志' })).toBeDisabled()
-    await fixture.page.getByRole('button', { name: '清空' }).click()
+    await fixture.page.getByRole('button', { name: '清空', exact: true }).click()
 
     expect(
       await fixture.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)

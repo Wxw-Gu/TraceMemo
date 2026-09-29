@@ -6,6 +6,8 @@ import { createRequire } from 'module'
 import { createConnection, Socket } from 'net'
 import { getResourceRoots } from './resource-paths'
 import { wcdbDebugLog } from './wcdb-debug'
+import type { ImageMessageCountProbe } from '../shared/image-text-index'
+import { imageTextWindowToSeconds } from '../shared/image-text-index'
 
 export interface Wcdb4Session {
   username: string
@@ -382,6 +384,79 @@ export function resolveWindowsNativeAccountRoot(
   }
 }
 
+/**
+ * native monitor 事件（pipe / socket 上的一行 JSON）。
+ *
+ * ## 两个协议版本
+ *
+ * **v1（历史）** —— 变更信号来自**文件系统通知**（Windows `ReadDirectoryChangesW` /
+ * macOS `kqueue`），native 只知道「哪个文件被写了」：
+ *
+ * ```json
+ * {"db":"message_0.db","table":"message","action":"update"}
+ * ```
+ *
+ * 它**不携带会话**，所以上层只能回读「最近活跃会话」。`protocol` 会标成 1。
+ *
+ * **v2（Native Monitor Event v2）** —— native 侧在收到文件变化后做一次
+ * SessionTable watermark diff，把**每一个真正变化的会话**各发一条：
+ *
+ * ```json
+ * {"version":2,"kind":"message_change","session_id":"xxx@chatroom",
+ *  "db":"message_0.db","table":"message","action":"update","observed_at_ms":1}
+ * ```
+ *
+ * `protocol = 2` 且带 `sessionId` 时，上层可以**直接按会话回读**，不再依赖
+ * `getSessions()[0]`。
+ *
+ * **降级规则**：只要 `version`/`kind`/`session_id` 任一不符合 v2 契约，
+ * 就按 v1 处理（`protocol = 1`）—— 宁可不精确，也不能拿一个不可信的会话 id 去读。
+ */
+export interface Wcdb4MonitorEvent {
+  /** pipe 上的原始一行（原样转发给需要它的消费者，例如退群监控）。 */
+  raw: string
+  /** 语义化的动作类型。当事件语义出现时用它，比如 `'user_change'`。 */
+  type: string
+  action: string
+  /** `2` = 精确会话事件；`1` = legacy（不含会话）。 */
+  protocol: 1 | 2
+  /** 粗表分类：`database` / `message` / `Session` / `contact`。 */
+  table: string
+  /** `protocol === 2` 时才有：发生变化的会话（`xxx@chatroom` 或 wxid）。 */
+  sessionId?: string
+  /** native 侧观测时刻（epoch ms），仅用于诊断。 */
+  observedAtMs?: number
+}
+
+/** 把 pipe 上的一行 payload 解析成事件。纯函数，便于单测。 */
+export function parseMonitorEvent(rawPayload: string): Wcdb4MonitorEvent {
+  const raw = rawPayload.trim()
+  let parsed: Record<string, unknown> = {}
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      parsed = value as Record<string, unknown>
+    }
+  } catch {
+    // 不是 JSON：当作 legacy 事件处理，保留原始 payload。
+  }
+
+  const action = typeof parsed.action === 'string' && parsed.action ? parsed.action : 'update'
+  const sessionId = typeof parsed.session_id === 'string' ? parsed.session_id.trim() : ''
+  // 三个条件缺一不可：版本、语义、以及**非空**的会话 id。
+  const precise = parsed.version === 2 && parsed.kind === 'message_change' && Boolean(sessionId)
+
+  return {
+    raw,
+    type: action,
+    action,
+    protocol: precise ? 2 : 1,
+    table: typeof parsed.table === 'string' ? parsed.table : '',
+    ...(precise ? { sessionId } : {}),
+    ...(typeof parsed.observed_at_ms === 'number' ? { observedAtMs: parsed.observed_at_ms } : {})
+  }
+}
+
 export class Wcdb4Client {
   static readonly defaultRoot = Wcdb4Client.findExistingDefaultRoot()
 
@@ -493,7 +568,7 @@ export class Wcdb4Client {
   private wcdbStopMonitorPipe: (() => void) | null = null
   private wcdbGetMonitorPipeName: ((outName: WcdbVoidOut) => number) | null = null
   private monitorPipeClient: Socket | null = null
-  private monitorCallback: ((type: string, json: string) => void) | null = null
+  private monitorCallback: ((event: Wcdb4MonitorEvent) => void) | null = null
   private monitorConnectTimer: ReturnType<typeof setTimeout> | null = null
   private monitorReconnectTimer: ReturnType<typeof setTimeout> | null = null
   private monitorPipePath = ''
@@ -771,7 +846,7 @@ export class Wcdb4Client {
     })
   }
 
-  async startMonitor(callback: (type: string, json: string) => void): Promise<boolean> {
+  async startMonitor(callback: (event: Wcdb4MonitorEvent) => void): Promise<boolean> {
     if (this.closing || !this.wcdbStartMonitorPipe || !this.wcdbGetMonitorPipeName || !this.koffi) {
       return false
     }
@@ -909,13 +984,7 @@ export class Wcdb4Client {
   private emitMonitorPayload(rawPayload: string): void {
     const payload = rawPayload.trim()
     if (!payload || !this.monitorCallback) return
-
-    try {
-      const parsed = JSON.parse(payload) as { action?: string }
-      this.monitorCallback(parsed.action || 'update', payload)
-    } catch {
-      this.monitorCallback('update', payload)
-    }
+    this.monitorCallback(parseMonitorEvent(payload))
   }
 
   private scheduleMonitorReconnect(): void {
@@ -1232,11 +1301,15 @@ export class Wcdb4Client {
   }
 
   async countVoiceMessagesAsync(
-    username: string,
+    md5OrUsername: string,
     startTime?: number,
     endTime?: number
   ): Promise<number | null> {
     if (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery) return null
+    // 与图片计数同因的修正：同一个 md5/username 混淆在这里也存在，
+    // 而且它更隐蔽 —— 匹配不到表时循环不执行，函数会**返回 0 而不是报错**。
+    const username = this.resolveMessageUsername(md5OrUsername)
+    if (!username) return null
 
     let tables: Wcdb4MessageStore[]
     try {
@@ -1274,6 +1347,243 @@ export class Wcdb4Client {
       }
     }
     return total
+  }
+
+  /**
+   * 消息类型列的可能名字（按顺序探测，命中即用）。
+   *
+   * 为什么不能直接硬编码 `"local_type"`：`pickValue(row, [...别名])` 那套别名列表只作用于
+   * **已经读出来的行**；一旦把列名写进 WHERE，列名不同的库会当场抛错，再被 catch 吞成
+   * `null` —— 表现就是"检测到 0 张图片"。所以必须先探测真实列名。
+   */
+  private readonly messageTypeColumnCandidates = [
+    'local_type',
+    'localType',
+    'msg_type',
+    'msgType',
+    'message_type',
+    'messageType',
+    'type',
+    'WCDB_CT_local_type'
+  ]
+
+  /** 每个消息分片的真实类型列名；探测一次即缓存，避免每个会话都跑一次 PRAGMA。 */
+  private readonly messageTypeColumnCache = new Map<string, string | null>()
+
+  private resolveMessageTypeColumn(store: Wcdb4MessageStore): string | null {
+    const cacheKey = `${store.dbPath}\u0000${store.tableName}`
+    const cached = this.messageTypeColumnCache.get(cacheKey)
+    if (cached !== undefined) return cached
+    let resolved: string | null = null
+    try {
+      const columns = this.readMessageColumns(store).map((column) => column.name)
+      for (const candidate of this.messageTypeColumnCandidates) {
+        const hit = columns.find((name) => name.toLowerCase() === candidate.toLowerCase())
+        if (hit) {
+          resolved = hit
+          break
+        }
+      }
+    } catch {
+      resolved = null
+    }
+    this.messageTypeColumnCache.set(cacheKey, resolved)
+    return resolved
+  }
+
+  /**
+   * 把「会话 md5」解析成原生接口真正需要的 username。
+   *
+   * `contact.md5` 是 `md5(wxid)` 的**哈希**（见 chat-service 的 `dbRef.md5(user.m_nsUsrName)`），
+   * 而 `wcdbGetMessageTableStats` / `wcdbGetMessages` 这些原生接口要的是**原始 username**。
+   * 直接把 md5 当 username 传，原生侧匹配不到任何表 —— 表现为"未找到该会话的消息表"，
+   * 而按表统计的计数会静默变成 0。
+   *
+   * 既有读消息路径一直做了这层转换（`listSourceMessages` 里的 `getUsernameByMd5`），
+   * **统计/水位路径漏了**，所以这里统一补上。
+   *
+   * 解析不到时原样返回：调用方本来就传 username 的路径仍然可用。
+   */
+  private resolveMessageUsername(md5OrUsername: string): string {
+    const value = String(md5OrUsername || '').trim()
+    if (!value) return value
+    const bySession = this.getUsernameByMd5(value)
+    if (bySession) return bySession
+    // 有些群只以 `Chat_<md5>` 表存在、不在 session 列表里；退回按聊天表映射解析
+    // （与 wechat-db 的 `chatMd5ToUsername` 同一套依据）。
+    try {
+      const byChatTable = this.getChatTables().find((table) => table.name === `Chat_${value}`)
+      if (byChatTable?.db_number) return byChatTable.db_number
+    } catch {
+      // 映射不可用时退回原值。
+    }
+    return value
+  }
+
+  /**
+   * 归一化图片消息的时间范围参数。
+   *
+   * 同时接受旧的裸 `sinceMs` 与新的 `{ sinceMs, beforeMs }`：
+   * 前者有若干既有调用点（统计卡片、增量水位），不该为了新功能去改它们；
+   * 后者是 recent-first 分段计划要的半开区间。
+   */
+  private normalizeImageRange(
+    input?: number | { sinceMs?: number; beforeMs?: number }
+  ): { sinceMs?: number; beforeMs?: number } {
+    if (typeof input === 'number') {
+      return Number.isFinite(input) && input > 0 ? { sinceMs: input } : {}
+    }
+    if (!input) return {}
+    const range: { sinceMs?: number; beforeMs?: number } = {}
+    if (typeof input.sinceMs === 'number' && Number.isFinite(input.sinceMs) && input.sinceMs > 0) {
+      range.sinceMs = input.sinceMs
+    }
+    if (
+      typeof input.beforeMs === 'number' &&
+      Number.isFinite(input.beforeMs) &&
+      input.beforeMs > 0
+    ) {
+      range.beforeMs = input.beforeMs
+    }
+    return range
+  }
+
+  /**
+   * 图片消息的 WHERE 片段；`[sinceMs, beforeMs)` 半开区间。
+   *
+   * 边界换算**只走** `imageTextWindowToSeconds`：COUNT 与列表两条路径必须用
+   * 同一份换算，否则"统计说有 3 张、列表却返回 2 张"，而调用方会据此把一段
+   * 标成"已覆盖"。
+   */
+  private imageMessageWhere(
+    column: string,
+    input?: number | { sinceMs?: number; beforeMs?: number }
+  ): string {
+    const clauses = [`(${this.quoteSqlIdentifier(column)} & 65535) = 3`]
+    // 微信的 create_time 是**秒**，`[sinceMs, beforeMs)` 转成秒闭区间
+    // `[sinceSec, beforeSecInclusive]`；两端同一套下取整，保证不重不漏。
+    const { sinceSec, beforeSecInclusive } = imageTextWindowToSeconds(
+      this.normalizeImageRange(input)
+    )
+    if (sinceSec !== null) clauses.push(`"create_time" >= ${sinceSec}`)
+    if (beforeSecInclusive !== null) clauses.push(`"create_time" <= ${beforeSecInclusive}`)
+    return clauses.join(' AND ')
+  }
+
+  /**
+   * 统计图片消息条数。
+   *
+   * 与 `countVoiceMessagesAsync` 同构：纯 SQL COUNT，**不解密任何图片** ——
+   * 这是「点击索引前先告诉用户有多少张图片」能足够快的前提。
+   *
+   * 与语音版本的关键差别：这里**必须区分「0 张」与「统计失败」**。
+   * `count: null` 表示没数成，调用方绝不能把它当成 0。
+   */
+  async countImageMessagesAsync(
+    md5OrUsername: string,
+    input?: number | { sinceMs?: number; beforeMs?: number }
+  ): Promise<ImageMessageCountProbe> {
+    if (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery) {
+      return { count: null, typeColumn: null, error: '当前数据服务不支持消息表统计' }
+    }
+    const username = this.resolveMessageUsername(md5OrUsername)
+    if (!username) {
+      return { count: null, typeColumn: null, error: '无法解析该会话的标识' }
+    }
+
+    let tables: Wcdb4MessageStore[]
+    try {
+      tables = await this.listMessageStoresAsync(username)
+    } catch {
+      return { count: null, typeColumn: null, error: '读取消息分片失败' }
+    }
+    if (!tables.length) {
+      return { count: null, typeColumn: null, error: '未找到该会话的消息表' }
+    }
+
+    let total = 0
+    let typeColumn: string | null = null
+    for (const table of tables) {
+      const column = this.resolveMessageTypeColumn(table)
+      if (!column) {
+        return { count: null, typeColumn: null, error: '消息表缺少可识别的消息类型列' }
+      }
+      if (!typeColumn) typeColumn = column
+      try {
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          table.dbPath,
+          `SELECT COUNT(*) AS "image_count" FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${this.imageMessageWhere(column, input)}`
+        )
+        const value = Number(this.pickValue(rows[0] || {}, ['image_count', 'count', 'COUNT(*)']))
+        if (Number.isFinite(value)) total += value
+      } catch {
+        return { count: null, typeColumn: null, error: '图片消息统计查询失败' }
+      }
+    }
+    return { count: total, typeColumn }
+  }
+
+  /**
+   * 图片消息的增量水位：`count` + `max(local_id)`。
+   *
+   * 为什么不能只靠 `countImageMessagesAsync`：
+   * 图片总数相同**不代表**图片集合没变。撤回一张旧图 + 新增一张新图，count 不变，
+   * 但新图的 `local_id` 更大。只看 count 会静默跳过该会话，新图片永远搜不到。
+   *
+   * `local_id` 是 WCDB 每张消息表内的插入序（自增），所以：
+   * - 任何 append → `max_local_id` 严格变大；
+   * - 「删旧 + 增新」且总数不变 → `max_local_id` 也变大，照样被发现；
+   * - 只有「删掉非最大的那张且不新增」才不变，而此时集合缩小、无需重扫。
+   *
+   * 仍然是一条 SQL 聚合，**不解密任何图片**，成本与 count 同量级。
+   */
+  async imageConversationWatermarkAsync(
+    md5OrUsername: string,
+    input?: number | { sinceMs?: number; beforeMs?: number }
+  ): Promise<{ count: number; maxLocalId: number } | null> {
+    if (!this.wcdbGetMessageTableStats || !this.wcdbExecQuery) return null
+    // 与计数同因：必须先把会话 md5 解析成原生接口要的 username，否则永远匹配不到消息表。
+    const username = this.resolveMessageUsername(md5OrUsername)
+    if (!username) return null
+
+    let tables: Wcdb4MessageStore[]
+    try {
+      tables = await this.listMessageStoresAsync(username)
+    } catch {
+      return null
+    }
+
+    let count = 0
+    let maxLocalId = 0
+    for (const table of tables) {
+      // 同样探测真实列名：硬编码列名会让水位查询静默失败，进而退化成"永远重扫"或"永远跳过"。
+      const column = this.resolveMessageTypeColumn(table)
+      if (!column) return null
+      try {
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          table.dbPath,
+          `SELECT COUNT(*) AS "image_count", MAX("local_id") AS "image_max_local_id" FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${this.imageMessageWhere(column, input)}`
+        )
+        const row = rows[0] || {}
+        const tableCount = Number(this.pickValue(row, ['image_count', 'count', 'COUNT(*)']))
+        const tableMax = Number(
+          this.pickValue(row, ['image_max_local_id', 'max_local_id', 'MAX("local_id")'])
+        )
+        if (Number.isFinite(tableCount)) count += tableCount
+        if (Number.isFinite(tableMax) && tableMax > maxLocalId) maxLocalId = tableMax
+      } catch (error) {
+        console.warn(
+          `[WCDB4] image watermark failed username=${username} db=${table.dbPath} table=${table.tableName}:`,
+          error
+        )
+        return null
+      }
+    }
+    return { count, maxLocalId }
   }
 
   private readSessionRows(): Record<string, unknown>[] {
@@ -1327,6 +1637,99 @@ export class Wcdb4Client {
     }
 
     return this.finalizeMessages(username, allRows, startTime, endTime, limit)
+  }
+
+  /**
+   * 只读**图片消息**，供图片文字索引使用。
+   *
+   * 为什么需要它：`getMessagesAsync` 会把整个会话的消息都读出来，
+   * 一个 20 万条消息的会话要花十几秒（实测 `rawReadMs≈15s`），
+   * 而图片索引只关心其中的图片 —— 那是错误的数据边界。
+   *
+   * 实现上刻意**复用 `finalizeMessages`**（即 `normalizeMessage` + 群昵称解析 + 排序），
+   * 这样产出的 `Wcdb4Message` 与全量路径**逐字段同构**，`messageId` / `contentData`
+   * 语义完全一致 —— 否则 artifact / binding / checkpoint 的键会全变。
+   * 变化的只有"读哪些行"：靠 `imageMessageWhere` 在 SQL 层过滤。
+   *
+   * 这里仍是一次性读完该会话的图片（**未分页**）：行数由图片数量决定而不是消息数量，
+   * 已经比全量小一到两个数量级。超过 `limit` 会被截断并告警，调用方应改成分页。
+   */
+  async listImageMessagesAsync(
+    md5OrUsername: string,
+    options: {
+      sinceMs?: number
+      /**
+       * 开区间上界。recent-first 的分段窗口靠它把"最近 30 天"和"更早"切开，
+       * 与 `sinceMs` 一起构成 `[sinceMs, beforeMs)`。
+       */
+      beforeMs?: number
+      limit?: number
+      /**
+       * 行序。默认 `asc` 保持既有行为不变；recent-first 的窗口用 `desc`，
+       * 让同一窗口内**新的图片先被处理**（用户先受益，且断点续跑更有意义）。
+       */
+      order?: 'asc' | 'desc'
+      requestId?: string
+    } = {}
+  ): Promise<Wcdb4Message[]> {
+    if (!this.wcdbExecQuery) return []
+    const requestId = options.requestId ?? 'NO-REQUEST'
+    const username = this.resolveMessageUsername(md5OrUsername)
+    if (!username) return []
+
+    const startedAt = Date.now()
+    let tables: Wcdb4MessageStore[] = []
+    try {
+      tables = await this.listMessageStoresAsync(username)
+    } catch (error) {
+      console.warn('[WCDB4] image message table stats failed:', error)
+      return []
+    }
+    if (!tables.length) return []
+
+    const limit = Math.max(1, options.limit ?? 200_000)
+    const allRows: Record<string, unknown>[] = []
+    let successfulTables = 0
+    for (const table of tables) {
+      // 真实类型列名必须逐表探测：硬编码会让过滤静默失效，把全量消息当图片读回来。
+      const column = this.resolveMessageTypeColumn(table)
+      if (!column) continue
+      try {
+        const where = this.imageMessageWhere(column, options)
+        // `local_id` 参与排序：`create_time` 同秒的消息需要一个稳定次序，
+        // 否则多次读取的行序可能不同，调用方无法做稳定游标。
+        const direction = options.order === 'desc' ? 'DESC' : 'ASC'
+        const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${where} ORDER BY "create_time" ${direction}, "local_id" ${direction} LIMIT ${limit}`
+        const queryStartedAt = Date.now()
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          table.dbPath,
+          sql
+        )
+        successfulTables += 1
+        if (Array.isArray(rows)) allRows.push(...rows)
+        wcdbDebugLog(
+          `[${requestId}] WCDB image messages table=${table.tableName} rows=${Array.isArray(rows) ? rows.length : 0} cost=${Date.now() - queryStartedAt}ms`
+        )
+      } catch (error) {
+        console.warn(
+          `[WCDB4] image message scan failed table=${table.tableName}:`,
+          error
+        )
+      }
+    }
+    if (tables.length > 0 && successfulTables === 0) return []
+
+    const messages = this.finalizeMessages(username, allRows)
+    if (allRows.length >= limit) {
+      // 不静默丢数据：截断会让该会话被标成"处理完了"，下一遍靠水位修正。
+      console.warn(`[WCDB4] image message scan truncated rows=${allRows.length} limit=${limit}`)
+    }
+    wcdbDebugLog(
+      `[${requestId}] WCDB image messages end rows=${messages.length} cost=${Date.now() - startedAt}ms`
+    )
+    return messages
   }
 
   private async getMessagesByTableScanAsync(

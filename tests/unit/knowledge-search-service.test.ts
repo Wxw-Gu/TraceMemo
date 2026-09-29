@@ -123,7 +123,14 @@ describe('KnowledgeSearchService legacy fallback', () => {
       startTime: 1785800000,
       limit: 10
     })
-    expect(listMessagesAsync).toHaveBeenCalledWith('fixture-conversation', 1785800000, undefined)
+    expect(listMessagesAsync).toHaveBeenCalledWith(
+      'fixture-conversation',
+      1785800000,
+      undefined,
+      undefined,
+      undefined,
+      'knowledge'
+    )
     expect(result).toMatchObject({
       source: 'fallback',
       fallbackReason: 'unavailable',
@@ -151,7 +158,14 @@ describe('KnowledgeSearchService legacy fallback', () => {
       limit: 10
     })
 
-    expect(listMessagesAsync).toHaveBeenCalledWith('fixture-conversation', undefined, undefined)
+    expect(listMessagesAsync).toHaveBeenCalledWith(
+      'fixture-conversation',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'knowledge'
+    )
     expect(result.evidence).toHaveLength(1)
     await service.dispose()
   })

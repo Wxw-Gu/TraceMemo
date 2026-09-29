@@ -1,11 +1,10 @@
 import * as React from 'react'
 import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog'
 import { cn } from '../../lib/cn'
+import { buttonVariants } from './button'
 
 const AlertDialog = AlertDialogPrimitive.Root
 const AlertDialogTrigger = AlertDialogPrimitive.Trigger
-const AlertDialogCancel = AlertDialogPrimitive.Cancel
-const AlertDialogAction = AlertDialogPrimitive.Action
 
 const AlertDialogContent = React.forwardRef<
   React.ElementRef<typeof AlertDialogPrimitive.Content>,
@@ -69,6 +68,39 @@ const AlertDialogDescription = React.forwardRef<
   />
 ))
 AlertDialogDescription.displayName = AlertDialogPrimitive.Description.displayName
+
+/**
+ * 取消：次要动作，走 `outline`。
+ *
+ * 这两个组件必须**显式**挂上 `buttonVariants`。直接 `export const X = Primitive.X`
+ * 会把 Radix 原始 primitive 原样抛出去，渲染成浏览器默认按钮（黑白方角），
+ * 跟产品主题完全不搭 —— 这类"忘了挂样式"的 primitive 是默认样式的常见来源。
+ */
+const AlertDialogCancel = React.forwardRef<
+  React.ElementRef<typeof AlertDialogPrimitive.Cancel>,
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Cancel>
+>(({ className, ...props }, ref) => (
+  <AlertDialogPrimitive.Cancel
+    ref={ref}
+    className={cn(buttonVariants({ variant: 'outline' }), className)}
+    {...props}
+  />
+))
+AlertDialogCancel.displayName = AlertDialogPrimitive.Cancel.displayName
+
+/**
+ * 确认：主要动作，走 `default`（主题色）。
+ *
+ * 危险动作（删除、清空等）由调用方传 `className` 覆盖成 destructive ——
+ * `cn` 走的是 tailwind-merge，同族类会被后者替换，不必在这里开新的分支。
+ */
+const AlertDialogAction = React.forwardRef<
+  React.ElementRef<typeof AlertDialogPrimitive.Action>,
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Action>
+>(({ className, ...props }, ref) => (
+  <AlertDialogPrimitive.Action ref={ref} className={cn(buttonVariants(), className)} {...props} />
+))
+AlertDialogAction.displayName = AlertDialogPrimitive.Action.displayName
 
 export {
   AlertDialog,

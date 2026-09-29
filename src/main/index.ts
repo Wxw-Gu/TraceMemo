@@ -14,7 +14,8 @@ import {
   Menu,
   Tray,
   dialog,
-  protocol
+  protocol,
+  screen
 } from 'electron'
 import { dirname, extname, join } from 'path'
 import { existsSync, promises as fsPromises } from 'fs'
@@ -29,12 +30,10 @@ import {
   ImageDecryptService,
   inspectImageDecoderExecutable,
   inspectImageDecoderStatus,
+  resolveFfmpegExecutable,
   type DecodedImage
 } from './image-decrypt-service'
-import {
-  exportGroupReportSnapshot,
-  extractGroupReportRenderSnapshot
-} from './group-report-service'
+import { exportGroupReportSnapshot, extractGroupReportRenderSnapshot } from './group-report-service'
 import {
   deleteGeneratedReport,
   listGeneratedReports,
@@ -44,9 +43,7 @@ import {
 } from './report-history-service'
 import { reportTemplateService } from './report-template-service'
 import { registerReportTemplateIpc } from './report-template-ipc'
-import type {
-  GroupReportRenderSnapshotExportRequest
-} from '../shared/group-report'
+import type { GroupReportRenderSnapshotExportRequest } from '../shared/group-report'
 import type {
   SaveGeneratedReportRequest,
   PrepareGeneratedReportTemplateSwitchRequest,
@@ -64,6 +61,7 @@ import { apiTokenStore } from './api-token-store'
 import { ImageKeyConfigService } from './services/image-key-config-service'
 import { AIProviderService } from './services/ai-provider-service'
 import { imageInsightService } from './services/image-insight-service'
+import { systemOcrService } from './services/system-ocr-service'
 import type {
   ImageAnalysisRequest,
   ImageAnalysisResponse,
@@ -71,6 +69,7 @@ import type {
   ImageCandidateQuery,
   ImageInsight
 } from '../shared/image-insight'
+import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../shared/system-ocr'
 import { KeyServiceMac } from './key-service-mac'
 import { KeyService as KeyServiceWin } from './key-service-win'
 import * as chat from './services/chat-service'
@@ -111,23 +110,31 @@ import {
 } from './services/bootstrap-cache'
 import { installSafeConsole } from './safe-log'
 import { agentHubService } from './services/agent-hub-service'
+import { WechatConnectorService } from './services/wechat-ilink'
+import { wechatSendGateway } from './services/wechat-send-gateway'
 import { groupExitMonitorService } from './services/group-exit-monitor-service'
+import {
+  filterSendableFriendContacts,
+  leaveNotificationContactDisplayName
+} from './services/leave-notification-target'
+import { MessageListenerService } from './services/message-listener-service'
+import { automationRuleStore } from './services/automation-rule-store'
+import { automationExecutionLogService } from './services/automation-execution-log-service'
+import { initAutomationService, getAutomationService } from './services/automation-service'
+import { GroupStatsService } from './services/group-stats-service'
 import { wechatActionLogService } from './services/wechat-action-log-service'
-import { wechatActionGateway } from './services/wechat-action-gateway'
+import { toPersonalWechatSendResult, wechatActionGateway } from './services/wechat-action-gateway'
 import { personalWechatSendService } from './services/personal-wechat-send-service'
+import { macWechatRuntimeManager } from './services/mac-wechat-runtime-manager'
 import { getPersonalWechatSendCapability } from './services/personal-wechat-capability-service'
 import { scheduledReportService } from './services/scheduled-report-service'
-import { PersonalWechatRuntimeManager } from './services/personal-wechat-runtime-manager'
 import { personalWechatVoiceEnvironmentService } from './services/personal-wechat-voice-environment-service'
 import type {
   PersonalWechatGeneratedTtsVoiceRequest,
   PersonalWechatSendRequest,
-  PersonalWechatSendResult
+  PersonalWechatSendResult,
+  PersonalWechatSenderStatus
 } from '../shared/personal-wechat'
-import type {
-  ScheduledReportCreateInput,
-  ScheduledReportUpdateInput
-} from '../shared/scheduled-report'
 import { isTruthyDebugFlag } from '../shared/debug-flags'
 import { TextToSpeechSettingsService } from './services/text-to-speech-settings-service'
 import type {
@@ -147,6 +154,11 @@ function nextGetMessagesRequestId(): string {
 import type { AppLogEntry } from '../shared/app-log'
 import { appUpdateService } from './services/app-update-service'
 import { clearCache, getCacheSummary, openKnowledgeDirectory } from './services/cache-service'
+import { imageTextIndexService } from './services/image-text-index-service'
+import {
+  IMAGE_TEXT_SEGMENT_MESSAGE_LIMIT,
+  type ImageTextIndexStartOptions
+} from '../shared/image-text-index'
 import type { CacheClearScope } from './services/cache-service'
 import { configureRecallArchive, RecallArchiveMonitor } from './services/recall-archive-service'
 import { VideoAssetService } from './video-asset-service'
@@ -191,15 +203,28 @@ import type {
   WechatShareServiceConfig
 } from '../shared/wechat-share-card'
 
+async function currentPersonalWechatSenderStatus(): Promise<PersonalWechatSenderStatus> {
+  return process.platform === 'darwin'
+    ? macWechatRuntimeManager.buildSenderStatus()
+    : personalWechatSendService.getStatus()
+}
+
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
 // handler. Wrap console.* before any other module logs anything.
 installSafeConsole()
 
+/**
+ * 进程内微信 iLink 连接器：inbound 回调与 outbound 发送都在主进程内完成，
+ * 不依赖子进程，也不开本地 HTTP 端口。
+ */
+const wechatConnectorService = new WechatConnectorService()
+
 let voiceService: VoiceService | null = null
 let voiceRecognition: VoiceRecognitionUseCase | null = null
 let voiceBatchService: VoiceBatchService | null = null
 let knowledgeSearchService: KnowledgeSearchService | null = null
+let groupStatsService: GroupStatsService | null = null
 let localQueryApiService: LocalQueryApiService | null = null
 let aiSearchPipelineService: AiSearchPipelineService | null = null
 let queryAgentService: QueryAgentService | null = null
@@ -211,7 +236,6 @@ const databaseKeyStore = new DatabaseKeyStore()
 const imageKeyConfigService = new ImageKeyConfigService()
 const aiProviderService = new AIProviderService()
 const textToSpeechSettingsService = new TextToSpeechSettingsService()
-const personalWechatRuntimeManager = new PersonalWechatRuntimeManager()
 const keyServiceMac = new KeyServiceMac()
 const keyServiceWin = new KeyServiceWin()
 const wechatShareConfigStore = new WechatShareConfigStore()
@@ -481,9 +505,29 @@ async function createLocalMediaResponse(request: Request, filePath: string): Pro
 
 function createWindow(): void {
   // 创建浏览器窗口
+  /*
+   * 初始尺寸按当前屏幕工作区的 60% 计算，不再用固定 1400×800。
+   * 两个夹逼都是必要的：
+   * - 下限：小屏上 60% 会算出比原固定值更小的窗口（1920×1080 的工作区高度
+   *   只有 ~985，60% 才 591 高），反而比改动前更糟；高度下限取 900，
+   *   即「高度拉大一点」的诉求。
+   * - 上限：不能超过工作区本身，否则初始尺寸会把标题栏顶出屏幕。
+   */
+  const { workAreaSize } = screen.getPrimaryDisplay()
+  const initialWidth = Math.min(
+    Math.max(Math.round(workAreaSize.width * 0.6), 1400),
+    workAreaSize.width
+  )
+  const initialHeight = Math.min(
+    Math.max(Math.round(workAreaSize.height * 0.6), 900),
+    workAreaSize.height
+  )
   const mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 800,
+    width: initialWidth,
+    height: initialHeight,
+    minWidth: 960,
+    minHeight: 640,
+    center: true,
     show: false,
     autoHideMenuBar: true,
     icon: appIconPath,
@@ -634,8 +678,135 @@ app.whenReady().then(async () => {
   voiceRecognition.onTranscriptUpdate((update) =>
     knowledgeSearchService?.indexVoiceTranscript(update)
   )
+
+  /**
+   * 确保图片解密服务可用（按需创建，与 `db:getImage` 冷路径同一套构造方式）。
+   *
+   * 提取成显式入口是因为原来它只存在于 `db:getImage` 的闭包里，
+   * 别的需要解密的路径（图片文字索引回填）拿不到、只能拿到 `null`。
+   */
+  function ensureImageDecryptService(): ImageDecryptService | null {
+    if (imageDecryptService) return imageDecryptService
+    const { xorKey, aesKey } = getConfiguredImageKeys()
+    if (!aesKey) return null
+    imageDecryptService = new ImageDecryptService(
+      xorKey,
+      aesKey,
+      chat.getChatDb()?.getWcdb4Client(),
+      loadSettings().dbRoot
+    )
+    return imageDecryptService
+  }
+
+  // 图片文字索引（本地 System OCR 派生文本）。
+  // 与语音转写完全同构：派生文本在 main 进程解析后贴到消息上，Knowledge 侧只消费结果。
+  knowledgeSearchService.setImageOcrResolver((conversationId, messageId) =>
+    imageTextIndexService.getConversationOcr(conversationId).get(messageId)
+  )
+  /**
+   * 图片文字索引需要解密图片。
+   *
+   * 解密服务原本只在 `db:getImage`（用户点开某张图）里才懒加载，于是没点开过图片时
+   * 全量回填会拿到 `null`。这里改成显式"按需确保"，凡是需要解密的路径都能自己建起来。
+   */
+  imageTextIndexService.bind({
+    databaseRoot: join(app.getPath('userData'), 'image-text-index'),
+    resolveAccountId: () =>
+      chat.isReady()
+        ? String(chat.getSelfAccountInfo()?.wxid || chat.getCurrentAccountRoot() || '')
+        : '',
+    resolveAccountRoot: () => chat.getCurrentAccountRoot() || loadSettings().dbRoot || '',
+    listContacts: async () => {
+      const contacts = await chat.listContactsAsync()
+      return contacts.map((contact) => ({
+        md5: contact.md5,
+        m_nsUsrName: contact.m_nsUsrName,
+        type: contact.type
+      }))
+    },
+    listMessages: (conversationId) =>
+      chat.listMessagesAsync(
+        conversationId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'image-text-index'
+      ),
+    /**
+     * 图片索引走**专用查询**：只读图片消息，不读整个会话。
+     *
+     * 全量读取一个 20 万条消息的会话实测要 15s 以上，而其中 99% 以上的行
+     * 图片索引根本不看 —— 那是数据边界错了，不是 OCR 慢。
+     */
+    listImageMessages: (conversationId, window) =>
+      chat.listImageMessagesAsync(
+        conversationId,
+        {
+          ...(window?.sinceMs !== undefined ? { sinceMs: window.sinceMs } : {}),
+          ...(window?.beforeMs !== undefined ? { beforeMs: window.beforeMs } : {}),
+          limit: IMAGE_TEXT_SEGMENT_MESSAGE_LIMIT
+        },
+        'image-text-index'
+      ),
+    countConversationImages: (conversationId, range) =>
+      chat.countImageMessagesAsync(conversationId, range),
+    imageWatermark: (conversationId, range) =>
+      chat.imageConversationWatermarkAsync(conversationId, range),
+    decryptService: () => ensureImageDecryptService(),
+    capability: () => systemOcrService.getCapability(),
+    /**
+     * OCR 并发度的运行时覆盖；不设置则走 `DEFAULT_IMAGE_TEXT_OCR_CONCURRENCY`。
+     *
+     * 同一份二进制、同一批图片只改这一个数，才能把并发度当作对照变量来比较。
+     * 非法值会被 `resolveImageTextOcrConcurrency` 收敛掉。
+     */
+    ...(process.env.TRACEMEMO_OCR_CONCURRENCY
+      ? { ocrConcurrency: Number(process.env.TRACEMEMO_OCR_CONCURRENCY) }
+      : {}),
+    /** 低频性能画像：只写性能数字，不含图片内容 / 路径 / 会话标识。 */
+    logStageProfile: (profile) =>
+      appLogger.write({
+        level: 'info',
+        scope: 'image-text-index',
+        message: '图片文字索引性能画像',
+        details: { ...profile }
+      }),
+    recognize: async (imageDataUrl) => {
+      const result = await systemOcrService.recognize({ imageDataUrl })
+      return {
+        success: result.success,
+        text: result.text,
+        language: result.language,
+        ...(result.errorCode ? { errorCode: result.errorCode } : {})
+      }
+    },
+    // 会话图片全部处理完 → 重建该会话索引，OCR 文本才可被 search_messages 检索。
+    onConversationIndexed: (conversationId) =>
+      knowledgeSearchService?.indexImageOcr(conversationId) ?? Promise.resolve()
+  })
   aiSearchPipelineService = new AiSearchPipelineService(knowledgeSearchService, aiProviderService)
   localQueryApiService = new LocalQueryApiService(knowledgeSearchService)
+  // 群员统计复用同一个 Knowledge 实例：它只是「读派生库 + 读成员名单」的编排，
+  // 不持有自己的数据库，也不新建索引。
+  groupStatsService = new GroupStatsService(knowledgeSearchService)
+  // 图片文字索引覆盖度是**独立覆盖维度**：接到 search_messages 的 tool result 上，
+  // 让 Query Agent 在图片索引没做完时不能凭 0 条证据断言"没有"。
+  localQueryApiService.setImageTextCoverageProvider(() =>
+    imageTextIndexService.getCoverageSnapshot()
+  )
+  /**
+   * 单条图片消息的 OCR 派生文本也要接到精确读消息路径上。
+   *
+   * 与覆盖度是**两件不同的事**：覆盖度回答"索引建了多少"，这里回答
+   * "这一条图片已经识别出的文字是什么"。只接前者的话，图片索引建好了模型也读不到正文，
+   * 只能看到一个空的 `attachment`。
+   *
+   * 只读派生库，**不触发 OCR / 解密 / 读原图**。
+   */
+  localQueryApiService.setImageOcrEntryProvider((conversationId, messageId) =>
+    imageTextIndexService.getConversationOcr(conversationId).get(messageId)
+  )
   setLocalQueryApiService(localQueryApiService)
   // Query Agent：生产 Runtime 只在这里实例化一次，桌面问问微信与 Agent Hub 共用同一个实例。
   queryAgentService = new QueryAgentService(
@@ -649,22 +820,50 @@ app.whenReady().then(async () => {
       if (!aiSearchPipelineService) throw new Error('本地搜索服务尚未初始化')
       return aiSearchPipelineService.run(request, () => undefined)
     },
-    log: (record) => appLogger.write({ level: record.level, scope: 'query-agent', message: record.message, details: record.details })
+    log: (record) =>
+      appLogger.write({
+        level: record.level,
+        scope: 'query-agent',
+        message: record.message,
+        details: record.details
+      })
   })
   agentHubService.setQueryAgentService(queryAgentService)
+  // 微信 iLink 连接器直接跑在主进程内：inbound 回调与 outbound 发送都不经过本地 HTTP 桥。
+  agentHubService.setWechatConnector(wechatConnectorService)
+  wechatSendGateway.configureIlinkSender(async (request) => {
+    const target = {
+      to: request.to,
+      ...(request.account_id ? { accountId: request.account_id } : {}),
+      ...(request.context_token ? { contextToken: request.context_token } : {})
+    }
+    if (request.type === 'text') {
+      await wechatConnectorService.sendText({ ...target, text: request.msg })
+      return
+    }
+    if (request.type === 'image' || request.type === 'file') {
+      if (/^https?:\/\//i.test(request.msg)) {
+        await wechatConnectorService.sendMediaUrl({ ...target, mediaUrl: request.msg })
+      } else {
+        await wechatConnectorService.sendMediaPath({ ...target, filePath: request.msg })
+      }
+      return
+    }
+    throw new Error('iLink 通道暂不支持发送语音')
+  })
   knowledgeSearchService.onStatusChange((status) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send('knowledge:status', status)
     }
   })
+  imageTextIndexService.onStatusChange((status) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('image-text-index:status', status)
+    }
+  })
   voiceRecognition.modelManager.setProgressListener((status) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send('voice:modelProgress', status)
-    }
-  })
-  personalWechatRuntimeManager.setProgressListener((status) => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) window.webContents.send('wechat-personal:runtimeProgress', status)
     }
   })
   protocol.handle('wxe-media', async (request) => {
@@ -745,12 +944,25 @@ app.whenReady().then(async () => {
   ipcMain.handle('cache:getSummary', () => getCacheSummary())
   ipcMain.handle('cache:openKnowledgeDirectory', () => openKnowledgeDirectory())
   ipcMain.handle('cache:clear', async (_, scope: CacheClearScope) => {
-    const allowedScopes: CacheClearScope[] = ['bootstrap', 'electron', 'knowledge', 'all']
+    const allowedScopes: CacheClearScope[] = [
+      'bootstrap',
+      'electron',
+      'knowledge',
+      'image-text-index',
+      'all'
+    ]
     if (!allowedScopes.includes(scope)) return getCacheSummary()
     imageDecryptService = null
+    // 这里刻意**不再**提前 resetAccount()：清理钩子需要先读到派生库里的
+    // "哪些会话有 OCR 派生文本"，才能把这些会话的 Knowledge 索引一起失效。
+    // 句柄由 beforeClearImageTextIndex 内部的 clear() 自己关闭（删文件前）。
     return clearCache(scope, {
       beforeClearKnowledge: () =>
-        knowledgeSearchService?.prepareForCacheClear() || Promise.resolve()
+        knowledgeSearchService?.prepareForCacheClear() || Promise.resolve(),
+      beforeClearImageTextIndex: async () => {
+        await imageTextIndexService.prepareForCacheClear()
+        imageTextIndexService.resetAccount()
+      }
     })
   })
 
@@ -816,20 +1028,120 @@ app.whenReady().then(async () => {
           return { success: false, error: '应用正在退出，数据库连接已取消', monitoring: false }
         }
         const wcdb4Client = nextWechatDb.getWcdb4Client()
+        /**
+         * 正式 MessageListener（Observation Mode 接入）。
+         *
+         * 本轮**只监听、回读、规范化、去重、统计**，不触发任何业务：
+         * 不匹配关键词、不判断 @我、不出日报、不回复、不调 AI / Agent、不发送。
+         * 下一层的 Trigger 由后续任务接入。
+         */
+        const messageListener = new MessageListenerService(wcdb4Client)
+        /**
+         * Automation v1（@我生成日报）。
+         *
+         * `isListening` 要等下面 `startMonitor` 有结果才知道，所以先用闭包变量占位。
+         */
+        let automationListening = false
+        initAutomationService(wcdb4Client, { isListening: () => automationListening })
+
+        /**
+         * 旧「定时日报任务」迁移所需的会话解析器。
+         *
+         * **必须在数据库就绪之后注入**：旧 `task.group` 可能是会话 md5、群名或 roomId
+         * 三种形态，只有 `resolveMd5` 能收敛成稳定会话 id。
+         * 注入前若渲染层已经读过一次规则（`automation:listRules`），迁移会**整体推迟**
+         * 而不落盘 —— 注入这一步会立刻补跑（见 `AutomationRuleStore.setLegacyConversationResolver`）。
+         *
+         * 这样设计的原因：拿不到解析器时如果把旧数据判成「无法无损映射」，
+         * 用户的定时日报会被**无辜停用**，而事实只是"数据库还没打开"。
+         */
+        automationRuleStore.setLegacyConversationResolver((raw) => {
+          const key = String(raw || '').trim()
+          if (!key) return undefined
+          // 已经是稳定会话 id 就直接用，不查库。
+          if (key.endsWith('@chatroom')) return key
+          try {
+            const username = String(chat.resolveMd5(key)?.m_nsUsrName || '').trim()
+            return username || undefined
+          } catch {
+            return undefined
+          }
+        })
+        /**
+         * 退群通知的唯一通路：**退群监控只负责产生事件，自动化负责发送**。
+         *
+         * `handleGroupExit` 自己吞掉异常，这里再兜一层 `.catch` 是防御性的 ——
+         * 未捕获的 rejection 会污染监控循环，而退群事实早就已经记录成功了。
+         */
+        groupExitMonitorService.setGroupExitHandler((event) => {
+          try {
+            return getAutomationService()
+              .handleGroupExit(event)
+              .catch((error) => {
+                console.warn(
+                  `[Automation] handleGroupExit failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                )
+              })
+          } catch (error) {
+            console.warn(
+              `[Automation] 退群通知未初始化，已跳过本次事件: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+            return undefined
+          }
+        })
+        messageListener.onMessage((message) => {
+          // 日志只允许出现「类型 / 群或私聊 / 是否自己发 / @ 数量」这类不可逆标识，
+          // 不含 wxid、昵称、群名、正文与 source。
+          console.log(
+            `[MessageListener] incoming messageType=${message.messageType}` +
+              ` group=${message.isGroup} self=${message.isSelf}` +
+              ` mentions=${message.mentionTargets.length}`
+          )
+          // Automation 自带 isSelf / cooldown / 同消息幂等三重闸，不会形成回复循环。
+          // 用 try 包住同步那一段：`getAutomationService()` 在未初始化时会抛，
+          // 而 `.catch()` 只能接住异步拒绝 —— 漏了这层就会把异常抛进 MessageListener 的投递循环。
+          try {
+            void getAutomationService()
+              .handleMessage(message)
+              .catch((error) => {
+                console.warn(
+                  `[Automation] handleMessage failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                )
+              })
+          } catch (error) {
+            console.warn(
+              `[Automation] 未初始化，已跳过本次消息: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+          }
+        })
         const sessions = await wcdb4Client.getSessionsAsync({ hydrateDisplayNames: false })
         configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
         voiceService = new VoiceService(wcdb4Client, resolvedRoot)
         voiceRecognition?.connect(voiceService, resolvedRoot)
         stickerService = new StickerService(wcdb4Client)
         videoAssetService = new VideoAssetService(wcdb4Client)
-        const monitoring = await wcdb4Client.startMonitor((type, json) => {
+        const monitoring = await wcdb4Client.startMonitor((event) => {
           wcdb4Client.invalidateSessionCache()
-          groupExitMonitorService.notifyDatabaseChanged(json)
-          recallArchiveMonitor?.handleDatabaseChange(json)
+          // 正式 MessageListener：只做 coalesce + 有界回读 + dedup + 投递，不触发业务。
+          // v2 事件带 sessionId ⇒ 回读不再依赖「最近活跃会话」。
+          messageListener.handleNativeChange(event)
+          groupExitMonitorService.notifyDatabaseChanged(event.raw)
+          recallArchiveMonitor?.handleDatabaseChange(event.raw)
           for (const window of BrowserWindow.getAllWindows()) {
-            if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
+            if (!window.isDestroyed()) {
+              window.webContents.send('wcdb-change', { type: event.type, json: event.raw })
+            }
           }
         })
+        automationListening = monitoring === true
         void groupExitMonitorService.start(monitoring)
         const recentSession = sessions[0]
         if (recentSession?.username) {
@@ -838,6 +1150,8 @@ app.whenReady().then(async () => {
             .catch((error) => console.warn('[WCDB4] message cursor warmup failed:', error))
         }
         imageDecryptService = null
+        // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+        imageTextIndexService.resetAccount()
         console.log(
           `[WCDB4] db:init ready sessions=${sessions.length} monitoring=${monitoring} cost=${Date.now() - startedAt}ms`
         )
@@ -969,7 +1283,54 @@ app.whenReady().then(async () => {
   )
   // 日报等系统动作仍复用现有发送服务；普通聊天不再暴露这个入口。
   ipcMain.handle('wechat-personal:send', async (_, request: PersonalWechatSendRequest) => {
-    if (request.type !== 'voice' || String(request.fromId || '').trim()) {
+    // 项目规则：**所有发送都必须经过 WechatActionGateway**（审计 + 幂等 + 同一个 Send Log）。
+    // 手动发送在改造前从这里直连 `PersonalWechatSendService`，于是完全不留痕 ——
+    // 排查「消息到底发没发出去」时恰好缺的就是那份证据。
+    // 普通手动发送保持 triggerType=user；带 postfixText 的日报图片由 Gateway 编排成
+    // 两个 automation action，以复用同一条 3s 队列，并严格在图片 sent 后才发后置词。
+    if (request.type === 'text' || request.type === 'image') {
+      const to = String(request.to || '').trim()
+      const recipient = {
+        type:
+          request.isGroup || to.endsWith('@chatroom') ? ('group' as const) : ('contact' as const),
+        id: to
+      }
+      if (request.type === 'image' && request.postfixText !== undefined) {
+        const sequence = await wechatActionGateway.executeReportImageSequence({
+          recipient,
+          imagePath: String(request.filePath || ''),
+          postfixText: request.postfixText
+        })
+        const imageResult = toPersonalWechatSendResult(
+          sequence.image,
+          await currentPersonalWechatSenderStatus()
+        )
+        if (!imageResult.success || !sequence.postfix) return imageResult
+        return {
+          ...imageResult,
+          postfixSent: sequence.postfix.status === 'sent',
+          ...(sequence.postfix.status === 'sent'
+            ? {}
+            : { postfixError: sequence.postfix.reason || '后置词发送失败' })
+        }
+      }
+      const action = await wechatActionGateway.execute({
+        origin: 'user_manual',
+        purpose: request.type === 'text' ? 'manual_text' : 'manual_image',
+        triggerType: 'user',
+        recipient,
+        content:
+          request.type === 'text'
+            ? { type: 'text', text: String(request.text || '') }
+            : { type: 'image', path: String(request.filePath || '') }
+      })
+      // 返回契约保持 `PersonalWechatSendResult`，界面判读不用改。
+      return toPersonalWechatSendResult(action, await currentPersonalWechatSenderStatus())
+    }
+
+    // 语音仍走既有分支：它有自己的网关入口 `wechat-personal:sendGeneratedTtsVoice`，
+    // 且需要先解析当前账号 wxid 才能编码。
+    if (String(request.fromId || '').trim()) {
       return personalWechatSendService.send(request)
     }
     let fromId = ''
@@ -1017,6 +1378,8 @@ app.whenReady().then(async () => {
       aesKey: result.aesKey
     })
     if (saved.success) imageDecryptService = null
+    // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+    imageTextIndexService.resetAccount()
     return {
       ...result,
       success: saved.success,
@@ -1037,6 +1400,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('image:saveConfig', (_, request: SaveImageKeyRequest) => {
     const result = imageKeyConfigService.save(request)
     if (result.success) imageDecryptService = null
+    // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+    imageTextIndexService.resetAccount()
     return result
   })
 
@@ -1047,6 +1412,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('image:clearConfig', () => {
     const result = imageKeyConfigService.clear()
     if (result.success) imageDecryptService = null
+    // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+    imageTextIndexService.resetAccount()
     return result
   })
 
@@ -1171,7 +1538,7 @@ app.whenReady().then(async () => {
       const requestId = nextGetMessagesRequestId()
       const startedAt = Date.now()
       wcdbDebugLog(
-        `[${requestId}] IPC db:getMessages start userMd5=${userMd5} start=${startTime || 0} end=${endTime || 0} limit=${options?.limit || 0}`
+        `[${requestId}] IPC db:getMessages start start=${startTime || 0} end=${endTime || 0} limit=${options?.limit || 0}`
       )
       try {
         const messages = await chat.listMessagesAsync(
@@ -1232,7 +1599,7 @@ app.whenReady().then(async () => {
         return { messages: [], found: false, radiusSeconds: 0, truncated: false }
       }
       wcdbDebugLog(
-        `[${requestId}] IPC db:getMessagesAround start userMd5=${userMd5} messageId=${target.messageId} anchor=${anchorSeconds || 0}`
+        `[${requestId}] IPC db:getMessagesAround start messageId=${target.messageId} anchor=${anchorSeconds || 0}`
       )
       for (const radius of radii) {
         const start = Math.max(0, (anchorSeconds as number) - radius)
@@ -1280,30 +1647,152 @@ app.whenReady().then(async () => {
     return snapshot
   })
 
+  /**
+   * 群员统计（单群）。
+   *
+   * 时间单位刻意用 epoch **毫秒**：这一路完全走 Knowledge，而 Knowledge 内部口径就是毫秒。
+   * 沿用聊天消息的秒级口径会在 service 内部凭空多出一次换算 —— 而单位换错是**静默读 0 条**，
+   * 不会报错。
+   */
+  ipcMain.handle(
+    'group-stats:getMemberStats',
+    async (_, request: { userMd5?: unknown; startTime?: unknown; endTime?: unknown }) => {
+      if (!groupStatsService) throw new Error('群员统计服务尚未就绪')
+      const userMd5 = String(request?.userMd5 || '').trim()
+      if (!userMd5) throw new Error('缺少会话标识')
+      const startTime = Number(request?.startTime)
+      const endTime = Number(request?.endTime)
+      if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime < startTime) {
+        throw new Error('统计时间范围无效')
+      }
+      return groupStatsService.getMemberStats({ userMd5, startTime, endTime })
+    }
+  )
+
   ipcMain.handle('group-exit-monitor:getState', () => groupExitMonitorService.getState())
   ipcMain.handle('group-exit-monitor:setEnabled', (_, enabled: boolean) =>
     groupExitMonitorService.setEnabled(enabled === true)
   )
-  ipcMain.handle(
-    'group-exit-monitor:setGroups',
-    (_, roomIds: string[], notificationRoomIds?: string[]) =>
-      groupExitMonitorService.setMonitoredRoomIds(
-        Array.isArray(roomIds) ? roomIds : [],
-        Array.isArray(notificationRoomIds) ? notificationRoomIds : []
-      )
-  )
-  ipcMain.handle('group-exit-monitor:setTemplate', (_, template: unknown) =>
-    groupExitMonitorService.setNotificationTemplate(template)
+  /**
+   * 保存**监控范围**。
+   *
+   * 只有一个参数：旧版第二个参数（通知群聊）已经迁到「自动化 → 退群通知」，
+   * 退群监控不再持有任何通知配置。
+   */
+  ipcMain.handle('group-exit-monitor:setGroups', (_, roomIds: string[]) =>
+    groupExitMonitorService.setMonitoredRoomIds(Array.isArray(roomIds) ? roomIds : [])
   )
   ipcMain.handle('group-exit-monitor:checkNow', () => groupExitMonitorService.checkNow())
+  /**
+   * 按群查退群事件（档案合并展示用）。
+   *
+   * 时间参数是 epoch **毫秒**，与事件的 `detectedAt` 同口径。
+   */
+  ipcMain.handle('group-exit-monitor:listEvents', (_, query: unknown) => {
+    const input = (query || {}) as {
+      roomId?: unknown
+      sinceMs?: unknown
+      untilMs?: unknown
+      limit?: unknown
+    }
+    return groupExitMonitorService.listEvents({
+      roomId: typeof input.roomId === 'string' ? input.roomId : undefined,
+      sinceMs: Number(input.sinceMs),
+      untilMs: Number(input.untilMs),
+      limit: Number(input.limit)
+    })
+  })
   ipcMain.handle('group-exit-monitor:clearEvents', () => groupExitMonitorService.clearEvents())
-  ipcMain.handle('group-exit-monitor:resendEvent', (_, eventId: string) =>
-    groupExitMonitorService.resendEvent(eventId)
-  )
   ipcMain.handle('group-exit-monitor:markRead', (_, readAt?: number) =>
     groupExitMonitorService.markRead(readAt)
   )
   ipcMain.handle('wechat-action-log:list', () => wechatActionLogService.list())
+
+  /**
+   * Automation v1（@我生成日报）。
+   *
+   * 规则与执行日志都是纯文件存储，**不依赖数据库**，所以这两组 handler 在数据库
+   * 解锁前也可以安全调用；只有 `getStatus` / `listGroups` 需要会话数据，因此用
+   * `tryAutomationService()` 兜底，避免渲染层在启动阶段拿到一个 rejected promise。
+   */
+  const tryAutomationService = (): ReturnType<typeof getAutomationService> | null => {
+    try {
+      return getAutomationService()
+    } catch {
+      return null
+    }
+  }
+  ipcMain.handle('automation:listRules', () => automationRuleStore.listRules())
+  ipcMain.handle('automation:createRule', (_, draft: unknown) =>
+    automationRuleStore.createRule(draft)
+  )
+  ipcMain.handle('automation:updateRule', (_, input: unknown) => {
+    const payload = (input || {}) as { id?: unknown; draft?: unknown }
+    return automationRuleStore.updateRule(String(payload.id || ''), payload.draft) ?? null
+  })
+  ipcMain.handle('automation:deleteRule', (_, id: string) => automationRuleStore.deleteRule(id))
+  ipcMain.handle('automation:setRuleEnabled', (_, input: unknown) => {
+    const payload = (input || {}) as { id?: unknown; enabled?: unknown }
+    return (
+      automationRuleStore.setRuleEnabled(String(payload.id || ''), payload.enabled === true) ?? null
+    )
+  })
+  ipcMain.handle('automation:listExecutions', (_, query: unknown) => {
+    const input = (query || {}) as { limit?: unknown }
+    return automationExecutionLogService.list({ limit: Number(input.limit) })
+  })
+  ipcMain.handle('automation:clearExecutions', () => automationExecutionLogService.clear())
+  ipcMain.handle('automation:listGroups', () => tryAutomationService()?.listGroups() ?? [])
+  /**
+   * 保存「退群通知」规则（singleton upsert）。
+   *
+   * 单独一个通道而不是复用 `updateRule`：这条规则是系统规则，
+   * 保存语义是"存在即更新、不存在即创建"，且 id 固定 —— 不允许渲染层自己拼 id。
+   */
+  ipcMain.handle('automation:saveLeaveNotificationRule', (_, draft: unknown) =>
+    automationRuleStore.saveLeaveNotificationRule(draft)
+  )
+  /**
+   * 「指定好友」的可选项。
+   *
+   * 过滤（群聊 / 公众号 / 文件传输助手 / 自己）在 main 侧完成 ——
+   * 只有这里知道当前登录账号是谁，渲染层再筛一遍必然会漂移。
+   */
+  ipcMain.handle('automation:listSendableContacts', () => {
+    try {
+      const selfWxid = String(chat.getSelfAccountInfo()?.wxid || '')
+      return filterSendableFriendContacts(chat.listContacts(), selfWxid).map((contact) => ({
+        id: String(contact.m_nsUsrName || ''),
+        name: leaveNotificationContactDisplayName(contact)
+      }))
+    } catch (error) {
+      console.warn(
+        `[Automation] 读取可选联系人失败: ${error instanceof Error ? error.message : String(error)}`
+      )
+      return []
+    }
+  })
+  ipcMain.handle('automation:getStatus', async () => {
+    const service = tryAutomationService()
+    if (service) return service.getStatus()
+    // 数据库尚未就绪：如实返回「未监听 + 能力未知」，而不是假装一切正常。
+    const todayStart = new Date()
+    todayStart.setHours(0, 0, 0, 0)
+    const counts = automationExecutionLogService.countSince(todayStart.getTime())
+    return {
+      listening: false,
+      listeningDegraded: true,
+      todayExecutions: counts.total,
+      todaySuccesses: counts.success,
+      sendCapability: {
+        supported: false,
+        ready: false,
+        canSendText: false,
+        canSendImage: false,
+        message: '数据库尚未就绪，暂时无法获知微信发送能力'
+      }
+    }
+  })
 
   ipcMain.handle('db:search', (_, keyword: string) => chat.searchMessages(keyword))
   ipcMain.handle(
@@ -1335,6 +1824,30 @@ app.whenReady().then(async () => {
     if (!knowledgeSearchService) throw new Error('本地知识库服务尚未初始化')
     return knowledgeSearchService.cancelCurrentAccountIndex()
   })
+  // ---- 图片文字索引（本地 System OCR 派生文本，非 AI Provider）----
+  ipcMain.handle('image-text-index:getStatus', () => imageTextIndexService.getStatus())
+  /**
+   * 点击索引前的快速统计：纯 SQL COUNT，**不解密任何图片**。
+   * 这是「先告诉用户有多少张图片再决定是否开始」能足够快的前提。
+   */
+  ipcMain.handle('image-text-index:count', (_, sinceMs?: number) =>
+    imageTextIndexService.countImageMessages(sinceMs)
+  )
+  ipcMain.handle('image-text-index:start', (_, options?: ImageTextIndexStartOptions) =>
+    imageTextIndexService.startPass(options ?? {})
+  )
+  ipcMain.handle('image-text-index:pause', () => imageTextIndexService.pause())
+  ipcMain.handle('image-text-index:resume', (_, options?: ImageTextIndexStartOptions) =>
+    imageTextIndexService.resume(options ?? {})
+  )
+  ipcMain.handle('image-text-index:cancel', () => imageTextIndexService.cancel())
+  ipcMain.handle('image-text-index:clear', () => imageTextIndexService.clear())
+  // 只重置失败记录（成功记录与其它数据一律不动），供"修好代码后重跑"使用。
+  ipcMain.handle('image-text-index:resetFailures', () =>
+    imageTextIndexService.resetRetriableFailures()
+  )
+  // 派生索引修复：只重建 Knowledge 里的图片派生条目（L3），**不重新 OCR**（L1 不动）。
+  ipcMain.handle('image-text-index:repair', () => imageTextIndexService.repairKnowledgeIndex())
   ipcMain.handle('ai-search:run', (event, request: AiSearchPipelineRequest) => {
     if (!aiSearchPipelineService) throw new Error('本地搜索服务尚未初始化')
     return aiSearchPipelineService.run(request, (progress) => {
@@ -1500,44 +2013,58 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('wechat-personal:getSendCapability', () => getPersonalWechatSendCapability())
-  ipcMain.handle('scheduled-report:list', () => scheduledReportService.listTasks())
-  ipcMain.handle('scheduled-report:listExecutions', (_, taskId?: string) =>
-    scheduledReportService.listExecutions(taskId)
+
+  /**
+   * 定时日报（Automation 的 `scheduled_report` 规则类型）。
+   *
+   * 规则本身的 CRUD 走上面的 `automation:*`；这里只补三块**专属**能力：
+   * 1. 「立即执行」—— 走 `AutomationService.executeScheduledRule(ruleId,'manual')`，
+   *    与 scheduler 触发**同一条链路**（生成 → 落库 → 解析目标 → Gateway 发图）；
+   * 2. 微信异常通知 —— 定时日报失败时的 Agent Hub 推送，随功能保留；
+   * 3. 旧执行记录**只读存档** —— 旧记录无法无损转换，原样保留给 UI 展示。
+   */
+  ipcMain.handle('automation:runScheduledReportRule', async (_, ruleId: string) => {
+    const service = tryAutomationService()
+    if (!service) return { success: false, error: '数据库尚未就绪，暂时无法执行定时日报' }
+    const outcome = await service.executeScheduledRule(String(ruleId || ''), { trigger: 'manual' })
+    if (outcome.executed) {
+      return { success: outcome.status !== 'failed', data: outcome }
+    }
+    // 「没执行」的每一种原因都要能翻译成用户看得懂的一句话 —— 否则点了按钮没反应，无从排查。
+    const skipMessages: Record<string, string> = {
+      missing_rule: '规则 id 无效',
+      rule_not_found: '未找到这条定时日报规则',
+      disabled: '这条定时日报已停用，请先启用再执行',
+      target_needs_review: '这条规则的发送目标需要重新选择后才能执行',
+      in_flight: '这条规则正在执行中，请稍后再试',
+      store_error: '读取规则失败，请稍后再试'
+    }
+    return {
+      success: false,
+      error: skipMessages[outcome.reason || ''] || '定时日报未执行',
+      data: outcome
+    }
+  })
+  ipcMain.handle('automation:listScheduledReportLegacyExecutions', (_, ruleId?: string) =>
+    scheduledReportService.listLegacyExecutions(ruleId)
   )
-  ipcMain.handle('scheduled-report:getNotificationSettings', () =>
+  ipcMain.handle('automation:getScheduledReportNotificationSettings', () =>
     scheduledReportService.getNotificationSettings()
   )
-  ipcMain.handle('scheduled-report:setNotificationEnabled', (_, enabled: boolean) =>
+  ipcMain.handle('automation:getScheduledReportNotificationCapability', () =>
+    scheduledReportService.checkNotificationCapability()
+  )
+  ipcMain.handle('automation:setScheduledReportNotificationEnabled', (_, enabled: boolean) =>
     scheduledReportService.setNotificationEnabled(Boolean(enabled))
   )
-  ipcMain.handle('scheduled-report:create', (_, request: ScheduledReportCreateInput) =>
-    scheduledReportService.createTask(request)
-  )
-  ipcMain.handle(
-    'scheduled-report:update',
-    (_, taskId: string, request: ScheduledReportUpdateInput) =>
-      scheduledReportService.updateTask(taskId, request)
-  )
-  ipcMain.handle('scheduled-report:delete', (_, taskId: string) =>
-    scheduledReportService.deleteTask(taskId)
-  )
-  ipcMain.handle('scheduled-report:setEnabled', (_, taskId: string, enabled: boolean) =>
-    scheduledReportService.setTaskEnabled(taskId, Boolean(enabled))
-  )
-  ipcMain.handle('scheduled-report:runNow', (_, taskId: string) =>
-    scheduledReportService.runScheduledReportNow(taskId)
-  )
-  ipcMain.handle('scheduled-report:retrySend', (_, executionId: string) =>
-    scheduledReportService.retryScheduledReportSend(executionId)
-  )
-  ipcMain.handle('scheduled-report:testErrorNotification', (_, taskId: string) => {
+  ipcMain.handle('automation:testScheduledReportErrorNotification', (_, ruleId: string) => {
     if (!isTruthyDebugFlag(import.meta.env.VITE_SCHEDULED_REPORT_DEBUG)) {
       return Promise.resolve({
         success: false,
         error: '调试测试按钮未开启，请在 .env 中设置 VITE_SCHEDULED_REPORT_DEBUG=true。'
       })
     }
-    return scheduledReportService.testScheduledReportErrorNotification(taskId)
+    return scheduledReportService.testScheduledReportErrorNotification(ruleId)
   })
 
   ipcMain.handle('report:reveal', async (_, filePath: string) => {
@@ -1640,12 +2167,15 @@ app.whenReady().then(async () => {
     return error ? { success: false, error } : { success: true }
   })
 
-  ipcMain.handle('voice:recognize', (_, reference: VoiceMessageReference) => {
-    if (!voiceRecognition) {
-      return { success: false, code: 'NOT_CONNECTED', error: '语音识别服务尚未初始化' }
+  ipcMain.handle(
+    'voice:recognize',
+    (_, reference: VoiceMessageReference, options?: { force?: boolean }) => {
+      if (!voiceRecognition) {
+        return { success: false, code: 'NOT_CONNECTED', error: '语音识别服务尚未初始化' }
+      }
+      return voiceRecognition.recognize(reference, options)
     }
-    return voiceRecognition.recognize(reference)
-  })
+  )
 
   ipcMain.handle('voice:getTranscriptSnapshot', (_, reference: VoiceMessageReference) => {
     return voiceRecognition?.getTranscriptSnapshot(reference) || { state: 'pending' as const }
@@ -1814,6 +2344,13 @@ app.whenReady().then(async () => {
     }
   })
 
+  // System OCR 是独立的本地 Runtime（不是 AI Provider）：只注入项目统一的 ffmpeg
+  // 解析逻辑（GIF/BMP/WebP/TIFF → PNG 归一化）和系统 locale（OCR 语言包探测）。
+  systemOcrService.bind({
+    resolveFfmpegExecutable,
+    locale: () => app.getLocale()
+  })
+
   /** 日报入口:取会话 Top N 热点图片 + 已缓存的 Insight */
   ipcMain.handle(
     'image:listCandidates',
@@ -1885,6 +2422,26 @@ app.whenReady().then(async () => {
     }
   )
 
+  // ============================================================
+  // 本地图片文字识别（System OCR Runtime：Windows 系统 OCR / macOS 系统 OCR）
+  // ============================================================
+  // 这是本地 Runtime，不是 AI Vision Provider：
+  //   - 不联网、不上传原图；
+  //   - 不读写 AI Provider / Vision 模型配置；
+  //   - 本 IPC 只返回识别文本、不落库：派生文本的持久化由图片文字索引负责。
+  ipcMain.handle('system-ocr:getCapability', async (): Promise<SystemOcrCapability> => {
+    return imageInsightService.getSystemOcrCapability()
+  })
+
+  ipcMain.handle(
+    'system-ocr:recognize',
+    async (_, request: SystemOcrRequest): Promise<SystemOcrResult> => {
+      // 单图识别是用户主动触发的一次操作，结果里已经带了 text / durationMs / errorCode，
+      // 调用方直接用返回值判断即可，这里不再打日志（尤其不打稳定的图片标识）。
+      return imageInsightService.extractLocalText(request)
+    }
+  )
+
   ipcMain.handle('db:getSticker', async (_, cdnUrl?: string, md5?: string) => {
     if (!stickerService) {
       stickerService = new StickerService(chat.getChatDb()?.getWcdb4Client())
@@ -1933,6 +2490,8 @@ app.whenReady().then(async () => {
       if (aesKey) imageKeyConfigService.save({ resourceRoot, xorKey, aesKey })
       else imageKeyConfigService.clear()
       imageDecryptService = null
+      // 派生库按 accountId 分目录，切账号必须换句柄，否则会串账号。
+      imageTextIndexService.resetAccount()
     }
     if ('recallProtectionEnabled' in patch && chat.isReady()) {
       const currentDb = chat.getChatDb()
@@ -1971,11 +2530,13 @@ app.whenReady().then(async () => {
     if (client) {
       voiceService = new VoiceService(client, client.getAccountRoot())
       voiceRecognition?.connect(voiceService, client.getAccountRoot())
-      const monitoring = await client.startMonitor((type, json) => {
+      const monitoring = await client.startMonitor((event) => {
         client.invalidateSessionCache()
-        groupExitMonitorService.notifyDatabaseChanged(json)
+        groupExitMonitorService.notifyDatabaseChanged(event.raw)
         for (const window of BrowserWindow.getAllWindows()) {
-          if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
+          if (!window.isDestroyed()) {
+            window.webContents.send('wcdb-change', { type: event.type, json: event.raw })
+          }
         }
       })
       void groupExitMonitorService.start(monitoring)
@@ -2091,42 +2652,25 @@ app.whenReady().then(async () => {
   ipcMain.handle('agent-hub:cancelLogin', () => agentHubService.cancelLogin())
   ipcMain.handle('agent-hub:reconnect', () => agentHubService.reconnect())
   ipcMain.handle('agent-hub:disconnect', () => agentHubService.disconnect())
-  ipcMain.handle('wechat-personal:getStatus', () => personalWechatSendService.getStatus())
-  ipcMain.handle('wechat-personal:getKeepProcess', () =>
-    personalWechatSendService.getKeepOneBotProcess()
+  // 对话记录：完整收发回看，仅本机，不进日志。
+  ipcMain.handle('agent-hub:getConversations', () => agentHubService.listConversations())
+  ipcMain.handle('agent-hub:getConversation', (_, userId: string) =>
+    agentHubService.getConversation(String(userId || ''))
   )
-  ipcMain.handle('wechat-personal:setKeepProcess', (_, keep: boolean) =>
-    personalWechatSendService.setKeepOneBotProcess(Boolean(keep))
-  )
+  ipcMain.handle('agent-hub:clearConversations', () => {
+    agentHubService.clearConversations()
+    return { success: true }
+  })
+  ipcMain.handle('wechat-personal:getStatus', () => currentPersonalWechatSenderStatus())
   ipcMain.handle('wechat-personal:checkStatus', (_, port?: string) =>
     personalWechatSendService.checkWindowsStatus(port)
   )
   ipcMain.handle('wechat-personal:checkVoiceEnvironment', () =>
     personalWechatVoiceEnvironmentService.check()
   )
-  ipcMain.handle('wechat-personal:installPilk', async () => {
-    const result = await personalWechatVoiceEnvironmentService.installPilk()
-    if (!result.success || process.platform !== 'darwin') return result
-
-    const senderStatus = await personalWechatSendService.getStatus()
-    if (!senderStatus.oneBotPid) return result
-    try {
-      const restartedStatus = await personalWechatSendService.restartRuntime()
-      return {
-        ...result,
-        restarted: restartedStatus.state !== 'error',
-        ...(restartedStatus.state === 'error'
-          ? { restartError: restartedStatus.error || restartedStatus.message }
-          : {})
-      }
-    } catch (error) {
-      return {
-        ...result,
-        restarted: false,
-        restartError: error instanceof Error ? error.message : String(error)
-      }
-    }
-  })
+  ipcMain.handle('wechat-personal:installPilk', () =>
+    personalWechatVoiceEnvironmentService.installPilk()
+  )
   ipcMain.handle('wechat-personal:openVoicePythonDownload', async () => {
     try {
       await shell.openExternal('https://www.python.org/downloads/macos/')
@@ -2143,23 +2687,20 @@ app.whenReady().then(async () => {
       return { success: false, error: '无法打开 FFmpeg 安装页面' }
     }
   })
-  ipcMain.handle('wechat-personal:getRuntimeStatus', () => personalWechatRuntimeManager.getStatus())
-  ipcMain.handle('wechat-personal:downloadRuntime', () => personalWechatRuntimeManager.download())
-  ipcMain.handle('wechat-personal:cancelRuntimeDownload', () => ({
-    success: personalWechatRuntimeManager.cancelDownload()
-  }))
-  ipcMain.handle('wechat-personal:removeRuntime', async () => {
-    await personalWechatSendService.terminate(true)
-    return personalWechatRuntimeManager.remove()
+  ipcMain.handle('wechat-personal:rebind', async () => {
+    if (process.platform !== 'darwin') return personalWechatSendService.rebind()
+
+    const result = await macWechatRuntimeManager.bind()
+    const status = await macWechatRuntimeManager.buildSenderStatus()
+    if (result.ok) return status
+
+    return {
+      ...status,
+      state: 'error',
+      message: result.message,
+      error: result.message
+    }
   })
-  ipcMain.handle('wechat-personal:openRuntimeDirectory', async () => {
-    const status = await personalWechatRuntimeManager.getStatus()
-    const directory = status.directory || personalWechatRuntimeManager.directory
-    await fsPromises.mkdir(directory, { recursive: true })
-    const error = await shell.openPath(directory)
-    return error ? { success: false, error } : { success: true }
-  })
-  ipcMain.handle('wechat-personal:rebind', () => personalWechatSendService.rebind())
   ipcMain.handle(
     'wechat-personal:sendGeneratedTtsVoice',
     async (_, request: PersonalWechatGeneratedTtsVoiceRequest) => {
@@ -2187,7 +2728,7 @@ app.whenReady().then(async () => {
         action.sendResult && typeof action.sendResult === 'object'
           ? (action.sendResult as PersonalWechatSendResult)
           : undefined
-      const status = sendResult?.status || (await personalWechatSendService.getStatus())
+      const status = sendResult?.status || (await currentPersonalWechatSenderStatus())
       return { action, status }
     }
   )
@@ -2262,9 +2803,21 @@ app.on('before-quit', (event) => {
       chat.closeChatDbForQuit().catch(() => false),
       voiceRecognition?.dispose().catch(() => undefined),
       knowledgeSearchService?.dispose().catch(() => undefined),
-      personalWechatSendService.terminate().catch((error) => {
-        console.warn('[Shutdown] personal WeChat sender cleanup failed:', error)
-      })
+      /*
+       * Deliberately do NOT stop the macOS native runtime here.
+       *
+       * The host is designed to outlive TraceMemo ("保留发送能力进程"): keeping
+       * it alive preserves the bound frida session, so relaunching the app —
+       * including every dev-mode restart — re-adopts it and works immediately
+       * instead of forcing the user to bind WeChat again.
+       *
+       * Stopping it on quit threw that away and, worse, gave teardown a chance
+       * to hang mid-unload while the app was already exiting. The host has its
+       * own lifecycle instead: it exits itself once WeChat is gone ("stale" ->
+       * self-shutdown), and it can be restarted explicitly from the settings
+       * card ("重新加载组件").
+       */
+      Promise.resolve()
     ])
     if (!nativeCallsDrained) {
       console.warn('[Shutdown] WCDB async calls did not fully drain before quit')

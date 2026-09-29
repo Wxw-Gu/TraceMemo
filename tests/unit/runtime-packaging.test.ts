@@ -1,5 +1,13 @@
 import { createRequire } from 'module'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join, resolve } from 'path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -14,15 +22,45 @@ const { hasWindowsSherpaRuntime } = nodeRequire('../../scripts/prepare-win-runti
 const {
   validateAsarRuntimeDependencies,
   validateFfmpegRuntime,
+  validateKoffiRuntime,
   validateReaderSkillRuntime,
   validateSherpaRuntime,
-  validateSilkWasmRuntime
+  validateSilkWasmRuntime,
+  validateSystemOcrRuntime,
+  findMacosHelperPaths,
+  signMacosHelpers,
+  signMacosAppBundle
 } = nodeRequire('../../scripts/after-pack.cjs') as {
   validateAsarRuntimeDependencies: (runtimeResources: string) => void
   validateFfmpegRuntime: (runtimeResources: string, platform?: NodeJS.Platform) => void
+  validateKoffiRuntime: (runtimeResources: string, platform: NodeJS.Platform, arch: string) => void
   validateReaderSkillRuntime: (runtimeResources: string) => string
   validateSherpaRuntime: (runtimeResources: string, platform: NodeJS.Platform, arch: string) => void
   validateSilkWasmRuntime: (runtimeResources: string) => void
+  validateSystemOcrRuntime: (
+    runtimeResources: string,
+    platform: NodeJS.Platform,
+    arch: string
+  ) => void
+  findMacosHelperPaths: (runtimeResources: string) => string[]
+  signMacosHelpers: (runtimeResources: string, run?: CodesignRunner) => string[]
+  signMacosAppBundle: (appBundlePath: string, run?: CodesignRunner) => string
+}
+
+type CodesignRunner = (args: string[]) => void
+
+function createCodesignStub(options: { verifyFails?: (args: string[]) => boolean } = {}): {
+  calls: string[][]
+  run: CodesignRunner
+} {
+  const calls: string[][] = []
+  const run: CodesignRunner = (args) => {
+    calls.push(args)
+    if (options.verifyFails && args[0] === '--verify' && options.verifyFails(args)) {
+      throw new Error('code object is not signed at all')
+    }
+  }
+  return { calls, run }
 }
 const root = mkdtempSync(join(tmpdir(), 'wxe-runtime-package-'))
 
@@ -30,7 +68,10 @@ const {
   pruneIntelMacKeyTool,
   pruneForeignArchConnectors,
   pruneForeignArchNativeRuntimes,
-  validateRuntimeBinaryArchitecture
+  validateRuntimeBinaryArchitecture,
+  findSendRuntime,
+  enforceSendRuntimeBoundary,
+  default: afterPack
 } = nodeRequire('../../scripts/after-pack.cjs') as {
   pruneIntelMacKeyTool: (
     runtimeResources: string,
@@ -53,6 +94,20 @@ const {
     arch: string,
     label: string
   ) => void
+  findSendRuntime: (runtimeResources: string) => string | null
+  enforceSendRuntimeBoundary: (
+    runtimeResources: string,
+    platform: NodeJS.Platform,
+    bundlesSendRuntime?: boolean
+  ) => string | null
+  default: (context: AfterPackContext) => Promise<void>
+}
+
+type AfterPackContext = {
+  appOutDir: string
+  electronPlatformName: NodeJS.Platform
+  arch?: number
+  packager: { appInfo: { productFilename: string } }
 }
 const { readBinaryArchitectures } = nodeRequire('../../scripts/binary-arch.cjs') as {
   readBinaryArchitectures: (filePath: string) => string[]
@@ -105,7 +160,6 @@ describe('production runtime packaging', () => {
 
   it('uses a Windows x64-only resource set', () => {
     const config = readFileSync(resolve(__dirname, '../../electron-builder.win.yml'), 'utf8')
-    expect(config).toContain('connectors/wechat/win32-x64/**')
     expect(config).toContain('key/win32/x64/**')
     expect(config).toContain('wcdb/win32/x64/**')
     expect(config).toContain('electronLanguages:')
@@ -218,6 +272,183 @@ describe('production runtime packaging', () => {
     expect(config).toContain('node_modules/sherpa-onnx-node/**')
     expect(config).toContain('node_modules/sherpa-onnx-*/**')
   })
+
+  it('requires the matching System OCR native runtime', () => {
+    const resources = join(root, 'system-ocr-resources')
+    const modules = join(resources, 'app.asar.unpacked', 'node_modules', '@napi-rs')
+    const base = join(modules, 'system-ocr')
+
+    expect(() => validateSystemOcrRuntime(resources, 'darwin', 'arm64')).toThrow(
+      /Missing unpacked System OCR runtime:.*system-ocr/
+    )
+
+    mkdirSync(base, { recursive: true })
+    writeFileSync(join(base, 'package.json'), '{}')
+    writeFileSync(join(base, 'index.js'), 'module.exports = {}')
+
+    const mac = join(modules, 'system-ocr-darwin-arm64')
+    mkdirSync(mac, { recursive: true })
+    writeFileSync(join(mac, 'package.json'), '{}')
+    writeFileSync(join(mac, 'system-ocr.darwin-arm64.node'), 'fixture')
+    expect(() => validateSystemOcrRuntime(resources, 'darwin', 'arm64')).not.toThrow()
+
+    // Windows 的原生包名带 -msvc 后缀，查找规则必须跟着改。
+    expect(() => validateSystemOcrRuntime(resources, 'win32', 'x64')).toThrow(/win32-x64-msvc/)
+    const windows = join(modules, 'system-ocr-win32-x64-msvc')
+    mkdirSync(windows, { recursive: true })
+    writeFileSync(join(windows, 'package.json'), '{}')
+    writeFileSync(join(windows, 'system-ocr.win32-x64-msvc.node'), 'fixture')
+    expect(() => validateSystemOcrRuntime(resources, 'win32', 'x64')).not.toThrow()
+
+    // Linux 不是 supported target，不应做硬校验。
+    expect(() => validateSystemOcrRuntime(resources, 'linux', 'x64')).not.toThrow()
+  })
+
+  it('requires the koffi native module for the packaged platform', () => {
+    const resources = join(root, 'koffi-resources')
+    const modules = join(resources, 'app.asar.unpacked', 'node_modules', '@koromix')
+
+    expect(() => validateKoffiRuntime(resources, 'darwin', 'x64')).toThrow(
+      /Missing macOS Koffi native module:.*koffi-darwin-x64/
+    )
+    expect(() => validateKoffiRuntime(resources, 'darwin', 'arm64')).toThrow(
+      /koffi-darwin-arm64[/\\]darwin_arm64[/\\]koffi\.node/
+    )
+    expect(() => validateKoffiRuntime(resources, 'win32', 'x64')).toThrow(
+      /Missing Windows Koffi native module:.*koffi-win32-x64/
+    )
+
+    // koffi 运行期按 `${platform}-${arch}` 拼目录名，darwin 用 darwin_<arch>，
+    // win32 用 win32_x64（见 node_modules/koffi/src/koffi/index.cjs）。
+    for (const segments of [
+      ['koffi-darwin-x64', 'darwin_x64'],
+      ['koffi-darwin-arm64', 'darwin_arm64'],
+      ['koffi-win32-x64', 'win32_x64']
+    ]) {
+      const nativeDirectory = join(modules, ...segments)
+      mkdirSync(nativeDirectory, { recursive: true })
+      writeFileSync(join(nativeDirectory, 'koffi.node'), 'fixture')
+    }
+
+    expect(() => validateKoffiRuntime(resources, 'darwin', 'x64')).not.toThrow()
+    expect(() => validateKoffiRuntime(resources, 'darwin', 'arm64')).not.toThrow()
+    expect(() => validateKoffiRuntime(resources, 'win32', 'x64')).not.toThrow()
+
+    // 没有对应原生包的组合应静默跳过，而不是误报。
+    expect(() => validateKoffiRuntime(resources, 'linux', 'x64')).not.toThrow()
+    expect(() => validateKoffiRuntime(resources, 'win32', 'arm64')).not.toThrow()
+  })
+
+  it('declares the cross-arch native runtimes pnpm 7 would otherwise skip', () => {
+    const packageJson = JSON.parse(
+      readFileSync(resolve(__dirname, '../../package.json'), 'utf8')
+    ) as { dependencies: Record<string, string> }
+
+    // pnpm 7.33.7 不支持 supportedArchitectures，非宿主平台的可选依赖会被静默跳过，
+    // 而这些原生包必须在 dependencies 里显式声明，否则打包阶段才在 afterPack 报缺。
+    for (const name of [
+      'sherpa-onnx-darwin-x64',
+      'sherpa-onnx-win-x64',
+      '@napi-rs/system-ocr-darwin-x64',
+      '@napi-rs/system-ocr-win32-x64-msvc',
+      '@koromix/koffi-darwin-x64',
+      '@koromix/koffi-win32-x64'
+    ]) {
+      expect(packageJson.dependencies).toHaveProperty(name)
+    }
+  })
+
+  it('finds only the macOS helpers that exist in packaged resources', () => {
+    const resources = join(root, 'helper-detect-resources', 'resources')
+    mkdirSync(resources, { recursive: true })
+    expect(findMacosHelperPaths(join(root, 'helper-detect-resources'))).toEqual([])
+
+    const helperPath = join(resources, 'xkey_helper')
+    writeFileSync(helperPath, 'fixture')
+    const versionedPath = join(resources, 'xkey_helper_4_1_13')
+    writeFileSync(versionedPath, 'fixture')
+    expect(findMacosHelperPaths(join(root, 'helper-detect-resources'))).toEqual([
+      helperPath,
+      versionedPath
+    ])
+  })
+
+  it('ad-hoc signs packaged helpers whose signature is missing or modified', () => {
+    const resources = join(root, 'helper-sign-resources', 'resources')
+    mkdirSync(resources, { recursive: true })
+    const helperPath = join(resources, 'xkey_helper')
+    writeFileSync(helperPath, 'fixture')
+    const stub = createCodesignStub({ verifyFails: (args) => !args.includes('--arch') })
+
+    expect(signMacosHelpers(join(root, 'helper-sign-resources'), stub.run)).toEqual([helperPath])
+    expect(stub.calls).toContainEqual(['--force', '--sign', '-', helperPath])
+    expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'arm64', helperPath])
+    expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'x86_64', helperPath])
+    if (process.platform !== 'win32') {
+      expect(statSync(helperPath).mode & 0o777).toBe(0o755)
+    }
+  })
+
+  it('keeps helpers that already verify strictly without re-signing them', () => {
+    const resources = join(root, 'helper-valid-resources', 'resources')
+    mkdirSync(resources, { recursive: true })
+    const helperPath = join(resources, 'xkey_helper')
+    writeFileSync(helperPath, 'fixture')
+    const stub = createCodesignStub()
+
+    expect(signMacosHelpers(join(root, 'helper-valid-resources'), stub.run)).toEqual([helperPath])
+    expect(stub.calls.filter((args) => args[0] === '--force')).toEqual([])
+    expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'arm64', helperPath])
+    expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'x86_64', helperPath])
+  })
+
+  it('fails packaging when a helper signature cannot be repaired', () => {
+    const resources = join(root, 'helper-broken-resources', 'resources')
+    mkdirSync(resources, { recursive: true })
+    writeFileSync(join(resources, 'xkey_helper'), 'fixture')
+    const stub = createCodesignStub({ verifyFails: () => true })
+
+    expect(() => signMacosHelpers(join(root, 'helper-broken-resources'), stub.run)).toThrow(
+      /xkey_helper \(arm64\)/
+    )
+  })
+
+  it('ad-hoc signs an invalid app bundle and verifies it strictly', () => {
+    const appBundle = join(root, 'TraceMemo.app')
+    const calls: string[][] = []
+    let verifyCount = 0
+    const run: CodesignRunner = (args) => {
+      calls.push(args)
+      if (args[0] === '--verify') {
+        verifyCount += 1
+        if (verifyCount === 1) throw new Error('bundle is not signed')
+      }
+    }
+
+    expect(signMacosAppBundle(appBundle, run)).toBe(appBundle)
+    expect(calls).toEqual([
+      ['--verify', '--strict', appBundle],
+      ['--force', '--sign', '-', appBundle],
+      ['--verify', '--strict', appBundle]
+    ])
+  })
+
+  it('keeps an app bundle that already verifies strictly', () => {
+    const appBundle = join(root, 'Valid.app')
+    const stub = createCodesignStub()
+
+    expect(signMacosAppBundle(appBundle, stub.run)).toBe(appBundle)
+    expect(stub.calls).toEqual([['--verify', '--strict', appBundle]])
+  })
+
+  it('fails packaging when the app bundle cannot be made strictly valid', () => {
+    const appBundle = join(root, 'Broken.app')
+    const stub = createCodesignStub({ verifyFails: () => true })
+
+    expect(() => signMacosAppBundle(appBundle, stub.run)).toThrow(
+      /app bundle signature verification failed/
+    )
+  })
 })
 
 describe('per-architecture macOS packaging', () => {
@@ -311,6 +542,121 @@ describe('per-architecture macOS packaging', () => {
     expect(() =>
       validateRuntimeBinaryArchitecture(binary, 'darwin', 'arm64', 'Bundled ffmpeg')
     ).not.toThrow()
+  })
+})
+
+describe('send runtime packaging boundary', () => {
+  const boundaryRoot = mkdtempSync(join(tmpdir(), 'wxe-send-runtime-'))
+  afterAll(() => rmSync(boundaryRoot, { recursive: true, force: true }))
+
+  function resourcesWithSendRuntime(name: string, unpacked = false): string {
+    const resources = join(boundaryRoot, name, 'Contents', 'Resources')
+    const runtime = unpacked
+      ? join(resources, 'app.asar.unpacked', 'resources', 'runtime', 'darwin-arm64')
+      : join(resources, 'resources', 'runtime', 'darwin-arm64')
+    mkdirSync(runtime, { recursive: true })
+    writeFileSync(join(runtime, 'tm-wechat-host'), 'fixture')
+    return resources
+  }
+
+  it('accepts a macOS bundle without the send runtime', () => {
+    const resources = join(boundaryRoot, 'clean', 'Contents', 'Resources')
+    mkdirSync(resources, { recursive: true })
+
+    expect(findSendRuntime(resources)).toBeNull()
+    expect(enforceSendRuntimeBoundary(resources, 'darwin', false)).toBeNull()
+  })
+
+  it('fails a bundle that still carries the send runtime', () => {
+    expect(() =>
+      enforceSendRuntimeBoundary(resourcesWithSendRuntime('dirty'), 'darwin', false)
+    ).toThrow(/must not include the WeChat send runtime/)
+  })
+
+  it('detects the send runtime when it lands under app.asar.unpacked', () => {
+    const resources = resourcesWithSendRuntime('unpacked', true)
+
+    expect(findSendRuntime(resources)).toBe(
+      join(resources, 'app.asar.unpacked', 'resources', 'runtime', 'darwin-arm64')
+    )
+    expect(() => enforceSendRuntimeBoundary(resources, 'darwin', false)).toThrow(
+      /must not include the WeChat send runtime/
+    )
+  })
+
+  it('requires the send runtime when the build is configured to bundle it', () => {
+    const missing = join(boundaryRoot, 'runtime-missing', 'Contents', 'Resources')
+    mkdirSync(missing, { recursive: true })
+
+    expect(() => enforceSendRuntimeBoundary(missing, 'darwin', true)).toThrow(
+      /requires the WeChat send runtime/
+    )
+
+    const present = resourcesWithSendRuntime('runtime-ok')
+    expect(enforceSendRuntimeBoundary(present, 'darwin', true)).toBe(
+      join(present, 'resources', 'runtime', 'darwin-arm64')
+    )
+  })
+
+  it('ignores non-macOS bundles', () => {
+    const resources = resourcesWithSendRuntime('win32')
+
+    expect(enforceSendRuntimeBoundary(resources, 'win32', false)).toBeNull()
+    expect(enforceSendRuntimeBoundary(resources, 'win32', true)).toBeNull()
+  })
+
+  it('keeps the send runtime build off the release publishing path', () => {
+    const pkg = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }
+
+    expect(Object.keys(pkg.scripts).filter((name) => name.includes('send-runtime'))).toEqual([
+      'build:mac:arm64:send-runtime'
+    ])
+    expect(pkg.scripts['build:mac:arm64:send-runtime']).toContain('TM_SEND_RUNTIME_BUILD=1')
+    expect(pkg.scripts['build:mac:arm64:send-runtime']).toContain(
+      'electron-builder.send-runtime.yml'
+    )
+    expect(pkg.scripts['build:mac:arm64:send-runtime']).not.toContain('--publish')
+
+    for (const [name, command] of Object.entries(pkg.scripts)) {
+      if (!name.startsWith('release')) continue
+      expect(command).not.toContain('electron-builder.send-runtime.yml')
+      expect(command).not.toContain('TM_SEND_RUNTIME_BUILD')
+    }
+  })
+
+  it('excludes the send runtime in the default builder config', () => {
+    const config = readFileSync(resolve(__dirname, '../../electron-builder.yml'), 'utf8')
+
+    expect(config).toContain("'!runtime/darwin-arm64/**'")
+  })
+
+  // 只测函数是测不出「边界校验有没有被接上去」的。这个 bundle 故意不含 app.asar 与
+  // Reader Skill：一旦 afterPack 把边界校验排到其它校验之后，抛出的就会是
+  // "Missing packaged application archive" 而不是边界错误，用例即失败。
+  it('applies the boundary check inside afterPack ahead of every other validation', async () => {
+    const appOutDir = join(boundaryRoot, 'wired')
+    const runtime = join(
+      appOutDir,
+      'TraceMemo.app',
+      'Contents',
+      'Resources',
+      'resources',
+      'runtime',
+      'darwin-arm64'
+    )
+    mkdirSync(runtime, { recursive: true })
+    writeFileSync(join(runtime, 'tm-wechat-host'), 'fixture')
+
+    await expect(
+      afterPack({
+        appOutDir,
+        electronPlatformName: 'darwin',
+        arch: 3,
+        packager: { appInfo: { productFilename: 'TraceMemo' } }
+      })
+    ).rejects.toThrow(/must not include the WeChat send runtime/)
   })
 })
 

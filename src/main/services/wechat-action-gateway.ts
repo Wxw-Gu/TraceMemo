@@ -5,34 +5,57 @@ import path from 'path'
 import type {
   PersonalWechatSendCapability,
   PersonalWechatSendRequest,
-  PersonalWechatSendResult
+  PersonalWechatSendResult,
+  PersonalWechatSenderStatus
 } from '../../shared/personal-wechat'
 import type {
   PolicyDecision,
   WechatActionAuditRecord,
   WechatActionContent,
   WechatActionErrorCode,
-  WechatActionMemberEventReference,
   WechatActionRequest,
   WechatActionResult
 } from '../../shared/wechat-action'
 import { personalWechatCapabilityService } from './personal-wechat-capability-service'
-import { personalWechatSendService } from './personal-wechat-send-service'
+import { wechatSendGateway } from './wechat-send-gateway'
 
 const MAX_AUDIT_RECORDS = 500
 const MAX_CONTENT_PREVIEW_LENGTH = 240
 export const AUTOMATION_SEND_INTERVAL_MS = 3_000
-const AUTOMATION_PURPOSE_ALLOWLIST = new Set(['scheduled_report', 'member_left_notification'])
+const AUTOMATION_PURPOSE_ALLOWLIST = new Set([
+  'scheduled_report',
+  // Automation（@我生成日报）。必须与 `src/shared/automation.ts` 的
+  // `AUTOMATION_SEND_PURPOSE` 保持一致，否则会被下面 evaluateWechatActionPolicy
+  // 以 ACTION_NOT_ALLOWED 拦下 —— 那是有意的闸门，不是 bug。
+  'automation_reply',
+  'automation_report',
+  // 退群通知（由 Automation 发出）。目标可以是群 / 自己 / 文件传输助手 / 指定好友，
+  // 所以**不绑定**任何 "只能发回原群" 的作用域锁。
+  'automation_leave_notification',
+  // 定时日报（由 Automation 的 `scheduled_report` 规则发出）。目标是四选一，
+  // 同样**不绑定**任何作用域锁。
+  'automation_scheduled_report',
+  // 定时日报的「后置词」（图片 sent 之后补发的那条文本）。与图片是两个独立
+  // purpose，各自有幂等位 —— 少这一条会被 evaluateWechatActionPolicy 拦下。
+  'automation_scheduled_report_postfix',
+  'manual_report_image',
+  'manual_report_postfix'
+])
+
+export interface ReportImageSequenceRequest {
+  recipient: WechatActionRequest['recipient']
+  imagePath: string
+  postfixText: string
+}
+
+export interface ReportImageSequenceResult {
+  image: WechatActionResult
+  postfix?: WechatActionResult
+}
 
 export interface WechatActionGatewayDependencies {
   getCapability?: () => Promise<PersonalWechatSendCapability>
   send?: (request: PersonalWechatSendRequest) => Promise<PersonalWechatSendResult>
-  getMemberEvent?: (
-    sourceId: string
-  ) =>
-    | WechatActionMemberEventReference
-    | Promise<WechatActionMemberEventReference | undefined>
-    | undefined
   getUserDataPath?: () => string
   now?: () => Date
   wait?: (milliseconds: number) => Promise<void>
@@ -43,10 +66,6 @@ interface LoadedAuditState {
   records: WechatActionAuditRecord[]
 }
 
-export interface WechatActionPolicyContext {
-  memberEvent?: WechatActionMemberEventReference
-}
-
 const defaultDependencies = (): Required<
   Pick<
     WechatActionGatewayDependencies,
@@ -54,7 +73,8 @@ const defaultDependencies = (): Required<
   >
 > => ({
   getCapability: () => personalWechatCapabilityService.getPersonalWechatSendCapability(),
-  send: (request) => personalWechatSendService.send(request),
+  // 高层业务审计之后仍然统一走 WechatSendGateway，保证每一次真实发送都有 Send Log。
+  send: (request) => wechatSendGateway.sendPersonal(request),
   getUserDataPath: () => app.getPath('userData'),
   now: () => new Date(),
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -75,7 +95,6 @@ export class WechatActionGateway {
       WechatActionGatewayDependencies,
       'getCapability' | 'send' | 'getUserDataPath' | 'now' | 'wait'
     >
-  private readonly memberEvents = new Map<string, WechatActionMemberEventReference>()
   private readonly inFlight = new Map<string, Promise<WechatActionResult>>()
   private auditState: LoadedAuditState | null = null
   private automationSendTail: Promise<void> = Promise.resolve()
@@ -85,20 +104,33 @@ export class WechatActionGateway {
     this.deps = { ...defaultDependencies(), ...deps }
   }
 
-  /** 记录退群事件，发送通知前可确认事件所属群聊。 */
-  registerMemberEvent(event: WechatActionMemberEventReference): void {
-    const id = String(event?.id || '').trim()
-    const roomId = String(event?.roomId || '').trim()
-    if (!id || !roomId) return
-    this.memberEvents.set(id, { id, roomId })
-  }
+  /**
+   * 用户确认后的日报发送序列。两步都进入 automation 发送队列，从而复用既有 3 秒间隔；
+   * 后置词 action 只在图片明确 sent 后创建，图片失败/blocked 时严格短路。
+   */
+  async executeReportImageSequence(
+    request: ReportImageSequenceRequest
+  ): Promise<ReportImageSequenceResult> {
+    const image = await this.execute({
+      origin: 'user_manual',
+      purpose: 'manual_report_image',
+      triggerType: 'automation',
+      recipient: request.recipient,
+      content: { type: 'image', path: String(request.imagePath || '') }
+    })
+    if (image.status !== 'sent') return { image }
 
-  registerMemberEvents(events: WechatActionMemberEventReference[]): void {
-    for (const event of events) this.registerMemberEvent(event)
-  }
+    const postfixText = String(request.postfixText || '').trim()
+    if (!postfixText) return { image }
 
-  clearMemberEvents(): void {
-    this.memberEvents.clear()
+    const postfix = await this.execute({
+      origin: 'user_manual',
+      purpose: 'manual_report_postfix',
+      triggerType: 'automation',
+      recipient: request.recipient,
+      content: { type: 'text', text: postfixText }
+    })
+    return { image, postfix }
   }
 
   listAuditRecords(): WechatActionAuditRecord[] {
@@ -144,8 +176,7 @@ export class WechatActionGateway {
       )
     }
 
-    const eventContext = await this.resolveEventContext(request)
-    const policy = evaluateWechatActionPolicy(request, eventContext)
+    const policy = evaluateWechatActionPolicy(request)
     if (policy.decision !== 'allow') {
       return this.finishBlocked(
         actionId,
@@ -239,28 +270,6 @@ export class WechatActionGateway {
     return queued
   }
 
-  private async resolveEventContext(
-    request: WechatActionRequest
-  ): Promise<WechatActionPolicyContext> {
-    if (request.purpose !== 'member_left_notification') return {}
-    const sourceId = String(request.sourceId || '').trim()
-    if (!sourceId) return {}
-    let memberEvent: WechatActionMemberEventReference | undefined = this.memberEvents.get(sourceId)
-    if (!memberEvent && this.deps.getMemberEvent) {
-      let resolved: WechatActionMemberEventReference | undefined
-      try {
-        resolved = await this.deps.getMemberEvent(sourceId)
-      } catch {
-        resolved = undefined
-      }
-      if (resolved && String(resolved.id || '').trim() === sourceId) {
-        memberEvent = { id: String(resolved.id), roomId: String(resolved.roomId) }
-        this.registerMemberEvent(memberEvent)
-      }
-    }
-    return memberEvent ? { memberEvent } : {}
-  }
-
   private async findExisting(idempotencyKey: string): Promise<WechatActionResult | undefined> {
     const state = this.loadAuditState()
     const existing = state.records.find((record) => record.idempotencyKey === idempotencyKey)
@@ -279,9 +288,6 @@ export class WechatActionGateway {
   private idempotencyKey(request: WechatActionRequest): string | undefined {
     const explicit = String(request.idempotencyKey || '').trim()
     if (explicit) return explicit
-    if (request.purpose === 'member_left_notification' && request.sourceId) {
-      return `member_left_notification:${request.sourceId}`
-    }
     if (request.origin === 'scheduled_report' && request.executionId) {
       return `scheduled_report:${request.executionId}`
     }
@@ -428,10 +434,7 @@ export class WechatActionGateway {
   }
 }
 
-export function evaluateWechatActionPolicy(
-  request: WechatActionRequest,
-  context: WechatActionPolicyContext = {}
-): PolicyDecision {
+export function evaluateWechatActionPolicy(request: WechatActionRequest): PolicyDecision {
   if (!request || typeof request !== 'object') {
     return {
       decision: 'block',
@@ -460,29 +463,6 @@ export function evaluateWechatActionPolicy(
       source: 'deterministic',
       reasonCode: 'ACTION_NOT_ALLOWED',
       reason: `自动化动作不允许执行 purpose=${request.purpose}`
-    }
-  }
-  if (request.purpose === 'member_left_notification') {
-    if (
-      !request.sourceId ||
-      !context.memberEvent ||
-      context.memberEvent.id !== request.sourceId ||
-      !context.memberEvent.roomId
-    ) {
-      return {
-        decision: 'block',
-        source: 'deterministic',
-        reasonCode: 'INVALID_REQUEST',
-        reason: '退群通知必须关联已记录的退群事件'
-      }
-    }
-    if (request.recipient.type !== 'group' || request.recipient.id !== context.memberEvent.roomId) {
-      return {
-        decision: 'block',
-        source: 'deterministic',
-        reasonCode: 'RECIPIENT_SCOPE_VIOLATION',
-        reason: '退群通知只能发送回原事件所在群聊'
-      }
     }
   }
   return { decision: 'allow', source: 'deterministic' }
@@ -596,6 +576,32 @@ function toPersonalWechatSendRequest(request: WechatActionRequest): PersonalWech
     filePath: request.content.path,
     ...(fromId ? { fromId } : {}),
     ...(durationMs !== undefined ? { durationMs } : {})
+  }
+}
+
+/**
+ * 把网关结果还原成既有调用方期望的 `PersonalWechatSendResult`。
+ *
+ * 为什么需要：手动发送的 IPC（`wechat-personal:send`）返回契约是
+ * `PersonalWechatSendResult`，界面上靠 `response.success` / `response.error` 判读。
+ * 改成走网关之后必须把这个契约**原样**还回去，否则「统一发送路径」会把 UI 一起改坏。
+ *
+ * 网关成功时会把底层 `sendResult` 原样挂在 `action.sendResult` 上，优先用它
+ * （它带着真实的 `status`）；拿不到时按 `action.status` 合成一个。
+ */
+export function toPersonalWechatSendResult(
+  action: WechatActionResult,
+  fallbackStatus: PersonalWechatSenderStatus
+): PersonalWechatSendResult {
+  const raw = action.sendResult
+  if (raw && typeof raw === 'object' && 'success' in (raw as Record<string, unknown>)) {
+    return raw as PersonalWechatSendResult
+  }
+  if (action.status === 'sent') return { success: true, status: fallbackStatus }
+  return {
+    success: false,
+    status: fallbackStatus,
+    error: action.reason || action.errorCode || '微信发送失败'
   }
 }
 

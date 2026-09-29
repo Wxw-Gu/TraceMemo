@@ -4,7 +4,10 @@ import {
   getSummaryDateRangeAt,
   parseGroupDailyReport
 } from '../../src/renderer/src/utils/group-report'
-import { summaryContent } from '../../src/renderer/src/utils/group-report-facts'
+import {
+  buildGroupReportFacts,
+  summaryContent
+} from '../../src/renderer/src/utils/group-report-facts'
 import { summarySender } from '../../src/renderer/src/utils/group-report-facts'
 import { selectHeroParticipantNames } from '../../src/shared/group-report'
 import type { GroupReportMetadata } from '../../src/shared/group-report'
@@ -60,6 +63,37 @@ describe('group report parsing', () => {
     }
 
     expect(summaryContent(message)).toContain('今晚八点确认发布。')
+  })
+
+  it('rounds accumulated voice seconds in the facts summary', async () => {
+    // 语音时长是 <voicemsg voicelength>（毫秒）换算来的小数秒（1600ms → 1.6）。
+    // 累加必须保留原始精度（否则多条累积会越差越多），但展示给用户的文案要取整。
+    const messages: Message[] = [
+      {
+        id: 'voice-a',
+        from: 'member',
+        type: '语音',
+        datetime: '2026-08-06 10:00:00',
+        content: '[语音]',
+        isSender: false,
+        contentData: { type: 'voice', duration: 1.979 }
+      },
+      {
+        id: 'voice-b',
+        from: 'member',
+        type: '语音',
+        datetime: '2026-08-06 10:00:05',
+        content: '[语音]',
+        isSender: false,
+        contentData: { type: 'voice', duration: 5.379 }
+      }
+    ]
+
+    const snapshot = await buildGroupReportFacts(messages, null, true, 'compact')
+
+    // 1.979 + 5.379 = 7.358 → 文案必须显示整数
+    expect(snapshot.factsPrompt).toContain('累计 7 秒')
+    expect(snapshot.factsPrompt).not.toContain('7.358')
   })
 
   it('includes a voice transcript when legacy cached messages have no contentData', () => {

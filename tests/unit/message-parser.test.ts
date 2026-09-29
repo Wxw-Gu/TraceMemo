@@ -17,6 +17,38 @@ describe('message parser', () => {
     ).toMatchObject({ type: 'sticker', md5: 'abcdefabcdefabcdefabcdefabcdefab' })
   })
 
+  it('reads the WeChat voice length in milliseconds and keeps fractional seconds', () => {
+    // 真机实测（2026-09-20）：voicelength 才是毫秒时长，length 是编码数据长度——别取错。
+    // 属性值取自一条真机采样的语音（1.6 秒，微信气泡显示 2"）。
+    const parsed = parseMessageContent(
+      '<msg><voicemsg endflag="1" cancelflag="0" forwardflag="0" voiceformat="4" voicelength="1600" length="6672" bufid="0" /></msg>',
+      34
+    )
+    expect(parsed).toEqual({ type: 'voice', duration: 1.6 })
+    // 误取 length 会得到 6.672 秒（把 2" 的语音显示成 0:07）——这条断言就是防这个回归。
+    expect(parsed).not.toEqual({ type: 'voice', duration: 6.672 })
+
+    // 微信四舍五入到整秒，取整必须在显示层做，不能在解析层丢精度。
+    expect(parseMessageContent('<msg><voicemsg voicelength="4211" /></msg>', 34)).toEqual({
+      type: 'voice',
+      duration: 4.211
+    })
+  })
+
+  it('leaves the voice duration undefined when the payload is missing or unusable', () => {
+    expect(parseMessageContent('', 34)).toEqual({ type: 'voice' })
+    expect(parseMessageContent('voice fixture', 34)).toEqual({ type: 'voice' })
+    expect(parseMessageContent('<msg><voicemsg voiceformat="4" /></msg>', 34)).toEqual({
+      type: 'voice'
+    })
+    expect(parseMessageContent('<msg><voicemsg voicelength="0" /></msg>', 34)).toEqual({
+      type: 'voice'
+    })
+    expect(parseMessageContent('<msg><voicemsg voicelength="abc" /></msg>', 34)).toEqual({
+      type: 'voice'
+    })
+  })
+
   it('keeps video metadata when WeChat omits every MD5 field', () => {
     const parsed = parseMessageContent(
       '<msg><videomsg length="6402169" playlength="30" cdnthumbwidth="224" cdnthumbheight="398" aeskey="25201cc658042689d1ad6747cea2b240" rawmd5="" /></msg>',
@@ -115,6 +147,55 @@ describe('message parser', () => {
       type: 'quote',
       quotedSender: 'wxid_fixture_member',
       quotedContent: '被引用内容'
+    })
+  })
+
+  it('renders the templated join-group notice instead of its hidden button label', () => {
+    // 微信 4.x 的 sysmsgtemplate：<plain> 为空、正文在 <template> 里用 $名称$ 引用 link，
+    // hidden="1" 的 link 是可点击按钮，不应作为正文。
+    const parsed = parseMessageContent(
+      [
+        '<sysmsg type="sysmsgtemplate">',
+        '<sysmsgtemplate><content_template type="tmpl_type_profilewithrevokeqrcode">',
+        '<plain><![CDATA[]]></plain>',
+        '<template><![CDATA["$adder$"通过扫描你分享的二维码加入群聊  $revoke$]]></template>',
+        '<link_list>',
+        '<link name="adder" type="link_profile"><memberlist><member>',
+        '<username><![CDATA[wxid_fixture_member]]></username>',
+        '<nickname><![CDATA[成员昵称]]></nickname>',
+        '</member></memberlist></link>',
+        '<link name="revoke" type="link_revoke_qrcode" hidden="1">',
+        '<title><![CDATA[撤销]]></title>',
+        '</link>',
+        '</link_list>',
+        '</content_template></sysmsgtemplate></sysmsg>'
+      ].join(''),
+      10000
+    )
+
+    expect(parsed).toMatchObject({
+      type: 'system',
+      content: '"成员昵称"通过扫描你分享的二维码加入群聊'
+    })
+  })
+
+  it('keeps parsing the legacy delchatroommember join-group notice', () => {
+    const parsed = parseMessageContent(
+      [
+        '<sysmsg type="delchatroommember"><delchatroommember>',
+        '<plain><![CDATA["成员昵称"通过扫描你分享的二维码加入群聊  ]]></plain>',
+        '<text><![CDATA["成员昵称"通过扫描你分享的二维码加入群聊  ]]></text>',
+        '<link><scene>qrcode</scene><text><![CDATA[  撤销]]></text>',
+        '<memberlist><username><![CDATA[wxid_fixture_member]]></username></memberlist>',
+        '</link>',
+        '</delchatroommember></sysmsg>'
+      ].join(''),
+      10000
+    )
+
+    expect(parsed).toMatchObject({
+      type: 'system',
+      content: '"成员昵称"通过扫描你分享的二维码加入群聊'
     })
   })
 

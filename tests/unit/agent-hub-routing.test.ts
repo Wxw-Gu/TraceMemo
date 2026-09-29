@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   matchGroupReportIntent,
+  matchRecentChatIntent,
   queryAgentReplyText,
   QUERY_AGENT_UNAVAILABLE_TEXT,
   resolveInboundRoute
@@ -61,6 +62,43 @@ describe('Agent Hub 入站路由 — Query / Action 分流', () => {
   it('H. 会话列表是确定性快捷路径（不经过模型）', () => {
     expect(resolveInboundRoute('最近有哪些会话')).toEqual({ kind: 'recent_list', limit: 5 })
     expect(resolveInboundRoute('最近3条消息')).toEqual({ kind: 'recent_list', limit: 3 })
+  })
+})
+
+/**
+ * recent_list 的判定必须**正向**：只有用户确实在要"会话 / 联系人名单"时才算。
+ * 早先只要求「最近」+「消息|会话|聊天」同时出现，于是内容查询被截走 —— 用户问
+ * "最近…里有没有提到 X"，得到的却是一串会话名。
+ */
+describe('Agent Hub 入站路由 — recent_list 边界', () => {
+  const cases: Array<[string, string, string]> = [
+    ['最近有哪些聊天', 'recent_list', '名单形态 + 聊天载体'],
+    ['最近有哪些会话', 'recent_list', '名单形态 + 会话载体'],
+    ['最近和谁聊过', 'recent_list', '「和谁」问法本身就在问会话对象'],
+    ['最近聊过哪些人', 'recent_list', '名单形态 + 人'],
+    ['最近 5 个会话', 'recent_list', '数量 + 载体'],
+    ['最近群里聊的消息里有没有提到报价', 'knowledge_query', '内容探针：有没有提到'],
+    ['最近聊天里谁提过健身', 'knowledge_query', '内容探针：谁提过'],
+    ['最近消息里有没有说过报价', 'knowledge_query', '内容探针：有没有说过'],
+    ['技术交流群今天主要聊了什么', 'knowledge_query', '没有「最近」，不是名单请求'],
+    ['生成技术交流群日报', 'report_action', '明确产物优先'],
+    ['微信里最近发生了什么', 'knowledge_query', '不是名单形态'],
+    ['总结一下 TraceMemo 交流群最近聊了什么', 'knowledge_query', '总结 ≠ 名单，且是内容探针']
+  ]
+
+  for (const [text, expected, why] of cases) {
+    it(`「${text}」→ ${expected}（${why}）`, () => {
+      expect(resolveInboundRoute(text).kind).toBe(expected)
+    })
+  }
+
+  it('recent_list 只保留实际存在的会话数量上限语义', () => {
+    // 无数字时默认 5；有数字时取该数字，并夹在 1..20。
+    expect(matchRecentChatIntent('最近和谁聊过')).toBe(5)
+    expect(matchRecentChatIntent('最近12个会话')).toBe(12)
+    expect(matchRecentChatIntent('最近99个会话')).toBe(20)
+    // 不是名单请求 → 不命中
+    expect(matchRecentChatIntent('最近聊天里谁提过健身')).toBeNull()
   })
 })
 

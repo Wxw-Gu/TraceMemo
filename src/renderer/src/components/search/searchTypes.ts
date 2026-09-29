@@ -6,7 +6,11 @@ import type {
   AiSearchProgressEvent,
   AiSearchProgressStage
 } from '../../../../shared/ai-search'
-import type { KnowledgeMessageKind, KnowledgeVoiceCoverage } from '../../../../shared/knowledge'
+import type {
+  KnowledgeDerivedSource,
+  KnowledgeMessageKind,
+  KnowledgeVoiceCoverage
+} from '../../../../shared/knowledge'
 import type { Contact, Message } from '../../../../shared/types'
 
 export type SearchStage = 'idle' | 'loading' | 'result' | 'partial' | 'insufficient'
@@ -34,6 +38,16 @@ export interface EvidenceItem {
   /** Program-owned Final Evidence ID. Cached legacy records may omit it. */
   evidenceId?: string
   sourceKind?: KnowledgeMessageKind
+  /**
+   * 命中所依赖的派生来源。
+   *
+   * 有值 = 这条结果靠**本地派生内容**命中，而不是原始消息本身的文字
+   * （`image_ocr` = 图片里的文字，`voice_transcript` = 语音转写）。
+   * authoritative source 始终是原始消息 —— 这里只用来多挂一个来源标记。
+   */
+  derivedSource?: KnowledgeDerivedSource
+  /** 「从图片里读出来的文字」片段，只作命中解释。 */
+  imageOcrText?: string
   contact: Contact
   message: Message
   /**

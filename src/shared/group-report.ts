@@ -7,6 +7,66 @@ import type { ReportTemplateRef } from './report-template-package'
 export const selectHeroParticipantNames = (names: string[]): string[] =>
   Array.from(new Set(names.map((name) => name.trim()).filter(Boolean))).slice(0, 4)
 
+/**
+ * 群成员快照里可以用来关联报告显示名的全部别名。
+ *
+ * 报告里的显示名取决于 `memberNameMode`（默认是**群昵称**），而快照的 `nickname`
+ * 字段是 `wechatNickname || groupNickname || username`。一个成员同时有微信昵称与群昵称、
+ * 且两者不同时，只按 `nickname` 建索引会**全部对不上** —— 头像 enrichment 会静默失效，
+ * 用户看到的就是首字 fallback。
+ */
+export const REPORT_AVATAR_ALIAS_FIELDS = [
+  'nickname',
+  'groupNickname',
+  'wechatNickname',
+  'remark',
+  'wxid'
+] as const
+
+export interface ReportAvatarMember {
+  wxid: string
+  nickname?: string
+  groupNickname?: string
+  wechatNickname?: string
+  remark?: string
+  avatar?: string
+}
+
+/**
+ * 建立「显示名别名 → 头像 URL」索引：每个成员的所有可用显示名都指向同一头像。
+ * 同名先到先得（P2 风险：群里两人同名）。
+ */
+export const buildReportAvatarAliasIndex = (
+  members: readonly ReportAvatarMember[]
+): Map<string, string> => {
+  const index = new Map<string, string>()
+  for (const member of members) {
+    if (!member.avatar) continue
+    for (const field of REPORT_AVATAR_ALIAS_FIELDS) {
+      const name = String(member[field] || '').trim()
+      if (name && !index.has(name)) index.set(name, member.avatar)
+    }
+  }
+  return index
+}
+
+/**
+ * 把别名索引合并进 `metadata.avatars`，返回实际补充的条数。
+ * 调用方已经给出的有效头像一律保留，绝不被快照覆盖。
+ */
+export const mergeReportAvatars = (
+  avatars: Record<string, string | undefined>,
+  index: ReadonlyMap<string, string>
+): number => {
+  let filled = 0
+  for (const [name, url] of index) {
+    if (avatars[name]) continue
+    avatars[name] = url
+    filled += 1
+  }
+  return filled
+}
+
 export type ReportSectionKey =
   | 'hero'
   | 'topics'

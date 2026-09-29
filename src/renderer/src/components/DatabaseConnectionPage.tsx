@@ -491,14 +491,8 @@ export function DatabaseConnectionPage({
                 <p className="database-login-platform-note">
                   {isMac ? (
                     <>
-                      {isIntelMac
-                        ? 'Intel Mac 首次使用需要先准备连接环境，按页面提示完成即可。'
-                        : 'macOS Apple 芯片首次获取密钥需要关闭 SIP，并在监听期间点击微信登录。'}{' '}
-                      <a
-                        href={isIntelMac ? GUIDE_URL : macKeyFaqUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
+                      macOS 首次获取密钥需要关闭 SIP，并在监听期间点击微信登录。{' '}
+                      <a href={macKeyFaqUrl} target="_blank" rel="noreferrer">
                         查看说明
                       </a>
                       <br />第 4 步之前不要登录微信，只需保留微信登录页面窗口；授权后再点「登录」。
