@@ -125,13 +125,62 @@ function validateSystemOcrRuntime(runtimeResources, platform, arch) {
   }
 }
 
+/**
+ * koffi 运行期按 `${process.platform}-${process.arch}` 拼出原生包目录名
+ * （node_modules/koffi/src/koffi/index.cjs:153/175），找不到就直接抛
+ * "Cannot find the native Koffi module; did you bundle it correctly?"。
+ * pnpm 7 不支持 supportedArchitectures，会静默跳过外平台可选依赖，所以每个目标平台的
+ * koffi 原生包都必须在 package.json 里显式声明；这里再兜一层，缺了就让构建失败，
+ * 而不是发出一个装得上、却打不开 WCDB 的包。
+ */
+function koffiNativeTarget(platform, arch) {
+  if (platform === 'win32') {
+    return arch === 'x64'
+      ? { label: 'Windows', segments: ['@koromix', 'koffi-win32-x64', 'win32_x64', 'koffi.node'] }
+      : null
+  }
+  if (platform === 'darwin' && (arch === 'x64' || arch === 'arm64')) {
+    return {
+      label: 'macOS',
+      segments: ['@koromix', `koffi-darwin-${arch}`, `darwin_${arch}`, 'koffi.node']
+    }
+  }
+  return null
+}
+
+function validateKoffiRuntime(runtimeResources, platform, arch) {
+  const target = koffiNativeTarget(platform, arch)
+  if (!target) return
+  const nativePath = path.join(
+    runtimeResources,
+    'app.asar.unpacked',
+    'node_modules',
+    ...target.segments
+  )
+  if (!existsSync(nativePath)) {
+    throw new Error(`Missing ${target.label} Koffi native module: ${nativePath}`)
+  }
+}
+
 function normalizeBuilderArch(arch) {
   if (typeof arch === 'string') return arch
   return { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' }[arch] || String(arch)
 }
 
 function runCodesign(args) {
-  execFileSync('/usr/bin/codesign', args, { stdio: 'ignore' })
+  try {
+    execFileSync('/usr/bin/codesign', args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+  } catch (error) {
+    const stderr =
+      error && typeof error === 'object' && 'stderr' in error ? String(error.stderr) : ''
+    if (stderr.trim() && error instanceof Error) {
+      error.message += `\n${stderr.trim()}`
+    }
+    throw error
+  }
 }
 
 function isMacosCodeValid(targetPath, run = runCodesign) {
@@ -174,8 +223,89 @@ function signMacosHelpers(runtimeResources, run = runCodesign) {
   return helperPaths
 }
 
+/**
+ * codesign 只把这些位置当作「嵌套代码」并要求它们先各自签好，才肯签外层 app。
+ * 只遍历这一组根目录，而不是整个 bundle：Contents/Resources 下的
+ * app.asar.unpacked 里成千上万个原生文件不属于嵌套代码，逐个签既慢又无意义。
+ */
+const MACOS_CODE_LOCATIONS = [
+  'Frameworks',
+  'MacOS',
+  'PlugIns',
+  'XPCServices',
+  'Helpers',
+  'Library/LoginItems'
+]
+
+function collectNestedMacosCode(dir, depth, targets) {
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry.name)
+    // framework 里的 Mantle -> Versions/Current/Mantle 这类符号链接指向真实文件，
+    // 真实文件会在更深的层级被走到；这里跳过以免重复签名。
+    if (entry.isSymbolicLink()) continue
+    if (entry.isDirectory()) {
+      if (/\.(app|framework|xpc)$/.test(entry.name)) {
+        targets.push({ path: entryPath, depth, bundle: true })
+      }
+      collectNestedMacosCode(entryPath, depth + 1, targets)
+      continue
+    }
+    if (!entry.isFile()) continue
+    if (readBinaryArchitectures(entryPath).length === 0) continue
+    targets.push({ path: entryPath, depth, bundle: false })
+  }
+}
+
+/**
+ * 返回嵌套代码的签名顺序：深度大的先签（framework 内部的 dylib、无扩展名的
+ * crashpad handler 先于 framework 本身，helper 的可执行文件先于 helper app），
+ * 同深度时文件先于 bundle。
+ */
+function findNestedMacosCodePaths(appBundlePath) {
+  const targets = []
+  for (const location of MACOS_CODE_LOCATIONS) {
+    const root = path.join(appBundlePath, 'Contents', ...location.split('/'))
+    if (existsSync(root)) collectNestedMacosCode(root, 1, targets)
+  }
+  return targets
+    .map((target, index) => ({ ...target, index }))
+    .sort((a, b) => {
+      if (a.depth !== b.depth) return b.depth - a.depth
+      if (a.bundle !== b.bundle) return a.bundle ? 1 : -1
+      return a.index - b.index
+    })
+    .map((target) => target.path)
+}
+
+/**
+ * Electron 43.1.0 的 darwin-x64 官方 zip（sha256 与上游 SHASUMS256.txt 一致）
+ * 里所有嵌套 Mach-O 都是未签名状态，darwin-arm64 那份则是 linker-signed。
+ * codesign 签外层 bundle 时要求子组件已签，否则直接报
+ * "code object is not signed at all" + "In subcomponent: ..."，
+ * 所以 x64 出包时只签外层必然失败，必须先由内向外补签一遍。
+ *
+ * 这里不采用 `--deep`（Apple 已标记 deprecated）：它会把外层的签名选项套用到
+ * 所有子组件上，将来接上 Developer ID + entitlements 时会把 app 的 entitlements
+ * 一并套到 helper 上，属于已知的坑。
+ */
 function signMacosAppBundle(appBundlePath, run = runCodesign) {
   if (isMacosCodeValid(appBundlePath, run)) return appBundlePath
+  for (const nestedPath of findNestedMacosCodePaths(appBundlePath)) {
+    try {
+      run(['--force', '--sign', '-', nestedPath])
+    } catch (error) {
+      throw new Error(
+        'macOS nested code signing failed: ' + path.relative(appBundlePath, nestedPath),
+        { cause: error }
+      )
+    }
+  }
   run(['--force', '--sign', '-', appBundlePath])
   try {
     run(['--verify', '--strict', appBundlePath])
@@ -401,6 +531,7 @@ exports.default = async function afterPack(context) {
   )
   validateSherpaRuntime(runtimeResources, context.electronPlatformName, arch)
   validateSystemOcrRuntime(runtimeResources, context.electronPlatformName, arch)
+  validateKoffiRuntime(runtimeResources, context.electronPlatformName, arch)
   pruneIntelMacKeyTool(runtimeResources, context.electronPlatformName, arch)
   pruneForeignArchConnectors(runtimeResources, context.electronPlatformName, arch)
   pruneForeignArchNativeRuntimes(runtimeResources, context.electronPlatformName, arch)
@@ -413,23 +544,6 @@ exports.default = async function afterPack(context) {
     const productName = context.packager.appInfo.productFilename
     signMacosAppBundle(path.join(context.appOutDir, productName + '.app'))
   }
-
-  if (context.electronPlatformName === 'win32') {
-    const koffiNative = path.join(
-      context.appOutDir,
-      'resources',
-      'app.asar.unpacked',
-      'node_modules',
-      '@koromix',
-      'koffi-win32-x64',
-      'win32_x64',
-      'koffi.node'
-    )
-    if (!existsSync(koffiNative)) {
-      throw new Error(`Missing Windows Koffi native module: ${koffiNative}`)
-    }
-    return
-  }
 }
 
 exports.getRuntimeResources = getRuntimeResources
@@ -439,6 +553,7 @@ exports.validateFfmpegRuntime = validateFfmpegRuntime
 exports.validateSilkWasmRuntime = validateSilkWasmRuntime
 exports.validateSherpaRuntime = validateSherpaRuntime
 exports.validateSystemOcrRuntime = validateSystemOcrRuntime
+exports.validateKoffiRuntime = validateKoffiRuntime
 exports.pruneIntelMacKeyTool = pruneIntelMacKeyTool
 exports.pruneForeignArchConnectors = pruneForeignArchConnectors
 exports.pruneForeignArchNativeRuntimes = pruneForeignArchNativeRuntimes
@@ -447,6 +562,7 @@ exports.findMacosHelperPaths = findMacosHelperPaths
 exports.isMacosCodeValid = isMacosCodeValid
 exports.signMacosHelpers = signMacosHelpers
 exports.signMacosAppBundle = signMacosAppBundle
+exports.findNestedMacosCodePaths = findNestedMacosCodePaths
 exports.sendRuntimeLocations = sendRuntimeLocations
 exports.findSendRuntime = findSendRuntime
 exports.enforceSendRuntimeBoundary = enforceSendRuntimeBoundary

@@ -22,18 +22,26 @@ const { hasWindowsSherpaRuntime } = nodeRequire('../../scripts/prepare-win-runti
 const {
   validateAsarRuntimeDependencies,
   validateFfmpegRuntime,
+  validateKoffiRuntime,
   validateReaderSkillRuntime,
   validateSherpaRuntime,
   validateSilkWasmRuntime,
+  validateSystemOcrRuntime,
   findMacosHelperPaths,
   signMacosHelpers,
   signMacosAppBundle
 } = nodeRequire('../../scripts/after-pack.cjs') as {
   validateAsarRuntimeDependencies: (runtimeResources: string) => void
   validateFfmpegRuntime: (runtimeResources: string, platform?: NodeJS.Platform) => void
+  validateKoffiRuntime: (runtimeResources: string, platform: NodeJS.Platform, arch: string) => void
   validateReaderSkillRuntime: (runtimeResources: string) => string
   validateSherpaRuntime: (runtimeResources: string, platform: NodeJS.Platform, arch: string) => void
   validateSilkWasmRuntime: (runtimeResources: string) => void
+  validateSystemOcrRuntime: (
+    runtimeResources: string,
+    platform: NodeJS.Platform,
+    arch: string
+  ) => void
   findMacosHelperPaths: (runtimeResources: string) => string[]
   signMacosHelpers: (runtimeResources: string, run?: CodesignRunner) => string[]
   signMacosAppBundle: (appBundlePath: string, run?: CodesignRunner) => string
@@ -263,6 +271,91 @@ describe('production runtime packaging', () => {
     const config = readFileSync(resolve(__dirname, '../../electron-builder.yml'), 'utf8')
     expect(config).toContain('node_modules/sherpa-onnx-node/**')
     expect(config).toContain('node_modules/sherpa-onnx-*/**')
+  })
+
+  it('requires the matching System OCR native runtime', () => {
+    const resources = join(root, 'system-ocr-resources')
+    const modules = join(resources, 'app.asar.unpacked', 'node_modules', '@napi-rs')
+    const base = join(modules, 'system-ocr')
+
+    expect(() => validateSystemOcrRuntime(resources, 'darwin', 'arm64')).toThrow(
+      /Missing unpacked System OCR runtime:.*system-ocr/
+    )
+
+    mkdirSync(base, { recursive: true })
+    writeFileSync(join(base, 'package.json'), '{}')
+    writeFileSync(join(base, 'index.js'), 'module.exports = {}')
+
+    const mac = join(modules, 'system-ocr-darwin-arm64')
+    mkdirSync(mac, { recursive: true })
+    writeFileSync(join(mac, 'package.json'), '{}')
+    writeFileSync(join(mac, 'system-ocr.darwin-arm64.node'), 'fixture')
+    expect(() => validateSystemOcrRuntime(resources, 'darwin', 'arm64')).not.toThrow()
+
+    // Windows 的原生包名带 -msvc 后缀，查找规则必须跟着改。
+    expect(() => validateSystemOcrRuntime(resources, 'win32', 'x64')).toThrow(/win32-x64-msvc/)
+    const windows = join(modules, 'system-ocr-win32-x64-msvc')
+    mkdirSync(windows, { recursive: true })
+    writeFileSync(join(windows, 'package.json'), '{}')
+    writeFileSync(join(windows, 'system-ocr.win32-x64-msvc.node'), 'fixture')
+    expect(() => validateSystemOcrRuntime(resources, 'win32', 'x64')).not.toThrow()
+
+    // Linux 不是 supported target，不应做硬校验。
+    expect(() => validateSystemOcrRuntime(resources, 'linux', 'x64')).not.toThrow()
+  })
+
+  it('requires the koffi native module for the packaged platform', () => {
+    const resources = join(root, 'koffi-resources')
+    const modules = join(resources, 'app.asar.unpacked', 'node_modules', '@koromix')
+
+    expect(() => validateKoffiRuntime(resources, 'darwin', 'x64')).toThrow(
+      /Missing macOS Koffi native module:.*koffi-darwin-x64/
+    )
+    expect(() => validateKoffiRuntime(resources, 'darwin', 'arm64')).toThrow(
+      /koffi-darwin-arm64[/\\]darwin_arm64[/\\]koffi\.node/
+    )
+    expect(() => validateKoffiRuntime(resources, 'win32', 'x64')).toThrow(
+      /Missing Windows Koffi native module:.*koffi-win32-x64/
+    )
+
+    // koffi 运行期按 `${platform}-${arch}` 拼目录名，darwin 用 darwin_<arch>，
+    // win32 用 win32_x64（见 node_modules/koffi/src/koffi/index.cjs）。
+    for (const segments of [
+      ['koffi-darwin-x64', 'darwin_x64'],
+      ['koffi-darwin-arm64', 'darwin_arm64'],
+      ['koffi-win32-x64', 'win32_x64']
+    ]) {
+      const nativeDirectory = join(modules, ...segments)
+      mkdirSync(nativeDirectory, { recursive: true })
+      writeFileSync(join(nativeDirectory, 'koffi.node'), 'fixture')
+    }
+
+    expect(() => validateKoffiRuntime(resources, 'darwin', 'x64')).not.toThrow()
+    expect(() => validateKoffiRuntime(resources, 'darwin', 'arm64')).not.toThrow()
+    expect(() => validateKoffiRuntime(resources, 'win32', 'x64')).not.toThrow()
+
+    // 没有对应原生包的组合应静默跳过，而不是误报。
+    expect(() => validateKoffiRuntime(resources, 'linux', 'x64')).not.toThrow()
+    expect(() => validateKoffiRuntime(resources, 'win32', 'arm64')).not.toThrow()
+  })
+
+  it('declares the cross-arch native runtimes pnpm 7 would otherwise skip', () => {
+    const packageJson = JSON.parse(
+      readFileSync(resolve(__dirname, '../../package.json'), 'utf8')
+    ) as { dependencies: Record<string, string> }
+
+    // pnpm 7.33.7 不支持 supportedArchitectures，非宿主平台的可选依赖会被静默跳过，
+    // 而这些原生包必须在 dependencies 里显式声明，否则打包阶段才在 afterPack 报缺。
+    for (const name of [
+      'sherpa-onnx-darwin-x64',
+      'sherpa-onnx-win-x64',
+      '@napi-rs/system-ocr-darwin-x64',
+      '@napi-rs/system-ocr-win32-x64-msvc',
+      '@koromix/koffi-darwin-x64',
+      '@koromix/koffi-win32-x64'
+    ]) {
+      expect(packageJson.dependencies).toHaveProperty(name)
+    }
   })
 
   it('finds only the macOS helpers that exist in packaged resources', () => {

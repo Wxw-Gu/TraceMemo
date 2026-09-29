@@ -11,8 +11,10 @@ specifiers:
   '@electron-toolkit/preload': ^3.0.2
   '@electron-toolkit/tsconfig': ^2.0.0
   '@electron-toolkit/utils': ^4.0.0
+  '@koromix/koffi-darwin-x64': 3.1.0
   '@koromix/koffi-win32-x64': 3.1.0
   '@napi-rs/system-ocr': 1.2.0
+  '@napi-rs/system-ocr-darwin-x64': 1.2.0
   '@napi-rs/system-ocr-win32-x64-msvc': 1.2.0
   '@playwright/test': ^1.62.1
   '@radix-ui/react-alert-dialog': ^1.1.23
@@ -72,7 +74,9 @@ specifiers:
   react: ^19.2.1
   react-dom: ^19.2.1
   sass: ^1.102.0
+  sherpa-onnx-darwin-x64: 1.13.3
   sherpa-onnx-node: 1.13.3
+  sherpa-onnx-win-x64: 1.13.4
   silk-wasm: ^3.7.1
   tailwind-merge: ^3.6.0
   tailwindcss: 3.4.17
@@ -87,8 +91,10 @@ specifiers:
 dependencies:
   '@electron-toolkit/preload': 3.0.2_electron@43.1.0
   '@electron-toolkit/utils': 4.0.0_electron@43.1.0
+  '@koromix/koffi-darwin-x64': 3.1.0
   '@koromix/koffi-win32-x64': 3.1.0
   '@napi-rs/system-ocr': 1.2.0
+  '@napi-rs/system-ocr-darwin-x64': 1.2.0
   '@napi-rs/system-ocr-win32-x64-msvc': 1.2.0
   '@radix-ui/react-alert-dialog': 1.1.23_eijghdl4n2x4hz6j4cg7ctgbuu
   '@radix-ui/react-checkbox': 1.3.11_eijghdl4n2x4hz6j4cg7ctgbuu
@@ -120,7 +126,9 @@ dependencies:
   parse5: 8.0.1
   pinyin-pro: 3.29.3
   qrcode: 1.5.4
+  sherpa-onnx-darwin-x64: 1.13.3
   sherpa-onnx-node: 1.13.3
+  sherpa-onnx-win-x64: 1.13.4
   silk-wasm: 3.7.1
   tailwind-merge: 3.6.0
   unzipper: 0.12.5
@@ -1585,7 +1593,6 @@ packages:
     cpu: [x64]
     os: [darwin]
     dev: false
-    optional: true
 
   /@koromix/koffi-freebsd-arm64/3.1.0:
     resolution: {integrity: sha512-vazoPYIhOAlXZksVIqDRMIID4VeUZKx8F3dR90hOobT2ATyOkqNS5dv5UCV7Q7DSq22lQTrdbvENBAhROzCp0w==}
@@ -1689,6 +1696,36 @@ packages:
       - supports-color
     dev: true
 
+  /@napi-rs/system-ocr-darwin-arm64/1.2.0:
+    resolution: {integrity: sha512-cK8dcDBEl3P4A04xmFJSHEJQxfDytaAIFyDCLqavTp92FVU5plESttWzZsqtTkS81/kzKiBfHyPQffSIndfWbQ==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [darwin]
+    dev: false
+    optional: true
+
+  /@napi-rs/system-ocr-darwin-x64/1.2.0:
+    resolution: {integrity: sha512-u3TBvBGrhmT5Os6AfaxbUEg6VHe8lvrFJNPgThJgshJHyRXUx/wCfTyOroJ22KdVCP5AE4GpwS5tFHMb6p6iaQ==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [darwin]
+    dev: false
+
+  /@napi-rs/system-ocr-win32-arm64-msvc/1.2.0:
+    resolution: {integrity: sha512-7ej8uMvmXomw3NXo5gZ5p2Nl6UKsHI+VRU3ELv0mhcxR0sJ6wFifYTu5bJrM1TGcz1/RsaX+TjWMmsDq8vriKQ==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [win32]
+    dev: false
+    optional: true
+
+  /@napi-rs/system-ocr-win32-x64-msvc/1.2.0:
+    resolution: {integrity: sha512-oOoCj3FPWDVctTxx98vMBiMI6m51U+w7SMmMefvmtpcpLelzZ/zYTqdwtWZFAjShaHO+RdaKkcpeVcQuBQiVbA==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [win32]
+    dev: false
+
   /@napi-rs/system-ocr/1.2.0:
     resolution: {integrity: sha512-r0f2xNH6U+sth44qF+lUP+2WuHSGUBAry5KSCNuaLDGRbgslFqeROr/qJJ/fb6AjBp3Ov+CJP5MdrOWoaoM3cw==}
     engines: {node: '>= 10'}
@@ -1697,34 +1734,6 @@ packages:
       '@napi-rs/system-ocr-darwin-x64': 1.2.0
       '@napi-rs/system-ocr-win32-arm64-msvc': 1.2.0
       '@napi-rs/system-ocr-win32-x64-msvc': 1.2.0
-    dev: false
-
-  /@napi-rs/system-ocr-darwin-arm64/1.2.0:
-    resolution: {integrity: sha512-cK8dcDBEl3P4A04xmFJSHEJQxfDytaAIFyDCLqavTp92FVU5plESttWzZsqtTkS81/kzKiBfHyPQffSIndfWbQ==}
-    cpu: [arm64]
-    os: [darwin]
-    engines: {node: '>= 10'}
-    dev: false
-
-  /@napi-rs/system-ocr-darwin-x64/1.2.0:
-    resolution: {integrity: sha512-u3TBvBGrhmT5Os6AfaxbUEg6VHe8lvrFJNPgThJgshJHyRXUx/wCfTyOroJ22KdVCP5AE4GpwS5tFHMb6p6iaQ==}
-    cpu: [x64]
-    os: [darwin]
-    engines: {node: '>= 10'}
-    dev: false
-
-  /@napi-rs/system-ocr-win32-arm64-msvc/1.2.0:
-    resolution: {integrity: sha512-7ej8uMvmXomw3NXo5gZ5p2Nl6UKsHI+VRU3ELv0mhcxR0sJ6wFifYTu5bJrM1TGcz1/RsaX+TjWMmsDq8vriKQ==}
-    cpu: [arm64]
-    os: [win32]
-    engines: {node: '>= 10'}
-    dev: false
-
-  /@napi-rs/system-ocr-win32-x64-msvc/1.2.0:
-    resolution: {integrity: sha512-oOoCj3FPWDVctTxx98vMBiMI6m51U+w7SMmMefvmtpcpLelzZ/zYTqdwtWZFAjShaHO+RdaKkcpeVcQuBQiVbA==}
-    cpu: [x64]
-    os: [win32]
-    engines: {node: '>= 10'}
     dev: false
 
   /@nodelib/fs.scandir/2.1.5:
@@ -7589,7 +7598,6 @@ packages:
     cpu: [x64]
     os: [darwin]
     dev: false
-    optional: true
 
   /sherpa-onnx-linux-arm64/1.13.4:
     resolution: {integrity: sha512-RMjMRqT82BgTXypNNGmLe6ZFYhc3WEvnAGl3DdkK7qB/kuXwkL3iHhV31wAecbnWPsnEpUoD+8cFovWSBzsCuw==}
@@ -7628,7 +7636,6 @@ packages:
     cpu: [x64]
     os: [win32]
     dev: false
-    optional: true
 
   /side-channel-list/1.0.0:
     resolution: {integrity: sha512-FCLHtRD/gnpCiCHEiJLOwdmFP+wzCmDEkc9y7NsYxeF4u7Btsn1ZuwgwJGxImImHicJArLP4R0yX4c2KCrMrTA==}
