@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { PersonalWechatSendCapability } from '../../src/shared/personal-wechat'
-import type { ScheduledReportTask } from '../../src/shared/scheduled-report'
+import type {
+  ScheduledReportCreateInput,
+  ScheduledReportExecution,
+  ScheduledReportResult,
+  ScheduledReportTask,
+  ScheduledReportUpdateInput
+} from '../../src/shared/scheduled-report'
 import {
   ScheduledReportApiService,
   type ScheduledReportApiDependencies
@@ -60,36 +66,60 @@ function makeApi(
 ): ApiTestResult {
   const tasks = options.tasks || []
   const service = {
-    listTasks: vi.fn(async () => tasks),
-    listExecutions: vi.fn(async () => []),
-    createTask: vi.fn(async (input: Record<string, unknown>) => {
-      const created = task({
-        id: `task-${tasks.length + 1}`,
-        name: String(input.name),
-        group: String(input.group),
-        target: String(input.target),
-        scheduleTime: String(input.scheduleTime),
-        reportRange: input.reportRange as ScheduledReportTask['reportRange'],
-        enabled: Boolean(input.enabled)
-      })
-      tasks.push(created)
-      return { success: true, data: created }
-    }),
-    updateTask: vi.fn(async () => ({ success: true, data: tasks[0] })),
-    deleteTask: vi.fn(async (id: string) => ({ success: true, data: { deletedId: id } })),
-    setTaskEnabled: vi.fn(async (id: string, enabled: boolean) => ({
-      success: true,
-      data: task({ id, enabled })
-    })),
-    runScheduledReportNow: vi.fn(async (id: string) => ({
-      success: true,
-      data: {
-        id: 'execution-1',
-        taskId: id,
-        startedAt: '2026-08-27T01:00:00.000Z',
-        status: 'success' as const
+    listTasks: vi.fn(async (): Promise<ScheduledReportTask[]> => tasks),
+    listExecutions: vi.fn(
+      async (_taskId?: string): Promise<ScheduledReportExecution[]> => []
+    ),
+    createTask: vi.fn(
+      async (input: ScheduledReportCreateInput): Promise<ScheduledReportResult<ScheduledReportTask>> => {
+        const created = task({
+          id: `task-${tasks.length + 1}`,
+          name: String(input.name),
+          group: String(input.group),
+          target: String(input.target),
+          scheduleTime: String(input.scheduleTime),
+          reportRange: input.reportRange as ScheduledReportTask['reportRange'],
+          enabled: Boolean(input.enabled)
+        })
+        tasks.push(created)
+        return { success: true, data: created }
       }
-    }))
+    ),
+    updateTask: vi.fn(
+      async (
+        _taskId: string,
+        _input: ScheduledReportUpdateInput
+      ): Promise<ScheduledReportResult<ScheduledReportTask>> => ({
+        success: true,
+        data: tasks[0]
+      })
+    ),
+    deleteTask: vi.fn(
+      async (id: string): Promise<ScheduledReportResult<{ deletedId: string }>> => ({
+        success: true,
+        data: { deletedId: id }
+      })
+    ),
+    setTaskEnabled: vi.fn(
+      async (
+        id: string,
+        enabled: boolean
+      ): Promise<ScheduledReportResult<ScheduledReportTask>> => ({
+        success: true,
+        data: task({ id, enabled })
+      })
+    ),
+    runScheduledReportNow: vi.fn(
+      async (id: string): Promise<ScheduledReportResult<ScheduledReportExecution>> => ({
+        success: true,
+        data: {
+          id: 'execution-1',
+          taskId: id,
+          startedAt: '2026-08-27T01:00:00.000Z',
+          status: 'success' as const
+        }
+      })
+    )
   }
   return {
     api: new ScheduledReportApiService({

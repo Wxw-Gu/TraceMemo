@@ -4,7 +4,9 @@ const fixture = vi.hoisted(() => ({
   capability: {
     supported: true,
     ready: true,
-    status: 'ready' as const,
+    // 显式标注成联合类型：否则会被收窄成字面量 'ready'，
+    // 后面把它改成 'needs_binding' 时就不合法了。
+    status: 'ready' as PersonalWechatSendCapabilityState,
     capabilities: { text: true, image: true, voice: true },
     senderStatus: {} as never,
     message: '个人微信已准备好发送日报'
@@ -58,7 +60,14 @@ vi.mock('../../src/main/services/agent-hub-service', () => ({
 }))
 
 import { startHttpServer, type HttpServerHandle } from '../../src/main/http-server'
-import type { ScheduledReportTask } from '../../src/shared/scheduled-report'
+import type {
+  ScheduledReportCreateInput,
+  ScheduledReportExecution,
+  ScheduledReportResult,
+  ScheduledReportTask,
+  ScheduledReportUpdateInput
+} from '../../src/shared/scheduled-report'
+import type { PersonalWechatSendCapabilityState } from '../../src/shared/personal-wechat'
 import type { ScheduledReportApiDependencies } from '../../src/main/services/scheduled-report-api-service'
 
 const TOKEN = 'A'.repeat(43)
@@ -87,57 +96,76 @@ async function startFixture(
   options: { tasks?: ScheduledReportTask[] } = {}
 ): Promise<{ handle: HttpServerHandle; service: ScheduledReportApiDependencies['service'] }> {
   const tasks = options.tasks || []
-  const executions: Array<Record<string, unknown>> = []
-  const service = {
-    listTasks: vi.fn(async () => tasks),
-    listExecutions: vi.fn(async (taskId?: string) =>
-      taskId ? executions.filter((item) => item.taskId === taskId) : executions
+  const executions: ScheduledReportExecution[] = []
+  const service: ScheduledReportApiDependencies['service'] = {
+    listTasks: vi.fn(async (): Promise<ScheduledReportTask[]> => tasks),
+    listExecutions: vi.fn(
+      async (taskId?: string): Promise<ScheduledReportExecution[]> =>
+        taskId ? executions.filter((item) => item.taskId === taskId) : executions
     ),
-    createTask: vi.fn(async (input: Record<string, unknown>) => {
-      const created = makeTask({
-        id: `task-${tasks.length + 1}`,
-        name: String(input.name),
-        group: String(input.group),
-        target: String(input.target),
-        scheduleTime: String(input.scheduleTime),
-        reportRange: input.reportRange as ScheduledReportTask['reportRange'],
-        enabled: Boolean(input.enabled)
-      })
-      tasks.push(created)
-      return { success: true, data: created }
-    }),
-    updateTask: vi.fn(async (id: string, input: Record<string, unknown>) => {
-      const current = tasks.find((item) => item.id === id)
-      if (!current) return { success: false, error: '未找到定时日报任务' }
-      const updated = { ...current, ...input, updatedAt: '2026-08-27T02:00:00.000Z' }
-      tasks[tasks.indexOf(current)] = updated
-      return { success: true, data: updated }
-    }),
-    deleteTask: vi.fn(async (id: string) => {
-      const index = tasks.findIndex((item) => item.id === id)
-      if (index < 0) return { success: false, error: '未找到定时日报任务' }
-      tasks.splice(index, 1)
-      return { success: true, data: { deletedId: id } }
-    }),
-    setTaskEnabled: vi.fn(async (id: string, enabled: boolean) => {
-      const current = tasks.find((item) => item.id === id)
-      if (!current) return { success: false, error: '未找到定时日报任务' }
-      const updated = { ...current, enabled }
-      tasks[tasks.indexOf(current)] = updated
-      return { success: true, data: updated }
-    }),
-    runScheduledReportNow: vi.fn(async (id: string) => {
-      const execution = {
-        id: `execution-${executions.length + 1}`,
-        taskId: id,
-        startedAt: '2026-08-27T01:00:00.000Z',
-        finishedAt: '2026-08-27T01:01:00.000Z',
-        status: 'success' as const,
-        message: '日报生成成功，微信发送成功'
+    createTask: vi.fn(
+      async (
+        input: ScheduledReportCreateInput
+      ): Promise<ScheduledReportResult<ScheduledReportTask>> => {
+        const created = makeTask({
+          id: `task-${tasks.length + 1}`,
+          name: String(input.name),
+          group: String(input.group),
+          target: String(input.target),
+          scheduleTime: String(input.scheduleTime),
+          reportRange: input.reportRange as ScheduledReportTask['reportRange'],
+          enabled: Boolean(input.enabled)
+        })
+        tasks.push(created)
+        return { success: true, data: created }
       }
-      executions.push(execution)
-      return { success: true, data: execution }
-    })
+    ),
+    updateTask: vi.fn(
+      async (
+        id: string,
+        input: ScheduledReportUpdateInput
+      ): Promise<ScheduledReportResult<ScheduledReportTask>> => {
+        const current = tasks.find((item) => item.id === id)
+        if (!current) return { success: false, error: '未找到定时日报任务' }
+        const updated = { ...current, ...input, updatedAt: '2026-08-27T02:00:00.000Z' }
+        tasks[tasks.indexOf(current)] = updated
+        return { success: true, data: updated }
+      }
+    ),
+    deleteTask: vi.fn(
+      async (id: string): Promise<ScheduledReportResult<{ deletedId: string }>> => {
+        const index = tasks.findIndex((item) => item.id === id)
+        if (index < 0) return { success: false, error: '未找到定时日报任务' }
+        tasks.splice(index, 1)
+        return { success: true, data: { deletedId: id } }
+      }
+    ),
+    setTaskEnabled: vi.fn(
+      async (
+        id: string,
+        enabled: boolean
+      ): Promise<ScheduledReportResult<ScheduledReportTask>> => {
+        const current = tasks.find((item) => item.id === id)
+        if (!current) return { success: false, error: '未找到定时日报任务' }
+        const updated = { ...current, enabled }
+        tasks[tasks.indexOf(current)] = updated
+        return { success: true, data: updated }
+      }
+    ),
+    runScheduledReportNow: vi.fn(
+      async (id: string): Promise<ScheduledReportResult<ScheduledReportExecution>> => {
+        const execution: ScheduledReportExecution = {
+          id: `execution-${executions.length + 1}`,
+          taskId: id,
+          startedAt: '2026-08-27T01:00:00.000Z',
+          finishedAt: '2026-08-27T01:01:00.000Z',
+          status: 'success',
+          message: '日报生成成功，微信发送成功'
+        }
+        executions.push(execution)
+        return { success: true, data: execution }
+      }
+    )
   }
   const handle = await startHttpServer('127.0.0.1', 0, {
     tokenProvider: () => TOKEN,
@@ -222,6 +250,13 @@ describe('scheduled report Local HTTP API', () => {
     })
     expect(await capability.json()).toMatchObject({ capability: { status: 'ready' } })
     expect(service.createTask).toHaveBeenCalledOnce()
+    // HTTP 契约把群解析成**会话 md5**、目标解析成 roomId 后交给服务层
+    //（服务层再把这些标识收敛成稳定会话 id）。
+    expect(vi.mocked(service.createTask).mock.calls[0][0]).toMatchObject({
+      group: 'tech-md5',
+      target: 'tech@chatroom',
+      scheduleTime: '09:00'
+    })
   })
 
   it('allows unavailable sending capability while still rejecting ambiguous groups', async () => {

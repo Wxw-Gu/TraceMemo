@@ -157,69 +157,6 @@
   gap: 8px;
 }
 
-.exit-monitor-template-popover {
-  width: min(390px, calc(100vw - 32px));
-}
-
-.exit-monitor-template-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.exit-monitor-template-heading h2 {
-  margin: 2px 0 0;
-  color: var(--wxex-text-primary);
-  font-size: 15px;
-  font-weight: 700;
-  line-height: 22px;
-}
-
-.exit-monitor-template-status {
-  flex: 0 0 auto;
-  color: var(--wxex-text-muted);
-  font-size: 11px;
-  line-height: 18px;
-}
-
-.exit-monitor-template-editor {
-  margin: 14px 0 0;
-  min-height: 190px;
-  resize: vertical;
-  background: color-mix(in srgb, var(--wxex-bg-main) 70%, var(--wxex-bg-elevated));
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  line-height: 20px;
-}
-
-.exit-monitor-template-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 6px;
-  color: var(--wxex-text-muted);
-  font-size: 11px;
-  line-height: 18px;
-}
-
-.exit-monitor-template-popover p {
-  margin: 10px 0 0;
-  color: var(--wxex-text-muted);
-  font-size: 11px;
-  line-height: 18px;
-}
-
-.exit-monitor-template-error {
-  color: var(--wxex-danger) !important;
-}
-
-.exit-monitor-template-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 12px;
-}
-
 .exit-monitor-manage-count strong {
   margin: 0 4px;
   color: var(--wxex-brand);
@@ -361,40 +298,6 @@
 .exit-monitor-event-count span {
   padding: 0 4px;
   color: var(--wxex-danger);
-}
-
-.exit-monitor-event-notification {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
-  margin-top: 7px;
-  color: var(--wxex-text-secondary);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.exit-monitor-event-notification span {
-  font-weight: 600;
-}
-
-.exit-monitor-event-notification small {
-  color: var(--wxex-text-muted);
-  font-size: 11px;
-  line-height: 18px;
-}
-
-.exit-monitor-event-notification.sent {
-  color: var(--wxex-success);
-}
-
-.exit-monitor-event-notification.blocked,
-.exit-monitor-event-notification.failed {
-  color: var(--wxex-danger);
-}
-
-.exit-monitor-event-notification.pending {
-  color: var(--wxex-brand);
 }
 
 .exit-monitor-event-details {
@@ -629,25 +532,6 @@
   color: var(--wxex-brand);
 }
 
-.exit-monitor-group-notification {
-  display: inline-flex;
-  min-width: 82px;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 7px;
-  color: var(--wxex-text-secondary);
-  cursor: pointer;
-  font-size: 11px;
-  line-height: 18px;
-  white-space: nowrap;
-}
-
-.exit-monitor-group-notification:has([data-disabled]) {
-  color: var(--wxex-text-muted);
-  cursor: not-allowed;
-  opacity: 0.65;
-}
-
 .exit-monitor-manage-footer {
   display: flex;
   align-items: center;
@@ -747,12 +631,6 @@
   .exit-monitor-group-row-status {
     grid-column: 3;
     grid-row: 2;
-  }
-
-  .exit-monitor-group-notification {
-    grid-column: 4;
-    grid-row: 2;
-    min-width: 0;
   }
 
   .exit-monitor-manage-footer {

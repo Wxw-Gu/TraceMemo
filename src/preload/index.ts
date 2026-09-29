@@ -52,19 +52,13 @@ import type {
 } from '../shared/personal-wechat'
 import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
 import type {
-  ScheduledReportCreateInput,
   ScheduledReportExecution,
+  ScheduledReportNotification,
+  ScheduledReportNotificationCapability,
   ScheduledReportNotificationSettings,
   ScheduledReportNotificationSettingsResult,
-  ScheduledReportResult,
-  ScheduledReportTask,
-  ScheduledReportUpdateInput
+  ScheduledReportResult
 } from '../shared/scheduled-report'
-import type {
-  PersonalWechatRuntimeDownloadResult,
-  PersonalWechatRuntimeProgressEvent,
-  PersonalWechatRuntimeStatus
-} from '../shared/personal-wechat-runtime'
 import type {
   PersonalWechatVoiceEncodingEnvironment,
   PersonalWechatVoiceEncodingEnvironmentResult
@@ -72,6 +66,13 @@ import type {
 import type { AppLogEntry } from '../shared/app-log'
 import type { AppUpdateState } from '../shared/app-update'
 import type { GroupExitMonitorEvent, GroupExitMonitorState } from '../shared/group-exit-monitor'
+import type {
+  AutomationExecution,
+  AutomationRule,
+  AutomationRuleDraft,
+  AutomationStatusSummary,
+  ScheduledRuleRunOutcome
+} from '../shared/automation'
 import type { GroupMemberStatsQuery, GroupMemberStatsResult } from '../shared/group-stats'
 import type { ActionLogEntry } from '../shared/action-log'
 import type { CacheClearScope, CacheSummary } from '../shared/cache'
@@ -181,25 +182,46 @@ const api = {
     ipcRenderer.invoke('group-exit-monitor:listEvents', query),
   setGroupExitMonitorEnabled: (enabled: boolean): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:setEnabled', enabled),
-  setGroupExitMonitorGroups: (
-    roomIds: string[],
-    notificationRoomIds?: string[]
-  ): Promise<GroupExitMonitorState> =>
-    notificationRoomIds === undefined
-      ? ipcRenderer.invoke('group-exit-monitor:setGroups', roomIds)
-      : ipcRenderer.invoke('group-exit-monitor:setGroups', roomIds, notificationRoomIds),
-  setGroupExitMonitorNotificationTemplate: (template: string): Promise<GroupExitMonitorState> =>
-    ipcRenderer.invoke('group-exit-monitor:setTemplate', template),
+  /** 保存**监控范围**。通知配置已迁到自动化规则，这里不再有第二个参数。 */
+  setGroupExitMonitorGroups: (roomIds: string[]): Promise<GroupExitMonitorState> =>
+    ipcRenderer.invoke('group-exit-monitor:setGroups', roomIds),
   checkGroupExitMonitorNow: (): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:checkNow'),
   clearGroupExitMonitorEvents: (): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:clearEvents'),
-  resendGroupExitMonitorEvent: (eventId: string): Promise<GroupExitMonitorState> =>
-    ipcRenderer.invoke('group-exit-monitor:resendEvent', eventId),
   markGroupExitMonitorRead: (readAt?: number): Promise<GroupExitMonitorState> =>
     ipcRenderer.invoke('group-exit-monitor:markRead', readAt),
   listWechatActionLogs: (): Promise<ActionLogEntry[]> =>
     ipcRenderer.invoke('wechat-action-log:list'),
+  // ---- Automation v1（@我生成日报）。命名与既有扁平风格一致。 ----
+  getAutomationStatus: (): Promise<AutomationStatusSummary> =>
+    ipcRenderer.invoke('automation:getStatus'),
+  listAutomationRules: (): Promise<AutomationRule[]> => ipcRenderer.invoke('automation:listRules'),
+  createAutomationRule: (draft: AutomationRuleDraft): Promise<AutomationRule> =>
+    ipcRenderer.invoke('automation:createRule', draft),
+  updateAutomationRule: (id: string, draft: AutomationRuleDraft): Promise<AutomationRule | null> =>
+    ipcRenderer.invoke('automation:updateRule', { id, draft }),
+  deleteAutomationRule: (id: string): Promise<boolean> =>
+    ipcRenderer.invoke('automation:deleteRule', id),
+  setAutomationRuleEnabled: (id: string, enabled: boolean): Promise<AutomationRule | null> =>
+    ipcRenderer.invoke('automation:setRuleEnabled', { id, enabled }),
+  listAutomationExecutions: (query?: { limit?: number }): Promise<AutomationExecution[]> =>
+    ipcRenderer.invoke('automation:listExecutions', query),
+  clearAutomationExecutions: (): Promise<boolean> =>
+    ipcRenderer.invoke('automation:clearExecutions'),
+  /** 「在哪些聊天生效」的可选项。`id` 为 `xxx@chatroom`，与规则内 conversationIds 同口径。 */
+  listAutomationGroups: (): Promise<Array<{ id: string; name: string }>> =>
+    ipcRenderer.invoke('automation:listGroups'),
+  /**
+   * 保存「退群通知」规则（singleton upsert，id 由 main 侧固定，渲染层不拼 id）。
+   */
+  saveLeaveNotificationRule: (draft: AutomationRuleDraft): Promise<AutomationRule> =>
+    ipcRenderer.invoke('automation:saveLeaveNotificationRule', draft),
+  /**
+   * 「指定好友」的可选项。已在 main 侧过滤掉群聊 / 公众号 / 文件传输助手 / 自己。
+   */
+  listSendableContacts: (): Promise<Array<{ id: string; name: string }>> =>
+    ipcRenderer.invoke('automation:listSendableContacts'),
   onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: GroupExitMonitorState): void =>
       callback(state)
@@ -529,10 +551,6 @@ const api = {
     ipcRenderer.invoke('wechat-personal:getStatus'),
   getPersonalWechatSendCapability: (): Promise<PersonalWechatSendCapability> =>
     ipcRenderer.invoke('wechat-personal:getSendCapability'),
-  getPersonalWechatKeepOneBotProcess: (): Promise<boolean> =>
-    ipcRenderer.invoke('wechat-personal:getKeepProcess'),
-  setPersonalWechatKeepOneBotProcess: (keep: boolean): Promise<boolean> =>
-    ipcRenderer.invoke('wechat-personal:setKeepProcess', keep),
   checkPersonalWechatSenderStatus: (port?: string): Promise<PersonalWechatSenderStatus> =>
     ipcRenderer.invoke('wechat-personal:checkStatus', port),
   checkPersonalWechatVoiceEncodingEnvironment:
@@ -544,26 +562,6 @@ const api = {
     ipcRenderer.invoke('wechat-personal:openVoicePythonDownload'),
   openPersonalWechatVoiceFfmpegDownload: (): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('wechat-personal:openVoiceFfmpegDownload'),
-  getPersonalWechatRuntimeStatus: (): Promise<PersonalWechatRuntimeStatus> =>
-    ipcRenderer.invoke('wechat-personal:getRuntimeStatus'),
-  downloadPersonalWechatRuntime: (): Promise<PersonalWechatRuntimeDownloadResult> =>
-    ipcRenderer.invoke('wechat-personal:downloadRuntime'),
-  cancelPersonalWechatRuntimeDownload: (): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke('wechat-personal:cancelRuntimeDownload'),
-  removePersonalWechatRuntime: (): Promise<PersonalWechatRuntimeStatus> =>
-    ipcRenderer.invoke('wechat-personal:removeRuntime'),
-  openPersonalWechatRuntimeDirectory: (): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('wechat-personal:openRuntimeDirectory'),
-  onPersonalWechatRuntimeProgress: (
-    callback: (status: PersonalWechatRuntimeProgressEvent) => void
-  ) => {
-    const listener = (
-      _event: Electron.IpcRendererEvent,
-      status: PersonalWechatRuntimeProgressEvent
-    ): void => callback(status)
-    ipcRenderer.on('wechat-personal:runtimeProgress', listener)
-    return () => ipcRenderer.removeListener('wechat-personal:runtimeProgress', listener)
-  },
   rebindPersonalWechatSender: (): Promise<PersonalWechatSenderStatus> =>
     ipcRenderer.invoke('wechat-personal:rebind'),
   sendGeneratedTtsVoice: (
@@ -574,44 +572,30 @@ const api = {
   sendPersonalWechatMessage: (
     request: PersonalWechatSendRequest
   ): Promise<PersonalWechatSendResult> => ipcRenderer.invoke('wechat-personal:send', request),
-  listScheduledReports: (): Promise<ScheduledReportTask[]> =>
-    ipcRenderer.invoke('scheduled-report:list'),
-  listScheduledReportExecutions: (taskId?: string): Promise<ScheduledReportExecution[]> =>
-    ipcRenderer.invoke('scheduled-report:listExecutions', taskId),
+  /**
+   * 定时日报（Automation 的 `scheduled_report` 规则类型）。
+   *
+   * 规则 CRUD 复用上面的 `automation:*` 通道；这里只暴露三块专属能力：
+   * 立即执行、微信异常通知、旧执行记录只读存档。
+   */
+  runScheduledReportRule: (
+    ruleId: string
+  ): Promise<{ success: boolean; error?: string; data?: ScheduledRuleRunOutcome }> =>
+    ipcRenderer.invoke('automation:runScheduledReportRule', ruleId),
+  listScheduledReportLegacyExecutions: (ruleId?: string): Promise<ScheduledReportExecution[]> =>
+    ipcRenderer.invoke('automation:listScheduledReportLegacyExecutions', ruleId),
   getScheduledReportNotificationSettings: (): Promise<ScheduledReportNotificationSettings> =>
-    ipcRenderer.invoke('scheduled-report:getNotificationSettings'),
+    ipcRenderer.invoke('automation:getScheduledReportNotificationSettings'),
+  getScheduledReportNotificationCapability: (): Promise<ScheduledReportNotificationCapability> =>
+    ipcRenderer.invoke('automation:getScheduledReportNotificationCapability'),
   setScheduledReportNotificationEnabled: (
     enabled: boolean
   ): Promise<ScheduledReportNotificationSettingsResult> =>
-    ipcRenderer.invoke('scheduled-report:setNotificationEnabled', enabled),
-  createScheduledReport: (
-    request: ScheduledReportCreateInput
-  ): Promise<ScheduledReportResult<ScheduledReportTask>> =>
-    ipcRenderer.invoke('scheduled-report:create', request),
-  updateScheduledReport: (
-    taskId: string,
-    request: ScheduledReportUpdateInput
-  ): Promise<ScheduledReportResult<ScheduledReportTask>> =>
-    ipcRenderer.invoke('scheduled-report:update', taskId, request),
-  deleteScheduledReport: (taskId: string): Promise<ScheduledReportResult<{ deletedId: string }>> =>
-    ipcRenderer.invoke('scheduled-report:delete', taskId),
-  setScheduledReportEnabled: (
-    taskId: string,
-    enabled: boolean
-  ): Promise<ScheduledReportResult<ScheduledReportTask>> =>
-    ipcRenderer.invoke('scheduled-report:setEnabled', taskId, enabled),
-  runScheduledReportNow: (
-    taskId: string
-  ): Promise<ScheduledReportResult<ScheduledReportExecution>> =>
-    ipcRenderer.invoke('scheduled-report:runNow', taskId),
-  retryScheduledReportSend: (
-    executionId: string
-  ): Promise<ScheduledReportResult<ScheduledReportExecution>> =>
-    ipcRenderer.invoke('scheduled-report:retrySend', executionId),
+    ipcRenderer.invoke('automation:setScheduledReportNotificationEnabled', enabled),
   testScheduledReportErrorNotification: (
-    taskId: string
-  ): Promise<ScheduledReportResult<ScheduledReportExecution>> =>
-    ipcRenderer.invoke('scheduled-report:testErrorNotification', taskId),
+    ruleId: string
+  ): Promise<ScheduledReportResult<ScheduledReportNotification>> =>
+    ipcRenderer.invoke('automation:testScheduledReportErrorNotification', ruleId),
   getPersonalWechatVoiceDiagnostic: (): Promise<PersonalWechatVoiceDiagnostic | null> =>
     ipcRenderer.invoke('wechat-personal:getVoiceDiagnostic'),
   getAgentHubStatus: () => ipcRenderer.invoke('agent-hub:getStatus'),

@@ -2,43 +2,69 @@ import { app } from 'electron'
 import { randomUUID } from 'crypto'
 import { promises as fs } from 'fs'
 import path from 'path'
-import type {
-  PersonalWechatSendCapability,
-  PersonalWechatSendRequest,
-  PersonalWechatSendResult
-} from '../../shared/personal-wechat'
-import type { WechatActionRequest, WechatActionResult } from '../../shared/wechat-action'
 import type { AgentHubStatus } from '../../shared/agent-hub'
+import {
+  AUTOMATION_RULE_TYPE_LABELS,
+  calculateNextRunAt,
+  isValidScheduleTime,
+  normalizeScheduledReportConfig,
+  type AutomationRule,
+  type ScheduledReportAutomationConfig,
+  type ScheduledReportTargetType
+} from '../../shared/automation'
 import type {
   ScheduledReportCreateInput,
   ScheduledReportExecution,
   ScheduledReportExecutionStage,
-  ScheduledReportMessageType,
-  ScheduledReportMemberNameMode,
   ScheduledReportNotification,
-  ScheduledReportNotificationCapabilityReason,
   ScheduledReportNotificationCapability,
+  ScheduledReportNotificationCapabilityReason,
   ScheduledReportNotificationSettings,
   ScheduledReportNotificationSettingsResult,
   ScheduledReportNotificationSeverity,
   ScheduledReportNotificationType,
-  ScheduledReportRange,
   ScheduledReportResult,
   ScheduledReportSendStatus,
   ScheduledReportTask,
   ScheduledReportUpdateInput
 } from '../../shared/scheduled-report'
 import {
-  legacyScheduledReportError,
-  normalizeScheduledReportError
-} from '../../shared/scheduled-report-error'
-import type { SaveGeneratedReportRequest } from '../../shared/report-history'
-import { saveGeneratedReport } from '../report-history-service'
-import { generateAgentGroupReport } from './agent-group-report-service'
-import { personalWechatCapabilityService } from './personal-wechat-capability-service'
-import { WechatActionGateway, wechatActionGateway } from './wechat-action-gateway'
-import { getContactAvatars, isReady as isChatReady, resolveMd5 } from './chat-service'
+  automationRuleStore
+} from './automation-rule-store'
+import {
+  automationExecutionLogService,
+  type AutomationExecutionLogService
+} from './automation-execution-log-service'
+import {
+  getAutomationService,
+  type ScheduledRuleRunOutcome
+} from './automation-service'
 import { agentHubService, type AgentHubNotificationResult } from './agent-hub-service'
+
+/**
+ * ScheduledReportService —— **退役后的定时日报服务**。
+ *
+ * 职责被压到三件事，且**只有这三件**：
+ *
+ * 1. **调度器（scheduler）**：只改任务来源，不重写计时器。
+ *    ```text
+ *    Before:  ScheduledReportStore(tasks.json) → Scheduler
+ *    After:   AutomationRuleStore ─ ruleType='scheduled_report' ↓ Scheduler
+ *    ```
+ *    真正干活的一律交给 `AutomationService.executeScheduledRule()` ——
+ *    这个类**不认识微信、不认识 OCR、不认识日报生成**。
+ * 2. **微信异常通知**：定时日报生成 / 发送异常时，经 Agent Hub 推一条消息。
+ *    这是定时日报功能的**全局能力**（与具体任务无关），因此随功能一起保留。
+ * 3. **旧数据只读存档**：旧 `tasks.json` / `executions.json` 不再参与运行期调度，
+ *    但历史执行记录**不能丢**，所以保留只读投影给 UI 展示。
+ *
+ * 已移除的能力：
+ * - 任务 CRUD 的**存储**（改由 `AutomationRuleStore` 承担；这里只保留一层
+ *   面向 HTTP API 的**只读兼容投影**，不落第二份数据）；
+ * - 日报生成 / 发送（`generateAgentGroupReport` / `saveGeneratedReport` /
+ *   `WechatActionGateway`）—— 全部搬进 `AutomationActionRunner.runScheduledReport()`；
+ * - `executions.json` 的写入（新执行记录进 Automation Execution Log）。
+ */
 
 const STORAGE_DIR = 'scheduled-reports'
 const TASKS_FILE = 'tasks.json'
@@ -51,107 +77,43 @@ const NOTIFICATION_TEST_MESSAGE = `✅ TraceMemo 定时日报通知已开启
 以后定时日报生成或发送出现异常时，
 我会通过这里通知你。`
 
+/**
+ * 生成失败但**不该打扰用户**的错误码。
+ *
+ * 这类错误照常记为 `failed`（如实），只是不该打扰用户 ——
+ * 把"不通知"这个判断放在**通知桥**这一层。
+ */
+const NON_NOTIFYING_ERROR_CODES = new Set(['NO_MESSAGES'])
+
 export interface ScheduledReportDependencies {
-  getCapability: () => Promise<PersonalWechatSendCapability>
-  generateReport: typeof generateAgentGroupReport
-  saveGeneratedReport: (
-    request: SaveGeneratedReportRequest
-  ) => ReturnType<typeof saveGeneratedReport>
-  send: (request: PersonalWechatSendRequest) => Promise<PersonalWechatSendResult>
-  sendAction?: (input: ScheduledReportSendActionInput) => Promise<WechatActionResult>
+  /** 执行一条定时日报规则。默认走 `AutomationService`。 */
+  executeRule: (
+    ruleId: string,
+    options: { trigger: 'schedule' | 'manual'; scheduledSlot?: string }
+  ) => Promise<ScheduledRuleRunOutcome>
+  /** 调度器的**唯一任务来源**。 */
+  listRules: () => AutomationRule[]
+  /** Automation 执行日志（用于把新执行记录投影给 HTTP API）。 */
+  listExecutions: (query?: { limit?: number }) => ReturnType<AutomationExecutionLogService['list']>
   sendNotification: (input: { to?: string; text: string }) => Promise<AgentHubNotificationResult>
   getNotificationRecipient: () => string | undefined
   getAgentHubStatus: () => AgentHubStatus
-  getContactAvatars?: (usernames: string[]) => Promise<Record<string, string>>
   storageDir: string
+  /** 数据库未就绪时不调度：目标解析必然失败，跑了只会留下误导性的失败记录。 */
   isDatabaseReady: () => boolean
   now?: () => Date
 }
 
-export interface ScheduledReportSendActionInput {
-  target: string
-  filePath: string
-  executionId: string
-  triggerType: 'scheduled' | 'manual'
-  retryCount?: number
-  taskId?: string
-}
-
-function buildScheduledReportActionRequest(
-  input: ScheduledReportSendActionInput
-): WechatActionRequest {
-  return {
-    idempotencyKey:
-      input.retryCount && input.retryCount > 0
-        ? `scheduled_report:${input.executionId}:retry:${input.retryCount}`
-        : `scheduled_report:${input.executionId}`,
-    origin: 'scheduled_report',
-    purpose: 'scheduled_report',
-    triggerType: input.triggerType === 'scheduled' ? 'automation' : 'user',
-    sourceId: input.executionId,
-    executionId: input.executionId,
-    recipient: { type: 'group', id: input.target },
-    content: { type: 'image', path: input.filePath },
-    metadata: {
-      taskId: input.taskId,
-      retryCount: input.retryCount || 0
-    }
-  }
-}
-
 const defaultDependencies = (): ScheduledReportDependencies => ({
-  getCapability: () => personalWechatCapabilityService.getPersonalWechatSendCapability(),
-  generateReport: generateAgentGroupReport,
-  saveGeneratedReport,
-  send: (request) => sendRequestThroughGateway(request),
-  sendAction: (input) => wechatActionGateway.execute(buildScheduledReportActionRequest(input)),
+  executeRule: (ruleId, options) => getAutomationService().executeScheduledRule(ruleId, options),
+  listRules: () => automationRuleStore.listRules(),
+  listExecutions: (query) => automationExecutionLogService.list(query),
   sendNotification: (input) => agentHubService.sendNotification(input),
   getNotificationRecipient: () => agentHubService.getNotificationRecipient(),
   getAgentHubStatus: () => agentHubService.getStatus(),
-  getContactAvatars: (usernames) => getContactAvatars(usernames),
   storageDir: path.join(app.getPath('userData'), STORAGE_DIR),
-  isDatabaseReady: () => isChatReady()
+  isDatabaseReady: () => true
 })
-
-async function sendRequestThroughGateway(
-  request: PersonalWechatSendRequest
-): Promise<PersonalWechatSendResult> {
-  const content =
-    request.type === 'text'
-      ? { type: 'text' as const, text: request.text }
-      : { type: request.type, path: request.filePath }
-  const action = await wechatActionGateway.execute({
-    origin: 'scheduled_report',
-    purpose: 'scheduled_report',
-    triggerType: 'automation',
-    recipient: {
-      type: request.isGroup ? 'group' : 'contact',
-      id: request.to
-    },
-    content
-  })
-  const sendResult = action.sendResult
-  const status =
-    sendResult && typeof sendResult === 'object' && 'status' in sendResult
-      ? (sendResult as { status: PersonalWechatSendResult['status'] }).status
-      : ({} as PersonalWechatSendResult['status'])
-  return {
-    success: action.status === 'sent',
-    status,
-    ...(action.reason || action.errorCode ? { error: action.reason || action.errorCode } : {})
-  }
-}
-
-const rangeValues = new Set<ScheduledReportRange>(['today', 'yesterday', '7days', 'recent24h'])
-
-const reportRangeLabel = (range: ScheduledReportRange): string =>
-  range === 'recent24h'
-    ? '最近 24 小时'
-    : range === '7days'
-      ? '近 7 天'
-      : range === 'today'
-        ? '今日'
-        : '昨日'
 
 interface ScheduledReportNotificationPayload {
   type: ScheduledReportNotificationType
@@ -161,73 +123,44 @@ interface ScheduledReportNotificationPayload {
   suggestedAction?: string
 }
 
-export function validateScheduleTime(value: string): boolean {
-  return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(value || '').trim())
-}
+/** `HH:mm` 校验（保留既有导出名，与共享层同一实现）。 */
+export const validateScheduleTime = isValidScheduleTime
+export { calculateNextRunAt, isValidScheduleTime }
 
-export function calculateNextRunAt(scheduleTime: string, from = new Date()): string {
-  if (!validateScheduleTime(scheduleTime)) throw new Error('执行时间必须是 HH:mm')
-  const [hour, minute] = scheduleTime.split(':').map(Number)
-  const next = new Date(from)
-  next.setHours(hour, minute, 0, 0)
-  if (next.getTime() <= from.getTime()) next.setDate(next.getDate() + 1)
-  return next.toISOString()
-}
-
-const asArray = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : [])
-
-const executionStatuses = new Set<ScheduledReportExecution['status']>([
-  'running',
-  'success',
-  'waiting_to_send',
-  'partial_success',
-  'failed',
-  'waiting_for_recovery',
-  'skipped'
-])
-
-const normalizeExecution = (value: ScheduledReportExecution): ScheduledReportExecution => {
-  const status = executionStatuses.has(value.status)
-    ? value.status
-    : value.error
-      ? 'failed'
-      : 'success'
-  const retryCount = Number(value.retryCount)
-  return {
-    ...value,
-    status,
-    triggerType: value.triggerType || 'scheduled',
-    retryCount: Number.isFinite(retryCount) && retryCount >= 0 ? retryCount : 0
-  }
+/**
+ * **已经到点、且最近的那个**每日槽位（ISO）。
+ *
+ * 与 `calculateNextRunAt`（返回"下一个"）配对使用：
+ * - 编辑页展示「下次执行」→ `calculateNextRunAt`；
+ * - 调度器判断「今天这一枪该不该开」→ 本函数。
+ */
+export function resolveDueScheduledSlot(scheduleTime: string, at: Date = new Date()): string {
+  if (!isValidScheduleTime(scheduleTime)) throw new Error('执行时间必须是 HH:mm')
+  const [hour, minute] = String(scheduleTime).trim().split(':').map(Number)
+  const slot = new Date(at)
+  slot.setHours(hour, minute, 0, 0)
+  if (slot.getTime() > at.getTime()) slot.setDate(slot.getDate() - 1)
+  return slot.toISOString()
 }
 
 export class ScheduledReportService {
   private readonly deps: ScheduledReportDependencies
-  private tasks: ScheduledReportTask[] | null = null
-  private executions: ScheduledReportExecution[] | null = null
+  /** 旧存档：只在 `load()` 读一次，**永不被运行期调度使用**。 */
+  private legacyTasks: ScheduledReportTask[] | null = null
+  private legacyExecutions: ScheduledReportExecution[] | null = null
   private notifications: ScheduledReportNotification[] | null = null
   private notificationSettings: ScheduledReportNotificationSettings | null = null
   private timer: NodeJS.Timeout | null = null
-  private readonly running = new Map<string, Promise<ScheduledReportExecution>>()
-  private readonly retrying = new Map<string, Promise<ScheduledReportExecution>>()
+  /** 已 fire-and-forget 起飞的执行（仅用于测试等待；不影响业务语义）。 */
+  private readonly pending = new Set<Promise<unknown>>()
 
   constructor(deps?: Partial<ScheduledReportDependencies>) {
-    const defaults = defaultDependencies()
-    const merged = { ...defaults, ...deps }
-    if (deps?.send && !deps.sendAction) {
-      // 保留注入的传输实现，方便测试和内嵌场景，同时让日报发送继续使用统一的发送入口。
-      const legacyGateway = new WechatActionGateway({
-        getCapability: merged.getCapability,
-        send: merged.send,
-        getUserDataPath: () => merged.storageDir,
-        ...(merged.now ? { now: merged.now } : {})
-      })
-      merged.sendAction = (input) => legacyGateway.execute(buildScheduledReportActionRequest(input))
-    } else if (!merged.sendAction) {
-      merged.sendAction = defaults.sendAction
-    }
-    this.deps = merged
+    this.deps = { ...defaultDependencies(), ...deps }
   }
+
+  // ---------------------------------------------------------------------------
+  // 生命周期
+  // ---------------------------------------------------------------------------
 
   async start(): Promise<void> {
     await this.load()
@@ -236,7 +169,11 @@ export class ScheduledReportService {
     this.timer = setInterval(() => {
       void this.tick().catch((error) => console.warn('[ScheduledReport] tick failed:', error))
     }, TICK_MS)
-    void this.tick().catch((error) => console.warn('[ScheduledReport] initial tick failed:', error))
+    // 首轮扫描也登记进 `pending`：否则 `settle()` 会在它真正起飞**之前**就返回，
+    // 调用方（主要是测试）拿不到确定性。
+    this.track(
+      this.tick().catch((error) => console.warn('[ScheduledReport] initial tick failed:', error))
+    )
   }
 
   stop(): void {
@@ -244,27 +181,174 @@ export class ScheduledReportService {
     this.timer = null
   }
 
-  async listTasks(): Promise<ScheduledReportTask[]> {
-    await this.load()
-    return this.tasks!.map((task) => ({ ...task }))
+  /** 等待所有 fire-and-forget 的执行结束（测试用；运行期不调用）。 */
+  async settle(): Promise<void> {
+    while (this.pending.size) {
+      await Promise.all([...this.pending])
+    }
   }
 
-  async listExecutions(taskId?: string): Promise<ScheduledReportExecution[]> {
+  // ---------------------------------------------------------------------------
+  // 调度器
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 一次调度扫描。**不重写计时器**：仍然是 15 秒一次的 `setInterval`。
+   *
+   * 每个到点且未消费的槽位调用一次 `AutomationService.executeScheduledRule(ruleId, …)`：
+   * - 并发保护（同规则同时只跑一个）在 `AutomationService` 里；
+   * - 槽位游标（`lastScheduledSlot`）由 `AutomationService` 写；
+   * - 这里**只负责**"读规则 → 判断到点 → 触发 → 失败时推异常通知"。
+   */
+  async tick(at = this.deps.now?.() || new Date()): Promise<void> {
     await this.load()
-    const items = taskId
-      ? this.executions!.filter((item) => item.taskId === taskId)
-      : this.executions!
-    return items.map((item) => ({ ...item }))
+    await this.flushNotifications()
+    if (!this.deps.isDatabaseReady()) return
+
+    let rules: AutomationRule[]
+    try {
+      rules = this.deps.listRules()
+    } catch (error) {
+      console.warn('[ScheduledReport] 读取自动化规则失败:', error)
+      return
+    }
+
+    for (const rule of rules) {
+      const config = rule.scheduledReport
+      if (rule.ruleType !== 'scheduled_report' || !config) continue
+      if (!rule.enabled) continue
+      // 迁移遗留的"目标待重选"：不调度、不创建记录，由 UI 提示用户处理。
+      if (config.targetNeedsReview) continue
+      if (!isValidScheduleTime(config.schedule.time)) continue
+
+      // `resolveDueScheduledSlot` 承诺返回「已经到点、最近的那个」槽位
+      // （一定是 `<= at`），所以不需要再自己判一次到点。
+      let slot: string
+      try {
+        slot = resolveDueScheduledSlot(config.schedule.time, at)
+      } catch {
+        continue
+      }
+      const slotMs = Date.parse(slot)
+      if (!Number.isFinite(slotMs)) continue
+
+      // 闸门 1：槽位必须晚于规则创建时间。
+      //
+      // 新建规则时（例：今天 10:00 建、执行时间 18:30），"最近的槽位"是**昨天 18:30**，
+      // 那不属于这条规则 —— 少了这道闸，新建规则会在下一次 tick（15 秒内）就补发一份
+      // 昨天的报告。这是绝不能出现的副作用。
+      if (slotMs < rule.createdAt) continue
+
+      // 闸门 2：槽位必须比**已消费的游标**更新。
+      //
+      // 槽位时间单调递增，所以用数值比较而不是字符串相等：
+      // 游标比槽位新（用户改过执行时间等）同样说明这个槽位已经过期，不该再补。
+      // 用 `===` 会漏掉"游标更新"这一类，用 `<=` 一并覆盖。
+      const consumed = config.lastScheduledSlot ? Date.parse(config.lastScheduledSlot) : NaN
+      if (Number.isFinite(consumed) && slotMs <= consumed) continue
+
+      const promise = this.runRule(rule, {
+        trigger: 'schedule',
+        scheduledSlot: slot
+      }).catch((error) => console.warn('[ScheduledReport] execution failed:', error))
+      this.track(promise)
+    }
   }
 
-  async listNotifications(): Promise<ScheduledReportNotification[]> {
+  /**
+   * 立即执行（用户点「立即执行」）。
+   *
+   * **不消耗槽位**：手动执行不该导致今天不再定时跑。
+   */
+  async runScheduledReportNow(ruleId: string): Promise<ScheduledReportResult<ScheduledReportExecution>> {
     await this.load()
-    return this.notifications!.map((notification) => ({ ...notification }))
+    const rule = this.findRule(ruleId)
+    if (!rule) return { success: false, error: '未找到定时日报规则' }
+    const outcome = await this.runRule(rule, { trigger: 'manual' })
+    const execution = this.projectOutcome(outcome, rule, 'manual')
+    return {
+      success: outcome.status !== 'failed',
+      data: execution,
+      ...(outcome.status === 'failed' && outcome.errorSummary
+        ? { error: outcome.errorSummary }
+        : {})
+    }
   }
+
+  /**
+   * 一次执行结果 → 旧 `ScheduledReportExecution` 形状（HTTP API 契约用）。
+   *
+   * 新状态模型只有 3 态，这里做**有损但方向明确**的投影：
+   * 未执行（停用 / 目标待重选 / 并发占用）→ `skipped`；
+   * 执行了但失败 → `failed`；成功 → `success`。
+   */
+  private projectOutcome(
+    outcome: ScheduledRuleRunOutcome,
+    rule: AutomationRule,
+    trigger: 'schedule' | 'manual'
+  ): ScheduledReportExecution {
+    const nowMs = (this.deps.now?.() || new Date()).getTime()
+    const startedAt = new Date(nowMs).toISOString()
+    const status = !outcome.executed
+      ? ('skipped' as const)
+      : outcome.status === 'success'
+        ? ('success' as const)
+        : ('failed' as const)
+    return {
+      id: outcome.executionId || `${rule.id}:${nowMs}`,
+      taskId: rule.id,
+      // 旧存档的字段名是 `scheduled`（不是新的 `schedule`）—— 投影时如实转换。
+      triggerType: trigger === 'manual' ? 'manual' : 'scheduled',
+      startedAt,
+      finishedAt: startedAt,
+      status,
+      currentStage: 'send',
+      message: outcome.errorSummary || '日报执行完成',
+      ...(outcome.errorSummary ? { error: outcome.errorSummary } : {}),
+      retryCount: 0,
+      sendStatus: status === 'success' ? 'success' : 'failed',
+      notificationStatus: 'not_needed'
+    }
+  }
+
+  private track(promise: Promise<unknown>): void {
+    this.pending.add(promise)
+    void promise.finally(() => this.pending.delete(promise))
+  }
+
+  /**
+   * 触发一次执行 + 失败时推异常通知。
+   *
+   * **手动执行不推通知**：只有定时任务失败才打扰用户。
+   */
+  private async runRule(
+    rule: AutomationRule,
+    options: { trigger: 'schedule' | 'manual'; scheduledSlot?: string }
+  ): Promise<ScheduledRuleRunOutcome> {
+    const outcome = await this.deps.executeRule(rule.id, options)
+    if (
+      options.trigger === 'schedule' &&
+      outcome.executed &&
+      outcome.status === 'failed' &&
+      !NON_NOTIFYING_ERROR_CODES.has(outcome.errorCode || '')
+    ) {
+      await this.notifyRuleFailure(rule, outcome)
+    }
+    return outcome
+  }
+
+  // ---------------------------------------------------------------------------
+  // 微信异常通知（独立能力，随定时日报功能保留）
+  // ---------------------------------------------------------------------------
 
   async getNotificationSettings(): Promise<ScheduledReportNotificationSettings> {
     await this.load()
     return { ...this.notificationSettings! }
+  }
+
+  async listNotifications(): Promise<ScheduledReportNotification[]> {
+    await this.load()
+    return this.notifications!.map((item) => ({ ...item }))
   }
 
   async checkNotificationCapability(): Promise<ScheduledReportNotificationCapability> {
@@ -396,676 +480,76 @@ export class ScheduledReportService {
     return { success: true, data: { enabled: true } }
   }
 
-  async createTask(
-    input: ScheduledReportCreateInput
-  ): Promise<ScheduledReportResult<ScheduledReportTask>> {
-    const normalized = this.normalizeInput(input)
-    if (!normalized.success) return { success: false, error: normalized.error }
-    const values = normalized.data!
-    await this.load()
-    const now = this.deps.now?.() || new Date()
-    const task: ScheduledReportTask = {
-      id: `scheduled_report_${randomUUID()}`,
-      name: values.name,
-      group: values.group,
-      scheduleTime: values.scheduleTime,
-      reportRange: values.reportRange,
-      messageTypes: values.messageTypes,
-      templateId: values.templateId,
-      memberNameMode: values.memberNameMode,
-      timeoutSeconds: values.timeoutSeconds,
-      target: values.target,
-      enabled: values.enabled,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      nextRunAt: calculateNextRunAt(values.scheduleTime, now)
-    }
-    this.tasks!.push(task)
-    await this.saveTasks()
-    return { success: true, data: { ...task } }
-  }
-
-  async updateTask(
-    taskId: string,
-    input: ScheduledReportUpdateInput
-  ): Promise<ScheduledReportResult<ScheduledReportTask>> {
-    await this.load()
-    const index = this.tasks!.findIndex((task) => task.id === taskId)
-    if (index < 0) return { success: false, error: '未找到定时日报任务' }
-    const current = this.tasks![index]
-    const normalized = this.normalizeInput({ ...current, ...input })
-    if (!normalized.success) return { success: false, error: normalized.error }
-    const values = normalized.data!
-    const now = this.deps.now?.() || new Date()
-    const scheduleChanged = values.scheduleTime !== current.scheduleTime
-    const updated: ScheduledReportTask = {
-      ...current,
-      ...values,
-      updatedAt: now.toISOString(),
-      ...(scheduleChanged ? { nextRunAt: calculateNextRunAt(values.scheduleTime, now) } : {})
-    }
-    this.tasks![index] = updated
-    await this.saveTasks()
-    return { success: true, data: { ...updated } }
-  }
-
-  async deleteTask(taskId: string): Promise<ScheduledReportResult<{ deletedId: string }>> {
-    await this.load()
-    const before = this.tasks!.length
-    this.tasks = this.tasks!.filter((task) => task.id !== taskId)
-    if (this.tasks.length === before) return { success: false, error: '未找到定时日报任务' }
-    await this.saveTasks()
-    return { success: true, data: { deletedId: taskId } }
-  }
-
-  async setTaskEnabled(
-    taskId: string,
-    enabled: boolean
-  ): Promise<ScheduledReportResult<ScheduledReportTask>> {
-    if (!enabled) return this.updateTask(taskId, { enabled: false })
-    await this.load()
-    const task = this.tasks!.find((item) => item.id === taskId)
-    if (!task) return { success: false, error: '未找到定时日报任务' }
-    const now = this.deps.now?.() || new Date()
-    const updated = {
-      ...task,
-      enabled: true,
-      nextRunAt: calculateNextRunAt(task.scheduleTime, now),
-      updatedAt: now.toISOString()
-    }
-    this.tasks![this.tasks!.findIndex((item) => item.id === taskId)] = updated
-    await this.saveTasks()
-    return { success: true, data: { ...updated } }
-  }
-
-  async runScheduledReportNow(
-    taskId: string
-  ): Promise<ScheduledReportResult<ScheduledReportExecution>> {
-    await this.load()
-    const task = this.tasks!.find((item) => item.id === taskId)
-    if (!task) return { success: false, error: '未找到定时日报任务' }
-    const execution = await this.runTask(task)
-    return {
-      success: execution.status !== 'failed',
-      data: execution,
-      ...(execution.error ? { error: execution.error } : {})
-    }
-  }
-
-  async retryScheduledReportSend(
-    executionId: string
-  ): Promise<ScheduledReportResult<ScheduledReportExecution>> {
-    await this.load()
-    const execution = this.executions!.find((item) => item.id === executionId)
-    if (!execution) return { success: false, error: '未找到定时日报执行记录' }
-    const existing = this.retrying.get(executionId)
-    if (existing) return { success: true, data: await existing }
-    const promise = this.retrySend(execution).finally(() => this.retrying.delete(executionId))
-    this.retrying.set(executionId, promise)
-    const result = await promise
-    return {
-      success: result.status !== 'failed',
-      data: result,
-      ...(result.error ? { error: result.error } : {})
-    }
-  }
-
+  /**
+   * 发一条**模拟**异常通知，验证 Agent Hub 推送链路。
+   *
+   * 迁移前这是旧「定时日报」页面上的调试入口。页面退役后入口挪到
+   * Automation 的定时日报区域，能力本身**一字不改**（否则等于把功能删了）。
+   */
   async testScheduledReportErrorNotification(
-    taskId: string
-  ): Promise<ScheduledReportResult<ScheduledReportExecution>> {
+    ruleId: string
+  ): Promise<ScheduledReportResult<ScheduledReportNotification>> {
     await this.load()
-    const task = this.tasks!.find((item) => item.id === taskId)
-    if (!task) return { success: false, error: '未找到定时日报任务' }
     if (!this.notificationSettings!.enabled) {
-      return {
-        success: false,
-        error: '请先开启微信异常通知，再发送测试错误信息。'
-      }
+      return { success: false, error: '请先开启微信异常通知，再发送测试错误信息。' }
     }
-
+    const rule = this.findRule(ruleId)
+    const ruleName = rule?.name || AUTOMATION_RULE_TYPE_LABELS.scheduled_report
     const now = (this.deps.now?.() || new Date()).toISOString()
-    const execution: ScheduledReportExecution = {
-      id: `scheduled_report_execution_${randomUUID()}`,
-      taskId: task.id,
-      triggerType: 'scheduled',
-      startedAt: now,
-      finishedAt: now,
-      status: 'failed',
-      currentStage: 'report',
-      failedStage: 'report',
-      error: 'debug_test_notification:模拟定时日报生成错误',
-      errorCode: 'DEBUG_TEST_NOTIFICATION',
-      technicalMessage: '这是调试用的模拟错误信息；本次没有调用 AI，也没有生成或发送日报图片。',
-      userTitle: '定时日报错误通知测试',
-      userMessage: '这是一条调试用的模拟错误通知，用于验证 Agent Hub 推送链路。',
-      suggestedAction: '确认微信中是否收到这条测试通知。',
-      retryable: false,
-      retryCount: 0,
-      sendStatus: 'unavailable',
-      notificationStatus: 'pending'
-    }
-    this.executions!.unshift(execution)
-    this.executions = this.executions!.slice(0, 500)
-    await this.saveExecutions()
-
-    const notified = await this.notifyExecution(task, execution, {
-      type: 'failure',
-      severity: 'error',
-      title: execution.userTitle || '定时日报错误通知测试',
-      message:
-        execution.userMessage || '这是一条调试用的模拟错误通知，用于验证 Agent Hub 推送链路。',
-      suggestedAction: execution.suggestedAction || '确认微信中是否收到这条测试通知。'
+    const notification = await this.enqueueNotification({
+      ruleId: rule?.id || String(ruleId || '').trim(),
+      ruleName,
+      dedupeKey: `debug:${randomUUID()}`,
+      payload: {
+        type: 'failure',
+        severity: 'error',
+        title: '定时日报错误通知测试',
+        message: '这是一条调试用的模拟错误通知，用于验证 Agent Hub 推送链路。',
+        suggestedAction: '确认微信中是否收到这条测试通知。'
+      },
+      createdAt: now
     })
     return {
-      success: notified.notificationStatus === 'sent',
-      data: notified,
-      ...(notified.notificationStatus === 'sent'
-        ? {}
-        : { error: '测试错误已创建，但通知尚未送达。' })
+      success: notification.status === 'sent',
+      data: { ...notification },
+      ...(notification.status === 'sent' ? {} : { error: '测试错误已创建，但通知尚未送达。' })
     }
   }
 
-  async tick(at = this.deps.now?.() || new Date()): Promise<void> {
+  /** 定时日报失败 → 入队 + 立刻尝试送达。 */
+  private async notifyRuleFailure(
+    rule: AutomationRule,
+    outcome: ScheduledRuleRunOutcome
+  ): Promise<void> {
     await this.load()
-    await this.flushNotifications()
-    if (!this.deps.isDatabaseReady()) return
-    const nowMs = at.getTime()
-    for (const task of [...this.tasks!]) {
-      if (!task.enabled || Date.parse(task.nextRunAt) > nowMs) continue
-      const slot = task.nextRunAt
-      if (task.lastScheduledSlot === slot) continue
-      const slotMs = Date.parse(slot)
-      const recentExecution = this.executions!.filter((item) => item.taskId === task.id).sort(
-        (left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt)
-      )[0]
-      const executionOverlapsSlot = Boolean(
-        recentExecution &&
-        Date.parse(recentExecution.startedAt) >= slotMs - 60_000 &&
-        Date.parse(recentExecution.startedAt) <= nowMs
-      )
-      const index = this.tasks!.findIndex((item) => item.id === task.id)
-      if (index < 0 || !this.tasks![index].enabled) continue
-      const claimed: ScheduledReportTask = {
-        ...this.tasks![index],
-        lastScheduledSlot: slot,
-        nextRunAt: calculateNextRunAt(task.scheduleTime, new Date(nowMs + 60_000)),
-        updatedAt: at.toISOString()
-      }
-      this.tasks![index] = claimed
-      await this.saveTasks()
-      if (executionOverlapsSlot) continue
-      void this.runTask(claimed, slot, 'scheduled').catch((error) =>
-        console.warn('[ScheduledReport] execution failed:', error)
-      )
-    }
-  }
-
-  private async runTask(
-    task: ScheduledReportTask,
-    scheduledSlot?: string,
-    triggerType: 'scheduled' | 'manual' = 'manual'
-  ): Promise<ScheduledReportExecution> {
-    const existing = this.running.get(task.id)
-    if (existing) return existing
-    const promise = this.executeTask(task, scheduledSlot, triggerType).finally(() =>
-      this.running.delete(task.id)
-    )
-    this.running.set(task.id, promise)
-    return promise
-  }
-
-  private async executeTask(
-    task: ScheduledReportTask,
-    scheduledSlot?: string,
-    triggerType: 'scheduled' | 'manual' = 'manual'
-  ): Promise<ScheduledReportExecution> {
-    await this.load()
-    const startedAt = (this.deps.now?.() || new Date()).toISOString()
-    const execution: ScheduledReportExecution = {
-      id: `scheduled_report_execution_${randomUUID()}`,
-      taskId: task.id,
-      triggerType,
-      startedAt,
-      status: 'running',
-      currentStage: 'precheck',
-      retryCount: 0,
-      sendStatus: 'pending',
-      notificationStatus: 'not_needed',
-      ...(scheduledSlot ? { scheduledSlot } : {})
-    }
-    this.executions!.push(execution)
-    await this.saveExecutions()
-    const update = async (patch: Partial<ScheduledReportExecution>): Promise<void> => {
-      Object.assign(execution, patch)
-      await this.persistExecution(execution)
-    }
-    const finishError = async (
-      rawError: unknown,
-      fallbackStage: ScheduledReportExecutionStage,
-      status: 'failed' | 'waiting_to_send' | 'partial_success' = 'failed',
-      patch: Partial<ScheduledReportExecution> = {},
-      notificationType: ScheduledReportNotificationType | null = 'failure',
-      code?: string,
-      errorStatus?: number,
-      errorType?: string
-    ): Promise<ScheduledReportExecution> => {
-      const normalized = normalizeScheduledReportError(
-        {
-          error: rawError,
-          code,
-          status: errorStatus,
-          type: errorType,
-          stage: fallbackStage
-        },
-        fallbackStage
-      )
-      if (normalized.code === 'NO_MESSAGES') {
-        return this.finalizeExecution(task, execution, {
-          ...patch,
-          status: 'skipped',
-          currentStage: 'data',
-          errorCode: 'NO_MESSAGES',
-          userTitle: '暂无可生成的日报',
-          userMessage: normalized.userMessage,
-          message: normalized.userMessage,
-          suggestedAction: normalized.suggestedAction,
-          retryable: false,
-          sendStatus: 'unavailable',
-          notificationStatus: 'not_needed'
-        })
-      }
-      const completed = await this.finalizeExecution(
-        task,
-        execution,
-        {
-          ...patch,
-          status,
-          currentStage: normalized.stage,
-          failedStage: normalized.stage,
-          error: legacyScheduledReportError(normalized.code, normalized.technicalMessage),
-          message: normalized.userMessage,
-          errorCode: normalized.code,
-          technicalMessage: normalized.technicalMessage,
-          userTitle: normalized.userTitle,
-          userMessage: normalized.userMessage,
-          suggestedAction: normalized.suggestedAction,
-          retryable: normalized.retryable
-        },
-        notificationType
-          ? {
-              type: notificationType,
-              severity: normalized.severity,
-              title: normalized.userTitle,
-              message: normalized.userMessage,
-              suggestedAction: normalized.suggestedAction
-            }
-          : undefined
-      )
-      return completed
-    }
-
-    try {
-      await update({ currentStage: 'precheck' })
-
-      await update({ currentStage: 'data' })
-      await update({ currentStage: 'ai' })
-      let generated: Awaited<ReturnType<typeof this.deps.generateReport>>
-      try {
-        generated = await this.deps.generateReport({
-          group: task.group,
-          range: task.reportRange,
-          messageTypes: task.messageTypes,
-          templateId: task.templateId,
-          memberNameMode: task.memberNameMode,
-          timeoutSeconds: task.timeoutSeconds
-        })
-      } catch (error) {
-        return finishError(error, 'report')
-      }
-      if (!generated.success || !generated.pngPath) {
-        return finishError(
-          generated.error || '日报生成失败',
-          generated.errorStage || 'report',
-          'failed',
-          {},
-          'failure',
-          generated.errorCode,
-          generated.errorStatus,
-          generated.errorType
-        )
-      }
-
-      await update({ currentStage: 'persist' })
-      const reportContact = resolveMd5(task.group)
-      let contactAvatar = reportContact?.avatar
-      if (!contactAvatar && reportContact?.m_nsUsrName && this.deps.getContactAvatars) {
-        try {
-          const avatars = await this.deps.getContactAvatars([reportContact.m_nsUsrName])
-          contactAvatar = avatars[reportContact.m_nsUsrName]
-        } catch (error) {
-          console.warn('[ScheduledReport] failed to hydrate group avatar:', error)
-        }
-      }
-      let savedHistory: Awaited<ReturnType<ScheduledReportDependencies['saveGeneratedReport']>>
-      try {
-        savedHistory = await this.deps.saveGeneratedReport({
-          contactId: reportContact?.md5 || task.group,
-          contactName: generated.groupName || reportContact?.m_nsNickName || task.group,
-          contactAvatar,
-          source: 'scheduled',
-          dateRange: generated.reportMetadata?.dateRange || reportRangeLabel(task.reportRange),
-          reportDate: generated.reportMetadata?.reportDate,
-          messageCount: generated.messageCount ?? generated.reportMetadata?.messageCount ?? 0,
-          generatedAt: (this.deps.now?.() || new Date()).toISOString(),
-          htmlPath: generated.htmlPath,
-          pngPath: generated.pngPath,
-          duration: generated.duration,
-          modelName: generated.modelName,
-          tokenUsage: generated.tokenUsage,
-          reportSnapshot: generated.reportSnapshot,
-          reportMetadata: generated.reportMetadata,
-          templateId: task.templateId
-        })
-      } catch (error) {
-        return finishError(error, 'persist')
-      }
-      if (!savedHistory.success) {
-        return finishError(
-          savedHistory.error || '日报历史保存失败',
-          'persist',
-          'failed',
-          {},
-          'failure',
-          'REPORT_HISTORY_SAVE_FAILED'
-        )
-      }
-
-      const reportId = savedHistory.record?.id
-      const pngPath = savedHistory.record?.pngPath || generated.pngPath
-      const htmlPath = savedHistory.record?.htmlPath || generated.htmlPath
-      if (!pngPath) {
-        return finishError(
-          '日报历史未返回可发送的 PNG 文件',
-          'persist',
-          'failed',
-          {},
-          'failure',
-          'REPORT_HISTORY_SAVE_FAILED'
-        )
-      }
-      await update({ reportId, htmlPath, pngPath, currentStage: 'send' })
-
-      const target = this.resolveTarget(task)
-      if (!target) {
-        return finishError(
-          '未找到指定微信群',
-          'send',
-          'partial_success',
-          { sendStatus: 'failed', sendError: '未找到指定微信群' },
-          'partial_success',
-          'WECHAT_SEND_FAILED'
-        )
-      }
-      await update({ sendTarget: target, currentStage: 'send' })
-      let action: WechatActionResult
-      try {
-        action = await this.deps.sendAction!({
-          target,
-          filePath: pngPath,
-          executionId: execution.id,
-          triggerType,
-          taskId: task.id
-        })
-      } catch (error) {
-        return finishError(
-          error,
-          'send',
-          'partial_success',
-          {
-            sendStatus: 'failed',
-            sendError: error instanceof Error ? error.message : String(error)
-          },
-          'partial_success',
-          'WECHAT_SEND_FAILED'
-        )
-      }
-      if (action.status !== 'sent') {
-        const unavailable =
-          action.errorCode === 'SEND_CAPABILITY_UNAVAILABLE' ||
-          action.errorCode === 'SEND_NOT_READY'
-        const actionError = action.reason || action.errorCode || '微信发送失败'
-        return finishError(
-          actionError,
-          'send',
-          unavailable ? 'waiting_to_send' : 'partial_success',
-          {
-            sendStatus: unavailable ? 'unavailable' : 'failed',
-            sendError: actionError
-          },
-          unavailable ? null : 'partial_success',
-          unavailable ? 'WECHAT_SEND_UNAVAILABLE' : 'WECHAT_SEND_FAILED'
-        )
-      }
-      return this.finalizeExecution(task, execution, {
-        status: 'success',
-        currentStage: 'send',
-        sendTarget: target,
-        sendStatus: 'success',
-        notificationStatus: 'not_needed',
-        message: '日报生成成功，微信发送成功'
-      })
-    } catch (error) {
-      return finishError(error, execution.currentStage || 'report')
-    }
-  }
-
-  private async retrySend(original: ScheduledReportExecution): Promise<ScheduledReportExecution> {
-    const task = this.tasks!.find((item) => item.id === original.taskId)
-    if (!task) return original
-    const retryCount = (original.retryCount || 0) + 1
-    const working: ScheduledReportExecution = {
-      ...original,
-      status: 'running',
-      currentStage: 'send',
-      retryCount,
-      sendStatus: 'pending'
-    }
-    await this.persistExecution(working)
-
-    const finishRetryError = async (
-      rawError: unknown,
-      code: string,
-      sendStatus: ScheduledReportSendStatus,
-      preferredStatus: 'waiting_to_send' | 'partial_success'
-    ): Promise<ScheduledReportExecution> => {
-      const normalized = normalizeScheduledReportError(
-        { error: rawError, code, stage: 'send' },
-        'send'
-      )
-      return this.finalizeExecution(task, working, {
-        status: preferredStatus,
-        currentStage: normalized.stage,
-        failedStage: normalized.stage,
-        error: legacyScheduledReportError(normalized.code, normalized.technicalMessage),
-        message: normalized.userMessage,
-        errorCode: normalized.code,
-        technicalMessage: normalized.technicalMessage,
-        userTitle: normalized.userTitle,
-        userMessage: normalized.userMessage,
-        suggestedAction: normalized.suggestedAction,
-        retryable: normalized.retryable,
-        retryCount,
-        sendStatus,
-        sendError: normalized.technicalMessage
-      })
-    }
-
-    if (!working.pngPath) {
-      return finishRetryError(
-        '执行记录缺少已保存的 PNG 文件',
-        'REPORT_HISTORY_SAVE_FAILED',
-        'failed',
-        'partial_success'
-      )
-    }
-
-    const target = working.sendTarget || this.resolveTarget(task)
-    if (!target) {
-      return finishRetryError('未找到指定微信群', 'WECHAT_SEND_FAILED', 'failed', 'partial_success')
-    }
-    try {
-      const action = await this.deps.sendAction!({
-        target,
-        filePath: working.pngPath,
-        executionId: working.id,
-        triggerType: working.triggerType || 'scheduled',
-        retryCount,
-        taskId: task.id
-      })
-      if (action.status !== 'sent') {
-        const unavailable =
-          action.errorCode === 'SEND_CAPABILITY_UNAVAILABLE' ||
-          action.errorCode === 'SEND_NOT_READY'
-        return finishRetryError(
-          action.reason || action.errorCode || '微信发送失败',
-          unavailable ? 'WECHAT_SEND_UNAVAILABLE' : 'WECHAT_SEND_FAILED',
-          unavailable ? 'unavailable' : 'failed',
-          unavailable ? 'waiting_to_send' : 'partial_success'
-        )
-      }
-    } catch (error) {
-      return finishRetryError(error, 'WECHAT_SEND_FAILED', 'failed', 'partial_success')
-    }
-
-    const previousStatus = original.status
-    const cleared = this.clearFailureFields(working, {
-      status: 'success',
-      currentStage: 'send',
-      sendTarget: target,
-      sendStatus: 'success',
-      retryCount,
-      message: '日报生成成功，微信发送成功',
-      notificationStatus: original.notificationStatus || 'not_needed'
+    if (!this.notificationSettings!.enabled) return
+    const executionId = outcome.executionId || `${rule.id}:${this.deps.now?.()?.getTime() ?? 0}`
+    const message = outcome.errorSummary || '定时日报执行失败。'
+    await this.enqueueNotification({
+      ruleId: rule.id,
+      ruleName: rule.name,
+      executionId,
+      dedupeKey: `${executionId}:failure`,
+      payload: {
+        type: 'failure',
+        severity: 'error',
+        title: '定时日报执行失败',
+        message
+      },
+      createdAt: (this.deps.now?.() || new Date()).toISOString()
     })
-    const completed = await this.finalizeExecution(task, cleared, {})
-    if (previousStatus === 'waiting_to_send' || previousStatus === 'partial_success') {
-      return this.notifyExecution(task, completed, {
-        type: 'recovery',
-        severity: 'info',
-        title: `${task.name} 已恢复`,
-        message: '刚才未发送的日报已经成功发送。'
-      })
-    }
-    return completed
   }
 
-  private clearFailureFields(
-    execution: ScheduledReportExecution,
-    patch: Partial<ScheduledReportExecution>
-  ): ScheduledReportExecution {
-    const next = { ...execution, ...patch }
-    delete next.error
-    delete next.failedStage
-    delete next.errorCode
-    delete next.technicalMessage
-    delete next.userTitle
-    delete next.userMessage
-    delete next.suggestedAction
-    delete next.retryable
-    delete next.sendError
-    return next
-  }
-
-  private async finalizeExecution(
-    task: ScheduledReportTask,
-    execution: ScheduledReportExecution,
-    patch: Partial<ScheduledReportExecution>,
-    notification?: ScheduledReportNotificationPayload
-  ): Promise<ScheduledReportExecution> {
-    const completed: ScheduledReportExecution = {
-      ...execution,
-      ...patch,
-      finishedAt: (this.deps.now?.() || new Date()).toISOString()
-    }
-    // 让执行记录在通知完成前保持进行中，避免日报已结束但通知状态尚未更新。
-    const notified = notification
-      ? await this.notifyExecution(task, completed, notification)
-      : completed
-    await this.persistExecution(notified)
-    const taskIndex = this.tasks!.findIndex((item) => item.id === task.id)
-    if (taskIndex >= 0) {
-      this.tasks![taskIndex] = {
-        ...this.tasks![taskIndex],
-        lastRunAt: notified.finishedAt,
-        updatedAt: notified.finishedAt!
-      }
-      await this.saveTasks()
-    }
-    return { ...notified }
-  }
-
-  private async persistExecution(execution: ScheduledReportExecution): Promise<void> {
-    const index = this.executions!.findIndex((item) => item.id === execution.id)
-    if (index >= 0) this.executions![index] = { ...execution }
-    else this.executions!.push({ ...execution })
-    await this.saveExecutions()
-  }
-
-  private async notifyExecution(
-    task: ScheduledReportTask,
-    execution: ScheduledReportExecution,
+  private async enqueueNotification(input: {
+    ruleId: string
+    ruleName: string
+    executionId?: string
+    dedupeKey: string
     payload: ScheduledReportNotificationPayload
-  ): Promise<ScheduledReportExecution> {
+    createdAt: string
+  }): Promise<ScheduledReportNotification> {
     await this.load()
-    if (
-      execution.triggerType !== 'scheduled' ||
-      execution.status === 'skipped' ||
-      !this.notificationSettings!.enabled
-    ) {
-      if (execution.notificationStatus !== 'not_needed') {
-        const updated = { ...execution, notificationStatus: 'not_needed' as const }
-        await this.persistExecution(updated)
-        return updated
-      }
-      return { ...execution }
-    }
-    let notification: ScheduledReportNotification
-    try {
-      notification = await this.enqueueNotification(task, execution, payload)
-    } catch (error) {
-      notification = {
-        id: `scheduled_report_notification_${randomUUID()}`,
-        executionId: execution.id,
-        taskId: task.id,
-        type: payload.type,
-        severity: payload.severity,
-        title: payload.title,
-        message: payload.message,
-        dedupeKey: `${execution.id}:${payload.type}`,
-        channel: 'agent_hub',
-        status: 'failed',
-        createdAt: (this.deps.now?.() || new Date()).toISOString(),
-        attempts: 0,
-        lastError: error instanceof Error ? error.message : String(error)
-      }
-    }
-    const updated: ScheduledReportExecution = {
-      ...execution,
-      currentStage: 'notify',
-      notificationStatus: notification.status
-    }
-    await this.persistExecution(updated)
-    return { ...updated }
-  }
-
-  private async enqueueNotification(
-    task: ScheduledReportTask,
-    execution: ScheduledReportExecution,
-    payload: ScheduledReportNotificationPayload
-  ): Promise<ScheduledReportNotification> {
-    await this.load()
-    const dedupeKey = `${execution.id}:${payload.type}`
-    const existing = this.notifications!.find((item) => item.dedupeKey === dedupeKey)
+    const existing = this.notifications!.find((item) => item.dedupeKey === input.dedupeKey)
     if (existing) return { ...existing }
     let recipient: string | undefined
     try {
@@ -1075,42 +559,38 @@ export class ScheduledReportService {
     }
     const notification: ScheduledReportNotification = {
       id: `scheduled_report_notification_${randomUUID()}`,
-      executionId: execution.id,
-      taskId: task.id,
-      type: payload.type,
-      severity: payload.severity,
-      title: payload.title,
-      message: payload.message,
-      dedupeKey,
+      executionId: input.executionId || input.dedupeKey,
+      // 字段名沿用旧存档（`taskId`）—— 迁移后 rule.id === 旧 task.id，语义一致。
+      taskId: input.ruleId,
+      type: input.payload.type,
+      severity: input.payload.severity,
+      title: input.payload.title,
+      message: input.payload.message,
+      dedupeKey: input.dedupeKey,
       channel: 'agent_hub',
       ...(recipient ? { recipient } : {}),
       status: 'pending',
-      createdAt: (this.deps.now?.() || new Date()).toISOString(),
+      createdAt: input.createdAt,
       attempts: 0
     }
     this.notifications!.unshift(notification)
     this.notifications = this.notifications!.slice(0, 500)
     await this.saveNotifications()
-    if (recipient) await this.tryDeliverNotification(notification, payload, task)
+    await this.tryDeliverNotification(notification, input.ruleName, input.payload)
     return { ...notification }
   }
 
   private async tryDeliverNotification(
     notification: ScheduledReportNotification,
-    payload?: ScheduledReportNotificationPayload,
-    task?: ScheduledReportTask
+    ruleName: string,
+    payload?: ScheduledReportNotificationPayload
   ): Promise<void> {
     if (notification.status === 'sent') return
     await this.load()
-    const execution = this.executions!.find((item) => item.id === notification.executionId)
-    if (
-      !this.notificationSettings!.enabled ||
-      execution?.triggerType === 'manual' ||
-      execution?.status === 'skipped'
-    ) {
+    if (!this.notificationSettings!.enabled) {
       notification.status = 'suppressed'
       notification.suppressedAt = (this.deps.now?.() || new Date()).toISOString()
-      notification.lastError = '定时日报微信异常通知已关闭或不适用于本次执行。'
+      notification.lastError = '定时日报微信异常通知已关闭。'
       await this.saveNotifications()
       return
     }
@@ -1129,7 +609,7 @@ export class ScheduledReportService {
       const result = await this.deps.sendNotification({
         to: recipient,
         text: this.notificationText(
-          task?.name || '定时日报',
+          ruleName,
           payload?.severity || notification.severity,
           payload?.title || notification.title,
           payload?.message || notification.message,
@@ -1159,14 +639,17 @@ export class ScheduledReportService {
     }
     const pending = this.notifications!.filter((item) => item.status === 'pending')
     if (!pending.length) return
+    let rules: AutomationRule[] = []
+    try {
+      rules = this.deps.listRules()
+    } catch {
+      rules = []
+    }
     for (const notification of pending) {
-      const task = this.tasks!.find((item) => item.id === notification.taskId)
-      await this.tryDeliverNotification(notification, undefined, task)
-      const execution = this.executions!.find((item) => item.id === notification.executionId)
-      if (execution) {
-        execution.notificationStatus = notification.status
-        await this.persistExecution(execution)
-      }
+      const name =
+        rules.find((rule) => rule.id === notification.taskId)?.name ||
+        AUTOMATION_RULE_TYPE_LABELS.scheduled_report
+      await this.tryDeliverNotification(notification, name)
     }
   }
 
@@ -1175,19 +658,12 @@ export class ScheduledReportService {
     const pending = this.notifications!.filter((item) => item.status === 'pending')
     if (!pending.length) return
     const suppressedAt = (this.deps.now?.() || new Date()).toISOString()
-    const executionIds = new Set<string>()
     for (const notification of pending) {
       notification.status = 'suppressed'
       notification.suppressedAt = suppressedAt
       notification.lastError = '定时日报微信异常通知已关闭。'
-      executionIds.add(notification.executionId)
     }
-    for (const execution of this.executions!) {
-      if (executionIds.has(execution.id) && execution.notificationStatus === 'pending') {
-        execution.notificationStatus = 'suppressed'
-      }
-    }
-    await Promise.all([this.saveNotifications(), this.saveExecutions()])
+    await this.saveNotifications()
   }
 
   private notificationCapabilityReasonForSend(
@@ -1199,7 +675,7 @@ export class ScheduledReportService {
   }
 
   private notificationText(
-    taskName: string,
+    ruleName: string,
     severity: ScheduledReportNotificationSeverity,
     title: string,
     message: string,
@@ -1207,7 +683,7 @@ export class ScheduledReportService {
   ): string {
     const icon = severity === 'error' ? '❌' : severity === 'warning' ? '⚠️' : '✅'
     return [
-      `${icon} ${taskName}`,
+      `${icon} ${ruleName}`,
       title,
       message,
       suggestedAction ? `建议：${suggestedAction}` : ''
@@ -1216,63 +692,268 @@ export class ScheduledReportService {
       .join('\n')
   }
 
-  private resolveTarget(task: ScheduledReportTask): string | undefined {
-    const explicit = String(task.target || '').trim()
-    if (explicit.endsWith('@chatroom')) return explicit
-    const contact = resolveMd5(task.group || explicit)
-    return contact?.m_nsUsrName?.endsWith('@chatroom') ? contact.m_nsUsrName : undefined
+  // ---------------------------------------------------------------------------
+  // 旧数据只读存档 + HTTP API 兼容投影
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 旧 `tasks.json` 的**只读**快照。
+   *
+   * 运行期调度**绝不**用它（唯一 source of truth 是 `AutomationRuleStore`）。
+   * 保留它只为一件事：把历史执行记录还原成"当时那条任务叫什么"。
+   */
+  async listLegacyTasks(): Promise<ScheduledReportTask[]> {
+    await this.load()
+    return this.legacyTasks!.map((task) => ({ ...task }))
   }
 
-  private normalizeInput(input: ScheduledReportCreateInput): ScheduledReportResult<{
-    name: string
-    group: string
-    scheduleTime: string
-    reportRange: ScheduledReportRange
-    messageTypes: ScheduledReportMessageType[]
-    templateId: ScheduledReportTask['templateId']
-    memberNameMode: ScheduledReportMemberNameMode
-    timeoutSeconds: number
-    target: string
-    enabled: boolean
-  }> {
-    const name = String(input.name || '').trim()
-    const group = String(input.group || '').trim()
-    const scheduleTime = String(input.scheduleTime || '').trim()
-    const reportRange = input.reportRange || 'yesterday'
-    const messageTypes: ScheduledReportMessageType[] = input.messageTypes?.length
-      ? input.messageTypes
-      : ['text']
-    const templateId = input.templateId || 'v1'
-    const memberNameMode = input.memberNameMode || 'groupNickname'
-    const timeoutSeconds = Math.max(
-      30,
-      Math.min(1800, Math.round(Number(input.timeoutSeconds) || 300))
+  /**
+   * 历史执行记录（只读存档）。
+   *
+   * 旧执行记录**无法无损转换**成新的步骤模型（旧的是 7 态 + stage + sendStatus，
+   * 新的是 3 态 + 通用步骤），所以**不迁移、不改写**，原样只读保留。
+   */
+  async listLegacyExecutions(ruleId?: string): Promise<ScheduledReportExecution[]> {
+    await this.load()
+    if (!ruleId) return this.legacyExecutions!.map((item) => ({ ...item }))
+    const key = String(ruleId).trim()
+    return this.legacyExecutions!
+      .filter((item) => this.matchesRuleId(item.taskId, key))
+      .map((item) => ({ ...item }))
+  }
+
+  /** 旧 taskId ↔ 新 ruleId 的对应（复用旧 id 时两者相同）。 */
+  private matchesRuleId(taskId: string | undefined, ruleId: string): boolean {
+    const raw = String(taskId || '').trim()
+    if (!raw) return false
+    return raw === ruleId || `scheduled-report:${raw}` === ruleId
+  }
+
+  /**
+   * 兼容投影：`scheduled_report` 规则 → 旧 `ScheduledReportTask` 形状。
+   *
+   * **只读、内存内转换**，不产生第二份存储。只投影目标为「发回来源群」的规则 ——
+   * 这是旧 HTTP API 契约（`target.type === 'wechat_group'`）唯一能如实表达的形态。
+   */
+  async listTasks(): Promise<ScheduledReportTask[]> {
+    const now = this.deps.now?.() || new Date()
+    return this.scheduledRules()
+      .filter((rule) => this.isHttpProjectable(rule))
+      .map((rule) => this.ruleToLegacyTask(rule, now))
+  }
+
+  async listExecutions(taskId?: string): Promise<ScheduledReportExecution[]> {
+    const key = String(taskId || '').trim()
+    const legacy = await this.listLegacyExecutions(key || undefined)
+    // 新增的执行记录从 Automation Execution Log 投影（同一 ruleId）。
+    let projected: ScheduledReportExecution[] = []
+    try {
+      const executions = this.deps.listExecutions({ limit: 500 })
+      projected = executions
+        .filter((item) => (key ? item.ruleId === key : true))
+        .filter((item) => {
+          const rule = this.findRule(item.ruleId)
+          return rule?.ruleType === 'scheduled_report'
+        })
+        .map((item) => this.automationExecutionToLegacy(item))
+    } catch (error) {
+      console.warn('[ScheduledReport] 读取 Automation 执行日志失败:', error)
+    }
+    // 旧记录在前（更早），新记录追加在后，按开始时间排序。
+    return [...legacy, ...projected].sort(
+      (left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt)
     )
-    const target = String(input.target || group).trim()
-    if (!name) return { success: false, error: '日报名称不能为空' }
+  }
+
+  async createTask(
+    input: ScheduledReportCreateInput
+  ): Promise<ScheduledReportResult<ScheduledReportTask>> {
+    const group = String(input.group || '').trim()
     if (!group) return { success: false, error: '微信群不能为空' }
-    if (!validateScheduleTime(scheduleTime))
-      return { success: false, error: '执行时间必须是 HH:mm' }
-    if (!rangeValues.has(reportRange)) return { success: false, error: '日报范围不受支持' }
-    return {
-      success: true,
-      data: {
-        name,
-        group,
-        scheduleTime,
-        reportRange,
-        messageTypes,
-        templateId,
-        memberNameMode,
-        timeoutSeconds,
-        target,
-        enabled: input.enabled !== false
-      }
+    const name = String(input.name || '').trim()
+    if (!name) return { success: false, error: '日报名称不能为空' }
+    const scheduleTime = String(input.scheduleTime || '').trim()
+    if (!isValidScheduleTime(scheduleTime)) return { success: false, error: '执行时间必须是 HH:mm' }
+
+    const config = normalizeScheduledReportConfig({
+      schedule: { time: scheduleTime },
+      report: {
+        sourceConversationId: group,
+        range: input.reportRange,
+        messageTypes: input.messageTypes,
+        templateId: input.templateId,
+        memberNameMode: input.memberNameMode,
+        timeoutSeconds: input.timeoutSeconds
+      },
+      // HTTP 契约里 target 必须等于 group，等价于 source_chat。
+      target: { type: 'source_chat' }
+    })
+    const created = automationRuleStore.createRule({
+      name,
+      enabled: input.enabled !== false,
+      ruleType: 'scheduled_report',
+      scheduledReport: config
+    })
+    return { success: true, data: this.ruleToLegacyTask(created, this.deps.now?.() || new Date()) }
+  }
+
+  async updateTask(
+    taskId: string,
+    input: ScheduledReportUpdateInput
+  ): Promise<ScheduledReportResult<ScheduledReportTask>> {
+    const rule = this.findRule(taskId)
+    if (!rule) return { success: false, error: '未找到定时日报任务' }
+    const current = normalizeScheduledReportConfig(rule.scheduledReport)
+    const scheduleTime = String(input.scheduleTime ?? current.schedule.time).trim()
+    if (!isValidScheduleTime(scheduleTime)) return { success: false, error: '执行时间必须是 HH:mm' }
+    const next = normalizeScheduledReportConfig({
+      ...current,
+      schedule: { time: scheduleTime },
+      report: {
+        sourceConversationId: String(input.group ?? current.report.sourceConversationId).trim(),
+        range: input.reportRange ?? current.report.range,
+        messageTypes: input.messageTypes ?? current.report.messageTypes,
+        templateId: input.templateId ?? current.report.templateId,
+        memberNameMode: input.memberNameMode ?? current.report.memberNameMode,
+        timeoutSeconds: input.timeoutSeconds ?? current.report.timeoutSeconds
+      },
+      target: current.target,
+      targetNeedsReview: false
+    })
+    const updated = automationRuleStore.updateRule(rule.id, {
+      ...rule,
+      name: input.name !== undefined ? String(input.name).trim() : rule.name,
+      enabled: input.enabled !== undefined ? input.enabled !== false : rule.enabled,
+      scheduledReport: next
+    })
+    if (!updated) return { success: false, error: '未找到定时日报任务' }
+    return { success: true, data: this.ruleToLegacyTask(updated, this.deps.now?.() || new Date()) }
+  }
+
+  async deleteTask(taskId: string): Promise<ScheduledReportResult<{ deletedId: string }>> {
+    const rule = this.findRule(taskId)
+    if (!rule) return { success: false, error: '未找到定时日报任务' }
+    const deleted = automationRuleStore.deleteRule(rule.id)
+    if (!deleted) return { success: false, error: '未找到定时日报任务' }
+    return { success: true, data: { deletedId: rule.id } }
+  }
+
+  async setTaskEnabled(
+    taskId: string,
+    enabled: boolean
+  ): Promise<ScheduledReportResult<ScheduledReportTask>> {
+    const rule = this.findRule(taskId)
+    if (!rule) return { success: false, error: '未找到定时日报任务' }
+    const updated = automationRuleStore.setRuleEnabled(rule.id, enabled)
+    if (!updated) return { success: false, error: '未找到定时日报任务' }
+    return { success: true, data: this.ruleToLegacyTask(updated, this.deps.now?.() || new Date()) }
+  }
+
+  /** 新建一条定时日报规则（Automation UI 用；与兼容投影无关）。 */
+  createScheduledReportRule(input: {
+    name: string
+    enabled?: boolean
+    config: ScheduledReportAutomationConfig
+  }): AutomationRule {
+    return automationRuleStore.createRule({
+      name: input.name,
+      enabled: input.enabled !== false,
+      ruleType: 'scheduled_report',
+      scheduledReport: input.config
+    })
+  }
+
+  private scheduledRules(): AutomationRule[] {
+    try {
+      return this.deps.listRules().filter((rule) => rule.ruleType === 'scheduled_report')
+    } catch (error) {
+      console.warn('[ScheduledReport] 读取自动化规则失败:', error)
+      return []
     }
   }
 
+  private findRule(ruleId: string): AutomationRule | undefined {
+    const key = String(ruleId || '').trim()
+    if (!key) return undefined
+    const rule = this.scheduledRules().find((item) => item.id === key)
+    return rule
+  }
+
+  private isHttpProjectable(rule: AutomationRule): boolean {
+    const config = rule.scheduledReport
+    if (!config) return false
+    if (config.targetNeedsReview) return false
+    return this.scheduledTargetType(rule) === 'source_chat'
+  }
+
+  private scheduledTargetType(rule: AutomationRule): ScheduledReportTargetType {
+    const type = rule.scheduledReport?.target?.type
+    if (type === 'self' || type === 'file_transfer' || type === 'contact' || type === 'source_chat') {
+      return type
+    }
+    return 'source_chat'
+  }
+
+  private ruleToLegacyTask(rule: AutomationRule, now: Date): ScheduledReportTask {
+    const config = normalizeScheduledReportConfig(rule.scheduledReport)
+    const source = config.report.sourceConversationId
+    return {
+      id: rule.id,
+      name: rule.name,
+      group: source,
+      scheduleTime: config.schedule.time,
+      reportRange: config.report.range,
+      messageTypes: config.report.messageTypes,
+      templateId: config.report.templateId,
+      memberNameMode: config.report.memberNameMode,
+      timeoutSeconds: config.report.timeoutSeconds,
+      // 旧契约里 target 必须是群：source_chat 时就是来源群本身。
+      target: source,
+      enabled: rule.enabled,
+      createdAt: new Date(rule.createdAt).toISOString(),
+      updatedAt: new Date(rule.updatedAt).toISOString(),
+      nextRunAt: calculateNextRunAt(config.schedule.time, now),
+      ...(config.lastRunAt ? { lastRunAt: config.lastRunAt } : {}),
+      ...(config.lastScheduledSlot ? { lastScheduledSlot: config.lastScheduledSlot } : {})
+    }
+  }
+
+  /** Automation 执行记录 → 旧 `ScheduledReportExecution` 形状（只读投影）。 */
+  private automationExecutionToLegacy(
+    execution: ReturnType<AutomationExecutionLogService['list']>[number]
+  ): ScheduledReportExecution {
+    const startedAt = new Date(execution.triggerTime).toISOString()
+    const finishedAt = new Date(execution.triggerTime + Math.max(0, execution.durationMs)).toISOString()
+    const sent = execution.steps.some((step) => step.key === 'report_sent' && step.status === 'success')
+    const currentStage: ScheduledReportExecutionStage = execution.steps.some(
+      (step) => step.key === 'report_sent' && step.status !== 'pending'
+    )
+      ? 'send'
+      : 'report'
+    return {
+      id: execution.executionId,
+      taskId: execution.ruleId,
+      triggerType: execution.trigger === 'manual' ? 'manual' : 'scheduled',
+      startedAt,
+      finishedAt,
+      status: execution.status,
+      currentStage,
+      message: execution.errorSummary || '日报执行完成',
+      ...(execution.status === 'failed' ? { error: execution.errorSummary } : {}),
+      retryCount: 0,
+      sendStatus: (sent ? 'success' : execution.status === 'failed' ? 'failed' : 'pending') as ScheduledReportSendStatus,
+      notificationStatus: 'not_needed'
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 落盘 / 读盘
+  // ---------------------------------------------------------------------------
+
   private async load(): Promise<void> {
-    if (this.tasks && this.executions && this.notifications && this.notificationSettings) return
+    if (this.legacyTasks && this.legacyExecutions && this.notifications && this.notificationSettings) {
+      return
+    }
     await fs.mkdir(this.deps.storageDir, { recursive: true })
     const [tasks, executions, notifications, settings] = await Promise.all([
       this.readJson<ScheduledReportTask[]>(TASKS_FILE),
@@ -1280,8 +961,8 @@ export class ScheduledReportService {
       this.readJson<ScheduledReportNotification[]>(NOTIFICATIONS_FILE),
       this.readJson<Partial<ScheduledReportNotificationSettings>>(SETTINGS_FILE)
     ])
-    this.tasks = asArray<ScheduledReportTask>(tasks)
-    this.executions = asArray<ScheduledReportExecution>(executions).map(normalizeExecution)
+    this.legacyTasks = asArray<ScheduledReportTask>(tasks)
+    this.legacyExecutions = asArray<ScheduledReportExecution>(executions).map(normalizeExecution)
     this.notifications = asArray<ScheduledReportNotification>(notifications)
     this.notificationSettings = { enabled: settings?.enabled === true }
   }
@@ -1297,22 +978,7 @@ export class ScheduledReportService {
     }
   }
 
-  private async saveTasks(): Promise<void> {
-    await fs.writeFile(
-      path.join(this.deps.storageDir, TASKS_FILE),
-      JSON.stringify(this.tasks, null, 2),
-      'utf8'
-    )
-  }
-
-  private async saveExecutions(): Promise<void> {
-    await fs.writeFile(
-      path.join(this.deps.storageDir, EXECUTIONS_FILE),
-      JSON.stringify(this.executions, null, 2),
-      'utf8'
-    )
-  }
-
+  /** **只写通知**：旧 tasks.json / executions.json 已冻结为只读存档。 */
   private async saveNotifications(): Promise<void> {
     await fs.writeFile(
       path.join(this.deps.storageDir, NOTIFICATIONS_FILE),
@@ -1327,6 +993,34 @@ export class ScheduledReportService {
       JSON.stringify(this.notificationSettings, null, 2),
       'utf8'
     )
+  }
+}
+
+const asArray = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : [])
+
+const executionStatuses = new Set<ScheduledReportExecution['status']>([
+  'running',
+  'success',
+  'waiting_to_send',
+  'partial_success',
+  'failed',
+  'waiting_for_recovery',
+  'skipped'
+])
+
+/** 旧存档里的状态收敛：非法值靠「有没有 error」推断，绝不丢记录。 */
+const normalizeExecution = (value: ScheduledReportExecution): ScheduledReportExecution => {
+  const status = executionStatuses.has(value.status)
+    ? value.status
+    : value.error
+      ? 'failed'
+      : 'success'
+  const retryCount = Number(value.retryCount)
+  return {
+    ...value,
+    status,
+    triggerType: value.triggerType || 'scheduled',
+    retryCount: Number.isFinite(retryCount) && retryCount >= 0 ? retryCount : 0
   }
 }
 

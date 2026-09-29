@@ -14,7 +14,8 @@ import {
   Menu,
   Tray,
   dialog,
-  protocol
+  protocol,
+  screen
 } from 'electron'
 import { dirname, extname, join } from 'path'
 import { existsSync, promises as fsPromises } from 'fs'
@@ -112,23 +113,28 @@ import { agentHubService } from './services/agent-hub-service'
 import { WechatConnectorService } from './services/wechat-ilink'
 import { wechatSendGateway } from './services/wechat-send-gateway'
 import { groupExitMonitorService } from './services/group-exit-monitor-service'
+import {
+  filterSendableFriendContacts,
+  leaveNotificationContactDisplayName
+} from './services/leave-notification-target'
+import { MessageListenerService } from './services/message-listener-service'
+import { automationRuleStore } from './services/automation-rule-store'
+import { automationExecutionLogService } from './services/automation-execution-log-service'
+import { initAutomationService, getAutomationService } from './services/automation-service'
 import { GroupStatsService } from './services/group-stats-service'
 import { wechatActionLogService } from './services/wechat-action-log-service'
-import { wechatActionGateway } from './services/wechat-action-gateway'
+import { toPersonalWechatSendResult, wechatActionGateway } from './services/wechat-action-gateway'
 import { personalWechatSendService } from './services/personal-wechat-send-service'
+import { macWechatRuntimeManager } from './services/mac-wechat-runtime-manager'
 import { getPersonalWechatSendCapability } from './services/personal-wechat-capability-service'
 import { scheduledReportService } from './services/scheduled-report-service'
-import { PersonalWechatRuntimeManager } from './services/personal-wechat-runtime-manager'
 import { personalWechatVoiceEnvironmentService } from './services/personal-wechat-voice-environment-service'
 import type {
   PersonalWechatGeneratedTtsVoiceRequest,
   PersonalWechatSendRequest,
-  PersonalWechatSendResult
+  PersonalWechatSendResult,
+  PersonalWechatSenderStatus
 } from '../shared/personal-wechat'
-import type {
-  ScheduledReportCreateInput,
-  ScheduledReportUpdateInput
-} from '../shared/scheduled-report'
 import { isTruthyDebugFlag } from '../shared/debug-flags'
 import { TextToSpeechSettingsService } from './services/text-to-speech-settings-service'
 import type {
@@ -197,6 +203,12 @@ import type {
   WechatShareServiceConfig
 } from '../shared/wechat-share-card'
 
+async function currentPersonalWechatSenderStatus(): Promise<PersonalWechatSenderStatus> {
+  return process.platform === 'darwin'
+    ? macWechatRuntimeManager.buildSenderStatus()
+    : personalWechatSendService.getStatus()
+}
+
 // electron-vite can close the child's stdout/stderr after spawning Electron.
 // Plain console.error then throws EPIPE on a closed pipe and crashes the IPC
 // handler. Wrap console.* before any other module logs anything.
@@ -224,7 +236,6 @@ const databaseKeyStore = new DatabaseKeyStore()
 const imageKeyConfigService = new ImageKeyConfigService()
 const aiProviderService = new AIProviderService()
 const textToSpeechSettingsService = new TextToSpeechSettingsService()
-const personalWechatRuntimeManager = new PersonalWechatRuntimeManager()
 const keyServiceMac = new KeyServiceMac()
 const keyServiceWin = new KeyServiceWin()
 const wechatShareConfigStore = new WechatShareConfigStore()
@@ -494,9 +505,29 @@ async function createLocalMediaResponse(request: Request, filePath: string): Pro
 
 function createWindow(): void {
   // 创建浏览器窗口
+  /*
+   * 初始尺寸按当前屏幕工作区的 60% 计算，不再用固定 1400×800。
+   * 两个夹逼都是必要的：
+   * - 下限：小屏上 60% 会算出比原固定值更小的窗口（1920×1080 的工作区高度
+   *   只有 ~985，60% 才 591 高），反而比改动前更糟；高度下限取 900，
+   *   即「高度拉大一点」的诉求。
+   * - 上限：不能超过工作区本身，否则初始尺寸会把标题栏顶出屏幕。
+   */
+  const { workAreaSize } = screen.getPrimaryDisplay()
+  const initialWidth = Math.min(
+    Math.max(Math.round(workAreaSize.width * 0.6), 1400),
+    workAreaSize.width
+  )
+  const initialHeight = Math.min(
+    Math.max(Math.round(workAreaSize.height * 0.6), 900),
+    workAreaSize.height
+  )
   const mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 800,
+    width: initialWidth,
+    height: initialHeight,
+    minWidth: 960,
+    minHeight: 640,
+    center: true,
     show: false,
     autoHideMenuBar: true,
     icon: appIconPath,
@@ -835,11 +866,6 @@ app.whenReady().then(async () => {
       if (!window.isDestroyed()) window.webContents.send('voice:modelProgress', status)
     }
   })
-  personalWechatRuntimeManager.setProgressListener((status) => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) window.webContents.send('wechat-personal:runtimeProgress', status)
-    }
-  })
   protocol.handle('wxe-media', async (request) => {
     const filePath = videoAssetService?.pathForUrl(request.url)
     if (!filePath) return new Response('Not found', { status: 404 })
@@ -1002,20 +1028,120 @@ app.whenReady().then(async () => {
           return { success: false, error: '应用正在退出，数据库连接已取消', monitoring: false }
         }
         const wcdb4Client = nextWechatDb.getWcdb4Client()
+        /**
+         * 正式 MessageListener（Observation Mode 接入）。
+         *
+         * 本轮**只监听、回读、规范化、去重、统计**，不触发任何业务：
+         * 不匹配关键词、不判断 @我、不出日报、不回复、不调 AI / Agent、不发送。
+         * 下一层的 Trigger 由后续任务接入。
+         */
+        const messageListener = new MessageListenerService(wcdb4Client)
+        /**
+         * Automation v1（@我生成日报）。
+         *
+         * `isListening` 要等下面 `startMonitor` 有结果才知道，所以先用闭包变量占位。
+         */
+        let automationListening = false
+        initAutomationService(wcdb4Client, { isListening: () => automationListening })
+
+        /**
+         * 旧「定时日报任务」迁移所需的会话解析器。
+         *
+         * **必须在数据库就绪之后注入**：旧 `task.group` 可能是会话 md5、群名或 roomId
+         * 三种形态，只有 `resolveMd5` 能收敛成稳定会话 id。
+         * 注入前若渲染层已经读过一次规则（`automation:listRules`），迁移会**整体推迟**
+         * 而不落盘 —— 注入这一步会立刻补跑（见 `AutomationRuleStore.setLegacyConversationResolver`）。
+         *
+         * 这样设计的原因：拿不到解析器时如果把旧数据判成「无法无损映射」，
+         * 用户的定时日报会被**无辜停用**，而事实只是"数据库还没打开"。
+         */
+        automationRuleStore.setLegacyConversationResolver((raw) => {
+          const key = String(raw || '').trim()
+          if (!key) return undefined
+          // 已经是稳定会话 id 就直接用，不查库。
+          if (key.endsWith('@chatroom')) return key
+          try {
+            const username = String(chat.resolveMd5(key)?.m_nsUsrName || '').trim()
+            return username || undefined
+          } catch {
+            return undefined
+          }
+        })
+        /**
+         * 退群通知的唯一通路：**退群监控只负责产生事件，自动化负责发送**。
+         *
+         * `handleGroupExit` 自己吞掉异常，这里再兜一层 `.catch` 是防御性的 ——
+         * 未捕获的 rejection 会污染监控循环，而退群事实早就已经记录成功了。
+         */
+        groupExitMonitorService.setGroupExitHandler((event) => {
+          try {
+            return getAutomationService()
+              .handleGroupExit(event)
+              .catch((error) => {
+                console.warn(
+                  `[Automation] handleGroupExit failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                )
+              })
+          } catch (error) {
+            console.warn(
+              `[Automation] 退群通知未初始化，已跳过本次事件: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+            return undefined
+          }
+        })
+        messageListener.onMessage((message) => {
+          // 日志只允许出现「类型 / 群或私聊 / 是否自己发 / @ 数量」这类不可逆标识，
+          // 不含 wxid、昵称、群名、正文与 source。
+          console.log(
+            `[MessageListener] incoming messageType=${message.messageType}` +
+              ` group=${message.isGroup} self=${message.isSelf}` +
+              ` mentions=${message.mentionTargets.length}`
+          )
+          // Automation 自带 isSelf / cooldown / 同消息幂等三重闸，不会形成回复循环。
+          // 用 try 包住同步那一段：`getAutomationService()` 在未初始化时会抛，
+          // 而 `.catch()` 只能接住异步拒绝 —— 漏了这层就会把异常抛进 MessageListener 的投递循环。
+          try {
+            void getAutomationService()
+              .handleMessage(message)
+              .catch((error) => {
+                console.warn(
+                  `[Automation] handleMessage failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                )
+              })
+          } catch (error) {
+            console.warn(
+              `[Automation] 未初始化，已跳过本次消息: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+          }
+        })
         const sessions = await wcdb4Client.getSessionsAsync({ hydrateDisplayNames: false })
         configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
         voiceService = new VoiceService(wcdb4Client, resolvedRoot)
         voiceRecognition?.connect(voiceService, resolvedRoot)
         stickerService = new StickerService(wcdb4Client)
         videoAssetService = new VideoAssetService(wcdb4Client)
-        const monitoring = await wcdb4Client.startMonitor((type, json) => {
+        const monitoring = await wcdb4Client.startMonitor((event) => {
           wcdb4Client.invalidateSessionCache()
-          groupExitMonitorService.notifyDatabaseChanged(json)
-          recallArchiveMonitor?.handleDatabaseChange(json)
+          // 正式 MessageListener：只做 coalesce + 有界回读 + dedup + 投递，不触发业务。
+          // v2 事件带 sessionId ⇒ 回读不再依赖「最近活跃会话」。
+          messageListener.handleNativeChange(event)
+          groupExitMonitorService.notifyDatabaseChanged(event.raw)
+          recallArchiveMonitor?.handleDatabaseChange(event.raw)
           for (const window of BrowserWindow.getAllWindows()) {
-            if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
+            if (!window.isDestroyed()) {
+              window.webContents.send('wcdb-change', { type: event.type, json: event.raw })
+            }
           }
         })
+        automationListening = monitoring === true
         void groupExitMonitorService.start(monitoring)
         const recentSession = sessions[0]
         if (recentSession?.username) {
@@ -1157,7 +1283,54 @@ app.whenReady().then(async () => {
   )
   // 日报等系统动作仍复用现有发送服务；普通聊天不再暴露这个入口。
   ipcMain.handle('wechat-personal:send', async (_, request: PersonalWechatSendRequest) => {
-    if (request.type !== 'voice' || String(request.fromId || '').trim()) {
+    // 项目规则：**所有发送都必须经过 WechatActionGateway**（审计 + 幂等 + 同一个 Send Log）。
+    // 手动发送在改造前从这里直连 `PersonalWechatSendService`，于是完全不留痕 ——
+    // 排查「消息到底发没发出去」时恰好缺的就是那份证据。
+    // 普通手动发送保持 triggerType=user；带 postfixText 的日报图片由 Gateway 编排成
+    // 两个 automation action，以复用同一条 3s 队列，并严格在图片 sent 后才发后置词。
+    if (request.type === 'text' || request.type === 'image') {
+      const to = String(request.to || '').trim()
+      const recipient = {
+        type:
+          request.isGroup || to.endsWith('@chatroom') ? ('group' as const) : ('contact' as const),
+        id: to
+      }
+      if (request.type === 'image' && request.postfixText !== undefined) {
+        const sequence = await wechatActionGateway.executeReportImageSequence({
+          recipient,
+          imagePath: String(request.filePath || ''),
+          postfixText: request.postfixText
+        })
+        const imageResult = toPersonalWechatSendResult(
+          sequence.image,
+          await currentPersonalWechatSenderStatus()
+        )
+        if (!imageResult.success || !sequence.postfix) return imageResult
+        return {
+          ...imageResult,
+          postfixSent: sequence.postfix.status === 'sent',
+          ...(sequence.postfix.status === 'sent'
+            ? {}
+            : { postfixError: sequence.postfix.reason || '后置词发送失败' })
+        }
+      }
+      const action = await wechatActionGateway.execute({
+        origin: 'user_manual',
+        purpose: request.type === 'text' ? 'manual_text' : 'manual_image',
+        triggerType: 'user',
+        recipient,
+        content:
+          request.type === 'text'
+            ? { type: 'text', text: String(request.text || '') }
+            : { type: 'image', path: String(request.filePath || '') }
+      })
+      // 返回契约保持 `PersonalWechatSendResult`，界面判读不用改。
+      return toPersonalWechatSendResult(action, await currentPersonalWechatSenderStatus())
+    }
+
+    // 语音仍走既有分支：它有自己的网关入口 `wechat-personal:sendGeneratedTtsVoice`，
+    // 且需要先解析当前账号 wxid 才能编码。
+    if (String(request.fromId || '').trim()) {
       return personalWechatSendService.send(request)
     }
     let fromId = ''
@@ -1500,16 +1673,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('group-exit-monitor:setEnabled', (_, enabled: boolean) =>
     groupExitMonitorService.setEnabled(enabled === true)
   )
-  ipcMain.handle(
-    'group-exit-monitor:setGroups',
-    (_, roomIds: string[], notificationRoomIds?: string[]) =>
-      groupExitMonitorService.setMonitoredRoomIds(
-        Array.isArray(roomIds) ? roomIds : [],
-        Array.isArray(notificationRoomIds) ? notificationRoomIds : []
-      )
-  )
-  ipcMain.handle('group-exit-monitor:setTemplate', (_, template: unknown) =>
-    groupExitMonitorService.setNotificationTemplate(template)
+  /**
+   * 保存**监控范围**。
+   *
+   * 只有一个参数：旧版第二个参数（通知群聊）已经迁到「自动化 → 退群通知」，
+   * 退群监控不再持有任何通知配置。
+   */
+  ipcMain.handle('group-exit-monitor:setGroups', (_, roomIds: string[]) =>
+    groupExitMonitorService.setMonitoredRoomIds(Array.isArray(roomIds) ? roomIds : [])
   )
   ipcMain.handle('group-exit-monitor:checkNow', () => groupExitMonitorService.checkNow())
   /**
@@ -1532,13 +1703,96 @@ app.whenReady().then(async () => {
     })
   })
   ipcMain.handle('group-exit-monitor:clearEvents', () => groupExitMonitorService.clearEvents())
-  ipcMain.handle('group-exit-monitor:resendEvent', (_, eventId: string) =>
-    groupExitMonitorService.resendEvent(eventId)
-  )
   ipcMain.handle('group-exit-monitor:markRead', (_, readAt?: number) =>
     groupExitMonitorService.markRead(readAt)
   )
   ipcMain.handle('wechat-action-log:list', () => wechatActionLogService.list())
+
+  /**
+   * Automation v1（@我生成日报）。
+   *
+   * 规则与执行日志都是纯文件存储，**不依赖数据库**，所以这两组 handler 在数据库
+   * 解锁前也可以安全调用；只有 `getStatus` / `listGroups` 需要会话数据，因此用
+   * `tryAutomationService()` 兜底，避免渲染层在启动阶段拿到一个 rejected promise。
+   */
+  const tryAutomationService = (): ReturnType<typeof getAutomationService> | null => {
+    try {
+      return getAutomationService()
+    } catch {
+      return null
+    }
+  }
+  ipcMain.handle('automation:listRules', () => automationRuleStore.listRules())
+  ipcMain.handle('automation:createRule', (_, draft: unknown) =>
+    automationRuleStore.createRule(draft)
+  )
+  ipcMain.handle('automation:updateRule', (_, input: unknown) => {
+    const payload = (input || {}) as { id?: unknown; draft?: unknown }
+    return automationRuleStore.updateRule(String(payload.id || ''), payload.draft) ?? null
+  })
+  ipcMain.handle('automation:deleteRule', (_, id: string) => automationRuleStore.deleteRule(id))
+  ipcMain.handle('automation:setRuleEnabled', (_, input: unknown) => {
+    const payload = (input || {}) as { id?: unknown; enabled?: unknown }
+    return (
+      automationRuleStore.setRuleEnabled(String(payload.id || ''), payload.enabled === true) ?? null
+    )
+  })
+  ipcMain.handle('automation:listExecutions', (_, query: unknown) => {
+    const input = (query || {}) as { limit?: unknown }
+    return automationExecutionLogService.list({ limit: Number(input.limit) })
+  })
+  ipcMain.handle('automation:clearExecutions', () => automationExecutionLogService.clear())
+  ipcMain.handle('automation:listGroups', () => tryAutomationService()?.listGroups() ?? [])
+  /**
+   * 保存「退群通知」规则（singleton upsert）。
+   *
+   * 单独一个通道而不是复用 `updateRule`：这条规则是系统规则，
+   * 保存语义是"存在即更新、不存在即创建"，且 id 固定 —— 不允许渲染层自己拼 id。
+   */
+  ipcMain.handle('automation:saveLeaveNotificationRule', (_, draft: unknown) =>
+    automationRuleStore.saveLeaveNotificationRule(draft)
+  )
+  /**
+   * 「指定好友」的可选项。
+   *
+   * 过滤（群聊 / 公众号 / 文件传输助手 / 自己）在 main 侧完成 ——
+   * 只有这里知道当前登录账号是谁，渲染层再筛一遍必然会漂移。
+   */
+  ipcMain.handle('automation:listSendableContacts', () => {
+    try {
+      const selfWxid = String(chat.getSelfAccountInfo()?.wxid || '')
+      return filterSendableFriendContacts(chat.listContacts(), selfWxid).map((contact) => ({
+        id: String(contact.m_nsUsrName || ''),
+        name: leaveNotificationContactDisplayName(contact)
+      }))
+    } catch (error) {
+      console.warn(
+        `[Automation] 读取可选联系人失败: ${error instanceof Error ? error.message : String(error)}`
+      )
+      return []
+    }
+  })
+  ipcMain.handle('automation:getStatus', async () => {
+    const service = tryAutomationService()
+    if (service) return service.getStatus()
+    // 数据库尚未就绪：如实返回「未监听 + 能力未知」，而不是假装一切正常。
+    const todayStart = new Date()
+    todayStart.setHours(0, 0, 0, 0)
+    const counts = automationExecutionLogService.countSince(todayStart.getTime())
+    return {
+      listening: false,
+      listeningDegraded: true,
+      todayExecutions: counts.total,
+      todaySuccesses: counts.success,
+      sendCapability: {
+        supported: false,
+        ready: false,
+        canSendText: false,
+        canSendImage: false,
+        message: '数据库尚未就绪，暂时无法获知微信发送能力'
+      }
+    }
+  })
 
   ipcMain.handle('db:search', (_, keyword: string) => chat.searchMessages(keyword))
   ipcMain.handle(
@@ -1759,44 +2013,58 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('wechat-personal:getSendCapability', () => getPersonalWechatSendCapability())
-  ipcMain.handle('scheduled-report:list', () => scheduledReportService.listTasks())
-  ipcMain.handle('scheduled-report:listExecutions', (_, taskId?: string) =>
-    scheduledReportService.listExecutions(taskId)
+
+  /**
+   * 定时日报（Automation 的 `scheduled_report` 规则类型）。
+   *
+   * 规则本身的 CRUD 走上面的 `automation:*`；这里只补三块**专属**能力：
+   * 1. 「立即执行」—— 走 `AutomationService.executeScheduledRule(ruleId,'manual')`，
+   *    与 scheduler 触发**同一条链路**（生成 → 落库 → 解析目标 → Gateway 发图）；
+   * 2. 微信异常通知 —— 定时日报失败时的 Agent Hub 推送，随功能保留；
+   * 3. 旧执行记录**只读存档** —— 旧记录无法无损转换，原样保留给 UI 展示。
+   */
+  ipcMain.handle('automation:runScheduledReportRule', async (_, ruleId: string) => {
+    const service = tryAutomationService()
+    if (!service) return { success: false, error: '数据库尚未就绪，暂时无法执行定时日报' }
+    const outcome = await service.executeScheduledRule(String(ruleId || ''), { trigger: 'manual' })
+    if (outcome.executed) {
+      return { success: outcome.status !== 'failed', data: outcome }
+    }
+    // 「没执行」的每一种原因都要能翻译成用户看得懂的一句话 —— 否则点了按钮没反应，无从排查。
+    const skipMessages: Record<string, string> = {
+      missing_rule: '规则 id 无效',
+      rule_not_found: '未找到这条定时日报规则',
+      disabled: '这条定时日报已停用，请先启用再执行',
+      target_needs_review: '这条规则的发送目标需要重新选择后才能执行',
+      in_flight: '这条规则正在执行中，请稍后再试',
+      store_error: '读取规则失败，请稍后再试'
+    }
+    return {
+      success: false,
+      error: skipMessages[outcome.reason || ''] || '定时日报未执行',
+      data: outcome
+    }
+  })
+  ipcMain.handle('automation:listScheduledReportLegacyExecutions', (_, ruleId?: string) =>
+    scheduledReportService.listLegacyExecutions(ruleId)
   )
-  ipcMain.handle('scheduled-report:getNotificationSettings', () =>
+  ipcMain.handle('automation:getScheduledReportNotificationSettings', () =>
     scheduledReportService.getNotificationSettings()
   )
-  ipcMain.handle('scheduled-report:setNotificationEnabled', (_, enabled: boolean) =>
+  ipcMain.handle('automation:getScheduledReportNotificationCapability', () =>
+    scheduledReportService.checkNotificationCapability()
+  )
+  ipcMain.handle('automation:setScheduledReportNotificationEnabled', (_, enabled: boolean) =>
     scheduledReportService.setNotificationEnabled(Boolean(enabled))
   )
-  ipcMain.handle('scheduled-report:create', (_, request: ScheduledReportCreateInput) =>
-    scheduledReportService.createTask(request)
-  )
-  ipcMain.handle(
-    'scheduled-report:update',
-    (_, taskId: string, request: ScheduledReportUpdateInput) =>
-      scheduledReportService.updateTask(taskId, request)
-  )
-  ipcMain.handle('scheduled-report:delete', (_, taskId: string) =>
-    scheduledReportService.deleteTask(taskId)
-  )
-  ipcMain.handle('scheduled-report:setEnabled', (_, taskId: string, enabled: boolean) =>
-    scheduledReportService.setTaskEnabled(taskId, Boolean(enabled))
-  )
-  ipcMain.handle('scheduled-report:runNow', (_, taskId: string) =>
-    scheduledReportService.runScheduledReportNow(taskId)
-  )
-  ipcMain.handle('scheduled-report:retrySend', (_, executionId: string) =>
-    scheduledReportService.retryScheduledReportSend(executionId)
-  )
-  ipcMain.handle('scheduled-report:testErrorNotification', (_, taskId: string) => {
+  ipcMain.handle('automation:testScheduledReportErrorNotification', (_, ruleId: string) => {
     if (!isTruthyDebugFlag(import.meta.env.VITE_SCHEDULED_REPORT_DEBUG)) {
       return Promise.resolve({
         success: false,
         error: '调试测试按钮未开启，请在 .env 中设置 VITE_SCHEDULED_REPORT_DEBUG=true。'
       })
     }
-    return scheduledReportService.testScheduledReportErrorNotification(taskId)
+    return scheduledReportService.testScheduledReportErrorNotification(ruleId)
   })
 
   ipcMain.handle('report:reveal', async (_, filePath: string) => {
@@ -2262,11 +2530,13 @@ app.whenReady().then(async () => {
     if (client) {
       voiceService = new VoiceService(client, client.getAccountRoot())
       voiceRecognition?.connect(voiceService, client.getAccountRoot())
-      const monitoring = await client.startMonitor((type, json) => {
+      const monitoring = await client.startMonitor((event) => {
         client.invalidateSessionCache()
-        groupExitMonitorService.notifyDatabaseChanged(json)
+        groupExitMonitorService.notifyDatabaseChanged(event.raw)
         for (const window of BrowserWindow.getAllWindows()) {
-          if (!window.isDestroyed()) window.webContents.send('wcdb-change', { type, json })
+          if (!window.isDestroyed()) {
+            window.webContents.send('wcdb-change', { type: event.type, json: event.raw })
+          }
         }
       })
       void groupExitMonitorService.start(monitoring)
@@ -2391,42 +2661,16 @@ app.whenReady().then(async () => {
     agentHubService.clearConversations()
     return { success: true }
   })
-  ipcMain.handle('wechat-personal:getStatus', () => personalWechatSendService.getStatus())
-  ipcMain.handle('wechat-personal:getKeepProcess', () =>
-    personalWechatSendService.getKeepOneBotProcess()
-  )
-  ipcMain.handle('wechat-personal:setKeepProcess', (_, keep: boolean) =>
-    personalWechatSendService.setKeepOneBotProcess(Boolean(keep))
-  )
+  ipcMain.handle('wechat-personal:getStatus', () => currentPersonalWechatSenderStatus())
   ipcMain.handle('wechat-personal:checkStatus', (_, port?: string) =>
     personalWechatSendService.checkWindowsStatus(port)
   )
   ipcMain.handle('wechat-personal:checkVoiceEnvironment', () =>
     personalWechatVoiceEnvironmentService.check()
   )
-  ipcMain.handle('wechat-personal:installPilk', async () => {
-    const result = await personalWechatVoiceEnvironmentService.installPilk()
-    if (!result.success || process.platform !== 'darwin') return result
-
-    const senderStatus = await personalWechatSendService.getStatus()
-    if (!senderStatus.oneBotPid) return result
-    try {
-      const restartedStatus = await personalWechatSendService.restartRuntime()
-      return {
-        ...result,
-        restarted: restartedStatus.state !== 'error',
-        ...(restartedStatus.state === 'error'
-          ? { restartError: restartedStatus.error || restartedStatus.message }
-          : {})
-      }
-    } catch (error) {
-      return {
-        ...result,
-        restarted: false,
-        restartError: error instanceof Error ? error.message : String(error)
-      }
-    }
-  })
+  ipcMain.handle('wechat-personal:installPilk', () =>
+    personalWechatVoiceEnvironmentService.installPilk()
+  )
   ipcMain.handle('wechat-personal:openVoicePythonDownload', async () => {
     try {
       await shell.openExternal('https://www.python.org/downloads/macos/')
@@ -2443,23 +2687,20 @@ app.whenReady().then(async () => {
       return { success: false, error: '无法打开 FFmpeg 安装页面' }
     }
   })
-  ipcMain.handle('wechat-personal:getRuntimeStatus', () => personalWechatRuntimeManager.getStatus())
-  ipcMain.handle('wechat-personal:downloadRuntime', () => personalWechatRuntimeManager.download())
-  ipcMain.handle('wechat-personal:cancelRuntimeDownload', () => ({
-    success: personalWechatRuntimeManager.cancelDownload()
-  }))
-  ipcMain.handle('wechat-personal:removeRuntime', async () => {
-    await personalWechatSendService.terminate(true)
-    return personalWechatRuntimeManager.remove()
+  ipcMain.handle('wechat-personal:rebind', async () => {
+    if (process.platform !== 'darwin') return personalWechatSendService.rebind()
+
+    const result = await macWechatRuntimeManager.bind()
+    const status = await macWechatRuntimeManager.buildSenderStatus()
+    if (result.ok) return status
+
+    return {
+      ...status,
+      state: 'error',
+      message: result.message,
+      error: result.message
+    }
   })
-  ipcMain.handle('wechat-personal:openRuntimeDirectory', async () => {
-    const status = await personalWechatRuntimeManager.getStatus()
-    const directory = status.directory || personalWechatRuntimeManager.directory
-    await fsPromises.mkdir(directory, { recursive: true })
-    const error = await shell.openPath(directory)
-    return error ? { success: false, error } : { success: true }
-  })
-  ipcMain.handle('wechat-personal:rebind', () => personalWechatSendService.rebind())
   ipcMain.handle(
     'wechat-personal:sendGeneratedTtsVoice',
     async (_, request: PersonalWechatGeneratedTtsVoiceRequest) => {
@@ -2487,7 +2728,7 @@ app.whenReady().then(async () => {
         action.sendResult && typeof action.sendResult === 'object'
           ? (action.sendResult as PersonalWechatSendResult)
           : undefined
-      const status = sendResult?.status || (await personalWechatSendService.getStatus())
+      const status = sendResult?.status || (await currentPersonalWechatSenderStatus())
       return { action, status }
     }
   )
@@ -2562,9 +2803,21 @@ app.on('before-quit', (event) => {
       chat.closeChatDbForQuit().catch(() => false),
       voiceRecognition?.dispose().catch(() => undefined),
       knowledgeSearchService?.dispose().catch(() => undefined),
-      personalWechatSendService.terminate().catch((error) => {
-        console.warn('[Shutdown] personal WeChat sender cleanup failed:', error)
-      })
+      /*
+       * Deliberately do NOT stop the macOS native runtime here.
+       *
+       * The host is designed to outlive TraceMemo ("保留发送能力进程"): keeping
+       * it alive preserves the bound frida session, so relaunching the app —
+       * including every dev-mode restart — re-adopts it and works immediately
+       * instead of forcing the user to bind WeChat again.
+       *
+       * Stopping it on quit threw that away and, worse, gave teardown a chance
+       * to hang mid-unload while the app was already exiting. The host has its
+       * own lifecycle instead: it exits itself once WeChat is gone ("stale" ->
+       * self-shutdown), and it can be restarted explicitly from the settings
+       * card ("重新加载组件").
+       */
+      Promise.resolve()
     ])
     if (!nativeCallsDrained) {
       console.warn('[Shutdown] WCDB async calls did not fully drain before quit')

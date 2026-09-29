@@ -1,5 +1,3 @@
-import type { WechatActionResult } from './wechat-action'
-
 export interface GroupExitMonitorMember {
   wxid: string
   nickname?: string
@@ -7,23 +5,6 @@ export interface GroupExitMonitorMember {
   wechatNickname?: string
   remark?: string
   avatar?: string
-}
-
-export type GroupExitNotificationStatus =
-  | 'not_requested'
-  | 'pending'
-  | 'sent'
-  | 'blocked'
-  | 'failed'
-
-export interface GroupExitNotificationState {
-  status: GroupExitNotificationStatus
-  actionId?: string
-  decision?: WechatActionResult['decision']
-  errorCode?: string
-  reason?: string
-  startedAt?: string
-  finishedAt?: string
 }
 
 export interface GroupExitMonitorEvent {
@@ -44,9 +25,6 @@ export interface GroupExitMonitorEvent {
   delta: number
   message: string
   detectedAt: number
-  /** 可选通知的结果；退群检测与通知发送彼此独立。 */
-  notificationStatus?: GroupExitNotificationStatus
-  notification?: GroupExitNotificationState
 }
 
 const LEGACY_GROUP_EXIT_NOTIFICATION_TEMPLATE = [
@@ -65,6 +43,8 @@ const LEGACY_GROUP_EXIT_NOTIFICATION_TEMPLATE = [
 export const GROUP_EXIT_NOTIFICATION_TEMPLATE = [
   '[退群监测]',
   '',
+  '群聊: {groupName}',
+  '',
   '用户: {user}',
   '',
   '群备注: {groupRemark}',
@@ -78,6 +58,9 @@ export const GROUP_EXIT_NOTIFICATION_TEMPLATE = [
 
 export const GROUP_EXIT_NOTIFICATION_TEMPLATE_MAX_LENGTH = 2_000
 export const GROUP_EXIT_NOTIFICATION_TEMPLATE_PLACEHOLDERS = [
+  // 群名排在最前：通知一旦发给「文件传输助手 / 自己 / 指定好友」，
+  // 收件人第一件要知道的事就是**哪个群**退的人。
+  'groupName',
   'user',
   'groupRemark',
   'wxid',
@@ -85,6 +68,26 @@ export const GROUP_EXIT_NOTIFICATION_TEMPLATE_PLACEHOLDERS = [
   'currentCount',
   'time'
 ] as const
+
+/**
+ * 每个变量的**中文含义**（编辑器悬停提示用）。
+ *
+ * 为什么必须有：变量清单原先只有 `{groupRemark}` 这种符号，用户看不出含义 ——
+ * 实测有人把 `{groupRemark}` 当成"群名"（它其实是**成员在本群的昵称**），
+ * 于是以为通知里已经有群名了。这类误会只能靠把含义写出来消除。
+ */
+export const GROUP_EXIT_NOTIFICATION_PLACEHOLDER_LABELS: Record<
+  (typeof GROUP_EXIT_NOTIFICATION_TEMPLATE_PLACEHOLDERS)[number],
+  string
+> = {
+  groupName: '群聊名（发生退群的群）',
+  user: '退群成员的显示名',
+  groupRemark: '退群成员在本群的昵称（不是群名）',
+  wxid: '成员的微信号',
+  previousCount: '退群前人数',
+  currentCount: '退群后人数',
+  time: '退群时间'
+}
 
 export interface GroupExitNotificationTemplateValidation {
   valid: boolean
@@ -134,26 +137,20 @@ export function formatGroupExitMonitorTime(timestamp: number): string {
   )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
-/** 根据模板生成通知文本。 */
-export function renderGroupExitMonitorNotification(
-  event: GroupExitMonitorEvent,
-  template = GROUP_EXIT_NOTIFICATION_TEMPLATE
+/**
+ * 模板插值的**唯一实现**。
+ *
+ * 退群监控的「复制退群信息」与自动化的「退群通知」都走这里 ——
+ * 迁移不允许产生第二套 regex，否则预览与实际发送迟早不一致。
+ */
+export function renderGroupExitNotificationTemplate(
+  template: string,
+  values: GroupExitNotificationValues
 ): string {
-  const user =
-    event.wechatName?.trim() || event.memberName?.trim() || event.memberWxid || '未读取到'
-  const groupRemark = event.groupRemark?.trim() || '未设置'
-  const wxid = event.memberWxid?.trim() || '未读取到'
-  const values = {
-    user,
-    groupRemark,
-    wxid,
-    previousCount: String(event.previousCount),
-    currentCount: String(event.currentCount),
-    time: formatGroupExitMonitorTime(event.detectedAt)
-  }
   return normalizeGroupExitNotificationTemplate(template).replace(
-    /\{(user|groupRemark|wxid|previousCount|currentCount|time)\}/g,
+    /\{(groupName|user|groupRemark|wxid|previousCount|currentCount|time)\}/g,
     (placeholder) => {
+      if (placeholder === '{groupName}') return values.groupName
       if (placeholder === '{user}') return values.user
       if (placeholder === '{groupRemark}') return values.groupRemark
       if (placeholder === '{wxid}') return values.wxid
@@ -164,12 +161,64 @@ export function renderGroupExitMonitorNotification(
   )
 }
 
-/** 主进程中的辅助函数，供生成通知和预览时共用。 */
-export function buildMemberLeftNotification(
+export interface GroupExitNotificationValues {
+  /** 发生退群的**群显示名**（含群备注）。 */
+  groupName: string
+  /** 退群成员的显示名（微信名 → 群昵称 → 微信号 依次回退）。 */
+  user: string
+  /** 退群成员**在本群的昵称**。⚠️ 不是群名 —— 群名是 `groupName`。 */
+  groupRemark: string
+  wxid: string
+  previousCount: string
+  currentCount: string
+  time: string
+}
+
+/**
+ * 变量取值的**唯一实现**，含全部 fallback 规则。
+ *
+ * ⚠️ 这些 fallback 是历史产品行为（`未读取到` / `未设置`），迁移**不得**改变输出：
+ * 退群监控与自动化都从这里取值，所以不存在"两处 fallback 漂移"的可能。
+ */
+export function buildGroupExitNotificationValues(input: {
+  groupName?: string
+  wechatNickname?: string
+  memberName?: string
+  memberId?: string
+  groupRemark?: string
+  previousCount: number
+  currentCount: number
+  occurredAt: number
+}): GroupExitNotificationValues {
+  return {
+    groupName: input.groupName?.trim() || '未读取到',
+    user: input.wechatNickname?.trim() || input.memberName?.trim() || input.memberId || '未读取到',
+    groupRemark: input.groupRemark?.trim() || '未设置',
+    wxid: input.memberId?.trim() || '未读取到',
+    previousCount: String(input.previousCount),
+    currentCount: String(input.currentCount),
+    time: formatGroupExitMonitorTime(input.occurredAt)
+  }
+}
+
+/** 根据模板生成通知文本（退群监控侧入口，保持既有签名与输出）。 */
+export function renderGroupExitMonitorNotification(
   event: GroupExitMonitorEvent,
   template = GROUP_EXIT_NOTIFICATION_TEMPLATE
 ): string {
-  return renderGroupExitMonitorNotification(event, template)
+  return renderGroupExitNotificationTemplate(
+    template,
+    buildGroupExitNotificationValues({
+      groupName: event.groupName,
+      wechatNickname: event.wechatName,
+      memberName: event.memberName,
+      memberId: event.memberWxid,
+      groupRemark: event.groupRemark,
+      previousCount: event.previousCount,
+      currentCount: event.currentCount,
+      occurredAt: event.detectedAt
+    })
+  )
 }
 
 export interface GroupExitMonitorState {
@@ -185,10 +234,6 @@ export interface GroupExitMonitorState {
   monitorSelectionConfigured?: boolean
   /** 管理页选中的群。 */
   monitoredRoomIds?: string[]
-  /** 需要发送通知的群。 */
-  notificationRoomIds?: string[]
-  /** 自动通知模板。 */
-  notificationTemplate?: string
   lastCheckedAt?: number
   lastReadAt: number
   unreadCount: number
@@ -218,4 +263,32 @@ export function findRemovedGroupMembers(
       !seen.has(member.wxid) &&
       seen.add(member.wxid)
   )
+}
+
+/**
+ * 把 `群聊: {groupName}` 补进一份**已有**模板。
+ *
+ * 放在 shared 而不是 main：主进程的模板升级迁移要用它，
+ * 编辑器的「一键补上群聊名」也要用它 —— 只允许有一份实现。
+ *
+ * 三条约束：
+ * 1. **幂等**：已经含 `{groupName}` 就原样返回；
+ * 2. **不破坏用户内容**：只在标题行后插入一行，其余文本与顺序一字不动；
+ * 3. 调用方负责"只补一次"—— 否则用户删掉这一行后重启它又回来，
+ *    那种"删不掉"的行为比缺失信息更糟。
+ */
+export function insertGroupNamePlaceholder(template: string): string {
+  const normalized = String(template ?? '').replace(/\r\n?/g, '\n')
+  if (!normalized.trim()) return template
+  if (normalized.includes('{groupName}')) return template
+
+  const lines = normalized.split('\n')
+  const titleIndex = lines.findIndex((line) => line.trim())
+  // 首行是标题（`[退群监测]` 这类）就插在它后面，否则插到最前面。
+  const insertAt = titleIndex >= 0 && lines[titleIndex].trim().startsWith('[') ? titleIndex + 1 : 0
+  // 前后各留一个空行（与标题、与下文都分开）；紧随其后的多余空行由下面的压缩处理掉。
+  return [...lines.slice(0, insertAt), '', '群聊: {groupName}', '', ...lines.slice(insertAt)]
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }

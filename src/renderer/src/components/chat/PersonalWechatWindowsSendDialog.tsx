@@ -6,6 +6,8 @@ import type {
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui'
 import { PersonalWechatChatComposer, type ChatMessage } from './PersonalWechatChatComposer'
 import type { PersonalWechatSendDialogProps } from './PersonalWechatSendDialog'
+import { ReportImagePostfixInput } from './ReportImagePostfixInput'
+import { useReportImagePostfixSetting } from './useReportImagePostfixSetting'
 
 function fallbackStatus(error: unknown): PersonalWechatSenderStatus {
   return {
@@ -45,7 +47,7 @@ function statusLabel(status: PersonalWechatSenderStatus | null): string {
 }
 
 function statusText(value: string): string {
-  return value.replace(/OneBot|Hook/gi, '微信发送能力').replace(/个人微信发送组件/g, '微信发送能力')
+  return value.replace(/Hook/gi, '微信发送能力').replace(/个人微信发送组件/g, '微信发送能力')
 }
 
 function statusDescription(status: PersonalWechatSenderStatus | null): string {
@@ -64,12 +66,17 @@ export function PersonalWechatWindowsSendDialog({
   const [status, setStatus] = useState<PersonalWechatSenderStatus | null>(null)
   const [detecting, setDetecting] = useState(true)
   const [sendBusy, setSendBusy] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+  const [sendSuccess, setSendSuccess] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const requestIdRef = useRef(0)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
   const closingRef = useRef(false)
   const displayName = contact.m_nsNickName || contact.m_nsUsrName || '未命名会话'
   const targetId = contact.m_nsUsrName
+  const { postfixText, setPostfixText, persistPostfixText } = useReportImagePostfixSetting(
+    Boolean(initialImage)
+  )
 
   const refreshStatus = useCallback(async (): Promise<void> => {
     const requestId = ++requestIdRef.current
@@ -103,9 +110,7 @@ export function PersonalWechatWindowsSendDialog({
     onOpenPersonalWechatSettings()
   }
 
-  const handleSend = async (
-    filePath: string
-  ): Promise<{ success: boolean; error?: string }> => {
+  const handleSend = async (filePath: string): Promise<{ success: boolean; error?: string }> => {
     setSendBusy(true)
     try {
       const response = await window.api.sendGeneratedTtsVoice({
@@ -137,15 +142,28 @@ export function PersonalWechatWindowsSendDialog({
   const handleSendReportImage = async (): Promise<void> => {
     if (!initialImage || !status?.canSendImage || sendBusy) return
     setSendBusy(true)
+    setSendError(null)
+    setSendSuccess(null)
     try {
+      await persistPostfixText()
       const response = await window.api.sendPersonalWechatMessage({
         type: 'image',
         to: targetId,
         isGroup: isGroupChat,
-        filePath: initialImage.path
+        filePath: initialImage.path,
+        postfixText
       } satisfies PersonalWechatSendRequest)
       setStatus(response.status)
-      if (!response.success) return
+      if (!response.success) {
+        setSendError(response.error || '日报图片发送失败')
+        return
+      }
+      if (response.postfixError) {
+        setSendError(`日报图片已发送，但${response.postfixError}`)
+        setSendSuccess('日报图片发送成功')
+      } else {
+        setSendSuccess(postfixText.trim() ? '日报图片和后置词发送成功' : '日报图片发送成功')
+      }
       setMessages((current) => [
         ...current,
         {
@@ -156,6 +174,8 @@ export function PersonalWechatWindowsSendDialog({
           outgoing: true
         }
       ])
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error))
     } finally {
       setSendBusy(false)
     }
@@ -183,7 +203,7 @@ export function PersonalWechatWindowsSendDialog({
         <DialogHeader className="flex-row items-center justify-between space-y-0 pr-10">
           <div>
             <span className="text-[11px] font-bold tracking-normal text-primary">实验性功能</span>
-              <DialogTitle className="mt-0.5 text-[19px] leading-[26px] tracking-normal">
+            <DialogTitle className="mt-0.5 text-[19px] leading-[26px] tracking-normal">
               文字转语音
             </DialogTitle>
           </div>
@@ -201,7 +221,7 @@ export function PersonalWechatWindowsSendDialog({
         </div>
 
         <div className="personal-wechat-send-target">
-            <span>{isGroupChat ? '发送到群聊' : '发送给联系人'}</span>
+          <span>{isGroupChat ? '发送到群聊' : '发送给联系人'}</span>
           <strong>{displayName}</strong>
           <code>{targetId}</code>
         </div>
@@ -246,7 +266,7 @@ export function PersonalWechatWindowsSendDialog({
                     key={message.id}
                     className={`personal-wechat-message-bubble ${message.outgoing ? 'is-outgoing' : ''}`}
                   >
-                      <span className="personal-wechat-message-kind">语音</span>
+                    <span className="personal-wechat-message-kind">语音</span>
                     <span>{message.text || message.fileName}</span>
                   </div>
                 ))}
@@ -255,6 +275,16 @@ export function PersonalWechatWindowsSendDialog({
             {initialImage && status.canSendImage ? (
               <section className="personal-wechat-composer" aria-label="日报图片发送">
                 <p>已准备日报图片：{initialImage.name}</p>
+                <ReportImagePostfixInput
+                  value={postfixText}
+                  onChange={setPostfixText}
+                  onBlur={() =>
+                    void persistPostfixText().catch((error) =>
+                      setSendError(error instanceof Error ? error.message : '发送后置词保存失败')
+                    )
+                  }
+                  disabled={sendBusy}
+                />
                 <Button size="sm" onClick={() => void handleSendReportImage()} disabled={sendBusy}>
                   {sendBusy ? '发送中…' : '发送日报图片'}
                 </Button>
@@ -270,6 +300,16 @@ export function PersonalWechatWindowsSendDialog({
                 onMessage={(message) => setMessages((current) => [...current, message])}
                 busy={sendBusy}
               />
+            ) : null}
+            {sendError ? (
+              <div className="personal-wechat-global-error" role="alert">
+                {sendError}
+              </div>
+            ) : null}
+            {sendSuccess ? (
+              <div className="personal-wechat-global-success" role="status">
+                {sendSuccess}
+              </div>
             ) : null}
           </>
         ) : null}

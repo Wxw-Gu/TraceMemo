@@ -148,12 +148,11 @@ describe('TextToSpeechPage', () => {
     await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ clearApiKey: true }))
   })
 
-  it('shows the macOS voice encoding environment entry without exposing OneBot controls', async () => {
+  it('shows the macOS voice encoding environment entry', async () => {
     render(<TextToSpeechPage onNotice={vi.fn()} />)
 
     expect(await screen.findByText('API 设置')).toBeVisible()
     expect(screen.getByText('语音编码环境')).toBeVisible()
-    expect(screen.queryByText(/OneBot/i)).not.toBeInTheDocument()
     expect(screen.queryByText('支持的微信版本')).not.toBeInTheDocument()
   })
 
@@ -166,8 +165,8 @@ describe('TextToSpeechPage', () => {
       python: { ready: true, executable: '/usr/local/bin/python3', version: '3.12.11' },
       pilk: { ready: false, error: '未安装' },
       ffmpeg: { ready: true, executable: '/runtime/ffmpeg', version: '6.1' },
-      encoder: 'go-silk' as const,
-      message: '语音编码环境不完整，OneBot 可能回退到 go-silk'
+      encoder: 'silk' as const,
+      message: '语音编码环境不完整，语音将回退到内置 SILK 编码'
     }
     const readyEnvironment = {
       ...incompleteEnvironment,
@@ -187,7 +186,7 @@ describe('TextToSpeechPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '安装 pilk' }))
     await waitFor(() => expect(installPilk).toHaveBeenCalledTimes(1))
-    expect(onNotice).toHaveBeenCalledWith('语音编码环境已修复。重新启动语音发送服务后生效。')
+    expect(onNotice).toHaveBeenCalledWith('语音编码环境已修复。')
     expect(await screen.findByText('✓ 编码环境正常')).toBeVisible()
   })
 })

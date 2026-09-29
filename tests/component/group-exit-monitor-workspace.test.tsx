@@ -1,8 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ReactElement } from 'react'
+import * as React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { GroupExitMonitorWorkspace } from '../../src/renderer/src/features/group-exit-monitor/GroupExitMonitorWorkspace'
+import {
+  GroupExitMonitorWorkspace,
+  type GroupExitMonitorOpenViewRequest
+} from '../../src/renderer/src/features/group-exit-monitor/GroupExitMonitorWorkspace'
 import type { GroupExitMonitorState } from '../../src/shared/group-exit-monitor'
 import { formatGroupExitMonitorTime } from '../../src/shared/group-exit-monitor'
 import type { Contact } from '../../src/shared/types'
@@ -48,7 +51,6 @@ const state: GroupExitMonitorState = {
   monitoredGroupCount: 3,
   monitorSelectionConfigured: true,
   monitoredRoomIds: ['研发群@chatroom', '设计群@chatroom'],
-  notificationRoomIds: [],
   lastCheckedAt: 1_756_600_000_000,
   lastReadAt: 0,
   unreadCount: 1
@@ -70,7 +72,7 @@ const groups: Contact[] = [
 ]
 
 describe('GroupExitMonitorWorkspace', () => {
-  const renderWorkspace = (element: ReactElement): void => {
+  const renderWorkspace = (element: React.ReactElement): void => {
     render(<TooltipProvider>{element}</TooltipProvider>)
   }
 
@@ -163,25 +165,23 @@ describe('GroupExitMonitorWorkspace', () => {
     await user.click(screen.getByRole('checkbox', { name: '监控研发群' }))
     await user.click(screen.getByRole('button', { name: '保存监控群聊' }))
 
-    await waitFor(() => expect(setGroups).toHaveBeenCalledWith(['研发群@chatroom'], []))
+    await waitFor(() => expect(setGroups).toHaveBeenCalledWith(['研发群@chatroom']))
     expect(screen.getByRole('heading', { name: '退群监控' })).toBeVisible()
     expect(screen.getByText('已监控群聊')).toBeVisible()
   })
 
-  it('filters group rows by selection and persists notification targets separately', async () => {
+  it('filters group rows by selection and saves the monitoring scope', async () => {
     const user = userEvent.setup()
     const configuredState: GroupExitMonitorState = {
       ...state,
       events: [],
       monitorSelectionConfigured: true,
       monitoredRoomIds: ['研发群@chatroom'],
-      notificationRoomIds: [],
       monitoredGroupCount: 1,
       unreadCount: 0
     }
     const savedState: GroupExitMonitorState = {
       ...configuredState,
-      notificationRoomIds: ['研发群@chatroom']
     }
     const setGroups = vi.fn().mockResolvedValue(savedState)
     window.api = {
@@ -209,12 +209,9 @@ describe('GroupExitMonitorWorkspace', () => {
 
     await user.click(screen.getByRole('combobox', { name: '筛选群聊状态' }))
     await user.click(await screen.findByRole('option', { name: '全部' }))
-    await user.click(screen.getByRole('checkbox', { name: '是否通知研发群' }))
     await user.click(screen.getByRole('button', { name: '保存监控群聊' }))
 
-    await waitFor(() =>
-      expect(setGroups).toHaveBeenCalledWith(['研发群@chatroom'], ['研发群@chatroom'])
-    )
+    await waitFor(() => expect(setGroups).toHaveBeenCalledWith(['研发群@chatroom']))
   })
 
   it('selects every group even when a search term is active', async () => {
@@ -224,7 +221,6 @@ describe('GroupExitMonitorWorkspace', () => {
       events: [],
       monitorSelectionConfigured: true,
       monitoredRoomIds: [],
-      notificationRoomIds: [],
       monitoredGroupCount: 0,
       unreadCount: 0
     }
@@ -244,7 +240,7 @@ describe('GroupExitMonitorWorkspace', () => {
     await user.click(screen.getByRole('button', { name: '保存监控群聊' }))
 
     await waitFor(() =>
-      expect(setGroups).toHaveBeenCalledWith(['研发群@chatroom', '设计群@chatroom'], [])
+      expect(setGroups).toHaveBeenCalledWith(['研发群@chatroom', '设计群@chatroom'])
     )
   })
 
@@ -275,43 +271,17 @@ describe('GroupExitMonitorWorkspace', () => {
     await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent('请先绑定个人微信'))
   })
 
-  it('shows the notification template from the management page header', async () => {
+  /*
+   * 迁移后这里**不再有模板入口与「通知群聊」列**：
+   * 模板的唯一编辑处是「自动化 → 规则 → 退群通知」。
+   * 退群监控只负责监控范围与退群事实。
+   */
+  it('管理群聊页不再提供通知模板与通知群聊配置', async () => {
     const user = userEvent.setup()
-    window.api = {
-      getGroupExitMonitorState: vi.fn().mockResolvedValue(state),
-      onGroupExitMonitorState: vi.fn(() => () => undefined),
-      getPersonalWechatSendCapability: vi.fn().mockResolvedValue({
-        supported: true,
-        ready: false,
-        status: 'needs_binding',
-        capabilities: { text: false, image: false, voice: false },
-        senderStatus: {} as never,
-        message: '请先绑定个人微信'
-      }),
-      setGroupExitMonitorGroups: vi.fn().mockResolvedValue(state),
-      checkGroupExitMonitorNow: vi.fn().mockResolvedValue(state),
-      clearGroupExitMonitorEvents: vi.fn().mockResolvedValue(state)
-    } as typeof window.api
-
-    renderWorkspace(<GroupExitMonitorWorkspace dbReady contacts={groups} />)
-    await user.click(await screen.findByRole('button', { name: '管理群聊' }))
-    await user.click(screen.getByRole('button', { name: '查看退群监测模板' }))
-
-    expect(screen.getByRole('heading', { name: '退群监测模板' })).toBeVisible()
-    const template = screen.getByLabelText('退群监测模板内容')
-    expect((template as HTMLTextAreaElement).value).toContain('用户: {user}')
-    expect((template as HTMLTextAreaElement).value).toContain('群备注: {groupRemark}')
-  })
-
-  it('edits and persists the notification template', async () => {
-    const user = userEvent.setup()
-    const savedTemplate = '[退群监测]\n用户: {user}\n群: {groupRemark}'
-    const setTemplate = vi.fn().mockResolvedValue({ ...state, notificationTemplate: savedTemplate })
     window.api = {
       getGroupExitMonitorState: vi.fn().mockResolvedValue(state),
       onGroupExitMonitorState: vi.fn(() => () => undefined),
       getPersonalWechatSendCapability: vi.fn().mockResolvedValue(null),
-      setGroupExitMonitorNotificationTemplate: setTemplate,
       setGroupExitMonitorGroups: vi.fn().mockResolvedValue(state),
       checkGroupExitMonitorNow: vi.fn().mockResolvedValue(state),
       clearGroupExitMonitorEvents: vi.fn().mockResolvedValue(state)
@@ -319,16 +289,16 @@ describe('GroupExitMonitorWorkspace', () => {
 
     renderWorkspace(<GroupExitMonitorWorkspace dbReady contacts={groups} />)
     await user.click(await screen.findByRole('button', { name: '管理群聊' }))
-    await user.click(screen.getByRole('button', { name: '查看退群监测模板' }))
-    const template = screen.getByLabelText('退群监测模板内容')
-    fireEvent.change(template, { target: { value: savedTemplate } })
-    await user.click(screen.getByRole('button', { name: '保存模板' }))
 
-    await waitFor(() => expect(setTemplate).toHaveBeenCalledWith(savedTemplate))
-    expect(screen.queryByRole('heading', { name: '退群监测模板' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '查看退群监测模板' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: '退群监测模板' })).toBeNull()
+    expect(screen.queryByText('通知群聊')).toBeNull()
+    expect(screen.queryByLabelText('退群监测模板内容')).toBeNull()
+    // 监控选择本身仍然可用。
+    expect(screen.getByRole('checkbox', { name: '监控研发群' })).toBeInTheDocument()
   })
 
-  it('copies the exit notice built from the template saved on the management page', async () => {
+  it('复制退群信息用的模板来自自动化规则，而不是退群监控自己存的', async () => {
     const user = userEvent.setup()
     const template = [
       '[退群监测]',
@@ -340,11 +310,19 @@ describe('GroupExitMonitorWorkspace', () => {
     ].join('\n')
     const copyText = vi.fn().mockResolvedValue({ success: true })
     window.api = {
-      getGroupExitMonitorState: vi
-        .fn()
-        .mockResolvedValue({ ...state, notificationTemplate: template }),
+      getGroupExitMonitorState: vi.fn().mockResolvedValue(state),
       onGroupExitMonitorState: vi.fn(() => () => undefined),
       copyText,
+      // 模板唯一来源：自动化里的退群通知规则。
+      listAutomationRules: vi.fn().mockResolvedValue([
+        {
+          id: 'builtin-leave-notification',
+          name: '退群通知',
+          enabled: true,
+          ruleType: 'leave_notification',
+          leaveNotification: { target: { type: 'file_transfer' }, template }
+        }
+      ]),
       checkGroupExitMonitorNow: vi.fn().mockResolvedValue(state),
       clearGroupExitMonitorEvents: vi.fn().mockResolvedValue(state)
     } as typeof window.api
@@ -396,7 +374,6 @@ describe('GroupExitMonitorWorkspace', () => {
       events: [],
       monitorSelectionConfigured: false,
       monitoredRoomIds: [],
-      notificationRoomIds: [],
       monitoredGroupCount: 0,
       unreadCount: 0
     }
@@ -412,5 +389,64 @@ describe('GroupExitMonitorWorkspace', () => {
     await user.click(await screen.findByRole('button', { name: '管理群聊' }))
     expect(screen.getByRole('checkbox', { name: '监控研发群' })).not.toBeChecked()
     expect(screen.getByRole('checkbox', { name: '监控设计群' })).not.toBeChecked()
+  })
+
+  /*
+   * 深链请求必须是**一次性**的。
+   *
+   * 真实拓扑里请求挂在 App，而本组件随一级菜单切换被卸载/重挂。
+   * 修复前 effect 只 `setView` 不回报父层，请求永远不清 —— 于是重挂时
+   * 那条陈旧的 `{view:'manage'}` 被重放，用户看到的现象就是
+   * "点一级菜单退群监控，却跳到了管理群聊"。
+   */
+  it('深链落到「管理群聊」，并立刻回报父层消费掉请求', async () => {
+    const onHandled = vi.fn()
+    renderWorkspace(
+      <GroupExitMonitorWorkspace
+        dbReady
+        openViewRequest={{ view: 'manage', requestId: 1 }}
+        onOpenViewRequestHandled={onHandled}
+      />
+    )
+
+    expect(await screen.findByRole('heading', { name: '管理群聊' })).toBeVisible()
+    await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1))
+  })
+
+  it('请求被消费后重新挂载，回到「退群事件」而不是「管理群聊」', async () => {
+    function Harness(): React.ReactElement {
+      const [request, setRequest] = React.useState<GroupExitMonitorOpenViewRequest | null>({
+        view: 'manage',
+        requestId: 1
+      })
+      const [mounted, setMounted] = React.useState(true)
+      return (
+        <>
+          <button type="button" onClick={() => setMounted((prev) => !prev)}>
+            切换页面
+          </button>
+          {mounted ? (
+            <GroupExitMonitorWorkspace
+              dbReady
+              openViewRequest={request}
+              onOpenViewRequestHandled={() => setRequest(null)}
+            />
+          ) : null}
+        </>
+      )
+    }
+
+    const user = userEvent.setup()
+    renderWorkspace(<Harness />)
+
+    // 第一次：深链确实生效。
+    expect(await screen.findByRole('heading', { name: '管理群聊' })).toBeVisible()
+
+    // 离开再回来（等价于点别的菜单再点「退群监控」）。
+    await user.click(screen.getByRole('button', { name: '切换页面' }))
+    await user.click(screen.getByRole('button', { name: '切换页面' }))
+
+    expect(await screen.findByText('小艾退出了研发群')).toBeVisible()
+    expect(screen.queryByRole('heading', { name: '管理群聊' })).toBeNull()
   })
 })

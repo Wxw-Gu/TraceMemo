@@ -4,16 +4,12 @@ import {
   Checkbox,
   EmptyState,
   Input,
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
   Switch,
-  Textarea,
   Tooltip,
   TooltipContent,
   TooltipTrigger
@@ -21,20 +17,37 @@ import {
 import type { Contact } from '../../../../shared/types'
 import {
   GROUP_EXIT_NOTIFICATION_TEMPLATE,
-  GROUP_EXIT_NOTIFICATION_TEMPLATE_MAX_LENGTH,
   renderGroupExitMonitorNotification,
-  validateGroupExitNotificationTemplate,
   type GroupExitMonitorEvent,
   type GroupExitMonitorState
 } from '../../../../shared/group-exit-monitor'
+import { BUILTIN_LEAVE_NOTIFICATION_RULE_ID } from '../../../../shared/automation'
 import type { PersonalWechatSendCapability } from '../../../../shared/personal-wechat'
+import { LeaveMonitorAutomationEntry } from './LeaveMonitorAutomationEntry'
 
 type GroupSelectionFilter = 'all' | 'selected' | 'unselected'
+
+/** 从「自动化 → 退群通知」跳回来时直接打开哪一页。 */
+export interface GroupExitMonitorOpenViewRequest {
+  view: 'events' | 'manage'
+  requestId: number
+}
 
 interface GroupExitMonitorWorkspaceProps {
   dbReady: boolean
   contacts?: Contact[]
   onOpenSendSettings?: () => void
+  /** 深链请求：直接落到「退群监控 → 管理群聊」。 */
+  openViewRequest?: GroupExitMonitorOpenViewRequest | null
+  /**
+   * 深链请求已被消费（父层据此把它清掉）。
+   *
+   * **不给这个回调，深链就会变成常驻状态**：本组件在切换一级菜单时会被卸载，
+   * 而请求还挂在父层，于是下次正常点「退群监控」也会被重放，直接落到「管理群聊」。
+   */
+  onOpenViewRequestHandled?: () => void
+  /** 「退群通知自动化 →」：跳到自动化里对应的规则类型（纯导航）。 */
+  onOpenLeaveNotificationAutomation?: () => void
 }
 
 const EMPTY_STATE: GroupExitMonitorState = {
@@ -45,7 +58,6 @@ const EMPTY_STATE: GroupExitMonitorState = {
   monitoredGroupCount: 0,
   monitorSelectionConfigured: true,
   monitoredRoomIds: [],
-  notificationRoomIds: [],
   lastReadAt: 0,
   unreadCount: 0
 }
@@ -85,56 +97,6 @@ const sendCapabilityLabel = (capability: PersonalWechatSendCapability | null): s
 const sendCapabilityTone = (capability: PersonalWechatSendCapability | null): string =>
   capability?.ready && capability.capabilities.text ? 'ready' : 'unready'
 
-function EventNotificationStatus({
-  event,
-  onOpenSendSettings,
-  onResend,
-  resending
-}: {
-  event: GroupExitMonitorState['events'][number]
-  onOpenSendSettings?: () => void
-  onResend?: () => void
-  resending?: boolean
-}): React.ReactElement {
-  const status = event.notificationStatus || event.notification?.status || 'not_requested'
-  const details =
-    status === 'sent'
-      ? { label: '已通知当前群聊', tone: 'sent', description: '' }
-      : status === 'pending'
-        ? { label: '正在通知当前群聊', tone: 'pending', description: '' }
-        : status === 'blocked'
-          ? { label: '通知已拦截', tone: 'blocked', description: '该操作未通过发送策略检查。' }
-          : status === 'failed'
-            ? {
-                label: '通知未发送',
-                tone: 'failed',
-                description:
-                  event.notification?.errorCode === 'SEND_CAPABILITY_UNAVAILABLE' ||
-                  event.notification?.errorCode === 'SEND_NOT_READY'
-                    ? '当前微信发送能力不可用，退群事件已正常记录。'
-                    : '退群事件已正常记录，但通知发送失败。'
-              }
-            : { label: '仅记录', tone: 'recorded', description: '' }
-  return (
-    <div className={`exit-monitor-event-notification ${details.tone}`}>
-      <span>{details.label}</span>
-      {details.description ? <small>{details.description}</small> : null}
-      {(event.notification?.errorCode === 'SEND_CAPABILITY_UNAVAILABLE' ||
-        event.notification?.errorCode === 'SEND_NOT_READY') &&
-      onOpenSendSettings ? (
-        <Button variant="link" size="sm" onClick={onOpenSendSettings}>
-          去设置
-        </Button>
-      ) : null}
-      {status !== 'sent' && status !== 'pending' && onResend ? (
-        <Button variant="link" size="sm" onClick={onResend} disabled={resending}>
-          {resending ? '发送中...' : '重新发送'}
-        </Button>
-      ) : null}
-    </div>
-  )
-}
-
 function SendCapabilityStatus({
   capability,
   className = ''
@@ -160,88 +122,12 @@ function SendCapabilityStatus({
   )
 }
 
-function GroupExitNotificationTemplate({
-  template,
-  saving,
-  error,
-  onSave
-}: {
-  template: string
-  saving: boolean
-  error: string
-  onSave: (template: string) => Promise<boolean>
-}): React.ReactElement {
-  const [open, setOpen] = React.useState(false)
-  const [draft, setDraft] = React.useState(template)
-  const [validationError, setValidationError] = React.useState('')
-
-  React.useEffect(() => {
-    if (!open) setDraft(template)
-  }, [open, template])
-
-  const handleOpenChange = (nextOpen: boolean): void => {
-    setOpen(nextOpen)
-    setValidationError('')
-    if (nextOpen) setDraft(template)
-  }
-
-  const saveDraft = async (): Promise<void> => {
-    const result = validateGroupExitNotificationTemplate(draft)
-    if (!result.valid || !result.template) {
-      setValidationError(result.error || '模板无效')
-      return
-    }
-    setValidationError('')
-    const saved = await onSave(result.template)
-    if (saved) setOpen(false)
-  }
-
-  return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
-      <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" aria-label="查看退群监测模板">
-          模板
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="exit-monitor-template-popover">
-        <div className="exit-monitor-template-heading">
-          <div>
-            <span className="exit-monitor-eyebrow">消息格式</span>
-            <h2>退群监测模板</h2>
-          </div>
-          <span className="exit-monitor-template-status">发送时使用</span>
-        </div>
-        <Textarea
-          id="exit-monitor-notification-template"
-          aria-label="退群监测模板内容"
-          value={draft}
-          rows={10}
-          maxLength={GROUP_EXIT_NOTIFICATION_TEMPLATE_MAX_LENGTH}
-          onChange={(event) => setDraft(event.target.value)}
-          className="exit-monitor-template-editor"
-        />
-        <div className="exit-monitor-template-meta">
-          <span>
-            支持 {`{user}`}、{`{groupRemark}`}、{`{wxid}`}、{`{previousCount}`}、{`{currentCount}`}
-            、{`{time}`}
-          </span>
-          <span>
-            {draft.length}/{GROUP_EXIT_NOTIFICATION_TEMPLATE_MAX_LENGTH}
-          </span>
-        </div>
-        <p>退群时会替换占位符；群备注指退群前的群内昵称，没有群备注时显示“未设置”。</p>
-        {validationError || error ? (
-          <p className="exit-monitor-template-error">{validationError || error}</p>
-        ) : null}
-        <div className="exit-monitor-template-actions">
-          <Button size="sm" onClick={() => void saveDraft()} disabled={saving}>
-            {saving ? '保存中...' : '保存模板'}
-          </Button>
-        </div>
-      </PopoverContent>
-    </Popover>
-  )
-}
+/*
+ * 「退群监测模板」编辑入口**已从这里移除**。
+ *
+ * 模板的唯一编辑处现在是「自动化 → 规则 → 退群通知 → 3 · 通知内容」。
+ * 退群监控只产生退群事实，不再持有通知模板 —— 两处可编辑必然漂移。
+ */
 
 function GroupAvatar({ contact }: { contact: Contact }): React.ReactElement {
   const name = contactDisplayName(contact)
@@ -256,7 +142,6 @@ function GroupAvatar({ contact }: { contact: Contact }): React.ReactElement {
 interface ManageGroupsProps {
   groups: Contact[]
   selectedRoomIds: Set<string>
-  notificationRoomIds: Set<string>
   sendCapability: PersonalWechatSendCapability | null
   keyword: string
   listFilter: GroupSelectionFilter
@@ -265,20 +150,14 @@ interface ManageGroupsProps {
   onKeywordChange: (keyword: string) => void
   onListFilterChange: (filter: GroupSelectionFilter) => void
   onToggle: (roomId: string) => void
-  onToggleNotification: (roomId: string) => void
   onToggleAll: () => void
   onSave: () => void
   onCancel: () => void
-  notificationTemplate: string
-  templateSaving: boolean
-  templateError: string
-  onSaveTemplate: (template: string) => Promise<boolean>
 }
 
 function ManageGroups({
   groups,
   selectedRoomIds,
-  notificationRoomIds,
   sendCapability,
   keyword,
   listFilter,
@@ -287,14 +166,9 @@ function ManageGroups({
   onKeywordChange,
   onListFilterChange,
   onToggle,
-  onToggleNotification,
   onToggleAll,
   onSave,
-  onCancel,
-  notificationTemplate,
-  templateSaving,
-  templateError,
-  onSaveTemplate
+  onCancel
 }: ManageGroupsProps): React.ReactElement {
   const lowerKeyword = keyword.trim().toLowerCase()
   const filteredGroups = React.useMemo(() => {
@@ -326,12 +200,6 @@ function ManageGroups({
           <p>选择需要持续关注成员变化的群聊，保存后会重新建立成员快照。</p>
         </div>
         <div className="exit-monitor-manage-header-status">
-          <GroupExitNotificationTemplate
-            template={notificationTemplate}
-            saving={templateSaving}
-            error={templateError}
-            onSave={onSaveTemplate}
-          />
           <SendCapabilityStatus capability={sendCapability} />
           <div className="exit-monitor-manage-count" aria-live="polite">
             已选择 <strong>{selectedRoomIds.size}</strong> 个群聊
@@ -394,7 +262,6 @@ function ManageGroups({
               const roomId = contactRoomId(contact)
               const name = contactDisplayName(contact)
               const checked = selectedRoomIds.has(roomId)
-              const notificationChecked = notificationRoomIds.has(roomId)
               return (
                 <div key={roomId} className={`exit-monitor-group-row ${checked ? 'selected' : ''}`}>
                   <Checkbox
@@ -412,15 +279,6 @@ function ManageGroups({
                   <span className="exit-monitor-group-row-status">
                     {checked ? '监控中' : '未选择'}
                   </span>
-                  <label className="exit-monitor-group-notification">
-                    <Checkbox
-                      checked={notificationChecked}
-                      disabled={!checked}
-                      onCheckedChange={() => onToggleNotification(roomId)}
-                      aria-label={`是否通知${name}`}
-                    />
-                    <span>通知群聊</span>
-                  </label>
                 </div>
               )
             })}
@@ -435,7 +293,9 @@ function ManageGroups({
       </section>
 
       <footer className="exit-monitor-manage-footer">
-        <span>保存后将从新的成员快照开始记录退群动态；通知仅发送到已勾选群聊。</span>
+        <span>
+          保存后将从新的成员快照开始记录退群动态；退群通知发到哪里，请在「自动化 → 退群通知」里配置。
+        </span>
         <div>
           <Button variant="ghost" onClick={onCancel} disabled={saving}>
             取消
@@ -452,7 +312,10 @@ function ManageGroups({
 export function GroupExitMonitorWorkspace({
   dbReady,
   contacts = [],
-  onOpenSendSettings
+  onOpenSendSettings,
+  openViewRequest,
+  onOpenViewRequestHandled,
+  onOpenLeaveNotificationAutomation
 }: GroupExitMonitorWorkspaceProps): React.ReactElement {
   const [state, setState] = React.useState<GroupExitMonitorState>(EMPTY_STATE)
   const [checking, setChecking] = React.useState(false)
@@ -462,21 +325,23 @@ export function GroupExitMonitorWorkspace({
   const [sendCapability, setSendCapability] = React.useState<PersonalWechatSendCapability | null>(
     null
   )
-  const [templateSaving, setTemplateSaving] = React.useState(false)
-  const [templateError, setTemplateError] = React.useState('')
   const [selectedRoomId, setSelectedRoomId] = React.useState('all')
   const [view, setView] = React.useState<'events' | 'manage'>('events')
-  const [resendingEventId, setResendingEventId] = React.useState<string | null>(null)
   const [copiedEventId, setCopiedEventId] = React.useState('')
+  /**
+   * 「复制退群信息」用的模板。
+   *
+   * 已迁到自动化规则；这里只是把它读回来给剪贴板用（见下面的 effect）。
+   */
+  const [copyNoticeTemplate, setCopyNoticeTemplate] = React.useState(
+    GROUP_EXIT_NOTIFICATION_TEMPLATE
+  )
   const copyResetTimer = React.useRef<number | null>(null)
   const [manageKeyword, setManageKeyword] = React.useState('')
   const [manageFilter, setManageFilter] = React.useState<GroupSelectionFilter>('all')
   const [selectedManageRoomIds, setSelectedManageRoomIds] = React.useState<Set<string>>(
     () => new Set()
   )
-  const [selectedManageNotificationRoomIds, setSelectedManageNotificationRoomIds] = React.useState<
-    Set<string>
-  >(() => new Set())
 
   const groups = React.useMemo(() => {
     const seen = new Set<string>()
@@ -521,6 +386,44 @@ export function GroupExitMonitorWorkspace({
       .catch(() => {
         if (!disposed) setSendCapability(null)
       })
+    return () => {
+      disposed = true
+    }
+  }, [])
+
+  /**
+   * 「自动化 → 退群通知 → 管理监控群聊」深链过来时，直接落到管理群聊页。
+   *
+   * 请求是**一次性的**：落位之后立刻回报父层把它清掉。以前只 `setView` 不回报，
+   * 请求就一直留在父层；而 `renderCurrentWorkspace()` 是 switch，切一级菜单会卸载
+   * 本组件 —— 于是下次正常点「退群监控」时，这条陈旧的 `{view:'manage'}` 被重放，
+   * 用户看到的就是"点退群监控却进了管理群聊"。
+   */
+  React.useEffect(() => {
+    if (!openViewRequest) return
+    setView(openViewRequest.view)
+    onOpenViewRequestHandled?.()
+  }, [openViewRequest, onOpenViewRequestHandled])
+
+  /**
+   * 「复制退群信息」用的模板。
+   *
+   * 模板**唯一来源**是「自动化 → 退群通知」规则 —— 退群监控自己不再持有模板。
+   * 读不到就回落默认模板（复制功能本身不依赖自动化是否启用）。
+   */
+  React.useEffect(() => {
+    const api = typeof window !== 'undefined' ? window.api : undefined
+    if (!api || typeof api.listAutomationRules !== 'function') return
+    let disposed = false
+    void api
+      .listAutomationRules()
+      .then((rules) => {
+        if (disposed) return
+        const rule = rules.find((item) => item.id === BUILTIN_LEAVE_NOTIFICATION_RULE_ID)
+        const template = rule?.leaveNotification?.template?.trim()
+        setCopyNoticeTemplate(template || GROUP_EXIT_NOTIFICATION_TEMPLATE)
+      })
+      .catch(() => undefined)
     return () => {
       disposed = true
     }
@@ -572,21 +475,15 @@ export function GroupExitMonitorWorkspace({
   }, [state.events])
   const setupEmpty =
     state.monitorSelectionConfigured === true && !(state.monitoredRoomIds || []).length
-  const notificationTemplate = state.notificationTemplate || GROUP_EXIT_NOTIFICATION_TEMPLATE
 
   const openManage = (): void => {
     const availableRoomIds = new Set(groups.map(contactRoomId))
     const defaultIds = state.monitorSelectionConfigured ? state.monitoredRoomIds || [] : []
     const selectedIds = new Set(defaultIds.filter((roomId) => availableRoomIds.has(roomId)))
-    const notificationIds = new Set(
-      (state.notificationRoomIds || []).filter((roomId) => selectedIds.has(roomId))
-    )
     setSelectedManageRoomIds(selectedIds)
-    setSelectedManageNotificationRoomIds(notificationIds)
     setManageKeyword('')
     setManageFilter('all')
     setError('')
-    setTemplateError('')
     setView('manage')
   }
 
@@ -615,26 +512,15 @@ export function GroupExitMonitorWorkspace({
     }
   }
 
-  const resendEvent = async (eventId: string): Promise<void> => {
-    if (resendingEventId || typeof window.api.resendGroupExitMonitorEvent !== 'function') return
-    setResendingEventId(eventId)
-    setError('')
-    try {
-      setState(await window.api.resendGroupExitMonitorEvent(eventId))
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setResendingEventId(null)
-    }
-  }
-
   /**
-   * 手动复制退群信息：按“管理群聊”里保存的模板拼接当前事件，只写系统剪贴板，
+   * 手动复制退群信息：按「自动化 → 退群通知」里的模板拼接当前事件，只写系统剪贴板，
    * 不触发任何微信发送，用户自行决定粘贴到哪里。
+   *
+   * 发送与重发**都不在这里** —— 通知由自动化执行，重发走执行日志。
    */
   const copyEventNotification = async (event: GroupExitMonitorEvent): Promise<void> => {
     const api = typeof window !== 'undefined' ? window.api : undefined
-    const text = renderGroupExitMonitorNotification(event, notificationTemplate)
+    const text = renderGroupExitMonitorNotification(event, copyNoticeTemplate)
     setError('')
     try {
       const result = api && typeof api.copyText === 'function' ? await api.copyText(text) : null
@@ -656,39 +542,17 @@ export function GroupExitMonitorWorkspace({
     setSaving(true)
     setError('')
     try {
+      // 只保存**监控范围**：通知配置属于自动化，不从这一页写。
       const selectedIds = groups
         .map(contactRoomId)
         .filter((roomId) => selectedManageRoomIds.has(roomId))
-      const notificationIds = selectedIds.filter((roomId) =>
-        selectedManageNotificationRoomIds.has(roomId)
-      )
-      const nextState = await api.setGroupExitMonitorGroups(selectedIds, notificationIds)
+      const nextState = await api.setGroupExitMonitorGroups(selectedIds)
       setState(nextState)
       setView('events')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setSaving(false)
-    }
-  }
-
-  const saveNotificationTemplate = async (template: string): Promise<boolean> => {
-    const api = window.api
-    if (templateSaving || typeof api.setGroupExitMonitorNotificationTemplate !== 'function') {
-      setTemplateError('当前版本不支持保存退群监测模板')
-      return false
-    }
-    setTemplateSaving(true)
-    setTemplateError('')
-    try {
-      const nextState = await api.setGroupExitMonitorNotificationTemplate(template)
-      setState(nextState)
-      return true
-    } catch (reason) {
-      setTemplateError(reason instanceof Error ? reason.message : String(reason))
-      return false
-    } finally {
-      setTemplateSaving(false)
     }
   }
 
@@ -707,20 +571,12 @@ export function GroupExitMonitorWorkspace({
   }
 
   const toggleManageGroup = (roomId: string): void => {
-    const wasSelected = selectedManageRoomIds.has(roomId)
     setSelectedManageRoomIds((current) => {
       const next = new Set(current)
       if (next.has(roomId)) next.delete(roomId)
       else next.add(roomId)
       return next
     })
-    if (wasSelected) {
-      setSelectedManageNotificationRoomIds((notifications) => {
-        const nextNotifications = new Set(notifications)
-        nextNotifications.delete(roomId)
-        return nextNotifications
-      })
-    }
   }
 
   const toggleAllManageGroups = (): void => {
@@ -734,17 +590,6 @@ export function GroupExitMonitorWorkspace({
       })
       return next
     })
-    if (!shouldSelect) setSelectedManageNotificationRoomIds(new Set())
-  }
-
-  const toggleManageNotification = (roomId: string): void => {
-    if (!selectedManageRoomIds.has(roomId)) return
-    setSelectedManageNotificationRoomIds((current) => {
-      const next = new Set(current)
-      if (next.has(roomId)) next.delete(roomId)
-      else next.add(roomId)
-      return next
-    })
   }
 
   if (view === 'manage') {
@@ -752,7 +597,6 @@ export function GroupExitMonitorWorkspace({
       <ManageGroups
         groups={groups}
         selectedRoomIds={selectedManageRoomIds}
-        notificationRoomIds={selectedManageNotificationRoomIds}
         sendCapability={sendCapability}
         keyword={manageKeyword}
         listFilter={manageFilter}
@@ -761,14 +605,9 @@ export function GroupExitMonitorWorkspace({
         onKeywordChange={setManageKeyword}
         onListFilterChange={setManageFilter}
         onToggle={toggleManageGroup}
-        onToggleNotification={toggleManageNotification}
         onToggleAll={toggleAllManageGroups}
         onSave={() => void saveGroups()}
         onCancel={() => setView('events')}
-        notificationTemplate={notificationTemplate}
-        templateSaving={templateSaving}
-        templateError={templateError}
-        onSaveTemplate={saveNotificationTemplate}
       />
     )
   }
@@ -806,6 +645,19 @@ export function GroupExitMonitorWorkspace({
             {statusLabel}
           </span>
           <SendCapabilityStatus capability={sendCapability} />
+          {/*
+            发送能力不完整时给一个可操作的去处。
+            这里只提示，不阻断任何编辑。
+          */}
+          {sendCapability &&
+          !(sendCapability.ready && sendCapability.capabilities?.text) &&
+          onOpenSendSettings ? (
+            <Button variant="link" size="sm" onClick={onOpenSendSettings}>
+              去设置发送能力
+            </Button>
+          ) : null}
+          {/* 检测到退群之后做什么，归自动化管；这里只是个入口。 */}
+          <LeaveMonitorAutomationEntry onOpen={onOpenLeaveNotificationAutomation} />
           <Button variant="outline" size="sm" onClick={openManage}>
             管理群聊
           </Button>
@@ -921,12 +773,10 @@ export function GroupExitMonitorWorkspace({
                           群人数 {event.previousCount} 人 → {event.currentCount} 人
                         </p>
                       ) : null}
-                      <EventNotificationStatus
-                        event={event}
-                        onOpenSendSettings={onOpenSendSettings}
-                        onResend={() => void resendEvent(event.id)}
-                        resending={resendingEventId === event.id}
-                      />
+                      {/*
+                        这里**不再显示通知状态**：发送结果归「自动化 → 执行日志」。
+                        退群监控只对"谁、哪个群、什么时候、人数怎么变"负责。
+                      */}
                       <dl className="exit-monitor-event-details">
                         <div>
                           <dt>微信名</dt>

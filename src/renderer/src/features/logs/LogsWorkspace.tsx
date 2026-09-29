@@ -13,7 +13,21 @@ import {
 } from '../../components/ui'
 
 type StatusFilter = 'all' | WechatActionStatus
-type PurposeFilter = 'all' | 'member_left_notification' | 'scheduled_report' | 'other'
+type PurposeFilter = 'all' | 'leave_notification' | 'scheduled_report' | 'other'
+
+/**
+ * 「退群通知」的发送用途。
+ *
+ * - `automation_leave_notification`：迁移后由自动化发出的退群通知（**当前唯一生产者**）；
+ * - `member_left_notification`：迁移前退群监控自己发的，只在**历史审计记录**里存在。
+ *
+ * 两个都归到「退群通知」这一个筛选项下 —— 否则用户翻旧日志时会发现
+ * 明明写着「退群通知」却筛不出来。
+ */
+const LEAVE_NOTIFICATION_PURPOSES: readonly string[] = [
+  'automation_leave_notification',
+  'member_left_notification'
+]
 
 const sourceLabel = (source: ActionLogEntry['source']): string => {
   if (source === 'member_monitor') return '退群监控'
@@ -27,7 +41,7 @@ const triggerLabel = (triggerType: ActionLogEntry['triggerType']): string =>
   triggerType === 'user' ? '用户触发' : '自动化'
 
 const purposeLabel = (purpose: WechatActionPurpose): string => {
-  if (purpose === 'member_left_notification') return '退群通知'
+  if (LEAVE_NOTIFICATION_PURPOSES.includes(purpose)) return '退群通知'
   if (purpose === 'scheduled_report') return '定时日报'
   if (purpose === 'tts_voice') return '文字转语音'
   return purpose || '其它动作'
@@ -51,7 +65,12 @@ const statusDetails = (entry: ActionLogEntry): { label: string; className: strin
 const matchesPurpose = (entry: ActionLogEntry, filter: PurposeFilter): boolean => {
   if (filter === 'all') return true
   if (filter === 'other') {
-    return entry.purpose !== 'member_left_notification' && entry.purpose !== 'scheduled_report'
+    return (
+      !LEAVE_NOTIFICATION_PURPOSES.includes(entry.purpose) && entry.purpose !== 'scheduled_report'
+    )
+  }
+  if (filter === 'leave_notification') {
+    return LEAVE_NOTIFICATION_PURPOSES.includes(entry.purpose)
   }
   return entry.purpose === filter
 }
@@ -133,7 +152,7 @@ export function LogsWorkspace(): React.ReactElement {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部类型</SelectItem>
-              <SelectItem value="member_left_notification">退群通知</SelectItem>
+              <SelectItem value="leave_notification">退群通知</SelectItem>
               <SelectItem value="scheduled_report">定时日报</SelectItem>
               <SelectItem value="other">其它动作</SelectItem>
             </SelectContent>

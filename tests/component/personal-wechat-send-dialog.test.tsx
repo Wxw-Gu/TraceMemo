@@ -12,16 +12,17 @@ vi.mock('../../src/renderer/src/utils/runtime-environment', () => ({
 }))
 
 const getStatus = vi.fn()
-const getRuntimeStatus = vi.fn()
-const onRuntimeProgress = vi.fn(() => vi.fn())
 const rebind = vi.fn()
 const sendGeneratedTtsVoice = vi.fn()
+const sendPersonalWechatMessage = vi.fn()
 const getTextToSpeechSettings = vi.fn()
 const listTextToSpeechVoices = vi.fn()
 const synthesizeTextToSpeech = vi.fn()
 const removeGeneratedTextToSpeechAudio = vi.fn()
 const getPersonalWechatVoiceDiagnostic = vi.fn()
 const copyText = vi.fn()
+const getSettings = vi.fn()
+const setSettings = vi.fn()
 
 const contact = {
   m_nsUsrName: 'fixture-room@chatroom',
@@ -38,8 +39,7 @@ const readyStatus = {
   wechatRunning: true,
   wechatPid: 4668,
   boundWechatPid: 4668,
-  oneBotPid: 5401,
-  endpoint: '127.0.0.1:58080',
+  endpoint: '127.0.0.1:4290',
   endpointReady: true,
   wechatVersion: '4.1.11.53',
   runtimeReady: true,
@@ -58,18 +58,6 @@ const readyStatus = {
   message: '个人微信已绑定'
 }
 
-const readyRuntime = {
-  version: 'v0.0.18',
-  state: 'ready' as const,
-  downloadedBytes: 1,
-  totalBytes: 1,
-  progress: 1,
-  platform: 'darwin' as NodeJS.Platform,
-  architecture: 'arm64',
-  supported: true,
-  removable: true
-}
-
 function renderDialog(
   props: Partial<React.ComponentProps<typeof PersonalWechatSendDialog>> = {}
 ): React.ReactElement {
@@ -85,12 +73,23 @@ async function startComposer(): Promise<void> {
 describe('PersonalWechatSendDialog', () => {
   beforeEach(() => {
     getStatus.mockReset().mockResolvedValue(readyStatus)
-    getRuntimeStatus.mockReset().mockResolvedValue(readyRuntime)
-    onRuntimeProgress.mockReset().mockReturnValue(vi.fn())
     rebind.mockReset().mockResolvedValue(readyStatus)
     sendGeneratedTtsVoice.mockReset().mockResolvedValue({
       action: { status: 'sent' },
       status: readyStatus
+    })
+    sendPersonalWechatMessage.mockReset().mockResolvedValue({
+      success: true,
+      status: readyStatus,
+      postfixSent: true
+    })
+    getSettings.mockReset().mockResolvedValue({
+      settings: { reportImagePostfixText: '今日日报' },
+      settingsPath: '/tmp/settings.json'
+    })
+    setSettings.mockReset().mockResolvedValue({
+      settings: { reportImagePostfixText: '今日日报' },
+      settingsPath: '/tmp/settings.json'
     })
     getTextToSpeechSettings.mockReset().mockResolvedValue({
       success: true,
@@ -125,16 +124,17 @@ describe('PersonalWechatSendDialog', () => {
       configurable: true,
       value: {
         getPersonalWechatSenderStatus: getStatus,
-        getPersonalWechatRuntimeStatus: getRuntimeStatus,
-        onPersonalWechatRuntimeProgress: onRuntimeProgress,
         rebindPersonalWechatSender: rebind,
         sendGeneratedTtsVoice,
+        sendPersonalWechatMessage,
         getTextToSpeechSettings,
         listTextToSpeechVoices,
         synthesizeTextToSpeech,
         removeGeneratedTextToSpeechAudio,
         getPersonalWechatVoiceDiagnostic,
-        copyText
+        copyText,
+        getSettings,
+        setSettings
       }
     })
   })
@@ -143,7 +143,6 @@ describe('PersonalWechatSendDialog', () => {
     renderDialog()
     await startComposer()
     expect(screen.getByRole('dialog')).toHaveTextContent('文字转语音')
-    expect(screen.queryByRole('switch', { name: '保留 OneBot 进程' })).not.toBeInTheDocument()
     expect(screen.queryByText('验证消息能力')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '生成语音' })).toBeDisabled()
   })
@@ -165,6 +164,55 @@ describe('PersonalWechatSendDialog', () => {
       })
     )
     expect(screen.getByLabelText('消息列表')).toHaveTextContent('你好 TraceMemo')
+  })
+
+  it('shows image send success feedback after the host confirms the send', async () => {
+    const user = userEvent.setup()
+    renderDialog({ initialImage: { path: '/tmp/report.png', name: '测试群日报.png' } })
+    expect(await screen.findByRole('textbox', { name: '发送后置词' })).toHaveValue('今日日报')
+    const sendButton = await screen.findByRole('button', { name: '发送日报图片' })
+    await user.click(sendButton)
+
+    await waitFor(() =>
+      expect(sendPersonalWechatMessage).toHaveBeenCalledWith({
+        type: 'image',
+        to: 'fixture-room@chatroom',
+        isGroup: true,
+        filePath: '/tmp/report.png',
+        postfixText: '今日日报'
+      })
+    )
+    expect(await screen.findByRole('status')).toHaveTextContent('日报图片和后置词发送成功')
+  })
+
+  it('persists a customized report postfix and sends it with the image request', async () => {
+    const user = userEvent.setup()
+    renderDialog({ initialImage: { path: '/tmp/report.png', name: '测试群日报.png' } })
+    const input = await screen.findByRole('textbox', { name: '发送后置词' })
+    await user.clear(input)
+    await user.type(input, '今日技术日报')
+    await user.tab()
+    await user.click(screen.getByRole('button', { name: '发送日报图片' }))
+
+    expect(setSettings).toHaveBeenCalledWith({ reportImagePostfixText: '今日技术日报' })
+    await waitFor(() =>
+      expect(sendPersonalWechatMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ postfixText: '今日技术日报' })
+      )
+    )
+  })
+
+  it('shows an error when the report postfix cannot be persisted', async () => {
+    setSettings.mockRejectedValueOnce(new Error('设置保存失败'))
+    const user = userEvent.setup()
+    renderDialog({ initialImage: { path: '/tmp/report.png', name: '测试群日报.png' } })
+    const input = await screen.findByRole('textbox', { name: '发送后置词' })
+
+    await user.clear(input)
+    await user.type(input, '今日技术日报')
+    await user.tab()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('设置保存失败')
   })
 
   it('keeps the setup guide voice-only when voice capability is unavailable', async () => {

@@ -1,26 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { findRuntime, buildEnvironment, writeLog } = vi.hoisted(() => ({
-  findRuntime: vi.fn(),
+const { isRuntimePresent, buildEnvironment, writeLog } = vi.hoisted(() => ({
+  isRuntimePresent: vi.fn(),
   buildEnvironment: vi.fn(),
   writeLog: vi.fn()
 }))
 
 vi.mock('../../src/main/services/personal-wechat-send-service', () => ({
-  findPersonalWechatRuntime: findRuntime,
   buildPersonalWechatRuntimeEnvironment: buildEnvironment
+}))
+vi.mock('../../src/main/services/mac-wechat-runtime-manager', () => ({
+  macWechatRuntimeManager: { isRuntimePresent: () => true }
 }))
 vi.mock('../../src/main/app-logger', () => ({ appLogger: { write: writeLog } }))
 
 import { PersonalWechatVoiceEnvironmentService } from '../../src/main/services/personal-wechat-voice-environment-service'
-
-const runtime = {
-  root: '/runtime',
-  executable: '/runtime/onebot/onebot',
-  workingDirectory: '/runtime/onebot',
-  configDirectory: '/runtime/wechat_version',
-  logPath: '/runtime/onebot/log/macos.log'
-}
 
 describe('PersonalWechatVoiceEnvironmentService', () => {
   let pilkAvailable = true
@@ -29,11 +23,8 @@ describe('PersonalWechatVoiceEnvironmentService', () => {
   beforeEach(() => {
     pilkAvailable = true
     commands.length = 0
-    findRuntime.mockReset().mockReturnValue(runtime)
-    buildEnvironment.mockReset().mockReturnValue({
-      PATH: '/runtime/bin',
-      PYTHONPATH: '/runtime/python'
-    })
+    isRuntimePresent.mockReset().mockReturnValue(true)
+    buildEnvironment.mockReset().mockReturnValue({ PATH: '/runtime/bin' })
     writeLog.mockReset()
   })
 
@@ -41,7 +32,7 @@ describe('PersonalWechatVoiceEnvironmentService', () => {
     return new PersonalWechatVoiceEnvironmentService({
       platform: 'darwin',
       architecture: 'arm64',
-      findRuntime,
+      isRuntimePresent,
       buildEnvironment,
       now: () => new Date('2026-08-31T00:00:00.000Z'),
       runCommand: async (executable, args, options) => {
@@ -74,7 +65,7 @@ describe('PersonalWechatVoiceEnvironmentService', () => {
     })
   }
 
-  it('checks pilk with the Python and environment used by OneBot', async () => {
+  it('checks pilk with the environment used by the native runtime', async () => {
     const environment = await createService().check()
 
     expect(environment).toMatchObject({
@@ -87,8 +78,7 @@ describe('PersonalWechatVoiceEnvironmentService', () => {
       ffmpeg: { ready: true, executable: '/runtime/bin/ffmpeg', version: '7.0' }
     })
     expect(commands.find((command) => command.executable === 'python3')?.env).toEqual({
-      PATH: '/runtime/bin',
-      PYTHONPATH: '/runtime/python'
+      PATH: '/runtime/bin'
     })
     expect(commands.some((command) => command.executable === '/runtime/python3')).toBe(true)
     expect(writeLog).toHaveBeenCalledWith(
@@ -99,12 +89,12 @@ describe('PersonalWechatVoiceEnvironmentService', () => {
     )
   })
 
-  it('reports go-silk fallback and installs the exact pilk version with the detected Python', async () => {
+  it('reports the built-in SILK fallback and installs the exact pilk version', async () => {
     pilkAvailable = false
     const service = createService()
     const before = await service.check()
 
-    expect(before).toMatchObject({ state: 'incomplete', ready: false, encoder: 'go-silk' })
+    expect(before).toMatchObject({ state: 'incomplete', ready: false, encoder: 'silk' })
     expect(before.pilk.ready).toBe(false)
 
     const result = await service.installPilk()
@@ -123,7 +113,7 @@ describe('PersonalWechatVoiceEnvironmentService', () => {
     const service = new PersonalWechatVoiceEnvironmentService({
       platform: 'darwin',
       architecture: 'arm64',
-      findRuntime,
+      isRuntimePresent,
       buildEnvironment,
       runCommand: async () => {
         throw new Error('spawn python3 ENOENT')
