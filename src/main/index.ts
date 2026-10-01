@@ -21,7 +21,10 @@ import { dirname, extname, join } from 'path'
 import { existsSync, promises as fsPromises } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import trayTemplateIcon from '../../resources/trayTemplate.png?asset'
+import trayTemplateRetinaIcon from '../../resources/trayTemplate@2x.png?asset'
 import { WechatDb } from './wechat-db'
+import { createTrayImage } from './tray-icon'
 import { bootstrapWcdbNativeAsync, Wcdb4Client } from './wcdb4-client'
 import { VoiceService } from './voice-service'
 import { StickerService } from './sticker-service'
@@ -370,6 +373,18 @@ function configureRecallProtection(
 
 const packagedIconPath = join(process.resourcesPath, 'resources', 'icon.png')
 const appIconPath = existsSync(packagedIconPath) ? packagedIconPath : icon
+const packagedTrayTemplateIconPath = join(process.resourcesPath, 'resources', 'trayTemplate.png')
+const packagedTrayTemplateRetinaIconPath = join(
+  process.resourcesPath,
+  'resources',
+  'trayTemplate@2x.png'
+)
+const trayTemplateIconPath = existsSync(packagedTrayTemplateIconPath)
+  ? packagedTrayTemplateIconPath
+  : trayTemplateIcon
+const trayTemplateRetinaIconPath = existsSync(packagedTrayTemplateRetinaIconPath)
+  ? packagedTrayTemplateRetinaIconPath
+  : trayTemplateRetinaIcon
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -920,8 +935,6 @@ app.whenReady().then(async () => {
 
   // 设置应用程序用户模型 ID
   electronApp.setAppUserModelId('com.tracememo.app')
-
-  if (process.platform === 'darwin') app.dock?.setIcon(appIconPath)
 
   // 开发环境中默认使用 F12 打开或关闭 DevTools
   // 生产环境中忽略 CommandOrControl + R
@@ -2875,11 +2888,12 @@ function buildTrayMenu(): Menu {
 function setupTray(): void {
   if (tray) return
   try {
-    const image = nativeImage.createFromPath(appIconPath)
-    const traySize = process.platform === 'darwin' ? 20 : 24
-    const trayImage = image.isEmpty()
-      ? nativeImage.createEmpty()
-      : image.resize({ width: traySize, height: traySize, quality: 'best' })
+    const trayImage = createTrayImage(
+      process.platform,
+      appIconPath,
+      { oneX: trayTemplateIconPath, twoX: trayTemplateRetinaIconPath },
+      nativeImage
+    )
     tray = new Tray(trayImage)
     tray.setToolTip('TraceMemo')
     // macOS may show a Tray context menu on a primary click when it is set

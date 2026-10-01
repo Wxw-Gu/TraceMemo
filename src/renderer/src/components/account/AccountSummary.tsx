@@ -26,11 +26,7 @@ export function AccountSummary({
   const displayName =
     showAccount && selfInfo ? selfInfo.nickname || selfInfo.wxid || '当前账号' : '未连接'
   const subtitle = showAccount && selfInfo ? selfInfo.wxid : '打开设置'
-  const statusText = dbReady
-    ? '数据库已连接'
-    : dbConnecting
-      ? '正在连接数据库'
-      : '数据库未连接'
+  const statusText = dbReady ? '数据库已连接' : dbConnecting ? '正在连接数据库' : '数据库未连接'
   const statusClass = dbReady ? 'ready' : dbConnecting ? 'connecting' : ''
   const initial = (displayName || '?').charAt(0)
   const title = `${displayName}\n${subtitle}`
@@ -66,8 +62,8 @@ export function AccountSummary({
       </span>
       <button type="button" className="account-summary-settings" onClick={onClick} title="设置">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" />
-          <path d="M19.4 15a8.2 8.2 0 0 0 .1-1l2-1.5-2-3.5-2.4 1a7.5 7.5 0 0 0-1.7-1l-.3-2.5h-4l-.4 2.5a7.5 7.5 0 0 0-1.7 1l-2.3-1-2 3.5 2 1.5a8.2 8.2 0 0 0 0 2l-2 1.5 2 3.5 2.3-1a7.5 7.5 0 0 0 1.7 1l.4 2.5h4l.3-2.5a7.5 7.5 0 0 0 1.7-1l2.4 1 2-3.5-2.1-1.5Z" />
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 1.72l-.15 1.58a8 8 0 0 0-1.77 1.03l-1.48-.6a2 2 0 0 0-2.5.88l-.22.39a2 2 0 0 0 .51 2.68l1.25.98a8 8 0 0 0 0 2.08l-1.25.98a2 2 0 0 0-.51 2.68l.22.39a2 2 0 0 0 2.5.88l1.48-.6c.54.43 1.14.78 1.77 1.03l.15 1.58a2 2 0 0 0 2 1.72h.44a2 2 0 0 0 2-1.72l.15-1.58c.63-.25 1.23-.6 1.77-1.03l1.48.6a2 2 0 0 0 2.5-.88l.22-.39a2 2 0 0 0-.51-2.68l-1.25-.98a8 8 0 0 0 0-2.08l1.25-.98a2 2 0 0 0 .51-2.68l-.22-.39a2 2 0 0 0-2.5-.88l-1.48.6a8 8 0 0 0-1.77-1.03l-.15-1.58a2 2 0 0 0-2-1.72Z" />
+          <circle cx="12" cy="12" r="3" />
         </svg>
       </button>
     </div>
