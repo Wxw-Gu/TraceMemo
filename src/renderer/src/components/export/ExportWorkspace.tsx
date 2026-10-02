@@ -27,6 +27,7 @@ import {
   buildContactSearchIndex,
   filterContactSearchIndex
 } from '../../../../shared/contact-search'
+import { loadExportPreferences, saveExportPreferences } from './exportPreferences'
 
 const ALL_CONTACT_TYPES: ExportContactType[] = ['group', 'user']
 const contactTypeKey = (types: ExportContactType[] | undefined): string =>
@@ -44,6 +45,8 @@ export function ExportWorkspace({
   onCancelExport
 }: ExportWorkspaceProps): React.ReactElement {
   const initialSelection = initialContact || contacts[0] || null
+  const defaultNameMode = initialSelection?.type === 'group' ? 'groupNickname' : 'remark'
+  const [savedPreferences] = useState(() => loadExportPreferences(defaultNameMode))
   const runningAllTask = exportTasks.find(
     (task) => task.scope === 'all' && task.status === 'running'
   )
@@ -64,24 +67,30 @@ export function ExportWorkspace({
   const contactSearchIndex = useMemo(() => buildContactSearchIndex(contacts), [contacts])
   const [activeContactId, setActiveContactId] = useState(initialSelection?.md5 || '')
   const [previewByContact, setPreviewByContact] = useState<Record<string, Message[]>>({})
-  const [range, setRange] = useState<ExportRange>(() => (runningAllTask ? 'all' : 'today'))
-  const [startDate, setStartDate] = useState('')
-  const [endDate, setEndDate] = useState('')
-  const [selectedKinds, setSelectedKinds] = useState<Set<string>>(() => new Set(['text']))
-  const [nameMode, setNameMode] = useState<ExportNameMode>(
-    initialSelection?.type === 'group' ? 'groupNickname' : 'remark'
+  const [range, setRange] = useState<ExportRange>(() => savedPreferences.range)
+  const [startDate, setStartDate] = useState(() => savedPreferences.startDate)
+  const [endDate, setEndDate] = useState(() => savedPreferences.endDate)
+  const [selectedKinds, setSelectedKinds] = useState<Set<string>>(
+    () => new Set(savedPreferences.selectedKinds)
   )
-  const [includeMedia, setIncludeMedia] = useState(true)
-  const [includeVoiceTranscripts, setIncludeVoiceTranscripts] = useState(true)
+  const [nameMode, setNameMode] = useState<ExportNameMode>(() => savedPreferences.nameMode)
+  const [includeMedia, setIncludeMedia] = useState(() => savedPreferences.includeMedia)
+  const [includeVoiceTranscripts, setIncludeVoiceTranscripts] = useState(
+    () => savedPreferences.includeVoiceTranscripts
+  )
   const [voiceModelStatus, setVoiceModelStatus] = useState<VoiceModelStatus | null>(null)
-  const [includeAvatars, setIncludeAvatars] = useState(true)
-  const [preferOriginal, setPreferOriginal] = useState(true)
-  const [fallbackThumbnail, setFallbackThumbnail] = useState(true)
-  const [keepMissing, setKeepMissing] = useState(true)
-  const [format, setFormat] = useState<ExportFormat>(() => runningAllTask?.format || 'csv')
-  const [zip, setZip] = useState(() => runningAllTask?.zip === true)
-  const [fileName, setFileName] = useState('')
-  const [outputDirectory, setOutputDirectory] = useState('')
+  const [includeAvatars, setIncludeAvatars] = useState(() => savedPreferences.includeAvatars)
+  const [preferOriginal, setPreferOriginal] = useState(() => savedPreferences.preferOriginal)
+  const [fallbackThumbnail, setFallbackThumbnail] = useState(
+    () => savedPreferences.fallbackThumbnail
+  )
+  const [keepMissing, setKeepMissing] = useState(() => savedPreferences.keepMissing)
+  const [format, setFormat] = useState<ExportFormat>(
+    () => runningAllTask?.format || savedPreferences.format
+  )
+  const [zip, setZip] = useState(() => runningAllTask?.zip ?? savedPreferences.zip)
+  const [fileName, setFileName] = useState(() => savedPreferences.fileName)
+  const [outputDirectory, setOutputDirectory] = useState(() => savedPreferences.outputDirectory)
   const [status, setStatus] = useState<ExportStatus>('idle')
   const [jobId, setJobId] = useState('')
   const [progress, setProgress] = useState<ExportJobProgress | null>(null)
@@ -91,6 +100,42 @@ export function ExportWorkspace({
   })
   const [taskCenterOpen, setTaskCenterOpen] = useState(false)
   const selectionLimit = 5
+
+  React.useEffect(() => {
+    saveExportPreferences({
+      format,
+      range,
+      startDate,
+      endDate,
+      selectedKinds: Array.from(selectedKinds) as ExportRequest['kinds'],
+      nameMode,
+      includeMedia,
+      includeVoiceTranscripts,
+      includeAvatars,
+      preferOriginal,
+      fallbackThumbnail,
+      keepMissing,
+      zip,
+      fileName,
+      outputDirectory
+    })
+  }, [
+    endDate,
+    fallbackThumbnail,
+    fileName,
+    format,
+    includeAvatars,
+    includeMedia,
+    includeVoiceTranscripts,
+    keepMissing,
+    nameMode,
+    outputDirectory,
+    preferOriginal,
+    range,
+    selectedKinds,
+    startDate,
+    zip
+  ])
 
   React.useEffect(() => {
     if (selectedContacts.length > 0) return
@@ -206,7 +251,6 @@ export function ExportWorkspace({
   const handleSelectContact = (contact: Contact): void => {
     if (exportAll) {
       setExportAll(false)
-      setRange('today')
     }
     if (!selectionMode) {
       setSelectedContacts([contact])
@@ -236,7 +280,6 @@ export function ExportWorkspace({
     setExportAll(true)
     setAllContactTypes([...ALL_CONTACT_TYPES])
     setSelectionMode(false)
-    setRange('all')
     setStatus('idle')
   }
 
@@ -417,6 +460,7 @@ export function ExportWorkspace({
     setSelectedKinds(new Set(['text']))
     setNameMode(contact?.type === 'group' ? 'groupNickname' : 'remark')
     setIncludeMedia(true)
+    setIncludeVoiceTranscripts(true)
     setIncludeAvatars(true)
     setPreferOriginal(true)
     setFallbackThumbnail(true)
@@ -424,6 +468,7 @@ export function ExportWorkspace({
     setFormat('csv')
     setZip(false)
     setFileName('')
+    setOutputDirectory('')
     setStatus('idle')
     setJobId('')
     setProgress(null)
@@ -492,7 +537,7 @@ export function ExportWorkspace({
         selectionMode={selectionMode}
         exportContactCount={exportContacts.length}
         format={format}
-        range={range}
+        range={exportAll ? 'all' : range}
         startDate={startDate}
         endDate={endDate}
         selectedKinds={selectedKinds}
