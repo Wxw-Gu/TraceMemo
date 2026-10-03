@@ -58,6 +58,67 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
       { key: 'q', label: '待解析标识', required: true, placeholder: '昵称、wxid 或 md5' }
     ]
   }),
+  endpoint('app-capabilities', {
+    name: '应用能力',
+    description: '查看数据库、Query、Automation 与运行环境的能力状态。'
+  }),
+  endpoint('group-exit-monitor', {
+    name: '退群监控状态',
+    description: '查看监控开关、监控群范围、事件数量和运行状态。'
+  }),
+  endpoint('group-exit-monitor-update', {
+    name: '配置退群监控',
+    description: '设置监控群范围或启用/关闭退群监控，不会修改退群通知 Automation。',
+    body: true
+  }),
+  endpoint('group-exit-events', {
+    name: '退群事件历史',
+    description: '按群和时间窗口查询退群事件，最多返回 200 条。',
+    parameters: [
+      { key: 'conversationId', label: '群会话 ID', placeholder: 'xxx@chatroom' },
+      { key: 'since', label: '开始时间', placeholder: '2026-10-01T00:00:00+07:00' },
+      { key: 'until', label: '结束时间', placeholder: '2026-10-02T23:59:59+07:00' },
+      { key: 'limit', label: '数量上限', placeholder: '50，最大 200' }
+    ]
+  }),
+  endpoint('group-member-stats', {
+    name: '群成员活跃统计',
+    description: '查询指定群在时间窗口内的活跃成员、沉默成员和数据完整性。',
+    parameters: [
+      { key: 'conversationId', label: '群会话 ID', required: true, placeholder: 'xxx@chatroom' },
+      { key: 'start', label: '开始时间', required: true, placeholder: '2026-10-01T00:00:00+07:00' },
+      { key: 'end', label: '结束时间', required: true, placeholder: '2026-10-02T23:59:59+07:00' }
+    ]
+  }),
+  endpoint('automations', {
+    name: '自动化规则',
+    description: '列出自动化规则，可按类型和启用状态筛选。',
+    parameters: [
+      { key: 'type', label: '规则类型', placeholder: 'daily_report / scheduled_report / leave_notification' },
+      { key: 'enabled', label: '启用状态', placeholder: 'true 或 false' }
+    ]
+  }),
+  endpoint('automation-create', {
+    name: '创建自动化规则',
+    description: '创建一条默认停用的自动化规则。',
+    body: true
+  }),
+  endpoint('automation-validate', {
+    name: '校验自动化规则',
+    description: '检查规则字段、目标标识和预计影响，不保存也不执行。',
+    body: true
+  }),
+  endpoint('automation-executions', {
+    name: '自动化执行记录',
+    description: '分页上限内查询执行结果，可按规则、状态和时间筛选。',
+    parameters: [
+      { key: 'ruleId', label: '规则 ID', placeholder: 'ruleId' },
+      { key: 'status', label: '状态', placeholder: 'running / success / failed' },
+      { key: 'since', label: '开始时间', placeholder: '2026-10-01T00:00:00+07:00' },
+      { key: 'until', label: '结束时间', placeholder: '2026-10-02T23:59:59+07:00' },
+      { key: 'limit', label: '数量上限', placeholder: '50，最大 200' }
+    ]
+  }),
   endpoint('report', {
     name: '群聊日报导出',
     description: '通过内置模板导出群聊日报 HTML 与 PNG。',

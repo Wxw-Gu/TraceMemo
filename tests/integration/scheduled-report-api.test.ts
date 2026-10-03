@@ -38,6 +38,7 @@ vi.mock('electron', () => ({
 vi.mock('../../src/main/services/chat-service', () => ({
   isReady: () => true,
   listContacts: () => fixture.contacts,
+  listContactsAsync: async () => fixture.contacts,
   listMessages: () => [],
   getGroupSnapshot: () => null,
   listRecentChat: () => [],

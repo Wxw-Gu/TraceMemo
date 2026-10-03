@@ -1,4 +1,4 @@
-export type ApiMethod = 'GET' | 'POST'
+export type ApiMethod = 'GET' | 'POST' | 'PATCH'
 export type { ApiTokenStatus } from '../../../../../shared/local-api-auth'
 
 export interface ApiParameter {

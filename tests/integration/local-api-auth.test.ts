@@ -29,7 +29,7 @@ const fixture = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
-  app: { getPath: () => fixture.root },
+  app: { getPath: () => fixture.root, getVersion: () => 'test-version' },
   safeStorage: {
     isEncryptionAvailable: () => fixture.storageAvailable,
     encryptString: (value: string) => Buffer.from(`encrypted:${value}`, 'utf8'),
@@ -111,7 +111,7 @@ describe('Local API authentication', () => {
     const health = await fetch(`${baseUrl(handle)}/api/v1/health`)
     expect(health.status).toBe(200)
     const healthBody = await health.json()
-    expect(healthBody).toMatchObject({ ok: true, service: 'TraceMemo Reader' })
+    expect(healthBody).toMatchObject({ ok: true, service: 'TraceMemo Reader', version: 'test-version' })
     expect(JSON.stringify(healthBody)).not.toMatch(
       /token|authorization|wxid|databasePath|provider/i
     )
@@ -126,6 +126,64 @@ describe('Local API authentication', () => {
     })
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toMatchObject({ count: 1 })
+  })
+
+  it.each([
+    ['POST', '/api/v1/health', 'GET'],
+    ['PATCH', '/api/v1/current_time', 'GET'],
+    ['POST', '/api/v1/contact', 'GET'],
+    ['POST', '/api/v1/chatroom', 'GET'],
+    ['POST', '/api/v1/recent_chat', 'GET'],
+    ['POST', '/api/v1/chatlog', 'GET'],
+    ['POST', '/api/v1/group_snapshot', 'GET'],
+    ['POST', '/api/v1/resolve', 'GET'],
+    ['POST', '/api/v1/agent/status', 'GET'],
+    ['GET', '/api/v1/report', 'POST'],
+    ['PATCH', '/api/v1/query/capabilities', 'GET'],
+    ['GET', '/api/v1/query/messages', 'POST'],
+    ['POST', '/api/v1/media/image-1', 'GET, HEAD']
+  ])('rejects unsupported methods with Allow: %s', async (method, pathname, allow) => {
+    const handle = await startFixtureServer()
+    const requestId = 'phase1:method-guard'
+    const response = await fetch(`${baseUrl(handle)}${pathname}`, {
+      method,
+      headers: { 'X-Request-Id': requestId }
+    })
+
+    expect(response.status).toBe(405)
+    expect(response.headers.get('allow')).toBe(allow)
+    expect(response.headers.get('x-request-id')).toBe(requestId)
+    await expect(response.json()).resolves.toMatchObject({ requestId })
+  })
+
+  it('rejects oversized JSON request bodies with 413 and a request ID', async () => {
+    const handle = await startFixtureServer()
+    const requestId = 'phase1:body-limit'
+    const response = await fetch(`${baseUrl(handle)}/api/v1/report`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${VALID_TOKEN}`,
+        'Content-Type': 'application/json',
+        'X-Request-Id': requestId
+      },
+      body: 'x'.repeat(1024 * 1024 + 1)
+    })
+
+    expect(response.status).toBe(413)
+    expect(response.headers.get('x-request-id')).toBe(requestId)
+    await expect(response.json()).resolves.toMatchObject({ status: 413, requestId })
+  })
+
+  it('replaces malformed or oversized client request IDs with a server UUID', async () => {
+    const handle = await startFixtureServer()
+    const malformedId = 'x'.repeat(129)
+    const response = await fetch(`${baseUrl(handle)}/api/v1/health`, {
+      headers: { 'X-Request-Id': malformedId }
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('x-request-id')).toMatch(/^[0-9a-f-]{36}$/i)
+    expect(response.headers.get('x-request-id')).not.toBe(malformedId)
   })
 
   it('exposes the query capability catalog only with the existing bearer token', async () => {
@@ -179,6 +237,23 @@ describe('Local API authentication', () => {
     expect(Buffer.from(await response.arrayBuffer())).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xd9]))
     expect(provider).toHaveBeenCalledOnce()
     expect(JSON.stringify(response.headers)).not.toMatch(/path|token|database/i)
+  })
+
+  it('preserves authenticated HEAD requests for media without returning a body', async () => {
+    const provider = vi.fn(async () => ({
+      buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      mimeType: 'image/jpeg'
+    }))
+    const handle = await startFixtureServer(() => VALID_TOKEN, provider)
+    const response = await fetch(`${baseUrl(handle)}/api/v1/media/message-1`, {
+      method: 'HEAD',
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` }
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-length')).toBe('4')
+    expect((await response.arrayBuffer()).byteLength).toBe(0)
+    expect(provider).toHaveBeenCalledOnce()
   })
 
   it('adds media metadata to chatlog while redacting image keys', async () => {
@@ -265,9 +340,10 @@ describe('Local API authentication', () => {
         headers: { Authorization: authorization }
       })
       expect(response.status).toBe(401)
-      await expect(response.json()).resolves.toEqual({
+      await expect(response.json()).resolves.toMatchObject({
         error: 'unauthorized',
-        message: 'Valid API token required'
+        message: 'Valid API token required',
+        requestId: expect.any(String)
       })
     }
   )
@@ -344,7 +420,9 @@ describe('Local API authentication', () => {
     expect(response.headers.get('access-control-allow-origin')).toBe(origin)
     expect(response.headers.get('access-control-allow-methods')).toContain('PATCH')
     expect(response.headers.get('access-control-allow-methods')).toContain('DELETE')
-    expect(response.headers.get('access-control-allow-headers')).toBe('Content-Type, Authorization')
+    expect(response.headers.get('access-control-allow-headers')).toBe(
+      'Content-Type, Authorization, X-Request-Id'
+    )
   })
 
   it.each([

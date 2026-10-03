@@ -76,7 +76,7 @@ import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../
 import { KeyServiceMac } from './key-service-mac'
 import { KeyService as KeyServiceWin } from './key-service-win'
 import * as chat from './services/chat-service'
-import { apiServer, setLocalQueryApiService } from './http-server'
+import { apiServer, setLocalGroupStatsService, setLocalQueryApiService } from './http-server'
 import { skillResourceService } from './services/skill-resource-service'
 import { buildLocalApiCurlCommand, testLocalApiRequest } from './services/local-api-test-service'
 import { isWechatRunning } from './services/wechat-process-status'
@@ -805,6 +805,7 @@ app.whenReady().then(async () => {
   // 群员统计复用同一个 Knowledge 实例：它只是「读派生库 + 读成员名单」的编排，
   // 不持有自己的数据库，也不新建索引。
   groupStatsService = new GroupStatsService(knowledgeSearchService)
+  setLocalGroupStatsService(groupStatsService)
   // 图片文字索引覆盖度是**独立覆盖维度**：接到 search_messages 的 tool result 上，
   // 让 Query Agent 在图片索引没做完时不能凭 0 条证据断言"没有"。
   localQueryApiService.setImageTextCoverageProvider(() =>

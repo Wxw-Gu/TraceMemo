@@ -21,6 +21,39 @@ export const LOCAL_API_ENDPOINTS = {
     path: '/api/v1/scheduled-reports',
     queryKeys: []
   },
+  'app-capabilities': { method: 'GET', path: '/api/v1/capabilities', queryKeys: [] },
+  automations: {
+    method: 'GET',
+    path: '/api/v1/automations',
+    queryKeys: ['type', 'enabled']
+  },
+  'automation-create': { method: 'POST', path: '/api/v1/automations', queryKeys: [] },
+  'automation-validate': { method: 'POST', path: '/api/v1/automations/validate', queryKeys: [] },
+  'automation-executions': {
+    method: 'GET',
+    path: '/api/v1/automations/executions',
+    queryKeys: ['ruleId', 'status', 'since', 'until', 'limit']
+  },
+  'group-exit-monitor': {
+    method: 'GET',
+    path: '/api/v1/monitors/group-exits',
+    queryKeys: []
+  },
+  'group-exit-monitor-update': {
+    method: 'PATCH',
+    path: '/api/v1/monitors/group-exits',
+    queryKeys: []
+  },
+  'group-exit-events': {
+    method: 'GET',
+    path: '/api/v1/monitors/group-exits/events',
+    queryKeys: ['conversationId', 'since', 'until', 'limit']
+  },
+  'group-member-stats': {
+    method: 'GET',
+    path: '/api/v1/groups/{conversationId}/member-stats',
+    queryKeys: ['conversationId', 'start', 'end']
+  },
   report: { method: 'POST', path: '/api/v1/report', queryKeys: [] },
   'agent-status': { method: 'GET', path: '/api/v1/agent/status', queryKeys: [] },
   'agent-group-report': { method: 'POST', path: '/api/v1/agent/group-report', queryKeys: [] },

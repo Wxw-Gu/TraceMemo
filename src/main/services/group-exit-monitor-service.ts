@@ -237,49 +237,72 @@ class GroupExitMonitorService {
    * 本服务不再持有任何通知配置。
    */
   async setMonitoredRoomIds(roomIds: string[]): Promise<GroupExitMonitorState> {
+    return this.configure({ monitoredRoomIds: roomIds })
+  }
+
+  /**
+   * Atomically update the monitor scope and enabled state.
+   *
+   * Agent API PATCH validates the whole request before calling this method. Keeping the
+   * two mutations in one service operation also means persistence and the renderer broadcast
+   * observe one final configuration rather than an intermediate half-patched state.
+   */
+  async configure(configuration: {
+    monitoredRoomIds?: string[]
+    enabled?: boolean
+  }): Promise<GroupExitMonitorState> {
     this.ensureLoaded()
-    this.eventSequence += 1
-    this.scopeGeneration += 1
-    this.monitorSelectionConfigured = true
-    const nextMonitoredRoomIds = normalizeRoomIds(roomIds)
-    for (const roomId of this.snapshots.keys()) {
-      if (!nextMonitoredRoomIds.has(roomId)) this.snapshots.delete(roomId)
+    const hasScope = configuration.monitoredRoomIds !== undefined
+    const hasEnabled = configuration.enabled !== undefined
+    if (!hasScope && !hasEnabled) return this.getState()
+    if (hasEnabled && !hasScope && this.enabled === configuration.enabled) return this.getState()
+
+    if (hasScope) {
+      this.eventSequence += 1
+      this.scopeGeneration += 1
+      this.monitorSelectionConfigured = true
+      const nextMonitoredRoomIds = normalizeRoomIds(configuration.monitoredRoomIds || [])
+      for (const roomId of this.snapshots.keys()) {
+        if (!nextMonitoredRoomIds.has(roomId)) this.snapshots.delete(roomId)
+      }
+      for (const roomId of this.hydrationQueue) {
+        if (!nextMonitoredRoomIds.has(roomId)) this.hydrationQueue.delete(roomId)
+      }
+      this.monitoredRoomIds = nextMonitoredRoomIds
+      this.groupNamesRefreshPending = true
+      this.lastCheckedAt = undefined
     }
-    for (const roomId of this.hydrationQueue) {
-      if (!nextMonitoredRoomIds.has(roomId)) this.hydrationQueue.delete(roomId)
+
+    if (hasEnabled && this.enabled !== configuration.enabled) {
+      this.enabled = configuration.enabled === true
+      this.eventSequence += 1
+      this.scopeGeneration += 1
+      this.checkQueued = false
+      this.hydrationQueue.clear()
+      if (this.changeTimer) clearTimeout(this.changeTimer)
+      this.changeTimer = null
+
+      if (this.enabled) {
+        // 用户主动暂停期间的成员变化不补报；重新开启后从当前状态建立新基线。
+        this.snapshots.clear()
+        this.lastCheckedAt = undefined
+        this.groupNamesRefreshPending = true
+      }
     }
-    this.monitoredRoomIds = nextMonitoredRoomIds
-    this.groupNamesRefreshPending = true
-    this.lastCheckedAt = undefined
+
     this.save()
     this.broadcast()
-    // 建立基线放到后台，保存配置可以立即返回。
-    if (this.enabled && this.active) void this.check()
+    // 仅修改范围时保持原有的后台基线行为；涉及 enabled 的 PATCH 等待一次检查，
+    // 让调用方拿到的是最终运行状态。
+    if (this.enabled && this.active && chat.isReady()) {
+      if (hasEnabled) await this.check()
+      else void this.check()
+    }
     return this.getState()
   }
 
   async setEnabled(enabled: boolean): Promise<GroupExitMonitorState> {
-    this.ensureLoaded()
-    if (this.enabled === enabled) return this.getState()
-
-    this.enabled = enabled
-    this.eventSequence += 1
-    this.scopeGeneration += 1
-    this.checkQueued = false
-    this.hydrationQueue.clear()
-    if (this.changeTimer) clearTimeout(this.changeTimer)
-    this.changeTimer = null
-
-    if (enabled) {
-      // 用户主动暂停期间的成员变化不补报；重新开启后从当前状态建立新基线。
-      this.snapshots.clear()
-      this.lastCheckedAt = undefined
-      this.groupNamesRefreshPending = true
-    }
-    this.save()
-    this.broadcast()
-    if (enabled && this.active && chat.isReady()) await this.check()
-    return this.getState()
+    return this.configure({ enabled })
   }
 
   /**
