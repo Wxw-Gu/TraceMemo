@@ -54,6 +54,7 @@ export interface WindowsNativePathBridgeOptions {
 type Wcdb4MessageStore = {
   tableName: string
   dbPath: string
+  senderTableName?: string
 }
 
 export interface Wcdb4GroupMember {
@@ -1623,7 +1624,7 @@ export class Wcdb4Client {
       try {
         const order = limit ? 'DESC' : 'ASC'
         const rowLimit = limit || 5000
-        const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
+        const sql = `${this.messageTableSelect(table)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
         const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
           this.wcdbExecQuery!(handle, 'message', table.dbPath, sql, outJson)
         )
@@ -1699,7 +1700,7 @@ export class Wcdb4Client {
         // `local_id` 参与排序：`create_time` 同秒的消息需要一个稳定次序，
         // 否则多次读取的行序可能不同，调用方无法做稳定游标。
         const direction = options.order === 'desc' ? 'DESC' : 'ASC'
-        const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${where} ORDER BY "create_time" ${direction}, "local_id" ${direction} LIMIT ${limit}`
+        const sql = `${this.messageTableSelect(table)} WHERE ${where} ORDER BY "create_time" ${direction}, "local_id" ${direction} LIMIT ${limit}`
         const queryStartedAt = Date.now()
         const rows = await this.callJsonAsync<Record<string, unknown>[]>(
           this.wcdbExecQuery as unknown as KoffiAsyncFunction,
@@ -1771,7 +1772,7 @@ export class Wcdb4Client {
     let successfulTables = 0
     for (const table of tables) {
       try {
-        const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
+        const sql = `${this.messageTableSelect(table)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
         const queryStartedAt = Date.now()
         const rows = await this.callJsonAsync<Record<string, unknown>[]>(
           this.wcdbExecQuery as unknown as KoffiAsyncFunction,
@@ -1847,7 +1848,7 @@ export class Wcdb4Client {
         if (!username.startsWith('gh_')) throw error
       }
     }
-    return stores.length > 0 ? stores : this.listBizMessageStores(username)
+    return stores.length > 0 ? stores : this.listFallbackMessageStores(username)
   }
 
   private async listMessageStoresAsync(username: string): Promise<Wcdb4MessageStore[]> {
@@ -1863,7 +1864,7 @@ export class Wcdb4Client {
         if (!username.startsWith('gh_')) throw error
       }
     }
-    return stores.length > 0 ? stores : this.listBizMessageStoresAsync(username)
+    return stores.length > 0 ? stores : this.listFallbackMessageStoresAsync(username)
   }
 
   private parseMessageStores(rows: Record<string, unknown>[]): Wcdb4MessageStore[] {
@@ -1875,12 +1876,17 @@ export class Wcdb4Client {
       .filter((row) => row.tableName && row.dbPath)
   }
 
-  private getBizMessageDatabasePaths(): string[] {
+  private getMessageDatabasePaths(username: string): string[] {
+    // Native shard discovery can return no stores on Windows even when SQL reads work.
+    // Enumerate only canonical databases; sync-conflict copies are not message shards.
     const messageRoot = path.join(this.dbStoragePath, 'message')
+    const pattern = username.startsWith('gh_')
+      ? /^biz_message(?:_\d+)?\.db$/i
+      : /^message(?:_\d+)?\.db$/i
     try {
       return fs
         .readdirSync(messageRoot)
-        .filter((name) => /^biz_message(?:_\d+)?\.db$/i.test(name))
+        .filter((name) => pattern.test(name))
         .sort()
         .map((name) => path.join(messageRoot, name))
     } catch {
@@ -1888,49 +1894,69 @@ export class Wcdb4Client {
     }
   }
 
-  private listBizMessageStores(username: string): Wcdb4MessageStore[] {
-    if (!this.wcdbExecQuery || !username.startsWith('gh_')) return []
+  private listFallbackMessageStores(username: string): Wcdb4MessageStore[] {
+    if (!this.wcdbExecQuery) return []
     const tableName = `Msg_${this.md5(username)}`
     const escapedTableName = tableName.replace(/'/g, "''")
     const stores: Wcdb4MessageStore[] = []
-    for (const dbPath of this.getBizMessageDatabasePaths()) {
+    for (const dbPath of this.getMessageDatabasePaths(username)) {
       try {
         const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
           this.wcdbExecQuery!(
             handle,
             'message',
             dbPath,
-            `SELECT name FROM sqlite_master WHERE type='table' AND name='${escapedTableName}'`,
+            `SELECT name FROM sqlite_master WHERE type='table' AND (name='${escapedTableName}' OR name LIKE 'Name2Id%') ORDER BY name DESC`,
             outJson
           )
         )
-        if (Array.isArray(rows) && rows.length > 0) stores.push({ tableName, dbPath })
+        if (Array.isArray(rows) && rows.some((row) => row.name === tableName)) {
+          const senderTableName = rows.find((row) => /^Name2Id/i.test(String(row.name)))?.name
+          stores.push({
+            tableName,
+            dbPath,
+            ...(senderTableName ? { senderTableName: String(senderTableName) } : {})
+          })
+        }
       } catch {
-        // Older biz shards may be absent or use a different key; continue scanning.
+        // A shard may use a different key; continue checking the other databases.
       }
     }
     return stores
   }
 
-  private async listBizMessageStoresAsync(username: string): Promise<Wcdb4MessageStore[]> {
-    if (!this.wcdbExecQuery || !username.startsWith('gh_')) return []
+  private async listFallbackMessageStoresAsync(username: string): Promise<Wcdb4MessageStore[]> {
+    if (!this.wcdbExecQuery) return []
     const tableName = `Msg_${this.md5(username)}`
     const escapedTableName = tableName.replace(/'/g, "''")
     const stores: Wcdb4MessageStore[] = []
-    for (const dbPath of this.getBizMessageDatabasePaths()) {
+    for (const dbPath of this.getMessageDatabasePaths(username)) {
       try {
         const rows = await this.callJsonAsync<Record<string, unknown>[]>(
           this.wcdbExecQuery as unknown as KoffiAsyncFunction,
           'message',
           dbPath,
-          `SELECT name FROM sqlite_master WHERE type='table' AND name='${escapedTableName}'`
+          `SELECT name FROM sqlite_master WHERE type='table' AND (name='${escapedTableName}' OR name LIKE 'Name2Id%') ORDER BY name DESC`
         )
-        if (Array.isArray(rows) && rows.length > 0) stores.push({ tableName, dbPath })
+        if (Array.isArray(rows) && rows.some((row) => row.name === tableName)) {
+          const senderTableName = rows.find((row) => /^Name2Id/i.test(String(row.name)))?.name
+          stores.push({
+            tableName,
+            dbPath,
+            ...(senderTableName ? { senderTableName: String(senderTableName) } : {})
+          })
+        }
       } catch {
-        // Older biz shards may be absent or use a different key; continue scanning.
+        // A shard may use a different key; continue checking the other databases.
       }
     }
     return stores
+  }
+
+  private messageTableSelect(store: Wcdb4MessageStore): string {
+    const table = this.quoteSqlIdentifier(store.tableName)
+    if (!store.senderTableName) return `SELECT * FROM ${table}`
+    return `SELECT m.*, n.user_name AS sender_username FROM ${table} AS m LEFT JOIN ${this.quoteSqlIdentifier(store.senderTableName)} AS n ON n.rowid = m.real_sender_id`
   }
 
   private executeMessageSql(store: Wcdb4MessageStore, sql: string): Record<string, unknown>[] {
