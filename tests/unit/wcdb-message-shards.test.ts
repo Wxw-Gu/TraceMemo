@@ -97,6 +97,80 @@ describe('WCDB message shard pagination', () => {
     ])
   })
 
+  it.each(['wxid_fixture_peer', 'fixture@chatroom'])(
+    'reads %s from all canonical shards when native discovery is empty',
+    async (username) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wxe-message-fallback-'))
+      temporaryDirectories.push(root)
+      const dbStoragePath = path.join(root, 'db_storage')
+      const messageRoot = path.join(dbStoragePath, 'message')
+      fs.ensureDirSync(messageRoot)
+      for (const name of [
+        'message_0.db',
+        'message_7.db',
+        'message_6.db',
+        'message_0 (同步冲突).db',
+        'biz_message_0.db'
+      ]) {
+        fs.writeFileSync(path.join(messageRoot, name), '')
+      }
+      const tableName = `Msg_${crypto.createHash('md5').update(username).digest('hex')}`
+      const query = vi.fn((_kind: string, dbPath: string, sql: string) => {
+        if (sql.includes('sqlite_master')) {
+          return dbPath.endsWith('message_6.db')
+            ? [{ name: 'Name2Id' }]
+            : [{ name: tableName }, { name: 'Name2Id' }]
+        }
+        expect(sql).toContain('n.user_name AS sender_username')
+        expect(sql).toContain('n.rowid = m.real_sender_id')
+        expect(sql).toContain('"create_time" <= 1800000000')
+        expect(sql).toContain('ORDER BY "create_time" DESC LIMIT 20')
+        const isLatestShard = dbPath.endsWith('message_7.db')
+        return [
+          {
+            local_id: 1,
+            server_id: isLatestShard ? 'fixture-new' : 'fixture-old',
+            local_type: 1,
+            create_time: isLatestShard ? 1700000001 : 1700000000,
+            message_content: 'fixture text',
+            sender_username: isLatestShard ? 'wxid_self' : 'wxid_peer'
+          }
+        ]
+      })
+      const stats = vi.fn(() => [])
+      const client = Object.assign(Object.create(Wcdb4Client.prototype), {
+        dbStoragePath,
+        accountRoot: path.join(root, 'wxid_self'),
+        wxid: 'wxid_self',
+        displayNameCache: new Map(),
+        avatarCache: new Map(),
+        wcdbGetMessageTableStats: stats,
+        wcdbExecQuery: query,
+        getMessagesByCursor: vi.fn(() => []),
+        getMessagesByCursorAsync: vi.fn(async () => []),
+        getGroupNicknames: vi.fn(() => new Map()),
+        callJson: vi.fn((call) => call(1, [null])),
+        callJsonAsync: vi.fn(async (fn, ...args) => fn(...args))
+      }) as Wcdb4Client
+      // The synchronous FFI callback includes handle/output arguments.
+      const syncQuery = vi.fn((_handle, kind, dbPath, sql) => query(kind, dbPath, sql))
+      Reflect.set(client, 'wcdbExecQuery', syncQuery)
+      const synchronous = client.getMessages(username, undefined, 1800000000, { limit: 20 })
+      Reflect.set(client, 'wcdbExecQuery', query)
+      const asynchronous = await client.getMessagesAsync(username, undefined, 1800000000, {
+        limit: 20
+      })
+
+      expect(asynchronous).toEqual(synchronous)
+      expect(asynchronous.map((row) => [row.serverId, row.sender, row.mesDes])).toEqual([
+        ['fixture-old', 'wxid_peer', 1],
+        ['fixture-new', 'wxid_self', 0]
+      ])
+      expect(query).toHaveBeenCalledTimes(10)
+      expect(query.mock.calls.every(([, dbPath]) => /message_(0|6|7)\.db$/.test(dbPath))).toBe(true)
+    }
+  )
+
   it('creates a stable ASCII junction for a Windows account path containing Chinese', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wxe-path-bridge-'))
     temporaryDirectories.push(root)
