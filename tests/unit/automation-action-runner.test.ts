@@ -24,6 +24,10 @@ import {
   type AutomationStepKey
 } from '../../src/shared/automation'
 import type { WechatActionRequest, WechatActionResult } from '../../src/shared/wechat-action'
+import type {
+  SaveGeneratedReportRequest,
+  SaveGeneratedReportResult
+} from '../../src/shared/report-history'
 import { AutomationActionRunner } from '../../src/main/services/automation-action-runner'
 import type { AgentGroupReportResult } from '../../src/main/services/agent-group-report-service'
 
@@ -87,13 +91,16 @@ function buildRunner(options: {
   executeAction?: (request: WechatActionRequest) => Promise<WechatActionResult>
   generateReport?: () => Promise<AgentGroupReportResult>
   delay?: (ms: number) => Promise<void>
+  saveGeneratedReport?: (request: SaveGeneratedReportRequest) => Promise<SaveGeneratedReportResult>
 }): {
   runner: AutomationActionRunner
   calls: WechatActionRequest[]
   reports: Array<{ group: string; range?: string }>
+  saved: SaveGeneratedReportRequest[]
 } {
   const calls: WechatActionRequest[] = []
   const reports: Array<{ group: string; range?: string }> = []
+  const saved: SaveGeneratedReportRequest[] = []
   const runner = new AutomationActionRunner({
     now: fakeClock(),
     delay: options.delay ?? noDelay,
@@ -104,9 +111,18 @@ function buildRunner(options: {
     generateReport: async (request) => {
       reports.push({ group: request.group, ...(request.range ? { range: request.range } : {}) })
       return options.generateReport ? options.generateReport() : { success: true, pngPath: '/tmp/report.png' }
+    },
+    /*
+     * 默认**不落盘**：真实的 `saveGeneratedReport` 会往 electron 提供的 userData
+     * 前缀（本文件 mock 成 `/tmp/wxe-automation-runner-fixture`）下写 json，
+     * 单测不该产生文件副作用。落库的磁盘语义由 `report-history-service.test.ts` 覆盖。
+     */
+    saveGeneratedReport: async (request) => {
+      saved.push(request)
+      return options.saveGeneratedReport ? options.saveGeneratedReport(request) : { success: true }
     }
   })
-  return { runner, calls, reports }
+  return { runner, calls, reports, saved }
 }
 
 const run = (
@@ -199,6 +215,42 @@ describe('AutomationActionRunner', () => {
     // 只发过那条文字回复，图片一次都没发。
     expect(calls).toHaveLength(1)
     expect(calls[0].content.type).toBe('text')
+  })
+
+  /*
+   * 「@我生成日报」产出的日报必须落进**日报历史**。
+   *
+   * 这一条是回归防线：`run()` 曾经只把 PNG 交给发送、从不落库，于是图发出去了、
+   * 日报历史里却永远查不到（用户报的"执行成功但历史里没有"就是这个）。
+   */
+  it('生成日报后把日报写进日报历史，来源标为 automation', async () => {
+    const { runner, saved } = buildRunner({})
+    const result = await run(runner, makeRule())
+
+    expect(statusOf(result, 'report')).toBe('success')
+    expect(saved).toHaveLength(1)
+    expect(saved[0].source).toBe('automation')
+    expect(saved[0].contactId).toBe(GROUP_ID)
+    expect(saved[0].pngPath).toBe('/tmp/report.png')
+    expect(saved[0].generatedAt).toBeTruthy()
+  })
+
+  /*
+   * 落库失败**不阻断发送**（图片已经在手上，扣下不发对用户没有任何好处），
+   * 但**也不能假装没事** —— 失败必须写进步骤细节，用户在执行详情里看得见。
+   */
+  it('日报历史写入失败时照常发送，但把失败如实写进步骤细节', async () => {
+    const { runner, saved, calls } = buildRunner({
+      saveGeneratedReport: async () => ({ success: false, error: 'ENOSPC: no space left' })
+    })
+    const result = await run(runner, makeRule())
+
+    expect(saved).toHaveLength(1)
+    expect(statusOf(result, 'report')).toBe('success')
+    expect(statusOf(result, 'send')).toBe('success')
+    expect(result.status).toBe('success')
+    expect(result.steps.find((step) => step.key === 'report')?.detail).toContain('未写入日报历史')
+    expect(calls.some((call) => call.purpose === AUTOMATION_SEND_PURPOSE.report)).toBe(true)
   })
 
   it('生成日报抛异常时同样记 failed 并跳过发送', async () => {

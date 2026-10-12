@@ -7,7 +7,17 @@ import type { ReportTemplateSelectionId } from './report-templates'
 import type { ReportTemplateRef } from './report-template-package'
 
 export type ReportAssetStatus = 'ready' | 'missing'
-export type GeneratedReportSource = 'manual' | 'scheduled'
+/**
+ * 日报的产出方式。
+ *
+ * - `manual`：用户在日报页手动生成；
+ * - `scheduled`：定时日报（自动化里的时间驱动规则）；
+ * - `automation`：消息型自动化「@我生成日报」触发产出。
+ *
+ * 三种都写进**同一条日报历史**（`report-history-service` 是唯一出口），
+ * 这个字段只用于区分「谁触发的」，不参与任何可见性判断。
+ */
+export type GeneratedReportSource = 'manual' | 'scheduled' | 'automation'
 
 export interface GeneratedReportRecord {
   id: string
