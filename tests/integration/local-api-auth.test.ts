@@ -68,7 +68,14 @@ vi.mock('../../src/main/services/agent-hub-service', () => ({
 }))
 
 import { apiTokenStore } from '../../src/main/api-token-store'
-import { apiServer, startHttpServer, type HttpServerHandle } from '../../src/main/http-server'
+import {
+  apiServer,
+  setLocalVoiceTranscriptSnapshotProvider,
+  startHttpServer,
+  type HttpServerHandle
+} from '../../src/main/http-server'
+import type { LocalQueryApiService } from '../../src/main/services/local-query-api-service'
+import { decodeMessageRef } from '../../src/shared/local-query-api'
 import { HttpMediaError } from '../../src/main/http-media-service'
 import {
   buildLocalApiCurlCommand,
@@ -209,7 +216,8 @@ describe('Local API authentication', () => {
     ['POST', '/api/v1/agent/group-report'],
     ['POST', '/api/v1/agent/send'],
     ['GET', '/api/v1/query/capabilities'],
-    ['POST', '/api/v1/query/messages']
+    ['POST', '/api/v1/query/messages'],
+    ['POST', '/api/v1/query/voice-transcribe']
   ])('protects every non-health route: %s %s', async (method, pathname) => {
     const handle = await startFixtureServer()
     const response = await fetch(`${baseUrl(handle)}${pathname}`, {
@@ -272,6 +280,65 @@ describe('Local API authentication', () => {
       }
     })
     expect(body.messages[0].contentData).not.toHaveProperty('aeskey')
+  })
+
+  it('adds cached voice transcripts and a messageRef to chatlog voice messages', async () => {
+    const voice = {
+      id: '41',
+      type: '语音',
+      content: '[语音消息]',
+      sessionId: 'wxid_fixture',
+      localId: 41,
+      createTime: 1_785_895_200
+    }
+    fixture.chatlogMessages.push(voice as never)
+    const snapshot = vi.fn(() => ({ state: 'transcribed' as const, transcript: '合成的转写文本' }))
+    setLocalVoiceTranscriptSnapshotProvider(snapshot)
+    try {
+      const handle = await startFixtureServer()
+      const response = await fetch(`${baseUrl(handle)}/api/v1/chatlog?talker=fixture`, {
+        headers: { Authorization: `Bearer ${VALID_TOKEN}` }
+      })
+      const body = await response.json()
+      expect(body.messages[0]).not.toHaveProperty('voiceTranscriptState')
+      expect(body.messages[1]).toMatchObject({
+        id: '41',
+        voiceTranscript: '合成的转写文本',
+        voiceTranscriptState: 'transcribed'
+      })
+      expect(decodeMessageRef(body.messages[1].messageRef)).toEqual({
+        conversationId: 'fixture-md5',
+        messageId: '41'
+      })
+      expect(snapshot).toHaveBeenCalledWith({
+        sessionId: 'wxid_fixture',
+        localId: 41,
+        createTime: 1_785_895_200,
+        svrId: undefined
+      })
+    } finally {
+      setLocalVoiceTranscriptSnapshotProvider(undefined)
+      fixture.chatlogMessages.pop()
+    }
+  })
+
+  it('maps a full voice transcription queue to 429 with Retry-After', async () => {
+    const queryApiService = {
+      transcribeVoice: vi.fn(async () => ({ status: 'busy', retryAfterSeconds: 12, hint: '队列已满' }))
+    } as unknown as LocalQueryApiService
+    const handle = await startHttpServer('127.0.0.1', 0, {
+      tokenProvider: () => VALID_TOKEN,
+      queryApiService
+    })
+    handles.push(handle)
+    const response = await fetch(`${baseUrl(handle)}/api/v1/query/voice-transcribe`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${VALID_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messageRefs: ['ref'] })
+    })
+    expect(response.status).toBe(429)
+    expect(response.headers.get('retry-after')).toBe('12')
+    await expect(response.json()).resolves.toMatchObject({ status: 'busy', retryAfterSeconds: 12 })
   })
 
   it('serves opaque media handles while preserving the chatlog message id', async () => {

@@ -1,4 +1,5 @@
 import type { KnowledgeDerivedSource, KnowledgeEvidence, KnowledgeVoiceCoverage } from './knowledge'
+import type { VoiceTranscriptState } from './voice-recognition'
 
 export type QueryDirection = 'any' | 'from_target' | 'to_target'
 export type QueryOrder = 'asc' | 'desc'
@@ -254,6 +255,21 @@ export interface QueryMessage {
    * `empty` 也不允许被当成"可以凭画面猜内容"（OCR 不是 Vision）。
    */
   imageTextState?: 'indexed' | 'empty' | 'not_indexed'
+  /**
+   * 语音转写派生文本（**仅**语音消息、且本地已转写时存在）。
+   *
+   * 与 `imageOcrText` 同理不并入 `text`：语音消息的正文仍是 `[语音消息]`，
+   * 这段文字来自本地离线识别，`derivedSource` 为 `voice_transcript`。
+   */
+  voiceTranscript?: string
+  /**
+   * 这条语音消息的本地转写状态（仅语音消息）。
+   *
+   * - `transcribed`：已转写（此时 `voiceTranscript` 有值）
+   * - `pending`：尚未转写 —— 不能当成"语音里没说话"，可调用 `query/voice-transcribe`
+   * - `failed`：之前识别失败
+   */
+  voiceTranscriptState?: VoiceTranscriptState
 }
 export interface QueryMessagesResponse {
   status: string
@@ -418,6 +434,38 @@ export interface MessageContextResponse {
   anchor?: QueryMessage
   before?: QueryMessage[]
   after?: QueryMessage[]
+}
+/** 单次 `query/voice-transcribe` 最多处理多少条语音。 */
+export const VOICE_TRANSCRIBE_MAX_REFS = 20
+/** 同步等待的默认值与上限（毫秒）；超时的条目返回 `pending`，识别继续在后台进行。 */
+export const VOICE_TRANSCRIBE_DEFAULT_WAIT_MS = 15_000
+export const VOICE_TRANSCRIBE_MAX_WAIT_MS = 60_000
+export interface VoiceTranscribeRequest {
+  /** 来自 `query/messages` / `query/message-context` / `chatlog` 的语音消息 `messageRef`。 */
+  messageRefs: string[]
+  /** 忽略已有转写与失败记录，重新识别。 */
+  force?: boolean
+  /** 最多同步等待多久；0 = 只排队不等待。 */
+  waitMs?: number
+}
+export interface VoiceTranscribeItem {
+  messageRef: string
+  state: VoiceTranscriptState
+  transcript?: string
+  cached?: boolean
+  durationMs?: number
+  /** 机器可读的原因，仅 `pending` / `failed` 时存在。 */
+  code?: string
+  error?: string
+  /** 给调用方（通常是 AI）的下一步建议。 */
+  hint?: string
+}
+export interface VoiceTranscribeResponse {
+  status: string
+  items?: VoiceTranscribeItem[]
+  summary?: { transcribed: number; pending: number; failed: number }
+  retryAfterSeconds?: number
+  hint?: string
 }
 export interface ConversationOverviewRequest { target: QueryTarget; timeRange: QueryTimeRange; scope?: QueryCorpusScope }
 export interface ConversationOverviewResponse {

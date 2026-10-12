@@ -77,7 +77,12 @@ import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../
 import { KeyServiceMac } from './key-service-mac'
 import { KeyService as KeyServiceWin } from './key-service-win'
 import * as chat from './services/chat-service'
-import { apiServer, setLocalGroupStatsService, setLocalQueryApiService } from './http-server'
+import {
+  apiServer,
+  setLocalGroupStatsService,
+  setLocalQueryApiService,
+  setLocalVoiceTranscriptSnapshotProvider
+} from './http-server'
 import { skillResourceService } from './services/skill-resource-service'
 import { buildLocalApiCurlCommand, testLocalApiRequest } from './services/local-api-test-service'
 import { isWechatRunning } from './services/wechat-process-status'
@@ -274,6 +279,7 @@ import type { ExportRequest } from '../shared/export'
 import { discoverAccounts } from './services/account-discovery'
 import { VoiceRecognitionUseCase } from './voice-pipeline/voice-recognition-use-case'
 import { VoiceBatchService } from './voice-pipeline/voice-batch-service'
+import { VoiceTranscriptionGateway } from './voice-pipeline/voice-transcription-gateway'
 import type { VoiceBatchRequest, VoiceMessageReference } from '../shared/voice-recognition'
 import type { AiSearchPipelineRequest } from '../shared/ai-search'
 import type {
@@ -926,6 +932,15 @@ app.whenReady().then(async () => {
    */
   localQueryApiService.setImageOcrEntryProvider((conversationId, messageId) =>
     imageTextIndexService.getConversationOcr(conversationId).get(messageId)
+  )
+  /**
+   * 语音转写：读消息时只读缓存快照；只有 query/voice-transcribe 会真正排队识别，
+   * 识别仍走同一个 VoiceRecognitionUseCase（同一份缓存、同一条串行队列）。
+   */
+  const voiceTranscriptionGateway = new VoiceTranscriptionGateway(voiceRecognition)
+  localQueryApiService.setVoiceTranscriptionGateway(voiceTranscriptionGateway)
+  setLocalVoiceTranscriptSnapshotProvider((reference) =>
+    voiceTranscriptionGateway.snapshot(reference)
   )
   setLocalQueryApiService(localQueryApiService)
   // Query Agent：生产 Runtime 只在这里实例化一次，桌面问问微信与 Agent Hub 共用同一个实例。

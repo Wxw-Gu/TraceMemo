@@ -8,7 +8,8 @@ import {
   listMessages,
   getGroupSnapshot,
   listRecentChat,
-  resolveMd5
+  resolveMd5,
+  type FormattedMessage
 } from './services/chat-service'
 import { exportGroupReport } from './group-report-service'
 import { GroupReportExportRequest } from '../shared/group-report'
@@ -34,6 +35,13 @@ import { automationExecutionLogService } from './services/automation-execution-l
 import { groupExitMonitorService } from './services/group-exit-monitor-service'
 import { LocalAgentApiError, LocalAgentApiService } from './services/local-agent-api-service'
 import type { GroupStatsService } from './services/group-stats-service'
+import { encodeMessageRef } from '../shared/local-query-api'
+import type {
+  VoiceMessageReference,
+  VoiceTranscriptSnapshot,
+  VoiceTranscriptState
+} from '../shared/voice-recognition'
+import { voiceMessageReferenceOf } from './voice-pipeline/voice-message-identity'
 
 export const DEFAULT_HTTP_HOST = '127.0.0.1'
 export const DEFAULT_HTTP_PORT = 6131
@@ -80,6 +88,35 @@ export function setLocalGroupStatsService(
   service: Pick<GroupStatsService, 'getMemberStats'> | undefined
 ): void {
   configuredGroupStatsService = service
+}
+
+let configuredVoiceTranscriptSnapshot:
+  | ((reference: VoiceMessageReference) => VoiceTranscriptSnapshot)
+  | undefined
+export function setLocalVoiceTranscriptSnapshotProvider(
+  provider: ((reference: VoiceMessageReference) => VoiceTranscriptSnapshot) | undefined
+): void {
+  configuredVoiceTranscriptSnapshot = provider
+}
+
+/**
+ * chatlog 的语音消息补上本地已有的转写（只读缓存，不触发识别）与 messageRef，
+ * 调用方据 `voiceTranscriptState` 决定是否调用 query/voice-transcribe。
+ */
+function withChatlogVoiceTranscript(
+  conversationId: string,
+  message: FormattedMessage
+): FormattedMessage & { messageRef?: string; voiceTranscriptState?: VoiceTranscriptState } {
+  const reference = voiceMessageReferenceOf(message)
+  if (!reference || !configuredVoiceTranscriptSnapshot) return message
+  const snapshot = configuredVoiceTranscriptSnapshot(reference)
+  const transcript = snapshot.state === 'transcribed' ? snapshot.transcript?.trim() : undefined
+  return {
+    ...message,
+    messageRef: encodeMessageRef(conversationId, message.id),
+    voiceTranscriptState: snapshot.state,
+    ...(transcript ? { voiceTranscript: transcript } : {})
+  }
 }
 
 const MAX_JSON_BODY_BYTES = 1024 * 1024
@@ -389,7 +426,9 @@ const routes: Record<string, RouteHandler> = {
       query: { talker, time: timeParam, startTime, endTime },
       count: messages.length,
       messages: messages.map((message) =>
-        sanitizeChatlogMessage(message as unknown as Record<string, unknown>)
+        sanitizeChatlogMessage(
+          withChatlogVoiceTranscript(resolved.md5, message) as unknown as Record<string, unknown>
+        )
       )
     })
   }),
@@ -654,6 +693,8 @@ function queryStatusCode(status: string): number {
   if (status === 'contact_not_found') return 404
   if (status === 'ambiguous_contact') return 409
   if (status === 'knowledge_unavailable') return 503
+  if (status === 'voice_model_not_ready' || status === 'voice_transcription_unavailable') return 503
+  if (status === 'busy') return 429
   if (status === 'retrieval_incomplete') return 206
   return 400
 }
@@ -669,6 +710,7 @@ function createQueryRoute(pathname: string, api: LocalQueryApiService): RouteHan
     | Awaited<ReturnType<LocalQueryApiService['search']>>
     | Awaited<ReturnType<LocalQueryApiService['context']>>
     | Awaited<ReturnType<LocalQueryApiService['overview']>>
+    | Awaited<ReturnType<LocalQueryApiService['transcribeVoice']>>
   const operations: Record<string, (payload: unknown) => Promise<QueryOperationResult>> = {
     '/api/v1/query/messages': (payload) =>
       api.messages(payload as Parameters<LocalQueryApiService['messages']>[0]),
@@ -677,7 +719,9 @@ function createQueryRoute(pathname: string, api: LocalQueryApiService): RouteHan
     '/api/v1/query/message-context': (payload) =>
       api.context(payload as Parameters<LocalQueryApiService['context']>[0]),
     '/api/v1/query/conversation-overview': (payload) =>
-      api.overview(payload as Parameters<LocalQueryApiService['overview']>[0])
+      api.overview(payload as Parameters<LocalQueryApiService['overview']>[0]),
+    '/api/v1/query/voice-transcribe': (payload) =>
+      api.transcribeVoice(payload as Parameters<LocalQueryApiService['transcribeVoice']>[0])
   }
   const operation = operations[pathname]
   if (!operation) return undefined
@@ -687,6 +731,9 @@ function createQueryRoute(pathname: string, api: LocalQueryApiService): RouteHan
     if (!payload || typeof payload !== 'object') return sendError(res, 400, 'invalid_request')
     try {
       const result = await operation(payload)
+      if ('retryAfterSeconds' in result && typeof result.retryAfterSeconds === 'number') {
+        res.setHeader('Retry-After', String(result.retryAfterSeconds))
+      }
       return sendJson(res, queryStatusCode(result.status), result)
     } catch (error) {
       return sendError(res, 400, error instanceof Error ? error.message : 'invalid_request')
