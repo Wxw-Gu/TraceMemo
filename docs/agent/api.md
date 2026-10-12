@@ -337,3 +337,50 @@ curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/convers
 调用方**必须**把 `coverage` 当真：`coverage.state` 不是 `complete` 且 `evidence` 为空时，只能说明"这段范围暂时无法确认"，**不能**下"没有找到"的结论。索引落后时服务端会自动请求一次追赶同步，但不会让请求无限等待；`freshness.catchUp` 为 `pending` 表示追赶仍在后台进行，稍后重试即可拿到更新的覆盖。
 
 `query/messages` 与 `query/conversation-overview` 直读聊天数据库，不受索引新鲜度影响。
+
+### 语音转文字（voice-transcribe）
+
+语音消息的正文固定是 `[语音消息]`。本机已转写过的语音，读取时会直接带上转写结果（只读缓存，不触发识别）：
+
+- `query/messages`、`query/message-context`：`voiceTranscriptState` 与 `voiceTranscript`，`derivedSource` 为 `voice_transcript`；
+- `/chatlog`：语音消息额外带 `messageRef`、`voiceTranscriptState` 与 `voiceTranscript`。
+
+`voiceTranscriptState` 为 `pending` 表示**还没转写**，不能当成"语音里没说话"。需要内容时，把这些语音的 `messageRef` 交给 `POST /api/v1/query/voice-transcribe`：
+
+```bash
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/voice-transcribe" \
+  -d '{"messageRefs":["<语音消息的 messageRef>"],"waitMs":15000}'
+```
+
+| 字段          | 含义                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------- |
+| `messageRefs` | 必填，1～20 条；重复的引用会合并                                                        |
+| `waitMs`      | 可选，最多同步等待的毫秒数，默认 15000，上限 60000；`0` 表示只排队、不等待              |
+| `force`       | 可选，`true` 时忽略已有转写和失败记录、重新识别；只在用户明确要求重试时使用             |
+
+识别在本机离线进行（需要先在 TraceMemo 设置里下载语音识别模型），和界面共用同一份缓存与同一条串行队列：界面上点开语音会优先处理，API 的任务随后继续。等待超时的条目返回 `pending`，识别会在后台继续；稍后用同样的 `messageRefs` 再调用即可取回结果，不会重复排队。
+
+```json
+{
+  "status": "completed",
+  "items": [
+    { "messageRef": "…", "state": "transcribed", "transcript": "…", "cached": false },
+    { "messageRef": "…", "state": "pending", "code": "still_processing", "hint": "…" }
+  ],
+  "summary": { "transcribed": 1, "pending": 1, "failed": 0 }
+}
+```
+
+每个未成功的条目都带 `code` 与 `hint`（下一步该怎么做）：
+
+| `code`                  | 含义                                       |
+| ----------------------- | ------------------------------------------ |
+| `still_processing`      | 仍在后台转写，稍后原样重试                 |
+| `previously_failed`     | 之前识别失败，默认不自动重跑               |
+| `recognition_failed`    | 本次识别失败（音频损坏、过短或没有人声）   |
+| `recognition_timeout`   | 识别超时                                   |
+| `not_voice_message`     | 不是语音消息                               |
+| `message_not_found`     | 找不到消息（可能已切换账号）               |
+| `invalid_message_ref`   | `messageRef` 无法解析                      |
+
+整次请求的状态：`200 completed`；`400 invalid_tool_arguments`（带 `field`、`constraint`、`hint`）；`503 voice_model_not_ready`（模型未下载）或 `knowledge_unavailable`（数据库未连接）；`429 busy`（队列已满，带 `retryAfterSeconds` 与 `Retry-After` 头）。

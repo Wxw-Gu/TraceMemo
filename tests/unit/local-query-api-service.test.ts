@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest'
 
 // Keep local-time label assertions deterministic; production follows the host timezone.
 process.env.TZ = 'Asia/Shanghai'
@@ -20,6 +20,10 @@ vi.mock('../../src/main/services/chat-service', () => ({
 }))
 
 import { LocalQueryApiService } from '../../src/main/services/local-query-api-service'
+import { listMessagesAsync } from '../../src/main/services/chat-service'
+import { encodeMessageRef } from '../../src/shared/local-query-api'
+import type { VoiceMessageReference, VoiceTranscriptSnapshot } from '../../src/shared/voice-recognition'
+import type { VoiceTranscriptionOutcome } from '../../src/main/voice-pipeline/voice-transcription-gateway'
 
 describe('LocalQueryApiService', () => {
   const knowledge = {
@@ -422,5 +426,113 @@ describe('LocalQueryApiService — indexCoverage 结论句', () => {
     expect(result.indexCoverage?.summary).toContain('暂时无法确认')
     // 不要把 epoch 数字交给模型去猜
     expect(result.indexCoverage?.summary).not.toMatch(/\d{12,}/)
+  })
+})
+
+describe('LocalQueryApiService voice transcription', () => {
+  const voiceMessage = {
+    id: 'v1',
+    from: 'user',
+    type: '语音',
+    datetime: '2026/8/4 10:00:00',
+    content: '[语音消息]',
+    isSender: false,
+    name: 'BOBO',
+    sessionId: 'wxid_fixture_member',
+    localId: 31,
+    createTime: Math.floor(new Date('2026-08-04T10:00:00+08:00').getTime() / 1000)
+  }
+  const textMessage = { id: 't1', from: 'user', type: '文本', datetime: '2026/8/4 10:01:00', content: '你好', isSender: false, name: 'BOBO', createTime: voiceMessage.createTime + 60 }
+  const voiceRef = encodeMessageRef('md5-bobo', 'v1')
+  const textRef = encodeMessageRef('md5-bobo', 't1')
+
+  type GatewayStub = {
+    inFlightCount: number
+    snapshot: Mock<(reference: VoiceMessageReference) => VoiceTranscriptSnapshot>
+    modelReady: Mock<() => Promise<boolean>>
+    transcribe: Mock<(references: VoiceMessageReference[], options: { force?: boolean; waitMs: number }) => Promise<VoiceTranscriptionOutcome[] | null>>
+  }
+  function makeGateway(): GatewayStub {
+    return {
+      inFlightCount: 0,
+      snapshot: vi.fn(() => ({ state: 'transcribed' as const, transcript: '明天下午三点开会' })),
+      modelReady: vi.fn(async () => true),
+      transcribe: vi.fn(async (references: VoiceMessageReference[]) =>
+        references.map(() => ({ state: 'transcribed' as const, transcript: '明天下午三点开会', cached: false }))
+      )
+    }
+  }
+
+  let service: LocalQueryApiService
+  let gateway: GatewayStub
+  beforeEach(() => {
+    vi.mocked(listMessagesAsync).mockResolvedValue([voiceMessage, textMessage] as never)
+    gateway = makeGateway()
+    service = new LocalQueryApiService(undefined, () => new Date('2026-09-09T12:00:00+08:00'))
+    service.setVoiceTranscriptionGateway(gateway)
+  })
+
+  it('reads cached transcripts on query/messages and message-context without triggering recognition', async () => {
+    const result = await service.messages({ scope: { kind: 'current', conversationId: 'md5-bobo' }, timeRange: { kind: 'all' }, messageTypes: ['voice'] })
+    expect(result).toMatchObject({
+      messages: [{ messageType: 'voice', text: '[语音消息]', voiceTranscript: '明天下午三点开会', voiceTranscriptState: 'transcribed', derivedSource: 'voice_transcript' }]
+    })
+
+    gateway.snapshot.mockReturnValueOnce({ state: 'pending' })
+    const context = await service.context({ messageRef: voiceRef, before: 0, after: 1 })
+    expect(context).toMatchObject({ anchor: { voiceTranscriptState: 'pending' }, after: [{ messageType: 'text' }] })
+    expect(context).not.toHaveProperty('anchor.voiceTranscript')
+    expect(context).not.toHaveProperty('after.0.voiceTranscriptState')
+    expect(gateway.transcribe).not.toHaveBeenCalled()
+  })
+
+  it('transcribes voice refs and explains refs that cannot be transcribed', async () => {
+    const result = await service.transcribeVoice({ messageRefs: [voiceRef, voiceRef, textRef, 'not-a-ref'], waitMs: 0 })
+
+    expect(gateway.transcribe).toHaveBeenCalledTimes(1)
+    expect(gateway.transcribe).toHaveBeenCalledWith(
+      [{ sessionId: 'wxid_fixture_member', localId: 31, createTime: voiceMessage.createTime, svrId: undefined }],
+      { force: undefined, waitMs: 0 }
+    )
+    expect(result.status).toBe('completed')
+    expect(result.summary).toEqual({ transcribed: 1, pending: 0, failed: 2 })
+    expect(result.items).toEqual([
+      { messageRef: voiceRef, state: 'transcribed', transcript: '明天下午三点开会', cached: false },
+      expect.objectContaining({ messageRef: textRef, state: 'failed', code: 'not_voice_message', hint: expect.stringContaining('不是语音') }),
+      expect.objectContaining({ messageRef: 'not-a-ref', state: 'failed', code: 'invalid_message_ref', hint: expect.stringContaining('不要自行构造') })
+    ])
+  })
+
+  it('reports still-processing and failed recognitions with next-step hints', async () => {
+    const other = { ...voiceMessage, id: 'v2', localId: 32 }
+    vi.mocked(listMessagesAsync).mockResolvedValue([voiceMessage, other] as never)
+    gateway.transcribe.mockResolvedValueOnce([
+      { state: 'pending' },
+      { state: 'failed', code: 'PREVIOUSLY_FAILED', error: 'decode failed' }
+    ])
+
+    const result = await service.transcribeVoice({ messageRefs: [voiceRef, encodeMessageRef('md5-bobo', 'v2')] })
+
+    expect(result.summary).toEqual({ transcribed: 0, pending: 1, failed: 1 })
+    expect(result.items?.[0]).toMatchObject({ state: 'pending', code: 'still_processing', hint: expect.stringContaining('同样的 messageRef') })
+    expect(result.items?.[1]).toMatchObject({ state: 'failed', code: 'previously_failed', error: 'decode failed', hint: expect.stringContaining('force=true') })
+    expect(result.hint).toContain('同样的 messageRef')
+  })
+
+  it('rejects invalid arguments with a correctable hint', async () => {
+    await expect(service.transcribeVoice({ messageRefs: [] })).resolves.toMatchObject({ status: 'invalid_tool_arguments', field: 'messageRefs' })
+    await expect(service.transcribeVoice({ messageRefs: Array.from({ length: 21 }, (_, index) => `ref-${index}`) })).resolves.toMatchObject({ status: 'invalid_tool_arguments', hint: expect.stringContaining('分批') })
+    await expect(service.transcribeVoice({ messageRefs: [voiceRef], waitMs: 600_000 })).resolves.toMatchObject({ status: 'invalid_tool_arguments', field: 'waitMs' })
+    expect(gateway.transcribe).not.toHaveBeenCalled()
+  })
+
+  it('stops before reading messages when the model is not ready or the queue is full', async () => {
+    gateway.modelReady.mockResolvedValueOnce(false)
+    await expect(service.transcribeVoice({ messageRefs: [voiceRef] })).resolves.toMatchObject({ status: 'voice_model_not_ready', hint: expect.stringContaining('下载语音识别模型') })
+    expect(gateway.transcribe).not.toHaveBeenCalled()
+
+    gateway.inFlightCount = 30
+    gateway.transcribe.mockResolvedValueOnce(null)
+    await expect(service.transcribeVoice({ messageRefs: [voiceRef] })).resolves.toMatchObject({ status: 'busy', retryAfterSeconds: 30 })
   })
 })
