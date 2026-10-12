@@ -240,8 +240,13 @@ describe('退群通知 · 真实数据', () => {
   it('规则级启停只有一个开关，没有第二个「发送退群通知」', async () => {
     await openLeaveNotificationEditor()
 
-    expect(screen.getAllByRole('switch')).toHaveLength(1)
-    expect(screen.getByRole('switch', { name: '启用这条自动化' })).toBeVisible()
+    /* 作用域收敛到规则编辑器本体（.automation-editor）。页面右上角的
+     * 「微信消息插入开关」是页面级控件，不属于这条规则的编辑器，
+     * 不该被本断言计入 —— 否则页面级功能一增加，这里就会假失败。 */
+    const editor = document.querySelector('.automation-editor') as HTMLElement
+    expect(editor).not.toBeNull()
+    expect(within(editor).getAllByRole('switch')).toHaveLength(1)
+    expect(within(editor).getByRole('switch', { name: '启用这条自动化' })).toBeVisible()
     expect(screen.queryByText('发送退群通知')).toBeNull()
   })
 })

@@ -75,6 +75,11 @@ import type {
 } from '../shared/automation'
 import type { GroupMemberStatsQuery, GroupMemberStatsResult } from '../shared/group-stats'
 import type { ActionLogEntry } from '../shared/action-log'
+import type {
+  MsgInsertApplyResult,
+  MsgInsertSwitchName,
+  MsgInsertSwitchesSnapshot
+} from '../shared/msg-insert-switch'
 import type { CacheClearScope, CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress } from '../shared/export'
 import type { ImageDecoderSelectionResult, ImageDecoderStatus } from '../shared/image-decryption'
@@ -222,6 +227,27 @@ const api = {
    */
   listSendableContacts: (): Promise<Array<{ id: string; name: string }>> =>
     ipcRenderer.invoke('automation:listSendableContacts'),
+  /**
+   * 微信消息插入开关 —— 读取当前状态。
+   *
+   * 返回的是**逐目标会话**的状态：desiredEnabled（开关值）与 effectiveEnabled
+   * （真的会生效）是两个概念，界面不能只看前者。数据库未连接时 `success=false`。
+   */
+  getMsgInsertSwitches: (): Promise<MsgInsertSwitchesSnapshot> =>
+    ipcRenderer.invoke('automation:getMsgInsertSwitches'),
+  /**
+   * 微信消息插入开关 —— 打开 / 关闭。
+   *
+   * 开的时候会先把目标会话的规则补齐、确认 ready 才写开关值；写不进本进程，
+   * 由一次性 helper 子进程完成。失败不伪装成功：`status.failedShards > 0`
+   * 表示真的有分片写失败，`status.readyTargetRooms < status.totalTargetRooms`
+   * 表示只是规则没装齐。
+   */
+  setMsgInsertSwitch: (
+    name: MsgInsertSwitchName,
+    enabled: boolean
+  ): Promise<MsgInsertApplyResult> =>
+    ipcRenderer.invoke('automation:setMsgInsertSwitch', { name, enabled }),
   onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: GroupExitMonitorState): void =>
       callback(state)

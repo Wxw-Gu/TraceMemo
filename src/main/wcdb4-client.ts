@@ -526,6 +526,16 @@ export class Wcdb4Client {
   private wcdbGetGroupMembersBatch:
     | ((handle: number, chatroomIdsJson: string, outJson: WcdbVoidOut) => number)
     | null = null
+  // 微信消息插入开关（native extension，不属于最初 27 个绑定）
+  private wcdbMsgInsertSetSwitch:
+    | ((handle: number, dbPath: string, name: string, enabled: number) => number)
+    | null = null
+  private wcdbMsgInsertGetSwitches:
+    | ((handle: number, dbPath: string, outJson: WcdbVoidOut) => number)
+    | null = null
+  private wcdbMsgInsertListShardCatalog:
+    | ((handle: number, outJson: WcdbVoidOut) => number)
+    | null = null
   private wcdbGetGroupNicknames:
     | ((handle: number, chatroomId: string, outJson: WcdbVoidOut) => number)
     | null = null
@@ -1804,6 +1814,113 @@ export class Wcdb4Client {
     return result
   }
 
+  /**
+   * 列出账号目录下所有消息分片路径（message_<n>.db）。
+   *
+   * 供「微信消息插入开关」这类**按分片存放**的状态遍历使用。
+   * 只认 message_<数字>.db，不包含 biz_message_* / media_*。
+   */
+  listMessageShardPaths(): string[] {
+    const messageRoot = path.join(this.dbStoragePath, 'message')
+    if (!fs.existsSync(messageRoot)) return []
+    return fs
+      .readdirSync(messageRoot)
+      .filter((name) => /^message_\d+\.db$/.test(name))
+      .sort()
+      .map((name) => path.join(messageRoot, name))
+  }
+
+  /**
+   * 读取某个消息分片上的「微信消息插入开关」。
+   *
+   * 开关按消息分片存放（native 侧的 _tm_config 表），所以调用方要先把分片路径定下来。
+   * 返回形如 { recall_notice: boolean, group_exit_notice: boolean }。
+   */
+  getMsgInsertSwitches(dbPath: string): {
+    success: boolean
+    switches?: Record<string, boolean>
+    error?: string
+  } {
+    if (!this.wcdbMsgInsertGetSwitches) {
+      return { success: false, error: '当前 WCDB 服务不支持微信消息插入开关' }
+    }
+    try {
+      const switches = this.callJson<Record<string, boolean>>((handle, outJson) =>
+        this.wcdbMsgInsertGetSwitches!(handle, dbPath, outJson)
+      )
+      return { success: true, switches }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /**
+   * 设置某个消息分片上的「微信消息插入开关」。
+   *
+   * name 只接受 recall_notice / group_exit_notice（native 侧白名单）。
+   * 写入走 native 单独维护的可写连接，只读查询链路不受影响。
+   */
+  setMsgInsertSwitch(
+    dbPath: string,
+    name: string,
+    enabled: boolean
+  ): { success: boolean; error?: string } {
+    if (!this.wcdbMsgInsertSetSwitch) {
+      return { success: false, error: '当前 WCDB 服务不支持微信消息插入开关' }
+    }
+    try {
+      const handle = this.ensureHandle()
+      const rc = this.wcdbMsgInsertSetSwitch(handle, dbPath, name, enabled ? 1 : 0)
+      if (rc !== 0) return { success: false, error: `返回码 ${rc}` }
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /**
+   * 读取「微信消息插入规则」的分片目录（只读）。
+   *
+   * 每个分片只跑两条查询（表清单 + 规则清单），拿回来之后调用方可以在本地用
+   * md5(roomId) 匹配出「每个会话落在哪些分片、规则齐不齐」。这样即使会话很多，
+   * 判断全部会话的状态也只是一次目录读取，不需要按会话逐个查库。
+   */
+  listMsgInsertShardCatalog(): {
+    success: boolean
+    catalog?: {
+      shardCount: number
+      shards: Array<{
+        shard: string
+        dbPath: string
+        configTable: boolean
+        storeTables: { capture: boolean; names: boolean; queue: boolean }
+        tables: string[]
+        rules: Array<{ name: string; table: string }>
+      }>
+    }
+    error?: string
+  } {
+    if (!this.wcdbMsgInsertListShardCatalog) {
+      return { success: false, error: '当前 WCDB 服务不支持消息插入规则目录' }
+    }
+    try {
+      const catalog = this.callJson<{
+        shardCount: number
+        shards: Array<{
+          shard: string
+          dbPath: string
+          configTable: boolean
+          storeTables: { capture: boolean; names: boolean; queue: boolean }
+          tables: string[]
+          rules: Array<{ name: string; table: string }>
+        }>
+      }>((handle, outJson) => this.wcdbMsgInsertListShardCatalog!(handle, outJson))
+      return { success: true, catalog }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   installRecallJournal(usernames: string[]): { installed: number; failed: number } {
     const stores = new Map<string, Wcdb4MessageStore>()
     for (const username of this.uniq(usernames)) {
@@ -3009,6 +3126,30 @@ export class Wcdb4Client {
       ) as (handle: number, chatroomIdsJson: string, outJson: WcdbVoidOut) => number
     } catch {
       this.wcdbGetGroupMembersBatch = null
+    }
+
+    try {
+      this.wcdbMsgInsertSetSwitch = lib.func(
+        'int32 wcdb_msg_insert_set_switch(int64 handle, const char* dbPath, const char* name, int32 enabled)'
+      ) as (handle: number, dbPath: string, name: string, enabled: number) => number
+    } catch {
+      this.wcdbMsgInsertSetSwitch = null
+    }
+
+    try {
+      this.wcdbMsgInsertGetSwitches = lib.func(
+        'int32 wcdb_msg_insert_get_switches(int64 handle, const char* dbPath, _Out_ void** outJson)'
+      ) as (handle: number, dbPath: string, outJson: WcdbVoidOut) => number
+    } catch {
+      this.wcdbMsgInsertGetSwitches = null
+    }
+
+    try {
+      this.wcdbMsgInsertListShardCatalog = lib.func(
+        'int32 wcdb_msg_insert_list_shard_catalog(int64 handle, _Out_ void** outJson)'
+      ) as (handle: number, outJson: WcdbVoidOut) => number
+    } catch {
+      this.wcdbMsgInsertListShardCatalog = null
     }
 
     try {

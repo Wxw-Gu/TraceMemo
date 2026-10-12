@@ -1,3 +1,4 @@
+import path from 'node:path'
 import {
   isLegacyMigrationHelper,
   isUserDataIsolated,
@@ -124,7 +125,110 @@ import { MessageListenerService } from './services/message-listener-service'
 import { automationRuleStore } from './services/automation-rule-store'
 import { automationExecutionLogService } from './services/automation-execution-log-service'
 import { initAutomationService, getAutomationService } from './services/automation-service'
+import {
+  applyMsgInsertSwitch,
+  emptyMsgInsertStatus,
+  eventModeStatus,
+  readMsgInsertSwitches,
+  reconcileMsgInsertRules,
+  resolveHelperPath,
+  type MsgInsertScopeInput,
+  type MsgInsertSwitchName
+} from './services/msg-insert-switch-service'
 import { GroupStatsService } from './services/group-stats-service'
+import {
+  configureWechatLocalExitNotice,
+  wechatLocalExitNoticeService
+} from './services/wechat-local-exit-notice-service'
+
+/**
+ * 微信消息插入开关的作用面输入。
+ *
+ * 目标群列表**复用退群监控的配置**，不在这里另维护一份。
+ * 数据库没连上时返回 null，调用方据此禁用写入而不是假装能改。
+ */
+function monitoredRoomCount(): number {
+  return (groupExitMonitorService.getState().monitoredRoomIds || []).length
+}
+
+function resolveMsgInsertScopeInput(): MsgInsertScopeInput | null {
+  const client = chat.getChatDb()?.getWcdb4Client()
+  if (!client) return null
+  return {
+    client,
+    monitoredRoomIds: groupExitMonitorService.getState().monitoredRoomIds || []
+  }
+}
+
+/**
+ * 轻量 reconciliation —— 把退群监控选中的群缺失的规则补齐，不动开关值。
+ *
+ * 触发点：连库完成后 / 退群监控群列表变化后 / 用户打开开关时（那条在 service 里）。
+ * 不轮询。微信新建 message_4.db 并把目标群的新表放进去时，下一次触发就会补上。
+ */
+let lastMsgInsertReconciledShards = ''
+
+/**
+ * 启动时补齐 —— 防撤回 reconciliation 的入口之一。
+ *
+ * 只在**持久化的开关已经是开**的时候跑（说明用户上次明确打开过）。开关是关的
+ * 就什么都不做，避免每次启动都扫一遍目标会话。
+ *
+ * 顺带覆盖「已启用时检测到新 shard / 新表」：分片清单变了就重新补齐，并把新的
+ * 清单记下来。渲染层读状态**不会**走到这里 —— GET 必须是纯读。
+ */
+async function reconcileMsgInsertRulesOnStart(): Promise<void> {
+  const scope = resolveMsgInsertScopeInput()
+  const client = chat.getChatDb()?.getWcdb4Client()
+  if (!scope || !client) return
+
+  let enabled = false
+  try {
+    const shards = client.listMessageShardPaths()
+    const shardSignature = shards.map((item) => path.basename(item)).join(',')
+    if (lastMsgInsertReconciledShards && lastMsgInsertReconciledShards !== shardSignature) {
+      /* 微信新建了 message_N.db（或清理了旧的）—— 分片集合变了就重新补齐。 */
+      console.log('[MsgInsert] 检测到消息分片变化，重新补齐规则')
+    }
+    lastMsgInsertReconciledShards = shardSignature
+    for (const shardPath of shards) {
+      const read = client.getMsgInsertSwitches(shardPath)
+      if (read.success && read.switches?.recall_notice) {
+        enabled = true
+        break
+      }
+    }
+  } catch (error) {
+    console.warn('[MsgInsert] 启动检查失败:', error)
+    return
+  }
+  if (!enabled) return
+  await reconcileMsgInsertRulesNow()
+}
+
+async function reconcileMsgInsertRulesNow(): Promise<boolean> {
+  const scope = resolveMsgInsertScopeInput()
+  const client = chat.getChatDb()?.getWcdb4Client()
+  if (!scope || !client) return false
+  try {
+    const result = await reconcileMsgInsertRules({
+      ...scope,
+      myWxid: String(chat.getSelfAccountInfo()?.wxid || ''),
+      databaseKey: client.getKey()
+    })
+    if (result.rooms === 0) {
+      // 群列表还没就绪（或用户本来就没选群）—— 不算跑过，让下一次触发重试。
+      return false
+    }
+    if (!result.done) {
+      console.warn(`[MsgInsert] reconcile 未完成 errorCode=${result.errorCode || 'UNKNOWN'}`)
+    }
+    return true
+  } catch (error) {
+    console.warn('[MsgInsert] reconcile 失败:', error)
+    return true
+  }
+}
 import { wechatActionLogService } from './services/wechat-action-log-service'
 import { toPersonalWechatSendResult, wechatActionGateway } from './services/wechat-action-gateway'
 import { personalWechatSendService } from './services/personal-wechat-send-service'
@@ -1087,7 +1191,32 @@ app.whenReady().then(async () => {
          * `handleGroupExit` 自己吞掉异常，这里再兜一层 `.catch` 是防御性的 ——
          * 未捕获的 rejection 会污染监控循环，而退群事实早就已经记录成功了。
          */
+        /* 退群本地提示的运行时依赖：密钥 / wxid / 账号目录都由主进程提供，
+         * 服务自己不依赖 chat-service 的具体形态。 */
+        configureWechatLocalExitNotice({
+          resolveDatabaseKey: () => chat.getChatDb()?.getWcdb4Client()?.getKey() || '',
+          resolveMyWxid: () => String(chat.getSelfAccountInfo()?.wxid || ''),
+          resolveAccountRoot: () => {
+            const shards = chat.getChatDb()?.getWcdb4Client()?.listMessageShardPaths() || []
+            if (shards.length > 0) return path.dirname(path.dirname(path.dirname(shards[0])))
+            return String(chat.getCurrentAccountRoot() || '')
+          }
+        })
+
+        /*
+         * 防撤回 reconciliation 的启动入口：只有当持久化的开关已经是「开」时才会跑。
+         * 渲染层读状态、群列表变化都不会触发 DDL。
+         */
+        void reconcileMsgInsertRulesOnStart()
+
         groupExitMonitorService.setGroupExitHandler((event) => {
+          /*
+           * 微信内退群监控消息：一次性往群里插一条本地提示。
+           *
+           * 与下面的自动化通知**完全独立**：自己不抛异常（handleExitEvent 内部兜底）、
+           * 不 await、失败只记日志 —— 插入失败绝不能影响退群监控循环或自动化通知。
+           */
+          void wechatLocalExitNoticeService.handleExitEvent(event)
           try {
             return getAutomationService()
               .handleGroupExit(event)
@@ -1693,6 +1822,8 @@ app.whenReady().then(async () => {
    * 只有一个参数：旧版第二个参数（通知群聊）已经迁到「自动化 → 退群通知」，
    * 退群监控不再持有任何通知配置。
    */
+  /* 监控范围变化不再触发任何规则补齐：防撤回的目标是「全部有消息表的会话」，
+   * 与退群监控选中的群无关；退群提示也已经改成事件驱动、不依赖 per-room 规则。 */
   ipcMain.handle('group-exit-monitor:setGroups', (_, roomIds: string[]) =>
     groupExitMonitorService.setMonitoredRoomIds(Array.isArray(roomIds) ? roomIds : [])
   )
@@ -1757,6 +1888,100 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('automation:clearExecutions', () => automationExecutionLogService.clear())
   ipcMain.handle('automation:listGroups', () => tryAutomationService()?.listGroups() ?? [])
+  /**
+   * 微信消息插入开关 —— 读取。
+   *
+   * 只走本进程只读路径（分片目录 + 开关值），不持有任何写权限。
+   * 状态里同时给出 desiredEnabled / effectiveEnabled：开关值写成功不等于功能
+   * 真的生效（规则可能没装齐），渲染层不能只看前者。
+   */
+  ipcMain.handle('automation:getMsgInsertSwitches', () => {
+    /* 🔴 纯读：任何 get/status 都不允许写微信库、不允许触发 DDL。
+     * 规则补齐只发生在「用户打开开关」（helper 的 apply 内部先 ensure）与
+     * 「应用启动且持久化开关为开」这两个时机。 */
+    const scope = resolveMsgInsertScopeInput()
+    if (scope) {
+      const snapshot = readMsgInsertSwitches(scope)
+      /* 退群提示的开关状态来自本地设置（事件驱动，不装规则），
+       * 不是微信库里的 _tm_config。 */
+      snapshot.switches.group_exit_notice = eventModeStatus(
+        'group_exit_notice',
+        wechatLocalExitNoticeService.isEnabled(),
+        monitoredRoomCount()
+      )
+      return snapshot
+    }
+    return {
+      success: false,
+      switches: {
+        recall_notice: emptyMsgInsertStatus('recall_notice'),
+        group_exit_notice: eventModeStatus(
+          'group_exit_notice',
+          wechatLocalExitNoticeService.isEnabled()
+        )
+      },
+      helperAvailable: resolveHelperPath() !== null,
+      detail: '微信数据库尚未连接'
+    }
+  })
+  /**
+   * 微信消息插入开关 —— 写入。
+   *
+   * 绝不使用本进程的 WCDB 句柄写（只读池会把它钉死）。这里 spawn 一次性 helper：
+   *   先补齐目标会话的规则 → 再写开关值 → 读回校验 → 本进程只读复核。
+   * 失败不伪装成功：partial 会带 failedShards / notReadyRooms 回渲染层。
+   */
+  ipcMain.handle('automation:setMsgInsertSwitch', async (_, input: unknown) => {
+    const payload = (input || {}) as { name?: unknown; enabled?: unknown }
+    const name = String(payload.name || '') as MsgInsertSwitchName
+    if (name !== 'recall_notice' && name !== 'group_exit_notice') {
+      return {
+        success: false,
+        status: emptyMsgInsertStatus('recall_notice'),
+        errorCode: 'UNSUPPORTED_SWITCH',
+        message: '未知的开关'
+      }
+    }
+    /*
+     * 退群提示是**事件驱动**的（GroupExitMonitorService 发事件 → 一次性插一条），
+     * 不装任何 per-room 规则。所以它的开关只是本地设置：
+     * 既不 spawn helper，也不碰微信库。
+     */
+    if (name === 'group_exit_notice') {
+      const toggled = wechatLocalExitNoticeService.setEnabled(payload.enabled === true)
+      if (toggled.error) {
+        return {
+          success: false,
+          status: eventModeStatus(name, toggled.enabled, monitoredRoomCount()),
+          errorCode: 'UNKNOWN',
+          message: '保存开关状态失败'
+        }
+      }
+      return {
+        success: true,
+        status: eventModeStatus(name, toggled.enabled, monitoredRoomCount())
+      }
+    }
+
+    const scope = resolveMsgInsertScopeInput()
+    const client = chat.getChatDb()?.getWcdb4Client()
+    if (!scope || !client) {
+      return {
+        success: false,
+        status: emptyMsgInsertStatus(name),
+        errorCode: 'DATABASE_UNAVAILABLE',
+        message: '微信数据库尚未连接'
+      }
+    }
+    return applyMsgInsertSwitch({
+      ...scope,
+      name,
+      enabled: payload.enabled === true,
+      myWxid: String(chat.getSelfAccountInfo()?.wxid || ''),
+      /* 密钥只在这里读一次，随后直接进 helper 的 stdin，绝不落盘 / 进 argv */
+      databaseKey: client.getKey()
+    })
+  })
   /**
    * 保存「退群通知」规则（singleton upsert）。
    *
