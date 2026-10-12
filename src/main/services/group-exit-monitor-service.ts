@@ -101,6 +101,15 @@ class GroupExitMonitorService {
   private events: GroupExitMonitorEvent[] = []
   private monitorSelectionConfigured = true
   private monitoredRoomIds = new Set<string>()
+  /*
+   * 「微信内退群监控消息」的范围：**全部群聊**，与退群监控勾选的群无关。
+   *
+   * 勾选只决定「哪些群的退群走自动化通知」；内提示是面向全体的展示能力。
+   * 所以这里只持有开关状态 + 全部群 id（随群名刷新一起更新），
+   * 检测范围取两者的并集 —— 两个消费者都要拿到事件。
+   */
+  private noticeEnabled = false
+  private allGroupRoomIds = new Set<string>()
   private loaded = false
   private accountRoot = ''
   private groupNamesByRoomId = new Map<string, string>()
@@ -131,6 +140,11 @@ class GroupExitMonitorService {
       /** 永久保留的事件总数（`events` 只是最新的一批）。 */
       totalEventCount: this.events.length,
       enabled: this.enabled,
+      /*
+       * 这里仍然按「用户勾选的那套监控」报状态，不掺内提示的范围：
+       * `running` 同时是本地 Agent API 的可用性判据，改语义会波及它。
+       * 注意：内提示开着时检测其实也在跑（见 detectionEnabled），只是不算「退群监控在跑」。
+       */
       running: this.enabled && this.active && chat.isReady(),
       nativeMonitorActive: this.nativeMonitorActive,
       monitoredGroupCount: this.snapshots.size,
@@ -168,7 +182,7 @@ class GroupExitMonitorService {
     this.active = true
     this.nativeMonitorActive = nativeMonitorActive
     this.checkQueued = false
-    if (!this.enabled) {
+    if (!this.detectionEnabled()) {
       this.save()
       this.broadcast()
       return
@@ -194,6 +208,77 @@ class GroupExitMonitorService {
     }
   }
 
+  /**
+   * 由主进程注入「微信内退群监控消息」开关状态。
+   *
+   * 注入的是**开关**而不是群列表：群列表由本服务在刷新群名时一并更新（同一份会话快照），
+   * 所以群变动后不会过期，上层也不必维护第二份群清单。
+   */
+  setNoticeEnabled(enabled: boolean): void {
+    this.ensureLoaded()
+    const next = enabled === true
+    if (this.noticeEnabled === next) return
+    this.noticeEnabled = next
+    this.eventSequence += 1
+    this.scopeGeneration += 1
+    this.dropOutOfScopeSnapshots()
+    this.lastCheckedAt = undefined
+    this.groupNamesRefreshPending = true
+    this.broadcast()
+    if (!this.detectionEnabled() || !chat.isReady()) return
+    if (!this.active) void this.start(false)
+    else void this.check()
+  }
+
+  /** 内提示开关是否打开。 */
+  isNoticeEnabled(): boolean {
+    return this.noticeEnabled
+  }
+
+  /** 内提示覆盖的群聊数（开关卡片的范围说明用）。 */
+  getNoticeGroupCount(): number {
+    return this.allGroupRoomIds.size
+  }
+
+  /** 该房间是否属于内提示范围（= 全部群聊）。 */
+  isNoticeRoom(roomId: string): boolean {
+    const normalized = String(roomId || '').trim()
+    return this.noticeEnabled && this.allGroupRoomIds.has(normalized)
+  }
+
+  /**
+   * 该房间是否要走自动化通知：**退群监控开着** 且 该房间在勾选范围内。
+   *
+   * 保留 `enabled` 这个前提是有意的 —— 关掉退群监控就等于「这些群我不看了」，
+   * 自动化通知不该因为内提示开关开着而偷偷恢复。
+   */
+  isMonitoredRoom(roomId: string): boolean {
+    return this.enabled && this.monitoredRoomIds.has(String(roomId || '').trim())
+  }
+
+  /** 检测范围 = 勾选的群 ∪ 内提示覆盖的群。 */
+  private detectionRoomIds(): Set<string> {
+    const ids = new Set(this.monitoredRoomIds)
+    if (this.noticeEnabled) for (const roomId of this.allGroupRoomIds) ids.add(roomId)
+    return ids
+  }
+
+  /** 是否要继续检测：任一消费者开着就要跑。 */
+  private detectionEnabled(): boolean {
+    return this.enabled || this.noticeEnabled
+  }
+
+  /** 丢掉已不在检测范围内的快照（换号、改范围、切开关都会用到）。 */
+  private dropOutOfScopeSnapshots(): void {
+    const inScope = this.detectionRoomIds()
+    for (const roomId of this.snapshots.keys()) {
+      if (!inScope.has(roomId)) this.snapshots.delete(roomId)
+    }
+    for (const roomId of this.hydrationQueue) {
+      if (!inScope.has(roomId)) this.hydrationQueue.delete(roomId)
+    }
+  }
+
   stop(): void {
     this.active = false
     this.nativeMonitorActive = false
@@ -208,7 +293,7 @@ class GroupExitMonitorService {
   }
 
   notifyDatabaseChanged(rawPayload: string): void {
-    if (!this.enabled || !this.active || !isContactEvent(rawPayload)) return
+    if (!this.detectionEnabled() || !this.active || !isContactEvent(rawPayload)) return
     try {
       chat.getChatDb()?.getWcdb4Client().invalidateGroupNicknameCache()
     } catch {
@@ -224,7 +309,7 @@ class GroupExitMonitorService {
 
   async checkNow(): Promise<GroupExitMonitorState> {
     this.ensureLoaded()
-    if (!this.enabled) return this.getState()
+    if (!this.detectionEnabled()) return this.getState()
     if (!this.active && chat.isReady()) await this.start(false)
     await this.check()
     return this.getState()
@@ -261,14 +346,8 @@ class GroupExitMonitorService {
       this.eventSequence += 1
       this.scopeGeneration += 1
       this.monitorSelectionConfigured = true
-      const nextMonitoredRoomIds = normalizeRoomIds(configuration.monitoredRoomIds || [])
-      for (const roomId of this.snapshots.keys()) {
-        if (!nextMonitoredRoomIds.has(roomId)) this.snapshots.delete(roomId)
-      }
-      for (const roomId of this.hydrationQueue) {
-        if (!nextMonitoredRoomIds.has(roomId)) this.hydrationQueue.delete(roomId)
-      }
-      this.monitoredRoomIds = nextMonitoredRoomIds
+      this.monitoredRoomIds = normalizeRoomIds(configuration.monitoredRoomIds || [])
+      this.dropOutOfScopeSnapshots()
       this.groupNamesRefreshPending = true
       this.lastCheckedAt = undefined
     }
@@ -394,7 +473,12 @@ class GroupExitMonitorService {
     const result = await this.readMemberships()
     const membershipCostMs = Date.now() - startedAt
     let changedGroups = 0
-    if (result.groups && this.enabled && this.active && scopeGeneration === this.scopeGeneration) {
+    if (
+      result.groups &&
+      this.detectionEnabled() &&
+      this.active &&
+      scopeGeneration === this.scopeGeneration
+    ) {
       changedGroups = await this.applyCurrentMemberships(result.groups, scopeGeneration)
     }
     console.log(
@@ -406,7 +490,7 @@ class GroupExitMonitorService {
   private async readMemberships(): Promise<MembershipReadResult> {
     await this.refreshGroupNamesIfNeeded()
     const database = chat.getChatDb()
-    const roomIds = Array.from(this.monitoredRoomIds)
+    const roomIds = Array.from(this.detectionRoomIds())
     const batchAvailable = chat.isGroupMemberIdsBatchAvailable()
     const mode: MembershipMode = batchAvailable ? 'batch' : 'legacy'
     if (!database) return { mode, groupCount: roomIds.length, groups: null }
@@ -536,7 +620,7 @@ class GroupExitMonitorService {
     }
     this.hydrationQueue.delete(roomId)
     const baseline = this.snapshots.get(roomId)
-    if (!baseline || !this.monitoredRoomIds.has(roomId)) {
+    if (!baseline || !this.detectionRoomIds().has(roomId)) {
       this.startNextSnapshotHydration()
       return
     }
@@ -610,6 +694,9 @@ class GroupExitMonitorService {
         const resolved = normalizeKnownGroupName(roomId, name)
         if (resolved) this.groupNamesByRoomId.set(roomId, resolved)
       }
+      /* 内提示覆盖的「全部群聊」与群名同源、同频刷新（都是会话表里的群聊），
+       * 这样群变动后自然跟上，上层不需要再维护第二份群清单。 */
+      this.allGroupRoomIds = new Set(Object.keys(names || {}))
     } catch {
       // Session 群名是展示信息；读取失败时继续使用快照中的已知群名。
     }

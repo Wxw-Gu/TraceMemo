@@ -132,6 +132,7 @@ import {
   readMsgInsertSwitches,
   reconcileMsgInsertRules,
   resolveHelperPath,
+  resolveTargetRooms,
   type MsgInsertScopeInput,
   type MsgInsertSwitchName
 } from './services/msg-insert-switch-service'
@@ -141,16 +142,31 @@ import {
   wechatLocalExitNoticeService
 } from './services/wechat-local-exit-notice-service'
 
+/** 「微信内退群监控消息」覆盖的群聊数（开关卡片的范围说明用，不是覆盖率）。 */
+function exitNoticeGroupCount(): number {
+  return groupExitMonitorService.getNoticeGroupCount()
+}
+
+/**
+ * 把「微信内退群监控消息」的开关状态同步给退群监控。
+ *
+ * 注入的只是**开关**：群清单由 monitor 自己在刷新群名时一并更新，
+ * 这里不维护第二份。检测范围会成为「勾选的群 ∪ 全部群聊」，两个消费者都能拿到事件。
+ */
+function syncExitNoticeScope(): void {
+  try {
+    groupExitMonitorService.setNoticeEnabled(wechatLocalExitNoticeService.isEnabled())
+  } catch (error) {
+    console.warn('[MsgInsert] 同步退群内提示范围失败:', error)
+  }
+}
+
 /**
  * 微信消息插入开关的作用面输入。
  *
- * 目标群列表**复用退群监控的配置**，不在这里另维护一份。
+ * 防撤回用「全部可定位会话」；退群监控的勾选只服务自动化通知，不再是内提示的范围。
  * 数据库没连上时返回 null，调用方据此禁用写入而不是假装能改。
  */
-function monitoredRoomCount(): number {
-  return (groupExitMonitorService.getState().monitoredRoomIds || []).length
-}
-
 function resolveMsgInsertScopeInput(): MsgInsertScopeInput | null {
   const client = chat.getChatDb()?.getWcdb4Client()
   if (!client) return null
@@ -203,16 +219,27 @@ async function reconcileMsgInsertRulesOnStart(): Promise<void> {
     return
   }
   if (!enabled) return
-  await reconcileMsgInsertRulesNow()
+  await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope))
 }
 
-async function reconcileMsgInsertRulesNow(): Promise<boolean> {
+/**
+ * 防撤回的作用面 = 全部可定位会话（群聊 + 私聊）。
+ *
+ * native 侧有「定义漂移就 DROP + 重建」的能力，但只有显式复核时才会跑；
+ * 规则定义变了不自动铺开，用户就得手动关-开一次开关。
+ */
+function recallRoomsForReconcile(scope: MsgInsertScopeInput): string[] {
+  return resolveTargetRooms(scope, 'recall_notice').rooms
+}
+
+async function reconcileMsgInsertRulesNow(extraRooms: string[] = []): Promise<boolean> {
   const scope = resolveMsgInsertScopeInput()
   const client = chat.getChatDb()?.getWcdb4Client()
   if (!scope || !client) return false
   try {
     const result = await reconcileMsgInsertRules({
       ...scope,
+      extraRooms,
       myWxid: String(chat.getSelfAccountInfo()?.wxid || ''),
       databaseKey: client.getKey()
     })
@@ -227,6 +254,78 @@ async function reconcileMsgInsertRulesNow(): Promise<boolean> {
   } catch (error) {
     console.warn('[MsgInsert] reconcile 失败:', error)
     return true
+  }
+}
+
+/**
+ * 清理老版防撤回保护（recall journal）留在微信库里的 `_wxe_capture_*` 触发器。
+ *
+ * 那批触发器装进库里就没人卸载（应用关闭该功能时直接 return），会一直抓取；而且它
+ * 和新机制的触发器挂在同一张 `Msg_*` 表上抢事件。
+ *
+ * 边界：先只读扫描、有残留才写库；只删触发器、不删老日志表（表里是微信已删、可能
+ * 只剩一份的副本）；日志只记数量（对象名含 sha1(会话表名) 派生的稳定标识）。
+ */
+async function cleanupLegacyRecallResidueOnStart(): Promise<void> {
+  const client = chat.getChatDb()?.getWcdb4Client()
+  if (!client) return
+  try {
+    const report = client.scanLegacyRecallResidue()
+    if (!report.found) return
+
+    console.log(
+      `[RecallResidue] 检测到老版防撤回残留 shards=${report.shards.length} triggers=${report.triggerCount}` +
+        ` journals=${report.journalCount} blockingDelete=${report.blockingDeleteCount}` +
+        ` blockingInsert=${report.blockingInsertCount} passive=${report.passiveCount}`
+    )
+    appLogger.write({
+      level: 'warn',
+      scope: 'recall-residue',
+      message: '检测到老版防撤回残留，开始清理',
+      details: {
+        shards: report.shards.length,
+        triggers: report.triggerCount,
+        journals: report.journalCount,
+        blockingDelete: report.blockingDeleteCount,
+        blockingInsert: report.blockingInsertCount,
+        passive: report.passiveCount
+      }
+    })
+
+    /*
+     * 删除必须借 helper 的可写连接：本进程对分片只有只读连接，自己发 DROP 一定失败。
+     * helper 那条链路会在装规则时顺手清掉残留，顺带把新规则铺到所有会话。
+     */
+    const scope = resolveMsgInsertScopeInput()
+    const applied = scope ? await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope)) : false
+
+    /* 收尾结论以「重新扫描」为准，不采信 helper 的自述。 */
+    const after = client.scanLegacyRecallResidue()
+    const cleared = after.triggerCount === 0
+    console.log(
+      `[RecallResidue] 清理${cleared ? '完成' : '未完成'} applied=${applied} remainingTriggers=${after.triggerCount}` +
+        ` remainingJournals=${after.journalCount}`
+    )
+    appLogger.write({
+      level: cleared ? 'info' : 'warn',
+      scope: 'recall-residue',
+      message: cleared ? '老版防撤回残留清理完成' : '老版防撤回残留清理未完成',
+      details: {
+        requested: report.triggerCount,
+        remainingTriggers: after.triggerCount,
+        remainingJournals: after.journalCount,
+        helperApplied: applied
+      }
+    })
+  } catch (error) {
+    /* 清理失败绝不能挡住启动 —— 它只是收尾工作。 */
+    console.warn('[RecallResidue] 清理失败:', error)
+    appLogger.write({
+      level: 'warn',
+      scope: 'recall-residue',
+      message: '老版防撤回残留清理失败',
+      details: { reason: error instanceof Error ? error.message : String(error) }
+    })
   }
 }
 import { wechatActionLogService } from './services/wechat-action-log-service'
@@ -430,6 +529,11 @@ function configureRecallProtection(
     recallJournalTimer = null
   }
   configureRecallArchive(enabled ? accountRoot : '')
+  /*
+   * 读取路径必须跟开关一起走：老 recall journal 的合并以前是无条件的，
+   * 于是「关掉防撤回」对用户等于没关（消息照样在，且不带撤回标记）。
+   */
+  wcdb4Client.setRecallJournalEnabled(enabled)
   if (!enabled) return
 
   const monitor = new RecallArchiveMonitor(
@@ -1208,15 +1312,26 @@ app.whenReady().then(async () => {
          * 渲染层读状态、群列表变化都不会触发 DDL。
          */
         void reconcileMsgInsertRulesOnStart()
+        /*
+         * 老防撤回残留收尾：只读扫描 → 有残留才写库（清理走 helper 的可写通道，
+         * 判定规则与边界见函数注释）。
+         */
+        void cleanupLegacyRecallResidueOnStart()
 
         groupExitMonitorService.setGroupExitHandler((event) => {
           /*
-           * 微信内退群监控消息：一次性往群里插一条本地提示。
+           * 同一个退群事件按**各自的范围**分发给两个消费者：
            *
-           * 与下面的自动化通知**完全独立**：自己不抛异常（handleExitEvent 内部兜底）、
-           * 不 await、失败只记日志 —— 插入失败绝不能影响退群监控循环或自动化通知。
+           *   - 微信内退群监控消息：范围 = 全部群聊（开关开着就全覆盖）；
+           *   - 自动化退群通知：范围 = 退群监控里勾选的群。
+           *
+           * 两者互不依赖：内提示不抛异常、不 await（handleExitEvent 内部兜底），
+           * 插入失败不会影响自动化通知，反之亦然。
            */
-          void wechatLocalExitNoticeService.handleExitEvent(event)
+          if (groupExitMonitorService.isNoticeRoom(event.conversationId)) {
+            void wechatLocalExitNoticeService.handleExitEvent(event)
+          }
+          if (!groupExitMonitorService.isMonitoredRoom(event.conversationId)) return undefined
           try {
             return getAutomationService()
               .handleGroupExit(event)
@@ -1236,6 +1351,8 @@ app.whenReady().then(async () => {
             return undefined
           }
         })
+        /* 把「微信内退群监控消息」的开关交给 monitor：开着时检测范围扩到全部群聊。 */
+        syncExitNoticeScope()
         messageListener.onMessage((message) => {
           // 日志只允许出现「类型 / 群或私聊 / 是否自己发 / @ 数量」这类不可逆标识，
           // 不含 wxid、昵称、群名、正文与 source。
@@ -1907,7 +2024,7 @@ app.whenReady().then(async () => {
       snapshot.switches.group_exit_notice = eventModeStatus(
         'group_exit_notice',
         wechatLocalExitNoticeService.isEnabled(),
-        monitoredRoomCount()
+        exitNoticeGroupCount()
       )
       return snapshot
     }
@@ -1952,14 +2069,16 @@ app.whenReady().then(async () => {
       if (toggled.error) {
         return {
           success: false,
-          status: eventModeStatus(name, toggled.enabled, monitoredRoomCount()),
+          status: eventModeStatus(name, toggled.enabled, exitNoticeGroupCount()),
           errorCode: 'UNKNOWN',
           message: '保存开关状态失败'
         }
       }
+      /* 开关一变，检测范围随之变（开 → 全部群聊；关 → 只剩勾选的群）。 */
+      syncExitNoticeScope()
       return {
         success: true,
-        status: eventModeStatus(name, toggled.enabled, monitoredRoomCount())
+        status: eventModeStatus(name, toggled.enabled, exitNoticeGroupCount())
       }
     }
 

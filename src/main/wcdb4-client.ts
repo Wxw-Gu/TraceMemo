@@ -458,6 +458,41 @@ export function parseMonitorEvent(rawPayload: string): Wcdb4MonitorEvent {
   }
 }
 
+/** 老版「防撤回保护」在某个消息分片上留下的残留。 */
+export interface LegacyRecallResidueShard {
+  /** 分片文件名，如 `message_0.db`（不含会话信息，可以进日志）。 */
+  shard: string
+  dbPath: string
+  /** 本应用自己装的抓取触发器：`_wxe_capture_<sha1(表名)[0:16]>` */
+  triggers: string[]
+  /** 老日志表：`_wxe_recall_journal_<sha1(表名)[0:16]>` */
+  journals: string[]
+}
+
+export interface LegacyRecallResidueReport {
+  found: boolean
+  shards: LegacyRecallResidueShard[]
+  triggerCount: number
+  journalCount: number
+  /**
+   * 行为分类：`blocking*` 带 `RAISE(IGNORE)`、会吃掉微信写库动作；
+   * `passive` 只复制行，不改变微信行为。
+   */
+  blockingDeleteCount: number
+  blockingInsertCount: number
+  passiveCount: number
+}
+
+/**
+ * 老版防撤回保护（recall journal）的命名规则，安装侧与扫描侧共用。
+ */
+const LEGACY_RECALL_TRIGGER_PREFIX = '_wxe_capture_'
+const LEGACY_RECALL_JOURNAL_PREFIX = '_wxe_recall_journal_'
+/**
+ * 触发器体里必须同时出现这两个列名才算「本应用装的」（安装时写入的私有标记）。
+ */
+const LEGACY_RECALL_TRIGGER_MARKERS = ['_wxe_source_table', '_wxe_captured_at'] as const
+
 export class Wcdb4Client {
   static readonly defaultRoot = Wcdb4Client.findExistingDefaultRoot()
 
@@ -1191,7 +1226,12 @@ export class Wcdb4Client {
     try {
       const cursorMessages = this.getMessagesByCursor(username, startTime, endTime, maxRows)
       if (cursorMessages && cursorMessages.length > 0) {
-        const recoveredMessages = this.readRecallJournal(username, startTime, endTime)
+        /*
+         * 老 recall journal 的合并必须跟开关联动：无条件合并会让「关掉防撤回」失效。
+         */
+        const recoveredMessages = this.recallJournalEnabled
+          ? this.readRecallJournal(username, startTime, endTime)
+          : []
         const mergedMessages = this.mergeMessageRows(cursorMessages, recoveredMessages, maxRows)
         console.log(
           `[WCDB4] getMessages cursor ok username=${username} rows=${mergedMessages.length} recovered=${recoveredMessages.length} cost=${Date.now() - startedAt}ms`
@@ -1921,6 +1961,15 @@ export class Wcdb4Client {
     }
   }
 
+  /**
+   * 老「防撤回保护」（recall journal）是否活动。只影响读取路径，默认 false。
+   */
+  private recallJournalEnabled = false
+
+  setRecallJournalEnabled(enabled: boolean): void {
+    this.recallJournalEnabled = enabled
+  }
+
   installRecallJournal(usernames: string[]): { installed: number; failed: number } {
     const stores = new Map<string, Wcdb4MessageStore>()
     for (const username of this.uniq(usernames)) {
@@ -2197,6 +2246,92 @@ export class Wcdb4Client {
       .update(messageTableName)
       .digest('hex')
       .slice(0, 16)}`
+  }
+
+  /**
+   * 只读扫描：老版防撤回保护在微信库里留下的 `_wxe_capture_*` 触发器与老日志表。
+   *
+   * 认领规则（保守：只认本应用装的）：触发器名以 `_wxe_capture_` 开头、挂在 `Msg_*`
+   * 上、且触发器体里同时出现 `_wxe_source_table` / `_wxe_captured_at` 私有列名；
+   * 表则要求名字以 `_wxe_recall_journal_` 开头。WeFlow 的 `anti_revoke_*`、新机制的
+   * `_tm_msg_insert_*`、微信自己的触发器都不在结果里。
+   *
+   * 顺带按触发器体判行为（blocking* / passive，见返回值）。纯只读；没有残留时不写库。
+   */
+  scanLegacyRecallResidue(): LegacyRecallResidueReport {
+    const shards: LegacyRecallResidueShard[] = []
+    let triggerCount = 0
+    let journalCount = 0
+    let blockingDeleteCount = 0
+    let blockingInsertCount = 0
+    let passiveCount = 0
+    for (const dbPath of this.listMessageShardPaths()) {
+      const triggers: string[] = []
+      const journals: string[] = []
+      for (const row of this.queryShardSqliteMaster(dbPath)) {
+        const name = String(row.name || '')
+        const type = String(row.type || '')
+        const tblName = String(row.tbl_name || '')
+        const sql = String(row.sql || '')
+        if (
+          type === 'trigger' &&
+          name.startsWith(LEGACY_RECALL_TRIGGER_PREFIX) &&
+          /^Msg_/i.test(tblName) &&
+          LEGACY_RECALL_TRIGGER_MARKERS.every((marker) => sql.includes(marker))
+        ) {
+          triggers.push(name)
+          /* 分类只看定义文本，不执行任何语句。合并空白便于匹配多行写法。 */
+          const normalized = sql.replace(/\s+/g, ' ').toUpperCase()
+          const blocks = normalized.includes('RAISE(IGNORE)')
+          if (normalized.includes('BEFORE DELETE')) {
+            if (blocks) blockingDeleteCount += 1
+            else passiveCount += 1
+          } else if (normalized.includes('BEFORE INSERT') && blocks) {
+            blockingInsertCount += 1
+          } else {
+            passiveCount += 1
+          }
+          continue
+        }
+        if (type === 'table' && name.startsWith(LEGACY_RECALL_JOURNAL_PREFIX)) {
+          journals.push(name)
+        }
+      }
+      if (triggers.length === 0 && journals.length === 0) continue
+      triggerCount += triggers.length
+      journalCount += journals.length
+      shards.push({ shard: path.basename(dbPath), dbPath, triggers, journals })
+    }
+    return {
+      found: triggerCount > 0 || journalCount > 0,
+      shards,
+      triggerCount,
+      journalCount,
+      blockingDeleteCount,
+      blockingInsertCount,
+      passiveCount
+    }
+  }
+
+  /*
+   * DROP 不在本进程做：对分片只有只读连接，发 DDL 必然失败。删除由 native 在其可写
+   * 连接里顺手完成（见 dll 侧 `_wxe_capture_*` 清理段）；调用方只做扫描与复核。
+   */
+
+  /**
+   * 读分片 sqlite_master 里可能属于老防撤回的对象。用 GLOB 而非 LIKE：
+   * `_` 在 LIKE 里是单字符通配，会误伤相似名字。
+   */
+  private queryShardSqliteMaster(dbPath: string): Record<string, unknown>[] {
+    if (!this.wcdbExecQuery) throw new Error('当前 WCDB 数据服务不支持 SQL 通道')
+    const sql =
+      "SELECT name, type, tbl_name, COALESCE(sql, '') AS sql FROM sqlite_master" +
+      ` WHERE (type = 'trigger' AND name GLOB '${LEGACY_RECALL_TRIGGER_PREFIX}*')` +
+      ` OR (type = 'table' AND name GLOB '${LEGACY_RECALL_JOURNAL_PREFIX}*')`
+    const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+      this.wcdbExecQuery!(handle, 'message', dbPath, sql, outJson)
+    )
+    return Array.isArray(rows) ? rows : []
   }
 
   getMyAvatarUrl(): string | undefined {

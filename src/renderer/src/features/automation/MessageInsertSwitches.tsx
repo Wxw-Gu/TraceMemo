@@ -174,7 +174,7 @@ export function MessageInsertSwitches(): React.JSX.Element {
          * 只留在诊断/tooltip 里，不上主界面。 */
         const scopeHint =
           status?.mode === 'event' && (status.monitoredRoomCount || 0) > 0
-            ? `当前监控 ${status.monitoredRoomCount} 个群聊`
+            ? `覆盖全部群聊（${status.monitoredRoomCount} 个）`
             : null
         return (
           /* 刻意用 span 而不是 label：<label> 会把点击转发给里面的 Switch，
@@ -209,7 +209,7 @@ export function MessageInsertSwitches(): React.JSX.Element {
               </span>
             ) : null}
             {scopeHint ? (
-              <span className="automation-msg-insert-switch-scope" title="监控范围，不是规则覆盖率">
+              <span className="automation-msg-insert-switch-scope" title="覆盖范围，不是规则覆盖率">
                 {scopeHint}
               </span>
             ) : null}

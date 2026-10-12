@@ -19,7 +19,14 @@ export const MSG_INSERT_SWITCHES = ['recall_notice', 'group_exit_notice'] as con
 export type MsgInsertSwitchName = (typeof MSG_INSERT_SWITCHES)[number]
 
 /** 目标会话的集合口径 */
-export const MSG_INSERT_SCOPES = ['monitored_rooms', 'all_sessions'] as const
+export const MSG_INSERT_SCOPES = [
+  /** 退群监控里勾选的群（只服务自动化通知） */
+  'monitored_rooms',
+  /** 全部可定位会话（群聊 + 私聊） */
+  'all_sessions',
+  /** 全部群聊（微信内退群提示的口径，与勾选无关） */
+  'all_group_chats'
+] as const
 export type MsgInsertScope = (typeof MSG_INSERT_SCOPES)[number]
 
 export interface MsgInsertRoomIssue {
@@ -73,7 +80,7 @@ export interface MsgInsertSwitchStatus {
    * notReadyRooms，也不会阻止 effectiveEnabled。UI 单独显示为「暂无消息表」。
    */
   roomsWithoutTable: number
-  /** 事件驱动型开关用：当前监控范围里的群聊数（只是范围，不是覆盖率） */
+  /** 事件驱动型开关用：该开关覆盖的群聊数（只是范围，不是覆盖率） */
   monitoredRoomCount?: number
 
   totalShards: number
@@ -161,6 +168,6 @@ export const MSG_INSERT_SWITCH_LABELS: Array<{
   {
     name: 'group_exit_notice',
     label: '微信内退群监控消息',
-    hint: '检测到有人退群时，在微信会话里插入一条退出提示'
+    hint: '任意群有人退出时，在微信会话里插入一条退出提示（范围 = 全部群聊；自动化退群通知仍按退群监控勾选的群）'
   }
 ]

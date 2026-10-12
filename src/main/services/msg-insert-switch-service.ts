@@ -72,8 +72,8 @@ function ruleName(base: string, roomId: string): string {
 const SWITCH_SCOPE: Record<MsgInsertSwitchName, MsgInsertScope> = {
   // 防撤回：群聊和私聊都要覆盖，所以目标是「全部可定位会话」
   recall_notice: 'all_sessions',
-  // 退群监控：只作用于退群监控当前选中的群
-  group_exit_notice: 'monitored_rooms'
+  // 退群提示：任意群有人退出都要提示，所以目标是「全部群聊」（与退群监控的勾选无关）
+  group_exit_notice: 'all_group_chats'
 }
 
 interface HelperRunResult {
@@ -338,7 +338,8 @@ export interface MsgInsertScopeInput {
 /**
  * 解析某个开关的目标会话集合。
  *
- * - group_exit_notice → 退群监控选中的群（复用现有配置，不重新维护第二份群列表）
+ * - group_exit_notice → 全部群聊（事件驱动：真实范围由 GroupExitMonitorService 持有，
+ *   退群监控勾选的群只决定「哪些群的退群走自动化通知」）
  * - recall_notice     → 全部可定位会话（群聊 + 私聊）
  */
 export function resolveTargetRooms(
@@ -349,6 +350,27 @@ export function resolveTargetRooms(
   if (scope === 'monitored_rooms') {
     const rooms = Array.from(new Set(input.monitoredRoomIds.filter(Boolean)))
     return { scope, rooms }
+  }
+  if (scope === 'all_group_chats') {
+    /* 事件驱动型：不装规则，真实范围由 GroupExitMonitorService 持有。
+     * 这里回一份群聊清单只为状态展示口径一致（调用方不拿它装规则）。 */
+    try {
+      const rooms = Array.from(
+        new Set(
+          input.client
+            .getSessions()
+            .map((session) => String(session.username || '').trim())
+            .filter((username) => username.endsWith('@chatroom'))
+        )
+      )
+      return { scope, rooms }
+    } catch (error) {
+      return {
+        scope,
+        rooms: [],
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
   }
   try {
     const rooms = Array.from(
@@ -692,7 +714,7 @@ export async function applyMsgInsertSwitch(
  * 微信新建 message_4.db 并把某个目标群的新表放进去时，下一次触发就会自动补上。
  */
 export async function reconcileMsgInsertRules(
-  input: MsgInsertScopeInput & { myWxid: string; databaseKey: string }
+  input: MsgInsertScopeInput & { myWxid: string; databaseKey: string; extraRooms?: string[] }
 ): Promise<{ done: boolean; rooms: number; written: number; errorCode?: MsgInsertErrorCode }> {
   const helperPath = resolveHelperPath()
   if (!helperPath || !input.databaseKey) {
@@ -707,15 +729,24 @@ export async function reconcileMsgInsertRules(
   if (shards.length === 0) {
     return { done: false, rooms: 0, written: 0, errorCode: 'DATABASE_UNAVAILABLE' }
   }
-  /* 只补退群监控选中的群 —— 防撤回的作用面由「打开开关」那一刻决定，
-   * 启动时不做全量扫描，避免每次启动都摸一遍全部会话。 */
-  const rooms = Array.from(new Set(input.monitoredRoomIds.filter(Boolean)))
+  /*
+   * 目标会话 = 退群监控选中的群 ∪ 调用方额外指定的会话。
+   * 清残留与规则定义自愈都复用这条链路，只是换会话集合。
+   */
+  const rooms = Array.from(
+    new Set([
+      ...input.monitoredRoomIds.filter(Boolean),
+      ...(input.extraRooms || []).filter(Boolean)
+    ])
+  )
   if (rooms.length === 0) return { done: true, rooms: 0, written: 0 }
 
   const run = await runHelper(
     helperPath,
     ['--account-root', accountRootFromShard(shards[0]), '--action', 'ensure-rules'],
-    { key: input.databaseKey, rooms, myWxid: input.myWxid }
+    { key: input.databaseKey, rooms, myWxid: input.myWxid },
+    /* 目标会话可能是「全部可定位会话」（几百个），比默认 60s 给宽一点。 */
+    180_000
   )
   if (!run.json) {
     return { done: false, rooms: rooms.length, written: 0, errorCode: run.errorCode || 'UNKNOWN' }
