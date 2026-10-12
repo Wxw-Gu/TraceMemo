@@ -19,15 +19,27 @@ import type {
   QueryMessagesRequest,
   SearchMessagesRequest,
   MessageContextRequest,
-  ConversationOverviewRequest
+  ConversationOverviewRequest,
+  VoiceTranscribeItem,
+  VoiceTranscribeRequest,
+  VoiceTranscribeResponse
 } from '../../shared/local-query-api'
 // messageRef 编解码是 main 与 renderer 共用的契约，只定义一次（`src/shared/local-query-api.ts`）：
 // 两侧各写一份 base64url 实现会悄悄漂移，那会让「跳转到原聊天」偶发失效。
 import {
   encodeMessageRef as toRef,
   decodeMessageRef as fromRef,
-  normalizeMessageIdentity
+  normalizeMessageIdentity,
+  VOICE_TRANSCRIBE_DEFAULT_WAIT_MS,
+  VOICE_TRANSCRIBE_MAX_REFS,
+  VOICE_TRANSCRIBE_MAX_WAIT_MS
 } from '../../shared/local-query-api'
+import type { VoiceMessageReference, VoiceTranscriptSnapshot } from '../../shared/voice-recognition'
+import { voiceMessageReferenceOf } from '../voice-pipeline/voice-message-identity'
+import type {
+  VoiceTranscriptionGateway,
+  VoiceTranscriptionOutcome
+} from '../voice-pipeline/voice-transcription-gateway'
 import {
   IMAGE_TEXT_BACKFILL_TIER_LABEL,
   describeImageTextCoverage,
@@ -223,7 +235,8 @@ function toQueryMessage(
   conversationId: string,
   message: FormattedMessage,
   target: FormattedContact,
-  imageOcr?: { state: string; text: string }
+  imageOcr?: { state: string; text: string },
+  voice?: VoiceTranscriptSnapshot
 ): QueryMessage {
   const kind = kindOf(message)
   const content = message.contentData
@@ -247,7 +260,12 @@ function toQueryMessage(
       : derived.state === 'empty'
         ? 'empty'
         : 'not_indexed'
-  return { messageRef: toRef(conversationId, message.id), timestamp: (message.createTime || 0) * 1000, datetime: message.datetime, sender: message.isSender ? '我' : (message.name || target.m_nsNickName), direction: message.isSender ? 'to_target' : 'from_target', messageType: kind, sourceKind: kind, ...(attachment ? { attachment } : {}), ...(text ? { text } : {}), ...(ocrText ? { imageOcrText: ocrText, derivedSource: 'image_ocr' as const } : {}), ...(kind === 'image' ? { imageTextState } : {}) }
+  // 语音转写与图片 OCR 同为派生文本：走独立字段，不改写 `text`（语音正文是 `[语音消息]`）。
+  const voiceText = kind === 'voice' && voice?.state === 'transcribed' ? voice.transcript?.trim() || '' : ''
+  const voiceFields = kind === 'voice' && voice
+    ? { voiceTranscriptState: voice.state, ...(voiceText ? { voiceTranscript: voiceText, derivedSource: 'voice_transcript' as const } : {}) }
+    : {}
+  return { messageRef: toRef(conversationId, message.id), timestamp: (message.createTime || 0) * 1000, datetime: message.datetime, sender: message.isSender ? '我' : (message.name || target.m_nsNickName), direction: message.isSender ? 'to_target' : 'from_target', messageType: kind, sourceKind: kind, ...(attachment ? { attachment } : {}), ...(text ? { text } : {}), ...(ocrText ? { imageOcrText: ocrText, derivedSource: 'image_ocr' as const } : {}), ...(kind === 'image' ? { imageTextState } : {}), ...voiceFields }
 }
 
 /**
@@ -299,6 +317,45 @@ function outsideScopeError(scope: ResolvedCorpusScope, actual: string): { status
   }
 }
 
+type VoiceTranscriptionPort = Pick<VoiceTranscriptionGateway, 'snapshot' | 'transcribe' | 'modelReady' | 'inFlightCount'>
+
+const VOICE_MODEL_NOT_READY_HINT =
+  '本机还没有可用的离线语音识别模型。请让用户在 TraceMemo 设置里下载语音识别模型后再试；在此之前不要重试。'
+
+/**
+ * 语音转写条目的原因码 → 给调用方（通常是 AI）的下一步建议。
+ * 关键是把"还没转完 / 转不了 / 不该转"三类分开，避免模型把它们说成"语音里没内容"。
+ */
+const VOICE_ITEM_HINTS: Record<string, string> = {
+  invalid_message_ref: 'messageRef 无法解析。请原样使用 query/messages、query/message-context 或 chatlog 返回的 messageRef，不要自行构造。',
+  message_not_found: '找不到这条消息（可能已切换账号或消息已不存在）。请重新读取消息，用新的 messageRef 调用。',
+  not_voice_message: '这不是语音消息，不需要转写。只对 messageType=voice（chatlog 中 type=语音）的消息调用。',
+  still_processing: '已在本机后台排队转写。稍后用同样的 messageRef 再调用一次即可取回结果，不会重复排队；在此之前不能认定这条语音没有内容。',
+  previously_failed: '这条语音之前识别失败，默认不会自动重跑。除非用户明确要求，不要反复重试；确需重试时传 force=true。',
+  recognition_timeout: '本机识别超时。可以稍后传 force=true 重试一次；仍失败就如实告诉用户这条语音无法转写。',
+  recognition_failed: '本机识别失败（音频可能损坏、过短或没有人声）。不要立即重复调用，如实告诉用户这条语音无法转写即可。',
+  voice_model_not_ready: VOICE_MODEL_NOT_READY_HINT,
+  not_connected: 'TraceMemo 当前没有连接微信数据库。请让用户在 TraceMemo 中重新连接后再试。',
+  cancelled: '识别被取消（可能切换了账号或移除了模型）。确认环境正常后可再调用一次。'
+}
+
+function voiceFailureCode(outcome: Extract<VoiceTranscriptionOutcome, { state: 'failed' }>): string {
+  if (outcome.code === 'PREVIOUSLY_FAILED') return 'previously_failed'
+  if (outcome.code === 'TIMEOUT') return 'recognition_timeout'
+  if (outcome.code === 'MODEL_NOT_READY') return 'voice_model_not_ready'
+  if (outcome.code === 'NOT_CONNECTED') return 'not_connected'
+  if (outcome.code === 'CANCELLED') return 'cancelled'
+  return 'recognition_failed'
+}
+
+function voiceItemProblem(messageRef: string, state: 'pending' | 'failed', code: string, error?: string): VoiceTranscribeItem {
+  return { messageRef, state, code, ...(error ? { error } : {}), hint: VOICE_ITEM_HINTS[code] }
+}
+
+function invalidVoiceTranscribeArguments(field: string, constraint: string, hint: string): VoiceTranscribeResponse & Record<string, unknown> {
+  return { status: 'invalid_tool_arguments', field, constraint, hint }
+}
+
 export class LocalQueryApiService {
   /**
    * 图片文字索引覆盖度提供者（同步、只读）。
@@ -343,8 +400,24 @@ export class LocalQueryApiService {
   ): void {
     this.imageOcrEntry = provider
   }
+
+  /**
+   * 语音转写入口。读消息时只读它的缓存快照（不触发识别）；
+   * 只有 `transcribeVoice` 会真正排队识别。
+   */
+  private voiceTranscription: VoiceTranscriptionPort | undefined
+
+  setVoiceTranscriptionGateway(gateway: VoiceTranscriptionPort | undefined): void {
+    this.voiceTranscription = gateway
+  }
+
+  private voiceSnapshot(message: FormattedMessage): VoiceTranscriptSnapshot | undefined {
+    const reference = voiceMessageReferenceOf(message)
+    return reference ? this.voiceTranscription?.snapshot(reference) : undefined
+  }
+
   capabilities(): QueryCapabilitiesResponse {
-    return { version: 1, tools: { query_messages: { operation: '读取指定联系人的确定性消息', directions: ['any', 'from_target', 'to_target'], messageTypes: kinds, timeRanges: ['all', 'today', 'yesterday', 'this_week', 'last_7_days', 'this_month', 'previous_month', 'this_year', 'previous_year', 'absolute'], limitMax: LIMIT_MAX }, search_messages: { operation: '受限 Knowledge 关键词检索', timeRanges: ['all', 'today', 'yesterday', 'this_week', 'last_7_days', 'this_month', 'previous_month', 'this_year', 'previous_year', 'absolute'], limitMax: LIMIT_MAX }, message_context: { operation: '读取消息前后文', timeRanges: ['all'], limitMax: CONTEXT_MAX }, conversation_overview: { operation: '按会话时间片提取概览证据', timeRanges: ['all', 'today', 'yesterday', 'this_week', 'last_7_days', 'this_month', 'previous_month', 'this_year', 'previous_year', 'absolute'], limitMax: LIMIT_MAX } } }
+    return { version: 1, tools: { query_messages: { operation: '读取指定联系人的确定性消息', directions: ['any', 'from_target', 'to_target'], messageTypes: kinds, timeRanges: ['all', 'today', 'yesterday', 'this_week', 'last_7_days', 'this_month', 'previous_month', 'this_year', 'previous_year', 'absolute'], limitMax: LIMIT_MAX }, search_messages: { operation: '受限 Knowledge 关键词检索', timeRanges: ['all', 'today', 'yesterday', 'this_week', 'last_7_days', 'this_month', 'previous_month', 'this_year', 'previous_year', 'absolute'], limitMax: LIMIT_MAX }, message_context: { operation: '读取消息前后文', timeRanges: ['all'], limitMax: CONTEXT_MAX }, conversation_overview: { operation: '按会话时间片提取概览证据', timeRanges: ['all', 'today', 'yesterday', 'this_week', 'last_7_days', 'this_month', 'previous_month', 'this_year', 'previous_year', 'absolute'], limitMax: LIMIT_MAX }, voice_transcribe: { operation: '把指定语音消息转成文字（本机离线识别，结果缓存）', timeRanges: [], limitMax: VOICE_TRANSCRIBE_MAX_REFS } } }
   }
 
   /**
@@ -416,7 +489,7 @@ export class LocalQueryApiService {
         kindOf(message) === 'image'
           ? this.imageOcrEntry?.(contact.md5, sourceMessageId(message))
           : undefined
-      return toQueryMessage(contact.md5, message, contact, ocr)
+      return toQueryMessage(contact.md5, message, contact, ocr, this.voiceSnapshot(message))
     })
     const imageOcrCoverage = buildImageOcrCoverage(this.imageTextCoverage())
     return { status: 'completed' as const, target: contactView(contact), query: { direction, messageTypes: request.messageTypes || [], order: request.order || 'asc', limit: Math.min(LIMIT_MAX, Math.max(1, request.limit || 20)), excludeSystem: request.excludeSystem !== false, resolvedTimeRange: range }, coverage: { state: 'complete' as const }, returnedCount: filtered.length, messages, scope: corpus.scope, ...(imageOcrCoverage ? { imageOcrCoverage } : {}) }
@@ -685,9 +758,92 @@ export class LocalQueryApiService {
       }
     }
     const before = Math.min(CONTEXT_MAX, Math.max(0, request.before ?? 10)); const after = Math.min(CONTEXT_MAX, Math.max(0, request.after ?? 10)); const messages = await listMessagesAsync(ref.conversationId); const index = messages.findIndex((message) => normalizeMessageIdentity(ref.conversationId, message.id)?.messageId === ref.messageId); if (index < 0) return { status: 'contact_not_found' as const }
-    const contact = (await listContactsAsync()).find((item) => item.md5 === ref.conversationId); if (!contact) return { status: 'contact_not_found' as const }; const map = (message: FormattedMessage) => toQueryMessage(ref.conversationId, message, contact)
+    const contact = (await listContactsAsync()).find((item) => item.md5 === ref.conversationId); if (!contact) return { status: 'contact_not_found' as const }; const map = (message: FormattedMessage) => toQueryMessage(ref.conversationId, message, contact, undefined, this.voiceSnapshot(message))
     return { status: 'completed' as const, anchor: map(messages[index]), before: messages.slice(Math.max(0, index - before), index).map(map), after: messages.slice(index + 1, index + 1 + after).map(map) }
   }
+  /**
+   * 把指定语音消息转成文字。
+   *
+   * 这是 Query API 里**唯一会触发计算**的操作：识别在本机离线进行、结果写入语音缓存，
+   * 之后 query/messages 等读路径就能直接读到。并发、去重与排队上限见 VoiceTranscriptionGateway。
+   */
+  async transcribeVoice(request: VoiceTranscribeRequest): Promise<VoiceTranscribeResponse> {
+    const refs = request?.messageRefs
+    if (!Array.isArray(refs) || refs.length === 0 || refs.some((ref) => typeof ref !== 'string' || !ref)) {
+      return invalidVoiceTranscribeArguments('messageRefs', 'non_empty_string_array', 'messageRefs 必须是非空字符串数组，元素取自 query/messages 或 chatlog 返回的语音消息 messageRef。')
+    }
+    if (refs.length > VOICE_TRANSCRIBE_MAX_REFS) {
+      return invalidVoiceTranscribeArguments('messageRefs', `max_items_${VOICE_TRANSCRIBE_MAX_REFS}`, `一次最多转写 ${VOICE_TRANSCRIBE_MAX_REFS} 条语音，请分批调用。`)
+    }
+    if (request.force !== undefined && typeof request.force !== 'boolean') {
+      return invalidVoiceTranscribeArguments('force', 'boolean', 'force 只能是 true 或 false。')
+    }
+    const waitMs = request.waitMs ?? VOICE_TRANSCRIBE_DEFAULT_WAIT_MS
+    if (typeof waitMs !== 'number' || !Number.isFinite(waitMs) || waitMs < 0 || waitMs > VOICE_TRANSCRIBE_MAX_WAIT_MS) {
+      return invalidVoiceTranscribeArguments('waitMs', `0_to_${VOICE_TRANSCRIBE_MAX_WAIT_MS}`, `waitMs 必须是 0 到 ${VOICE_TRANSCRIBE_MAX_WAIT_MS} 之间的毫秒数；0 表示只排队、不等待。`)
+    }
+    const gateway = this.voiceTranscription
+    if (!gateway) return { status: 'voice_transcription_unavailable', hint: '当前 TraceMemo 没有启用语音转写服务，无法转写语音。' }
+    if (!isReady()) return { status: 'knowledge_unavailable', hint: VOICE_ITEM_HINTS.not_connected }
+    if (!(await gateway.modelReady())) return { status: 'voice_model_not_ready', hint: VOICE_MODEL_NOT_READY_HINT }
+
+    const uniqueRefs = Array.from(new Set(refs))
+    const problems = new Map<string, VoiceTranscribeItem>()
+    const references = new Map<string, VoiceMessageReference>()
+    const refsByConversation = new Map<string, Array<{ messageRef: string; messageId: string }>>()
+    for (const messageRef of uniqueRefs) {
+      const identity = fromRef(messageRef)
+      if (!identity) {
+        problems.set(messageRef, voiceItemProblem(messageRef, 'failed', 'invalid_message_ref'))
+        continue
+      }
+      const group = refsByConversation.get(identity.conversationId) || []
+      group.push({ messageRef, messageId: identity.messageId })
+      refsByConversation.set(identity.conversationId, group)
+    }
+    // 同一会话只读一次源消息；与 message-context 同样按会话读取后匹配消息身份。
+    for (const [conversationId, wanted] of refsByConversation) {
+      const messages = await listMessagesAsync(conversationId)
+      const byId = new Map(messages.map((message) => [normalizeMessageIdentity(conversationId, message.id)?.messageId, message]))
+      for (const { messageRef, messageId } of wanted) {
+        const message = byId.get(messageId)
+        const reference = message ? voiceMessageReferenceOf(message) : undefined
+        if (reference) references.set(messageRef, reference)
+        else problems.set(messageRef, voiceItemProblem(messageRef, 'failed', message ? 'not_voice_message' : 'message_not_found'))
+      }
+    }
+
+    const pendingRefs = Array.from(references.keys())
+    const outcomes = pendingRefs.length
+      ? await gateway.transcribe(pendingRefs.map((ref) => references.get(ref)!), { force: request.force, waitMs })
+      : []
+    if (!outcomes) {
+      // 粗估：按每条语音约 1 秒的本机识别耗时。
+      const retryAfterSeconds = Math.max(5, gateway.inFlightCount)
+      return { status: 'busy', retryAfterSeconds, hint: `本机语音转写队列已满。请等待约 ${retryAfterSeconds} 秒后用同样的参数重试，或减少本次的 messageRefs 数量。` }
+    }
+    const resolved = new Map<string, VoiceTranscribeItem>()
+    pendingRefs.forEach((messageRef, index) => {
+      const outcome = outcomes[index]
+      if (outcome.state === 'transcribed') {
+        resolved.set(messageRef, { messageRef, state: 'transcribed', transcript: outcome.transcript, cached: outcome.cached, ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}) })
+      } else if (outcome.state === 'pending') {
+        resolved.set(messageRef, voiceItemProblem(messageRef, 'pending', 'still_processing'))
+      } else {
+        resolved.set(messageRef, voiceItemProblem(messageRef, 'failed', voiceFailureCode(outcome), outcome.error))
+      }
+    })
+    const items = uniqueRefs.map((ref) => resolved.get(ref) || problems.get(ref)!)
+    const summary = { transcribed: 0, pending: 0, failed: 0 }
+    for (const item of items) summary[item.state] += 1
+    return {
+      status: 'completed',
+      items,
+      summary,
+      ...(summary.pending ? { hint: VOICE_ITEM_HINTS.still_processing } : {})
+    }
+  }
+
   /**
    * 会话概览。
    *

@@ -42,6 +42,7 @@ description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的�
 | POST   | `/query/search`                                         | 受限语义关键词检索（依赖本地索引，见 freshness）  |
 | POST   | `/query/message-context`                                | 用 `messageRef` 取某条消息的前后文                |
 | POST   | `/query/conversation-overview`                          | 按会话与时间范围提取可总结的证据                  |
+| POST   | `/query/voice-transcribe`                               | 把指定语音消息转成文字（本机离线识别）            |
 | GET    | `/query/capabilities`                                   | Query 端点能力目录                                |
 | GET    | `/wechat-personal/send-capability`                      | 个人微信发送能力状态（文字 / 图片 / 语音）        |
 | GET    | `/scheduled-reports`                                    | 查询全部定时日报任务                              |
@@ -118,6 +119,7 @@ description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的�
 - `query/search`：受限语义关键词检索，依赖本地索引；
 - `query/message-context`：用返回的 `messageRef` 取前后文；
 - `query/conversation-overview`：按会话与时间范围提取可总结的证据。
+- `query/voice-transcribe`：把指定语音消息的 `messageRef` 转成文字。
 
 两个要点：
 
@@ -146,6 +148,18 @@ description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的�
 4. 必要时读取图片消息前后若干条消息，结合聊天上下文回答。
 
 不要只根据 `[图片]` 猜测内容，不要把一次 OCR 当作完整图片理解，也不要直接读取任意本地图片路径。
+
+### 语音消息
+
+语音消息的正文固定是 `[语音消息]`，转写结果在 `voiceTranscript`，状态在 `voiceTranscriptState`（`/chatlog` 与 `query/*` 都会返回）。
+
+1. `transcribed`：直接使用 `voiceTranscript`。
+2. `pending`：还没转写，**不能**说成“语音里没内容”。回答需要它时，把这些语音的 `messageRef` 批量（每次最多 20 条）交给 `POST /query/voice-transcribe`。
+3. 返回 `pending`（`still_processing`）时，稍后用同样的 `messageRefs` 再调用一次；不要换参数反复重试。
+4. 返回 `failed` 时按 `hint` 处理；`previously_failed` 只有用户明确要求才传 `force: true` 重试。
+5. `503 voice_model_not_ready`：告诉用户先在 TraceMemo 设置中下载语音识别模型，在此之前不要重试。
+6. `429 busy`：等待 `retryAfterSeconds` 后再调用。
+7. 只转写回答问题所需的语音，不要一次把整个会话的语音都提交。
 
 ## 隐私和安全
 
