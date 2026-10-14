@@ -1,7 +1,7 @@
 import { createRequire } from 'module'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, sep } from 'path'
 import { afterAll, describe, expect, it } from 'vitest'
 
 const nodeRequire = createRequire(import.meta.url)
@@ -94,7 +94,16 @@ function fixtureApp(): string {
 }
 
 const app = fixtureApp()
-const relative = (target: string): string => target.slice(app.length + 1)
+/**
+ * 归一化成 POSIX 风格再断言。
+ *
+ * `findNestedMacosCodePaths()` 返回的是**平台原生路径**（Windows runner 上是反斜杠），
+ * 而这一组用例验证的是**签名顺序算法** —— 谁必须排在谁前面 —— 跟分隔符毫无关系。
+ * 归一化之后，层次可以直接用 `Contents/Frameworks/...` 这样的字面量表达，
+ * 既读得懂，也不会再出现"同一文件里一半 `join()`、一半硬编码斜杠"的混用。
+ */
+const relative = (target: string): string =>
+  target.slice(app.length + 1).split(sep).join('/')
 
 describe('macOS nested code signing order', () => {
   afterAll(() => rmSync(root, { recursive: true, force: true }))
@@ -102,7 +111,7 @@ describe('macOS nested code signing order', () => {
   it('signs nested code inside-out and ignores resources and symlinks', () => {
     const paths = findNestedMacosCodePaths(app).map(relative)
 
-    expect(paths).toContain(join('Contents', 'MacOS', 'TraceMemo'))
+    expect(paths).toContain('Contents/MacOS/TraceMemo')
     expect(paths).not.toContain(app)
     expect(paths.some((entry) => entry.includes('Resources'))).toBe(false)
     expect(paths.some((entry) => entry.endsWith('.md'))).toBe(false)

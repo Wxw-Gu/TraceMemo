@@ -1,17 +1,23 @@
-import { mkdtempSync, rmSync } from 'fs'
-import { tmpdir } from 'os'
 import { join } from 'path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { VoiceRecognitionUseCase } from '../../src/main/voice-pipeline/voice-recognition-use-case'
 
-const roots: string[] = []
-
+/**
+ * 这组用例验证的是**转写更新的编排**：命中缓存/新识别是否走同一条 update path、
+ * 账号代号中途变化时是否取消发布、force 是否透传给 pipeline。真正的
+ * `pipeline.run` 与 `modelManager.getStatus` 都被 mock，所以**不需要真实的
+ * 文件系统或 SQLite**。
+ *
+ * 用内存库 + 纯字符串路径（不建目录、不落盘、不删除）：
+ * `SqliteTranscriptRepository` 一旦落盘就会连带生成 `-wal` / `-shm`，
+ * 每个用例还要 `rmSync` 整棵临时树 —— 这些在 Windows runner 上（Defender 实时扫描
+ * 每次文件创建/删除）会放大到秒级，而对被测行为零贡献。
+ */
 function createUseCase(): VoiceRecognitionUseCase {
-  const root = mkdtempSync(join(tmpdir(), 'wxe-voice-use-case-'))
-  roots.push(root)
+  const root = join('wxe-voice-use-case-fixture', 'account-a')
   const useCase = new VoiceRecognitionUseCase({
     modelRoot: join(root, 'model'),
-    databasePath: join(root, 'transcripts.sqlite'),
+    databasePath: ':memory:',
     workerPath: join(root, 'unused-worker.js')
   })
   const state = useCase as unknown as {
@@ -35,10 +41,6 @@ function createUseCase(): VoiceRecognitionUseCase {
   })
   return useCase
 }
-
-afterEach(async () => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
-})
 
 describe('VoiceRecognitionUseCase transcript updates', () => {
   it('publishes a successful cache hit through the same update path as fresh recognition', async () => {
