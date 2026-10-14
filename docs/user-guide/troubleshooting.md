@@ -31,6 +31,14 @@
 
 重新输入密钥或断开连接不会删除微信原始数据库。macOS 的 SIP 和授权说明见[平台说明](../platform/macos.md)。
 
+### 提示「无法读取微信数据库」但文件确实存在
+
+这是**权限问题，不是文件缺失** —— 如果你在终端里能列出 `db_storage/session/session.db`，说明数据目录是完整的，只是 TraceMemo 这个进程读不到。
+
+macOS 27 及更高版本需要给 TraceMemo 授予「完全磁盘访问权限」。注意：**终端能读到文件不代表 TraceMemo 有权限** —— macOS 的隐私权限按应用进程的身份判定，两者走的是不同的授权。
+
+处理步骤见 [macOS 数据访问与系统权限 → 提示「无法读取微信数据库」时](../platform/macos.md#提示无法读取微信数据库时)。
+
 仍然失败时，记录 **macOS 版本、CPU 架构（Apple Silicon / Intel）、微信版本、TraceMemo 版本和页面错误提示**后 扫码 README 文档二维码进群提交消息, 或者提交 Issue。
 
 ## 连接成功但没有联系人或消息

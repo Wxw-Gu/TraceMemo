@@ -14,6 +14,7 @@ import {
   isWindowsVcRuntimeMissingError,
   WINDOWS_VC_RUNTIME_ERROR_MESSAGE
 } from '../../shared/windows-runtime'
+import { hasPermissionDeniedText, isPermissionDeniedError } from './path-access-probe'
 import { mergeRecallArchiveMessages, recordRecallArchiveMessages } from './recall-archive-service'
 import type { ExportImageQuality } from '../../shared/image-quality'
 import type { ImageMessageCountProbe } from '../../shared/image-text-index'
@@ -1238,12 +1239,11 @@ export function testConnection(key: string, accountRoot?: string): DatabaseKeyVa
       messages: { available: true, count: messages.length }
     }
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    const code = mapConnectionError(detail)
+    const code = mapConnectionError(error)
     return {
       success: false,
       code,
-      error: DATABASE_KEY_ERROR_MESSAGES[code]
+      error: databaseKeyErrorMessage(code)
     }
   } finally {
     try {
@@ -1256,20 +1256,79 @@ export function testConnection(key: string, accountRoot?: string): DatabaseKeyVa
   }
 }
 
-const DATABASE_KEY_ERROR_MESSAGES: Record<DatabaseKeyValidationCode, string> = {
+/**
+ * macOS 上的权限不足提示。
+ *
+ * 措辞刻意**不写成安装前置条件**：正常连接的用户什么都不该看到，
+ * 只有在真的读到 EPERM / EACCES 时才给出这一步。FDA 是故障恢复方案。
+ */
+const DATABASE_PERMISSION_HINT_DARWIN =
+  'TraceMemo 无法读取微信数据库。如果你使用 macOS 27 或更高版本，请在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中允许 TraceMemo，然后重新启动应用。'
+
+/** 非 macOS 平台的权限不足提示：不给 macOS 专属指引。 */
+const DATABASE_PERMISSION_HINT_GENERIC =
+  'TraceMemo 无法读取微信数据库，可能是当前用户对该目录没有读取权限。请检查目录权限后重试。'
+
+export const DATABASE_KEY_ERROR_MESSAGES: Record<DatabaseKeyValidationCode, string> = {
   INVALID_FORMAT: '密钥格式不正确',
   DATABASE_OPEN_FAILED: '无法打开数据库',
   ACCOUNT_MISMATCH: '密钥与当前账号不匹配',
   ROOT_UNAVAILABLE: '当前数据库目录不可用',
   DATABASE_FILE_MISSING: '数据库文件缺失',
+  DATABASE_PERMISSION_DENIED: DATABASE_PERMISSION_HINT_GENERIC,
   VC_RUNTIME_MISSING: WINDOWS_VC_RUNTIME_ERROR_MESSAGE,
   UNKNOWN_VALIDATION_ERROR: '未知验证错误'
 }
 
-function mapConnectionError(detail: string): DatabaseKeyValidationCode {
+/**
+ * 取错误码对应的用户可见文案。
+ *
+ * 单独开一层是为了**按平台分叉**：`DATABASE_PERMISSION_DENIED` 这个码在两个平台都可能
+ * 出现，但只有 macOS 才该给出「完全磁盘访问权限」这条指引 —— 把它无条件塞给
+ * Windows 用户是无效指引。
+ */
+export function databaseKeyErrorMessage(
+  code: DatabaseKeyValidationCode,
+  platform: NodeJS.Platform = process.platform
+): string {
+  if (code === 'DATABASE_PERMISSION_DENIED' && platform === 'darwin') {
+    return DATABASE_PERMISSION_HINT_DARWIN
+  }
+  return DATABASE_KEY_ERROR_MESSAGES[code]
+}
+
+/**
+ * 把底层抛出物归类成机器可读的错误码。
+ *
+ * 顺序是有约束的，别随意调整：
+ *   1. VC runtime —— Windows 专属，特征明确，先摘掉；
+ *   2. 账号不匹配 —— `-1005` 是 native 给出的确定信号；
+ *   3. **权限不足** —— 必须排在"文件缺失"之前。原因见下；
+ *   4. 文件缺失 / 根目录不可用 / 打开失败 —— 按文本兜底。
+ *
+ * 为什么权限要排在缺失之前：底层探测用的是 `fs.existsSync()`，它对 EPERM 也返回
+ * `false`，所以走到这里时错误文本常常已经变成「未找到 … session.db」这种**缺失**措辞。
+ * 只按文本判断就会永远归到 `DATABASE_FILE_MISSING`，把用户指向错误的方向。
+ * 因此 errno 优先（调用方在探测层用 `statSync` 补问过），文本特征只作兜底。
+ *
+ * 判断文本时逐个列举显式模式，不用 `includes('permission')` 这类过宽匹配 ——
+ * 那会把 "permission config not found" 之类无关错误也算进来。
+ *
+ * 导出是为了让分类规则本身可被回归测试钉住：这条链路上任何一处顺序调整都会让
+ * 权限问题重新落回"文件缺失"，而那正是本函数要防的回归。
+ * `platform` 可注入，否则 Windows 专属分支在测试里无法触发（`process.platform` 是只读的）。
+ */
+export function mapConnectionError(
+  error: unknown,
+  platform: NodeJS.Platform = process.platform
+): DatabaseKeyValidationCode {
+  const detail = error instanceof Error ? error.message : String(error)
   const normalized = detail.toLowerCase()
-  if (isWindowsVcRuntimeMissingError(detail, process.platform)) return 'VC_RUNTIME_MISSING'
+  if (isWindowsVcRuntimeMissingError(detail, platform)) return 'VC_RUNTIME_MISSING'
   if (normalized.includes('-1005') || normalized.includes('不匹配')) return 'ACCOUNT_MISMATCH'
+  if (isPermissionDeniedError(error) || hasPermissionDeniedText(normalized)) {
+    return 'DATABASE_PERMISSION_DENIED'
+  }
   if (normalized.includes('session.db') || normalized.includes('数据库文件')) {
     return 'DATABASE_FILE_MISSING'
   }

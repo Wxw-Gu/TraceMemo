@@ -6,6 +6,7 @@ import { createRequire } from 'module'
 import { createConnection, Socket } from 'net'
 import { getResourceRoots } from './resource-paths'
 import { wcdbDebugLog } from './wcdb-debug'
+import { looksLikePermissionDenied, PathAccessDeniedError } from './services/path-access-probe'
 import type { ImageMessageCountProbe } from '../shared/image-text-index'
 import { imageTextWindowToSeconds } from '../shared/image-text-index'
 
@@ -631,6 +632,18 @@ export class Wcdb4Client {
     this.sessionDbPath = this.findSessionDb()
 
     if (!this.sessionDbPath) {
+      /*
+       * 先追问一次「到底是文件缺失，还是读不了」。
+       *
+       * `findSessionDb()` 依赖 `fs.existsSync()`，而它对 EPERM / EACCES 同样返回
+       * `false` —— 权限被拒会被静默降级成"文件不存在"。macOS 上未授予完全磁盘访问
+       * 权限时走的正是这条路径：数据目录其实是完整的。此时若照旧抛「未找到」，
+       * 用户会去查路径和重装，而真正该做的是去系统设置授权。
+       */
+      const expected = path.join(this.dbStoragePath, 'session', 'session.db')
+      if (looksLikePermissionDenied(expected) || looksLikePermissionDenied(this.dbStoragePath)) {
+        throw new PathAccessDeniedError(this.dbStoragePath)
+      }
       throw new Error(`未找到微信 4.0 session.db: ${this.dbStoragePath}`)
     }
   }
@@ -644,6 +657,8 @@ export class Wcdb4Client {
       return target
     }
     if (!fs.existsSync(target)) {
+      // 同 session.db：existsSync 分不出"不存在"与"读不了"，追问一次再下结论。
+      if (looksLikePermissionDenied(target)) throw new PathAccessDeniedError(target)
       throw new Error(`未找到微信 4.0 数据目录: ${target}`)
     }
     const candidates = fs
@@ -660,6 +675,8 @@ export class Wcdb4Client {
   static findLatestAccountRoot(): string {
     const root = Wcdb4Client.defaultRoot
     if (!fs.existsSync(root)) {
+      // 默认根目录读不了同样要区分：macOS 上这就是"没授权"的表现，不是"没装微信"。
+      if (looksLikePermissionDenied(root)) throw new PathAccessDeniedError(root)
       throw new Error(`未找到微信 4.0 数据目录: ${root}`)
     }
 

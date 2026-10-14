@@ -4,6 +4,14 @@ export type DatabaseKeyValidationCode =
   | 'ACCOUNT_MISMATCH'
   | 'ROOT_UNAVAILABLE'
   | 'DATABASE_FILE_MISSING'
+  /**
+   * 路径存在、但**当前进程无权读取**（macOS 的完全磁盘访问权限是最常见的成因）。
+   *
+   * 与 `DATABASE_FILE_MISSING` 分开，是因为两者的下一步动作完全不同：
+   * 文件真的不存在要用户去查路径 / 重装，而权限不足要用户去系统设置授权。
+   * 合成一个码会把用户指向错误的排查方向。
+   */
+  | 'DATABASE_PERMISSION_DENIED'
   | 'VC_RUNTIME_MISSING'
   | 'UNKNOWN_VALIDATION_ERROR'
 
