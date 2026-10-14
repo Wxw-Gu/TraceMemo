@@ -235,6 +235,9 @@ const api = {
    */
   getMsgInsertSwitches: (): Promise<MsgInsertSwitchesSnapshot> =>
     ipcRenderer.invoke('automation:getMsgInsertSwitches'),
+  /** 运行期刷新：允许在消息分片集合变化时补一次规则，再返回最新状态。 */
+  refreshMsgInsertSwitches: (): Promise<MsgInsertSwitchesSnapshot> =>
+    ipcRenderer.invoke('automation:refreshMsgInsertSwitches'),
   /**
    * 微信消息插入开关 —— 打开 / 关闭。
    *

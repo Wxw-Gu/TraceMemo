@@ -129,7 +129,11 @@ function SendCapabilityStatus({
  * 退群监控只产生退群事实，不再持有通知模板 —— 两处可编辑必然漂移。
  */
 
-function GroupAvatar({ contact }: { contact: Contact }): React.ReactElement {
+const GroupAvatar = React.memo(function GroupAvatar({
+  contact
+}: {
+  contact: Contact
+}): React.ReactElement {
   const name = contactDisplayName(contact)
   const initial = name.charAt(0) || '?'
   return (
@@ -137,7 +141,7 @@ function GroupAvatar({ contact }: { contact: Contact }): React.ReactElement {
       {contact.avatar ? <img src={contact.avatar} alt="" aria-hidden="true" /> : initial}
     </span>
   )
-}
+})
 
 interface ManageGroupsProps {
   groups: Contact[]
@@ -155,7 +159,14 @@ interface ManageGroupsProps {
   onCancel: () => void
 }
 
-function ManageGroups({
+/**
+ * 管理群聊页。
+ *
+ * 必须 `memo`：这个页面**不消费退群监控状态** —— 列表数据来自 `contacts`、选中来自本地 state，
+ * 而父层会因为监控状态推送反复重渲染（实测约 5 次/秒，且推送间隔 350ms 去抖）。
+ * 没有 memo 时 200+ 行会跟着每次推送重建，用户看到的就是"列表一直在刷新"。
+ */
+const ManageGroups = React.memo(function ManageGroups({
   groups,
   selectedRoomIds,
   sendCapability,
@@ -294,7 +305,8 @@ function ManageGroups({
 
       <footer className="exit-monitor-manage-footer">
         <span>
-          保存后将从新的成员快照开始记录退群动态；退群通知发到哪里，请在「自动化 → 退群通知」里配置。
+          保存后将从新的成员快照开始记录退群动态；退群通知发到哪里，请在「自动化 →
+          退群通知」里配置。
         </span>
         <div>
           <Button variant="ghost" onClick={onCancel} disabled={saving}>
@@ -307,7 +319,7 @@ function ManageGroups({
       </footer>
     </div>
   )
-}
+})
 
 export function GroupExitMonitorWorkspace({
   dbReady,
@@ -354,6 +366,7 @@ export function GroupExitMonitorWorkspace({
   }, [contacts])
 
   React.useEffect(() => {
+    if (view !== 'events') return
     const api = typeof window !== 'undefined' ? window.api : undefined
     if (!api || typeof api.getGroupExitMonitorState !== 'function') return
     let disposed = false
@@ -372,7 +385,7 @@ export function GroupExitMonitorWorkspace({
       disposed = true
       unsubscribe?.()
     }
-  }, [])
+  }, [view])
 
   React.useEffect(() => {
     const api = typeof window !== 'undefined' ? window.api : undefined
@@ -536,7 +549,13 @@ export function GroupExitMonitorWorkspace({
     }
   }
 
-  const saveGroups = async (): Promise<void> => {
+  /**
+   * 保存监控范围。
+   *
+   * `useCallback` 是给 `ManageGroups` 的 `memo` 用的：函数引用不稳定时，
+   * 每次状态推送都会让 200+ 行的列表跟着重渲染。
+   */
+  const saveGroups = React.useCallback(async (): Promise<void> => {
     const api = window.api
     if (saving || !dbReady || typeof api.setGroupExitMonitorGroups !== 'function') return
     setSaving(true)
@@ -554,7 +573,7 @@ export function GroupExitMonitorWorkspace({
     } finally {
       setSaving(false)
     }
-  }
+  }, [dbReady, groups, saving, selectedManageRoomIds])
 
   const setMonitorEnabled = async (enabled: boolean): Promise<void> => {
     const api = window.api
@@ -570,16 +589,16 @@ export function GroupExitMonitorWorkspace({
     }
   }
 
-  const toggleManageGroup = (roomId: string): void => {
+  const toggleManageGroup = React.useCallback((roomId: string): void => {
     setSelectedManageRoomIds((current) => {
       const next = new Set(current)
       if (next.has(roomId)) next.delete(roomId)
       else next.add(roomId)
       return next
     })
-  }
+  }, [])
 
-  const toggleAllManageGroups = (): void => {
+  const toggleAllManageGroups = React.useCallback((): void => {
     const allRoomIds = groups.map(contactRoomId)
     const shouldSelect = allRoomIds.some((roomId) => !selectedManageRoomIds.has(roomId))
     setSelectedManageRoomIds((current) => {
@@ -590,7 +609,10 @@ export function GroupExitMonitorWorkspace({
       })
       return next
     })
-  }
+  }, [groups, selectedManageRoomIds])
+
+  /** 退出管理页返回事件列表。同样为了 `ManageGroups` 的 memo 保持稳定引用。 */
+  const cancelManage = React.useCallback((): void => setView('events'), [])
 
   if (view === 'manage') {
     return (
@@ -606,8 +628,8 @@ export function GroupExitMonitorWorkspace({
         onListFilterChange={setManageFilter}
         onToggle={toggleManageGroup}
         onToggleAll={toggleAllManageGroups}
-        onSave={() => void saveGroups()}
-        onCancel={() => setView('events')}
+        onSave={saveGroups}
+        onCancel={cancelManage}
       />
     )
   }
@@ -616,11 +638,11 @@ export function GroupExitMonitorWorkspace({
     ? '数据库未连接'
     : !state.enabled
       ? '监控已暂停'
-    : state.running && state.nativeMonitorActive
-      ? '实时监听已启用'
-      : state.running
-        ? '已连接，等待原生监听'
-        : '等待启动'
+      : state.running && state.nativeMonitorActive
+        ? '实时监听已启用'
+        : state.running
+          ? '已连接，等待原生监听'
+          : '等待启动'
 
   return (
     <div className="exit-monitor-page">

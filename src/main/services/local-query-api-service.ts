@@ -64,8 +64,11 @@ const kinds: QueryMessageType[] = ['text', 'image', 'voice', 'video', 'file', 'l
  *
  * 一次完整 pass 的耗时以分钟计，远超任何交互预算。所以这个预算只用来兜住「已经很接近追平」
  * 的情况：追不上就按当前覆盖如实回答并让后台继续追，而不是把查询卡在索引上。
+ *
+ * 2 秒连"索引已经快跑完"都等不到，就会出现**索引正在追、查询却拿旧覆盖下结论**的矛盾表现。
+ * 15 秒仍远小于一次完整 pass，不会把查询卡住，但足以覆盖"追平在即"的绝大多数情况。
  */
-const QUERY_FRESHNESS_WAIT_BUDGET_MS = 2000
+const QUERY_FRESHNESS_WAIT_BUDGET_MS = 15000
 
 /**
  * 两次由查询触发的追赶之间的最小间隔，避免每个 Query 都重跑一遍索引。
@@ -120,17 +123,26 @@ function formatLocalMinute(ms: number): string {
 function buildIndexCoverage(
   indexLatestAt: number | null,
   sourceLatestAt: number | null,
-  covered: boolean
+  covered: boolean,
+  directReadApplied = false
 ): QueryIndexCoverage | undefined {
   if (indexLatestAt === null) return undefined
   const indexLabel = formatLocalMinute(indexLatestAt)
   return {
+    // 注意：直读补齐**不**把 covered 改成 true。
+    //
+    // 直读只扫了 `indexLatestAt` 之后那一段（权威源、全量），更早的部分仍然依赖索引；
+    // 而 `indexLatestAt` 是**全局**水位，不代表"这个会话在更早区间被索引得多完整"。
+    // 所以这里保持诚实：覆盖结论不变，只在 summary 里说明"这之后已用直读补齐"。
+    // 一旦把 covered 改成 true，prompt 就会允许模型在 0 结果时下"没有"，那是错误的否定。
     covered,
     indexLatestAtLabel: indexLabel,
     ...(sourceLatestAt !== null ? { sourceLatestAtLabel: formatLocalMinute(sourceLatestAt) } : {}),
-    summary: covered
-      ? `可搜索索引已覆盖所问的时间范围（索引最新到 ${indexLabel}）。`
-      : `可搜索索引只更新到 ${indexLabel}，这之后的聊天还没进索引，这段时间是否聊过暂时无法确认。`
+    summary: directReadApplied
+      ? `关键词索引只更新到 ${indexLabel}；这之后的聊天已改用直读原始记录补齐，本会话该区间的结果来自直读。`
+      : covered
+        ? `可搜索索引已覆盖所问的时间范围（索引最新到 ${indexLabel}）。`
+        : `可搜索索引只更新到 ${indexLabel}，这之后的聊天还没进索引，这段时间是否聊过暂时无法确认。`
   }
 }
 
@@ -544,6 +556,7 @@ export class LocalQueryApiService {
     let found: Awaited<ReturnType<LocalQueryApiService['probe']>>
     let freshness: { resynced: boolean; catchUp: 'none' | 'reused' | 'skipped' | 'completed' | 'pending' }
     let freshnessMs = 0
+    let directFallback: { evidence: Map<string, QueryEvidenceItem>; scanned: number } | undefined
     try {
       found = await this.probe(probes, conversationIds, range, limit, contactByMd5, retrievalSessionId)
       probeMs.push(...found.probeMs)
@@ -562,13 +575,38 @@ export class LocalQueryApiService {
         enrichmentMs += reProbe.enrichmentMs
         found = reProbe
       }
+      // 直读兜底必须在这个 `beginInteractiveQuery` 窗口内跑。
+      //
+      // 这个窗口的作用就是让后台索引让路；一旦 `endInteractiveQuery()` 放开，
+      // 正在追赶的索引会立刻进来抢 WCDB，把直读拖成几十秒。
+      const soleId = conversationIds && conversationIds.length === 1 ? conversationIds[0] : undefined
+      const soleContact = soleId ? contactByMd5.get(soleId) : undefined
+      if (!indexCovers(found.indexLatestAt, requestedEnd, found.sourceLatestAt) && soleContact) {
+        // 索引不可信、而范围又恰好是一个会话 → 用 WCDB 直读把索引落后的那一段补上。
+        // 微信机器人问"某个群最近聊了 X"时，这正是"索引没追完就拿不到东西"的解药。
+        directFallback = await this.directReadKeywordFallback({
+          conversationId: soleContact.md5,
+          contact: soleContact,
+          probes,
+          fromMs: found.indexLatestAt,
+          range,
+          limit
+        })
+      }
     } finally {
       this.knowledge.endInteractiveQuery()
     }
     const requestedEnd = rangeEndMs(range, this.nowProvider().getTime())
 
     const covered = indexCovers(found.indexLatestAt, requestedEnd, found.sourceLatestAt)
-    const indexCoverage = buildIndexCoverage(found.indexLatestAt, found.sourceLatestAt, covered)
+    const evidence = new Map(found.evidence)
+    if (directFallback) for (const [key, item] of directFallback.evidence) evidence.set(key, item)
+    const indexCoverage = buildIndexCoverage(
+      found.indexLatestAt,
+      found.sourceLatestAt,
+      covered,
+      directFallback !== undefined
+    )
     // 图片文字索引是**独立覆盖维度**：文字索引再完整也不代表图片里的文字搜得到。
     const imageOcrCoverage = buildImageOcrCoverage(this.imageTextCoverage())
     const timings: QuerySearchTimings = {
@@ -586,8 +624,8 @@ export class LocalQueryApiService {
       resolvedTimeRange: range,
       coverage: { state: this.searchCoverage(found, requestedEnd) },
       probeCount: probes.length,
-      evidenceCount: found.evidence.size,
-      evidence: Array.from(found.evidence.values()).slice(0, limit),
+      evidenceCount: evidence.size,
+      evidence: Array.from(evidence.values()).slice(0, limit),
       scope: corpus.scope,
       indexLatestAt: found.indexLatestAt,
       sourceLatestAt: found.sourceLatestAt,
@@ -596,6 +634,80 @@ export class LocalQueryApiService {
       ...(imageOcrCoverage ? { imageOcrCoverage } : {}),
       timings
     }
+  }
+
+  /**
+   * 索引不可信时的**直读兜底** —— 只在"范围恰好是一个会话"时启用。
+   *
+   * `search_messages` 是四个 Query Tool 里唯一依赖派生索引的：索引在追赶期间它给不出新消息，
+   * 而 WCDB 才是权威源、永远最新。跨会话直读不可行（要遍历上千个会话，实测大会话全量读一次
+   * 15s 以上），但**单个会话**成本可控 —— 所以只在这一种形状下降级，其余情况仍如实标 partial。
+   *
+   * 只扫索引**没覆盖**的那一段（`fromMs` 之后）：已经进索引的部分仍以索引结果为准，不重复劳动。
+   * 匹配口径与索引保持一致：正文 + 语音转写 + 图片 OCR 派生文本。
+   */
+  private async directReadKeywordFallback(input: {
+    conversationId: string
+    contact: FormattedContact
+    probes: string[]
+    /** 索引水位（epoch **毫秒**）；null 表示索引还没建立过，那就从头扫。 */
+    fromMs: number | null
+    range: ResolvedTimeRange
+    limit: number
+  }): Promise<{ evidence: Map<string, QueryEvidenceItem>; scanned: number }> {
+    // freshness 是**毫秒**口径，而 WCDB 读消息的时间窗是**秒**口径。
+    // 显式换算，不让两种单位在同一个表达式里静默错位（这个坑历史上踩过）。
+    const coveredSeconds = input.fromMs === null ? undefined : Math.floor(input.fromMs / 1000)
+    const startTime =
+      coveredSeconds === undefined
+        ? input.range.startTime
+        : input.range.startTime === undefined
+          ? coveredSeconds
+          : Math.max(input.range.startTime, coveredSeconds)
+
+    const raw = await listMessagesAsync(input.conversationId, startTime, input.range.endTime)
+    const needles = input.probes
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean)
+    const evidence = new Map<string, QueryEvidenceItem>()
+    for (const message of raw) {
+      if (evidence.size >= input.limit) break
+      const kind = kindOf(message)
+      const ocr =
+        kind === 'image' ? this.imageOcrEntry?.(input.conversationId, sourceMessageId(message)) : undefined
+      const haystack = [
+        message.content,
+        message.voiceTranscript,
+        ocr && ocr.state === 'indexed' ? ocr.text : ''
+      ]
+        .filter(Boolean)
+        .join('\n')
+        .toLowerCase()
+      if (!haystack || !needles.some((needle) => haystack.includes(needle))) continue
+      const item = toQueryMessage(
+        input.conversationId,
+        message,
+        input.contact,
+        ocr,
+        this.voiceSnapshot(message)
+      )
+      // key 必须与索引路径一致（`会话:归一化消息 id`）：两条路径可能命中同一条消息，
+      // 合并时要能去重。`message.id` 可能带 `local:` 装饰，所以走归一化。
+      const normalizedId = normalizeMessageIdentity(input.conversationId, message.id)?.messageId
+      if (!normalizedId) continue
+      evidence.set(`${input.conversationId}:${normalizedId}`, {
+        messageRef: item.messageRef,
+        timestamp: item.timestamp,
+        sender: item.sender,
+        sourceKind: item.sourceKind,
+        text: toEvidenceDisplayText(item.text ?? ''),
+        ...(item.derivedSource ? { derivedSource: item.derivedSource } : {}),
+        ...(item.imageOcrText ? { imageOcrText: item.imageOcrText } : {}),
+        conversationName: contactView(input.contact).displayName,
+        conversationType: input.contact.type
+      })
+    }
+    return { evidence, scanned: raw.length }
   }
 
   /** 逐 probe 检索并合并去重；同时记录派生索引的覆盖口径与真实耗时分解。 */
@@ -721,12 +833,19 @@ export class LocalQueryApiService {
     if (lag <= worthThreshold) return { resynced: false, catchUp: 'skipped' }
 
     const request = this.knowledge.requestCatchUp(QUERY_CATCH_UP_MIN_INTERVAL_MS)
-    if (!request.triggered) {
-      // 已经在跑 → 复用；刚触发过 → 节流。两种都不阻塞本次查询，后台继续追。
-      return { resynced: false, catchUp: request.inProgress ? 'reused' : 'skipped' }
+    // 只有在"刚刚触发过、节流窗口内"时才不等 —— 那种情况再等也没意义。
+    if (!request.triggered && !request.inProgress) {
+      return { resynced: false, catchUp: 'skipped' }
     }
+    // 本次触发、以及**正在跑（复用）**两种都要等。
+    //
+    // 复用场景若直接返回旧快照，就会出现**索引明明在追、查询却拿旧覆盖下结论**的表现。
+    // 等待后统一 `resynced: true`：即使没等到追平，索引也可能前进了一段，值得按新覆盖重查一次。
     const completed = await this.knowledge.waitForIndexingComplete(QUERY_FRESHNESS_WAIT_BUDGET_MS)
-    return { resynced: true, catchUp: completed ? 'completed' : 'pending' }
+    return {
+      resynced: true,
+      catchUp: completed ? 'completed' : request.triggered ? 'pending' : 'reused'
+    }
   }
 
   /**

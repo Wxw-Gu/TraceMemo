@@ -28,6 +28,9 @@ import { Switch, Spinner, useToast } from '../../components/ui'
 const BLOCKED_RETRY_LIMIT = 20
 const BLOCKED_RETRY_INTERVAL_MS = 2000
 
+/** 运行期刷新的低频兜底间隔。开销说明见 `refreshQuietly`：指纹没变时只是一次本地读。 */
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000
+
 export function MessageInsertSwitches(): React.JSX.Element {
   const { toast } = useToast()
   const [snapshot, setSnapshot] = React.useState<MsgInsertSwitchesSnapshot | null>(null)
@@ -84,6 +87,37 @@ export function MessageInsertSwitches(): React.JSX.Element {
       if (timer) clearTimeout(timer)
     }
   }, [refresh])
+
+  /**
+   * 运行期刷新：**窗口重新聚焦** + **低频兜底**。
+   *
+   * 只在挂载时拉一次不够用：微信运行期间会新建 `message_N.db`，目标会话集合随之变化，
+   * 而规则补齐只在启动时跑过一次 —— 于是 `ready / total` 会一直差着几个。
+   *
+   * 刻意不做高频轮询：主进程侧会先比对消息分片清单指纹，没变就只做纯读立刻返回，
+   * 变了才 spawn 一次 helper，所以这一次调用的实际开销通常只是一次本地读。
+   */
+  const refreshQuietly = React.useCallback(async (): Promise<void> => {
+    const api = window.api
+    if (!api?.refreshMsgInsertSwitches) return
+    try {
+      const result = await api.refreshMsgInsertSwitches()
+      setSnapshot(result)
+      if (result.success) setBlockedReason(null)
+    } catch {
+      /* 静默：一次后台刷新失败不应该把已经可用的界面打回禁用态。 */
+    }
+  }, [])
+
+  React.useEffect(() => {
+    const timer = window.setInterval(() => void refreshQuietly(), REFRESH_INTERVAL_MS)
+    const onFocus = (): void => void refreshQuietly()
+    window.addEventListener('focus', onFocus)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [refreshQuietly])
 
   /** 把结果里的失败原因翻成人话；native code 只进日志。 */
   const humanize = React.useCallback((result: MsgInsertApplyResult): string => {

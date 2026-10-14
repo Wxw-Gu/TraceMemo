@@ -1,5 +1,6 @@
 ---
 name: tracememo-reader
+version: 1.3.0
 description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的微信聊天数据和图片媒体，并管理定时日报任务。当用户要求查看微信消息、查找联系人或群聊、总结聊天、查看或理解图片、生成群聊总结、查询或修改定时日报时使用。此 Skill 由本机 TraceMemo 提供数据，不是 MCP Server。
 ---
 
@@ -17,6 +18,35 @@ description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的�
 - 不要把 Token 放到 URL、回答、日志、Skill 文件或仓库。
 - 6131 是普通 Local HTTP API，不是 MCP Server；不要生成 `mcpServers` 配置。
 
+## 版本自检（每次会话开始时执行一次）
+
+这份 Skill 随 TraceMemo 一起更新，接口会随版本变化。本文件 frontmatter 里的 `version` 是它的唯一版本标识，服务端在 `/health` 回报当前版本。
+
+1. 读取本文件 frontmatter 的 `version`。
+2. 调用 `GET /health`，取返回的 `skill.version`。
+3. 两者一致 → 正常继续。
+4. 两者不一致（本文件更旧）→ **先停止，不要继续读取数据**，并原样告知用户：
+
+   > 本机 TraceMemo Reader Skill 是 {本地版本}，而 TraceMemo 当前是 {服务端版本}，接口契约可能已经过期。
+   > 请打开 TraceMemo → API Center → 快速接入 → 选择目标 Agent → 复制安装指令，把新指令发给我重新安装。
+
+5. `/health` 没有返回 `skill.version`（说明 TraceMemo 版本较旧）→ 无法比对，正常继续，但要在回答中提醒用户升级 TraceMemo。
+
+自检只做一次，不要每个任务都执行。**不要**因为版本不一致就自行猜测新接口的用法。
+
+### 自助更新
+
+用户同意更新时，不必让他手动复制安装指令，Agent 可以自己完成：
+
+```bash
+curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
+  "http://127.0.0.1:6131/api/v1/skill/tracememo-reader"
+```
+
+响应的 `markdown` 就是最新 SKILL.md 全文，`version` 是它的版本，`contentHash` 可用于核对写入结果。先取得用户同意，再用它覆盖本机这份 SKILL.md（连同 frontmatter 一起写），然后重新读取本文件，并告知用户已更新到哪个版本。
+
+覆盖前先确认目标文件路径并留一份备份；**不要**改动本目录里的其他文件，也不要把 `markdown` 内容写进回答或日志。
+
 ## 每次任务前
 
 1. 调用 `/health`，确认服务和数据库状态。
@@ -29,7 +59,8 @@ description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的�
 
 | 方法   | 路径                                                    | 用途                                              |
 | ------ | ------------------------------------------------------- | ------------------------------------------------- |
-| GET    | `/health`                                               | 健康和数据库状态                                  |
+| GET    | `/health`                                               | 健康和数据库状态 + 当前 Skill 版本                |
+| GET    | `/skill/tracememo-reader`                               | 当前 SKILL.md 全文与版本号（自助更新用）          |
 | GET    | `/current_time`                                         | 本机时间与时区                                    |
 | GET    | `/contact`                                              | 联系人/群聊列表；可传 `filter`、`type`            |
 | GET    | `/chatroom`                                             | 群聊列表；可传 `keyword`                          |

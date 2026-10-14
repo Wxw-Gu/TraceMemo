@@ -323,6 +323,11 @@ describe('定时日报 · 微信异常通知', () => {
     const text = sendNotification.mock.calls[0][0].text as string
     expect(text).toContain('每日晚报')
     expect(text).toContain('日报生成失败')
+    // 必须带**失败发生时刻**：同一批补发的多条失败文案可能一模一样，
+    // 只有这个时间戳能把它们区分开。
+    expect(text).toContain('8月27日 18:31')
+    // 必须用空行分隔：微信把单个换行压成空格，否则整条通知连成一行。
+    expect(text).toContain('定时日报执行失败\n\n日报生成失败')
 
     const notifications = await service.listNotifications()
     expect(notifications).toHaveLength(1)

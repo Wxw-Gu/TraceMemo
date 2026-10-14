@@ -291,7 +291,13 @@ export interface QueryMessagesResponse {
   imageOcrCoverage?: QueryImageTextCoverage
 }
 export interface SearchMessagesRequest {
-  target: QueryTarget
+  /**
+   * 目标会话。**可选** —— 省略表示"在 `scope` 描述的整个搜索范围内做跨会话检索"。
+   *
+   * 实现侧一直是这么用的（`request.target?.query`），Tool schema 也是这么声明的；
+   * 只有这里漏了 `?`，于是所有"省略 target 的跨会话检索"在类型层面都成了错误。
+   */
+  target?: QueryTarget
   timeRange: QueryTimeRange
   query: string
   variants?: string[]
@@ -467,7 +473,7 @@ export interface VoiceTranscribeResponse {
   retryAfterSeconds?: number
   hint?: string
 }
-export interface ConversationOverviewRequest { target: QueryTarget; timeRange: QueryTimeRange; scope?: QueryCorpusScope }
+export interface ConversationOverviewRequest { target?: QueryTarget; timeRange: QueryTimeRange; scope?: QueryCorpusScope }
 export interface ConversationOverviewResponse {
   status: string
   target?: { displayName: string; type: 'user' | 'group' }

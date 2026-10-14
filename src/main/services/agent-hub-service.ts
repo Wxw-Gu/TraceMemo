@@ -17,6 +17,7 @@ import { QueryAgentService } from './query-agent-service'
 import { AskWechatService } from './ask-wechat-service'
 import {
   QUERY_AGENT_UNAVAILABLE_TEXT,
+  formatWechatReplyText,
   queryAgentReplyText,
   resolveInboundRoute,
   type GroupMemberChatIntent,
@@ -700,7 +701,7 @@ export class AgentHubService {
         { requestId: `agent-hub-${Date.now()}-${this.nextLogId}`, text },
         conversationKey
       )
-      await this.sendToConversation(conversation, this.formatAIReply(queryAgentReplyText(result)))
+      await this.sendToConversation(conversation, formatWechatReplyText(queryAgentReplyText(result)))
       this.addLog('agent-hub', 'info', `查询回答已发送（${result.status}）`)
     } catch (error) {
       this.addLog('agent-hub', 'error', `查询处理失败：${this.errorMessage(error)}`)
@@ -834,7 +835,7 @@ export class AgentHubService {
     }
     await this.sendToConversation(
       conversation,
-      this.formatAIReply(
+      formatWechatReplyText(
         `${displayName}在“${group.m_nsNickName}”的发言总结（共 ${messages.length} 条）：\n\n${summary.data.trim().slice(0, 3500)}`
       )
     )
@@ -848,15 +849,6 @@ export class AgentHubService {
     if (normalized) return normalized.length > 100 ? `${normalized.slice(0, 100)}…` : normalized
     const label = String(type || '消息').replace(/^普通文本$/, '消息')
     return `[${label}]`
-  }
-
-  private formatAIReply(content: string): string {
-    return content
-      .replace(/\r\n?/g, '\n')
-      .replace(/[ \t]*•[ \t]*/g, '\n• ')
-      .replace(/[ \t]+(?=\d+[.、][ \t])/g, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()
   }
 
   private async generateAndSendReport(

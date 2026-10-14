@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { RadioGroup, RadioGroupItem, Switch } from '../../../components/ui'
 
 export type AppearanceTheme = 'system' | 'light' | 'dark'
+/** 关闭主窗口时的行为。与主进程 settings-store 的 `CloseAction` 保持一致。 */
+export type CloseAction = 'ask' | 'tray' | 'quit'
 
 export function AppearancePage({
   onNotice,
@@ -13,6 +15,7 @@ export function AppearancePage({
   const [theme, setTheme] = useState<AppearanceTheme>('system')
   const [compactMode, setCompactMode] = useState(false)
   const [showStartupProgress, setShowStartupProgress] = useState(true)
+  const [closeAction, setCloseAction] = useState<CloseAction>('ask')
 
   useEffect(() => {
     let active = true
@@ -21,6 +24,7 @@ export function AppearancePage({
       setTheme(result.settings.appearanceTheme)
       setCompactMode(result.settings.compactMode)
       setShowStartupProgress(result.settings.showStartupProgress)
+      setCloseAction(result.settings.closeAction)
       onAppearanceChange({
         theme: result.settings.appearanceTheme,
         compactMode: result.settings.compactMode
@@ -35,11 +39,13 @@ export function AppearancePage({
     appearanceTheme?: AppearanceTheme
     compactMode?: boolean
     showStartupProgress?: boolean
+    closeAction?: CloseAction
   }): Promise<void> => {
     const result = await window.api.setSettings(patch)
     setTheme(result.settings.appearanceTheme)
     setCompactMode(result.settings.compactMode)
     setShowStartupProgress(result.settings.showStartupProgress)
+    setCloseAction(result.settings.closeAction)
     onAppearanceChange({
       theme: result.settings.appearanceTheme,
       compactMode: result.settings.compactMode
@@ -117,6 +123,45 @@ export function AppearancePage({
                 aria-label="显示启动进度"
               />
             </label>
+          </section>
+
+          <h2 className="settings-section-heading">关闭窗口时</h2>
+          <section className="settings-card settings-option-card">
+            <RadioGroup
+              className="settings-choice-grid"
+              value={closeAction}
+              onValueChange={(value) => {
+                if (value === 'ask' || value === 'tray' || value === 'quit')
+                  void save({ closeAction: value })
+              }}
+            >
+              {(
+                [
+                  ['ask', '每次询问', '每次关闭窗口都弹出选择框'],
+                  ['tray', '最小化到托盘', '窗口隐藏，应用继续在后台运行'],
+                  ['quit', '退出应用', '直接结束整个 TraceMemo 进程']
+                ] as const
+              ).map(([value, label, hint]) => (
+                <label
+                  className={`settings-choice ${closeAction === value ? 'active' : ''}`}
+                  key={value}
+                  htmlFor={`appearance-close-${value}`}
+                >
+                  <RadioGroupItem
+                    id={`appearance-close-${value}`}
+                    value={value}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <b>{label}</b>
+                    <small>{hint}</small>
+                  </span>
+                </label>
+              ))}
+            </RadioGroup>
+            <p className="settings-option-hint">
+              选择「每次询问」时，关闭弹窗里勾选「记住我的选择」会自动切换到这里对应的项。
+            </p>
           </section>
         </div>
       </div>

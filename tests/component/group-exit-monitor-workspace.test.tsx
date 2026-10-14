@@ -149,9 +149,22 @@ describe('GroupExitMonitorWorkspace', () => {
       monitoredRoomIds: ['研发群@chatroom'],
       monitoredGroupCount: 1
     }
-    const setGroups = vi.fn().mockResolvedValue(savedState)
+    const setGroups = vi.fn(async (roomIds: string[]) => {
+      current = {
+        ...configuredState,
+        monitoredRoomIds: roomIds,
+        monitoredGroupCount: roomIds.length
+      }
+      return current
+    })
+    /**
+     * 真实服务的 `getState()` 返回的是**内存里的当前状态** —— 保存之后再拉一次，
+     * 拿到的必然是保存后的值。mock 用可变变量体现这一点：
+     * 否则"切回事件页时重新拉取"会把它覆盖成保存前的旧值，那是 mock 的失真，不是实现的问题。
+     */
+    let current: GroupExitMonitorState = configuredState
     window.api = {
-      getGroupExitMonitorState: vi.fn().mockResolvedValue(configuredState),
+      getGroupExitMonitorState: vi.fn(async () => current),
       onGroupExitMonitorState: vi.fn(() => () => undefined),
       setGroupExitMonitorGroups: setGroups,
       checkGroupExitMonitorNow: vi.fn().mockResolvedValue(savedState),

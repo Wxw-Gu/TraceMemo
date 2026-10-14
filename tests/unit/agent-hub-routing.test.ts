@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  formatWechatReplyText,
   matchGroupReportIntent,
   matchRecentChatIntent,
   queryAgentReplyText,
@@ -114,15 +115,46 @@ describe('Agent Hub 回复文案映射', () => {
     outcome: 'answered' as const
   }
 
+  /**
+   * 完整合法的 answered 结果。
+   * `evidence` / `stats` 是 contract 必填字段 —— 直接写字面量会缺字段报类型错。
+   */
+  const answeredResult = (answer: string): AskWechatQueryResult => ({
+    engine: 'query-agent',
+    status: 'answered',
+    answer,
+    evidence: [],
+    stats: {
+      tools: [],
+      reads: { messageCount: 0, matchedCount: 0, overviewSourceCount: 0, evidenceCount: 0 },
+      modelCallCount: 0,
+      toolCallCount: 0,
+      totalMs: 0
+    },
+    diagnostics
+  })
+
   it('answered → 直接用 Query Agent 的文本回答', () => {
+    expect(queryAgentReplyText(answeredResult('最近聊了两件事。'))).toBe('最近聊了两件事。')
+  })
+
+  it('answered → 剥离桌面 UI 的 [E#] 引用编号（微信里点不开，只剩噪音）', () => {
     expect(
-      queryAgentReplyText({
-        engine: 'query-agent',
-        status: 'answered',
-        answer: '最近聊了两件事。',
-        diagnostics
-      })
-    ).toBe('最近聊了两件事。')
+      queryAgentReplyText(
+        answeredResult('第一件事先看结论、第二件事要留缓冲[E6][E14]，第三件不能直接上[E16]。')
+      )
+    ).toBe('第一件事先看结论、第二件事要留缓冲，第三件不能直接上。')
+  })
+
+  it('独占一行的 [E#] 被移除，但不会把相邻两行粘成一行', () => {
+    expect(queryAgentReplyText(answeredResult('第一件事[E1]\n[E2]\n第二件事[E3]'))).toBe(
+      '第一件事\n\n第二件事'
+    )
+  })
+
+  it('整段只剩引用编号时原样兜底，绝不发空消息', () => {
+    // 防御分支：正常回答不会走到这里；真走到也宁可有内容，不能发一条空消息。
+    expect(queryAgentReplyText(answeredResult('[E1][E2]'))).toBe('[E1][E2]')
   })
 
   it('provider_unavailable / error → 使用安全文案', () => {
@@ -151,5 +183,27 @@ describe('Agent Hub 回复文案映射', () => {
       result: {} as never
     }
     expect(queryAgentReplyText(legacy)).toBe(QUERY_AGENT_UNAVAILABLE_TEXT)
+  })
+})
+
+describe('Agent Hub 微信文本排版 — 单换行会被压成空格', () => {
+  it('列表项之间改用空行，否则微信里连成一整段', () => {
+    expect(formatWechatReplyText('结论：两件事。\n• 做饭\n• 游戏')).toBe(
+      '结论：两件事。\n\n• 做饭\n\n• 游戏'
+    )
+  })
+
+  it('Markdown 列表标记归一成 • 后同样独立成行', () => {
+    expect(formatWechatReplyText('1. 先说结论\n- 做饭\n- 游戏')).toBe(
+      '1. 先说结论\n\n• 做饭\n\n• 游戏'
+    )
+  })
+
+  it('连续空行收敛成一个，不留多余空行', () => {
+    expect(formatWechatReplyText('A\n\n\n\nB')).toBe('A\n\nB')
+  })
+
+  it('水平线不会被误当成列表标记', () => {
+    expect(formatWechatReplyText('上文\n---\n下文')).toBe('上文\n---\n下文')
   })
 })

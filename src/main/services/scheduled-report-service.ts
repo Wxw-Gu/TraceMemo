@@ -613,7 +613,10 @@ export class ScheduledReportService {
           payload?.severity || notification.severity,
           payload?.title || notification.title,
           payload?.message || notification.message,
-          payload?.suggestedAction
+          payload?.suggestedAction,
+          // 用**失败发生时刻**而不是发送时刻：pending 通知会跨天补发，
+          // 同一批里几条文案完全相同的失败，只有这个时间能区分开。
+          notification.createdAt
         )
       })
       if (result.success) {
@@ -679,17 +682,20 @@ export class ScheduledReportService {
     severity: ScheduledReportNotificationSeverity,
     title: string,
     message: string,
-    suggestedAction?: string
+    suggestedAction?: string,
+    occurredAt?: string
   ): string {
     const icon = severity === 'error' ? '❌' : severity === 'warning' ? '⚠️' : '✅'
+    const stamp = formatNotificationTimestamp(occurredAt)
     return [
-      `${icon} ${ruleName}`,
+      `${icon} ${ruleName}${stamp ? ` · ${stamp}` : ''}`,
       title,
       message,
       suggestedAction ? `建议：${suggestedAction}` : ''
     ]
       .filter(Boolean)
-      .join('\n')
+      // 必须用**空行**分隔：微信会把单个换行压成空格，否则整条通知会连成一行长句。
+      .join('\n\n')
   }
 
   // ---------------------------------------------------------------------------
@@ -994,6 +1000,21 @@ export class ScheduledReportService {
       'utf8'
     )
   }
+}
+
+/**
+ * 微信通知里的时间戳（「10月13日 16:28」）。
+ *
+ * 必须精确到分钟而不是只到「几月几日」：pending 通知会跨天补发，同一批里
+ * 几条文案完全相同的失败（同规则、同原因），只到日仍然分不清谁是谁。
+ * 时间非法时返回空串，调用方据此去掉整段前缀。
+ */
+const formatNotificationTimestamp = (iso?: string): string => {
+  if (!iso) return ''
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 const asArray = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : [])

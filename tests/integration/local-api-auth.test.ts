@@ -1,9 +1,11 @@
 import fs from 'fs-extra'
+import { join } from 'path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const fixture = vi.hoisted(() => ({
   root: `/tmp/wxe-local-api-auth-${process.pid}`,
   storageAvailable: true,
+  skillVersion: '9.9.9',
   contacts: [
     {
       m_nsUsrName: 'wxid_fixture',
@@ -29,7 +31,16 @@ const fixture = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
-  app: { getPath: () => fixture.root, getVersion: () => 'test-version' },
+  app: {
+    getPath: () => fixture.root,
+    getAppPath: () => fixture.root,
+    getVersion: () => 'test-version',
+    isPackaged: false
+  },
+  shell: {
+    openPath: async () => '',
+    openExternal: async () => undefined
+  },
   safeStorage: {
     isEncryptionAvailable: () => fixture.storageAvailable,
     encryptString: (value: string) => Buffer.from(`encrypted:${value}`, 'utf8'),
@@ -99,7 +110,13 @@ async function startFixtureServer(
 }
 
 describe('Local API authentication', () => {
-  beforeAll(() => fs.ensureDirSync(fixture.root))
+  beforeAll(() => {
+    fs.ensureDirSync(fixture.root)
+    fs.outputFileSync(
+      join(fixture.root, 'docs', 'skill', 'tracememo-reader', 'SKILL.md'),
+      `---\nname: tracememo-reader\nversion: ${fixture.skillVersion}\ndescription: fixture\n---\n\n# TraceMemo Reader fixture\n`
+    )
+  })
 
   beforeEach(() => {
     fixture.storageAvailable = true
@@ -133,6 +150,46 @@ describe('Local API authentication', () => {
     })
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toMatchObject({ count: 1 })
+  })
+
+  it('advertises the Reader Skill version on health and serves SKILL.md to authenticated agents', async () => {
+    const handle = await startFixtureServer()
+
+    const health = await (await fetch(`${baseUrl(handle)}/api/v1/health`)).json()
+    expect(health).toMatchObject({
+      ok: true,
+      skill: { name: 'tracememo-reader', version: fixture.skillVersion, available: true }
+    })
+
+    const path = `${baseUrl(handle)}/api/v1/skill/tracememo-reader`
+    expect((await fetch(path)).status).toBe(401)
+
+    const response = await fetch(path, { headers: { Authorization: `Bearer ${VALID_TOKEN}` } })
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body).toMatchObject({ name: 'tracememo-reader', version: fixture.skillVersion })
+    expect(body.markdown).toContain(`version: ${fixture.skillVersion}`)
+    expect(body.contentHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(JSON.stringify(body)).not.toMatch(/token|authorization|wxid|databasePath|provider/i)
+  })
+
+  // 外部 Agent 靠 health 上的 skill.version 判断 Skill 是否过期，
+  // 所以首选位置读不到时也必须正常回答（回退到下一个候选），不能整条 500。
+  it('falls back to the next Skill candidate and still answers health', async () => {
+    const handle = await startFixtureServer()
+    const skillPath = join(fixture.root, 'docs', 'skill', 'tracememo-reader', 'SKILL.md')
+    const backup = fs.readFileSync(skillPath, 'utf-8')
+    fs.removeSync(skillPath)
+    try {
+      const response = await fetch(`${baseUrl(handle)}/api/v1/health`)
+      expect(response.status).toBe(200)
+      const body = await response.json()
+      expect(body.ok).toBe(true)
+      expect(body.skill).toMatchObject({ name: 'tracememo-reader', available: true })
+      expect(body.skill.version).toMatch(/^\d+\.\d+\.\d+$/)
+    } finally {
+      fs.outputFileSync(skillPath, backup)
+    }
   })
 
   it.each([
@@ -217,7 +274,8 @@ describe('Local API authentication', () => {
     ['POST', '/api/v1/agent/send'],
     ['GET', '/api/v1/query/capabilities'],
     ['POST', '/api/v1/query/messages'],
-    ['POST', '/api/v1/query/voice-transcribe']
+    ['POST', '/api/v1/query/voice-transcribe'],
+    ['GET', '/api/v1/skill/tracememo-reader']
   ])('protects every non-health route: %s %s', async (method, pathname) => {
     const handle = await startFixtureServer()
     const response = await fetch(`${baseUrl(handle)}${pathname}`, {

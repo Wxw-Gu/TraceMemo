@@ -338,6 +338,7 @@ declare global {
        * 功能真的生效（规则可能没装齐），界面不能只看前者。
        */
       getMsgInsertSwitches: () => Promise<MsgInsertSwitchesSnapshot>
+      refreshMsgInsertSwitches: () => Promise<MsgInsertSwitchesSnapshot>
       /**
        * 微信消息插入开关：打开 / 关闭。
        *
@@ -561,6 +562,7 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          closeAction: 'ask' | 'tray' | 'quit'
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
@@ -602,6 +604,7 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          closeAction: 'ask' | 'tray' | 'quit'
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
@@ -626,6 +629,7 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          closeAction: 'ask' | 'tray' | 'quit'
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
@@ -648,6 +652,7 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          closeAction: 'ask' | 'tray' | 'quit'
           windowsWechatPort: string
           imageXorKey: string
           imageAesKey: string

@@ -26,6 +26,21 @@ Reader Skill 只负责“外部 Agent 主动查询历史微信数据”。它不
 
 TraceMemo 不会自动把 Token 写进 Agent 配置。重新生成 Token 后，必须同步更新 Agent 环境。
 
+## 更新已安装的 Skill
+
+Reader Skill 在 Agent 那边是独立副本，**不会随 TraceMemo 升级自动更新**。判断是否需要更新：
+
+1. 在 API Center 的「Skill 详情」里看到的是 TraceMemo 内置的版本；
+2. Agent 调用 `/api/v1/health` 拿到 `skill.version`；
+3. 再和 Agent 手里 SKILL.md frontmatter 的 `version` 比对——不一致就是过期了。
+
+更新有两种方式，任选其一：
+
+- **让 Agent 自己更新**：直接告诉 Agent「你的 Reader Skill 过期了，请从本机 TraceMemo 拉最新版覆盖」。它会调用 `/api/v1/skill/tracememo-reader` 取回最新全文并落盘，不需要你重新复制安装指令。
+- **手工重新安装**：回到 API Center → 快速接入，重新点一次「复制安装指令」交给 Agent 覆盖安装。
+
+新版 Skill 里带有「版本自检」条款，要求 Agent 每次会话开始时比对一次版本。**如果它从来没提醒过你版本不一致，很可能你手里那份还是旧版**——旧版没有这条自检。
+
 ## Agent 的读取顺序
 
 当用户使用“今天”“昨天”“本周”等相对时间时：
@@ -55,7 +70,8 @@ Reader Skill 可以指导 Agent 使用：
 - 结构化日报渲染和按群聊生成总结图片；
 - 定时日报任务的查询、创建、修改、启停、删除、立即执行和执行记录；删除不可逆，Skill 要求先列出唯一任务并取得用户明确确认；
 - 个人微信发送能力状态查询（`/wechat-personal/send-capability`）；
-- `query/*` 一组结构化 Query 端点：`messages`、`search`、`message-context`、`conversation-overview`；
+- `query/*` 一组结构化 Query 端点：`messages`、`search`、`message-context`、`conversation-overview`、`voice-transcribe`；
+- 自身版本查询（`/skill/tracememo-reader`），用于判断是否需要更新；
 - Agent Hub 状态检查与已连接机器人发送测试。这里的发送接口是开发者/测试用途，不是实时机器人入口，也不会让 Reader Skill 自动监听微信消息。
 
 注意这个 API 不只是只读的：`/report`、`/agent/send` 和 `/scheduled-reports*` 会写入状态或真的发出微信消息。

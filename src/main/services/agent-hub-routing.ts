@@ -149,11 +149,47 @@ export function resolveInboundRoute(text: string): InboundRoute {
 export const QUERY_AGENT_UNAVAILABLE_TEXT = '当前 AI 查询服务暂时不可用，请稍后再试。'
 
 /**
+ * 桌面 UI 的 inline citation（`[E6]`）在微信里**没有落点** ——
+ * 点不开、也没有证据卡可以对照，留在正文里纯属噪音。下发前一律剥离。
+ *
+ * 只吃行内空格（`[ \t]`）而不是 `\s`：引用可能独占一行，用 `\s*` 会把上一行的换行
+ * 一起吞掉，把两行粘成一行。
+ */
+const INLINE_CITATION_PATTERN = /[ \t]*\[E\d+\]/g
+
+function stripInlineCitations(text: string): string {
+  return text.replace(INLINE_CITATION_PATTERN, '').replace(/[ \t]+$/gm, '')
+}
+
+/**
+ * 微信气泡的换行规则：**单个 `\n` 会被压成空格，只有空行（`\n\n`）才真的换行**。
+ *
+ * 所以列表项之间必须用**空行**分隔：单换行等于白发，多条 bullet 会被挤成一整段。
+ *
+ * 顺带把 Markdown 列表标记（`-` / `*` / `+`）统一成 `• `：下游
+ * `markdownToPlainText()` 虽然也做这一步，但它只保证 `• `、不保证前面有空行，
+ * 在这里先接住才能拿到正确行距。
+ */
+export function formatWechatReplyText(content: string): string {
+  return content
+    .replace(/\r\n?/g, '\n')
+    .replace(/^[ \t]*[-*+][ \t]+/gm, '• ')
+    .replace(/[ \t]*•[ \t]*/g, '\n\n• ')
+    .replace(/[ \t]+(?=\d+[.、][ \t])/g, '\n\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+/**
  * 把 Query Agent 结果映射成**微信文字回复**。
  * 只输出用户可读文本；Tool trace / temporalBasis / Evidence / 诊断字段一律不下发。
  */
 export function queryAgentReplyText(result: AskWechatQueryResult): string {
-  if (result.status === 'answered') return result.answer
+  if (result.status === 'answered') {
+    const text = stripInlineCitations(result.answer).trim()
+    // 极端情况（整段只有引用编号）宁可原样下发，也不能发一条空消息出去。
+    return text || result.answer.trim()
+  }
   if (result.status === 'provider_unavailable' || result.status === 'error') return result.message
   // Agent Hub 没有 Legacy runner，不会产生 legacy 结果；真出现时按服务不可用处理，不暴露内部结构。
   return QUERY_AGENT_UNAVAILABLE_TEXT

@@ -247,7 +247,7 @@ describe('LocalQueryApiService', () => {
       expect(result.sourceLatestAt).toBe(NOW - 1000)
       expect(result.freshness).toEqual({ catchUp: 'pending' })
       expect(knowledge.requestCatchUp).toHaveBeenCalledTimes(1)
-      expect(knowledge.waitForIndexingComplete).toHaveBeenCalledWith(2000)
+      expect(knowledge.waitForIndexingComplete).toHaveBeenCalledWith(15000)
     })
 
     it('追赶在预算内完成 → 用新索引重新检索（不能拿同步前的结果回答）', async () => {
@@ -315,7 +315,9 @@ describe('LocalQueryApiService', () => {
         voiceCoverage: undefined
       })
 
-      const result = await service.search({ target: { query: 'BOBO' }, timeRange: { kind: 'today' }, query: '健身' })
+      // 刻意**不带 target**：单会话现在会走直读兜底（结论句变成"已用直读补齐"），
+      // 而这条用例要守的是"索引落后且无法兜底时，结论句必须诚实说无法确认"。
+      const result = await service.search({ timeRange: { kind: 'today' }, query: '健身' })
 
       expect(result.resolvedTimeRange?.endTime).toEqual(expect.any(Number))
       // 请求边界（今天）晚于索引覆盖边界 4 分钟 → 只能 partial。
@@ -324,16 +326,129 @@ describe('LocalQueryApiService', () => {
       expect(result.indexCoverage?.summary).toContain('暂时无法确认')
     })
 
-    it('已有索引任务在跑 → 复用而不阻塞本次查询', async () => {
+    it('已有索引任务在跑 → 同样等一个有界预算，等不到才按旧覆盖如实回答', async () => {
       fixture.contacts.splice(1)
       knowledge.search.mockResolvedValue({ ...staleIndex(), sourceLatestAt: NOW - 1000 })
       knowledge.requestCatchUp.mockReturnValue({ triggered: false, inProgress: true })
+      knowledge.waitForIndexingComplete.mockResolvedValue(false)
 
-      const result = await service.search({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, query: '健身' })
+      const result = await service.search({
+        target: { query: 'BOBO' },
+        timeRange: { kind: 'all' },
+        query: '健身'
+      })
 
-      expect(result.freshness).toEqual({ catchUp: 'reused' })
-      expect(knowledge.waitForIndexingComplete).not.toHaveBeenCalled()
-      expect(result.coverage).toEqual({ state: 'partial' })
+      // 复用场景必须等：直接返回旧快照会出现「索引明明在追，却拿旧覆盖下结论」。
+      expect(knowledge.waitForIndexingComplete).toHaveBeenCalledWith(15000)
+      // 用 toMatchObject 而不是逐字段断言：search() 的返回是联合类型，
+      // 直接取属性会撞上这个文件既有的"未收窄"类型债（棘轮不允许新增）。
+      expect(result).toMatchObject({
+        freshness: { catchUp: 'reused' },
+        coverage: { state: 'partial' }
+      })
+    })
+
+    it('复用的索引任务在预算内追完 → 重新检索，不允许拿同步前的结果回答', async () => {
+      fixture.contacts.splice(1)
+      knowledge.search
+        .mockResolvedValueOnce({ ...staleIndex(), sourceLatestAt: NOW - 1000 })
+        .mockResolvedValueOnce({
+          state: 'ready',
+          indexLatestAt: NOW - 30 * 1000,
+          sourceLatestAt: NOW - 1000,
+          voiceCoverage: undefined,
+          evidence: [
+            {
+              conversationId: 'md5-bobo',
+              messageId: 'new-1',
+              timestamp: NOW - 60_000,
+              sender: 'BOBO',
+              sourceKind: 'text',
+              text: '最近开始健身了'
+            }
+          ]
+        })
+      knowledge.requestCatchUp.mockReturnValue({ triggered: false, inProgress: true })
+      knowledge.waitForIndexingComplete.mockResolvedValue(true)
+
+      const result = await service.search({
+        target: { query: 'BOBO' },
+        timeRange: { kind: 'all' },
+        query: '健身'
+      })
+
+      expect(knowledge.search).toHaveBeenCalledTimes(2)
+      expect(result).toMatchObject({
+        freshness: { catchUp: 'completed' },
+        coverage: { state: 'complete' },
+        evidenceCount: 1
+      })
+    })
+
+    it('索引没覆盖 + 范围恰是一个会话 → 直读原始记录兜底（微信机器人拿得到新消息）', async () => {
+      fixture.contacts.splice(1)
+      knowledge.search.mockResolvedValue({ ...staleIndex(), sourceLatestAt: NOW - 1000 })
+      knowledge.requestCatchUp.mockReturnValue({ triggered: true, inProgress: true })
+      knowledge.waitForIndexingComplete.mockResolvedValue(false)
+      const listSpy = listMessagesAsync as unknown as Mock
+      // 直读必须落在 begin/end 让路窗口**之内**：窗口外后台索引会抢 WCDB，
+      // 把直读拖成几十秒。用调用顺序固定这个不变量。
+      const order: string[] = []
+      knowledge.beginInteractiveQuery.mockImplementation(() => void order.push('begin'))
+      knowledge.endInteractiveQuery.mockImplementation(() => void order.push('end'))
+      listSpy.mockImplementation(async () => {
+        order.push('directRead')
+        return [
+          {
+            id: 'm9',
+            type: '普通文本',
+            datetime: '2026/9/9 11:58:00',
+            content: '刚提到过这个探针词',
+            isSender: false,
+            name: 'BOBO',
+            createTime: Math.floor((NOW - 2 * 60 * 1000) / 1000)
+          }
+        ]
+      })
+
+      const result = await service.search({
+        target: { query: 'BOBO' },
+        timeRange: { kind: 'all' },
+        query: '探针词'
+      })
+
+      // 直读读的是权威源，证据拿得到 —— 这是微信机器人"能拿到东西"的关键。
+      // 但 coverage 仍如实是 partial：直读只补了索引水位之后那一段，更早的区间还是索引说了算。
+      expect(listSpy).toHaveBeenCalledTimes(1)
+      expect(result).toMatchObject({
+        coverage: { state: 'partial' },
+        evidenceCount: 1,
+        evidence: [{ text: '刚提到过这个探针词', sender: 'BOBO' }]
+      })
+      // 结论句必须说明"这段已用直读补上"，否则模型会一边拿着证据、一边说"暂时无法确认"。
+      const indexCoverage = (
+        result as unknown as { indexCoverage?: { covered: boolean; summary: string } }
+      ).indexCoverage
+      expect(indexCoverage?.covered).toBe(false)
+      expect(indexCoverage?.summary).toContain('直读原始记录补齐')
+      expect(order).toEqual(['begin', 'directRead', 'end'])
+    })
+
+    it('索引没覆盖但范围跨多个会话 → 不直读兜底，仍如实 partial', async () => {
+      knowledge.search.mockResolvedValue({ ...staleIndex(), sourceLatestAt: NOW - 1000 })
+      knowledge.requestCatchUp.mockReturnValue({ triggered: true, inProgress: true })
+      knowledge.waitForIndexingComplete.mockResolvedValue(false)
+      const listSpy = listMessagesAsync as unknown as Mock
+
+      const result = await service.search({
+        timeRange: { kind: 'all' },
+        query: '探针词',
+        scope: { kind: 'all' }
+      })
+
+      // 跨会话直读要遍历上千个会话（大会话全量读一次 15s+），只能保持 partial。
+      expect(listSpy).not.toHaveBeenCalled()
+      expect(result).toMatchObject({ coverage: { state: 'partial' }, evidenceCount: 0 })
     })
 
     it('追平后 0 结果才允许 complete negative；落后时同一条件只能是 partial', async () => {
@@ -417,7 +532,8 @@ describe('LocalQueryApiService — indexCoverage 结论句', () => {
   })
 
   it('落后时给出可直接引用的本地时间结论，且明确"暂时无法确认"', async () => {
-    const result = await service2.search({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, query: '健身' })
+    // 同样刻意不带 target —— 见上一条：单会话已经会走直读兜底。
+    const result = await service2.search({ timeRange: { kind: 'all' }, query: '健身' })
     expect(result.coverage).toEqual({ state: 'partial' })
     // 8/30 12:00 的本地时间标签（固定时钟下可断言）
     expect(result.indexCoverage?.covered).toBe(false)

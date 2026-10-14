@@ -28,6 +28,7 @@ import type {
 import { agentHubService } from './services/agent-hub-service'
 import { safeError, safeLog, safeWarn } from './safe-log'
 import { apiTokenStore } from './api-token-store'
+import { READER_SKILL_NAME, skillResourceService } from './services/skill-resource-service'
 import { HttpMediaError, readImageMedia, type HttpImageResult } from './http-media-service'
 import { LocalQueryApiService } from './services/local-query-api-service'
 import { automationRuleStore, AutomationRulePersistenceError } from './services/automation-rule-store'
@@ -332,12 +333,36 @@ function getApplicationVersion(): string {
 
 const routes: Record<string, RouteHandler> = {
   '/api/v1/health': withMethods(['GET'], ({ res }) => {
+    const skill = skillResourceService.getStatus()
     sendJson(res, 200, {
       ok: true,
       ready: isReady(),
       service: 'TraceMemo Reader',
       version: getApplicationVersion(),
+      skill: {
+        name: skill.name || READER_SKILL_NAME,
+        version: skill.version || null,
+        available: skill.available
+      },
       timestamp: new Date().toISOString()
+    })
+  }),
+
+  // 外部 Agent 的版本自检与自助更新入口：返回当前 SKILL.md 全文，不返回本地路径。
+  '/api/v1/skill/tracememo-reader': withMethods(['GET'], ({ res }) => {
+    const document = skillResourceService.getDocument()
+    if (!document) {
+      return sendJson(res, 503, {
+        error: 'skill_unavailable',
+        message: '未找到本机 TraceMemo Reader Skill 文件，请确认应用安装是否完整。'
+      })
+    }
+    sendJson(res, 200, {
+      name: document.name,
+      version: document.version || null,
+      contentHash: document.contentHash,
+      modifiedAt: document.modifiedAt,
+      markdown: document.markdown
     })
   }),
 

@@ -33,6 +33,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:test",
     "typecheck:test": "node scripts/typecheck-tests.cjs",
     "test:skill-install": "node scripts/test-skill-install-instruction.cjs",
+    "check:skill-version": "node scripts/check-skill-version-drift.cjs",
     "cp:env": "node scripts/ensure-env.cjs",
     "prepare:env": "node scripts/ensure-env.cjs",
     "prepare:ffmpeg:win": "node scripts/prepare-electron-runtime.cjs --platform win32 --arch x64",

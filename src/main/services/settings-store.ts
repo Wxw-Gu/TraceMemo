@@ -20,6 +20,8 @@ function redirectLegacyWeChatFilesToXwechat(candidate: string): string {
   return candidate
 }
 
+export type CloseAction = 'ask' | 'tray' | 'quit'
+
 export interface AppSettings {
   dbRoot: string
   apiEnabled: boolean
@@ -47,6 +49,17 @@ export interface AppSettings {
    * 不在用户界面暴露实验性名称）。
    */
   queryAgentEnabled: boolean
+  /**
+   * 关闭主窗口时的行为。
+   *
+   * - `ask`：每次弹窗询问（默认，保持既有行为）
+   * - `tray`：直接最小化到系统托盘，应用继续在后台跑
+   * - `quit`：直接退出整个进程
+   *
+   * 只有用户在关闭弹窗里勾了"记住我的选择"才会离开 `ask`；
+   * 设置页随时可以改回来。
+   */
+  closeAction: CloseAction
 }
 
 function getDefaultDbRoot(): string {
@@ -131,7 +144,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   ttsModel: 's2.1-pro-free',
   windowsWechatPort: '',
   reportImagePostfixText: '今日日报',
-  queryAgentEnabled: true
+  queryAgentEnabled: true,
+  closeAction: 'ask'
 }
 
 const SETTINGS_FILE = path.join(
@@ -175,6 +189,11 @@ export function loadSettings(): AppSettings {
       }
       if (cache.dbRoot) {
         cache.dbRoot = redirectLegacyWeChatFilesToXwechat(cache.dbRoot)
+      }
+      // 关闭行为可能来自旧版本或手改过的 settings.json —— 非法值一律收敛回 `ask`。
+      // 放任非法值会造成最难排查的一种表现：点关闭窗口什么也不发生。
+      if (cache.closeAction !== 'ask' && cache.closeAction !== 'tray' && cache.closeAction !== 'quit') {
+        cache.closeAction = 'ask'
       }
       // 防撤回已下线（设置入口已隐藏）：历史版本可能把它持久化为 true。
       // 这里强制收敛为 false 并回写磁盘，确保旧的撤回监听与撤回日志不会继续运行。

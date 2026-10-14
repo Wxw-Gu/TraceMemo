@@ -1,6 +1,6 @@
 {
   "note": "测试文件类型检查基线：只允许下降，不允许上升。用 node scripts/typecheck-tests.cjs --update 下调。",
-  "total": 209,
+  "total": 203,
   "files": {
     "tests/component/ai-model-settings.test.tsx": 2,
     "tests/component/ai-search-cache-consent.test.tsx": 3,
@@ -32,7 +32,6 @@
     "tests/integration/image-text-index-synthetic-e2e.test.ts": 22,
     "tests/integration/query-agent-image-ocr-text.test.ts": 16,
     "tests/integration/query-agent-self-direction.test.ts": 7,
-    "tests/unit/agent-hub-routing.test.ts": 1,
     "tests/unit/ai-search-pipeline-service.test.ts": 1,
     "tests/unit/ai-search-provider-consent.test.ts": 5,
     "tests/unit/ai-search-workspace-pure-functions.test.ts": 13,
@@ -40,7 +39,7 @@
     "tests/unit/group-report.test.ts": 1,
     "tests/unit/http-media-service.test.ts": 2,
     "tests/unit/knowledge-freshness.test.ts": 1,
-    "tests/unit/local-query-api-service.test.ts": 51,
+    "tests/unit/local-query-api-service.test.ts": 46,
     "tests/unit/message-state.test.ts": 1,
     "tests/unit/query-agent-image-ocr-coverage.test.ts": 1,
     "tests/unit/query-agent-service.test.ts": 4,

@@ -94,6 +94,7 @@ import type { SaveImageKeyRequest, TestImageDecryptionRequest } from '../shared/
 import {
   loadSettings,
   saveSettings,
+  updateSettings,
   getSettingsPath,
   AppSettings,
   validateDbRoot
@@ -139,7 +140,8 @@ import {
   resolveHelperPath,
   resolveTargetRooms,
   type MsgInsertScopeInput,
-  type MsgInsertSwitchName
+  type MsgInsertSwitchName,
+  type MsgInsertSwitchesSnapshot
 } from './services/msg-insert-switch-service'
 import { GroupStatsService } from './services/group-stats-service'
 import {
@@ -178,6 +180,39 @@ function resolveMsgInsertScopeInput(): MsgInsertScopeInput | null {
   return {
     client,
     monitoredRoomIds: groupExitMonitorService.getState().monitoredRoomIds || []
+  }
+}
+
+/**
+ * 组装「微信消息插入开关」的快照。**纯读**：不写微信库、不触发 DDL。
+ *
+ * 抽出来是为了让 GET 与「运行期刷新」共用同一份展示口径（含退群提示这个本地事件开关），
+ * 避免两处各拼一遍导致漂移。
+ */
+function buildMsgInsertSwitchesSnapshot(): MsgInsertSwitchesSnapshot {
+  const scope = resolveMsgInsertScopeInput()
+  if (scope) {
+    const snapshot = readMsgInsertSwitches(scope)
+    /* 退群提示的开关状态来自本地设置（事件驱动，不装规则），
+     * 不是微信库里的 _tm_config。 */
+    snapshot.switches.group_exit_notice = eventModeStatus(
+      'group_exit_notice',
+      wechatLocalExitNoticeService.isEnabled(),
+      exitNoticeGroupCount()
+    )
+    return snapshot
+  }
+  return {
+    success: false,
+    switches: {
+      recall_notice: emptyMsgInsertStatus('recall_notice'),
+      group_exit_notice: eventModeStatus(
+        'group_exit_notice',
+        wechatLocalExitNoticeService.isEnabled()
+      )
+    },
+    helperAvailable: resolveHelperPath() !== null,
+    detail: '微信数据库尚未连接'
   }
 }
 
@@ -771,8 +806,27 @@ function createWindow(): void {
     mainWindow.show()
   })
 
+  /** 隐藏到托盘。关闭弹窗的"最小化"与"已记住托盘"两条路径共用同一套副作用。 */
+  const minimizeToTray = (): void => {
+    setupTray()
+    mainWindow.hide()
+    if (process.platform === 'darwin') app.dock?.hide()
+  }
+
   mainWindow.on('close', (event) => {
     if (isQuitting || appShutdownRequested) return
+    // 用户在关闭弹窗里勾过"记住我的选择"就照做，不再每次都弹。
+    const remembered = loadSettings().closeAction
+    if (remembered === 'quit') {
+      isQuitting = true
+      app.quit()
+      return
+    }
+    if (remembered === 'tray') {
+      event.preventDefault()
+      minimizeToTray()
+      return
+    }
     event.preventDefault()
     if (closePromptInFlight) return
     closePromptInFlight = true
@@ -785,16 +839,19 @@ function createWindow(): void {
         buttons: ['最小化到系统托盘', '关闭进程', '取消'],
         defaultId: 0,
         cancelId: 2,
+        // 勾了就记住这次的选择，之后不再弹窗；设置页里随时可以改回来。
+        checkboxLabel: '记住我的选择，下次不再询问',
+        checkboxChecked: false,
         noLink: true
       })
-      .then(({ response }) => {
+      .then(({ response, checkboxChecked }) => {
         if (response === 0) {
-          setupTray()
-          mainWindow.hide()
-          if (process.platform === 'darwin') app.dock?.hide()
+          if (checkboxChecked) updateSettings({ closeAction: 'tray' })
+          minimizeToTray()
           return
         }
         if (response === 1) {
+          if (checkboxChecked) updateSettings({ closeAction: 'quit' })
           isQuitting = true
           app.quit()
         }
@@ -2029,32 +2086,37 @@ app.whenReady().then(async () => {
    */
   ipcMain.handle('automation:getMsgInsertSwitches', () => {
     /* 🔴 纯读：任何 get/status 都不允许写微信库、不允许触发 DDL。
-     * 规则补齐只发生在「用户打开开关」（helper 的 apply 内部先 ensure）与
-     * 「应用启动且持久化开关为开」这两个时机。 */
+     * 需要顺带补齐规则的场景走 automation:refreshMsgInsertSwitches。 */
+    return buildMsgInsertSwitchesSnapshot()
+  })
+  /**
+   * 微信消息插入开关 —— **运行期刷新**（允许在分片集合变化时补一次规则）。
+   *
+   * 与 GET 的分工：GET 必须纯读；但"微信运行期间新建了 message_N.db"这种情况需要补规则，
+   * 否则新分片里的会话永远显示未就绪 —— 而规则补齐只在**启动时**跑过一次。
+   * 用户侧看到的表现就是"计数变了，但分子追不上分母"。
+   *
+   * 成本控制：分片清单指纹没变 → 只做纯读立刻返回；变了才 spawn 一次 helper。
+   */
+  ipcMain.handle('automation:refreshMsgInsertSwitches', async () => {
     const scope = resolveMsgInsertScopeInput()
-    if (scope) {
-      const snapshot = readMsgInsertSwitches(scope)
-      /* 退群提示的开关状态来自本地设置（事件驱动，不装规则），
-       * 不是微信库里的 _tm_config。 */
-      snapshot.switches.group_exit_notice = eventModeStatus(
-        'group_exit_notice',
-        wechatLocalExitNoticeService.isEnabled(),
-        exitNoticeGroupCount()
-      )
-      return snapshot
+    const client = chat.getChatDb()?.getWcdb4Client()
+    if (scope && client) {
+      try {
+        const signature = client
+          .listMessageShardPaths()
+          .map((item) => path.basename(item))
+          .join(',')
+        if (signature !== lastMsgInsertReconciledShards) {
+          lastMsgInsertReconciledShards = signature
+          console.log('[MsgInsert] 运行期检测到消息分片变化，重新补齐规则')
+          await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope))
+        }
+      } catch (error) {
+        console.warn('[MsgInsert] 运行期补齐失败:', error)
+      }
     }
-    return {
-      success: false,
-      switches: {
-        recall_notice: emptyMsgInsertStatus('recall_notice'),
-        group_exit_notice: eventModeStatus(
-          'group_exit_notice',
-          wechatLocalExitNoticeService.isEnabled()
-        )
-      },
-      helperAvailable: resolveHelperPath() !== null,
-      detail: '微信数据库尚未连接'
-    }
+    return buildMsgInsertSwitchesSnapshot()
   })
   /**
    * 微信消息插入开关 —— 写入。

@@ -35,6 +35,7 @@ Token 由应用生成并保存在本机，**不接受用环境变量覆盖**：A
 | 方法   | 路径                                                            | 作用                                   | 参数/请求体                                                     |
 | ------ | --------------------------------------------------------------- | -------------------------------------- | --------------------------------------------------------------- |
 | GET    | `/api/v1/health`                                                | 服务与数据库健康状态                   | 无                                                              |
+| GET    | `/api/v1/skill/tracememo-reader`                                | 当前 Reader Skill 的版本与全文         | 无（需 Token）                                                  |
 | GET    | `/api/v1/current_time`                                          | 本机时间、时区和 Unix 时间戳           | 无                                                              |
 | GET    | `/api/v1/contact`                                               | 联系人和群聊列表                       | `filter`、`type=user\|group`                                    |
 | GET    | `/api/v1/chatroom`                                              | 群聊列表                               | `keyword`                                                       |
@@ -384,3 +385,55 @@ curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/voice-t
 | `invalid_message_ref`   | `messageRef` 无法解析                      |
 
 整次请求的状态：`200 completed`；`400 invalid_tool_arguments`（带 `field`、`constraint`、`hint`）；`503 voice_model_not_ready`（模型未下载）或 `knowledge_unavailable`（数据库未连接）；`429 busy`（队列已满，带 `retryAfterSeconds` 与 `Retry-After` 头）。
+
+## Reader Skill 的版本与更新
+
+Reader Skill 是随应用分发的说明文件。它被安装到 Agent 自己的 Skill 目录之后就与 TraceMemo 分离了，不再随应用升级自动变化，所以它必须能自己证明版本：
+
+- `SKILL.md` frontmatter 的 `version` 是**唯一真源**（形如 `1.3.0`）；
+- `/api/v1/health` 的 `skill.version` 回报当前应用内置的版本；
+- 两者不一致，就说明 Agent 手里那份已经过期，接口契约可能已经变化。
+
+### 检查更新
+
+```bash
+curl http://127.0.0.1:6131/api/v1/health
+```
+
+```json
+{
+  "ok": true,
+  "ready": true,
+  "service": "TraceMemo Reader",
+  "version": "2.5.0",
+  "skill": { "name": "tracememo-reader", "version": "1.3.0", "available": true },
+  "timestamp": "2026-10-13T08:43:52.863Z"
+}
+```
+
+注意区分两个版本号：`version` 是应用版本，`skill.version` 才是 Reader Skill 的版本。Skill 文件读不到时 `available` 为 `false`、`skill.version` 为 `null`，此时 health 仍然返回 `200`——外部 Agent 靠它做自检，这个接口不允许因为 Skill 缺失而失败。
+
+### 拉取最新 Skill
+
+```bash
+curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
+  "http://127.0.0.1:6131/api/v1/skill/tracememo-reader"
+```
+
+```json
+{
+  "name": "tracememo-reader",
+  "version": "1.3.0",
+  "contentHash": "<sha256 hex>",
+  "modifiedAt": "2026-10-13T08:37:30.000Z",
+  "markdown": "---\nname: tracememo-reader\nversion: 1.3.0\n…"
+}
+```
+
+`markdown` 就是可以直接落盘的 SKILL.md 全文，`contentHash` 是它的 SHA-256，可用来核对写入结果。响应**不包含**任何本地文件路径。`503 skill_unavailable` 表示应用侧也没找到 Skill 文件，需要重新安装 TraceMemo。
+
+### Agent 侧的自检义务
+
+`docs/skill/tracememo-reader/SKILL.md` 中的「版本自检」要求 Agent 在每次会话开始时比对一次版本：不一致就停止读取数据并提醒用户重新安装；用户同意后，Agent 可以直接调用上面的接口自助覆盖本地文件，不需要用户重新复制安装指令。
+
+修改 `SKILL.md` 内容时必须同步提升 `version`。CI 中的 `pnpm check:skill-version` 会在"只改文档、不升版本"时失败，避免再次出现"文档改了两轮、版本号纹丝不动"的情况。
