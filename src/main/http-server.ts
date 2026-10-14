@@ -239,7 +239,17 @@ function readBody(req: IncomingMessage, maxBytes = MAX_JSON_BODY_BYTES): Promise
   return new Promise((resolve, reject) => {
     const contentLength = Number(req.headers['content-length'])
     if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-      req.pause()
+      /*
+       * 拒收，但**要先把请求体排空**。
+       *
+       * 直接 `pause()` 会让剩余数据留在 socket 缓冲里，而我们紧接着就会
+       * 发 413 + `Connection: close` —— 客户端此时仍在写，收到连接关闭后会以
+       * 传输层错误收场（undici 报 `ECONNRESET`；Windows 的 TCP 栈比 macOS
+       * 更倾向回 RST，所以先在那里暴露）。改成 `resume()`：不再收集数据，
+       * 只是把客户端已经/正在发的字节丢掉，让它正常写完并读到这个 413。
+       * 上限仍是 maxBytes，所以不会有人靠超大 body 拖住我们。
+       */
+      req.resume()
       reject(new RequestBodyTooLargeError())
       return
     }
@@ -249,7 +259,8 @@ function readBody(req: IncomingMessage, maxBytes = MAX_JSON_BODY_BYTES): Promise
       size += chunk.length
       if (size > maxBytes) {
         chunks.length = 0
-        req.pause()
+        // 同上：排空而不是暂停，否则客户端拿不到这个 413。
+        req.resume()
         reject(new RequestBodyTooLargeError())
         return
       }
