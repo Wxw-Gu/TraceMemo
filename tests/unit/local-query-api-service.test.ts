@@ -403,7 +403,7 @@ describe('LocalQueryApiService', () => {
             id: 'm9',
             type: '普通文本',
             datetime: '2026/9/9 11:58:00',
-            content: '刚提到过这个探针词',
+            content: '刚聊到过这个话题',
             isSender: false,
             name: 'BOBO',
             createTime: Math.floor((NOW - 2 * 60 * 1000) / 1000)
@@ -414,7 +414,7 @@ describe('LocalQueryApiService', () => {
       const result = await service.search({
         target: { query: 'BOBO' },
         timeRange: { kind: 'all' },
-        query: '探针词'
+        query: '话题'
       })
 
       // 直读读的是权威源，证据拿得到 —— 这是微信机器人"能拿到东西"的关键。
@@ -423,7 +423,7 @@ describe('LocalQueryApiService', () => {
       expect(result).toMatchObject({
         coverage: { state: 'partial' },
         evidenceCount: 1,
-        evidence: [{ text: '刚提到过这个探针词', sender: 'BOBO' }]
+        evidence: [{ text: '刚聊到过这个话题', sender: 'BOBO' }]
       })
       // 结论句必须说明"这段已用直读补上"，否则模型会一边拿着证据、一边说"暂时无法确认"。
       const indexCoverage = (
@@ -442,7 +442,7 @@ describe('LocalQueryApiService', () => {
 
       const result = await service.search({
         timeRange: { kind: 'all' },
-        query: '探针词',
+        query: '话题',
         scope: { kind: 'all' }
       })
 
