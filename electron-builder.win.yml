@@ -38,6 +38,7 @@ extraResources:
       - key/win32/x64/**
       - runtime/win32/**
       - wcdb/win32/x64/**
+      - '!wcdb/**/tm-wcdb-config-helper*'
   - from: docs/skill/tracememo-reader
     to: skill/tracememo-reader
     filter:

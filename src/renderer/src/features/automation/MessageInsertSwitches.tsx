@@ -180,16 +180,15 @@ export function MessageInsertSwitches(): React.JSX.Element {
    * 让人点了才失败是最差的一种交互。
    */
   /*
-   * 写入组件缺失 = **能力不可用**，不是安装坏了。
+   * 写入组件缺失 = **这个能力还没开放**，不是安装坏了。
    *
-   * 主进程对微信库只有只读连接，任何写入都要 spawn 那个一次性组件；没有它，
-   * 「微信内防撤回提示」和「微信内退群监控消息」都做不了。所以这里按能力置灰 +
-   * 一句话说明，而不是弹「请重新安装」—— 后者会让人以为装坏了。
-   * （machine-readable 的原因仍然是 snapshot.helperAvailable，付费/授权层可以据此判断。）
+   * 主进程对微信库只有只读连接，任何写入都要 spawn 那个一次性写入组件；当前分发的
+   * 安装包不带它（它随发送运行时按需分发），所以「微信内防撤回提示」与
+   * 「微信内退群监控消息」一律按"下个版本开放"呈现 —— 不该让用户去排查自己的安装。
+   * （machine-readable 的原因仍然是 snapshot.helperAvailable，授权层可以据此判断。）
    */
   const helperMissing = snapshot?.helperAvailable === false
-  const blocked =
-    blockedReason ?? (helperMissing ? '暂无法使用：当前安装不包含微信内消息写入组件' : null)
+  const blocked = blockedReason ?? (helperMissing ? '该能力将在下个版本开放' : null)
   const disabled = blocked !== null
 
   return (
