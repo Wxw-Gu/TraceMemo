@@ -382,12 +382,18 @@ function QuoteBubble({
 }): JSX.Element {
   const quotedText = data.quotedContent || data.content || '[引用消息]'
   const replyText = data.content || data.title || ''
-  const quotedSender = data.quotedSender || data.sender || ''
+  // 空白 sender 不渲染：否则只剩下 `.quoted-sender::after` 的冒号，看着像乱码。
+  const quotedSender = String(data.quotedSender || data.sender || '').trim()
   const hasQuotedImage = Boolean(data.quotedImageMd5 || data.quotedImageDatName)
+  // 引用框里只放一行（超出用省略号），全文交给 hover 的 title 兜底。
+  const quotedTitle = quotedSender ? `${quotedSender}: ${quotedText}` : quotedText
 
   return (
     <div className="quote-message">
-      <div className={`quoted-message${hasQuotedImage ? ' quoted-message-image' : ''}`}>
+      <div
+        className={`quoted-message${hasQuotedImage ? ' quoted-message-image' : ''}`}
+        title={quotedTitle}
+      >
         {quotedSender && <span className="quoted-sender">{quotedSender}</span>}
         {hasQuotedImage ? (
           <ImageBubble
