@@ -1,3 +1,4 @@
+import path from 'node:path'
 import {
   isLegacyMigrationHelper,
   isUserDataIsolated,
@@ -21,7 +22,10 @@ import { dirname, extname, join } from 'path'
 import { existsSync, promises as fsPromises } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import trayTemplateIcon from '../../resources/trayTemplate.png?asset'
+import trayTemplateRetinaIcon from '../../resources/trayTemplate@2x.png?asset'
 import { WechatDb } from './wechat-db'
+import { createTrayImage } from './tray-icon'
 import { bootstrapWcdbNativeAsync, Wcdb4Client } from './wcdb4-client'
 import { VoiceService } from './voice-service'
 import { StickerService } from './sticker-service'
@@ -73,7 +77,12 @@ import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../
 import { KeyServiceMac } from './key-service-mac'
 import { KeyService as KeyServiceWin } from './key-service-win'
 import * as chat from './services/chat-service'
-import { apiServer, setLocalQueryApiService } from './http-server'
+import {
+  apiServer,
+  setLocalGroupStatsService,
+  setLocalQueryApiService,
+  setLocalVoiceTranscriptSnapshotProvider
+} from './http-server'
 import { skillResourceService } from './services/skill-resource-service'
 import { buildLocalApiCurlCommand, testLocalApiRequest } from './services/local-api-test-service'
 import { isWechatRunning } from './services/wechat-process-status'
@@ -85,6 +94,7 @@ import type { SaveImageKeyRequest, TestImageDecryptionRequest } from '../shared/
 import {
   loadSettings,
   saveSettings,
+  updateSettings,
   getSettingsPath,
   AppSettings,
   validateDbRoot
@@ -121,7 +131,243 @@ import { MessageListenerService } from './services/message-listener-service'
 import { automationRuleStore } from './services/automation-rule-store'
 import { automationExecutionLogService } from './services/automation-execution-log-service'
 import { initAutomationService, getAutomationService } from './services/automation-service'
+import {
+  applyMsgInsertSwitch,
+  emptyMsgInsertStatus,
+  eventModeStatus,
+  readMsgInsertSwitches,
+  reconcileMsgInsertRules,
+  resolveHelperPath,
+  resolveTargetRooms,
+  type MsgInsertScopeInput,
+  type MsgInsertSwitchName,
+  type MsgInsertSwitchesSnapshot
+} from './services/msg-insert-switch-service'
 import { GroupStatsService } from './services/group-stats-service'
+import {
+  configureWechatLocalExitNotice,
+  wechatLocalExitNoticeService
+} from './services/wechat-local-exit-notice-service'
+
+/** 「微信内退群监控消息」覆盖的群聊数（开关卡片的范围说明用，不是覆盖率）。 */
+function exitNoticeGroupCount(): number {
+  return groupExitMonitorService.getNoticeGroupCount()
+}
+
+/**
+ * 把「微信内退群监控消息」的开关状态同步给退群监控。
+ *
+ * 注入的只是**开关**：群清单由 monitor 自己在刷新群名时一并更新，
+ * 这里不维护第二份。检测范围会成为「勾选的群 ∪ 全部群聊」，两个消费者都能拿到事件。
+ */
+function syncExitNoticeScope(): void {
+  try {
+    groupExitMonitorService.setNoticeEnabled(wechatLocalExitNoticeService.isEnabled())
+  } catch (error) {
+    console.warn('[MsgInsert] 同步退群内提示范围失败:', error)
+  }
+}
+
+/**
+ * 微信消息插入开关的作用面输入。
+ *
+ * 防撤回用「全部可定位会话」；退群监控的勾选只服务自动化通知，不再是内提示的范围。
+ * 数据库没连上时返回 null，调用方据此禁用写入而不是假装能改。
+ */
+function resolveMsgInsertScopeInput(): MsgInsertScopeInput | null {
+  const client = chat.getChatDb()?.getWcdb4Client()
+  if (!client) return null
+  return {
+    client,
+    monitoredRoomIds: groupExitMonitorService.getState().monitoredRoomIds || []
+  }
+}
+
+/**
+ * 组装「微信消息插入开关」的快照。**纯读**：不写微信库、不触发 DDL。
+ *
+ * 抽出来是为了让 GET 与「运行期刷新」共用同一份展示口径（含退群提示这个本地事件开关），
+ * 避免两处各拼一遍导致漂移。
+ */
+function buildMsgInsertSwitchesSnapshot(): MsgInsertSwitchesSnapshot {
+  const scope = resolveMsgInsertScopeInput()
+  if (scope) {
+    const snapshot = readMsgInsertSwitches(scope)
+    /* 退群提示的开关状态来自本地设置（事件驱动，不装规则），
+     * 不是微信库里的 _tm_config。 */
+    snapshot.switches.group_exit_notice = eventModeStatus(
+      'group_exit_notice',
+      wechatLocalExitNoticeService.isEnabled(),
+      exitNoticeGroupCount()
+    )
+    return snapshot
+  }
+  return {
+    success: false,
+    switches: {
+      recall_notice: emptyMsgInsertStatus('recall_notice'),
+      group_exit_notice: eventModeStatus(
+        'group_exit_notice',
+        wechatLocalExitNoticeService.isEnabled()
+      )
+    },
+    helperAvailable: resolveHelperPath() !== null,
+    detail: '微信数据库尚未连接'
+  }
+}
+
+/**
+ * 轻量 reconciliation —— 把退群监控选中的群缺失的规则补齐，不动开关值。
+ *
+ * 触发点：连库完成后 / 退群监控群列表变化后 / 用户打开开关时（那条在 service 里）。
+ * 不轮询。微信新建 message_4.db 并把目标群的新表放进去时，下一次触发就会补上。
+ */
+let lastMsgInsertReconciledShards = ''
+
+/**
+ * 启动时补齐 —— 防撤回 reconciliation 的入口之一。
+ *
+ * 只在**持久化的开关已经是开**的时候跑（说明用户上次明确打开过）。开关是关的
+ * 就什么都不做，避免每次启动都扫一遍目标会话。
+ *
+ * 顺带覆盖「已启用时检测到新 shard / 新表」：分片清单变了就重新补齐，并把新的
+ * 清单记下来。渲染层读状态**不会**走到这里 —— GET 必须是纯读。
+ */
+async function reconcileMsgInsertRulesOnStart(): Promise<void> {
+  const scope = resolveMsgInsertScopeInput()
+  const client = chat.getChatDb()?.getWcdb4Client()
+  if (!scope || !client) return
+
+  let enabled = false
+  try {
+    const shards = client.listMessageShardPaths()
+    const shardSignature = shards.map((item) => path.basename(item)).join(',')
+    if (lastMsgInsertReconciledShards && lastMsgInsertReconciledShards !== shardSignature) {
+      /* 微信新建了 message_N.db（或清理了旧的）—— 分片集合变了就重新补齐。 */
+      console.log('[MsgInsert] 检测到消息分片变化，重新补齐规则')
+    }
+    lastMsgInsertReconciledShards = shardSignature
+    for (const shardPath of shards) {
+      const read = client.getMsgInsertSwitches(shardPath)
+      if (read.success && read.switches?.recall_notice) {
+        enabled = true
+        break
+      }
+    }
+  } catch (error) {
+    console.warn('[MsgInsert] 启动检查失败:', error)
+    return
+  }
+  if (!enabled) return
+  await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope))
+}
+
+/**
+ * 防撤回的作用面 = 全部可定位会话（群聊 + 私聊）。
+ *
+ * native 侧有「定义漂移就 DROP + 重建」的能力，但只有显式复核时才会跑；
+ * 规则定义变了不自动铺开，用户就得手动关-开一次开关。
+ */
+function recallRoomsForReconcile(scope: MsgInsertScopeInput): string[] {
+  return resolveTargetRooms(scope, 'recall_notice').rooms
+}
+
+async function reconcileMsgInsertRulesNow(extraRooms: string[] = []): Promise<boolean> {
+  const scope = resolveMsgInsertScopeInput()
+  const client = chat.getChatDb()?.getWcdb4Client()
+  if (!scope || !client) return false
+  try {
+    const result = await reconcileMsgInsertRules({
+      ...scope,
+      extraRooms,
+      myWxid: String(chat.getSelfAccountInfo()?.wxid || ''),
+      databaseKey: client.getKey()
+    })
+    if (result.rooms === 0) {
+      // 群列表还没就绪（或用户本来就没选群）—— 不算跑过，让下一次触发重试。
+      return false
+    }
+    if (!result.done) {
+      console.warn(`[MsgInsert] reconcile 未完成 errorCode=${result.errorCode || 'UNKNOWN'}`)
+    }
+    return true
+  } catch (error) {
+    console.warn('[MsgInsert] reconcile 失败:', error)
+    return true
+  }
+}
+
+/**
+ * 清理老版防撤回保护（recall journal）留在微信库里的 `_wxe_capture_*` 触发器。
+ *
+ * 那批触发器装进库里就没人卸载（应用关闭该功能时直接 return），会一直抓取；而且它
+ * 和新机制的触发器挂在同一张 `Msg_*` 表上抢事件。
+ *
+ * 边界：先只读扫描、有残留才写库；只删触发器、不删老日志表（表里是微信已删、可能
+ * 只剩一份的副本）；日志只记数量（对象名含 sha1(会话表名) 派生的稳定标识）。
+ */
+async function cleanupLegacyRecallResidueOnStart(): Promise<void> {
+  const client = chat.getChatDb()?.getWcdb4Client()
+  if (!client) return
+  try {
+    const report = client.scanLegacyRecallResidue()
+    if (!report.found) return
+
+    console.log(
+      `[RecallResidue] 检测到老版防撤回残留 shards=${report.shards.length} triggers=${report.triggerCount}` +
+        ` journals=${report.journalCount} blockingDelete=${report.blockingDeleteCount}` +
+        ` blockingInsert=${report.blockingInsertCount} passive=${report.passiveCount}`
+    )
+    appLogger.write({
+      level: 'warn',
+      scope: 'recall-residue',
+      message: '检测到老版防撤回残留，开始清理',
+      details: {
+        shards: report.shards.length,
+        triggers: report.triggerCount,
+        journals: report.journalCount,
+        blockingDelete: report.blockingDeleteCount,
+        blockingInsert: report.blockingInsertCount,
+        passive: report.passiveCount
+      }
+    })
+
+    /*
+     * 删除必须借 helper 的可写连接：本进程对分片只有只读连接，自己发 DROP 一定失败。
+     * helper 那条链路会在装规则时顺手清掉残留，顺带把新规则铺到所有会话。
+     */
+    const scope = resolveMsgInsertScopeInput()
+    const applied = scope ? await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope)) : false
+
+    /* 收尾结论以「重新扫描」为准，不采信 helper 的自述。 */
+    const after = client.scanLegacyRecallResidue()
+    const cleared = after.triggerCount === 0
+    console.log(
+      `[RecallResidue] 清理${cleared ? '完成' : '未完成'} applied=${applied} remainingTriggers=${after.triggerCount}` +
+        ` remainingJournals=${after.journalCount}`
+    )
+    appLogger.write({
+      level: cleared ? 'info' : 'warn',
+      scope: 'recall-residue',
+      message: cleared ? '老版防撤回残留清理完成' : '老版防撤回残留清理未完成',
+      details: {
+        requested: report.triggerCount,
+        remainingTriggers: after.triggerCount,
+        remainingJournals: after.journalCount,
+        helperApplied: applied
+      }
+    })
+  } catch (error) {
+    /* 清理失败绝不能挡住启动 —— 它只是收尾工作。 */
+    console.warn('[RecallResidue] 清理失败:', error)
+    appLogger.write({
+      level: 'warn',
+      scope: 'recall-residue',
+      message: '老版防撤回残留清理失败',
+      details: { reason: error instanceof Error ? error.message : String(error) }
+    })
+  }
+}
 import { wechatActionLogService } from './services/wechat-action-log-service'
 import { toPersonalWechatSendResult, wechatActionGateway } from './services/wechat-action-gateway'
 import { personalWechatSendService } from './services/personal-wechat-send-service'
@@ -167,6 +413,7 @@ import type { ExportRequest } from '../shared/export'
 import { discoverAccounts } from './services/account-discovery'
 import { VoiceRecognitionUseCase } from './voice-pipeline/voice-recognition-use-case'
 import { VoiceBatchService } from './voice-pipeline/voice-batch-service'
+import { VoiceTranscriptionGateway } from './voice-pipeline/voice-transcription-gateway'
 import type { VoiceBatchRequest, VoiceMessageReference } from '../shared/voice-recognition'
 import type { AiSearchPipelineRequest } from '../shared/ai-search'
 import type {
@@ -323,6 +570,11 @@ function configureRecallProtection(
     recallJournalTimer = null
   }
   configureRecallArchive(enabled ? accountRoot : '')
+  /*
+   * 读取路径必须跟开关一起走：老 recall journal 的合并以前是无条件的，
+   * 于是「关掉防撤回」对用户等于没关（消息照样在，且不带撤回标记）。
+   */
+  wcdb4Client.setRecallJournalEnabled(enabled)
   if (!enabled) return
 
   const monitor = new RecallArchiveMonitor(
@@ -370,6 +622,18 @@ function configureRecallProtection(
 
 const packagedIconPath = join(process.resourcesPath, 'resources', 'icon.png')
 const appIconPath = existsSync(packagedIconPath) ? packagedIconPath : icon
+const packagedTrayTemplateIconPath = join(process.resourcesPath, 'resources', 'trayTemplate.png')
+const packagedTrayTemplateRetinaIconPath = join(
+  process.resourcesPath,
+  'resources',
+  'trayTemplate@2x.png'
+)
+const trayTemplateIconPath = existsSync(packagedTrayTemplateIconPath)
+  ? packagedTrayTemplateIconPath
+  : trayTemplateIcon
+const trayTemplateRetinaIconPath = existsSync(packagedTrayTemplateRetinaIconPath)
+  ? packagedTrayTemplateRetinaIconPath
+  : trayTemplateRetinaIcon
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -542,8 +806,27 @@ function createWindow(): void {
     mainWindow.show()
   })
 
+  /** 隐藏到托盘。关闭弹窗的"最小化"与"已记住托盘"两条路径共用同一套副作用。 */
+  const minimizeToTray = (): void => {
+    setupTray()
+    mainWindow.hide()
+    if (process.platform === 'darwin') app.dock?.hide()
+  }
+
   mainWindow.on('close', (event) => {
     if (isQuitting || appShutdownRequested) return
+    // 用户在关闭弹窗里勾过"记住我的选择"就照做，不再每次都弹。
+    const remembered = loadSettings().closeAction
+    if (remembered === 'quit') {
+      isQuitting = true
+      app.quit()
+      return
+    }
+    if (remembered === 'tray') {
+      event.preventDefault()
+      minimizeToTray()
+      return
+    }
     event.preventDefault()
     if (closePromptInFlight) return
     closePromptInFlight = true
@@ -556,16 +839,19 @@ function createWindow(): void {
         buttons: ['最小化到系统托盘', '关闭进程', '取消'],
         defaultId: 0,
         cancelId: 2,
+        // 勾了就记住这次的选择，之后不再弹窗；设置页里随时可以改回来。
+        checkboxLabel: '记住我的选择，下次不再询问',
+        checkboxChecked: false,
         noLink: true
       })
-      .then(({ response }) => {
+      .then(({ response, checkboxChecked }) => {
         if (response === 0) {
-          setupTray()
-          mainWindow.hide()
-          if (process.platform === 'darwin') app.dock?.hide()
+          if (checkboxChecked) updateSettings({ closeAction: 'tray' })
+          minimizeToTray()
           return
         }
         if (response === 1) {
+          if (checkboxChecked) updateSettings({ closeAction: 'quit' })
           isQuitting = true
           app.quit()
         }
@@ -790,6 +1076,7 @@ app.whenReady().then(async () => {
   // 群员统计复用同一个 Knowledge 实例：它只是「读派生库 + 读成员名单」的编排，
   // 不持有自己的数据库，也不新建索引。
   groupStatsService = new GroupStatsService(knowledgeSearchService)
+  setLocalGroupStatsService(groupStatsService)
   // 图片文字索引覆盖度是**独立覆盖维度**：接到 search_messages 的 tool result 上，
   // 让 Query Agent 在图片索引没做完时不能凭 0 条证据断言"没有"。
   localQueryApiService.setImageTextCoverageProvider(() =>
@@ -806,6 +1093,15 @@ app.whenReady().then(async () => {
    */
   localQueryApiService.setImageOcrEntryProvider((conversationId, messageId) =>
     imageTextIndexService.getConversationOcr(conversationId).get(messageId)
+  )
+  /**
+   * 语音转写：读消息时只读缓存快照；只有 query/voice-transcribe 会真正排队识别，
+   * 识别仍走同一个 VoiceRecognitionUseCase（同一份缓存、同一条串行队列）。
+   */
+  const voiceTranscriptionGateway = new VoiceTranscriptionGateway(voiceRecognition)
+  localQueryApiService.setVoiceTranscriptionGateway(voiceTranscriptionGateway)
+  setLocalVoiceTranscriptSnapshotProvider((reference) =>
+    voiceTranscriptionGateway.snapshot(reference)
   )
   setLocalQueryApiService(localQueryApiService)
   // Query Agent：生产 Runtime 只在这里实例化一次，桌面问问微信与 Agent Hub 共用同一个实例。
@@ -920,8 +1216,6 @@ app.whenReady().then(async () => {
 
   // 设置应用程序用户模型 ID
   electronApp.setAppUserModelId('com.tracememo.app')
-
-  if (process.platform === 'darwin') app.dock?.setIcon(appIconPath)
 
   // 开发环境中默认使用 F12 打开或关闭 DevTools
   // 生产环境中忽略 CommandOrControl + R
@@ -1073,7 +1367,43 @@ app.whenReady().then(async () => {
          * `handleGroupExit` 自己吞掉异常，这里再兜一层 `.catch` 是防御性的 ——
          * 未捕获的 rejection 会污染监控循环，而退群事实早就已经记录成功了。
          */
+        /* 退群本地提示的运行时依赖：密钥 / wxid / 账号目录都由主进程提供，
+         * 服务自己不依赖 chat-service 的具体形态。 */
+        configureWechatLocalExitNotice({
+          resolveDatabaseKey: () => chat.getChatDb()?.getWcdb4Client()?.getKey() || '',
+          resolveMyWxid: () => String(chat.getSelfAccountInfo()?.wxid || ''),
+          resolveAccountRoot: () => {
+            const shards = chat.getChatDb()?.getWcdb4Client()?.listMessageShardPaths() || []
+            if (shards.length > 0) return path.dirname(path.dirname(path.dirname(shards[0])))
+            return String(chat.getCurrentAccountRoot() || '')
+          }
+        })
+
+        /*
+         * 防撤回 reconciliation 的启动入口：只有当持久化的开关已经是「开」时才会跑。
+         * 渲染层读状态、群列表变化都不会触发 DDL。
+         */
+        void reconcileMsgInsertRulesOnStart()
+        /*
+         * 老防撤回残留收尾：只读扫描 → 有残留才写库（清理走 helper 的可写通道，
+         * 判定规则与边界见函数注释）。
+         */
+        void cleanupLegacyRecallResidueOnStart()
+
         groupExitMonitorService.setGroupExitHandler((event) => {
+          /*
+           * 同一个退群事件按**各自的范围**分发给两个消费者：
+           *
+           *   - 微信内退群监控消息：范围 = 全部群聊（开关开着就全覆盖）；
+           *   - 自动化退群通知：范围 = 退群监控里勾选的群。
+           *
+           * 两者互不依赖：内提示不抛异常、不 await（handleExitEvent 内部兜底），
+           * 插入失败不会影响自动化通知，反之亦然。
+           */
+          if (groupExitMonitorService.isNoticeRoom(event.conversationId)) {
+            void wechatLocalExitNoticeService.handleExitEvent(event)
+          }
+          if (!groupExitMonitorService.isMonitoredRoom(event.conversationId)) return undefined
           try {
             return getAutomationService()
               .handleGroupExit(event)
@@ -1093,6 +1423,8 @@ app.whenReady().then(async () => {
             return undefined
           }
         })
+        /* 把「微信内退群监控消息」的开关交给 monitor：开着时检测范围扩到全部群聊。 */
+        syncExitNoticeScope()
         messageListener.onMessage((message) => {
           // 日志只允许出现「类型 / 群或私聊 / 是否自己发 / @ 数量」这类不可逆标识，
           // 不含 wxid、昵称、群名、正文与 source。
@@ -1679,6 +2011,8 @@ app.whenReady().then(async () => {
    * 只有一个参数：旧版第二个参数（通知群聊）已经迁到「自动化 → 退群通知」，
    * 退群监控不再持有任何通知配置。
    */
+  /* 监控范围变化不再触发任何规则补齐：防撤回的目标是「全部有消息表的会话」，
+   * 与退群监控选中的群无关；退群提示也已经改成事件驱动、不依赖 per-room 规则。 */
   ipcMain.handle('group-exit-monitor:setGroups', (_, roomIds: string[]) =>
     groupExitMonitorService.setMonitoredRoomIds(Array.isArray(roomIds) ? roomIds : [])
   )
@@ -1743,6 +2077,107 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('automation:clearExecutions', () => automationExecutionLogService.clear())
   ipcMain.handle('automation:listGroups', () => tryAutomationService()?.listGroups() ?? [])
+  /**
+   * 微信消息插入开关 —— 读取。
+   *
+   * 只走本进程只读路径（分片目录 + 开关值），不持有任何写权限。
+   * 状态里同时给出 desiredEnabled / effectiveEnabled：开关值写成功不等于功能
+   * 真的生效（规则可能没装齐），渲染层不能只看前者。
+   */
+  ipcMain.handle('automation:getMsgInsertSwitches', () => {
+    /* 🔴 纯读：任何 get/status 都不允许写微信库、不允许触发 DDL。
+     * 需要顺带补齐规则的场景走 automation:refreshMsgInsertSwitches。 */
+    return buildMsgInsertSwitchesSnapshot()
+  })
+  /**
+   * 微信消息插入开关 —— **运行期刷新**（允许在分片集合变化时补一次规则）。
+   *
+   * 与 GET 的分工：GET 必须纯读；但"微信运行期间新建了 message_N.db"这种情况需要补规则，
+   * 否则新分片里的会话永远显示未就绪 —— 而规则补齐只在**启动时**跑过一次。
+   * 用户侧看到的表现就是"计数变了，但分子追不上分母"。
+   *
+   * 成本控制：分片清单指纹没变 → 只做纯读立刻返回；变了才 spawn 一次 helper。
+   */
+  ipcMain.handle('automation:refreshMsgInsertSwitches', async () => {
+    const scope = resolveMsgInsertScopeInput()
+    const client = chat.getChatDb()?.getWcdb4Client()
+    if (scope && client) {
+      try {
+        const signature = client
+          .listMessageShardPaths()
+          .map((item) => path.basename(item))
+          .join(',')
+        if (signature !== lastMsgInsertReconciledShards) {
+          lastMsgInsertReconciledShards = signature
+          console.log('[MsgInsert] 运行期检测到消息分片变化，重新补齐规则')
+          await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope))
+        }
+      } catch (error) {
+        console.warn('[MsgInsert] 运行期补齐失败:', error)
+      }
+    }
+    return buildMsgInsertSwitchesSnapshot()
+  })
+  /**
+   * 微信消息插入开关 —— 写入。
+   *
+   * 绝不使用本进程的 WCDB 句柄写（只读池会把它钉死）。这里 spawn 一次性 helper：
+   *   先补齐目标会话的规则 → 再写开关值 → 读回校验 → 本进程只读复核。
+   * 失败不伪装成功：partial 会带 failedShards / notReadyRooms 回渲染层。
+   */
+  ipcMain.handle('automation:setMsgInsertSwitch', async (_, input: unknown) => {
+    const payload = (input || {}) as { name?: unknown; enabled?: unknown }
+    const name = String(payload.name || '') as MsgInsertSwitchName
+    if (name !== 'recall_notice' && name !== 'group_exit_notice') {
+      return {
+        success: false,
+        status: emptyMsgInsertStatus('recall_notice'),
+        errorCode: 'UNSUPPORTED_SWITCH',
+        message: '未知的开关'
+      }
+    }
+    /*
+     * 退群提示是**事件驱动**的（GroupExitMonitorService 发事件 → 一次性插一条），
+     * 不装任何 per-room 规则。所以它的开关只是本地设置：
+     * 既不 spawn helper，也不碰微信库。
+     */
+    if (name === 'group_exit_notice') {
+      const toggled = wechatLocalExitNoticeService.setEnabled(payload.enabled === true)
+      if (toggled.error) {
+        return {
+          success: false,
+          status: eventModeStatus(name, toggled.enabled, exitNoticeGroupCount()),
+          errorCode: 'UNKNOWN',
+          message: '保存开关状态失败'
+        }
+      }
+      /* 开关一变，检测范围随之变（开 → 全部群聊；关 → 只剩勾选的群）。 */
+      syncExitNoticeScope()
+      return {
+        success: true,
+        status: eventModeStatus(name, toggled.enabled, exitNoticeGroupCount())
+      }
+    }
+
+    const scope = resolveMsgInsertScopeInput()
+    const client = chat.getChatDb()?.getWcdb4Client()
+    if (!scope || !client) {
+      return {
+        success: false,
+        status: emptyMsgInsertStatus(name),
+        errorCode: 'DATABASE_UNAVAILABLE',
+        message: '微信数据库尚未连接'
+      }
+    }
+    return applyMsgInsertSwitch({
+      ...scope,
+      name,
+      enabled: payload.enabled === true,
+      myWxid: String(chat.getSelfAccountInfo()?.wxid || ''),
+      /* 密钥只在这里读一次，随后直接进 helper 的 stdin，绝不落盘 / 进 argv */
+      databaseKey: client.getKey()
+    })
+  })
   /**
    * 保存「退群通知」规则（singleton upsert）。
    *
@@ -2875,11 +3310,12 @@ function buildTrayMenu(): Menu {
 function setupTray(): void {
   if (tray) return
   try {
-    const image = nativeImage.createFromPath(appIconPath)
-    const traySize = process.platform === 'darwin' ? 20 : 24
-    const trayImage = image.isEmpty()
-      ? nativeImage.createEmpty()
-      : image.resize({ width: traySize, height: traySize, quality: 'best' })
+    const trayImage = createTrayImage(
+      process.platform,
+      appIconPath,
+      { oneX: trayTemplateIconPath, twoX: trayTemplateRetinaIconPath },
+      nativeImage
+    )
     tray = new Tray(trayImage)
     tray.setToolTip('TraceMemo')
     // macOS may show a Tray context menu on a primary click when it is set

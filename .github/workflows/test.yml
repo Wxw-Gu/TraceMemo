@@ -15,6 +15,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 版本漂移检查需要与基准分支比较 SKILL.md，浅克隆拿不到基准。
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
@@ -45,6 +48,9 @@ jobs:
 
       - name: Skill installation instruction tests
         run: pnpm test:skill-install
+
+      - name: Reader Skill version drift check
+        run: pnpm check:skill-version
 
       - name: Build Electron test application
         run: pnpm test:e2e:build

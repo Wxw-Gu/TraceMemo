@@ -13,7 +13,12 @@ import {
 } from '../../components/ui'
 
 type StatusFilter = 'all' | WechatActionStatus
-type PurposeFilter = 'all' | 'leave_notification' | 'scheduled_report' | 'other'
+type PurposeFilter =
+  | 'all'
+  | 'leave_notification'
+  | 'scheduled_report'
+  | 'automation_report'
+  | 'other'
 
 /**
  * 「退群通知」的发送用途。
@@ -32,7 +37,10 @@ const LEAVE_NOTIFICATION_PURPOSES: readonly string[] = [
 const sourceLabel = (source: ActionLogEntry['source']): string => {
   if (source === 'member_monitor') return '退群监控'
   if (source === 'scheduled_report') return '定时日报'
+  // 消息型自动化「@我生成日报」发出的动作。少了这一条会直接显示英文原文 `automation`。
+  if (source === 'automation') return '自动化'
   if (source === 'user_tts') return '文字转语音'
+  if (source === 'user_manual') return '手动发送'
   if (source === 'unknown') return '未知来源'
   return source || '未知来源'
 }
@@ -40,9 +48,21 @@ const sourceLabel = (source: ActionLogEntry['source']): string => {
 const triggerLabel = (triggerType: ActionLogEntry['triggerType']): string =>
   triggerType === 'user' ? '用户触发' : '自动化'
 
+/**
+ * purpose → 中文。
+ *
+ * **每一个有生产者的 purpose 都必须在这里有分支**：`WechatActionPurpose` 是字符串联合，
+ * 漏掉谁，那类记录就会顶着英文原文出现在列表里（筛选项里也找不到对应项）——
+ * 「@我生成日报」的发送记录此前就是这样被用户当成"压根没有"的。
+ * 未知值仍回落到原文，好让将来新增 purpose 时一眼能看出漏了映射。
+ */
 const purposeLabel = (purpose: WechatActionPurpose): string => {
   if (LEAVE_NOTIFICATION_PURPOSES.includes(purpose)) return '退群通知'
   if (purpose === 'scheduled_report') return '定时日报'
+  if (purpose === 'automation_report') return '生成日报（@我）'
+  if (purpose === 'automation_reply') return '回复确认（@我）'
+  if (purpose === 'manual_report_image') return '日报图片（手动发送）'
+  if (purpose === 'manual_report_postfix') return '日报后置词（手动发送）'
   if (purpose === 'tts_voice') return '文字转语音'
   return purpose || '其它动作'
 }
@@ -65,8 +85,11 @@ const statusDetails = (entry: ActionLogEntry): { label: string; className: strin
 const matchesPurpose = (entry: ActionLogEntry, filter: PurposeFilter): boolean => {
   if (filter === 'all') return true
   if (filter === 'other') {
+    // 「其它动作」= 剩下的。独立筛选项必须在这里排掉，否则同一条记录会同时出现在两组里。
     return (
-      !LEAVE_NOTIFICATION_PURPOSES.includes(entry.purpose) && entry.purpose !== 'scheduled_report'
+      !LEAVE_NOTIFICATION_PURPOSES.includes(entry.purpose) &&
+      entry.purpose !== 'scheduled_report' &&
+      entry.purpose !== 'automation_report'
     )
   }
   if (filter === 'leave_notification') {
@@ -154,6 +177,7 @@ export function LogsWorkspace(): React.ReactElement {
               <SelectItem value="all">全部类型</SelectItem>
               <SelectItem value="leave_notification">退群通知</SelectItem>
               <SelectItem value="scheduled_report">定时日报</SelectItem>
+              <SelectItem value="automation_report">生成日报（@我）</SelectItem>
               <SelectItem value="other">其它动作</SelectItem>
             </SelectContent>
           </Select>

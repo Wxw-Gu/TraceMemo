@@ -8,7 +8,9 @@
 - API 前缀：`/api/v1`
 - 默认只监听 loopback；不要把它当作公网服务。
 - `/api/v1/health` 无需 Token；其他端点需要 `Authorization: Bearer <TOKEN>`。
-- 请求体使用 JSON；响应为 JSON。
+- 请求体使用 JSON，单个请求体最大 `1 MiB`；超限返回 `413`。
+- 错误响应包含 `requestId`，响应头包含 `X-Request-Id`。客户端可传入 1-128 位的 `[A-Za-z0-9._:-]` 标识，否则服务端会生成 UUID。
+- 不支持的 HTTP method 返回 `405` 和 `Allow` 响应头。
 
 ## 最小请求
 
@@ -33,6 +35,7 @@ Token 由应用生成并保存在本机，**不接受用环境变量覆盖**：A
 | 方法   | 路径                                                            | 作用                                   | 参数/请求体                                                     |
 | ------ | --------------------------------------------------------------- | -------------------------------------- | --------------------------------------------------------------- |
 | GET    | `/api/v1/health`                                                | 服务与数据库健康状态                   | 无                                                              |
+| GET    | `/api/v1/skill/tracememo-reader`                                | 当前 Reader Skill 的版本与全文         | 无（需 Token）                                                  |
 | GET    | `/api/v1/current_time`                                          | 本机时间、时区和 Unix 时间戳           | 无                                                              |
 | GET    | `/api/v1/contact`                                               | 联系人和群聊列表                       | `filter`、`type=user\|group`                                    |
 | GET    | `/api/v1/chatroom`                                              | 群聊列表                               | `keyword`                                                       |
@@ -55,9 +58,129 @@ Token 由应用生成并保存在本机，**不接受用环境变量覆盖**：A
 | POST   | `/api/v1/scheduled-reports/{id}/disable`                        | 暂停定时日报任务                       | 无                                                              |
 | POST   | `/api/v1/scheduled-reports/{id}/run`                            | 立即执行一次并返回 execution           | 无                                                              |
 | GET    | `/api/v1/scheduled-reports/{id}/executions`                     | 查询某个任务的执行记录                 | 无                                                              |
-| POST   | `/api/v1/scheduled-reports/executions/{executionId}/retry-send` | 复用已有 PNG 重试发送                  | 无                                                              |
+| POST   | `/api/v1/scheduled-reports/executions/{executionId}/retry-send` | 兼容占位路由；当前返回 `501 not_supported` | 无                                                              |
+| GET    | `/api/v1/capabilities`                                            | TraceMemo 应用能力和可用状态             | 无                                                              |
+| GET    | `/api/v1/automations`                                             | 自动化规则列表                           | 可选 `type`、`enabled`                                           |
+| POST   | `/api/v1/automations`                                             | 创建默认停用的自动化规则                 | Automation draft JSON                                           |
+| POST   | `/api/v1/automations/validate`                                    | 校验规则，不保存、不执行                 | Automation draft JSON                                           |
+| GET    | `/api/v1/automations/{id}`                                        | 查询单条自动化规则                       | 无                                                              |
+| PATCH  | `/api/v1/automations/{id}`                                        | 更新规则配置                             | 可变配置字段 JSON                                                |
+| DELETE | `/api/v1/automations/{id}`                                        | 删除自定义规则                           | 系统内置规则受保护                                               |
+| POST   | `/api/v1/automations/{id}/enable`                                 | 校验并启用规则                           | 无                                                              |
+| POST   | `/api/v1/automations/{id}/disable`                                | 停用规则                                 | 无                                                              |
+| GET    | `/api/v1/automations/executions`                                  | 查询自动化执行记录                       | `ruleId`、`status`、`since`、`until`、`limit`                   |
+| GET    | `/api/v1/monitors/group-exits`                                     | 查看退群监控状态                         | 无                                                              |
+| PATCH  | `/api/v1/monitors/group-exits`                                     | 配置监控群范围或启停                     | `enabled`、`monitoredConversationIds`                          |
+| GET    | `/api/v1/monitors/group-exits/events`                             | 查询退群事件历史                         | `conversationId`、`since`、`until`、`limit`                    |
+| GET    | `/api/v1/groups/{conversationId}/member-stats`                     | 查询群成员活跃统计                       | 必填 `conversationId`、`start`、`end`                          |
 
 `/api/v1/query/*` 是一组结构化的 Query 端点，见下方[LLM-friendly Query Tool API](#llm-friendly-query-tool-api)。
+
+## Application Capabilities
+
+`GET /api/v1/capabilities` 描述 TraceMemo 应用级能力和当前运行环境；`GET /api/v1/query/capabilities` 只描述结构化 Query primitive，两者不是同一份目录。应用能力使用 `supported` 和 `available` 分开表示“代码支持”与“当前可用”；运行时原因使用稳定的简短 code，不返回 Token、数据库路径、微信密钥或 sender 诊断路径。
+
+响应包含应用版本、数据库 readiness、Query、Automation、退群监控、群统计，以及个人微信/iLink 的能力状态。`groupExitMonitor.operations` 当前声明 `read_state`、`configure_scope`、`enable`、`disable`、`list_events`；`groupStats.operations` 当前声明 `member_stats`。能力声明不会触发监控扫描或群统计查询。
+
+```bash
+: "${TRACEMEMO_API_TOKEN:?Set TRACEMEMO_API_TOKEN from API Center}"
+BASE="http://127.0.0.1:6131/api/v1"
+AUTH="Authorization: Bearer $TRACEMEMO_API_TOKEN"
+curl -H "$AUTH" "$BASE/capabilities"
+```
+
+## Group Exit Monitor API
+
+退群监控只负责“监测哪些群、发现了哪些退群事实”。退群后是否通知、通知到哪里以及通知模板，仍由 `leave_notification` Automation singleton 负责；修改监控范围不会隐式修改该 Automation。
+
+### 查看和配置监控
+
+```bash
+curl -H "$AUTH" "$BASE/monitors/group-exits"
+
+curl -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  "$BASE/monitors/group-exits" \
+  -d '{"enabled":true,"monitoredConversationIds":["123@chatroom"]}'
+```
+
+`monitoredConversationIds` 只接受当前联系人列表中精确存在的群 `roomId`（例如 `xxx@chatroom`），不接受群名、md5、个人联系人、重复或空 ID。请求至少提供 `enabled` 或 `monitoredConversationIds` 其中一个；传空数组表示清空监控范围。服务会先校验全部群，再执行一次原子配置。PATCH 返回最终完整状态。
+
+状态中的 `eventCount` 是持久化退群事件总数，`lastCheckedAt`/`lastReadAt` 为空时返回 `null`。GET 不会调用 `checkNow()`，也不会触发通知发送。
+
+### 查询退群事件
+
+```bash
+curl -G -H "$AUTH" "$BASE/monitors/group-exits/events" \
+  --data-urlencode 'conversationId=123@chatroom' \
+  --data-urlencode 'since=2026-10-01T00:00:00+07:00' \
+  --data-urlencode 'until=2026-10-02T23:59:59+07:00' \
+  --data-urlencode 'limit=50'
+```
+
+时间参数必须是带 offset 的 ISO-8601；默认 `limit=50`，最大 200。事件按 `detectedAt` 升序返回。事件 DTO 使用 `eventId`、稳定的 `conversationId` 和 `memberId`，并把时间输出为 ISO-8601；当前整体已读状态不会伪造成 event-level `read` 字段。当前未开放 clear events、markRead 或 checkNow HTTP 路由。
+
+一个典型 Agent 工作流是：先通过 `/resolve` 或 `/contact` 找到稳定群 ID，再 PATCH monitor scope；如需通知，再单独 PATCH `leave_notification` Automation，调用 `/automations/validate`，最后启用规则。
+
+## Group Member Stats API
+
+```bash
+curl -G -H "$AUTH" "$BASE/groups/123%40chatroom/member-stats" \
+  --data-urlencode 'start=2026-09-01T00:00:00+07:00' \
+  --data-urlencode 'end=2026-10-01T00:00:00+07:00'
+```
+
+`conversationId` 必须是当前联系人列表中精确存在的群 `roomId`；不存在返回 `NOT_FOUND`，个人联系人返回 `NOT_GROUP_CONVERSATION`。`start` 和 `end` 必须同时提供，且使用带 offset 的 ISO-8601，`start` 不能晚于 `end`。HTTP adapter 只负责把稳定群 ID 解析为内部 md5 并调用现有 `GroupStatsService`，不会在 HTTP 层重新统计消息。
+
+响应中的 `activeMembers` 和 `silentMembers` 都只描述当前成员名单；成员使用 `memberId`，活跃成员的 `lastMessageAt` 和 `range` 时间均为 ISO-8601。`freshness`、`complete`、`limitations` 必须原样保留，`unattributedMessages` 与 `excludedSystemMessages` 用于诊断，`firstMessageAt` 没有消息时为 `null`。当前成员统计不等于完整历史成员统计，`limitations` 表达的退群成员或未归档时段不能从文本中推导成额外的 `formerMembers`，也不会伪造 `totalMessageCount`。
+
+## Automation API
+
+`/api/v1/automations*` 是 Automation 的 canonical HTTP API，读写唯一的 `AutomationRuleStore`。它支持当前真实规则类型：`daily_report`、`scheduled_report`、`leave_notification`。本 API 不提供立即执行、重试或清理执行记录。
+
+旧 `/api/v1/scheduled-reports*` 保持兼容，不设移除日期；它是面向旧 DTO 的受限 compatibility API，不是第二份存储，也不能表示所有新的定时日报目标和配置。新的 Agent 集成应使用 `/automations`。
+
+创建和校验规则时 `enabled` 只能缺省或为 `false`。创建成功后必须调用 `/automations/{id}/enable` 才会启用。启用会重新校验当前规则；数据库未就绪、目标无法解析或配置无效时不会启用。`PATCH` 只接受规则配置字段，不可改 `ruleType`、`id`、创建/更新时间或 `enabled`；启停必须使用独立 endpoint。未知字段和未知枚举会被拒绝。
+
+会话范围优先传 `wxid`、`roomId`（如 `xxx@chatroom`）或 canonical conversation ID。唯一匹配的联系人名可被解析为稳定 ID；重名会返回 `ambiguous_contact`，不会猜测。`daily_report.conditions.conversationIds` 在对外 API 中使用稳定 ID，Store 内部仍沿用既有 md5 口径。
+
+校验请求不落盘、不发消息，也不执行规则。`valid: false` 时查看 `issues`；有效时 `normalized` 是经 ID 解析后的草稿，`effects` 描述启用后的动作，定时日报另外返回按本机时区计算的 `nextRunAt`。
+
+```json
+{
+  "name": "产品群每日日报",
+  "ruleType": "scheduled_report",
+  "scheduledReport": {
+    "schedule": { "time": "20:00" },
+    "report": {
+      "sourceConversationId": "wxid_product@chatroom",
+      "range": "today",
+      "messageTypes": ["text", "image"],
+      "templateId": "v1",
+      "memberNameMode": "groupNickname",
+      "timeoutSeconds": 300
+    },
+    "target": { "type": "file_transfer" },
+    "postfixText": ""
+  }
+}
+```
+
+执行历史只读，默认最多返回 50 条，`limit` 范围是 1-200。`since` 和 `until` 接受带时区的 ISO-8601 时间；execution 本身最多留存 200 条。`running` 记录的 `finishedAt` 为 `null`。
+
+新 Agent API 的错误格式：
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_FAILED",
+    "message": "自动化规则校验失败",
+    "details": []
+  },
+  "requestId": "..."
+}
+```
+
+常见错误码包括 `UNAUTHORIZED`、`METHOD_NOT_ALLOWED`、`PAYLOAD_TOO_LARGE`、`INVALID_ARGUMENT`、`NOT_FOUND`、`NOT_GROUP_CONVERSATION`、`DATABASE_NOT_READY`、`VALIDATION_FAILED`、`SINGLETON_RULE`、`PROTECTED_RULE` 和 `PERSISTENCE_FAILED`。`leave_notification` 是固定单例：可读取、修改和启停，但不能创建第二条或删除。内置 `@我生成日报` 同样不能通过 HTTP 删除。
 
 ### 这些端点与实时机器人有什么关系
 
@@ -215,3 +338,102 @@ curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/convers
 调用方**必须**把 `coverage` 当真：`coverage.state` 不是 `complete` 且 `evidence` 为空时，只能说明"这段范围暂时无法确认"，**不能**下"没有找到"的结论。索引落后时服务端会自动请求一次追赶同步，但不会让请求无限等待；`freshness.catchUp` 为 `pending` 表示追赶仍在后台进行，稍后重试即可拿到更新的覆盖。
 
 `query/messages` 与 `query/conversation-overview` 直读聊天数据库，不受索引新鲜度影响。
+
+### 语音转文字（voice-transcribe）
+
+语音消息的正文固定是 `[语音消息]`。本机已转写过的语音，读取时会直接带上转写结果（只读缓存，不触发识别）：
+
+- `query/messages`、`query/message-context`：`voiceTranscriptState` 与 `voiceTranscript`，`derivedSource` 为 `voice_transcript`；
+- `/chatlog`：语音消息额外带 `messageRef`、`voiceTranscriptState` 与 `voiceTranscript`。
+
+`voiceTranscriptState` 为 `pending` 表示**还没转写**，不能当成"语音里没说话"。需要内容时，把这些语音的 `messageRef` 交给 `POST /api/v1/query/voice-transcribe`：
+
+```bash
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/voice-transcribe" \
+  -d '{"messageRefs":["<语音消息的 messageRef>"],"waitMs":15000}'
+```
+
+| 字段          | 含义                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------- |
+| `messageRefs` | 必填，1～20 条；重复的引用会合并                                                        |
+| `waitMs`      | 可选，最多同步等待的毫秒数，默认 15000，上限 60000；`0` 表示只排队、不等待              |
+| `force`       | 可选，`true` 时忽略已有转写和失败记录、重新识别；只在用户明确要求重试时使用             |
+
+识别在本机离线进行（需要先在 TraceMemo 设置里下载语音识别模型），和界面共用同一份缓存与同一条串行队列：界面上点开语音会优先处理，API 的任务随后继续。等待超时的条目返回 `pending`，识别会在后台继续；稍后用同样的 `messageRefs` 再调用即可取回结果，不会重复排队。
+
+```json
+{
+  "status": "completed",
+  "items": [
+    { "messageRef": "…", "state": "transcribed", "transcript": "…", "cached": false },
+    { "messageRef": "…", "state": "pending", "code": "still_processing", "hint": "…" }
+  ],
+  "summary": { "transcribed": 1, "pending": 1, "failed": 0 }
+}
+```
+
+每个未成功的条目都带 `code` 与 `hint`（下一步该怎么做）：
+
+| `code`                  | 含义                                       |
+| ----------------------- | ------------------------------------------ |
+| `still_processing`      | 仍在后台转写，稍后原样重试                 |
+| `previously_failed`     | 之前识别失败，默认不自动重跑               |
+| `recognition_failed`    | 本次识别失败（音频损坏、过短或没有人声）   |
+| `recognition_timeout`   | 识别超时                                   |
+| `not_voice_message`     | 不是语音消息                               |
+| `message_not_found`     | 找不到消息（可能已切换账号）               |
+| `invalid_message_ref`   | `messageRef` 无法解析                      |
+
+整次请求的状态：`200 completed`；`400 invalid_tool_arguments`（带 `field`、`constraint`、`hint`）；`503 voice_model_not_ready`（模型未下载）或 `knowledge_unavailable`（数据库未连接）；`429 busy`（队列已满，带 `retryAfterSeconds` 与 `Retry-After` 头）。
+
+## Reader Skill 的版本与更新
+
+Reader Skill 是随应用分发的说明文件。它被安装到 Agent 自己的 Skill 目录之后就与 TraceMemo 分离了，不再随应用升级自动变化，所以它必须能自己证明版本：
+
+- `SKILL.md` frontmatter 的 `version` 是**唯一真源**（形如 `1.3.0`）；
+- `/api/v1/health` 的 `skill.version` 回报当前应用内置的版本；
+- 两者不一致，就说明 Agent 手里那份已经过期，接口契约可能已经变化。
+
+### 检查更新
+
+```bash
+curl http://127.0.0.1:6131/api/v1/health
+```
+
+```json
+{
+  "ok": true,
+  "ready": true,
+  "service": "TraceMemo Reader",
+  "version": "2.5.0",
+  "skill": { "name": "tracememo-reader", "version": "1.3.0", "available": true },
+  "timestamp": "2026-10-13T08:43:52.863Z"
+}
+```
+
+注意区分两个版本号：`version` 是应用版本，`skill.version` 才是 Reader Skill 的版本。Skill 文件读不到时 `available` 为 `false`、`skill.version` 为 `null`，此时 health 仍然返回 `200`——外部 Agent 靠它做自检，这个接口不允许因为 Skill 缺失而失败。
+
+### 拉取最新 Skill
+
+```bash
+curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
+  "http://127.0.0.1:6131/api/v1/skill/tracememo-reader"
+```
+
+```json
+{
+  "name": "tracememo-reader",
+  "version": "1.3.0",
+  "contentHash": "<sha256 hex>",
+  "modifiedAt": "2026-10-13T08:37:30.000Z",
+  "markdown": "---\nname: tracememo-reader\nversion: 1.3.0\n…"
+}
+```
+
+`markdown` 就是可以直接落盘的 SKILL.md 全文，`contentHash` 是它的 SHA-256，可用来核对写入结果。响应**不包含**任何本地文件路径。`503 skill_unavailable` 表示应用侧也没找到 Skill 文件，需要重新安装 TraceMemo。
+
+### Agent 侧的自检义务
+
+`docs/skill/tracememo-reader/SKILL.md` 中的「版本自检」要求 Agent 在每次会话开始时比对一次版本：不一致就停止读取数据并提醒用户重新安装；用户同意后，Agent 可以直接调用上面的接口自助覆盖本地文件，不需要用户重新复制安装指令。
+
+修改 `SKILL.md` 内容时必须同步提升 `version`。CI 中的 `pnpm check:skill-version` 会在"只改文档、不升版本"时失败，避免再次出现"文档改了两轮、版本号纹丝不动"的情况。

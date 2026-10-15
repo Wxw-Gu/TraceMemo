@@ -337,6 +337,19 @@ export class AutomationActionRunner {
         return { steps, status: 'failed', errorSummary: reportStep.error }
       }
       pngPath = result.pngPath
+      const persisted = await this.persistRunReport(input, result)
+      if (persisted.ok) {
+        // 发出去的图就是日报历史里的那一份（同一文件），避免「历史一张、发出去另一张」。
+        pngPath = persisted.pngPath || pngPath
+      } else {
+        /*
+         * 落库失败**不阻断发送**：日报确实生成了、图片已经在手上，把它扣下不发对用户没有任何好处。
+         * 但也**绝不假装没事** —— 失败会写进步骤细节，用户在执行详情里一眼能看见。
+         * 细节文案刻意不带原始错误串（fs 报错常含本地绝对路径），原始错误只进主进程日志。
+         */
+        reportStep.detail = '日报已生成，但未写入日报历史。'
+        console.warn('[Automation] 日报历史写入失败:', persisted.error)
+      }
       markSuccess(reportStep, this.now())
     }
 
@@ -367,6 +380,61 @@ export class AutomationActionRunner {
     }
     markSuccess(sendStep, this.now())
     return { steps, status: 'success', pngPath }
+  }
+
+  /**
+   * 把「@我生成日报」产出的日报写进**日报历史**。
+   *
+   * 与定时日报共用同一个 `saveGeneratedReport`（同一条历史、同一个日报页），
+   * 唯一差别是 `source: 'automation'` —— 让用户能区分这条日报是谁触发的。
+   *
+   * 为什么必须在这里补：`run()` 只把 PNG 交给发送，图发出去之后**没有任何地方**
+   * 再碰这份日报。此前只有 `runScheduledReport` 落库，于是消息型规则产出的日报
+   * 在日报历史里**从来没存在过**（发出去的那张图成了孤儿）。
+   *
+   * 失败语义与 `runScheduledReport` **刻意不同**：那边发的是历史里的文件、落库是发送的前置，
+   * 所以落库失败即整次失败；这里图片已经在手上，落库失败只降级成一句提示，不阻断发送。
+   */
+  private async persistRunReport(
+    input: AutomationRunInput,
+    generated: AgentGroupReportResult
+  ): Promise<{ ok: boolean; error?: string; pngPath?: string }> {
+    try {
+      const reportContact = this.resolveReportContact(input.conversationId)
+      let contactAvatar = reportContact?.avatar
+      if (!contactAvatar && reportContact?.m_nsUsrName) {
+        try {
+          const avatars = await this.getContactAvatars([reportContact.m_nsUsrName])
+          contactAvatar = avatars[reportContact.m_nsUsrName]
+        } catch (error) {
+          console.warn('[Automation] 日报群头像补全失败:', error)
+        }
+      }
+      const saved = await this.saveGeneratedReport({
+        contactId: reportContact?.md5 || input.conversationId,
+        contactName:
+          generated.groupName || reportContact?.m_nsNickName || input.sourceDisplayName || '群聊',
+        contactAvatar,
+        source: 'automation',
+        dateRange: generated.reportMetadata?.dateRange || scheduledReportRangeLabel('today'),
+        reportDate: generated.reportMetadata?.reportDate,
+        messageCount: generated.messageCount ?? generated.reportMetadata?.messageCount ?? 0,
+        generatedAt: new Date(this.now()).toISOString(),
+        htmlPath: generated.htmlPath,
+        pngPath: generated.pngPath,
+        duration: generated.duration,
+        modelName: generated.modelName,
+        tokenUsage: generated.tokenUsage,
+        reportSnapshot: generated.reportSnapshot,
+        reportMetadata: generated.reportMetadata
+      })
+      if (!saved.success) {
+        return { ok: false, error: saved.error || '日报历史保存失败' }
+      }
+      return { ok: true, ...(saved.record?.pngPath ? { pngPath: saved.record.pngPath } : {}) }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   /**

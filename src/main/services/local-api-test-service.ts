@@ -46,6 +46,21 @@ function parseBody(bodyText: string, contentType?: string): { json?: unknown; bo
   return { bodyText }
 }
 
+function materializeEndpointPath(pathname: string, query: Record<string, string>): string {
+  return pathname.replace('{conversationId}', encodeURIComponent(query.conversationId || ''))
+}
+
+function appendQueryParameters(
+  url: URL,
+  endpointPath: string,
+  entries: Array<[string, string]>
+): void {
+  for (const [key, value] of entries) {
+    if (endpointPath.includes(`{${key}}`)) continue
+    if (value.trim()) url.searchParams.set(key, value.trim())
+  }
+}
+
 export function buildLocalApiCurlCommand(payload: unknown): {
   success: boolean
   command?: string
@@ -71,18 +86,17 @@ export function buildLocalApiCurlCommand(payload: unknown): {
   const service = apiServer.getState()
   const targetHost = requestHost(service.host)
   const hostPart = targetHost.includes(':') ? `[${targetHost}]` : targetHost
-  const url = new URL(endpoint.path, `http://${hostPart}:${service.port}`)
-  entries.forEach(([key, value]) => {
-    if (value.trim()) url.searchParams.set(key, value.trim())
-  })
+  const endpointPath = materializeEndpointPath(endpoint.path, query as Record<string, string>)
+  const url = new URL(endpointPath, `http://${hostPart}:${service.port}`)
+  appendQueryParameters(url, endpoint.path, entries)
   const token = endpointId === 'health' ? null : apiTokenStore.getTokenForAuthentication()
   if (endpointId !== 'health' && !token) {
     return { success: false, error: 'API Token 安全存储不可用，请在 API Center 检查 Token 状态' }
   }
   const authHeader = token ? ` -H 'Authorization: Bearer ${token}'` : ''
   const command =
-    endpoint.method === 'POST'
-      ? `curl -X POST '${url.toString()}'${authHeader} -H 'Content-Type: application/json' -d '${body.replaceAll("'", "\\'")}'`
+    endpoint.method === 'POST' || endpoint.method === 'PATCH'
+      ? `curl -X ${endpoint.method} '${url.toString()}'${authHeader} -H 'Content-Type: application/json' -d '${body.replaceAll("'", "\\'")}'`
       : `curl '${url.toString()}'${authHeader}`
   return { success: true, command }
 }
@@ -110,10 +124,9 @@ export async function testLocalApiRequest(payload: unknown): Promise<LocalApiTes
   const targetHost = requestHost(service.host)
   const targetPort = service.port
   const hostPart = targetHost.includes(':') ? `[${targetHost}]` : targetHost
-  const url = new URL(endpoint.path, `http://${hostPart}:${targetPort}`)
-  entries.forEach(([key, value]) => {
-    if (value.trim()) url.searchParams.set(key, value.trim())
-  })
+  const endpointPath = materializeEndpointPath(endpoint.path, query as Record<string, string>)
+  const url = new URL(endpointPath, `http://${hostPart}:${targetPort}`)
+  appendQueryParameters(url, endpoint.path, entries)
 
   if (!service.running) {
     return {
@@ -150,7 +163,9 @@ export async function testLocalApiRequest(payload: unknown): Promise<LocalApiTes
       })
     }
     const headers: Record<string, string> = {}
-    if (endpoint.method === 'POST') headers['Content-Type'] = 'application/json'
+    if (endpoint.method === 'POST' || endpoint.method === 'PATCH') {
+      headers['Content-Type'] = 'application/json'
+    }
     if (token) headers.Authorization = `Bearer ${token}`
     const request = http.request(
       url,
@@ -208,7 +223,7 @@ export async function testLocalApiRequest(payload: unknown): Promise<LocalApiTes
         error: error.message
       })
     })
-    if (endpoint.method === 'POST') request.write(body)
+    if (endpoint.method === 'POST' || endpoint.method === 'PATCH') request.write(body)
     request.end()
   })
 }

@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import http, { IncomingMessage, ServerResponse, Server } from 'http'
+import { app } from 'electron'
 import {
   isReady,
   listContacts,
@@ -7,7 +8,8 @@ import {
   listMessages,
   getGroupSnapshot,
   listRecentChat,
-  resolveMd5
+  resolveMd5,
+  type FormattedMessage
 } from './services/chat-service'
 import { exportGroupReport } from './group-report-service'
 import { GroupReportExportRequest } from '../shared/group-report'
@@ -26,8 +28,21 @@ import type {
 import { agentHubService } from './services/agent-hub-service'
 import { safeError, safeLog, safeWarn } from './safe-log'
 import { apiTokenStore } from './api-token-store'
+import { READER_SKILL_NAME, skillResourceService } from './services/skill-resource-service'
 import { HttpMediaError, readImageMedia, type HttpImageResult } from './http-media-service'
 import { LocalQueryApiService } from './services/local-query-api-service'
+import { automationRuleStore, AutomationRulePersistenceError } from './services/automation-rule-store'
+import { automationExecutionLogService } from './services/automation-execution-log-service'
+import { groupExitMonitorService } from './services/group-exit-monitor-service'
+import { LocalAgentApiError, LocalAgentApiService } from './services/local-agent-api-service'
+import type { GroupStatsService } from './services/group-stats-service'
+import { encodeMessageRef } from '../shared/local-query-api'
+import type {
+  VoiceMessageReference,
+  VoiceTranscriptSnapshot,
+  VoiceTranscriptState
+} from '../shared/voice-recognition'
+import { voiceMessageReferenceOf } from './voice-pipeline/voice-message-identity'
 
 export const DEFAULT_HTTP_HOST = '127.0.0.1'
 export const DEFAULT_HTTP_PORT = 6131
@@ -45,6 +60,11 @@ interface RouteContext {
   body?: unknown
 }
 
+type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PATCH' | 'DELETE'
+type RouteHandler = ((ctx: RouteContext) => void | Promise<void>) & {
+  allowedMethods: readonly HttpMethod[]
+}
+
 export interface HttpServerOptions {
   tokenProvider?: () => string | null
   mediaProvider?: (messageId: string) => Promise<HttpImageResult>
@@ -54,21 +74,85 @@ export interface HttpServerOptions {
   scheduledReportDatabaseReadyProvider?: ScheduledReportApiDependencies['isDatabaseReady']
   scheduledReportPlatform?: NodeJS.Platform
   queryApiService?: LocalQueryApiService
+  agentApiService?: LocalAgentApiService
+  groupStatsService?: Pick<GroupStatsService, 'getMemberStats'>
+  appVersionProvider?: () => string
 }
 
 let configuredQueryApiService: LocalQueryApiService | undefined
+let configuredGroupStatsService: Pick<GroupStatsService, 'getMemberStats'> | undefined
 export function setLocalQueryApiService(service: LocalQueryApiService | undefined): void {
   configuredQueryApiService = service
 }
 
-type RouteHandler = (ctx: RouteContext) => void | Promise<void>
+export function setLocalGroupStatsService(
+  service: Pick<GroupStatsService, 'getMemberStats'> | undefined
+): void {
+  configuredGroupStatsService = service
+}
+
+let configuredVoiceTranscriptSnapshot:
+  | ((reference: VoiceMessageReference) => VoiceTranscriptSnapshot)
+  | undefined
+export function setLocalVoiceTranscriptSnapshotProvider(
+  provider: ((reference: VoiceMessageReference) => VoiceTranscriptSnapshot) | undefined
+): void {
+  configuredVoiceTranscriptSnapshot = provider
+}
+
+/**
+ * chatlog 的语音消息补上本地已有的转写（只读缓存，不触发识别）与 messageRef，
+ * 调用方据 `voiceTranscriptState` 决定是否调用 query/voice-transcribe。
+ */
+function withChatlogVoiceTranscript(
+  conversationId: string,
+  message: FormattedMessage
+): FormattedMessage & { messageRef?: string; voiceTranscriptState?: VoiceTranscriptState } {
+  const reference = voiceMessageReferenceOf(message)
+  if (!reference || !configuredVoiceTranscriptSnapshot) return message
+  const snapshot = configuredVoiceTranscriptSnapshot(reference)
+  const transcript = snapshot.state === 'transcribed' ? snapshot.transcript?.trim() : undefined
+  return {
+    ...message,
+    messageRef: encodeMessageRef(conversationId, message.id),
+    voiceTranscriptState: snapshot.state,
+    ...(transcript ? { voiceTranscript: transcript } : {})
+  }
+}
+
+const MAX_JSON_BODY_BYTES = 1024 * 1024
+
+class RequestBodyTooLargeError extends Error {
+  constructor() {
+    super('Request body exceeds the maximum size')
+    this.name = 'RequestBodyTooLargeError'
+  }
+}
+
+function withMethods(
+  methods: readonly HttpMethod[],
+  handler: (ctx: RouteContext) => void | Promise<void>
+): RouteHandler {
+  return Object.assign(handler, { allowedMethods: methods })
+}
+
+function sendMethodNotAllowed(res: ServerResponse, methods: readonly HttpMethod[]): void {
+  res.setHeader('Allow', methods.join(', '))
+  sendError(res, 405, `请求方法不受支持；允许的方法：${methods.join(', ')}`)
+}
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
-  const body = JSON.stringify(payload, null, 2)
+  const requestId = String(res.getHeader('X-Request-Id') || '')
+  let responsePayload = payload
+  if (status >= 400 && payload && typeof payload === 'object' && !('requestId' in payload)) {
+    responsePayload = { ...(payload as Record<string, unknown>), requestId }
+  }
+  const body = JSON.stringify(responsePayload, null, 2)
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
-    'Cache-Control': 'no-store'
+    'Cache-Control': 'no-store',
+    ...(requestId ? { 'X-Request-Id': requestId } : {})
   })
   res.end(body)
 }
@@ -91,8 +175,8 @@ function applyCorsHeaders(req: IncomingMessage, res: ServerResponse): boolean {
   if (!isAllowedCorsOrigin(origin)) return false
   res.setHeader('Access-Control-Allow-Origin', origin)
   res.setHeader('Vary', 'Origin')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, PATCH, DELETE, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Request-Id')
   return true
 }
 
@@ -112,6 +196,20 @@ function sendUnauthorized(res: ServerResponse): void {
   })
 }
 
+function sendAgentHttpError(
+  res: ServerResponse,
+  status: number,
+  code: string,
+  message: string,
+  details?: unknown
+): void {
+  const requestId = String(res.getHeader('X-Request-Id') || '')
+  sendJson(res, status, {
+    error: { code, message, ...(details !== undefined ? { details } : {}) },
+    requestId
+  })
+}
+
 function sendError(res: ServerResponse, status: number, message: string, extra?: unknown): void {
   sendJson(res, status, { error: message, status, ...(extra ? { details: extra } : {}) })
 }
@@ -121,7 +219,8 @@ function sendBinary(res: ServerResponse, status: number, result: HttpImageResult
     'Content-Type': result.mimeType,
     'Content-Length': result.buffer.length,
     'Cache-Control': 'private, no-store',
-    'X-Content-Type-Options': 'nosniff'
+    'X-Content-Type-Options': 'nosniff',
+    'X-Request-Id': String(res.getHeader('X-Request-Id') || '')
   })
   res.end(result.buffer)
 }
@@ -136,10 +235,37 @@ function sanitizeChatlogMessage(message: Record<string, unknown>): Record<string
   return { ...message, contentData: safeContentData }
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, maxBytes = MAX_JSON_BODY_BYTES): Promise<string> {
   return new Promise((resolve, reject) => {
+    const contentLength = Number(req.headers['content-length'])
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      /*
+       * 拒收，但**要先把请求体排空**。
+       *
+       * 直接 `pause()` 会让剩余数据留在 socket 缓冲里，而我们紧接着就会
+       * 发 413 + `Connection: close` —— 客户端此时仍在写，收到连接关闭后会以
+       * 传输层错误收场（undici 报 `ECONNRESET`；Windows 的 TCP 栈比 macOS
+       * 更倾向回 RST，所以先在那里暴露）。改成 `resume()`：不再收集数据，
+       * 只是把客户端已经/正在发的字节丢掉，让它正常写完并读到这个 413。
+       * 上限仍是 maxBytes，所以不会有人靠超大 body 拖住我们。
+       */
+      req.resume()
+      reject(new RequestBodyTooLargeError())
+      return
+    }
     const chunks: Buffer[] = []
-    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    let size = 0
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > maxBytes) {
+        chunks.length = 0
+        // 同上：排空而不是暂停，否则客户端拿不到这个 413。
+        req.resume()
+        reject(new RequestBodyTooLargeError())
+        return
+      }
+      chunks.push(chunk)
+    })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')))
     req.on('error', reject)
   })
@@ -208,18 +334,50 @@ function parseNumeric(value: string | null, fallback: number): number {
   return Number.isFinite(n) ? n : fallback
 }
 
+function getApplicationVersion(): string {
+  try {
+    return typeof app.getVersion === 'function' ? app.getVersion() : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
 const routes: Record<string, RouteHandler> = {
-  '/api/v1/health': ({ res }) => {
+  '/api/v1/health': withMethods(['GET'], ({ res }) => {
+    const skill = skillResourceService.getStatus()
     sendJson(res, 200, {
       ok: true,
       ready: isReady(),
       service: 'TraceMemo Reader',
-      version: '1.0.0',
+      version: getApplicationVersion(),
+      skill: {
+        name: skill.name || READER_SKILL_NAME,
+        version: skill.version || null,
+        available: skill.available
+      },
       timestamp: new Date().toISOString()
     })
-  },
+  }),
 
-  '/api/v1/current_time': ({ res }) => {
+  // 外部 Agent 的版本自检与自助更新入口：返回当前 SKILL.md 全文，不返回本地路径。
+  '/api/v1/skill/tracememo-reader': withMethods(['GET'], ({ res }) => {
+    const document = skillResourceService.getDocument()
+    if (!document) {
+      return sendJson(res, 503, {
+        error: 'skill_unavailable',
+        message: '未找到本机 TraceMemo Reader Skill 文件，请确认应用安装是否完整。'
+      })
+    }
+    sendJson(res, 200, {
+      name: document.name,
+      version: document.version || null,
+      contentHash: document.contentHash,
+      modifiedAt: document.modifiedAt,
+      markdown: document.markdown
+    })
+  }),
+
+  '/api/v1/current_time': withMethods(['GET'], ({ res }) => {
     const now = new Date()
     sendJson(res, 200, {
       time: now.toISOString(),
@@ -229,9 +387,9 @@ const routes: Record<string, RouteHandler> = {
         now.getDate()
       ).padStart(2, '0')}`
     })
-  },
+  }),
 
-  '/api/v1/contact': async ({ res, url }) => {
+  '/api/v1/contact': withMethods(['GET'], async ({ res, url }) => {
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const filter = url.searchParams.get('filter') || undefined
     const type = url.searchParams.get('type') || undefined
@@ -243,9 +401,9 @@ const routes: Record<string, RouteHandler> = {
       contacts = contacts.filter((c) => c.type === type)
     }
     sendJson(res, 200, { count: contacts.length, contacts })
-  },
+  }),
 
-  '/api/v1/chatroom': async ({ res, url }) => {
+  '/api/v1/chatroom': withMethods(['GET'], async ({ res, url }) => {
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const keyword = url.searchParams.get('keyword') || ''
     // Same hydration requirement as /api/v1/contact: group display names are
@@ -260,16 +418,16 @@ const routes: Record<string, RouteHandler> = {
       )
     }
     sendJson(res, 200, { count: groups.length, chatrooms: groups })
-  },
+  }),
 
-  '/api/v1/recent_chat': ({ res, url }) => {
+  '/api/v1/recent_chat': withMethods(['GET'], ({ res, url }) => {
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const limit = parseNumeric(url.searchParams.get('limit'), 50)
     const items = listRecentChat(limit)
     sendJson(res, 200, { count: items.length, items })
-  },
+  }),
 
-  '/api/v1/chatlog': ({ res, url }) => {
+  '/api/v1/chatlog': withMethods(['GET'], ({ res, url }) => {
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const talker = url.searchParams.get('talker')
     if (!talker) return sendError(res, 400, '缺少必要参数 talker')
@@ -304,30 +462,32 @@ const routes: Record<string, RouteHandler> = {
       query: { talker, time: timeParam, startTime, endTime },
       count: messages.length,
       messages: messages.map((message) =>
-        sanitizeChatlogMessage(message as unknown as Record<string, unknown>)
+        sanitizeChatlogMessage(
+          withChatlogVoiceTranscript(resolved.md5, message) as unknown as Record<string, unknown>
+        )
       )
     })
-  },
+  }),
 
-  '/api/v1/group_snapshot': ({ res, url }) => {
+  '/api/v1/group_snapshot': withMethods(['GET'], ({ res, url }) => {
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const md5 = url.searchParams.get('md5')
     if (!md5) return sendError(res, 400, '缺少必要参数 md5')
     const snapshot = getGroupSnapshot(md5)
     if (!snapshot) return sendError(res, 404, `未找到群聊: ${md5}`)
     sendJson(res, 200, snapshot)
-  },
+  }),
 
-  '/api/v1/resolve': ({ res, url }) => {
+  '/api/v1/resolve': withMethods(['GET'], ({ res, url }) => {
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const q = url.searchParams.get('q')
     if (!q) return sendError(res, 400, '缺少必要参数 q')
     const contact = resolveMd5(q)
     if (!contact) return sendError(res, 404, `未匹配到联系人: ${q}`)
     sendJson(res, 200, contact)
-  },
+  }),
 
-  '/api/v1/report': async ({ req, res, body }) => {
+  '/api/v1/report': withMethods(['POST'], async ({ req, res, body }) => {
     if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     if (typeof body !== 'string' || !body.trim()) {
@@ -354,9 +514,9 @@ const routes: Record<string, RouteHandler> = {
     }
     const result = await exportGroupReport(request)
     sendJson(res, result.success ? 200 : 500, result)
-  },
+  }),
 
-  '/api/v1/agent/group-report': async ({ req, res, body }) => {
+  '/api/v1/agent/group-report': withMethods(['POST'], async ({ req, res, body }) => {
     if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     let request: { group?: string; range?: 'today' | 'yesterday' | '7days' }
@@ -370,9 +530,9 @@ const routes: Record<string, RouteHandler> = {
       range: request.range
     })
     sendJson(res, result.success ? 200 : 400, result)
-  },
+  }),
 
-  '/api/v1/agent/status': ({ res }) => {
+  '/api/v1/agent/status': withMethods(['GET'], ({ res }) => {
     const status = agentHubService.getStatus()
     sendJson(res, 200, {
       ok: status.hub === 'online' && status.connector === 'online',
@@ -382,9 +542,9 @@ const routes: Record<string, RouteHandler> = {
       databaseReady: status.databaseReady,
       accountId: status.accountId
     })
-  },
+  }),
 
-  '/api/v1/agent/send': async ({ req, res, body }) => {
+  '/api/v1/agent/send': withMethods(['POST'], async ({ req, res, body }) => {
     if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
     let request: { to?: string; text?: string; media_url?: string }
     try {
@@ -398,7 +558,7 @@ const routes: Record<string, RouteHandler> = {
       mediaUrl: request.media_url
     })
     sendJson(res, result.success ? 200 : result.status === 'token_expired' ? 401 : 503, result)
-  }
+  })
 }
 
 const SCHEDULED_REPORTS_ROUTE = '/api/v1/scheduled-reports'
@@ -448,18 +608,18 @@ function createScheduledReportRoute(
   api: ScheduledReportApiService
 ): RouteHandler | undefined {
   if (pathname === WECHAT_SEND_CAPABILITY_ROUTE) {
-    return async ({ req, res }) => {
+    return withMethods(['GET'], async ({ req, res }) => {
       if (req.method !== 'GET') return sendError(res, 405, '需要 GET 请求')
       try {
         sendJson(res, 200, { capability: await api.getCapability() })
       } catch (error) {
         sendScheduledError(res, error)
       }
-    }
+    })
   }
 
   if (pathname === SCHEDULED_REPORTS_ROUTE) {
-    return async ({ req, res, body }) => {
+    return withMethods(['GET', 'POST'], async ({ req, res, body }) => {
       try {
         if (req.method === 'GET') {
           const tasks = await api.list()
@@ -475,7 +635,7 @@ function createScheduledReportRoute(
       } catch (error) {
         sendScheduledError(res, error)
       }
-    }
+    })
   }
 
   const retryPrefix = `${SCHEDULED_REPORTS_ROUTE}/executions/`
@@ -488,7 +648,7 @@ function createScheduledReportRoute(
     } catch {
       return undefined
     }
-    return async ({ req, res }) => {
+    return withMethods(['POST'], async ({ req, res }) => {
       if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
       try {
         const execution = await api.retrySend(executionId)
@@ -496,7 +656,7 @@ function createScheduledReportRoute(
       } catch (error) {
         sendScheduledError(res, error)
       }
-    }
+    })
   }
 
   const prefix = `${SCHEDULED_REPORTS_ROUTE}/`
@@ -510,8 +670,15 @@ function createScheduledReportRoute(
     return undefined
   }
   const action = segments[1]
+  if (action && !['enable', 'disable', 'run', 'executions'].includes(action)) return undefined
 
-  return async ({ req, res, body }) => {
+  const methods: HttpMethod[] = !action
+    ? ['GET', 'PATCH', 'DELETE']
+    : action === 'executions'
+      ? ['GET']
+      : ['POST']
+
+  return withMethods(methods, async ({ req, res, body }) => {
     try {
       if (!action && req.method === 'GET') {
         sendJson(res, 200, { task: await api.get(taskId) })
@@ -551,7 +718,7 @@ function createScheduledReportRoute(
     } catch (error) {
       sendScheduledError(res, error)
     }
-  }
+  })
 }
 
 const MEDIA_ROUTE_PREFIX = '/api/v1/media/'
@@ -562,46 +729,58 @@ function queryStatusCode(status: string): number {
   if (status === 'contact_not_found') return 404
   if (status === 'ambiguous_contact') return 409
   if (status === 'knowledge_unavailable') return 503
+  if (status === 'voice_model_not_ready' || status === 'voice_transcription_unavailable') return 503
+  if (status === 'busy') return 429
   if (status === 'retrieval_incomplete') return 206
   return 400
 }
 
-function createQueryRoute(api: LocalQueryApiService): RouteHandler | undefined {
-  return async ({ req, res, body }) => {
-    const pathname = new URL(req.url || '/', 'http://localhost').pathname
-    if (pathname === '/api/v1/query/capabilities') {
-      if (req.method !== 'GET') return sendError(res, 405, '需要 GET 请求')
+function createQueryRoute(pathname: string, api: LocalQueryApiService): RouteHandler | undefined {
+  if (pathname === '/api/v1/query/capabilities') {
+    return withMethods(['GET'], ({ res }) => {
       return sendJson(res, 200, api.capabilities())
-    }
-    if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
-    let payload: any
+    })
+  }
+  type QueryOperationResult =
+    | Awaited<ReturnType<LocalQueryApiService['messages']>>
+    | Awaited<ReturnType<LocalQueryApiService['search']>>
+    | Awaited<ReturnType<LocalQueryApiService['context']>>
+    | Awaited<ReturnType<LocalQueryApiService['overview']>>
+    | Awaited<ReturnType<LocalQueryApiService['transcribeVoice']>>
+  const operations: Record<string, (payload: unknown) => Promise<QueryOperationResult>> = {
+    '/api/v1/query/messages': (payload) =>
+      api.messages(payload as Parameters<LocalQueryApiService['messages']>[0]),
+    '/api/v1/query/search': (payload) =>
+      api.search(payload as Parameters<LocalQueryApiService['search']>[0]),
+    '/api/v1/query/message-context': (payload) =>
+      api.context(payload as Parameters<LocalQueryApiService['context']>[0]),
+    '/api/v1/query/conversation-overview': (payload) =>
+      api.overview(payload as Parameters<LocalQueryApiService['overview']>[0]),
+    '/api/v1/query/voice-transcribe': (payload) =>
+      api.transcribeVoice(payload as Parameters<LocalQueryApiService['transcribeVoice']>[0])
+  }
+  const operation = operations[pathname]
+  if (!operation) return undefined
+  return withMethods(['POST'], async ({ res, body }) => {
+    let payload: unknown
     try { payload = JSON.parse(typeof body === 'string' ? body : '') } catch { return sendError(res, 400, 'invalid_request') }
     if (!payload || typeof payload !== 'object') return sendError(res, 400, 'invalid_request')
     try {
-      const result = pathname === '/api/v1/query/messages'
-        ? await api.messages(payload)
-        : pathname === '/api/v1/query/search'
-          ? await api.search(payload)
-          : pathname === '/api/v1/query/message-context'
-            ? await api.context(payload)
-            : pathname === '/api/v1/query/conversation-overview'
-              ? await api.overview(payload)
-              : undefined
-      if (!result) return sendError(res, 404, `端点不存在: ${pathname}`)
+      const result = await operation(payload)
+      if ('retryAfterSeconds' in result && typeof result.retryAfterSeconds === 'number') {
+        res.setHeader('Retry-After', String(result.retryAfterSeconds))
+      }
       return sendJson(res, queryStatusCode(result.status), result)
     } catch (error) {
       return sendError(res, 400, error instanceof Error ? error.message : 'invalid_request')
     }
-  }
+  })
 }
 
 function createMediaRoute(
   mediaProvider: (messageId: string) => Promise<HttpImageResult>
 ): RouteHandler {
-  return async ({ req, res, url }) => {
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      return sendError(res, 405, '需要 GET 请求')
-    }
+  return withMethods(['GET', 'HEAD'], async ({ req, res, url }) => {
     const encodedMessageId = url.pathname.slice(MEDIA_ROUTE_PREFIX.length)
     let messageId: string
     try {
@@ -640,7 +819,218 @@ function createMediaRoute(
       safeError('[HttpServer] media request failed:', error)
       return sendError(res, 500, '图片读取失败')
     }
+  })
+}
+
+function createAgentApiService(options: HttpServerOptions): LocalAgentApiService {
+  const groupStats = options.groupStatsService || configuredGroupStatsService
+  return options.agentApiService || new LocalAgentApiService({
+    automationRuleStore,
+    automationExecutionLogService,
+    listContacts: listContactsAsync,
+    isDatabaseReady: isReady,
+    getVersion: options.appVersionProvider || getApplicationVersion,
+    getPersonalWechatCapability: () =>
+      personalWechatCapabilityService.getPersonalWechatSendCapability(),
+    getAgentHubStatus: () => agentHubService.getStatus(),
+    getGroupExitMonitorState: () => {
+      const state = groupExitMonitorService.getState()
+      return { ...state, monitoredRoomIds: state.monitoredRoomIds || [] }
+    },
+    configureGroupExitMonitor: (configuration) =>
+      groupExitMonitorService.configure(configuration),
+    setGroupExitMonitorRoomIds: (roomIds) => groupExitMonitorService.setMonitoredRoomIds(roomIds),
+    setGroupExitMonitorEnabled: (enabled) => groupExitMonitorService.setEnabled(enabled),
+    listGroupExitMonitorEvents: (query) => groupExitMonitorService.listEvents(query),
+    ...(groupStats ? { getGroupMemberStats: (query) => groupStats.getMemberStats(query) } : {})
+  })
+}
+
+function sendAgentApiError(res: ServerResponse, error: unknown): void {
+  const requestId = String(res.getHeader('X-Request-Id') || '')
+  if (error instanceof LocalAgentApiError) {
+    sendAgentHttpError(res, error.status, error.code, error.message, error.details)
+    return
   }
+  if (error instanceof AutomationRulePersistenceError) {
+    sendAgentHttpError(res, 500, 'PERSISTENCE_FAILED', '自动化规则未能保存到本地')
+    return
+  }
+  safeError(`[HttpServer requestId=${requestId}] Agent API request failed:`, error)
+  sendAgentHttpError(res, 500, 'INTERNAL_ERROR', 'Agent API 请求失败')
+}
+
+async function handleAgentApi<T>(
+  res: ServerResponse,
+  operation: () => Promise<T> | T,
+  respond: (value: T) => void
+): Promise<void> {
+  try {
+    respond(await operation())
+  } catch (error) {
+    sendAgentApiError(res, error)
+  }
+}
+
+function parseAgentJson(body: unknown): unknown {
+  if (typeof body !== 'string' || !body.trim()) {
+    throw new LocalAgentApiError(400, 'INVALID_ARGUMENT', '请求体不能为空')
+  }
+  try {
+    return JSON.parse(body)
+  } catch {
+    throw new LocalAgentApiError(400, 'INVALID_ARGUMENT', '请求体 JSON 格式无效')
+  }
+}
+
+function createAgentApiRoute(
+  pathname: string,
+  api: LocalAgentApiService
+): RouteHandler | undefined {
+  if (pathname === '/api/v1/capabilities') {
+    return withMethods(['GET'], ({ res }) =>
+      void handleAgentApi(res, () => api.getCapabilities(), (capabilities) =>
+        sendJson(res, 200, capabilities)
+      )
+    )
+  }
+
+  const groupExitMonitorPath = '/api/v1/monitors/group-exits'
+  if (pathname === groupExitMonitorPath) {
+    return withMethods(['GET', 'PATCH'], async ({ req, res, body }) => {
+      if (req.method === 'GET') {
+        await handleAgentApi(res, () => api.getGroupExitMonitorState(), (state) =>
+          sendJson(res, 200, state)
+        )
+        return
+      }
+      await handleAgentApi(res, () => api.updateGroupExitMonitor(parseAgentJson(body)), (state) =>
+        sendJson(res, 200, state)
+      )
+    })
+  }
+
+  if (pathname === `${groupExitMonitorPath}/events`) {
+    return withMethods(['GET'], ({ res, url }) =>
+      void handleAgentApi(res, () => api.listGroupExitMonitorEvents(url.searchParams), (result) =>
+        sendJson(res, 200, result)
+      )
+    )
+  }
+
+  const groupStatsPrefix = '/api/v1/groups/'
+  if (pathname.startsWith(groupStatsPrefix)) {
+    const segments = pathname.slice(groupStatsPrefix.length).split('/')
+    if (segments.length === 2 && segments[1] === 'member-stats' && segments[0]) {
+      let conversationId: string
+      try {
+        conversationId = decodeURIComponent(segments[0])
+      } catch {
+        return undefined
+      }
+      return withMethods(['GET'], ({ res, url }) =>
+        void handleAgentApi(
+          res,
+          () => api.getGroupMemberStats(conversationId, url.searchParams),
+          (result) => sendJson(res, 200, result)
+        )
+      )
+    }
+  }
+
+  const automationCollection = '/api/v1/automations'
+  if (pathname === automationCollection) {
+    return withMethods(['GET', 'POST'], async ({ req, res, url, body }) => {
+      if (req.method === 'GET') {
+        await handleAgentApi(
+          res,
+          () => api.listAutomations({
+            type: url.searchParams.get('type'),
+            enabled: url.searchParams.get('enabled')
+          }),
+          (rules) => sendJson(res, 200, { count: rules.length, rules })
+        )
+        return
+      }
+      await handleAgentApi(res, () => api.createAutomation(parseAgentJson(body)), (rule) =>
+        sendJson(res, 201, { created: true, rule })
+      )
+    })
+  }
+
+  if (pathname === `${automationCollection}/validate`) {
+    return withMethods(['POST'], async ({ res, body }) => {
+      await handleAgentApi(res, () => api.validateAutomation(parseAgentJson(body)), (result) =>
+        sendJson(res, 200, result)
+      )
+    })
+  }
+
+  if (pathname === `${automationCollection}/executions`) {
+    return withMethods(['GET'], ({ res, url }) =>
+      void handleAgentApi(res, () => api.listExecutions(url.searchParams), (result) =>
+        sendJson(res, 200, result)
+      )
+    )
+  }
+
+  const prefix = `${automationCollection}/`
+  if (!pathname.startsWith(prefix)) return undefined
+  const segments = pathname.slice(prefix.length).split('/').filter(Boolean)
+  if (segments.length < 1 || segments.length > 2) return undefined
+  let id: string
+  try {
+    id = decodeURIComponent(segments[0])
+  } catch {
+    return undefined
+  }
+  if (!id || id.includes('/') || id.includes('\\')) return undefined
+  const action = segments[1]
+  if (action && action !== 'enable' && action !== 'disable') return undefined
+
+  if (action) {
+    return withMethods(['POST'], ({ res }) =>
+      void handleAgentApi(res, () => api.setAutomationEnabled(id, action === 'enable'), (rule) =>
+        sendJson(res, 200, { updated: true, rule })
+      )
+    )
+  }
+
+  return withMethods(['GET', 'PATCH', 'DELETE'], async ({ req, res, body }) => {
+    if (req.method === 'GET') {
+      await handleAgentApi(res, () => api.getAutomation(id), (rule) =>
+        sendJson(res, 200, { rule })
+      )
+      return
+    }
+    if (req.method === 'PATCH') {
+      await handleAgentApi(
+        res,
+        () => api.updateAutomation(id, parseAgentJson(body)),
+        (rule) => sendJson(res, 200, { updated: true, rule })
+      )
+      return
+    }
+    await handleAgentApi(res, () => api.deleteAutomation(id), (result) =>
+      sendJson(res, 200, { deleted: true, ...result })
+    )
+  })
+}
+
+function requestIdFor(req: IncomingMessage): string {
+  const incoming = req.headers['x-request-id']
+  return typeof incoming === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(incoming)
+    ? incoming
+    : crypto.randomUUID()
+}
+
+function isAgentApiPath(pathname: string): boolean {
+  return pathname === '/api/v1/capabilities' ||
+    pathname === '/api/v1/monitors/group-exits' ||
+    pathname.startsWith('/api/v1/monitors/group-exits/') ||
+    pathname.startsWith('/api/v1/groups/') ||
+    pathname === '/api/v1/automations' ||
+    pathname.startsWith('/api/v1/automations/')
 }
 
 export function startHttpServer(
@@ -652,11 +1042,19 @@ export function startHttpServer(
   const mediaProvider = options.mediaProvider || readImageMedia
   const scheduledReportApi = createScheduledReportApi(options)
   const queryApi = options.queryApiService || configuredQueryApiService || new LocalQueryApiService()
+  const agentApi = createAgentApiService(options)
   return new Promise((resolve, reject) => {
     const server: Server = http.createServer(async (req, res) => {
+      const requestId = requestIdFor(req)
+      res.setHeader('X-Request-Id', requestId)
+      let agentApiRequest = false
       try {
         const url = new URL(req.url || '/', `http://${host}:${port}`)
+        agentApiRequest = isAgentApiPath(url.pathname)
         if (!applyCorsHeaders(req, res)) {
+          if (agentApiRequest) {
+            return sendAgentHttpError(res, 403, 'FORBIDDEN', 'Origin 不允许访问本地 API')
+          }
           return sendError(res, 403, 'Origin 不允许访问本地 API')
         }
         if (req.method === 'OPTIONS') {
@@ -665,15 +1063,37 @@ export function startHttpServer(
         }
         const handler =
           routes[url.pathname] ||
+          createAgentApiRoute(url.pathname, agentApi) ||
           createScheduledReportRoute(url.pathname, scheduledReportApi) ||
-          (url.pathname.startsWith(QUERY_ROUTE_PREFIX) ? createQueryRoute(queryApi) : undefined) ||
+          (url.pathname.startsWith(QUERY_ROUTE_PREFIX)
+            ? createQueryRoute(url.pathname, queryApi)
+            : undefined) ||
           (url.pathname.startsWith(MEDIA_ROUTE_PREFIX)
             ? createMediaRoute(mediaProvider)
             : undefined)
         if (!handler) {
+          if (agentApiRequest) {
+            return sendAgentHttpError(res, 404, 'NOT_FOUND', `端点不存在: ${url.pathname}`)
+          }
           return sendError(res, 404, `端点不存在: ${url.pathname}`)
         }
+        if (!handler.allowedMethods.includes(req.method as HttpMethod)) {
+          if (agentApiRequest) {
+            res.setHeader('Allow', handler.allowedMethods.join(', '))
+            return sendAgentHttpError(
+              res,
+              405,
+              'METHOD_NOT_ALLOWED',
+              `请求方法不受支持；允许的方法：${handler.allowedMethods.join(', ')}`,
+              { allowedMethods: handler.allowedMethods }
+            )
+          }
+          return sendMethodNotAllowed(res, handler.allowedMethods)
+        }
         if (url.pathname !== '/api/v1/health' && !isAuthorized(req, tokenProvider())) {
+          if (agentApiRequest) {
+            return sendAgentHttpError(res, 401, 'UNAUTHORIZED', 'Valid API token required')
+          }
           return sendUnauthorized(res)
         }
         let body: string | undefined
@@ -683,8 +1103,22 @@ export function startHttpServer(
         const ctx: RouteContext = { req, res, url, body }
         await handler(ctx)
       } catch (error) {
-        safeError('[HttpServer] 请求处理失败:', error)
+        if (error instanceof RequestBodyTooLargeError) {
+          res.setHeader('Connection', 'close')
+          res.shouldKeepAlive = false
+          if (agentApiRequest) {
+            sendAgentHttpError(res, 413, 'PAYLOAD_TOO_LARGE', '请求体不能超过 1 MiB')
+            return
+          }
+          sendError(res, 413, '请求体不能超过 1 MiB')
+          return
+        }
+        safeError(`[HttpServer requestId=${requestId}] 请求处理失败:`, error)
         if (!res.headersSent) {
+          if (agentApiRequest) {
+            sendAgentHttpError(res, 500, 'INTERNAL_ERROR', 'Agent API 请求失败')
+            return
+          }
           sendError(res, 500, error instanceof Error ? error.message : String(error))
         }
       }

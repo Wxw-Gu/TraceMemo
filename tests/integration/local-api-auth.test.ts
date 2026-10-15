@@ -1,9 +1,11 @@
 import fs from 'fs-extra'
+import { join } from 'path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const fixture = vi.hoisted(() => ({
   root: `/tmp/wxe-local-api-auth-${process.pid}`,
   storageAvailable: true,
+  skillVersion: '9.9.9',
   contacts: [
     {
       m_nsUsrName: 'wxid_fixture',
@@ -29,7 +31,16 @@ const fixture = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
-  app: { getPath: () => fixture.root },
+  app: {
+    getPath: () => fixture.root,
+    getAppPath: () => fixture.root,
+    getVersion: () => 'test-version',
+    isPackaged: false
+  },
+  shell: {
+    openPath: async () => '',
+    openExternal: async () => undefined
+  },
   safeStorage: {
     isEncryptionAvailable: () => fixture.storageAvailable,
     encryptString: (value: string) => Buffer.from(`encrypted:${value}`, 'utf8'),
@@ -68,7 +79,14 @@ vi.mock('../../src/main/services/agent-hub-service', () => ({
 }))
 
 import { apiTokenStore } from '../../src/main/api-token-store'
-import { apiServer, startHttpServer, type HttpServerHandle } from '../../src/main/http-server'
+import {
+  apiServer,
+  setLocalVoiceTranscriptSnapshotProvider,
+  startHttpServer,
+  type HttpServerHandle
+} from '../../src/main/http-server'
+import type { LocalQueryApiService } from '../../src/main/services/local-query-api-service'
+import { decodeMessageRef } from '../../src/shared/local-query-api'
 import { HttpMediaError } from '../../src/main/http-media-service'
 import {
   buildLocalApiCurlCommand,
@@ -92,7 +110,13 @@ async function startFixtureServer(
 }
 
 describe('Local API authentication', () => {
-  beforeAll(() => fs.ensureDirSync(fixture.root))
+  beforeAll(() => {
+    fs.ensureDirSync(fixture.root)
+    fs.outputFileSync(
+      join(fixture.root, 'docs', 'skill', 'tracememo-reader', 'SKILL.md'),
+      `---\nname: tracememo-reader\nversion: ${fixture.skillVersion}\ndescription: fixture\n---\n\n# TraceMemo Reader fixture\n`
+    )
+  })
 
   beforeEach(() => {
     fixture.storageAvailable = true
@@ -111,7 +135,7 @@ describe('Local API authentication', () => {
     const health = await fetch(`${baseUrl(handle)}/api/v1/health`)
     expect(health.status).toBe(200)
     const healthBody = await health.json()
-    expect(healthBody).toMatchObject({ ok: true, service: 'TraceMemo Reader' })
+    expect(healthBody).toMatchObject({ ok: true, service: 'TraceMemo Reader', version: 'test-version' })
     expect(JSON.stringify(healthBody)).not.toMatch(
       /token|authorization|wxid|databasePath|provider/i
     )
@@ -126,6 +150,104 @@ describe('Local API authentication', () => {
     })
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toMatchObject({ count: 1 })
+  })
+
+  it('advertises the Reader Skill version on health and serves SKILL.md to authenticated agents', async () => {
+    const handle = await startFixtureServer()
+
+    const health = await (await fetch(`${baseUrl(handle)}/api/v1/health`)).json()
+    expect(health).toMatchObject({
+      ok: true,
+      skill: { name: 'tracememo-reader', version: fixture.skillVersion, available: true }
+    })
+
+    const path = `${baseUrl(handle)}/api/v1/skill/tracememo-reader`
+    expect((await fetch(path)).status).toBe(401)
+
+    const response = await fetch(path, { headers: { Authorization: `Bearer ${VALID_TOKEN}` } })
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body).toMatchObject({ name: 'tracememo-reader', version: fixture.skillVersion })
+    expect(body.markdown).toContain(`version: ${fixture.skillVersion}`)
+    expect(body.contentHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(JSON.stringify(body)).not.toMatch(/token|authorization|wxid|databasePath|provider/i)
+  })
+
+  // 外部 Agent 靠 health 上的 skill.version 判断 Skill 是否过期，
+  // 所以首选位置读不到时也必须正常回答（回退到下一个候选），不能整条 500。
+  it('falls back to the next Skill candidate and still answers health', async () => {
+    const handle = await startFixtureServer()
+    const skillPath = join(fixture.root, 'docs', 'skill', 'tracememo-reader', 'SKILL.md')
+    const backup = fs.readFileSync(skillPath, 'utf-8')
+    fs.removeSync(skillPath)
+    try {
+      const response = await fetch(`${baseUrl(handle)}/api/v1/health`)
+      expect(response.status).toBe(200)
+      const body = await response.json()
+      expect(body.ok).toBe(true)
+      expect(body.skill).toMatchObject({ name: 'tracememo-reader', available: true })
+      expect(body.skill.version).toMatch(/^\d+\.\d+\.\d+$/)
+    } finally {
+      fs.outputFileSync(skillPath, backup)
+    }
+  })
+
+  it.each([
+    ['POST', '/api/v1/health', 'GET'],
+    ['PATCH', '/api/v1/current_time', 'GET'],
+    ['POST', '/api/v1/contact', 'GET'],
+    ['POST', '/api/v1/chatroom', 'GET'],
+    ['POST', '/api/v1/recent_chat', 'GET'],
+    ['POST', '/api/v1/chatlog', 'GET'],
+    ['POST', '/api/v1/group_snapshot', 'GET'],
+    ['POST', '/api/v1/resolve', 'GET'],
+    ['POST', '/api/v1/agent/status', 'GET'],
+    ['GET', '/api/v1/report', 'POST'],
+    ['PATCH', '/api/v1/query/capabilities', 'GET'],
+    ['GET', '/api/v1/query/messages', 'POST'],
+    ['POST', '/api/v1/media/image-1', 'GET, HEAD']
+  ])('rejects unsupported methods with Allow: %s', async (method, pathname, allow) => {
+    const handle = await startFixtureServer()
+    const requestId = 'phase1:method-guard'
+    const response = await fetch(`${baseUrl(handle)}${pathname}`, {
+      method,
+      headers: { 'X-Request-Id': requestId }
+    })
+
+    expect(response.status).toBe(405)
+    expect(response.headers.get('allow')).toBe(allow)
+    expect(response.headers.get('x-request-id')).toBe(requestId)
+    await expect(response.json()).resolves.toMatchObject({ requestId })
+  })
+
+  it('rejects oversized JSON request bodies with 413 and a request ID', async () => {
+    const handle = await startFixtureServer()
+    const requestId = 'phase1:body-limit'
+    const response = await fetch(`${baseUrl(handle)}/api/v1/report`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${VALID_TOKEN}`,
+        'Content-Type': 'application/json',
+        'X-Request-Id': requestId
+      },
+      body: 'x'.repeat(1024 * 1024 + 1)
+    })
+
+    expect(response.status).toBe(413)
+    expect(response.headers.get('x-request-id')).toBe(requestId)
+    await expect(response.json()).resolves.toMatchObject({ status: 413, requestId })
+  })
+
+  it('replaces malformed or oversized client request IDs with a server UUID', async () => {
+    const handle = await startFixtureServer()
+    const malformedId = 'x'.repeat(129)
+    const response = await fetch(`${baseUrl(handle)}/api/v1/health`, {
+      headers: { 'X-Request-Id': malformedId }
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('x-request-id')).toMatch(/^[0-9a-f-]{36}$/i)
+    expect(response.headers.get('x-request-id')).not.toBe(malformedId)
   })
 
   it('exposes the query capability catalog only with the existing bearer token', async () => {
@@ -151,7 +273,9 @@ describe('Local API authentication', () => {
     ['POST', '/api/v1/agent/group-report'],
     ['POST', '/api/v1/agent/send'],
     ['GET', '/api/v1/query/capabilities'],
-    ['POST', '/api/v1/query/messages']
+    ['POST', '/api/v1/query/messages'],
+    ['POST', '/api/v1/query/voice-transcribe'],
+    ['GET', '/api/v1/skill/tracememo-reader']
   ])('protects every non-health route: %s %s', async (method, pathname) => {
     const handle = await startFixtureServer()
     const response = await fetch(`${baseUrl(handle)}${pathname}`, {
@@ -181,6 +305,23 @@ describe('Local API authentication', () => {
     expect(JSON.stringify(response.headers)).not.toMatch(/path|token|database/i)
   })
 
+  it('preserves authenticated HEAD requests for media without returning a body', async () => {
+    const provider = vi.fn(async () => ({
+      buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      mimeType: 'image/jpeg'
+    }))
+    const handle = await startFixtureServer(() => VALID_TOKEN, provider)
+    const response = await fetch(`${baseUrl(handle)}/api/v1/media/message-1`, {
+      method: 'HEAD',
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` }
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-length')).toBe('4')
+    expect((await response.arrayBuffer()).byteLength).toBe(0)
+    expect(provider).toHaveBeenCalledOnce()
+  })
+
   it('adds media metadata to chatlog while redacting image keys', async () => {
     const handle = await startFixtureServer()
     const response = await fetch(`${baseUrl(handle)}/api/v1/chatlog?talker=测试联系人`, {
@@ -197,6 +338,65 @@ describe('Local API authentication', () => {
       }
     })
     expect(body.messages[0].contentData).not.toHaveProperty('aeskey')
+  })
+
+  it('adds cached voice transcripts and a messageRef to chatlog voice messages', async () => {
+    const voice = {
+      id: '41',
+      type: '语音',
+      content: '[语音消息]',
+      sessionId: 'wxid_fixture',
+      localId: 41,
+      createTime: 1_785_895_200
+    }
+    fixture.chatlogMessages.push(voice as never)
+    const snapshot = vi.fn(() => ({ state: 'transcribed' as const, transcript: '合成的转写文本' }))
+    setLocalVoiceTranscriptSnapshotProvider(snapshot)
+    try {
+      const handle = await startFixtureServer()
+      const response = await fetch(`${baseUrl(handle)}/api/v1/chatlog?talker=fixture`, {
+        headers: { Authorization: `Bearer ${VALID_TOKEN}` }
+      })
+      const body = await response.json()
+      expect(body.messages[0]).not.toHaveProperty('voiceTranscriptState')
+      expect(body.messages[1]).toMatchObject({
+        id: '41',
+        voiceTranscript: '合成的转写文本',
+        voiceTranscriptState: 'transcribed'
+      })
+      expect(decodeMessageRef(body.messages[1].messageRef)).toEqual({
+        conversationId: 'fixture-md5',
+        messageId: '41'
+      })
+      expect(snapshot).toHaveBeenCalledWith({
+        sessionId: 'wxid_fixture',
+        localId: 41,
+        createTime: 1_785_895_200,
+        svrId: undefined
+      })
+    } finally {
+      setLocalVoiceTranscriptSnapshotProvider(undefined)
+      fixture.chatlogMessages.pop()
+    }
+  })
+
+  it('maps a full voice transcription queue to 429 with Retry-After', async () => {
+    const queryApiService = {
+      transcribeVoice: vi.fn(async () => ({ status: 'busy', retryAfterSeconds: 12, hint: '队列已满' }))
+    } as unknown as LocalQueryApiService
+    const handle = await startHttpServer('127.0.0.1', 0, {
+      tokenProvider: () => VALID_TOKEN,
+      queryApiService
+    })
+    handles.push(handle)
+    const response = await fetch(`${baseUrl(handle)}/api/v1/query/voice-transcribe`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${VALID_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messageRefs: ['ref'] })
+    })
+    expect(response.status).toBe(429)
+    expect(response.headers.get('retry-after')).toBe('12')
+    await expect(response.json()).resolves.toMatchObject({ status: 'busy', retryAfterSeconds: 12 })
   })
 
   it('serves opaque media handles while preserving the chatlog message id', async () => {
@@ -265,9 +465,10 @@ describe('Local API authentication', () => {
         headers: { Authorization: authorization }
       })
       expect(response.status).toBe(401)
-      await expect(response.json()).resolves.toEqual({
+      await expect(response.json()).resolves.toMatchObject({
         error: 'unauthorized',
-        message: 'Valid API token required'
+        message: 'Valid API token required',
+        requestId: expect.any(String)
       })
     }
   )
@@ -344,7 +545,9 @@ describe('Local API authentication', () => {
     expect(response.headers.get('access-control-allow-origin')).toBe(origin)
     expect(response.headers.get('access-control-allow-methods')).toContain('PATCH')
     expect(response.headers.get('access-control-allow-methods')).toContain('DELETE')
-    expect(response.headers.get('access-control-allow-headers')).toBe('Content-Type, Authorization')
+    expect(response.headers.get('access-control-allow-headers')).toBe(
+      'Content-Type, Authorization, X-Request-Id'
+    )
   })
 
   it.each([

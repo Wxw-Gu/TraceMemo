@@ -546,6 +546,13 @@
   }
 }
 
+.settings-option-hint {
+  margin: 12px 0 0;
+  color: var(--wxex-text-muted);
+  font-size: 10px;
+  line-height: 15px;
+}
+
 .settings-toggle-list {
   display: grid;
   gap: 0;

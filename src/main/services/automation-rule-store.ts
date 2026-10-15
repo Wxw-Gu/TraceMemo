@@ -50,6 +50,13 @@ const LEGACY_SCHEDULED_TASKS_FILE = 'tasks.json'
 const SCHEDULED_MIGRATION_BACKUP_FILE = 'scheduled-report-migration-backup.json'
 const CURRENT_VERSION = 4
 
+export class AutomationRulePersistenceError extends Error {
+  constructor() {
+    super('自动化规则保存失败')
+    this.name = 'AutomationRulePersistenceError'
+  }
+}
+
 interface StoredRules {
   version: number
   /** 内置「@我生成日报」是否已经播种过。**即使随后被删除也保持 true**。 */
@@ -231,7 +238,8 @@ export class AutomationRuleStore {
     this.legacyConversationResolver = resolver
     if (!this.loaded) return
     if (this.state.scheduledReportMigrated) return
-    if (this.runScheduledReportMigration(this.state)) this.persist()
+    const next = structuredClone(this.state)
+    if (this.runScheduledReportMigration(next)) this.commitState(next)
   }
 
   /** 旧定时日报迁移是否仍在等待解析器（仅用于启动日志与测试断言）。 */
@@ -274,8 +282,7 @@ export class AutomationRuleStore {
       createdAt: timestamp,
       updatedAt: timestamp
     }
-    this.state.rules = [...this.state.rules, rule]
-    this.persist()
+    this.commitRules([...this.state.rules, rule])
     return structuredClone(rule)
   }
 
@@ -316,8 +323,7 @@ export class AutomationRuleStore {
     } else {
       delete rule.leaveNotification
     }
-    this.state.rules = this.state.rules.map((item, at) => (at === index ? rule : item))
-    this.persist()
+    this.commitRules(this.state.rules.map((item, at) => (at === index ? rule : item)))
     return structuredClone(rule)
   }
 
@@ -346,8 +352,7 @@ export class AutomationRuleStore {
       createdAt: timestamp,
       updatedAt: timestamp
     }
-    this.state.rules = [...this.state.rules, rule]
-    this.persist()
+    this.commitRules([...this.state.rules, rule])
     return structuredClone(rule)
   }
 
@@ -355,9 +360,9 @@ export class AutomationRuleStore {
     this.ensureLoaded()
     const key = String(id || '').trim()
     const before = this.state.rules.length
-    this.state.rules = this.state.rules.filter((rule) => rule.id !== key)
-    if (this.state.rules.length === before) return false
-    this.persist()
+    const rules = this.state.rules.filter((rule) => rule.id !== key)
+    if (rules.length === before) return false
+    this.commitRules(rules)
     return true
   }
 
@@ -394,8 +399,7 @@ export class AutomationRuleStore {
       },
       updatedAt: this.now()
     }
-    this.state.rules = this.state.rules.map((item, at) => (at === index ? next : item))
-    this.persist()
+    this.commitRules(this.state.rules.map((item, at) => (at === index ? next : item)))
     return structuredClone(next)
   }
 
@@ -428,7 +432,11 @@ export class AutomationRuleStore {
     this.runScheduledReportMigration(stored)
     stored.version = CURRENT_VERSION
     this.state = stored
-    this.persist()
+    try {
+      this.persist()
+    } catch {
+      // Keep the in-memory defaults available; later writes report persistence failures.
+    }
   }
 
   /** 旧退群通知配置 → 内置退群通知规则。**只跑一次**，且先备份旧配置。 */
@@ -641,6 +649,22 @@ export class AutomationRuleStore {
       console.warn(
         `[Automation] 保存规则失败: ${error instanceof Error ? error.message : String(error)}`
       )
+      throw new AutomationRulePersistenceError()
+    }
+  }
+
+  private commitRules(rules: AutomationRule[]): void {
+    this.commitState({ ...this.state, rules })
+  }
+
+  private commitState(next: StoredRules): void {
+    const previous = this.state
+    this.state = next
+    try {
+      this.persist()
+    } catch (error) {
+      this.state = previous
+      throw error
     }
   }
 }

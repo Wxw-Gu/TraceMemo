@@ -416,8 +416,9 @@
   border: 1px solid #929a96;
   border-radius: 50%;
   color: #929a96;
-  font-size: 11px;
-  font-weight: 700;
+}
+.settings-diagnostic-icon svg {
+  display: block;
 }
 .settings-diagnostic-icon.success {
   border-color: #2e8b68;

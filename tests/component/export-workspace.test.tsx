@@ -25,6 +25,7 @@ const previewMessage = (contact: Contact): Message => ({
 
 describe('ExportWorkspace multi-chat selection', () => {
   beforeEach(() => {
+    localStorage.clear()
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
@@ -41,9 +42,9 @@ describe('ExportWorkspace multi-chat selection', () => {
   const renderWorkspace = (
     onStartExport = vi.fn(async () => ({ success: false })),
     exportTasks: ExportTaskRecord[] = []
-  ): { loadPreviewMessages: ReturnType<typeof vi.fn> } => {
+  ): { loadPreviewMessages: ReturnType<typeof vi.fn>; unmount: () => void } => {
     const loadPreviewMessages = vi.fn(async (contact: Contact) => [previewMessage(contact)])
-    render(
+    const workspace = render(
       <ExportWorkspace
         contacts={contacts}
         initialContact={contacts[0]}
@@ -56,7 +57,7 @@ describe('ExportWorkspace multi-chat selection', () => {
         onCancelExport={vi.fn(async () => undefined)}
       />
     )
-    return { loadPreviewMessages }
+    return { loadPreviewMessages, unmount: workspace.unmount }
   }
 
   it('defaults to one chat, forces HTML after adding another, merges the preview, and resets locally', async () => {
@@ -220,6 +221,93 @@ describe('ExportWorkspace multi-chat selection', () => {
       startTime: Math.floor(new Date('2026-08-01T09:30').getTime() / 1000),
       endTime: Math.floor(new Date('2026-08-02T18:45').getTime() / 1000)
     })
+  })
+
+  it('restores export preferences after leaving and reopening the workspace', async () => {
+    const { unmount } = renderWorkspace()
+
+    await userEvent.click(
+      within(screen.getByRole('radiogroup', { name: '导出格式' })).getByRole('radio', {
+        name: /HTML/
+      })
+    )
+    await userEvent.click(
+      within(screen.getByRole('radiogroup', { name: '时间范围' })).getByRole('radio', {
+        name: '自定义时间'
+      })
+    )
+    await userEvent.type(screen.getByLabelText('开始时间'), '2026-08-01T09:30')
+    await userEvent.type(screen.getByLabelText('结束时间'), '2026-08-02T18:45')
+    await userEvent.click(screen.getByRole('checkbox', { name: '文字' }))
+    await userEvent.click(screen.getByRole('checkbox', { name: '语音' }))
+    await userEvent.click(
+      within(screen.getByRole('radiogroup', { name: '消息显示名称' })).getByRole('radio', {
+        name: '微信名'
+      })
+    )
+    await userEvent.click(
+      within(screen.getByRole('radiogroup', { name: 'HTML 打包方式' })).getByRole('radio', {
+        name: 'HTML 资源包并压缩为 ZIP'
+      })
+    )
+    await userEvent.click(screen.getByRole('checkbox', { name: '优先导出原图' }))
+    await userEvent.type(screen.getByLabelText('文件名称'), '持续更新的聊天档案')
+    await userEvent.click(screen.getByRole('button', { name: '选择位置' }))
+    expect(await screen.findByText('/fixture/export/持续更新的聊天档案.zip')).toBeVisible()
+
+    unmount()
+    renderWorkspace()
+
+    expect(
+      within(screen.getByRole('radiogroup', { name: '导出格式' })).getByRole('radio', {
+        name: /HTML/
+      })
+    ).toBeChecked()
+    expect(
+      within(screen.getByRole('radiogroup', { name: '时间范围' })).getByRole('radio', {
+        name: '自定义时间'
+      })
+    ).toBeChecked()
+    expect(screen.getByLabelText('开始时间')).toHaveValue('2026-08-01T09:30')
+    expect(screen.getByLabelText('结束时间')).toHaveValue('2026-08-02T18:45')
+    expect(screen.getByRole('checkbox', { name: '文字' })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: '语音' })).toBeChecked()
+    expect(
+      within(screen.getByRole('radiogroup', { name: '消息显示名称' })).getByRole('radio', {
+        name: '微信名'
+      })
+    ).toBeChecked()
+    expect(
+      within(screen.getByRole('radiogroup', { name: 'HTML 打包方式' })).getByRole('radio', {
+        name: 'HTML 资源包并压缩为 ZIP'
+      })
+    ).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: '优先导出原图' })).not.toBeChecked()
+    expect(screen.getByLabelText('文件名称')).toHaveValue('持续更新的聊天档案')
+    expect(screen.getByText('/fixture/export/持续更新的聊天档案.zip')).toBeVisible()
+  })
+
+  it('preserves the selected range while switching to and from all export', async () => {
+    renderWorkspace()
+
+    await userEvent.click(
+      within(screen.getByRole('radiogroup', { name: '时间范围' })).getByRole('radio', {
+        name: '最近 7 天'
+      })
+    )
+    await userEvent.click(screen.getByRole('button', { name: /全部导出/ }))
+    expect(
+      within(screen.getByRole('radiogroup', { name: '时间范围' })).getByRole('radio', {
+        name: '全部时间'
+      })
+    ).toBeChecked()
+
+    await userEvent.click(screen.getByRole('button', { name: /聊天 A/ }))
+    expect(
+      within(screen.getByRole('radiogroup', { name: '时间范围' })).getByRole('radio', {
+        name: '最近 7 天'
+      })
+    ).toBeChecked()
   })
 })
 

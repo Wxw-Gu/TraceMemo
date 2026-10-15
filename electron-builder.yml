@@ -35,6 +35,7 @@ extraResources:
     filter:
       - '**/*'
       - '!runtime/darwin-arm64/**'
+      - '!wcdb/**/tm-wcdb-config-helper*'
   - from: docs/skill/tracememo-reader
     to: skill/tracememo-reader
     filter:

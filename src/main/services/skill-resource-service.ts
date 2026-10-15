@@ -1,5 +1,6 @@
+import { createHash } from 'crypto'
 import { app, shell } from 'electron'
-import { existsSync, promises as fs } from 'fs'
+import { existsSync, readFileSync, promises as fs, statSync } from 'fs'
 import { dirname, join } from 'path'
 import { isPackagedRuntime } from '../runtime-mode'
 
@@ -8,7 +9,8 @@ const SKILL_RELATIVE_PATHS = [
   join('skill', 'wechatexplorer-reader', 'SKILL.md')
 ]
 const GITHUB_URL = 'https://github.com/Wxw-Gu/TraceMemo/tree/main/docs/skill/tracememo-reader'
-const SKILL_VERSION = 'v1.2'
+
+export const READER_SKILL_NAME = 'tracememo-reader'
 
 type SkillResourceSource = 'development' | 'bundled'
 
@@ -27,12 +29,35 @@ interface SkillCandidate {
 
 export interface SkillResourceStatus {
   available: boolean
+  name?: string
   version?: string
+  contentHash?: string
   filePath?: string
   directoryPath?: string
   source: SkillResourceSource
   githubUrl: string
   error?: string
+}
+
+export interface SkillDocument {
+  name: string
+  version?: string
+  contentHash: string
+  modifiedAt: string
+  markdown: string
+  filePath: string
+}
+
+export interface SkillFrontmatter {
+  name?: string
+  version?: string
+}
+
+interface SkillDocumentCacheEntry {
+  filePath: string
+  mtimeMs: number
+  size: number
+  document: SkillDocument
 }
 
 function currentEnvironment(): SkillPathEnvironment {
@@ -52,6 +77,81 @@ function uniqueCandidates(candidates: SkillCandidate[]): SkillCandidate[] {
     seen.add(candidate.path)
     return true
   })
+}
+
+/**
+ * 版本号只认 SKILL.md frontmatter 的 `version`，不再维护源码常量：
+ * 常量与文档分离必然漂移，曾经出现过文档改了两轮而版本号纹丝不动的情况。
+ */
+export function parseSkillFrontmatter(content: string): SkillFrontmatter {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)
+  if (!match) return {}
+  const block = match[1]
+  if (!block) return {}
+
+  const frontmatter: SkillFrontmatter = {}
+  for (const rawLine of block.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const separator = line.indexOf(':')
+    if (separator <= 0) continue
+    const key = line.slice(0, separator).trim().toLowerCase()
+    const value = line
+      .slice(separator + 1)
+      .trim()
+      .replace(/^["']/, '')
+      .replace(/["']$/, '')
+    if (!value) continue
+    if (key === 'name') frontmatter.name = value
+    else if (key === 'version') frontmatter.version = value
+  }
+  return frontmatter
+}
+
+function hashSkillContent(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex')
+}
+
+let cachedDocument: SkillDocumentCacheEntry | null = null
+
+/**
+ * 同步读取 Skill 文档。`/health` 属于高频接口，因此按 mtime + size 缓存，
+ * 文件被替换（版本升级）后缓存自动失效。
+ */
+export function readSkillDocument(filePath: string): SkillDocument | null {
+  try {
+    const stats = statSync(filePath)
+    if (
+      cachedDocument &&
+      cachedDocument.filePath === filePath &&
+      cachedDocument.mtimeMs === stats.mtimeMs &&
+      cachedDocument.size === stats.size
+    ) {
+      return cachedDocument.document
+    }
+
+    const markdown = readFileSync(filePath, 'utf-8')
+    const frontmatter = parseSkillFrontmatter(markdown)
+    const document: SkillDocument = {
+      name: frontmatter.name || READER_SKILL_NAME,
+      contentHash: hashSkillContent(markdown),
+      modifiedAt: stats.mtime.toISOString(),
+      markdown,
+      filePath
+    }
+    if (frontmatter.version) document.version = frontmatter.version
+
+    cachedDocument = {
+      filePath,
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+      document
+    }
+    return document
+  } catch {
+    cachedDocument = null
+    return null
+  }
 }
 
 export function getSkillCandidates(environment?: SkillPathEnvironment): SkillCandidate[] {
@@ -82,26 +182,40 @@ export function getSkillCandidates(environment?: SkillPathEnvironment): SkillCan
 export function resolveSkillResourceStatus(
   environment?: SkillPathEnvironment
 ): SkillResourceStatus {
-  const candidates = getSkillCandidates(environment)
-  const resolved = candidates.find((candidate) => existsSync(candidate.path))
-  const filePath = resolved?.path || candidates[0].path
-  const source = resolved?.source || candidates[0].source
-  const directoryPath = dirname(filePath)
-  if (!resolved) {
-    return {
-      available: false,
-      source,
-      githubUrl: GITHUB_URL,
-      error: `未找到 TraceMemo Reader Skill 文件（已检查：${candidates.map((item) => item.path).join('；')}）`
+  let candidates: SkillCandidate[] = []
+  let source: SkillResourceSource = environment?.packaged ? 'bundled' : 'development'
+  try {
+    candidates = getSkillCandidates(environment)
+    const resolved = candidates.find((candidate) => existsSync(candidate.path))
+    if (resolved) {
+      const filePath = resolved.path
+      const status: SkillResourceStatus = {
+        available: true,
+        filePath,
+        directoryPath: dirname(filePath),
+        source: resolved.source,
+        githubUrl: GITHUB_URL
+      }
+      const document = readSkillDocument(filePath)
+      if (document) {
+        status.name = document.name
+        status.contentHash = document.contentHash
+        if (document.version) status.version = document.version
+      }
+      return status
     }
+    const fallback = candidates[0]
+    if (fallback) source = fallback.source
+  } catch {
+    // 环境探测失败（例如非 Electron 进程）时退化成“不可用”：
+    // /health 是外部 Agent 的自检入口，不能因为 Skill 读不到就整条挂掉。
   }
+
   return {
-    available: true,
-    version: SKILL_VERSION,
-    filePath,
-    directoryPath,
+    available: false,
     source,
-    githubUrl: GITHUB_URL
+    githubUrl: GITHUB_URL,
+    error: `未找到 TraceMemo Reader Skill 文件（已检查：${candidates.map((item) => item.path).join('；')}）`
   }
 }
 
@@ -111,6 +225,12 @@ function getStatus(): SkillResourceStatus {
 
 export const skillResourceService = {
   getStatus,
+
+  getDocument(): SkillDocument | null {
+    const status = this.getStatus()
+    if (!status.available || !status.filePath) return null
+    return readSkillDocument(status.filePath)
+  },
 
   async read(): Promise<{ success: boolean; content?: string; error?: string }> {
     const status = this.getStatus()

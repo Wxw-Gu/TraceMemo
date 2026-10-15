@@ -6,6 +6,7 @@ import { createRequire } from 'module'
 import { createConnection, Socket } from 'net'
 import { getResourceRoots } from './resource-paths'
 import { wcdbDebugLog } from './wcdb-debug'
+import { looksLikePermissionDenied, PathAccessDeniedError } from './services/path-access-probe'
 import type { ImageMessageCountProbe } from '../shared/image-text-index'
 import { imageTextWindowToSeconds } from '../shared/image-text-index'
 
@@ -54,6 +55,7 @@ export interface WindowsNativePathBridgeOptions {
 type Wcdb4MessageStore = {
   tableName: string
   dbPath: string
+  senderTableName?: string
 }
 
 export interface Wcdb4GroupMember {
@@ -457,6 +459,41 @@ export function parseMonitorEvent(rawPayload: string): Wcdb4MonitorEvent {
   }
 }
 
+/** 老版「防撤回保护」在某个消息分片上留下的残留。 */
+export interface LegacyRecallResidueShard {
+  /** 分片文件名，如 `message_0.db`（不含会话信息，可以进日志）。 */
+  shard: string
+  dbPath: string
+  /** 本应用自己装的抓取触发器：`_wxe_capture_<sha1(表名)[0:16]>` */
+  triggers: string[]
+  /** 老日志表：`_wxe_recall_journal_<sha1(表名)[0:16]>` */
+  journals: string[]
+}
+
+export interface LegacyRecallResidueReport {
+  found: boolean
+  shards: LegacyRecallResidueShard[]
+  triggerCount: number
+  journalCount: number
+  /**
+   * 行为分类：`blocking*` 带 `RAISE(IGNORE)`、会吃掉微信写库动作；
+   * `passive` 只复制行，不改变微信行为。
+   */
+  blockingDeleteCount: number
+  blockingInsertCount: number
+  passiveCount: number
+}
+
+/**
+ * 老版防撤回保护（recall journal）的命名规则，安装侧与扫描侧共用。
+ */
+const LEGACY_RECALL_TRIGGER_PREFIX = '_wxe_capture_'
+const LEGACY_RECALL_JOURNAL_PREFIX = '_wxe_recall_journal_'
+/**
+ * 触发器体里必须同时出现这两个列名才算「本应用装的」（安装时写入的私有标记）。
+ */
+const LEGACY_RECALL_TRIGGER_MARKERS = ['_wxe_source_table', '_wxe_captured_at'] as const
+
 export class Wcdb4Client {
   static readonly defaultRoot = Wcdb4Client.findExistingDefaultRoot()
 
@@ -525,6 +562,16 @@ export class Wcdb4Client {
   private wcdbGetGroupMembersBatch:
     | ((handle: number, chatroomIdsJson: string, outJson: WcdbVoidOut) => number)
     | null = null
+  // 微信消息插入开关（native extension，不属于最初 27 个绑定）
+  private wcdbMsgInsertSetSwitch:
+    | ((handle: number, dbPath: string, name: string, enabled: number) => number)
+    | null = null
+  private wcdbMsgInsertGetSwitches:
+    | ((handle: number, dbPath: string, outJson: WcdbVoidOut) => number)
+    | null = null
+  private wcdbMsgInsertListShardCatalog:
+    | ((handle: number, outJson: WcdbVoidOut) => number)
+    | null = null
   private wcdbGetGroupNicknames:
     | ((handle: number, chatroomId: string, outJson: WcdbVoidOut) => number)
     | null = null
@@ -585,6 +632,18 @@ export class Wcdb4Client {
     this.sessionDbPath = this.findSessionDb()
 
     if (!this.sessionDbPath) {
+      /*
+       * 先追问一次「到底是文件缺失，还是读不了」。
+       *
+       * `findSessionDb()` 依赖 `fs.existsSync()`，而它对 EPERM / EACCES 同样返回
+       * `false` —— 权限被拒会被静默降级成"文件不存在"。macOS 上未授予完全磁盘访问
+       * 权限时走的正是这条路径：数据目录其实是完整的。此时若照旧抛「未找到」，
+       * 用户会去查路径和重装，而真正该做的是去系统设置授权。
+       */
+      const expected = path.join(this.dbStoragePath, 'session', 'session.db')
+      if (looksLikePermissionDenied(expected) || looksLikePermissionDenied(this.dbStoragePath)) {
+        throw new PathAccessDeniedError(this.dbStoragePath)
+      }
       throw new Error(`未找到微信 4.0 session.db: ${this.dbStoragePath}`)
     }
   }
@@ -598,6 +657,8 @@ export class Wcdb4Client {
       return target
     }
     if (!fs.existsSync(target)) {
+      // 同 session.db：existsSync 分不出"不存在"与"读不了"，追问一次再下结论。
+      if (looksLikePermissionDenied(target)) throw new PathAccessDeniedError(target)
       throw new Error(`未找到微信 4.0 数据目录: ${target}`)
     }
     const candidates = fs
@@ -614,6 +675,8 @@ export class Wcdb4Client {
   static findLatestAccountRoot(): string {
     const root = Wcdb4Client.defaultRoot
     if (!fs.existsSync(root)) {
+      // 默认根目录读不了同样要区分：macOS 上这就是"没授权"的表现，不是"没装微信"。
+      if (looksLikePermissionDenied(root)) throw new PathAccessDeniedError(root)
       throw new Error(`未找到微信 4.0 数据目录: ${root}`)
     }
 
@@ -1180,7 +1243,12 @@ export class Wcdb4Client {
     try {
       const cursorMessages = this.getMessagesByCursor(username, startTime, endTime, maxRows)
       if (cursorMessages && cursorMessages.length > 0) {
-        const recoveredMessages = this.readRecallJournal(username, startTime, endTime)
+        /*
+         * 老 recall journal 的合并必须跟开关联动：无条件合并会让「关掉防撤回」失效。
+         */
+        const recoveredMessages = this.recallJournalEnabled
+          ? this.readRecallJournal(username, startTime, endTime)
+          : []
         const mergedMessages = this.mergeMessageRows(cursorMessages, recoveredMessages, maxRows)
         console.log(
           `[WCDB4] getMessages cursor ok username=${username} rows=${mergedMessages.length} recovered=${recoveredMessages.length} cost=${Date.now() - startedAt}ms`
@@ -1623,7 +1691,7 @@ export class Wcdb4Client {
       try {
         const order = limit ? 'DESC' : 'ASC'
         const rowLimit = limit || 5000
-        const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
+        const sql = `${this.messageTableSelect(table)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
         const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
           this.wcdbExecQuery!(handle, 'message', table.dbPath, sql, outJson)
         )
@@ -1699,7 +1767,7 @@ export class Wcdb4Client {
         // `local_id` 参与排序：`create_time` 同秒的消息需要一个稳定次序，
         // 否则多次读取的行序可能不同，调用方无法做稳定游标。
         const direction = options.order === 'desc' ? 'DESC' : 'ASC'
-        const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)} WHERE ${where} ORDER BY "create_time" ${direction}, "local_id" ${direction} LIMIT ${limit}`
+        const sql = `${this.messageTableSelect(table)} WHERE ${where} ORDER BY "create_time" ${direction}, "local_id" ${direction} LIMIT ${limit}`
         const queryStartedAt = Date.now()
         const rows = await this.callJsonAsync<Record<string, unknown>[]>(
           this.wcdbExecQuery as unknown as KoffiAsyncFunction,
@@ -1771,7 +1839,7 @@ export class Wcdb4Client {
     let successfulTables = 0
     for (const table of tables) {
       try {
-        const sql = `SELECT * FROM ${this.quoteSqlIdentifier(table.tableName)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
+        const sql = `${this.messageTableSelect(table)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
         const queryStartedAt = Date.now()
         const rows = await this.callJsonAsync<Record<string, unknown>[]>(
           this.wcdbExecQuery as unknown as KoffiAsyncFunction,
@@ -1801,6 +1869,122 @@ export class Wcdb4Client {
       `[${requestId}] WCDB table scan end rows=${result.length} cost=${Date.now() - startedAt}ms`
     )
     return result
+  }
+
+  /**
+   * 列出账号目录下所有消息分片路径（message_<n>.db）。
+   *
+   * 供「微信消息插入开关」这类**按分片存放**的状态遍历使用。
+   * 只认 message_<数字>.db，不包含 biz_message_* / media_*。
+   */
+  listMessageShardPaths(): string[] {
+    const messageRoot = path.join(this.dbStoragePath, 'message')
+    if (!fs.existsSync(messageRoot)) return []
+    return fs
+      .readdirSync(messageRoot)
+      .filter((name) => /^message_\d+\.db$/.test(name))
+      .sort()
+      .map((name) => path.join(messageRoot, name))
+  }
+
+  /**
+   * 读取某个消息分片上的「微信消息插入开关」。
+   *
+   * 开关按消息分片存放（native 侧的 _tm_config 表），所以调用方要先把分片路径定下来。
+   * 返回形如 { recall_notice: boolean, group_exit_notice: boolean }。
+   */
+  getMsgInsertSwitches(dbPath: string): {
+    success: boolean
+    switches?: Record<string, boolean>
+    error?: string
+  } {
+    if (!this.wcdbMsgInsertGetSwitches) {
+      return { success: false, error: '当前 WCDB 服务不支持微信消息插入开关' }
+    }
+    try {
+      const switches = this.callJson<Record<string, boolean>>((handle, outJson) =>
+        this.wcdbMsgInsertGetSwitches!(handle, dbPath, outJson)
+      )
+      return { success: true, switches }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /**
+   * 设置某个消息分片上的「微信消息插入开关」。
+   *
+   * name 只接受 recall_notice / group_exit_notice（native 侧白名单）。
+   * 写入走 native 单独维护的可写连接，只读查询链路不受影响。
+   */
+  setMsgInsertSwitch(
+    dbPath: string,
+    name: string,
+    enabled: boolean
+  ): { success: boolean; error?: string } {
+    if (!this.wcdbMsgInsertSetSwitch) {
+      return { success: false, error: '当前 WCDB 服务不支持微信消息插入开关' }
+    }
+    try {
+      const handle = this.ensureHandle()
+      const rc = this.wcdbMsgInsertSetSwitch(handle, dbPath, name, enabled ? 1 : 0)
+      if (rc !== 0) return { success: false, error: `返回码 ${rc}` }
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /**
+   * 读取「微信消息插入规则」的分片目录（只读）。
+   *
+   * 每个分片只跑两条查询（表清单 + 规则清单），拿回来之后调用方可以在本地用
+   * md5(roomId) 匹配出「每个会话落在哪些分片、规则齐不齐」。这样即使会话很多，
+   * 判断全部会话的状态也只是一次目录读取，不需要按会话逐个查库。
+   */
+  listMsgInsertShardCatalog(): {
+    success: boolean
+    catalog?: {
+      shardCount: number
+      shards: Array<{
+        shard: string
+        dbPath: string
+        configTable: boolean
+        storeTables: { capture: boolean; names: boolean; queue: boolean }
+        tables: string[]
+        rules: Array<{ name: string; table: string }>
+      }>
+    }
+    error?: string
+  } {
+    if (!this.wcdbMsgInsertListShardCatalog) {
+      return { success: false, error: '当前 WCDB 服务不支持消息插入规则目录' }
+    }
+    try {
+      const catalog = this.callJson<{
+        shardCount: number
+        shards: Array<{
+          shard: string
+          dbPath: string
+          configTable: boolean
+          storeTables: { capture: boolean; names: boolean; queue: boolean }
+          tables: string[]
+          rules: Array<{ name: string; table: string }>
+        }>
+      }>((handle, outJson) => this.wcdbMsgInsertListShardCatalog!(handle, outJson))
+      return { success: true, catalog }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /**
+   * 老「防撤回保护」（recall journal）是否活动。只影响读取路径，默认 false。
+   */
+  private recallJournalEnabled = false
+
+  setRecallJournalEnabled(enabled: boolean): void {
+    this.recallJournalEnabled = enabled
   }
 
   installRecallJournal(usernames: string[]): { installed: number; failed: number } {
@@ -1847,7 +2031,7 @@ export class Wcdb4Client {
         if (!username.startsWith('gh_')) throw error
       }
     }
-    return stores.length > 0 ? stores : this.listBizMessageStores(username)
+    return stores.length > 0 ? stores : this.listFallbackMessageStores(username)
   }
 
   private async listMessageStoresAsync(username: string): Promise<Wcdb4MessageStore[]> {
@@ -1863,7 +2047,7 @@ export class Wcdb4Client {
         if (!username.startsWith('gh_')) throw error
       }
     }
-    return stores.length > 0 ? stores : this.listBizMessageStoresAsync(username)
+    return stores.length > 0 ? stores : this.listFallbackMessageStoresAsync(username)
   }
 
   private parseMessageStores(rows: Record<string, unknown>[]): Wcdb4MessageStore[] {
@@ -1875,12 +2059,17 @@ export class Wcdb4Client {
       .filter((row) => row.tableName && row.dbPath)
   }
 
-  private getBizMessageDatabasePaths(): string[] {
+  private getMessageDatabasePaths(username: string): string[] {
+    // Native shard discovery can return no stores on Windows even when SQL reads work.
+    // Enumerate only canonical databases; sync-conflict copies are not message shards.
     const messageRoot = path.join(this.dbStoragePath, 'message')
+    const pattern = username.startsWith('gh_')
+      ? /^biz_message(?:_\d+)?\.db$/i
+      : /^message(?:_\d+)?\.db$/i
     try {
       return fs
         .readdirSync(messageRoot)
-        .filter((name) => /^biz_message(?:_\d+)?\.db$/i.test(name))
+        .filter((name) => pattern.test(name))
         .sort()
         .map((name) => path.join(messageRoot, name))
     } catch {
@@ -1888,49 +2077,69 @@ export class Wcdb4Client {
     }
   }
 
-  private listBizMessageStores(username: string): Wcdb4MessageStore[] {
-    if (!this.wcdbExecQuery || !username.startsWith('gh_')) return []
+  private listFallbackMessageStores(username: string): Wcdb4MessageStore[] {
+    if (!this.wcdbExecQuery) return []
     const tableName = `Msg_${this.md5(username)}`
     const escapedTableName = tableName.replace(/'/g, "''")
     const stores: Wcdb4MessageStore[] = []
-    for (const dbPath of this.getBizMessageDatabasePaths()) {
+    for (const dbPath of this.getMessageDatabasePaths(username)) {
       try {
         const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
           this.wcdbExecQuery!(
             handle,
             'message',
             dbPath,
-            `SELECT name FROM sqlite_master WHERE type='table' AND name='${escapedTableName}'`,
+            `SELECT name FROM sqlite_master WHERE type='table' AND (name='${escapedTableName}' OR name LIKE 'Name2Id%') ORDER BY name DESC`,
             outJson
           )
         )
-        if (Array.isArray(rows) && rows.length > 0) stores.push({ tableName, dbPath })
+        if (Array.isArray(rows) && rows.some((row) => row.name === tableName)) {
+          const senderTableName = rows.find((row) => /^Name2Id/i.test(String(row.name)))?.name
+          stores.push({
+            tableName,
+            dbPath,
+            ...(senderTableName ? { senderTableName: String(senderTableName) } : {})
+          })
+        }
       } catch {
-        // Older biz shards may be absent or use a different key; continue scanning.
+        // A shard may use a different key; continue checking the other databases.
       }
     }
     return stores
   }
 
-  private async listBizMessageStoresAsync(username: string): Promise<Wcdb4MessageStore[]> {
-    if (!this.wcdbExecQuery || !username.startsWith('gh_')) return []
+  private async listFallbackMessageStoresAsync(username: string): Promise<Wcdb4MessageStore[]> {
+    if (!this.wcdbExecQuery) return []
     const tableName = `Msg_${this.md5(username)}`
     const escapedTableName = tableName.replace(/'/g, "''")
     const stores: Wcdb4MessageStore[] = []
-    for (const dbPath of this.getBizMessageDatabasePaths()) {
+    for (const dbPath of this.getMessageDatabasePaths(username)) {
       try {
         const rows = await this.callJsonAsync<Record<string, unknown>[]>(
           this.wcdbExecQuery as unknown as KoffiAsyncFunction,
           'message',
           dbPath,
-          `SELECT name FROM sqlite_master WHERE type='table' AND name='${escapedTableName}'`
+          `SELECT name FROM sqlite_master WHERE type='table' AND (name='${escapedTableName}' OR name LIKE 'Name2Id%') ORDER BY name DESC`
         )
-        if (Array.isArray(rows) && rows.length > 0) stores.push({ tableName, dbPath })
+        if (Array.isArray(rows) && rows.some((row) => row.name === tableName)) {
+          const senderTableName = rows.find((row) => /^Name2Id/i.test(String(row.name)))?.name
+          stores.push({
+            tableName,
+            dbPath,
+            ...(senderTableName ? { senderTableName: String(senderTableName) } : {})
+          })
+        }
       } catch {
-        // Older biz shards may be absent or use a different key; continue scanning.
+        // A shard may use a different key; continue checking the other databases.
       }
     }
     return stores
+  }
+
+  private messageTableSelect(store: Wcdb4MessageStore): string {
+    const table = this.quoteSqlIdentifier(store.tableName)
+    if (!store.senderTableName) return `SELECT * FROM ${table}`
+    return `SELECT m.*, n.user_name AS sender_username FROM ${table} AS m LEFT JOIN ${this.quoteSqlIdentifier(store.senderTableName)} AS n ON n.rowid = m.real_sender_id`
   }
 
   private executeMessageSql(store: Wcdb4MessageStore, sql: string): Record<string, unknown>[] {
@@ -2054,6 +2263,92 @@ export class Wcdb4Client {
       .update(messageTableName)
       .digest('hex')
       .slice(0, 16)}`
+  }
+
+  /**
+   * 只读扫描：老版防撤回保护在微信库里留下的 `_wxe_capture_*` 触发器与老日志表。
+   *
+   * 认领规则（保守：只认本应用装的）：触发器名以 `_wxe_capture_` 开头、挂在 `Msg_*`
+   * 上、且触发器体里同时出现 `_wxe_source_table` / `_wxe_captured_at` 私有列名；
+   * 表则要求名字以 `_wxe_recall_journal_` 开头。WeFlow 的 `anti_revoke_*`、新机制的
+   * `_tm_msg_insert_*`、微信自己的触发器都不在结果里。
+   *
+   * 顺带按触发器体判行为（blocking* / passive，见返回值）。纯只读；没有残留时不写库。
+   */
+  scanLegacyRecallResidue(): LegacyRecallResidueReport {
+    const shards: LegacyRecallResidueShard[] = []
+    let triggerCount = 0
+    let journalCount = 0
+    let blockingDeleteCount = 0
+    let blockingInsertCount = 0
+    let passiveCount = 0
+    for (const dbPath of this.listMessageShardPaths()) {
+      const triggers: string[] = []
+      const journals: string[] = []
+      for (const row of this.queryShardSqliteMaster(dbPath)) {
+        const name = String(row.name || '')
+        const type = String(row.type || '')
+        const tblName = String(row.tbl_name || '')
+        const sql = String(row.sql || '')
+        if (
+          type === 'trigger' &&
+          name.startsWith(LEGACY_RECALL_TRIGGER_PREFIX) &&
+          /^Msg_/i.test(tblName) &&
+          LEGACY_RECALL_TRIGGER_MARKERS.every((marker) => sql.includes(marker))
+        ) {
+          triggers.push(name)
+          /* 分类只看定义文本，不执行任何语句。合并空白便于匹配多行写法。 */
+          const normalized = sql.replace(/\s+/g, ' ').toUpperCase()
+          const blocks = normalized.includes('RAISE(IGNORE)')
+          if (normalized.includes('BEFORE DELETE')) {
+            if (blocks) blockingDeleteCount += 1
+            else passiveCount += 1
+          } else if (normalized.includes('BEFORE INSERT') && blocks) {
+            blockingInsertCount += 1
+          } else {
+            passiveCount += 1
+          }
+          continue
+        }
+        if (type === 'table' && name.startsWith(LEGACY_RECALL_JOURNAL_PREFIX)) {
+          journals.push(name)
+        }
+      }
+      if (triggers.length === 0 && journals.length === 0) continue
+      triggerCount += triggers.length
+      journalCount += journals.length
+      shards.push({ shard: path.basename(dbPath), dbPath, triggers, journals })
+    }
+    return {
+      found: triggerCount > 0 || journalCount > 0,
+      shards,
+      triggerCount,
+      journalCount,
+      blockingDeleteCount,
+      blockingInsertCount,
+      passiveCount
+    }
+  }
+
+  /*
+   * DROP 不在本进程做：对分片只有只读连接，发 DDL 必然失败。删除由 native 在其可写
+   * 连接里顺手完成（见 dll 侧 `_wxe_capture_*` 清理段）；调用方只做扫描与复核。
+   */
+
+  /**
+   * 读分片 sqlite_master 里可能属于老防撤回的对象。用 GLOB 而非 LIKE：
+   * `_` 在 LIKE 里是单字符通配，会误伤相似名字。
+   */
+  private queryShardSqliteMaster(dbPath: string): Record<string, unknown>[] {
+    if (!this.wcdbExecQuery) throw new Error('当前 WCDB 数据服务不支持 SQL 通道')
+    const sql =
+      "SELECT name, type, tbl_name, COALESCE(sql, '') AS sql FROM sqlite_master" +
+      ` WHERE (type = 'trigger' AND name GLOB '${LEGACY_RECALL_TRIGGER_PREFIX}*')` +
+      ` OR (type = 'table' AND name GLOB '${LEGACY_RECALL_JOURNAL_PREFIX}*')`
+    const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+      this.wcdbExecQuery!(handle, 'message', dbPath, sql, outJson)
+    )
+    return Array.isArray(rows) ? rows : []
   }
 
   getMyAvatarUrl(): string | undefined {
@@ -2983,6 +3278,30 @@ export class Wcdb4Client {
       ) as (handle: number, chatroomIdsJson: string, outJson: WcdbVoidOut) => number
     } catch {
       this.wcdbGetGroupMembersBatch = null
+    }
+
+    try {
+      this.wcdbMsgInsertSetSwitch = lib.func(
+        'int32 wcdb_msg_insert_set_switch(int64 handle, const char* dbPath, const char* name, int32 enabled)'
+      ) as (handle: number, dbPath: string, name: string, enabled: number) => number
+    } catch {
+      this.wcdbMsgInsertSetSwitch = null
+    }
+
+    try {
+      this.wcdbMsgInsertGetSwitches = lib.func(
+        'int32 wcdb_msg_insert_get_switches(int64 handle, const char* dbPath, _Out_ void** outJson)'
+      ) as (handle: number, dbPath: string, outJson: WcdbVoidOut) => number
+    } catch {
+      this.wcdbMsgInsertGetSwitches = null
+    }
+
+    try {
+      this.wcdbMsgInsertListShardCatalog = lib.func(
+        'int32 wcdb_msg_insert_list_shard_catalog(int64 handle, _Out_ void** outJson)'
+      ) as (handle: number, outJson: WcdbVoidOut) => number
+    } catch {
+      this.wcdbMsgInsertListShardCatalog = null
     }
 
     try {

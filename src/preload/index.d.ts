@@ -106,6 +106,11 @@ import type {
 } from '../shared/automation'
 import type { ActionLogEntry } from '../shared/action-log'
 import type {
+  MsgInsertApplyResult,
+  MsgInsertSwitchName,
+  MsgInsertSwitchesSnapshot
+} from '../shared/msg-insert-switch'
+import type {
   AppUpdateCheckResult,
   AppUpdateInstallResult,
   AppUpdateOpenDownloadPageResult,
@@ -326,6 +331,24 @@ declare global {
       saveLeaveNotificationRule: (draft: AutomationRuleDraft) => Promise<AutomationRule>
       /** 「指定好友」的可选项；已在 main 侧过滤掉群聊 / 公众号 / 文件传输助手 / 自己。 */
       listSendableContacts: () => Promise<Array<{ id: string; name: string }>>
+      /**
+       * 微信消息插入开关：读取当前状态。
+       *
+       * 逐目标会话返回 desiredEnabled / effectiveEnabled —— 开关值写成功不等于
+       * 功能真的生效（规则可能没装齐），界面不能只看前者。
+       */
+      getMsgInsertSwitches: () => Promise<MsgInsertSwitchesSnapshot>
+      refreshMsgInsertSwitches: () => Promise<MsgInsertSwitchesSnapshot>
+      /**
+       * 微信消息插入开关：打开 / 关闭。
+       *
+       * 开的时候先补规则再写值；写入由一次性 helper 子进程完成，
+       * 失败会带 failedShards / notReadyRooms 回来，不伪装成功。
+       */
+      setMsgInsertSwitch: (
+        name: MsgInsertSwitchName,
+        enabled: boolean
+      ) => Promise<MsgInsertApplyResult>
       onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => () => void
       search: (keyword: string) => Promise<string | null>
       searchKnowledge: (request: KnowledgeSearchIpcRequest) => Promise<KnowledgeSearchIpcResult>
@@ -539,6 +562,7 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          closeAction: 'ask' | 'tray' | 'quit'
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
@@ -580,6 +604,7 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          closeAction: 'ask' | 'tray' | 'quit'
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
@@ -604,6 +629,7 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          closeAction: 'ask' | 'tray' | 'quit'
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
@@ -626,6 +652,7 @@ declare global {
           appearanceTheme: 'system' | 'light' | 'dark'
           compactMode: boolean
           showStartupProgress: boolean
+          closeAction: 'ask' | 'tray' | 'quit'
           windowsWechatPort: string
           imageXorKey: string
           imageAesKey: string

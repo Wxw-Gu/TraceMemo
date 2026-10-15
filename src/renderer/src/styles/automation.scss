@@ -42,6 +42,74 @@
   }
 }
 
+/* 右上角操作区：微信消息插入开关 + 新建自动化 */
+.automation-page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+}
+
+.automation-msg-insert-switches {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.automation-msg-insert-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--wxex-text-secondary);
+  /* 容器本身不可点（点了不切换），所以不要给 pointer 光标误导用户。 */
+  cursor: default;
+  user-select: none;
+
+  &.is-disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.automation-msg-insert-switch-label {
+  white-space: nowrap;
+}
+
+/* 处理中：把「正在写微信库」这件事显式说出来，避免用户以为界面卡死。
+   宽度不锁死会带着开关一起抖，所以这里只用固定行高、不加弹性布局。 */
+.automation-msg-insert-switch-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  color: var(--wxex-accent, var(--wxex-text-secondary));
+}
+
+/* 中性提示：既不表示失败，也不参与「是否生效」判定 → 不用警告色。 */
+.automation-msg-insert-switch-scope {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--wxex-text-tertiary, var(--wxex-text-secondary));
+  opacity: 0.7;
+}
+
+/* 覆盖情况（已就绪 / 可安装）。规则没装齐时给出可读的警示，而不是只留一个 ON。 */
+.automation-msg-insert-switch-count {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--wxex-text-tertiary, var(--wxex-text-secondary));
+  opacity: 0.85;
+
+  &.is-warning {
+    color: var(--wxex-warning, #d97706);
+    opacity: 1;
+  }
+}
+
 .automation-notice {
   margin: 0;
   padding: 10px 14px;

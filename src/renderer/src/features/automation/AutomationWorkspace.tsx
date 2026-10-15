@@ -24,6 +24,7 @@ import {
   AutomationRuleTypeTabs,
   type AutomationRuleTabType
 } from './AutomationRuleTypeTabs'
+import { MessageInsertSwitches } from './MessageInsertSwitches'
 import { ScheduledReportEditor } from './ScheduledReportEditor'
 import { ScheduledReportRuleList } from './ScheduledReportRuleList'
 import { ScheduledReportNotificationPanel } from './ScheduledReportNotificationPanel'
@@ -483,16 +484,20 @@ export function AutomationWorkspace({
           <h1>自动化</h1>
           <p>当群里出现符合条件的消息时，TraceMemo 会自动执行你配置的动作。</p>
         </div>
-        {tab === 'rules' && !showEditor ? (
-          <Button
-            onClick={() => {
-              lastDailyTargetRef.current = null
-              setEditor({ mode: 'create', rule: null, ruleType: 'daily_report' })
-            }}
-          >
-            新建自动化
-          </Button>
-        ) : null}
+        <div className="automation-page-header-actions">
+          {/* 微信消息插入开关：控制 TraceMemo 能在微信会话里插入哪些消息 */}
+          <MessageInsertSwitches />
+          {tab === 'rules' && !showEditor ? (
+            <Button
+              onClick={() => {
+                lastDailyTargetRef.current = null
+                setEditor({ mode: 'create', rule: null, ruleType: 'daily_report' })
+              }}
+            >
+              新建自动化
+            </Button>
+          ) : null}
+        </div>
       </header>
 
       {!apiAvailable ? (

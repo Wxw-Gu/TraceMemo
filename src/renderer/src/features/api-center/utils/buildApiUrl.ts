@@ -4,8 +4,19 @@ export function buildApiUrl(
   path: string,
   params: Record<string, string>
 ): string {
-  const url = new URL(path, `http://${host}:${port}`)
+  let resolvedPath = path
+  const pathParameterKeys = new Set(
+    Object.keys(params).filter((key) => path.includes(`{${key}}`))
+  )
   Object.entries(params).forEach(([key, value]) => {
+    const normalized = value.trim()
+    if (normalized && resolvedPath.includes(`{${key}}`)) {
+      resolvedPath = resolvedPath.replace(`{${key}}`, encodeURIComponent(normalized))
+    }
+  })
+  const url = new URL(resolvedPath, `http://${host}:${port}`)
+  Object.entries(params).forEach(([key, value]) => {
+    if (pathParameterKeys.has(key)) return
     if (value.trim()) url.searchParams.set(key, value.trim())
   })
   return url.toString()
