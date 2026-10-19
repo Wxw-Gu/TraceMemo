@@ -91,6 +91,14 @@ import {
   testImageDecryption
 } from './services/image-decryption-status-service'
 import type { SaveImageKeyRequest, TestImageDecryptionRequest } from '../shared/image-decryption'
+import { imageFileQuality } from '../shared/image-quality'
+import {
+  IMAGE_DEBUG_KIND,
+  type ImageDebugInfoRequest,
+  type ImageDebugInfoResult,
+  type ImageDebugPayload,
+  type ImageDebugQuality
+} from '../shared/image-debug-info'
 import {
   loadSettings,
   saveSettings,
@@ -684,6 +692,16 @@ function getLocalMediaMimeType(filePath: string): string {
     default:
       return 'application/octet-stream'
   }
+}
+
+/**
+ * 导出用的三档质量（original/medium/thumbnail）与调试信息的两档命名不同：
+ * 调试侧用 normal 表示「中图」，避免与 ExportImageQuality 的 medium 混淆。
+ */
+function toDebugQuality(quality: 'original' | 'medium' | 'thumbnail'): ImageDebugQuality {
+  if (quality === 'original') return 'original'
+  if (quality === 'thumbnail') return 'thumbnail'
+  return 'normal'
 }
 
 function buildImageResponse(
@@ -1724,6 +1742,69 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('image:getConfig', () => imageKeyConfigService.getConfig())
+
+  /**
+   * 复制图片调试定位信息。
+   *
+   * 只回答「用户点中的是哪一条消息、当前展示的是哪份本地资源」。
+   * 刻意不返回资源密钥、完整 XML、fileid 或任何 CDN 凭据。
+   */
+  ipcMain.handle(
+    'image:getDebugInfo',    async (_, request: ImageDebugInfoRequest): Promise<ImageDebugInfoResult> => {
+      try {
+        const service = ensureImageDecryptService()
+        const self = chat.getSelfAccountInfo()
+        const accountRoot = self?.accountRoot || loadSettings().dbRoot || ''
+        const sessionId = String(request?.sessionId || '').trim() || null
+        const localId =
+          typeof request?.localId === 'number' && Number.isFinite(request.localId)
+            ? String(request.localId)
+            : null
+        const serverId = String(request?.serverId || '').trim() || null
+        const createTimeSeconds =
+          typeof request?.createTime === 'number' && Number.isFinite(request.createTime)
+            ? request.createTime
+            : null
+
+        const md5 = String(request?.imageMd5 || '').trim() || null
+        const datName = String(request?.imageDatName || '').trim() || null
+
+        // 复用真实选图逻辑；找不到就是 null，不根据文件名猜。
+        const filePath = service
+          ? service.findImageFile(md5 || undefined, datName || undefined, { sessionId: sessionId || undefined })
+          : null
+        const quality = filePath ? toDebugQuality(imageFileQuality(filePath)) : 'unknown'
+        const relativePath =
+          filePath && accountRoot && filePath.startsWith(accountRoot)
+            ? path.relative(accountRoot, filePath).split(path.sep).join('/')
+            : null
+        const evidence = filePath ? path.basename(filePath) : null
+
+        const payload: ImageDebugPayload = {
+          kind: IMAGE_DEBUG_KIND,
+          message: {
+            accountId: self?.wxid || null,
+            conversationId: sessionId,
+            localId,
+            serverId,
+            createTimeSeconds
+          },
+          image: { md5, datName },
+          display: {
+            quality,
+            evidence,
+            path: relativePath
+          }
+        }
+        return { success: true, payload }
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      }
+    }
+  )
 
   ipcMain.handle('image:getStatus', async () =>
     inspectImageDecryptionStatus(imageKeyConfigService.getConfig())

@@ -83,6 +83,7 @@ import type {
 import type { CacheClearScope, CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress } from '../shared/export'
 import type { ImageDecoderSelectionResult, ImageDecoderStatus } from '../shared/image-decryption'
+import type { ImageDebugInfoRequest, ImageDebugInfoResult } from '../shared/image-debug-info'
 import type { AccountDiscoveryResult } from '../shared/database-key'
 import type {
   VoiceBatchConversationSummary,
@@ -394,6 +395,8 @@ const api = {
       includeData?: boolean
     }
   ) => ipcRenderer.invoke('db:getImage', imageMd5, imageDatNameOrThumb, sessionId, options),
+  getImageDebugInfo: (request: ImageDebugInfoRequest): Promise<ImageDebugInfoResult> =>
+    ipcRenderer.invoke('image:getDebugInfo', request),
   getVideo: (
     hashes: string[],
     options?: {

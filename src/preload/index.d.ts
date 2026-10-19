@@ -39,6 +39,7 @@ import type {
   SaveImageKeyRequest,
   TestImageDecryptionRequest
 } from '../shared/image-decryption'
+import type { ImageDebugInfoRequest, ImageDebugInfoResult } from '../shared/image-debug-info'
 import type {
   AIChatRequestOptions,
   AiSearchExternalAuthorizationRequest,
@@ -458,6 +459,7 @@ declare global {
         isThumb?: boolean
         filePath?: string
       }>
+      getImageDebugInfo: (request: ImageDebugInfoRequest) => Promise<ImageDebugInfoResult>
       getVideo: (
         hashes: string[],
         options?: {

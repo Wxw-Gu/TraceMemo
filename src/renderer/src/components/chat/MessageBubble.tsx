@@ -74,6 +74,9 @@ export function MessageBubble({
             imageMd5={message.contentData.md5}
             imageDatName={message.contentData.datName}
             sessionId={message.sessionId}
+            localId={message.localId}
+            serverId={message.serverId}
+            createTime={message.createTime}
             onImageClick={onImageClick}
           />
         ) : isVideo && message.contentData && message.contentData.type === 'video' ? (
