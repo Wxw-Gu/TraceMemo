@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -57,6 +57,69 @@ describe('ImageBubble', () => {
     requestImage.mockResolvedValueOnce({ data: thumbnail, isThumbnail: true })
     await userEvent.click(screen.getByText('加载失败'))
     expect(await screen.findByAltText('图片')).toBeVisible()
+  })
+
+  it('copies the raw message xml when right clicked', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    })
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
+    const getImageMessageXml = vi
+      .fn()
+      .mockResolvedValue({ success: true, xml: '<msg><img aeskey="fixture" /></msg>' })
+    window.api = {
+      copyImage: vi.fn(),
+      getImageMessageXml
+    } as unknown as typeof window.api
+
+    requestImage.mockResolvedValueOnce({ data: thumbnail, isThumbnail: true })
+    render(
+      <ImageBubble
+        imageMd5="fixture-image"
+        sessionId="fixture-session"
+        localId={42}
+        createTime={1700000000}
+      />
+    )
+
+    const image = await screen.findByAltText('图片')
+    fireEvent.contextMenu(image)
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith('<msg><img aeskey="fixture" /></msg>')
+    )
+    expect(getImageMessageXml).toHaveBeenCalledWith({
+      sessionId: 'fixture-session',
+      localId: 42,
+      serverId: undefined,
+      createTime: 1700000000
+    })
+    expect(alertSpy).toHaveBeenCalledWith('图片消息 XML 已复制')
+    alertSpy.mockRestore()
+  })
+
+  it('surfaces a failure instead of copying anything when the xml is unavailable', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    })
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
+    window.api = {
+      copyImage: vi.fn(),
+      getImageMessageXml: vi.fn().mockResolvedValue({ success: false, error: '数据库尚未连接' })
+    } as unknown as typeof window.api
+
+    requestImage.mockResolvedValueOnce({ data: thumbnail, isThumbnail: true })
+    render(<ImageBubble imageMd5="fixture-image" sessionId="fixture-session" localId={7} />)
+
+    fireEvent.contextMenu(await screen.findByAltText('图片'))
+
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('XML 获取失败：数据库尚未连接'))
+    expect(writeText).not.toHaveBeenCalled()
+    alertSpy.mockRestore()
   })
 
   it('places a quoted image on the line below the quoted sender', async () => {

@@ -131,31 +131,25 @@ export function ImageBubble({
     alert('图片已复制')
   }
 
-  /**
-   * 复制的是「消息定位信息」而非图片内容：
-   * 不带 aeskey / XML / fileid / 带票据的下载地址。
-   */
-  const handleCopyDebugInfo = async (event: MouseEvent): Promise<void> => {
+  /** 右键复制消息原始 XML。 */
+  const handleCopyMessageXml = async (event: MouseEvent): Promise<void> => {
     event.preventDefault()
     event.stopPropagation()
     try {
-      const result = await window.api.getImageDebugInfo({
+      const result = await window.api.getImageMessageXml({
         sessionId,
         localId,
         serverId,
-        createTime,
-        imageMd5,
-        imageDatName
+        createTime
       })
-      if (!result.success || !result.payload) {
-        alert(result.error ? `图片调试信息获取失败：${result.error}` : '图片调试信息获取失败')
+      if (!result.success || !result.xml) {
+        alert(result.error ? `XML 获取失败：${result.error}` : 'XML 获取失败')
         return
       }
-      const text = JSON.stringify(result.payload, null, 2)
-      await navigator.clipboard.writeText(text)
-      alert('图片调试信息已复制')
+      await navigator.clipboard.writeText(result.xml)
+      alert('图片消息 XML 已复制')
     } catch (error) {
-      alert(error instanceof Error ? `图片调试信息复制失败：${error.message}` : '图片调试信息复制失败')
+      alert(error instanceof Error ? `XML 复制失败：${error.message}` : 'XML 复制失败')
     }
   }
 
@@ -230,7 +224,7 @@ export function ImageBubble({
       tabIndex={0}
       aria-label="查看图片"
       onClick={handleClick}
-      onContextMenu={handleCopyDebugInfo}
+      onContextMenu={handleCopyMessageXml}
       onKeyDown={handlePreviewKeyDown}
     >
       <img

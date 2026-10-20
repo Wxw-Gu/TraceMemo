@@ -99,6 +99,7 @@ import {
   type ImageDebugPayload,
   type ImageDebugQuality
 } from '../shared/image-debug-info'
+import type { ImageMessageXmlRequest, ImageMessageXmlResult } from '../shared/image-message-xml'
 import {
   loadSettings,
   saveSettings,
@@ -702,6 +703,16 @@ function toDebugQuality(quality: 'original' | 'medium' | 'thumbnail'): ImageDebu
   if (quality === 'original') return 'original'
   if (quality === 'thumbnail') return 'thumbnail'
   return 'normal'
+}
+
+/** 反转义以 HTML 实体形式存库的正文（&amp; 必须最后处理）。 */
+function unescapeXmlText(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
 }
 
 function buildImageResponse(
@@ -1806,10 +1817,34 @@ app.whenReady().then(async () => {
     }
   )
 
+  /** 取回一条图片消息的原始 XML。需 sessionId + localId 定位。 */
+  ipcMain.handle(
+    'image:getMessageXml',
+    async (_, request: ImageMessageXmlRequest): Promise<ImageMessageXmlResult> => {
+      const sessionId = String(request?.sessionId || '').trim()
+      const localId = Math.trunc(Number(request?.localId) || 0)
+      const createTime = Math.trunc(Number(request?.createTime) || 0)
+      if (!sessionId) return { success: false, error: '缺少会话标识，无法定位消息' }
+      if (localId <= 0) return { success: false, error: '缺少消息序号，无法定位消息' }
+
+      try {
+        const db = chat.getChatDb()
+        const client = db ? db.getWcdb4Client() : null
+        if (!client) return { success: false, error: '数据库尚未连接' }
+
+        const raw = client.getRawMessageContent(sessionId, localId, createTime || undefined)
+        if (!raw) return { success: false, error: '这条消息没有可读取的正文' }
+        const xml = raw.trim().includes('<') ? raw.trim() : unescapeXmlText(raw.trim())
+        return { success: true, xml }
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    }
+  )
+
   ipcMain.handle('image:getStatus', async () =>
     inspectImageDecryptionStatus(imageKeyConfigService.getConfig())
   )
-
   ipcMain.handle('image:saveConfig', (_, request: SaveImageKeyRequest) => {
     const result = imageKeyConfigService.save(request)
     if (result.success) imageDecryptService = null

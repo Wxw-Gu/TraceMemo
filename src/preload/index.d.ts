@@ -40,6 +40,7 @@ import type {
   TestImageDecryptionRequest
 } from '../shared/image-decryption'
 import type { ImageDebugInfoRequest, ImageDebugInfoResult } from '../shared/image-debug-info'
+import type { ImageMessageXmlRequest, ImageMessageXmlResult } from '../shared/image-message-xml'
 import type {
   AIChatRequestOptions,
   AiSearchExternalAuthorizationRequest,
@@ -460,6 +461,7 @@ declare global {
         filePath?: string
       }>
       getImageDebugInfo: (request: ImageDebugInfoRequest) => Promise<ImageDebugInfoResult>
+      getImageMessageXml: (request: ImageMessageXmlRequest) => Promise<ImageMessageXmlResult>
       getVideo: (
         hashes: string[],
         options?: {

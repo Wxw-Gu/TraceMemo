@@ -84,6 +84,7 @@ import type { CacheClearScope, CacheSummary } from '../shared/cache'
 import type { ExportRequest, ExportJobProgress } from '../shared/export'
 import type { ImageDecoderSelectionResult, ImageDecoderStatus } from '../shared/image-decryption'
 import type { ImageDebugInfoRequest, ImageDebugInfoResult } from '../shared/image-debug-info'
+import type { ImageMessageXmlRequest, ImageMessageXmlResult } from '../shared/image-message-xml'
 import type { AccountDiscoveryResult } from '../shared/database-key'
 import type {
   VoiceBatchConversationSummary,
@@ -397,6 +398,9 @@ const api = {
   ) => ipcRenderer.invoke('db:getImage', imageMd5, imageDatNameOrThumb, sessionId, options),
   getImageDebugInfo: (request: ImageDebugInfoRequest): Promise<ImageDebugInfoResult> =>
     ipcRenderer.invoke('image:getDebugInfo', request),
+  /** 图片消息原始 XML。 */
+  getImageMessageXml: (request: ImageMessageXmlRequest): Promise<ImageMessageXmlResult> =>
+    ipcRenderer.invoke('image:getMessageXml', request),
   getVideo: (
     hashes: string[],
     options?: {
