@@ -16,6 +16,12 @@ export type WechatActionOrigin =
    * 也不进 Send Log —— 排查「消息到底发没发出去」时会缺一份证据。
    */
   | 'user_manual'
+  /**
+   * 外部 Agent 通过本地 HTTP API（`POST /api/v1/wechat/send`）发起的发送。
+   *
+   * 与 `user_manual` 分开登记，审计记录才能区分人工点击与 Agent 调用。
+   */
+  | 'http_api'
   /** Automation（@我生成日报 / 退群通知）。与 `shared/automation.ts` 的 AUTOMATION_SEND_ORIGIN 一致。 */
   | 'automation'
   | 'unknown'
@@ -36,6 +42,10 @@ export type WechatActionPurpose =
   | 'manual_image'
   /** 用户手动发送文本。 */
   | 'manual_text'
+  /** 外部 Agent 经本地 HTTP API 发送；按内容类型分开，便于审计统计。 */
+  | 'api_text'
+  | 'api_image'
+  | 'api_voice'
   /** 用户确认后的日报图片；进入 automation 队列以复用 3 秒发送间隔。 */
   | 'manual_report_image'
   /** 日报图片成功后的后置词；只有图片 sent 后才会创建。 */

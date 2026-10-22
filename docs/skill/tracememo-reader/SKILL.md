@@ -1,7 +1,7 @@
 ---
 name: tracememo-reader
-version: 1.3.0
-description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的微信聊天数据和图片媒体，并管理定时日报任务。当用户要求查看微信消息、查找联系人或群聊、总结聊天、查看或理解图片、生成群聊总结、查询或修改定时日报时使用。此 Skill 由本机 TraceMemo 提供数据，不是 MCP Server。
+version: 1.4.0
+description: 通过 TraceMemo 本地 HTTP API 按需读取用户有权访问的微信聊天数据和图片媒体、管理定时日报任务，并用用户本机登录的微信账号发送消息。当用户要求查看微信消息、查找联系人或群聊、总结聊天、查看或理解图片、生成群聊总结、查询或修改定时日报、给好友或群发送微信消息、代发消息、查看发送记录时使用。此 Skill 由本机 TraceMemo 提供数据，不是 MCP Server。
 ---
 
 # TraceMemo Reader
@@ -76,6 +76,7 @@ curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
 | POST   | `/query/voice-transcribe`                               | 把指定语音消息转成文字（本机离线识别）            |
 | GET    | `/query/capabilities`                                   | Query 端点能力目录                                |
 | GET    | `/wechat-personal/send-capability`                      | 个人微信发送能力状态（文字 / 图片 / 语音）        |
+| POST   | `/wechat/send`                                          | 用本机微信账号发消息给他人（文字/图片/语音）      |
 | GET    | `/scheduled-reports`                                    | 查询全部定时日报任务                              |
 | GET    | `/scheduled-reports/:id`                                | 查询单个定时日报任务                              |
 | POST   | `/scheduled-reports`                                    | 创建定时日报任务                                  |
@@ -91,7 +92,68 @@ curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
 | POST   | `/agent/group-report`                                   | 按群和 `today`/`yesterday`/`7days` 生成总结图片   |
 | POST   | `/agent/send`                                           | 已连接机器人发送测试（文字或本地图片）            |
 
-这个 API **不只是只读的**：`/report` 会渲染并写文件，`/agent/send` 会真的发出微信消息，`/scheduled-reports*` 会创建、修改、删除或立刻执行定时任务。这些调用都要先确认用户意图；`DELETE` 与 `/agent/send` 尤其需要用户明确确认。
+这个 API **不只是只读的**：`/report` 会渲染并写文件，`/wechat/send` 会以用户本人的微信账号把消息真的发给别人，`/agent/send` 会通过机器人发出消息，`/scheduled-reports*` 会创建、修改、删除或立刻执行定时任务。这些调用都要先确认用户意图；`DELETE`、`/wechat/send` 与 `/agent/send` 尤其需要用户明确确认。
+
+## 发送微信消息
+
+两个发送端点的**身份和通道完全不同**，不要混用：
+
+|          | `/wechat/send`                 | `/agent/send`                    |
+| -------- | ------------------------------ | -------------------------------- |
+| 发送身份 | 用户本机正在登录的微信账号     | 已扫码接入的 TraceMemo 机器人    |
+| 收件人   | 好友 / 群 / 文件传输助手       | 一般是自己，用于测试连接器连通性 |
+| 前置条件 | 本机微信已启动，发送能力 ready | Agent Hub 连接器 online          |
+
+用户说“发消息给某人 / 某个群 / 文件传输助手”时，**只能用 `/wechat/send`**。`/agent/send` 不是用来通知别人的。
+
+### 调用前必须做
+
+1. 调用 `GET /wechat-personal/send-capability`，只有 `capability.ready === true` 且 `capability.capabilities[type] === true` 才继续。否则停下来说明需要先在 TraceMemo「设置 → 发送能力」里完成绑定，**不要**直接调用再解释失败。
+2. 通过 `/resolve` 把用户说的昵称换成 wxid；`to` 只接受 wxid、`xxx@chatroom` 群 id，或 `filehelper`。**不要猜 wxid，也不要把昵称直接写进 `to`。**
+3. 把「发给谁 + 发什么」复述给用户并得到确认后再发。这是不可撤回的外部操作。
+
+### 请求
+
+```json
+{ "to": "wxid_xxx", "type": "text", "text": "消息内容", "idempotencyKey": "可选" }
+```
+
+| 字段             | 必填               | 说明                                                                |
+| ---------------- | ------------------ | ------------------------------------------------------------------- |
+| `to`             | 是                 | wxid / `xxx@chatroom` / `filehelper`；以 `@chatroom` 结尾自动判为群 |
+| `type`           | 否                 | `text`（默认）/ `image` / `voice`                                   |
+| `text`           | `type=text` 时必填 | **最多 2000 字符**，超限返回 `400`，不会自动截断                    |
+| `filePath`       | `type=image/voice` | 本机**绝对路径**且文件必须存在；**不接受 URL**                      |
+| `idempotencyKey` | 否                 | 重试时原样带回，避免超时重发产生重复消息                            |
+
+几个必须遵守的限制：
+
+- **超过 2000 字符不要硬发**。先告诉用户内容过长，征得同意后再拆成多条依次发送；不要静默截断。
+- **媒体只收本地文件**。用户给的是聊天里的图片时，先用 `/chatlog` 拿到 `media.url` 下载成临时文件，再把该路径传给 `filePath`；网络图片同样需要先落盘。不要试图传 URL。
+- **本端点没有节流**。automation 的 3 秒间隔对它不生效，连续调用就会连续投递。单个任务里连续发送超过 3 条前，先和用户确认节奏。
+
+### 结果
+
+成功返回 `success: true`、`status: "sent"`、`actionId`。失败时读 `errorCode`：
+
+- `400 INVALID_REQUEST` / `INVALID_RECIPIENT`：字段不合法，按 `error` 里的说明修正；
+- `403 POLICY_BLOCKED`：被发送策略拒绝，如实告知用户；
+- `502 SEND_FAILED`：已进入投递但微信侧失败，不要说成“已发送”；
+- `503 SEND_CAPABILITY_UNAVAILABLE` / `SEND_NOT_READY`：能力未就绪，引导用户去绑定；
+- `503 UNSUPPORTED_PLATFORM`：当前系统不支持。
+
+只有 `status === "sent"` 才能告诉用户发送成功。不要凭 `actionId` 或 HTTP 200 之外的任何信息推断结果。
+
+### 发送成功后不要用 `/chatlog` 自证
+
+`status: "sent"` 只表示消息已经交给微信完成投递，**不代表它会出现在本地聊天数据库里**。TraceMemo 读的是微信本地库，自己发出的消息可能延迟落库，也可能根本不写入。
+
+因此：
+
+- **不要**用 `/chatlog` 查自己刚发出的那条消息来确认发送成功。查不到是正常现象，不等于发送失败。
+- **不要**因为本地库没有这条消息就重发 —— 那会产生真实的重复消息。
+- 需要人工确认时，请用户用**手机微信**或**另一个微信号**查看该会话；这是唯一可靠的确认方式。
+- Send Log 与 `actions/wechat-actions.json` 记录的是 TraceMemo 自己的发送动作与结果，能证明“调用过并成功投递”，**不能**证明对方收到或本地库已落库。不要把它们混为一谈。
 
 ## 定时日报管理
 
@@ -199,8 +261,8 @@ curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
 ## 常见错误
 
 - `401`：Token 缺失、错误或被轮换；请用户回 API Center 复制最新 Token。
-- `403`：浏览器 Origin 不在 loopback 允许列表；CLI/Agent 通常不带 Origin。
+- `403`：浏览器 Origin 不在 loopback 允许列表；CLI/Agent 通常不带 Origin。注意 `/wechat/send` 的 `403 POLICY_BLOCKED` 是被发送策略拒绝，含义不同。
 - `404`：会话查询失败时先用 `/resolve` 确认会话标识；媒体请求表示标识未登记、已过期、有歧义，或图片文件不存在（`NOT_FOUND`）。先重新读取 `/chatlog` 并使用新的 `media.url`；若仍失败，再检查本地图片文件是否存在。
 - `422`：媒体标识格式错误，或消息不是可读取的图片（`NOT_IMAGE`）。
-- `503`：用户还没有完成数据库连接或对应服务未就绪。
+- `503`：用户还没有完成数据库连接或对应服务未就绪。发送端点返回 `503` 时先查 `/wechat-personal/send-capability`，不要反复重试。
 - 空结果：缩小/扩大时间范围，确认账号和会话，再检查媒体或语音是否可读。
