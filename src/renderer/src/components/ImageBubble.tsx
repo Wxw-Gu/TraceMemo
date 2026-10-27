@@ -6,6 +6,9 @@ interface ImageBubbleProps {
   imageMd5?: string
   imageDatName?: string
   sessionId?: string
+  localId?: number
+  serverId?: string
+  createTime?: number
   isThumb?: boolean
   fallbackUrl?: string
   onImageClick?: (imageUrl: string) => void
@@ -15,6 +18,9 @@ export function ImageBubble({
   imageMd5,
   imageDatName,
   sessionId,
+  localId,
+  serverId,
+  createTime,
   fallbackUrl,
   onImageClick
 }: ImageBubbleProps): JSX.Element {
@@ -125,6 +131,28 @@ export function ImageBubble({
     alert('图片已复制')
   }
 
+  /** 右键复制消息原始 XML。 */
+  const handleCopyMessageXml = async (event: MouseEvent): Promise<void> => {
+    event.preventDefault()
+    event.stopPropagation()
+    try {
+      const result = await window.api.getImageMessageXml({
+        sessionId,
+        localId,
+        serverId,
+        createTime
+      })
+      if (!result.success || !result.xml) {
+        alert(result.error ? `XML 获取失败：${result.error}` : 'XML 获取失败')
+        return
+      }
+      await navigator.clipboard.writeText(result.xml)
+      alert('图片消息 XML 已复制')
+    } catch (error) {
+      alert(error instanceof Error ? `XML 复制失败：${error.message}` : 'XML 复制失败')
+    }
+  }
+
   const handleClick = async (): Promise<void> => {
     if (!imageUrl && !error) return
     if (!imageMd5 && !imageDatName) {
@@ -196,6 +224,7 @@ export function ImageBubble({
       tabIndex={0}
       aria-label="查看图片"
       onClick={handleClick}
+      onContextMenu={handleCopyMessageXml}
       onKeyDown={handlePreviewKeyDown}
     >
       <img

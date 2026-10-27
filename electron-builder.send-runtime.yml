@@ -6,6 +6,10 @@ extraResources:
     to: resources
     filter:
       - '**/*'
+  - from: resources/wcdb/macos/arm64
+    to: resources/wcdb/macos/arm64
+    filter:
+      - 'tm-wcdb-config-helper'
   - from: docs/skill/tracememo-reader
     to: skill/tracememo-reader
     filter:

@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { existsSync } from 'fs'
 import http, { IncomingMessage, ServerResponse, Server } from 'http'
 import { app } from 'electron'
 import {
@@ -35,6 +36,9 @@ import { automationRuleStore, AutomationRulePersistenceError } from './services/
 import { automationExecutionLogService } from './services/automation-execution-log-service'
 import { groupExitMonitorService } from './services/group-exit-monitor-service'
 import { LocalAgentApiError, LocalAgentApiService } from './services/local-agent-api-service'
+import { wechatActionGateway } from './services/wechat-action-gateway'
+import type { WechatActionRequest, WechatActionResult } from '../shared/wechat-action'
+import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
 import type { GroupStatsService } from './services/group-stats-service'
 import { encodeMessageRef } from '../shared/local-query-api'
 import type {
@@ -77,6 +81,8 @@ export interface HttpServerOptions {
   agentApiService?: LocalAgentApiService
   groupStatsService?: Pick<GroupStatsService, 'getMemberStats'>
   appVersionProvider?: () => string
+  wechatSendCapabilityProvider?: () => Promise<PersonalWechatSendCapability>
+  wechatSendExecutor?: (request: WechatActionRequest) => Promise<WechatActionResult>
 }
 
 let configuredQueryApiService: LocalQueryApiService | undefined
@@ -563,6 +569,298 @@ const routes: Record<string, RouteHandler> = {
 
 const SCHEDULED_REPORTS_ROUTE = '/api/v1/scheduled-reports'
 const WECHAT_SEND_CAPABILITY_ROUTE = '/api/v1/wechat-personal/send-capability'
+const WECHAT_SEND_ROUTE = '/api/v1/wechat/send'
+
+/**
+ * 文本上限必须与 `wechat-action-gateway.ts` 的 `normalizeActionRequest` 一致，
+ * 否则本层放过的请求会被网关静默拒绝；在此先拦是为了返回实际长度。
+ */
+const WECHAT_SEND_MAX_TEXT_LENGTH = 2_000
+const WECHAT_SEND_MAX_RECIPIENT_LENGTH = 512
+const WECHAT_SEND_MAX_IDEMPOTENCY_KEY_LENGTH = 200
+
+const WECHAT_SEND_CONTENT_TYPES = ['text', 'image', 'voice'] as const
+type WechatSendContentType = (typeof WECHAT_SEND_CONTENT_TYPES)[number]
+
+interface WechatSendApiDependencies {
+  getCapability: () => Promise<PersonalWechatSendCapability>
+  execute: (request: WechatActionRequest) => Promise<WechatActionResult>
+}
+
+type ParsedWechatSend =
+  | {
+      ok: true
+      recipient: WechatActionRequest['recipient']
+      content: WechatActionRequest['content']
+      idempotencyKey?: string
+    }
+  | { ok: false; status: number; code: string; message: string }
+
+function readSendString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+/**
+ * 请求体 → Gateway 动作。
+ *
+ * 字段在本层先校验：`WechatActionGateway` 对不合格请求只回一个 `INVALID_REQUEST`，
+ * 调用方拿不到具体是哪个字段的问题。
+ */
+function parseWechatSendPayload(payload: unknown): ParsedWechatSend {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { ok: false, status: 400, code: 'INVALID_REQUEST', message: '请求体必须是 JSON 对象' }
+  }
+  const body = payload as Record<string, unknown>
+
+  const to = readSendString(body.to)
+  if (!to) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'INVALID_RECIPIENT',
+      message: '缺少 to：接收者 wxid、群 id 或 filehelper'
+    }
+  }
+  if (to.length > WECHAT_SEND_MAX_RECIPIENT_LENGTH) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'INVALID_RECIPIENT',
+      message: `to 长度 ${to.length} 超过上限 ${WECHAT_SEND_MAX_RECIPIENT_LENGTH} 字符`
+    }
+  }
+  if (body.isGroup !== undefined && typeof body.isGroup !== 'boolean') {
+    return { ok: false, status: 400, code: 'INVALID_REQUEST', message: 'isGroup 必须是布尔值' }
+  }
+
+  const rawType = body.type === undefined ? 'text' : body.type
+  if (
+    typeof rawType !== 'string' ||
+    !WECHAT_SEND_CONTENT_TYPES.includes(rawType as WechatSendContentType)
+  ) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'INVALID_REQUEST',
+      message: `type 必须是 ${WECHAT_SEND_CONTENT_TYPES.join(' / ')} 之一`
+    }
+  }
+  const type = rawType as WechatSendContentType
+
+  const rawKey = body.idempotencyKey
+  if (rawKey !== undefined && typeof rawKey !== 'string') {
+    return {
+      ok: false,
+      status: 400,
+      code: 'INVALID_REQUEST',
+      message: 'idempotencyKey 必须是字符串'
+    }
+  }
+  const idempotencyKey = readSendString(rawKey)
+  if (idempotencyKey.length > WECHAT_SEND_MAX_IDEMPOTENCY_KEY_LENGTH) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'INVALID_REQUEST',
+      message: `idempotencyKey 长度 ${idempotencyKey.length} 超过上限 ${WECHAT_SEND_MAX_IDEMPOTENCY_KEY_LENGTH} 字符`
+    }
+  }
+
+  const recipient: WechatActionRequest['recipient'] = {
+    type: body.isGroup === true || to.endsWith('@chatroom') ? 'group' : 'contact',
+    id: to
+  }
+
+  let content: WechatActionRequest['content']
+  if (type === 'text') {
+    const text = typeof body.text === 'string' ? body.text.trim() : ''
+    if (!text) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'INVALID_REQUEST',
+        message: 'type=text 时 text 不能为空'
+      }
+    }
+    if (text.length > WECHAT_SEND_MAX_TEXT_LENGTH) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'INVALID_REQUEST',
+        message: `text 长度 ${text.length} 超过上限 ${WECHAT_SEND_MAX_TEXT_LENGTH} 字符`
+      }
+    }
+    content = { type: 'text', text }
+  } else {
+    const filePath = readSendString(body.filePath)
+    if (!filePath) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'INVALID_REQUEST',
+        message: `type=${type} 时 filePath 必填，且必须是本机绝对路径（不接受 URL）`
+      }
+    }
+    if (!existsSync(filePath)) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'INVALID_REQUEST',
+        message: `filePath 指向的文件不存在：${filePath}`
+      }
+    }
+    content = { type, path: filePath }
+  }
+
+  return {
+    ok: true,
+    recipient,
+    content,
+    ...(idempotencyKey ? { idempotencyKey } : {})
+  }
+}
+
+function wechatActionResultStatus(result: WechatActionResult): number {
+  if (result.status === 'sent') return 200
+  switch (result.errorCode) {
+    case 'INVALID_REQUEST':
+    case 'INVALID_RECIPIENT':
+      return 400
+    case 'ACTION_NOT_ALLOWED':
+    case 'POLICY_BLOCKED':
+    case 'RECIPIENT_SCOPE_VIOLATION':
+      return 403
+    case 'SEND_CAPABILITY_UNAVAILABLE':
+    case 'SEND_NOT_READY':
+      return 503
+    default:
+      return 502
+  }
+}
+
+function actionDurationMs(result: WechatActionResult): number {
+  const started = Date.parse(result.startedAt)
+  const finished = Date.parse(result.finishedAt)
+  if (!Number.isFinite(started) || !Number.isFinite(finished)) return 0
+  return Math.max(0, finished - started)
+}
+
+/**
+ * 本地个人微信发送：用本机登录的微信账号把消息发给**别人**（好友 / 群 / 文件传输助手）。
+ *
+ * 与 `/api/v1/agent/send` 的区别是传输通道：这个端点走本机 runtime/hook，
+ * 不依赖 Agent Hub 连接器在线，也不消耗机器人身份。
+ */
+function createWechatSendRoute(
+  pathname: string,
+  deps: WechatSendApiDependencies
+): RouteHandler | undefined {
+  if (pathname !== WECHAT_SEND_ROUTE) return undefined
+
+  return withMethods(['POST'], async ({ res, body }) => {
+    let payload: unknown
+    try {
+      payload = JSON.parse(typeof body === 'string' && body.trim() ? body : '{}')
+    } catch {
+      return sendWechatSendError(res, 400, 'INVALID_REQUEST', '请求体 JSON 解析失败')
+    }
+
+    const parsed = parseWechatSendPayload(payload)
+    if (!parsed.ok) {
+      return sendWechatSendError(res, parsed.status, parsed.code, parsed.message)
+    }
+
+    // 发送能力必须在真正投递前确认：否则失败只能等到 runtime 超时后才知道。
+    let capability: PersonalWechatSendCapability
+    try {
+      capability = await deps.getCapability()
+    } catch (error) {
+      return sendWechatSendError(
+        res,
+        503,
+        'SEND_CAPABILITY_UNAVAILABLE',
+        '个人微信发送能力探测失败',
+        { reason: error instanceof Error ? error.message : String(error) }
+      )
+    }
+    if (!capability.supported) {
+      return sendWechatSendError(
+        res,
+        503,
+        'UNSUPPORTED_PLATFORM',
+        capability.message || '当前平台不支持个人微信发送',
+        { capabilityStatus: capability.status }
+      )
+    }
+    if (!capability.ready) {
+      return sendWechatSendError(
+        res,
+        503,
+        'SEND_CAPABILITY_UNAVAILABLE',
+        capability.message || '个人微信发送能力未就绪',
+        {
+          capabilityStatus: capability.status,
+          ...(capability.error ? { reason: capability.error } : {})
+        }
+      )
+    }
+    const contentType = parsed.content.type
+    if (!capability.capabilities[contentType]) {
+      const label = contentType === 'text' ? '文字' : contentType === 'image' ? '图片' : '语音'
+      return sendWechatSendError(res, 503, 'SEND_NOT_READY', `当前微信发送能力不支持发送${label}`, {
+        capabilityStatus: capability.status,
+        capabilities: capability.capabilities
+      })
+    }
+
+    let result: WechatActionResult
+    try {
+      result = await deps.execute({
+        origin: 'http_api',
+        purpose: `api_${contentType}` as WechatActionRequest['purpose'],
+        triggerType: 'user',
+        recipient: parsed.recipient,
+        content: parsed.content,
+        ...(parsed.idempotencyKey ? { idempotencyKey: parsed.idempotencyKey } : {})
+      })
+    } catch (error) {
+      return sendWechatSendError(res, 500, 'INTERNAL_ERROR', '微信发送执行失败', {
+        reason: error instanceof Error ? error.message : String(error)
+      })
+    }
+
+    const status = wechatActionResultStatus(result)
+    sendJson(res, status, {
+      success: result.status === 'sent',
+      status: result.status,
+      actionId: result.actionId,
+      recipient: parsed.recipient,
+      contentType,
+      durationMs: actionDurationMs(result),
+      ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+      ...(result.reason ? { error: result.reason } : {})
+    })
+  })
+}
+
+/**
+ * 发送端点的错误响应保持扁平：Agent 读 `errorCode` 就能分支，
+ * 不需要再往 `details` 里翻一层（`sendError` 的通用结构会多包一层）。
+ */
+function sendWechatSendError(
+  res: ServerResponse,
+  status: number,
+  errorCode: string,
+  message: string,
+  extra?: Record<string, unknown>
+): void {
+  sendJson(res, status, {
+    success: false,
+    errorCode,
+    error: message,
+    ...(extra || {})
+  })
+}
 
 function parseJsonBody(body: unknown): unknown {
   if (typeof body !== 'string' || !body.trim()) {
@@ -1043,6 +1341,12 @@ export function startHttpServer(
   const scheduledReportApi = createScheduledReportApi(options)
   const queryApi = options.queryApiService || configuredQueryApiService || new LocalQueryApiService()
   const agentApi = createAgentApiService(options)
+  const wechatSendApi: WechatSendApiDependencies = {
+    getCapability:
+      options.wechatSendCapabilityProvider ||
+      (() => personalWechatCapabilityService.getPersonalWechatSendCapability()),
+    execute: options.wechatSendExecutor || ((request) => wechatActionGateway.execute(request))
+  }
   return new Promise((resolve, reject) => {
     const server: Server = http.createServer(async (req, res) => {
       const requestId = requestIdFor(req)
@@ -1064,6 +1368,7 @@ export function startHttpServer(
         const handler =
           routes[url.pathname] ||
           createAgentApiRoute(url.pathname, agentApi) ||
+          createWechatSendRoute(url.pathname, wechatSendApi) ||
           createScheduledReportRoute(url.pathname, scheduledReportApi) ||
           (url.pathname.startsWith(QUERY_ROUTE_PREFIX)
             ? createQueryRoute(url.pathname, queryApi)

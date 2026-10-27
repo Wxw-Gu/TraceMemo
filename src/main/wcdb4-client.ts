@@ -3044,6 +3044,50 @@ export class Wcdb4Client {
     return this.key
   }
 
+  /** 按 (localId, createTime) 取回一条消息的原始 content。 */
+  getRawMessageContent(username: string, localId: number, createTime?: number): string | null {
+    if (!this.wcdbExecQuery) return null
+    const targetId = Math.trunc(Number(localId) || 0)
+    if (!username || targetId <= 0) return null
+    const anchorTime = Math.trunc(Number(createTime) || 0)
+
+    let stores: Wcdb4MessageStore[] = []
+    try {
+      stores = this.listMessageStores(username)
+    } catch {
+      return null
+    }
+
+    const candidates: string[] = []
+    for (const store of stores) {
+      const conditions = [`"local_id" = ${targetId}`]
+      if (anchorTime > 0) {
+        conditions.push(`"create_time" = ${anchorTime}`)
+      }
+      const sql = `${this.messageTableSelect(store)} WHERE ${conditions.join(' AND ')} LIMIT 5`
+      let rows: Record<string, unknown>[] = []
+      try {
+        rows = this.executeMessageSql(store, sql)
+      } catch {
+        continue
+      }
+      for (const row of rows) {
+        try {
+          const message = this.normalizeMessage(row)
+          if (typeof message.msgContent === 'string' && message.msgContent.trim()) {
+            candidates.push(message.msgContent)
+          }
+        } catch {
+          // 单行解析失败不影响其它分片；定位信息不全时这里本来就可能拿不到。
+        }
+      }
+    }
+
+    if (candidates.length === 0) return null
+    candidates.sort((left, right) => right.length - left.length)
+    return candidates[0]
+  }
+
   resolveImageHardlink(md5: string): Wcdb4ImageHardlink | null {
     if (!this.wcdbResolveImageHardlink) return null
     const normalizedMd5 = String(md5 || '')

@@ -48,6 +48,7 @@ Token 由应用生成并保存在本机，**不接受用环境变量覆盖**：A
 | GET    | `/api/v1/agent/status`                                          | Agent Hub、连接器和数据库状态          | 无                                                              |
 | POST   | `/api/v1/agent/group-report`                                    | 读取群聊并生成总结图片                 | `{ "group": "群名或标识", "range": "today\|yesterday\|7days" }` |
 | POST   | `/api/v1/agent/send`                                            | 通过已连接机器人测试发送文字或本地图片 | `{ "to": "接收者", "text": "...", "media_url": "..." }`         |
+| POST   | `/api/v1/wechat/send`                                           | 用本机微信账号把消息发给别人           | `{ "to": "wxid 或 filehelper", "type": "text\|image\|voice", "text": "..." }` |
 | GET    | `/api/v1/wechat-personal/send-capability`                       | 个人微信发送能力状态                   | 无                                                              |
 | GET    | `/api/v1/scheduled-reports`                                     | 定时日报任务列表                       | 无                                                              |
 | POST   | `/api/v1/scheduled-reports`                                     | 创建定时日报任务                       | `ScheduledReportApiCreateRequest` JSON                          |
@@ -75,6 +76,86 @@ Token 由应用生成并保存在本机，**不接受用环境变量覆盖**：A
 | GET    | `/api/v1/groups/{conversationId}/member-stats`                     | 查询群成员活跃统计                       | 必填 `conversationId`、`start`、`end`                          |
 
 `/api/v1/query/*` 是一组结构化的 Query 端点，见下方[LLM-friendly Query Tool API](#llm-friendly-query-tool-api)。
+
+## 发送消息 API
+
+两个发送端点走**完全不同的通道**，用途也不同，不要混用。
+
+| | `POST /api/v1/wechat/send` | `POST /api/v1/agent/send` |
+| --- | --- | --- |
+| 通道 | 本机微信（macOS native runtime / Windows hook） | Agent Hub 机器人（iLink） |
+| 身份 | 你本人当前登录的微信账号 | 已扫码接入的机器人 |
+| 用途 | **以你的身份把消息发给别人**（好友 / 群 / 文件传输助手） | **机器人给自己发通知**（测试连通性） |
+| 前置条件 | 本机微信已启动，发送能力为 `ready` | 连接器为 `online` |
+| 内容类型 | `text` / `image` / `voice`，媒体只接受本地文件 | `text` / `image`（URL 或本地路径） |
+| 典型失败 | 能力未就绪 `503`、发送失败 `502` | 连接器离线 `503`、凭证过期 `401` |
+
+### 本地发送：`POST /api/v1/wechat/send`
+
+用你正在登录的微信账号发消息。**这是唯一能把消息发给别人（而不是发给机器人自己）的端点。**
+
+```bash
+: "${TRACEMEMO_API_TOKEN:?Set TRACEMEMO_API_TOKEN from API Center}"
+curl -X POST http://127.0.0.1:6131/api/v1/wechat/send \
+  -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"filehelper","type":"text","text":"来自 Agent 的一条消息"}'
+```
+
+请求体：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `to` | 是 | 接收者：好友 wxid、群 id（以 `@chatroom` 结尾），或 `filehelper`（文件传输助手）。**不做昵称解析**，先调 `/api/v1/resolve?q=张三` 换 wxid |
+| `type` | 否 | `text`（默认）/ `image` / `voice` |
+| `text` | `type=text` 时必填 | **最长 2000 字符**，超限返回 `400`，不会截断 |
+| `filePath` | `type=image\|voice` 时必填 | 本机**绝对路径**，必须已存在。不接受 URL —— 需要发网络图片时先落盘 |
+| `isGroup` | 否 | 通常可省略；`to` 以 `@chatroom` 结尾时自动判为群 |
+| `idempotencyKey` | 否 | 幂等键。**重试时请原样带上**，避免 Agent 超时重发导致重复消息 |
+
+发送前会先校验当前发送能力（等价于 `GET /api/v1/wechat-personal/send-capability`）：`ready=false` 时直接返回 `503`，不会进入投递；`capabilities[type]=false` 时返回 `503 SEND_NOT_READY`。
+
+> **没有 3 秒节流。** 自动化规则（定时日报、退群通知）之间共享 3 秒发送间隔，但本端点属于手动发送，**不受该队列约束**：连续调用会连续投递。Agent 需要自行控制频率，不要用它循环刷消息。
+
+响应：
+
+```json
+{
+  "success": true,
+  "status": "sent",
+  "actionId": "5f0c…",
+  "recipient": { "type": "contact", "id": "filehelper" },
+  "contentType": "text",
+  "durationMs": 842
+}
+```
+
+| HTTP | `errorCode` | 含义 |
+| --- | --- | --- |
+| `400` | `INVALID_REQUEST` / `INVALID_RECIPIENT` | 字段缺失、`text` 超长、`filePath` 不存在 |
+| `403` | `POLICY_BLOCKED` / `ACTION_NOT_ALLOWED` / `RECIPIENT_SCOPE_VIOLATION` | 发送策略拒绝 |
+| `502` | `SEND_FAILED` | 已进入投递，底层发送失败（看 `error`） |
+| `503` | `SEND_CAPABILITY_UNAVAILABLE` | 微信未启动 / 未绑定 / 未初始化 |
+| `503` | `SEND_NOT_READY` | 能力在，但不支持该内容类型（例如语音 hook 未就绪） |
+| `503` | `UNSUPPORTED_PLATFORM` | 非 macOS / Windows |
+| `500` | `INTERNAL_ERROR` | 网关执行抛出未预期异常 |
+
+> **`status: "sent"` 只代表投递成功，不等于消息已写入本地数据库。** TraceMemo 读的是微信本地库，自己发出的消息可能延迟落库，也可能根本不会写入。因此不要用 `/api/v1/chatlog` 回查自己刚发的消息来判断是否发送成功 —— 查不到是正常现象；也**不要**因为本地库没有就重发，那会产生真实的重复消息。需要人工确认时，让对方用手机微信或另一个账号查看会话。
+
+每一次发送都会写入 `actions/wechat-actions.json` 审计记录（`origin` 为 `http_api`），可在 Send Log 中核对。这份记录证明的是「调用过并成功投递」，**不能**证明对方已收到或本地库已落库。
+
+### 机器人通知：`POST /api/v1/agent/send`
+
+走已扫码的 Agent Hub 连接器，给**自己**发一条测试消息，用于确认机器人链路是否通畅。它不适合「通知某人」这类场景 —— 那要用上面的 `/api/v1/wechat/send`。
+
+```bash
+curl -X POST http://127.0.0.1:6131/api/v1/agent/send \
+  -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"<你的 wxid>","text":"connector ok"}'
+```
+
+`to` 省略时回落到当前登录账号自己。`media_url` 可传 URL。连接器离线返回 `503`，凭证过期返回 `401`。
 
 ## Application Capabilities
 
@@ -390,7 +471,7 @@ curl -X POST -H "$AUTH" -H 'Content-Type: application/json' "$BASE/query/voice-t
 
 Reader Skill 是随应用分发的说明文件。它被安装到 Agent 自己的 Skill 目录之后就与 TraceMemo 分离了，不再随应用升级自动变化，所以它必须能自己证明版本：
 
-- `SKILL.md` frontmatter 的 `version` 是**唯一真源**（形如 `1.3.0`）；
+- `SKILL.md` frontmatter 的 `version` 是**唯一真源**（形如 `1.4.0`）；
 - `/api/v1/health` 的 `skill.version` 回报当前应用内置的版本；
 - 两者不一致，就说明 Agent 手里那份已经过期，接口契约可能已经变化。
 
@@ -405,8 +486,8 @@ curl http://127.0.0.1:6131/api/v1/health
   "ok": true,
   "ready": true,
   "service": "TraceMemo Reader",
-  "version": "2.5.0",
-  "skill": { "name": "tracememo-reader", "version": "1.3.0", "available": true },
+  "version": "2.5.1",
+  "skill": { "name": "tracememo-reader", "version": "1.4.0", "available": true },
   "timestamp": "2026-10-13T08:43:52.863Z"
 }
 ```
@@ -423,10 +504,10 @@ curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
 ```json
 {
   "name": "tracememo-reader",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "contentHash": "<sha256 hex>",
   "modifiedAt": "2026-10-13T08:37:30.000Z",
-  "markdown": "---\nname: tracememo-reader\nversion: 1.3.0\n…"
+  "markdown": "---\nname: tracememo-reader\nversion: 1.4.0\n…"
 }
 ```
 

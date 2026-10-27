@@ -1739,8 +1739,11 @@
 }
 
 .quoted-sender {
-  flex: 0 1 auto;
+  // 名字优先：两个 flex 项都按比例收缩时，长引用会把名字压成半个字（只剩一个冒号），
+  // 所以名字固定不参与收缩，只用 max-width 限制它最多占六成，剩下的留给正文。
+  flex: 0 0 auto;
   min-width: 0;
+  max-width: 60%;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1752,7 +1755,12 @@
 }
 
 .quoted-text {
-  flex: 0 0 auto;
+  // 收缩全部落在正文上（名字已固定），单行省略；全文由引用框的 title 兜底。
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .quote-reply {

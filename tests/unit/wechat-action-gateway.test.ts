@@ -524,6 +524,35 @@ describe('WechatActionGateway', () => {
       expect(result.errorCode).toBe('INVALID_REQUEST')
       expect(mocks.sender.send).not.toHaveBeenCalled()
     })
+
+    it('放行 HTTP API 来源，并在审计里与人工发送区分开', async () => {
+      const userData = mkdtempSync(join(tmpdir(), 'tracememo-wechat-action-'))
+      directories.push(userData)
+      const gateway = new WechatActionGateway({ getUserDataPath: () => userData })
+
+      const result = await manualAction(gateway, {
+        origin: 'http_api',
+        purpose: 'api_text',
+        recipient: { type: 'contact', id: 'filehelper' },
+        content: { type: 'text', text: '来自 Agent' }
+      })
+
+      expect(result).toMatchObject({ status: 'sent', decision: 'allow' })
+      expect(mocks.sender.send).toHaveBeenCalledWith({
+        type: 'text',
+        to: 'filehelper',
+        isGroup: false,
+        text: '来自 Agent'
+      })
+      const audit = readJsonSync(join(userData, 'actions', 'wechat-actions.json'))
+      expect(audit[0]).toMatchObject({
+        origin: 'http_api',
+        purpose: 'api_text',
+        triggerType: 'user',
+        recipientId: 'filehelper',
+        sendStatus: 'sent'
+      })
+    })
   })
 
   describe('toPersonalWechatSendResult', () => {
