@@ -569,9 +569,6 @@ export class Wcdb4Client {
   private wcdbMsgInsertGetSwitches:
     | ((handle: number, dbPath: string, outJson: WcdbVoidOut) => number)
     | null = null
-  private wcdbMsgInsertListShardCatalog:
-    | ((handle: number, outJson: WcdbVoidOut) => number)
-    | null = null
   private wcdbGetGroupNicknames:
     | ((handle: number, chatroomId: string, outJson: WcdbVoidOut) => number)
     | null = null
@@ -1938,7 +1935,7 @@ export class Wcdb4Client {
   /**
    * 读取「微信消息插入规则」的分片目录（只读）。
    *
-   * 每个分片只跑两条查询（表清单 + 规则清单），拿回来之后调用方可以在本地用
+   * 每个分片只跑一条 sqlite_master 查询，拿回来之后调用方可以在本地用
    * md5(roomId) 匹配出「每个会话落在哪些分片、规则齐不齐」。这样即使会话很多，
    * 判断全部会话的状态也只是一次目录读取，不需要按会话逐个查库。
    */
@@ -1950,29 +1947,40 @@ export class Wcdb4Client {
         shard: string
         dbPath: string
         configTable: boolean
-        storeTables: { capture: boolean; names: boolean; queue: boolean }
         tables: string[]
         rules: Array<{ name: string; table: string }>
       }>
     }
     error?: string
   } {
-    if (!this.wcdbMsgInsertListShardCatalog) {
+    if (!this.wcdbExecQuery) {
       return { success: false, error: '当前 WCDB 服务不支持消息插入规则目录' }
     }
     try {
-      const catalog = this.callJson<{
-        shardCount: number
-        shards: Array<{
-          shard: string
-          dbPath: string
-          configTable: boolean
-          storeTables: { capture: boolean; names: boolean; queue: boolean }
-          tables: string[]
-          rules: Array<{ name: string; table: string }>
-        }>
-      }>((handle, outJson) => this.wcdbMsgInsertListShardCatalog!(handle, outJson))
-      return { success: true, catalog }
+      // 专用 native 目录接口在部分 Windows 数据库上会终止进程，改走已有的只读 SQL 通道。
+      const shards = this.listMessageShardPaths().map((dbPath) => {
+        const rows = this.callJson<{ name: string; type: string; tbl_name: string }[]>(
+          (handle, outJson) =>
+            this.wcdbExecQuery!(
+              handle,
+              'message',
+              dbPath,
+              "SELECT name, type, tbl_name FROM sqlite_master WHERE type IN ('table', 'trigger')",
+              outJson
+            )
+        )
+        const tables = rows.filter((row) => row.type === 'table').map((row) => row.name)
+        return {
+          shard: path.basename(dbPath),
+          dbPath,
+          configTable: tables.includes('_tm_config'),
+          tables,
+          rules: rows
+            .filter((row) => row.type === 'trigger')
+            .map((row) => ({ name: row.name, table: row.tbl_name }))
+        }
+      })
+      return { success: true, catalog: { shardCount: shards.length, shards } }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
@@ -3338,14 +3346,6 @@ export class Wcdb4Client {
       ) as (handle: number, dbPath: string, outJson: WcdbVoidOut) => number
     } catch {
       this.wcdbMsgInsertGetSwitches = null
-    }
-
-    try {
-      this.wcdbMsgInsertListShardCatalog = lib.func(
-        'int32 wcdb_msg_insert_list_shard_catalog(int64 handle, _Out_ void** outJson)'
-      ) as (handle: number, outJson: WcdbVoidOut) => number
-    } catch {
-      this.wcdbMsgInsertListShardCatalog = null
     }
 
     try {
