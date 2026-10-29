@@ -2923,7 +2923,7 @@ export class Wcdb4Client {
 
     const handle = this.ensureHandle()
     const fn = this.wcdbGetVoiceData as unknown as KoffiAsyncFunction
-    return this.createTrackedNativeCall<Wcdb4VoiceDataResult>((resolve, reject) => {
+    const result = await this.createTrackedNativeCall<Wcdb4VoiceDataResult>((resolve, reject) => {
       const outHex: WcdbVoidOut = [null]
       fn.async(
         handle,
@@ -2948,7 +2948,9 @@ export class Wcdb4Client {
             resolve(
               hex === null
                 ? { success: false, error: '解析语音数据失败' }
-                : { success: true, hex, error: '' }
+                : hex
+                  ? { success: true, hex, error: '' }
+                  : { success: false, error: '语音数据为空' }
             )
           } finally {
             this.wcdbFreeString?.(outHex[0])
@@ -2956,6 +2958,51 @@ export class Wcdb4Client {
         }
       )
     })
+    if (result.success) return result
+    return (
+      (await this.getVoiceDataFromMediaShards(sessionId, createTime, candidates, localId, svrId)) || result
+    )
+  }
+
+  private async getVoiceDataFromMediaShards(
+    sessionId: string,
+    createTime: number,
+    candidates: string[],
+    localId: number,
+    svrId: string | number
+  ): Promise<Wcdb4VoiceDataResult | null> {
+    if (!this.wcdbExecQuery || !sessionId) return null
+    const serverId = String(svrId || 0)
+    const identity = /^-?[1-9]\d*$/.test(serverId)
+      ? `v.svr_id = ${serverId}`
+      : Number.isSafeInteger(localId) &&
+          localId > 0 &&
+          Number.isSafeInteger(createTime) &&
+          createTime > 0
+        ? `v.local_id = ${localId} AND v.create_time = ${createTime}`
+        : ''
+    if (!identity) return null
+    const sessions = this.uniq([sessionId, ...candidates])
+      .map((name) => `'${name.replace(/'/g, "''")}'`)
+      .join(',')
+    const messageRoot = path.join(this.dbStoragePath, 'message')
+    if (!fs.existsSync(messageRoot)) return null
+    // 部分 native 版本漏读后续媒体分片；按完整消息身份查询，避免同秒语音串条。
+    const shards = fs.readdirSync(messageRoot).filter((file) => /^media_\d+\.db$/.test(file)).sort()
+    for (const name of shards) {
+      try {
+        const rows = await this.callJsonAsync<{ hex?: string }[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          path.join(messageRoot, name),
+          `SELECT hex(v.voice_data) AS hex FROM VoiceInfo v JOIN Name2Id n ON n.rowid = v.chat_name_id WHERE n.user_name IN (${sessions}) AND ${identity} AND length(v.voice_data) > 0 LIMIT 1`
+        )
+        if (rows[0]?.hex) return { success: true, hex: rows[0].hex, error: '' }
+      } catch (error) {
+        console.warn(`[WCDB4] voice lookup failed in ${name}:`, error)
+      }
+    }
+    return null
   }
 
   async getVoiceDataBatch(requests: Wcdb4VoiceDataRequest[]): Promise<Wcdb4VoiceDataResult[]> {
