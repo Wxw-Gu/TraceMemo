@@ -66,6 +66,16 @@ export function deriveMacWechatSenderStatus({
 }: MacWechatSenderStatusInput): PersonalWechatSenderStatus {
   const identityMatches = binding !== null && bindingMatchesRuntimeManifest(binding, manifest)
   const stale = binding?.bindingState === 'stale'
+  const versionCapabilities = binding?.wechatVersion
+    ? manifest.capabilitiesByVersion?.[binding.wechatVersion]
+    : undefined
+  const nativeMechanism = versionCapabilities?.textMechanism === 'native-msg-object'
+  const nativeBindingReady =
+    identityMatches &&
+    nativeMechanism &&
+    binding?.runtimeState === 'ready' &&
+    binding.sessionAttached &&
+    binding.scriptLoaded
 
   let state: PersonalWechatSenderStatus['state'] = 'stopped'
   let message = '正在初始化微信发送能力'
@@ -78,12 +88,17 @@ export function deriveMacWechatSenderStatus({
   } else if (binding && !binding.wechatRunning) {
     state = 'wechat_not_running'
     message = '微信未运行'
-  } else if (binding?.bindingState === 'ready') {
+  } else if (binding?.runtimeState === 'unsupported_version') {
+    state = 'error'
+    message = binding.wechatVersion
+      ? `当前微信版本是 ${binding.wechatVersion}，不在支持列表`
+      : '当前微信版本不在支持列表'
+  } else if (binding?.bindingState === 'ready' || nativeBindingReady) {
     state = 'online'
     message = '个人微信已准备好发送日报'
   } else if (binding?.bindingState === 'bound' || binding?.bindingState === 'binding') {
     state = 'hook_not_ready'
-    message = '已绑定，等待捕获微信发送上下文'
+    message = nativeMechanism ? '已绑定，等待原生发送 hook 就绪' : '已绑定，等待捕获微信发送上下文'
   } else if (stale) {
     state = 'stopped'
     message = '检测到微信已重启，请重新绑定'
@@ -96,13 +111,20 @@ export function deriveMacWechatSenderStatus({
   }
 
   const runtimeCapabilities = new Set(manifest.capabilities)
-  const bindingReady = identityMatches && state === 'online' && binding?.sendContextReady === true
+  const supportsCapability = (name: 'text' | 'image' | 'voice'): boolean => {
+    if (manifest.capabilitiesByVersion) return versionCapabilities?.[name] === 'verified'
+    return runtimeCapabilities.has(name)
+  }
+  const bindingReady =
+    identityMatches &&
+    state === 'online' &&
+    (binding?.sendContextReady === true || nativeBindingReady)
   const canSendText =
-    bindingReady && runtimeCapabilities.has('text') && binding?.canSendText === true
+    bindingReady && supportsCapability('text') && binding?.canSendText === true
   const canSendImage =
-    bindingReady && runtimeCapabilities.has('image') && binding?.canSendImage === true
+    bindingReady && supportsCapability('image') && binding?.canSendImage === true
   const canSendVoice =
-    bindingReady && runtimeCapabilities.has('voice') && binding?.canSendVoice === true
+    bindingReady && supportsCapability('voice') && binding?.canSendVoice === true
   const sessionAttached = identityMatches && (binding?.sessionAttached ?? false)
   const scriptLoaded = identityMatches && (binding?.scriptLoaded ?? false)
 
@@ -159,7 +181,6 @@ class MacWechatRuntimeManager {
       endpoint: `http://${HOST}:${PORT}`,
       port: PORT,
       runtimeDir: this.resolveRuntimeDir(),
-      manifest: this.manifest ?? undefined,
       error: this.lastError ?? undefined,
       binding: this.lastBinding ?? undefined
     }
@@ -450,7 +471,11 @@ class MacWechatRuntimeManager {
     const { status, body } = await this.request('GET', '/bindingStatus')
     if (status !== 200) return null
     try {
-      this.lastBinding = JSON.parse(body) as MacWechatBindingStatus
+      const binding = JSON.parse(body) as MacWechatBindingStatus & {
+        supportedVersions?: string
+      }
+      delete binding.supportedVersions
+      this.lastBinding = binding
       /*
        * A 20s bind timeout is NOT proof of the orphan-agent wall: in the
        * stale-rebind path the host worker waits up to 45s for the old session
