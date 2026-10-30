@@ -755,6 +755,19 @@ function createWechatSendRoute(
   pathname: string,
   deps: WechatSendApiDependencies
 ): RouteHandler | undefined {
+  // 语音发送必须带「当前账号 wxid」：Windows hook 的语音对象需要它。
+  // IPC 路径一直有（index.ts 里的 chat.getSelfAccountInfoAsync），HTTP 路径漏了，
+  // 表现为 type=voice 一律 SEND_FAILED「无法识别当前微信账号 wxid」。
+  // 懒加载，避免 http-server 与 chat-service 形成静态循环依赖。
+  const resolveSelfWxid = async (): Promise<string> => {
+    try {
+      const chat = await import('./services/chat-service')
+      const self = await chat.getSelfAccountInfoAsync()
+      return String(self?.wxid || '').trim()
+    } catch {
+      return ''
+    }
+  }
   if (pathname !== WECHAT_SEND_ROUTE) return undefined
 
   return withMethods(['POST'], async ({ res, body }) => {
@@ -815,13 +828,15 @@ function createWechatSendRoute(
 
     let result: WechatActionResult
     try {
+      const fromId = contentType === 'voice' ? await resolveSelfWxid() : ''
       result = await deps.execute({
         origin: 'http_api',
         purpose: `api_${contentType}` as WechatActionRequest['purpose'],
         triggerType: 'user',
         recipient: parsed.recipient,
         content: parsed.content,
-        ...(parsed.idempotencyKey ? { idempotencyKey: parsed.idempotencyKey } : {})
+        ...(parsed.idempotencyKey ? { idempotencyKey: parsed.idempotencyKey } : {}),
+        ...(fromId ? { metadata: { fromId } } : {})
       })
     } catch (error) {
       return sendWechatSendError(res, 500, 'INTERNAL_ERROR', '微信发送执行失败', {
