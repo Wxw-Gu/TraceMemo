@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/explicit-function-return-type */
-const { chmodSync, existsSync, readdirSync, rmSync } = require('node:fs')
+const { chmodSync, existsSync, readFileSync, readdirSync, rmSync } = require('node:fs')
+const { createHash } = require('node:crypto')
 const { execFileSync } = require('node:child_process')
 const path = require('node:path')
 const asar = require('@electron/asar')
@@ -24,6 +25,13 @@ const REQUIRED_RUNTIME_PACKAGES = [
 // every Mach-O verifies strictly; spctl still rejects ad-hoc code, which is
 // acceptable for the SIP-disabled customer workflow.
 const MACOS_HELPER_NAMES = ['xkey_helper', 'xkey_helper_4_1_13']
+const MACOS_EDITION_CODE_PATHS = [
+  ['wcdb', 'macos', 'arm64', 'libwcdb_api.dylib'],
+  ['wcdb', 'macos', 'arm64', 'libWCDB.dylib'],
+  ['wcdb', 'macos', 'arm64', 'tm-wcdb-config-helper'],
+  ['runtime', 'darwin-arm64', 'tm-wechat-host'],
+  ['runtime', 'darwin-arm64', 'libtmwechat.dylib']
+]
 
 function getRuntimeResources(context) {
   const productName = context.packager.appInfo.productFilename
@@ -45,7 +53,25 @@ function validateSilkWasmRuntime(runtimeResources) {
   }
 }
 
-function validateFfmpegRuntime(runtimeResources, platform = process.platform) {
+function validateFfmpegRuntime(
+  runtimeResources,
+  platform = process.platform,
+  edition = process.env.TRACEMEMO_EDITION
+) {
+  if (platform === 'darwin' && edition) {
+    const editionFfmpeg = path.join(runtimeResources, 'resources', 'ffmpeg', 'ffmpeg')
+    if (!existsSync(editionFfmpeg)) throw new Error(`Missing staged macOS ffmpeg: ${editionFfmpeg}`)
+    const sharedBinary = path.join(
+      runtimeResources,
+      'app.asar.unpacked',
+      'node_modules',
+      'ffmpeg-static',
+      'ffmpeg'
+    )
+    rmSync(sharedBinary, { force: true })
+    chmodSync(editionFfmpeg, 0o755)
+    return editionFfmpeg
+  }
   const executable = platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
   const ffmpegPath = path.join(
     runtimeResources,
@@ -59,6 +85,171 @@ function validateFfmpegRuntime(runtimeResources, platform = process.platform) {
   }
   if (platform !== 'win32') chmodSync(ffmpegPath, 0o755)
   return ffmpegPath
+}
+
+function validateMacEditionResources(runtimeResources, edition, platform) {
+  if (platform !== 'darwin') return
+  const resources = path.join(runtimeResources, 'resources')
+  const markerPath = path.join(resources, 'tracememo-build.json')
+  if (!existsSync(markerPath)) throw new Error(`Missing macOS edition marker: ${markerPath}`)
+  const marker = JSON.parse(readFileSync(markerPath, 'utf8'))
+  if (marker.profile !== edition) throw new Error(`Expected ${edition} bundle, found ${String(marker.profile)}`)
+  const wcdb = path.join(resources, 'wcdb', 'macos', 'arm64')
+  const api = path.join(wcdb, 'libwcdb_api.dylib')
+  const companion = path.join(wcdb, 'libWCDB.dylib')
+  const helper = path.join(wcdb, 'tm-wcdb-config-helper')
+  const runtime = path.join(resources, 'runtime', 'darwin-arm64')
+  const host = path.join(runtime, 'tm-wechat-host')
+  const runtimeDylib = path.join(runtime, 'libtmwechat.dylib')
+  const runtimeManifest = path.join(runtime, 'runtime-manifest.json')
+  const nativeArtifacts = [helper, host, runtimeDylib, runtimeManifest]
+  const presentNativeArtifacts = nativeArtifacts.filter(existsSync)
+  if (edition === 'public' && presentNativeArtifacts.length) {
+    throw new Error(`Public bundle contains native artifacts: ${presentNativeArtifacts.join(', ')}`)
+  }
+  if (edition === 'native' && presentNativeArtifacts.length !== nativeArtifacts.length) {
+    throw new Error('Native bundle is missing WCDB helper or WeChat runtime files')
+  }
+  for (const protectedPath of [path.join(resources, '1.txt'), path.join(resources, 'runtime', 'runtime.zip')]) {
+    if (existsSync(protectedPath)) throw new Error(`Protected file leaked into macOS bundle: ${protectedPath}`)
+  }
+  if (!existsSync(api) || !existsSync(companion)) throw new Error('macOS bundle is missing WCDB files')
+  if (!readBinaryArchitectures(api).includes('arm64')) throw new Error('Bundled WCDB API is not arm64')
+  if (!readBinaryArchitectures(companion).includes('arm64')) throw new Error('Bundled WCDB companion is not arm64')
+  const apiDependencies = execFileSync('/usr/bin/otool', ['-L', api], { encoding: 'utf8' })
+  if (!apiDependencies.includes('@loader_path/libWCDB.dylib')) {
+    throw new Error('Bundled WCDB API is missing its @loader_path companion dependency')
+  }
+  const symbols = execFileSync('/usr/bin/nm', ['-gU', api], { encoding: 'utf8' })
+    .split(/\r?\n/)
+    .map((line) => line.trim().split(/\s+/).pop() || '')
+    .map((symbol) => symbol.replace(/^_/, ''))
+  const hasNativeAbi = symbols.some((symbol) => symbol.startsWith('wcdb_msg_insert_'))
+  if ((edition === 'public' && hasNativeAbi) || (edition === 'native' && !hasNativeAbi)) {
+    throw new Error(`Bundled WCDB API has the wrong ${edition} ABI`)
+  }
+  const nativeInput = marker.nativeInput || {}
+  if (edition === 'public') {
+    if (nativeInput.libwcdbApiSha256 && createHash('sha256').update(readFileSync(api)).digest('hex') !== nativeInput.libwcdbApiSha256) {
+      throw new Error('Packaged public WCDB API does not match the recorded WCDB input hash')
+    }
+    if (nativeInput.libWCDBSha256 && createHash('sha256').update(readFileSync(companion)).digest('hex') !== nativeInput.libWCDBSha256) {
+      throw new Error('Packaged public WCDB companion does not match the recorded WCDB input hash')
+    }
+  }
+  const requiredSymbols = [
+    'wcdb_get_messages',
+    'wcdb_get_group_members_batch',
+    'wcdb_start_monitor_pipe',
+    ...(edition === 'native'
+      ? [
+          'wcdb_msg_insert_set_switch',
+          'wcdb_msg_insert_get_switches',
+          'wcdb_msg_insert_list_shard_catalog',
+          'wcdb_msg_insert_ensure_rooms_rules',
+          'wcdb_msg_insert_get_rooms_status',
+          'wcdb_msg_insert_inspect_shard',
+          'wcdb_msg_insert_insert_local_notice',
+          'wcdb_msg_insert_insert_local_notice_ex',
+          'wcdb_msg_insert_sync_display_names'
+        ]
+      : [])
+  ]
+  const missingSymbols = requiredSymbols.filter((symbol) => !symbols.includes(symbol))
+  if (missingSymbols.length) throw new Error(`${edition} WCDB API is missing exports: ${missingSymbols.join(', ')}`)
+  const ffmpeg = path.join(resources, 'ffmpeg', 'ffmpeg')
+  if (!existsSync(ffmpeg) || !readBinaryArchitectures(ffmpeg).includes('arm64')) {
+    throw new Error(`macOS arm64 FFmpeg is missing or wrong architecture: ${ffmpeg}`)
+  }
+  if (marker.ffmpegSha256 && createHash('sha256').update(readFileSync(ffmpeg)).digest('hex') !== marker.ffmpegSha256) {
+    throw new Error('Packaged FFmpeg does not match its recorded staged hash')
+  }
+  for (const relative of [
+    'licenses/ffmpeg-static/LICENSE',
+    'licenses/ffmpeg-static/FFMPEG-LICENSE.txt',
+    'licenses/ffmpeg-static/FFMPEG-BUILD-INFO.txt'
+  ]) {
+    if (!existsSync(path.join(resources, relative))) {
+      throw new Error(`Missing FFmpeg license/build notice: ${relative}`)
+    }
+  }
+  if (edition === 'native') {
+    for (const binary of [helper, host, runtimeDylib]) {
+      if (!readBinaryArchitectures(binary).includes('arm64')) {
+        throw new Error(`Native binary lacks arm64 architecture: ${binary}`)
+      }
+    }
+    const manifest = JSON.parse(readFileSync(runtimeManifest, 'utf8'))
+    if (manifest.runtime !== 'tm-wechat-native') throw new Error('Runtime Manifest runtime name is invalid')
+    if (manifest.platform !== 'darwin-arm64' || manifest.architecture !== 'arm64' || manifest.protocolVersion !== 1) {
+      throw new Error('Runtime Manifest platform, architecture, or protocol is invalid')
+    }
+    for (const capability of ['text', 'image', 'voice']) {
+      if (!Array.isArray(manifest.capabilities) || !manifest.capabilities.includes(capability)) {
+        throw new Error(`Runtime Manifest is missing capability: ${capability}`)
+      }
+    }
+    if (!Array.isArray(manifest.supportedWechatVersions) || manifest.supportedWechatVersions.length === 0) {
+      throw new Error('Runtime Manifest has no supported WeChat versions')
+    }
+    const dylib = readFileSync(runtimeDylib)
+    for (const key of ['tmSendSourceSha256', 'addressProfileSha256']) {
+      if (!/^[a-f0-9]{64}$/.test(manifest[key] || '') || !dylib.includes(Buffer.from(manifest[key]))) {
+        throw new Error(`Runtime embedded hash mismatch: ${key}`)
+      }
+    }
+    if (!execFileSync('/usr/bin/otool', ['-L', helper], { encoding: 'utf8' }).includes('@loader_path/libwcdb_api.dylib')) {
+      throw new Error('Native helper is missing its @loader_path WCDB API dependency')
+    }
+    const actualRuntimeManifest = JSON.parse(readFileSync(runtimeManifest, 'utf8'))
+    if (actualRuntimeManifest.runtime !== 'tm-wechat-native' ||
+      actualRuntimeManifest.platform !== 'darwin-arm64' ||
+      actualRuntimeManifest.architecture !== 'arm64' ||
+      actualRuntimeManifest.protocolVersion !== 1 ||
+      !Array.isArray(actualRuntimeManifest.supportedWechatVersions) ||
+      actualRuntimeManifest.supportedWechatVersions.length === 0) {
+      throw new Error('Runtime Manifest failed application compatibility checks')
+    }
+    for (const key of ['tmSendSourceSha256', 'addressProfileSha256']) {
+      if (!/^[a-f0-9]{64}$/.test(actualRuntimeManifest[key] || '')) {
+        throw new Error(`Runtime Manifest has invalid ${key}`)
+      }
+    }
+    const stagedFiles = marker.nativeInput?.files
+    if (!Array.isArray(stagedFiles) || stagedFiles.length !== 6) {
+      throw new Error('Native build marker is missing its source Bundle file hashes')
+    }
+    for (const entry of stagedFiles) {
+      const remainder = entry.path.replace(/^tracememo\//, '')
+      const relative = remainder.startsWith('runtime/')
+        ? remainder.replace(/^runtime\//, 'runtime/darwin-arm64/')
+        : path.join('wcdb', 'macos', 'arm64', remainder.replace(/^wcdb\//, ''))
+      const binary = path.join(resources, relative)
+      if (!existsSync(binary) || readFileSync(binary).length !== entry.bytes) {
+        throw new Error(`Native packaged artifact size mismatch: ${entry.path}`)
+      }
+      const digest = createHash('sha256').update(readFileSync(binary)).digest('hex')
+      if (digest !== entry.sha256) throw new Error(`Native packaged artifact SHA-256 mismatch: ${entry.path}`)
+    }
+  }
+}
+
+function validateMacEditionProtectedFiles(runtimeResources) {
+  const asarPath = path.join(runtimeResources, 'app.asar')
+  if (!existsSync(asarPath)) throw new Error(`Missing packaged application archive: ${asarPath}`)
+  const entries = asar.listPackage(asarPath).map((entry) => entry.replaceAll('\\', '/'))
+  const leaked = entries.filter((entry) =>
+    /(^|\/)1\.txt$/i.test(entry) ||
+    /(^|\/)runtime\.zip$/i.test(entry) ||
+    /(^|\/)\.env(?:\.|$)/i.test(entry) ||
+    /\.(?:db|sqlite)(?:3)?$/i.test(entry) ||
+    /\.log$/i.test(entry)
+  )
+  if (leaked.length) throw new Error(`Sensitive file(s) leaked into app.asar: ${leaked.join(', ')}`)
+  for (const relative of ['1.txt', 'runtime/runtime.zip']) {
+    const candidate = path.join(runtimeResources, 'resources', relative)
+    if (existsSync(candidate)) throw new Error(`Protected file leaked into packaged resources: ${candidate}`)
+  }
 }
 
 function validateSherpaRuntime(runtimeResources, platform, arch) {
@@ -193,19 +384,28 @@ function isMacosCodeValid(targetPath, run = runCodesign) {
 }
 
 function findMacosHelperPaths(runtimeResources) {
-  return MACOS_HELPER_NAMES.map((name) => path.join(runtimeResources, 'resources', name)).filter(
-    (helperPath) => existsSync(helperPath)
-  )
+  const paths = MACOS_HELPER_NAMES.map((name) => path.join(runtimeResources, 'resources', name))
+  if (process.env.TRACEMEMO_EDITION) {
+    paths.push(...MACOS_EDITION_CODE_PATHS.map((segments) => path.join(runtimeResources, 'resources', ...segments)))
+  }
+  return paths.filter((helperPath) => existsSync(helperPath))
 }
 
 function signMacosHelpers(runtimeResources, run = runCodesign) {
   const helperPaths = findMacosHelperPaths(runtimeResources)
   for (const helperPath of helperPaths) {
-    chmodSync(helperPath, 0o755)
+    if (!helperPath.endsWith('.dylib')) chmodSync(helperPath, 0o755)
     if (!isMacosCodeValid(helperPath, run)) {
       run(['--force', '--sign', '-', helperPath])
     }
-    for (const arch of ['arm64', 'x86_64']) {
+    const architectures = readBinaryArchitectures(helperPath)
+    if (architectures.length === 0 && process.env.TRACEMEMO_EDITION) {
+      throw new Error(`macOS edition helper is not a supported Mach-O: ${helperPath}`)
+    }
+    const verificationArchitectures = architectures.length
+      ? architectures.map((arch) => (arch === 'x64' ? 'x86_64' : arch))
+      : ['arm64', 'x86_64']
+    for (const arch of verificationArchitectures) {
       try {
         run(['--verify', '--strict', '--arch', arch, helperPath])
       } catch (error) {
@@ -483,7 +683,12 @@ function isSendRuntimeBuild() {
 function enforceSendRuntimeBoundary(
   runtimeResources,
   platform,
-  bundlesSendRuntime = isSendRuntimeBuild()
+  bundlesSendRuntime =
+    process.env.TRACEMEMO_EDITION === 'native'
+      ? true
+      : process.env.TRACEMEMO_EDITION === 'public'
+        ? false
+        : isSendRuntimeBuild()
 ) {
   if (platform !== 'darwin') return null
   const found = findSendRuntime(runtimeResources)
@@ -532,6 +737,23 @@ exports.default = async function afterPack(context) {
   validateSherpaRuntime(runtimeResources, context.electronPlatformName, arch)
   validateSystemOcrRuntime(runtimeResources, context.electronPlatformName, arch)
   validateKoffiRuntime(runtimeResources, context.electronPlatformName, arch)
+  if (context.electronPlatformName === 'darwin' && process.env.TRACEMEMO_EDITION) {
+    validateMacEditionResources(runtimeResources, process.env.TRACEMEMO_EDITION, context.electronPlatformName)
+    validateMacEditionProtectedFiles(runtimeResources)
+    if (process.env.TRACEMEMO_EDITION === 'public' && sendRuntime) {
+      throw new Error('Public edition unexpectedly includes a WeChat Runtime')
+    }
+    if (process.env.TRACEMEMO_EDITION === 'native' && !sendRuntime) {
+      throw new Error('Native edition is missing its WeChat Runtime')
+    }
+    if (sendRuntime) {
+      for (const runtimeFile of ['tm-wechat-host', 'libtmwechat.dylib', 'runtime-manifest.json']) {
+        if (!existsSync(path.join(sendRuntime, runtimeFile))) {
+        throw new Error(`Runtime file missing after packaging: ${runtimeFile}`)
+        }
+      }
+    }
+  }
   pruneIntelMacKeyTool(runtimeResources, context.electronPlatformName, arch)
   pruneForeignArchConnectors(runtimeResources, context.electronPlatformName, arch)
   pruneForeignArchNativeRuntimes(runtimeResources, context.electronPlatformName, arch)
@@ -554,6 +776,8 @@ exports.validateSilkWasmRuntime = validateSilkWasmRuntime
 exports.validateSherpaRuntime = validateSherpaRuntime
 exports.validateSystemOcrRuntime = validateSystemOcrRuntime
 exports.validateKoffiRuntime = validateKoffiRuntime
+exports.validateMacEditionResources = validateMacEditionResources
+exports.validateMacEditionProtectedFiles = validateMacEditionProtectedFiles
 exports.pruneIntelMacKeyTool = pruneIntelMacKeyTool
 exports.pruneForeignArchConnectors = pruneForeignArchConnectors
 exports.pruneForeignArchNativeRuntimes = pruneForeignArchNativeRuntimes

@@ -5,6 +5,7 @@ import crypto from 'crypto'
 import { createRequire } from 'module'
 import { createConnection, Socket } from 'net'
 import { getResourceRoots } from './resource-paths'
+import { resolveWcdbLibrary } from './native-runtime-paths'
 import { wcdbDebugLog } from './wcdb-debug'
 import { looksLikePermissionDenied, PathAccessDeniedError } from './services/path-access-probe'
 import type { ImageMessageCountProbe } from '../shared/image-text-index'
@@ -3485,16 +3486,14 @@ export class Wcdb4Client {
   }
 
   static resolveNativeLibrary(): string {
-    const libName =
-      process.platform === 'darwin'
-        ? 'libwcdb_api.dylib'
-        : process.platform === 'linux'
-          ? 'libwcdb_api.so'
-          : 'wcdb_api.dll'
+    if (process.platform === 'darwin') {
+      const library = resolveWcdbLibrary()
+      if (library) return library
+      throw new Error('找不到当前发行版对应的 WCDB native 库')
+    }
+    const libName = process.platform === 'linux' ? 'libwcdb_api.so' : 'wcdb_api.dll'
     const platformDir =
-      process.platform === 'darwin'
-        ? 'macos'
-        : process.platform === 'win32'
+      process.platform === 'win32'
           ? 'win32'
           : process.platform
     const archDir = process.arch === 'arm64' ? 'arm64' : 'x64'

@@ -174,25 +174,17 @@ export function MessageInsertSwitches(): React.JSX.Element {
     [humanize, pending, refresh, toast]
   )
 
-  /*
-   * helper 缺失时**提前**禁用，而不是等用户点了再弹「缺少写入组件」。
-   * 写开关必须靠那个一次性子进程，缺了它这个开关根本没法工作 ——
-   * 让人点了才失败是最差的一种交互。
-   */
-  /*
-   * 写入组件缺失 = **这个能力还没开放**，不是安装坏了。
-   *
-   * 主进程对微信库只有只读连接，任何写入都要 spawn 那个一次性写入组件；当前分发的
-   * 安装包不带它（它随发送运行时按需分发），所以「微信内防撤回提示」与
-   * 「微信内退群监控消息」一律按"下个版本开放"呈现 —— 不该让用户去排查自己的安装。
-   * （machine-readable 的原因仍然是 snapshot.helperAvailable，授权层可以据此判断。）
-   */
+  /* 微信内消息插入必须依赖可用的发送组件；能力状态由主进程统一判定。 */
   const helperMissing = snapshot?.helperAvailable === false
-  const blocked = blockedReason ?? (helperMissing ? '该能力将在下个版本开放' : null)
+  const capabilityNotice = snapshot?.sendCapabilityAvailable === false
+    ? '微信内防撤回与退群消息插入仅在 TraceMemo 具备发送能力时开放；退群检测和历史记录不受影响'
+    : null
+  const blocked = capabilityNotice ?? blockedReason ?? (helperMissing ? '该能力暂不可用' : null)
   const disabled = blocked !== null
 
   return (
     <div className="automation-msg-insert-switches" title={blocked ?? undefined}>
+      {capabilityNotice ? <p className="automation-notice warning" role="status">{capabilityNotice}</p> : null}
       {loading ? <Spinner /> : null}
       {MSG_INSERT_SWITCH_LABELS.map(({ name, label, hint }) => {
         const status: MsgInsertSwitchStatus | undefined = snapshot?.switches?.[name]

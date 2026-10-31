@@ -5,7 +5,7 @@ import os from 'os'
 import { app } from 'electron'
 import { execFile } from 'child_process'
 import { Worker } from 'worker_threads'
-import ffmpegStaticPath from 'ffmpeg-static'
+import { resolveBundledFfmpegPath } from './ffmpeg-path'
 import type { ImageDecoderSource, ImageDecoderStatus } from '../shared/image-decryption'
 import { imageFileQuality, imageQualityRank } from '../shared/image-quality'
 import { loadSettings } from './services/settings-store'
@@ -78,9 +78,7 @@ function getFfmpegCandidates(selectedPath = loadSettings().ffmpegPath): FfmpegCa
   const selected = String(selectedPath || '').trim()
   const environment = String(process.env['FFMPEG_BIN'] || '').trim()
   const executable = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
-  const staticExecutable = String(ffmpegStaticPath || '')
-    .replace('app.asar', 'app.asar.unpacked')
-    .trim()
+  const staticExecutable = resolveBundledFfmpegPath()
   const candidates: FfmpegCandidate[] = [
     ...(selected ? [{ executable: selected, source: 'selected' as const }] : []),
     ...(environment ? [{ executable: environment, source: 'environment' as const }] : []),

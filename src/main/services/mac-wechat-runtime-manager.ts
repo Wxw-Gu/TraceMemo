@@ -6,7 +6,7 @@ import { join } from 'path'
 import { app } from 'electron'
 
 import { appLogger } from '../app-logger'
-import { isPackagedRuntime } from '../runtime-mode'
+import { isMacNativeRuntimeUnavailable, resolveWechatRuntimeDirectory } from '../native-runtime-paths'
 import type {
   MacWechatBindResult,
   MacWechatBindingStatus,
@@ -180,25 +180,31 @@ class MacWechatRuntimeManager {
       wechatRestartRequired: this.wechatRestartRequired,
       endpoint: `http://${HOST}:${PORT}`,
       port: PORT,
-      runtimeDir: this.resolveRuntimeDir(),
+      runtimeDir: this.resolveRuntimeDir() ?? undefined,
       error: this.lastError ?? undefined,
       binding: this.lastBinding ?? undefined
     }
   }
 
-  private resolveRuntimeDir(): string {
-    const base = isPackagedRuntime() ? process.resourcesPath : app.getAppPath()
-    return join(base, 'resources', 'runtime', 'darwin-arm64')
+  private resolveRuntimeDir(): string | null {
+    if (isMacNativeRuntimeUnavailable()) return null
+    const resolved = resolveWechatRuntimeDirectory()
+    if (resolved) return resolved
+    if (app.isPackaged) return null
+    return join(app.getAppPath(), 'resources', 'runtime', 'darwin-arm64')
   }
 
   private resolveHostPath(): string {
-    return join(this.resolveRuntimeDir(), 'tm-wechat-host')
+    return join(this.resolveRuntimeDir() || '', 'tm-wechat-host')
   }
 
   /** Runtime binaries present and executable? Cheap check for the settings UI. */
   isRuntimePresent(): boolean {
+    if (isMacNativeRuntimeUnavailable()) return false
     try {
-      this.manifest = readMacWechatRuntimeManifest(this.resolveRuntimeDir())
+      const runtimeDir = this.resolveRuntimeDir()
+      if (!runtimeDir) return false
+      this.manifest = readMacWechatRuntimeManifest(runtimeDir)
       return true
     } catch {
       return false
@@ -211,11 +217,22 @@ class MacWechatRuntimeManager {
    * online" and "WeChat bound" stay two independent states.
    */
   async ensureStarted(): Promise<MacWechatRuntimeSnapshot> {
+    if (isMacNativeRuntimeUnavailable()) {
+      this.manifest = null
+      this.lifecycle = 'stopped'
+      this.lastError = '当前环境不包含微信发送能力'
+      return this.getSnapshot()
+    }
     if (this.lifecycle === 'starting') {
       return this.getSnapshot()
     }
 
     const runtimeDir = this.resolveRuntimeDir()
+    if (!runtimeDir) {
+      this.lifecycle = 'stopped'
+      this.lastError = '暂无发送能力'
+      return this.getSnapshot()
+    }
     try {
       this.manifest = readMacWechatRuntimeManifest(runtimeDir)
       appLogger.write({
@@ -517,6 +534,32 @@ class MacWechatRuntimeManager {
    * circular import.
    */
   async buildSenderStatus(): Promise<PersonalWechatSenderStatus> {
+    if (isMacNativeRuntimeUnavailable()) {
+      const message = '当前环境不包含微信发送能力'
+      return {
+        state: 'runtime_missing',
+        platform: 'darwin',
+        arch: process.arch,
+        sipDisabled: true,
+        wechatRunning: false,
+        endpoint: `http://${HOST}:${PORT}`,
+        endpointReady: false,
+        runtimeReady: false,
+        attachReady: false,
+        baseAddressReady: false,
+        textHookInstalled: false,
+        textHookReady: false,
+        imageHookInstalled: false,
+        imageHookReady: false,
+        messageListenerReady: false,
+        canSend: false,
+        canSendText: false,
+        canSendImage: false,
+        canSendVoice: false,
+        message,
+        error: message
+      }
+    }
     /*
      * Lazy-start the host from status reads.
      *
@@ -534,7 +577,9 @@ class MacWechatRuntimeManager {
     /* Self-heal the status card too: if WeChat was restarted, drop the stale
      * restartRequired before it is read into the UI as an error. */
     try {
-      this.manifest = readMacWechatRuntimeManifest(this.resolveRuntimeDir())
+      const runtimeDir = this.resolveRuntimeDir()
+      if (!runtimeDir) throw new Error('runtime missing')
+      this.manifest = readMacWechatRuntimeManifest(runtimeDir)
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       appLogger.write({
@@ -605,6 +650,14 @@ class MacWechatRuntimeManager {
    * live WeChat pid again returns attached=false and never double-attaches.
    */
   async bind(): Promise<MacWechatBindResult> {
+    if (isMacNativeRuntimeUnavailable()) {
+      return {
+        ok: false,
+        attached: false,
+        state: 'runtime_offline',
+        message: '当前环境不包含微信发送能力'
+      }
+    }
     if (this.lifecycle !== 'online') {
       const snapshot = await this.ensureStarted()
       if (snapshot.lifecycle !== 'online') {
@@ -687,6 +740,7 @@ class MacWechatRuntimeManager {
    * leave its injected agent inside WeChat and make the next attach hang.
    */
   async shutdown(): Promise<void> {
+    if (isMacNativeRuntimeUnavailable()) return
     if (this.restartTimer) {
       clearTimeout(this.restartTimer)
       this.restartTimer = null

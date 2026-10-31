@@ -202,6 +202,7 @@ function buildMsgInsertSwitchesSnapshot(): MsgInsertSwitchesSnapshot {
   const scope = resolveMsgInsertScopeInput()
   if (scope) {
     const snapshot = readMsgInsertSwitches(scope)
+    snapshot.sendCapabilityAvailable = !isMacNativeRuntimeUnavailable()
     /* 退群提示的开关状态来自本地设置（事件驱动，不装规则），
      * 不是微信库里的 _tm_config。 */
     snapshot.switches.group_exit_notice = eventModeStatus(
@@ -213,6 +214,7 @@ function buildMsgInsertSwitchesSnapshot(): MsgInsertSwitchesSnapshot {
   }
   return {
     success: false,
+    sendCapabilityAvailable: !isMacNativeRuntimeUnavailable(),
     switches: {
       recall_notice: emptyMsgInsertStatus('recall_notice'),
       group_exit_notice: eventModeStatus(
@@ -390,6 +392,7 @@ import type {
   PersonalWechatSendResult,
   PersonalWechatSenderStatus
 } from '../shared/personal-wechat'
+import { isMacNativeRuntimeUnavailable } from './native-runtime-paths'
 import { isTruthyDebugFlag } from '../shared/debug-flags'
 import { TextToSpeechSettingsService } from './services/text-to-speech-settings-service'
 import type {
@@ -2250,6 +2253,14 @@ app.whenReady().then(async () => {
         status: emptyMsgInsertStatus('recall_notice'),
         errorCode: 'UNSUPPORTED_SWITCH',
         message: '未知的开关'
+      }
+    }
+    if (isMacNativeRuntimeUnavailable()) {
+      return {
+        success: false,
+        status: emptyMsgInsertStatus(name, 'HELPER_NOT_FOUND', '微信内消息插入仅在 TraceMemo 具备发送能力时开放'),
+        errorCode: 'HELPER_NOT_FOUND',
+        message: '微信内防撤回与退群消息插入仅在 TraceMemo 具备发送能力时开放；退群检测和历史记录不受影响'
       }
     }
     /*

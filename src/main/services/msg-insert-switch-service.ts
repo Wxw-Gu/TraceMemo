@@ -29,6 +29,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 
 import { findResource } from '../resource-paths'
+import { isMacNativeRuntimeUnavailable, resolveWcdbConfigHelper } from '../native-runtime-paths'
 import type { Wcdb4Client } from '../wcdb4-client'
 import {
   MSG_INSERT_SWITCHES,
@@ -156,6 +157,7 @@ export function emptyMsgInsertStatus(
  * 开发态与打包态都靠 findResource 解析，不依赖当前工作目录。
  */
 export function resolveHelperPath(): string | null {
+  if (process.platform === 'darwin') return resolveWcdbConfigHelper()
   /*
    * 平台/架构都要分。Windows 交付在 `resources/wcdb/win32/x64/`（注意是 win32 不是 windows），
    * 文件名带 `.exe`。以前这里三个候选全写死 macos —— Windows 上会恒返回 null，
@@ -640,6 +642,14 @@ export async function applyMsgInsertSwitch(
     }
   }
 
+  if (isMacNativeRuntimeUnavailable()) {
+    return {
+      success: false,
+      status: emptyMsgInsertStatus(input.name, 'HELPER_NOT_FOUND', '微信内消息插入仅在 TraceMemo 具备发送能力时开放'),
+      errorCode: 'HELPER_NOT_FOUND',
+      message: '微信内防撤回与退群消息插入仅在 TraceMemo 具备发送能力时开放；退群检测和历史记录不受影响'
+    }
+  }
   const helperPath = resolveHelperPath()
   if (!helperPath) {
     return {
@@ -716,6 +726,9 @@ export async function applyMsgInsertSwitch(
 export async function reconcileMsgInsertRules(
   input: MsgInsertScopeInput & { myWxid: string; databaseKey: string; extraRooms?: string[] }
 ): Promise<{ done: boolean; rooms: number; written: number; errorCode?: MsgInsertErrorCode }> {
+  if (isMacNativeRuntimeUnavailable()) {
+    return { done: false, rooms: 0, written: 0, errorCode: 'HELPER_NOT_FOUND' }
+  }
   const helperPath = resolveHelperPath()
   if (!helperPath || !input.databaseKey) {
     return {

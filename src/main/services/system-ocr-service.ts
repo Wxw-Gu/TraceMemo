@@ -36,6 +36,7 @@
 //   - macOS 没有"语言包缺失"这一失败模式。
 
 import crypto from 'node:crypto'
+import { resolveBundledFfmpegPath } from '../ffmpeg-path'
 import { spawn } from 'node:child_process'
 import {
   SYSTEM_OCR_CACHE_TTL_MS,
@@ -125,7 +126,7 @@ const defaultResolveFfmpegExecutable = (): string => {
   const fromEnvironment = String(process.env['FFMPEG_BIN'] || '').trim()
   if (fromEnvironment) return fromEnvironment
   try {
-    const bundled = require('ffmpeg-static') as string | null
+    const bundled = resolveBundledFfmpegPath()
     if (bundled) return bundled
   } catch {
     // 忽略：退回到 PATH 上的 ffmpeg

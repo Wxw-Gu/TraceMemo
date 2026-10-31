@@ -106,10 +106,11 @@ export interface MsgInsertSwitchStatus {
 
 export interface MsgInsertSwitchesSnapshot {
   success: boolean
+  sendCapabilityAvailable?: boolean
   switches: Record<MsgInsertSwitchName, MsgInsertSwitchStatus>
-  /** helper 是否可用（不可用时只能读不能写） */
+  /** 写入组件是否可用（不可用时只能读不能写） */
   /**
-   * **能力标志**：本机是否存在「微信内消息写入组件」（那个一次性 helper）。
+   * **能力标志**：本机是否存在「微信内消息写入组件」。
    *
    * 这是「微信内防撤回提示」和「微信内退群监控消息」的**唯一硬门槛**：
    * 主进程对微信库只持只读连接，任何写入都必须 spawn 那个组件，没有它两个功能都做不了。
@@ -117,9 +118,7 @@ export interface MsgInsertSwitchesSnapshot {
    * 语义上它是 **capability（能力）**，不是 error（错误）——
    * 缺失时 UI 显示「暂无法使用」，而不是「请重新安装」。
    *
-   * ⚠️ 它是**唯一**的能力判据，不要再新增第二份（曾经因为 native 与 TS 各存一份判据
-   * 而出现 946 里莫名少 323 的假象）。将来的授权/付费门禁应当**并列**加在它旁边
-   * （capability && entitlement），而不是替换它。
+   * 它是组件能力判据；授权状态应与其并列，不能替换它。
    */
   helperAvailable: boolean
   /** native code 只放这里，不往 UI 上抛 */

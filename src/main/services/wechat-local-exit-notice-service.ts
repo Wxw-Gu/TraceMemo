@@ -34,6 +34,7 @@ import type { GroupMemberExitedEvent } from '../../shared/group-exit-event'
 import { renderLeaveNotificationText } from '../../shared/group-exit-event'
 import { GROUP_EXIT_NOTIFICATION_TEMPLATE } from '../../shared/group-exit-monitor'
 import { findResource } from '../resource-paths'
+import { isMacNativeRuntimeUnavailable, resolveWcdbConfigHelper } from '../native-runtime-paths'
 
 export type LocalExitNoticeOutcome =
   | 'inserted'
@@ -63,6 +64,7 @@ const HELPER_TIMEOUT_MS = 20_000
 const RECENT_LIMIT = 50
 
 function helperPath(): string | null {
+  if (process.platform === 'darwin') return resolveWcdbConfigHelper()
   /* 与 msg-insert-switch-service 的 resolveHelperPath 保持一致：
    * Windows 走 wcdb/win32/<arch>/ 且文件名带 .exe。 */
   const arch = process.arch === 'x64' ? 'x64' : 'arm64'
@@ -149,6 +151,9 @@ export class WechatLocalExitNoticeService {
     }
     try {
       this.ensureLoaded()
+      if (isMacNativeRuntimeUnavailable()) {
+        return this.finish({ ...base, outcome: 'disabled', code: 'SEND_CAPABILITY_UNAVAILABLE' })
+      }
       if (!this.enabled) return this.finish({ ...base, outcome: 'disabled', code: 'DISABLED' })
       if (!event.eventId || !event.conversationId) {
         return this.finish({ ...base, outcome: 'failed', code: 'EVENT_INCOMPLETE' })
