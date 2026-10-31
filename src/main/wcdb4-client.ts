@@ -569,9 +569,6 @@ export class Wcdb4Client {
   private wcdbMsgInsertGetSwitches:
     | ((handle: number, dbPath: string, outJson: WcdbVoidOut) => number)
     | null = null
-  private wcdbMsgInsertListShardCatalog:
-    | ((handle: number, outJson: WcdbVoidOut) => number)
-    | null = null
   private wcdbGetGroupNicknames:
     | ((handle: number, chatroomId: string, outJson: WcdbVoidOut) => number)
     | null = null
@@ -1938,7 +1935,7 @@ export class Wcdb4Client {
   /**
    * 读取「微信消息插入规则」的分片目录（只读）。
    *
-   * 每个分片只跑两条查询（表清单 + 规则清单），拿回来之后调用方可以在本地用
+   * 每个分片只跑一条 sqlite_master 查询，拿回来之后调用方可以在本地用
    * md5(roomId) 匹配出「每个会话落在哪些分片、规则齐不齐」。这样即使会话很多，
    * 判断全部会话的状态也只是一次目录读取，不需要按会话逐个查库。
    */
@@ -1950,29 +1947,40 @@ export class Wcdb4Client {
         shard: string
         dbPath: string
         configTable: boolean
-        storeTables: { capture: boolean; names: boolean; queue: boolean }
         tables: string[]
         rules: Array<{ name: string; table: string }>
       }>
     }
     error?: string
   } {
-    if (!this.wcdbMsgInsertListShardCatalog) {
+    if (!this.wcdbExecQuery) {
       return { success: false, error: '当前 WCDB 服务不支持消息插入规则目录' }
     }
     try {
-      const catalog = this.callJson<{
-        shardCount: number
-        shards: Array<{
-          shard: string
-          dbPath: string
-          configTable: boolean
-          storeTables: { capture: boolean; names: boolean; queue: boolean }
-          tables: string[]
-          rules: Array<{ name: string; table: string }>
-        }>
-      }>((handle, outJson) => this.wcdbMsgInsertListShardCatalog!(handle, outJson))
-      return { success: true, catalog }
+      // 专用 native 目录接口在部分 Windows 数据库上会终止进程，改走已有的只读 SQL 通道。
+      const shards = this.listMessageShardPaths().map((dbPath) => {
+        const rows = this.callJson<{ name: string; type: string; tbl_name: string }[]>(
+          (handle, outJson) =>
+            this.wcdbExecQuery!(
+              handle,
+              'message',
+              dbPath,
+              "SELECT name, type, tbl_name FROM sqlite_master WHERE type IN ('table', 'trigger')",
+              outJson
+            )
+        )
+        const tables = rows.filter((row) => row.type === 'table').map((row) => row.name)
+        return {
+          shard: path.basename(dbPath),
+          dbPath,
+          configTable: tables.includes('_tm_config'),
+          tables,
+          rules: rows
+            .filter((row) => row.type === 'trigger')
+            .map((row) => ({ name: row.name, table: row.tbl_name }))
+        }
+      })
+      return { success: true, catalog: { shardCount: shards.length, shards } }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
@@ -2923,7 +2931,7 @@ export class Wcdb4Client {
 
     const handle = this.ensureHandle()
     const fn = this.wcdbGetVoiceData as unknown as KoffiAsyncFunction
-    return this.createTrackedNativeCall<Wcdb4VoiceDataResult>((resolve, reject) => {
+    const result = await this.createTrackedNativeCall<Wcdb4VoiceDataResult>((resolve, reject) => {
       const outHex: WcdbVoidOut = [null]
       fn.async(
         handle,
@@ -2948,7 +2956,9 @@ export class Wcdb4Client {
             resolve(
               hex === null
                 ? { success: false, error: '解析语音数据失败' }
-                : { success: true, hex, error: '' }
+                : hex
+                  ? { success: true, hex, error: '' }
+                  : { success: false, error: '语音数据为空' }
             )
           } finally {
             this.wcdbFreeString?.(outHex[0])
@@ -2956,6 +2966,51 @@ export class Wcdb4Client {
         }
       )
     })
+    if (result.success) return result
+    return (
+      (await this.getVoiceDataFromMediaShards(sessionId, createTime, candidates, localId, svrId)) || result
+    )
+  }
+
+  private async getVoiceDataFromMediaShards(
+    sessionId: string,
+    createTime: number,
+    candidates: string[],
+    localId: number,
+    svrId: string | number
+  ): Promise<Wcdb4VoiceDataResult | null> {
+    if (!this.wcdbExecQuery || !sessionId) return null
+    const serverId = String(svrId || 0)
+    const identity = /^-?[1-9]\d*$/.test(serverId)
+      ? `v.svr_id = ${serverId}`
+      : Number.isSafeInteger(localId) &&
+          localId > 0 &&
+          Number.isSafeInteger(createTime) &&
+          createTime > 0
+        ? `v.local_id = ${localId} AND v.create_time = ${createTime}`
+        : ''
+    if (!identity) return null
+    const sessions = this.uniq([sessionId, ...candidates])
+      .map((name) => `'${name.replace(/'/g, "''")}'`)
+      .join(',')
+    const messageRoot = path.join(this.dbStoragePath, 'message')
+    if (!fs.existsSync(messageRoot)) return null
+    // 部分 native 版本漏读后续媒体分片；按完整消息身份查询，避免同秒语音串条。
+    const shards = fs.readdirSync(messageRoot).filter((file) => /^media_\d+\.db$/.test(file)).sort()
+    for (const name of shards) {
+      try {
+        const rows = await this.callJsonAsync<{ hex?: string }[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          path.join(messageRoot, name),
+          `SELECT hex(v.voice_data) AS hex FROM VoiceInfo v JOIN Name2Id n ON n.rowid = v.chat_name_id WHERE n.user_name IN (${sessions}) AND ${identity} AND length(v.voice_data) > 0 LIMIT 1`
+        )
+        if (rows[0]?.hex) return { success: true, hex: rows[0].hex, error: '' }
+      } catch (error) {
+        console.warn(`[WCDB4] voice lookup failed in ${name}:`, error)
+      }
+    }
+    return null
   }
 
   async getVoiceDataBatch(requests: Wcdb4VoiceDataRequest[]): Promise<Wcdb4VoiceDataResult[]> {
@@ -3338,14 +3393,6 @@ export class Wcdb4Client {
       ) as (handle: number, dbPath: string, outJson: WcdbVoidOut) => number
     } catch {
       this.wcdbMsgInsertGetSwitches = null
-    }
-
-    try {
-      this.wcdbMsgInsertListShardCatalog = lib.func(
-        'int32 wcdb_msg_insert_list_shard_catalog(int64 handle, _Out_ void** outJson)'
-      ) as (handle: number, outJson: WcdbVoidOut) => number
-    } catch {
-      this.wcdbMsgInsertListShardCatalog = null
     }
 
     try {
