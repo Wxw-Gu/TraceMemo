@@ -33,8 +33,9 @@ import { app } from 'electron'
 import type { GroupMemberExitedEvent } from '../../shared/group-exit-event'
 import { renderLeaveNotificationText } from '../../shared/group-exit-event'
 import { GROUP_EXIT_NOTIFICATION_TEMPLATE } from '../../shared/group-exit-monitor'
-import { findResource } from '../resource-paths'
-import { isMacNativeRuntimeUnavailable, resolveWcdbConfigHelper } from '../native-runtime-paths'
+import { resolveWcdbConfigHelper } from '../native-runtime-paths'
+import { msgInsertCapabilityService } from './msg-insert-capability-service'
+import { resolveHelperPath } from './msg-insert-switch-service'
 
 export type LocalExitNoticeOutcome =
   | 'inserted'
@@ -58,28 +59,18 @@ interface StoredState {
   enabled?: boolean
 }
 
-const HELPER_NAME = 'tm-wcdb-config-helper'
 const HELPER_TIMEOUT_MS = 20_000
 /** 最近若干次插入结果，只用于诊断展示，不参与判定 */
 const RECENT_LIMIT = 50
 
 function helperPath(): string | null {
   if (process.platform === 'darwin') return resolveWcdbConfigHelper()
-  /* 与 msg-insert-switch-service 的 resolveHelperPath 保持一致：
-   * Windows 走 wcdb/win32/<arch>/ 且文件名带 .exe。 */
-  const arch = process.arch === 'x64' ? 'x64' : 'arm64'
-  const other = arch === 'arm64' ? 'x64' : 'arm64'
-  const platformDir = process.platform === 'win32' ? 'win32' : 'macos'
-  const suffix = process.platform === 'win32' ? '.exe' : ''
-  for (const candidate of [
-    `wcdb/${platformDir}/${arch}/${HELPER_NAME}${suffix}`,
-    `wcdb/${platformDir}/${other}/${HELPER_NAME}${suffix}`,
-    `wcdb/${platformDir}/${HELPER_NAME}${suffix}`
-  ]) {
-    const resolved = findResource(candidate)
-    if (resolved) return resolved
-  }
-  return null
+  /*
+   * 不在这里重复一份 resources 搜索逻辑。
+   * Windows 上 helper 可能被部署到外置目录，
+   * 只有一处解析入口，两条链路才不会各解析各的。
+   */
+  return resolveHelperPath()
 }
 
 /**
@@ -151,10 +142,14 @@ export class WechatLocalExitNoticeService {
     }
     try {
       this.ensureLoaded()
-      if (isMacNativeRuntimeUnavailable()) {
-        return this.finish({ ...base, outcome: 'disabled', code: 'SEND_CAPABILITY_UNAVAILABLE' })
-      }
       if (!this.enabled) return this.finish({ ...base, outcome: 'disabled', code: 'DISABLED' })
+      /* 判定走统一服务；未授权或超时一律不写，普通退群检测不受影响。 */
+      const capability = await msgInsertCapabilityService.getCapability({
+        databaseReady: true
+      })
+      if (!capability.canEnable) {
+        return this.finish({ ...base, outcome: 'disabled', code: capability.reasonCode })
+      }
       if (!event.eventId || !event.conversationId) {
         return this.finish({ ...base, outcome: 'failed', code: 'EVENT_INCOMPLETE' })
       }

@@ -186,7 +186,7 @@ describe('派生库句柄的账号身份缓存', () => {
     h.service.resetAccount()
   })
 
-  it('identity resolution cost is paid once per pass, not per image', async () => {
+  it('identity resolution cost is consumed once per pass, not per image', async () => {
     const RESOLVE_MS = 30
     const OCR_MS = 5
     const slow = createHarness({

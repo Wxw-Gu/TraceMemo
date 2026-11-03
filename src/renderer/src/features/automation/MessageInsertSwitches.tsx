@@ -122,7 +122,7 @@ export function MessageInsertSwitches(): React.JSX.Element {
   /** 把结果里的失败原因翻成人话；native code 只进日志。 */
   const humanize = React.useCallback((result: MsgInsertApplyResult): string => {
     const status = result.status
-    if (result.errorCode === 'HELPER_NOT_FOUND') return '缺少写入组件，请重新安装或更新 TraceMemo'
+    if (result.errorCode === 'HELPER_NOT_FOUND') return '缺少发送能力组件，请重新安装或更新 TraceMemo'
     if (result.errorCode === 'DATABASE_UNAVAILABLE') return '微信数据库未连接'
     if (result.errorCode === 'NO_TARGET_ROOMS') return '没有可作用的目标会话'
     if (status && status.failedShards > 0) {
@@ -174,21 +174,61 @@ export function MessageInsertSwitches(): React.JSX.Element {
     [humanize, pending, refresh, toast]
   )
 
-  /* 微信内消息插入必须依赖可用的发送组件；能力状态由主进程统一判定。 */
+  /* 开启要全绿，关闭永远放行——授权过期后关不掉比开不了更糟。 */
+  const capability = snapshot?.capability
   const helperMissing = snapshot?.helperAvailable === false
-  const capabilityNotice = snapshot?.sendCapabilityAvailable === false
-    ? '微信内防撤回与退群消息插入仅在 TraceMemo 具备发送能力时开放；退群检测和历史记录不受影响'
-    : null
-  const blocked = capabilityNotice ?? blockedReason ?? (helperMissing ? '该能力暂不可用' : null)
-  const disabled = blocked !== null
+
+  const noticeForEnable = ((): string | null => {
+    if (capability) {
+      if (capability.canEnable) return blockedReason ?? null
+      switch (capability.reasonCode) {
+        case 'LICENSE_REQUIRED':
+          return '需要有效授权才能开启'
+        case 'LICENSE_PENDING':
+          return '授权正在验证，稍等片刻再试'
+        case 'LICENSE_EXPIRED':
+          return '授权已过期，重新激活后可开启'
+        case 'LICENSE_INVALID':
+          return '授权无效，请重新激活'
+        case 'LICENSE_MACHINE_MISMATCH':
+          return '这份授权不属于本机'
+        case 'LICENSE_REVOKED':
+          return '授权已被吊销'
+        case 'LICENSE_UNAVAILABLE':
+          return '暂时无法确认授权状态'
+        case 'COMPONENT_MISSING':
+          return '当前安装未包含发送能力组件'
+        case 'COMPONENT_INVALID':
+          return '发送能力组件不完整，请重新安装'
+        case 'DATABASE_UNAVAILABLE':
+          return '微信数据库尚未连接'
+        case 'UNSUPPORTED_PLATFORM':
+          return '当前版本不包含此能力'
+        default:
+          return capability.message || null
+      }
+    }
+    if (helperMissing) return '该能力暂不可用'
+    return blockedReason ?? null
+  })()
+
+  const anyEnabled = MSG_INSERT_SWITCH_LABELS.some(
+    ({ name }) => snapshot?.switches?.[name]?.desiredEnabled === true
+  )
+  /* 顶部只给「想开但开不了」的场景一条总提示，避免每个开关重复一遍 */
+  const capabilityNotice = noticeForEnable && !anyEnabled ? noticeForEnable : null
 
   return (
-    <div className="automation-msg-insert-switches" title={blocked ?? undefined}>
+    <div className="automation-msg-insert-switches" title={capabilityNotice ?? undefined}>
       {capabilityNotice ? <p className="automation-notice warning" role="status">{capabilityNotice}</p> : null}
       {loading ? <Spinner /> : null}
       {MSG_INSERT_SWITCH_LABELS.map(({ name, label, hint }) => {
         const status: MsgInsertSwitchStatus | undefined = snapshot?.switches?.[name]
         const busy = pending === name
+        const desired = status?.desiredEnabled === true
+        /* 已开启 → 允许关；未开启 → 必须满足开启条件 */
+        const switchNotice = desired ? null : noticeForEnable
+        const switchDisabled = pending !== null || (!desired && switchNotice !== null)
         /* rules 型：显示「已就绪 / 可安装」；事件驱动型没有覆盖率这个概念。 */
         const showCoverage = status?.mode === 'rules' && status.totalInstallableRooms > 0
         const partial =
@@ -206,8 +246,8 @@ export function MessageInsertSwitches(): React.JSX.Element {
              于是「点文字」也会切换开关。写微信库的开关不该这么容易被误触。 */
           <span
             key={name}
-            className={`automation-msg-insert-switch ${disabled ? 'is-disabled' : ''}`}
-            title={[hint, status?.message].filter(Boolean).join('\n') || blocked || hint}
+            className={`automation-msg-insert-switch ${switchDisabled ? 'is-disabled' : ''}`}
+            title={[hint, status?.message, switchNotice].filter(Boolean).join('\n') || hint}
           >
             <span className="automation-msg-insert-switch-label">{label}</span>
             {/* 写微信库要 spawn 子进程 + 装规则，耗时以秒计。
@@ -219,8 +259,8 @@ export function MessageInsertSwitches(): React.JSX.Element {
               </span>
             ) : null}
             <Switch
-              checked={status?.desiredEnabled === true}
-              disabled={disabled || pending !== null}
+              checked={desired}
+              disabled={switchDisabled}
               onCheckedChange={(checked) => void handleToggle(name, checked === true)}
               aria-label={label}
             />

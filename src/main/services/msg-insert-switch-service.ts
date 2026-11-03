@@ -30,6 +30,7 @@ import path from 'node:path'
 
 import { findResource } from '../resource-paths'
 import { isMacNativeRuntimeUnavailable, resolveWcdbConfigHelper } from '../native-runtime-paths'
+import { resolveExternalComponent } from './external-component-locator'
 import type { Wcdb4Client } from '../wcdb4-client'
 import {
   MSG_INSERT_SWITCHES,
@@ -158,10 +159,13 @@ export function emptyMsgInsertStatus(
  */
 export function resolveHelperPath(): string | null {
   if (process.platform === 'darwin') return resolveWcdbConfigHelper()
+  /* 优先用外置目录里的发送能力组件，避免自动更新清掉；校验不过当没装。 */
+  const external = resolveExternalComponent()
+  if (external) return external.helperPath
   /*
    * 平台/架构都要分。Windows 交付在 `resources/wcdb/win32/x64/`（注意是 win32 不是 windows），
    * 文件名带 `.exe`。以前这里三个候选全写死 macos —— Windows 上会恒返回 null，
-   * 表现为「缺少写入组件」+ 开关永久置灰。
+   * 表现为「缺少发送能力组件」+ 开关永久置灰。
    *
    * 同目录还有 wcdb_api.dll / WCDB.dll / SDL2.dll，MSVC 运行库在 resources/runtime/win32/，
    * 两者都由 preload-env.ts 加进 DLL 搜索路径，所以 helper.exe 能直接加载。
@@ -657,7 +661,7 @@ export async function applyMsgInsertSwitch(
       status: emptyMsgInsertStatus(input.name, 'HELPER_NOT_FOUND', '暂无法使用'),
       errorCode: 'HELPER_NOT_FOUND',
       /* 面向用户是能力语义；errorCode 仍是 HELPER_NOT_FOUND，门禁/授权层照旧能判。 */
-      message: '暂无法使用：当前安装不包含微信内消息写入组件'
+      message: '暂无法使用：当前安装不包含发送能力组件'
     }
   }
 
