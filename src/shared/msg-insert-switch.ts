@@ -104,12 +104,56 @@ export interface MsgInsertSwitchStatus {
   message?: string
 }
 
+/** 授权状态（与「能不能发消息」无关） */
+export type EntitlementState = 'valid' | 'invalid' | 'pending' | 'unavailable' | 'unsupported'
+
+/** 发送能力组件状态 */
+export type NativeComponentState = 'ready' | 'missing' | 'invalid' | 'incompatible'
+
+/**
+ * 发送能力被拒的原因。**不要用 HELPER_NOT_FOUND 表达授权问题** ——
+ * 那会让「没装组件」「没授权」「发不了消息」三种情况在界面上无法区分。
+ */
+export type CapabilityReasonCode =
+  | 'CAPABILITY_READY'
+  | 'UNSUPPORTED_PLATFORM'
+  | 'LICENSE_REQUIRED'
+  | 'LICENSE_PENDING'
+  | 'LICENSE_EXPIRED'
+  | 'LICENSE_INVALID'
+  | 'LICENSE_MACHINE_MISMATCH'
+  | 'LICENSE_REVOKED'
+  | 'LICENSE_UNAVAILABLE'
+  | 'COMPONENT_MISSING'
+  | 'COMPONENT_INVALID'
+  | 'DATABASE_UNAVAILABLE'
+
+/** 主进程算好的发送能力视图，渲染层只读这个，不再自己判断 */
+export interface CapabilityView {
+  entitlementState: EntitlementState
+  nativeComponentState: NativeComponentState
+  databaseReady: boolean
+  canEnable: boolean
+  canDisable: boolean
+  reasonCode: CapabilityReasonCode
+  message: string
+  licenseStatus?: string
+  checkedAt?: number
+}
+
 export interface MsgInsertSwitchesSnapshot {
   success: boolean
-  switches: Record<MsgInsertSwitchName, MsgInsertSwitchStatus>
-  /** helper 是否可用（不可用时只能读不能写） */
+  /** 原生发送能力（授权 + 组件 + 数据库），两个开关共用 */
+  capability?: CapabilityView
   /**
-   * **能力标志**：本机是否存在「微信内消息写入组件」（那个一次性 helper）。
+   * @deprecated 语义漂移过：曾等于「这是不是 mac native 包」，在 Windows 上恒为 true。
+   * 新代码请用 `capability.canEnable`；这里只留一个与它一致的值给旧调用方。
+   */
+  sendCapabilityAvailable?: boolean
+  switches: Record<MsgInsertSwitchName, MsgInsertSwitchStatus>
+  /** 发送能力组件是否可用（不可用时只能读不能写） */
+  /**
+   * **能力标志**：本机是否存在「微信内发送能力组件」。
    *
    * 这是「微信内防撤回提示」和「微信内退群监控消息」的**唯一硬门槛**：
    * 主进程对微信库只持只读连接，任何写入都必须 spawn 那个组件，没有它两个功能都做不了。
@@ -117,9 +161,7 @@ export interface MsgInsertSwitchesSnapshot {
    * 语义上它是 **capability（能力）**，不是 error（错误）——
    * 缺失时 UI 显示「暂无法使用」，而不是「请重新安装」。
    *
-   * ⚠️ 它是**唯一**的能力判据，不要再新增第二份（曾经因为 native 与 TS 各存一份判据
-   * 而出现 946 里莫名少 323 的假象）。将来的授权/付费门禁应当**并列**加在它旁边
-   * （capability && entitlement），而不是替换它。
+   * 它是组件能力判据；授权状态应与其并列，不能替换它。
    */
   helperAvailable: boolean
   /** native code 只放这里，不往 UI 上抛 */
@@ -152,6 +194,11 @@ export type MsgInsertErrorCode =
   | 'UNSUPPORTED_SWITCH'
   | 'NO_TARGET_ROOMS'
   | 'DATABASE_UNAVAILABLE'
+  | 'LICENSE_REQUIRED'
+  | 'LICENSE_PENDING'
+  | 'LICENSE_EXPIRED'
+  | 'COMPONENT_MISSING'
+  | 'CAPABILITY_UNAVAILABLE'
   | 'UNKNOWN'
 
 /** 界面上要展示的两个开关（顺序即展示顺序） */

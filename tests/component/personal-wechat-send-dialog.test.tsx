@@ -41,7 +41,6 @@ const readyStatus = {
   boundWechatPid: 4668,
   endpoint: '127.0.0.1:4290',
   endpointReady: true,
-  wechatVersion: '4.1.11.53',
   runtimeReady: true,
   attachReady: true,
   baseAddress: '0x114ef8000',

@@ -84,6 +84,8 @@ import type {
   PersonalWechatVoiceDiagnostic
 } from '../shared/personal-wechat'
 import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
+import type { MacLicenseStatus } from '../shared/personal-wechat-mac-license'
+import type { MacWechatSendRuntimeAvailabilityResult } from '../shared/personal-wechat-mac-runtime'
 import type { GroupMemberStatsQuery, GroupMemberStatsResult } from '../shared/group-stats'
 import type {
   ScheduledReportExecution,
@@ -751,6 +753,9 @@ declare global {
       repairImageTextIndex: () => Promise<ImageTextIndexRepairResult>
       onImageTextIndexStatus: (callback: (status: ImageTextIndexStatus) => void) => () => void
       getPersonalWechatSenderStatus: () => Promise<PersonalWechatSenderStatus>
+  getMacLicenseStatus: () => Promise<MacLicenseStatus>
+  getMacSendRuntimeAvailability: () => Promise<MacWechatSendRuntimeAvailabilityResult>
+  refreshMacLicense: () => Promise<MacLicenseStatus>
       getPersonalWechatSendCapability: () => Promise<PersonalWechatSendCapability>
       checkPersonalWechatSenderStatus: (port?: string) => Promise<PersonalWechatSenderStatus>
       checkPersonalWechatVoiceEncodingEnvironment: () => Promise<PersonalWechatVoiceEncodingEnvironment>
