@@ -1,20 +1,30 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { chmodSync, existsSync } from 'fs'
-import { get } from 'http'
+import { get, request as httpRequest } from 'http'
 import { join } from 'path'
 
 import { app } from 'electron'
 
 import { appLogger } from '../app-logger'
-import { isMacNativeRuntimeUnavailable, resolveWechatRuntimeDirectory } from '../native-runtime-paths'
+import {
+  isMacNativeRuntimeUnavailable,
+  resolveWechatRuntimeDirectory
+} from '../native-runtime-paths'
+import type { MacLicenseStatus } from '../../shared/personal-wechat-mac-license'
+import {
+  offlineMacLicenseStatus,
+  parseMacLicenseStatus
+} from '../../shared/personal-wechat-mac-license'
 import type {
   MacWechatBindResult,
   MacWechatBindingStatus,
   MacWechatRuntimeManifest,
   MacWechatRuntimeLifecycle,
-  MacWechatRuntimeSnapshot
+  MacWechatRuntimeSnapshot,
+  MacWechatSendRuntimeAvailabilityResult
 } from '../../shared/personal-wechat-mac-runtime'
 import type { PersonalWechatSenderStatus } from '../../shared/personal-wechat'
+import { hasValidWechatLicense } from '../../shared/personal-wechat-mac-send-action'
 import {
   bindingMatchesRuntimeManifest,
   readMacWechatRuntimeManifest
@@ -43,6 +53,10 @@ const HOST = '127.0.0.1'
 const START_TIMEOUT_MS = 15_000
 const REQUEST_TIMEOUT_MS = 30_000
 const CRASH_RESTART_DELAY_MS = 1_500
+/* /license/status is a local cache read; keep it snappy. /license/refresh runs a
+ * real challenge->sign->check cycle inside the host, which is bounded at 15s. */
+const LICENSE_STATUS_TIMEOUT_MS = 8_000
+const LICENSE_REFRESH_TIMEOUT_MS = 20_000
 
 interface MacWechatSenderStatusInput {
   snapshot: MacWechatRuntimeSnapshot
@@ -119,12 +133,9 @@ export function deriveMacWechatSenderStatus({
     identityMatches &&
     state === 'online' &&
     (binding?.sendContextReady === true || nativeBindingReady)
-  const canSendText =
-    bindingReady && supportsCapability('text') && binding?.canSendText === true
-  const canSendImage =
-    bindingReady && supportsCapability('image') && binding?.canSendImage === true
-  const canSendVoice =
-    bindingReady && supportsCapability('voice') && binding?.canSendVoice === true
+  const canSendText = bindingReady && supportsCapability('text') && binding?.canSendText === true
+  const canSendImage = bindingReady && supportsCapability('image') && binding?.canSendImage === true
+  const canSendVoice = bindingReady && supportsCapability('voice') && binding?.canSendVoice === true
   const sessionAttached = identityMatches && (binding?.sessionAttached ?? false)
   const scriptLoaded = identityMatches && (binding?.scriptLoaded ?? false)
 
@@ -155,6 +166,25 @@ export function deriveMacWechatSenderStatus({
     message,
     error: state === 'error' ? message : undefined
   }
+}
+
+/**
+ * 在线刷新失败时的返回策略：
+ * 缓存里还有可用授权就保留它（只把失败写进 message），否则明确报告网络故障。
+ * 单独抽出来是因为这两条分支都必须可测 —— 把网络故障错报成「已撤销」会让
+ * 用户去找客服，错报成「有效」又会掩盖真实故障。
+ */
+export function resolveLicenseRefreshFailure(
+  snapshot: MacLicenseStatus | null,
+  diagnostic: string
+): MacLicenseStatus {
+  if (snapshot?.authorized) {
+    return {
+      ...snapshot,
+      message: `本次刷新失败：${diagnostic}（仍使用本地缓存授权）`
+    }
+  }
+  return offlineMacLicenseStatus('server_unavailable', diagnostic)
 }
 
 class MacWechatRuntimeManager {
@@ -208,6 +238,21 @@ class MacWechatRuntimeManager {
       return true
     } catch {
       return false
+    }
+  }
+
+  getSendRuntimeAvailability(): MacWechatSendRuntimeAvailabilityResult {
+    if (isMacNativeRuntimeUnavailable()) {
+      return { state: 'unavailable', message: '当前版本没有微信发送能力' }
+    }
+    try {
+      const runtimeDir = this.resolveRuntimeDir()
+      if (!runtimeDir) throw new Error('发送 Runtime 目录缺失')
+      this.manifest = readMacWechatRuntimeManifest(runtimeDir)
+      return { state: 'available', message: '微信发送组件可用' }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      return { state: 'component_error', message: `发送组件缺失或异常：${detail}` }
     }
   }
 
@@ -423,11 +468,28 @@ class MacWechatRuntimeManager {
   private request(
     method: string,
     path: string,
-    timeoutMs = REQUEST_TIMEOUT_MS
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    body?: string
   ): Promise<{ status: number | null; body: string }> {
     return new Promise((resolve) => {
-      const request = get(
-        { host: HOST, port: PORT, path, method, timeout: timeoutMs },
+      const payload = body !== undefined ? Buffer.from(body, 'utf8') : undefined
+      // GET keeps using `get()` (auto-end); POST goes through `request()` so we
+      // can attach a JSON body. Both funnel into the same resolve contract.
+      const transport = method === 'GET' || method === 'HEAD' ? get : httpRequest
+      const req = transport(
+        {
+          host: HOST,
+          port: PORT,
+          path,
+          method,
+          timeout: timeoutMs,
+          headers: payload
+            ? {
+                'Content-Type': 'application/json',
+                'Content-Length': payload.length
+              }
+            : undefined
+        },
         (response) => {
           let body = ''
           response.on('data', (chunk) => {
@@ -438,14 +500,15 @@ class MacWechatRuntimeManager {
           })
         }
       )
-      request.on('timeout', () => {
-        request.destroy()
+      req.on('timeout', () => {
+        req.destroy()
         resolve({ status: null, body: '' })
       })
-      request.on('error', () => {
+      req.on('error', () => {
         resolve({ status: null, body: '' })
       })
-      request.end()
+      if (payload) req.write(payload)
+      req.end()
     })
   }
 
@@ -526,6 +589,97 @@ class MacWechatRuntimeManager {
     await this.refreshBinding().catch(() => null)
     return this.lastBinding
   }
+
+  // GET reads the local snapshot; POST runs one real online check.
+  // Neither touches the WeChat binding.
+
+  /** Local snapshot. Never attaches to WeChat, never forces a network refresh.
+   *  404 means the host predates these endpoints — not "unlicensed". */
+  async getMacLicenseStatus(): Promise<MacLicenseStatus> {
+    const availability = this.getSendRuntimeAvailability()
+    if (availability.state === 'unavailable') {
+      return offlineMacLicenseStatus('platform_unsupported', '当前构建不包含 Mac 发送能力')
+    }
+    if (availability.state !== 'available') {
+      return offlineMacLicenseStatus('runtime_missing', availability.message)
+    }
+    if (this.lifecycle === 'stopped') await this.ensureStarted()
+    const { status, body } = await this.request('GET', '/license/status', LICENSE_STATUS_TIMEOUT_MS)
+    if (status === null) {
+      return offlineMacLicenseStatus('runtime_missing', 'Mac 发送组件未运行，请先启动发送组件')
+    }
+    if (status === 404) {
+      return offlineMacLicenseStatus(
+        'unsupported',
+        '当前发送组件版本较旧，不支持授权检测。请升级或重启发送组件后再试。'
+      )
+    }
+    if (status !== 200) {
+      return offlineMacLicenseStatus('runtime_missing', `授权状态查询失败（HTTP ${status}）`)
+    }
+    try {
+      return parseMacLicenseStatus(JSON.parse(body))
+    } catch {
+      return offlineMacLicenseStatus('runtime_missing', '授权状态响应无法解析')
+    }
+  }
+
+  /**
+   * One real online check; re-entrant calls return the current snapshot instead
+   * of minting a duplicate challenge. Network failure maps to server_unavailable,
+   * never to revoked.
+   */
+  async refreshMacLicense(): Promise<MacLicenseStatus> {
+    const availability = this.getSendRuntimeAvailability()
+    if (availability.state === 'unavailable') {
+      return offlineMacLicenseStatus('platform_unsupported', '当前构建不包含 Mac 发送能力')
+    }
+    if (availability.state !== 'available') {
+      return offlineMacLicenseStatus('runtime_missing', availability.message)
+    }
+    if (this.lifecycle === 'stopped') await this.ensureStarted()
+    if (this.licenseRefreshInFlight) {
+      // A refresh is already running; answer from the local snapshot so the
+      // button click is a no-op instead of stacking a second online check.
+      return this.getMacLicenseStatus()
+    }
+    this.licenseRefreshInFlight = true
+    try {
+      const { status, body } = await this.request(
+        'POST',
+        '/license/refresh',
+        LICENSE_REFRESH_TIMEOUT_MS,
+        '{}'
+      )
+      if (status === null) {
+        const snapshot = await this.getMacLicenseStatus().catch(() => null)
+        return resolveLicenseRefreshFailure(snapshot, '无法连接授权服务器，请检查网络后重试')
+      }
+      if (status === 404) {
+        return offlineMacLicenseStatus(
+          'unsupported',
+          '当前发送组件版本较旧，不支持授权检测。请升级或重启发送组件后再试。'
+        )
+      }
+      let envelope: Record<string, unknown>
+      try {
+        envelope = JSON.parse(body) as Record<string, unknown>
+      } catch {
+        return offlineMacLicenseStatus('runtime_missing', '授权刷新响应无法解析')
+      }
+      // The host wraps the result: { ok, code, message, status: MacLicenseStatus }
+      const nested = envelope.status ?? envelope
+      const parsed = parseMacLicenseStatus(nested)
+      if (typeof envelope.errorCode === 'number' && parsed.errorCode == null) {
+        parsed.errorCode = envelope.errorCode
+      }
+      return parsed
+    } finally {
+      this.licenseRefreshInFlight = false
+    }
+  }
+
+  private licenseRefreshInFlight = false
 
   /*
    * Build the legacy PersonalWechatSenderStatus contract from the live mac
@@ -650,13 +804,17 @@ class MacWechatRuntimeManager {
    * live WeChat pid again returns attached=false and never double-attaches.
    */
   async bind(): Promise<MacWechatBindResult> {
-    if (isMacNativeRuntimeUnavailable()) {
+    const availability = this.getSendRuntimeAvailability()
+    if (availability.state === 'unavailable') {
       return {
         ok: false,
         attached: false,
         state: 'runtime_offline',
         message: '当前环境不包含微信发送能力'
       }
+    }
+    if (availability.state !== 'available') {
+      return { ok: false, attached: false, state: 'runtime_offline', message: availability.message }
     }
     if (this.lifecycle !== 'online') {
       const snapshot = await this.ensureStarted()
@@ -682,6 +840,28 @@ class MacWechatRuntimeManager {
         message:
           'Previous WeChat send session was not fully released. ' + 'Restart WeChat and bind again.'
       }
+    }
+
+    const license = await this.getMacLicenseStatus()
+    const licenseAllowed = hasValidWechatLicense(license)
+    if (!licenseAllowed) {
+      const tokenExpiresAt = license.tokenExpiresAt
+        ? Date.parse(license.tokenExpiresAt)
+        : Number.NaN
+      const message =
+        license.state === 'revoked'
+          ? 'LICENSE_REVOKED: 微信发送授权已撤销'
+          : license.state === 'expired' ||
+              (Number.isFinite(tokenExpiresAt) && tokenExpiresAt <= Date.now())
+            ? 'LICENSE_EXPIRED: 微信发送授权已过期'
+            : license.state === 'device_mismatch'
+              ? 'LICENSE_DEVICE_MISMATCH: 授权与当前设备不匹配'
+              : license.state === 'identity_error'
+                ? 'LICENSE_IDENTITY_ERROR: 设备身份异常'
+                : license.authorized && !license.features.includes('wechat')
+                  ? 'LICENSE_FEATURE_DENIED: 未开通微信发送'
+                  : 'LICENSE_REQUIRED: 需要有效的微信发送授权'
+      return { ok: false, attached: false, state: 'host_error', message }
     }
 
     const { status, body } = await this.request('POST', '/bindWeChat')

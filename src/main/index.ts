@@ -1557,15 +1557,16 @@ app.whenReady().then(async () => {
         /**
          * 正式 MessageListener（Observation Mode 接入）。
          *
-         * 本轮**只监听、回读、规范化、去重、统计**，不触发任何业务：
+         * 只监听、回读、规范化、去重、统计，不触发任何业务：
          * 不匹配关键词、不判断 @我、不出日报、不回复、不调 AI / Agent、不发送。
-         * 下一层的 Trigger 由后续任务接入。
+         * 业务响应由上层消费者自行订阅，不在监听层实现。
          */
         const messageListener = new MessageListenerService(wcdb4Client)
         /**
          * Automation v1（@我生成日报）。
          *
-         * `isListening` 要等下面 `startMonitor` 有结果才知道，所以先用闭包变量占位。
+         * `isListening` 反映 `startMonitor` 的实际结果，因此通过闭包读取，
+         * 而不是在初始化时传入快照。
          */
         let automationListening = false
         initAutomationService(wcdb4Client, { isListening: () => automationListening })
@@ -3442,6 +3443,15 @@ app.whenReady().then(async () => {
     return { success: true }
   })
   ipcMain.handle('wechat-personal:getStatus', () => currentPersonalWechatSenderStatus())
+  ipcMain.handle('wechat-personal:getMacLicenseStatus', () =>
+    macWechatRuntimeManager.getMacLicenseStatus()
+  )
+  ipcMain.handle('wechat-personal:getMacSendRuntimeAvailability', () =>
+    macWechatRuntimeManager.getSendRuntimeAvailability()
+  )
+  ipcMain.handle('wechat-personal:refreshMacLicense', () =>
+    macWechatRuntimeManager.refreshMacLicense()
+  )
   ipcMain.handle('wechat-personal:checkStatus', (_, port?: string) =>
     personalWechatSendService.checkWindowsStatus(port)
   )

@@ -15,6 +15,13 @@ export type MacWechatRuntimeLifecycle =
   | 'crashed_unbound' // died while unbound — safe to auto-restart
   | 'crashed_bound' // died while bound — WeChat keeps an orphan agent
 
+export type MacWechatSendRuntimeAvailability = 'unavailable' | 'component_error' | 'available'
+
+export interface MacWechatSendRuntimeAvailabilityResult {
+  state: MacWechatSendRuntimeAvailability
+  message: string
+}
+
 export type MacWechatHostRuntimeState =
   | 'not_initialized'
   | 'wechat_not_running'

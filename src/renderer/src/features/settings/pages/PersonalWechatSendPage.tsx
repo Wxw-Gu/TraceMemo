@@ -1,8 +1,14 @@
-import { useCallback, useEffect, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import type {
   PersonalWechatSendCapability,
   PersonalWechatSenderStatus
 } from '../../../../../shared/personal-wechat'
+import type {
+  MacLicenseState,
+  MacLicenseStatus
+} from '../../../../../shared/personal-wechat-mac-license'
+import type { MacWechatSendRuntimeAvailabilityResult } from '../../../../../shared/personal-wechat-mac-runtime'
+import { resolveMacSendPrimaryAction } from '../../../../../shared/personal-wechat-mac-send-action'
 import { Button, Input, Skeleton } from '../../../components/ui'
 import { PersonalWechatSetupGuide } from '../../../components/chat/PersonalWechatSetupGuide'
 import { isMac, isWindows } from '../../../utils/runtime-environment'
@@ -60,6 +66,190 @@ function SendCapabilityAuthorizationCard(): ReactElement {
   )
 }
 
+const macLicenseStateLabel: Record<MacLicenseState, string> = {
+  unlicensed: '当前设备暂无发送能力授权',
+  valid: '已授权',
+  cached: '授权有效（本地缓存）',
+  expired: '授权已过期',
+  revoked: '授权已撤销',
+  device_mismatch: '授权与当前设备不匹配',
+  identity_error: '设备身份异常',
+  server_unavailable: '授权服务器不可用',
+  checking: '检测中…',
+  unsupported: '发送组件版本较旧',
+  runtime_missing: '发送组件未运行',
+  platform_unsupported: '当前构建不支持'
+}
+
+const macLicenseFeatureLabel: Record<string, string> = {
+  basic: '基础功能',
+  wechat: '微信发送',
+  advanced: '高级功能',
+  api: 'API 接口'
+}
+
+function licenseTone(state: MacLicenseState): string {
+  if (state === 'valid' || state === 'cached') return 'is-ready'
+  if (state === 'revoked' || state === 'expired' || state === 'identity_error') return 'is-error'
+  return 'is-neutral'
+}
+
+function formatMacLicenseDateTime(iso: string | null): string {
+  if (!iso) return '—'
+  const parsed = new Date(iso)
+  if (Number.isNaN(parsed.getTime())) return iso
+  return parsed.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+function formatMacLicenseDate(iso: string | null): string {
+  if (!iso) return '—'
+  const parsed = new Date(iso)
+  if (Number.isNaN(parsed.getTime())) return iso
+  return parsed.toLocaleDateString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  })
+}
+
+function summarizeDeviceId(deviceId: string): string {
+  return deviceId.length === 68 ? `${deviceId.slice(0, 12)}…${deviceId.slice(-6)}` : deviceId
+}
+
+/** 展示当前设备的授权状态，并提供刷新与复制设备 ID 的操作。 */
+export function MacProLicenseCard({
+  onNotice,
+  onStatusChange
+}: {
+  onNotice: (message: string) => void
+  onStatusChange: (status: MacLicenseStatus) => void
+}): ReactElement {
+  const [license, setLicense] = useState<MacLicenseStatus | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      const next = await window.api.getMacLicenseStatus()
+      setLicense(next)
+      onStatusChange(next)
+    } catch {
+      setLicense(null)
+    }
+  }, [onStatusChange])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const refresh = async (): Promise<void> => {
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      const next = await window.api.refreshMacLicense()
+      setLicense(next)
+      onStatusChange(next)
+      if (next.authorized) {
+        onNotice('授权检测完成：已授权')
+      } else {
+        onNotice(next.message || '授权检测完成')
+      }
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : '授权检测失败')
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  const copyDeviceId = async (): Promise<void> => {
+    if (!license?.deviceId) return
+    try {
+      await navigator.clipboard.writeText(license.deviceId)
+      setCopied(true)
+      onNotice('设备 ID 已复制')
+      window.setTimeout(() => setCopied(false), 2_000)
+    } catch {
+      onNotice('复制失败，请手动选择设备 ID 复制')
+    }
+  }
+
+  if (!license) {
+    return <Skeleton className="h-24 w-full" />
+  }
+  // OSS 构建走到这里（platform_unsupported）时不渲染卡片，保证免费版不出现授权入口。
+  if (license.state === 'platform_unsupported') {
+    return <></>
+  }
+
+  return (
+    <section className="settings-card mac-pro-license-card" aria-label="发送能力授权">
+      <header className="mac-pro-license-header">
+        <strong>发送能力授权</strong>
+        <span className={`mac-pro-license-status ${licenseTone(license.state)}`}>
+          {license.state === 'valid' || license.state === 'cached'
+            ? '设备已授权'
+            : macLicenseStateLabel[license.state]}
+        </span>
+      </header>
+
+      <div className="mac-pro-device-row">
+        <div className="mac-pro-device-value">
+          <span>本机设备 ID</span>
+          <code title={license.deviceId || undefined}>
+            {license.deviceId ? summarizeDeviceId(license.deviceId) : '（尚未生成）'}
+          </code>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={!license.deviceId}
+          aria-label="复制完整设备 ID"
+          onClick={() => void copyDeviceId()}
+        >
+          {copied ? '已复制' : '复制'}
+        </Button>
+      </div>
+      {license.deviceId && !license.authorized ? (
+        <p className="mac-pro-license-hint">
+          将设备 ID 提供给授权管理员，完成授权后点击「重新检测授权」。
+        </p>
+      ) : null}
+      {license.authorized && license.features.length > 0 ? (
+        <div className="mac-pro-license-features" aria-label="已开通功能">
+          {license.features.map((feature) => (
+            <span key={feature}>{macLicenseFeatureLabel[feature] || feature}</span>
+          ))}
+        </div>
+      ) : null}
+      <div className="mac-pro-license-meta">
+        <span>
+          授权到期 <strong>{formatMacLicenseDate(license.licenseExpiresAt)}</strong>
+        </span>
+        <span>
+          最近检测 <strong>{formatMacLicenseDateTime(license.lastCheckedAt)}</strong>
+        </span>
+      </div>
+      <div className="mac-pro-license-footer">
+        <span />
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={refreshing || license.state === 'unsupported'}
+          onClick={() => void refresh()}
+        >
+          {refreshing ? '检测中…' : '重新检测授权'}
+        </Button>
+      </div>
+    </section>
+  )
+}
+
 export function PersonalWechatSendPage({
   onNotice,
   onOpenTextToSpeechSettings
@@ -79,6 +269,11 @@ export function PersonalWechatSendPage({
   const [windowsPortInput, setWindowsPortInput] = useState('')
   const [windowsDetectedPort, setWindowsDetectedPort] = useState('')
   const [windowsEndpointBusy, setWindowsEndpointBusy] = useState(false)
+  const [setupExpanded, setSetupExpanded] = useState<boolean | null>(null)
+  const [macLicenseStatus, setMacLicenseStatus] = useState<MacLicenseStatus | null>(null)
+  const [macRuntimeAvailability, setMacRuntimeAvailability] =
+    useState<MacWechatSendRuntimeAvailabilityResult | null>(null)
+  const setupDefaultInitialized = useRef(false)
   const refresh = useCallback(async (): Promise<void> => {
     if (isWindows) {
       setLoading(false)
@@ -101,7 +296,59 @@ export function PersonalWechatSendPage({
 
   useEffect(() => {
     if (isWindows) return
-    void refresh()
+    let active = true
+    const loadMacStatus = async (): Promise<void> => {
+      try {
+        const availability = await window.api.getMacSendRuntimeAvailability()
+        if (!active) return
+        setMacRuntimeAvailability(availability)
+        if (availability.state !== 'available') {
+          setSenderStatus({
+            state: 'runtime_missing',
+            platform: 'darwin',
+            arch: 'arm64',
+            sipDisabled: true,
+            wechatRunning: false,
+            endpoint: '',
+            endpointReady: false,
+            runtimeReady: false,
+            attachReady: false,
+            baseAddressReady: false,
+            textHookInstalled: false,
+            textHookReady: false,
+            imageHookInstalled: false,
+            imageHookReady: false,
+            messageListenerReady: false,
+            canSend: false,
+            canSendText: false,
+            canSendImage: false,
+            canSendVoice: false,
+            message: availability.message,
+            error: availability.message
+          })
+          setLoading(false)
+          return
+        }
+        const [nextCapability, nextSender, license] = await Promise.all([
+          window.api.getPersonalWechatSendCapability(),
+          window.api.getPersonalWechatSenderStatus(),
+          window.api.getMacLicenseStatus()
+        ])
+        if (!active) return
+        setCapability(nextCapability)
+        setSenderStatus(nextSender)
+        setMacLicenseStatus(license)
+      } catch (reason) {
+        if (!active) return
+        setError(reason instanceof Error ? reason.message : '微信发送能力读取失败')
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    void loadMacStatus()
+    return () => {
+      active = false
+    }
   }, [refresh])
 
   useEffect(() => {
@@ -266,7 +513,27 @@ export function PersonalWechatSendPage({
   const pageMessage = isWindows
     ? windowsSenderStatus?.message || '请输入端口并检测 Windows 微信发送能力'
     : capability?.message || '微信发送能力暂不可用'
-  const macUnavailable = isMac && senderStatus?.state === 'runtime_missing'
+  const macUnavailable = isMac && macRuntimeAvailability?.state === 'unavailable'
+  const macComponentError = isMac && macRuntimeAvailability?.state === 'component_error'
+  const macBound = boundToCurrentWechat(senderStatus)
+  const macEnvironmentReady = Boolean(
+    senderStatus?.runtimeReady && macBound && senderStatus.canSend
+  )
+  useEffect(() => {
+    if (isMac && senderStatus && !setupDefaultInitialized.current) {
+      setSetupExpanded(!macEnvironmentReady)
+      setupDefaultInitialized.current = true
+    }
+  }, [macEnvironmentReady, senderStatus])
+
+  const setupBodyId = 'personal-wechat-first-use-setup'
+  const macPrimaryAction = resolveMacSendPrimaryAction({
+    runtime: macRuntimeAvailability,
+    license: macLicenseStatus,
+    senderStatus,
+    binding,
+    detecting: loading || detecting
+  })
 
   return (
     <>
@@ -279,7 +546,13 @@ export function PersonalWechatSendPage({
           <span
             className={`settings-status-badge ${loading ? 'checking' : pageReady ? '' : pageStatus === 'unsupported' ? 'unavailable' : 'warning'}`}
           >
-            {loading ? '检测中' : macUnavailable ? '暂不可用' : capabilityLabel[pageStatus]}
+            {loading
+              ? '检测中'
+              : macUnavailable
+                ? '没有微信发送能力'
+                : macComponentError
+                  ? '发送组件异常'
+                  : capabilityLabel[pageStatus]}
           </span>
         </header>
         <div className="settings-page-scroll">
@@ -407,18 +680,129 @@ export function PersonalWechatSendPage({
                   </>
                 ) : isMac ? (
                   <>
-                    <h2 className="settings-section-heading">配置状态</h2>
-                    <PersonalWechatSetupGuide
-                      senderStatus={senderStatus}
-                      binding={binding}
-                      detecting={detecting}
-                      sessionBound={boundToCurrentWechat(senderStatus)}
-                      onBind={() => void bindWechat()}
-                      onStartSending={() =>
-                        onNotice('微信消息发送能力已就绪，请在档案中选择会话开始发送。')
-                      }
-                      onOpenTextToSpeechSettings={onOpenTextToSpeechSettings}
-                    />
+                    {/* 发送能力授权卡片：仅在加载了发送组件的档位渲染。
+                        OSS（runtime_missing）下不渲染，保证免费版不出现授权入口。 */}
+                    {macRuntimeAvailability?.state === 'available' ? (
+                      <MacProLicenseCard onNotice={onNotice} onStatusChange={setMacLicenseStatus} />
+                    ) : null}
+                    <section
+                      className="settings-card mac-wechat-environment-card"
+                      aria-label="微信发送环境"
+                    >
+                      <header className="mac-wechat-environment-header">
+                        <strong>微信发送环境</strong>
+                        <span
+                          className={`mac-wechat-environment-status ${macEnvironmentReady ? 'is-ready' : 'is-neutral'}`}
+                        >
+                          {loading
+                            ? '正在检查环境'
+                            : macUnavailable
+                              ? '当前版本没有微信发送能力'
+                              : macComponentError
+                                ? '发送组件缺失或异常'
+                                : macEnvironmentReady
+                                  ? '运行环境已就绪'
+                                  : '需要完成配置'}
+                        </span>
+                      </header>
+                      <div className="mac-wechat-status-grid" aria-label="环境状态">
+                        {[
+                          ['运行时正常', Boolean(senderStatus?.runtimeReady)],
+                          ['微信已绑定', macBound],
+                          ['发送组件正常', Boolean(senderStatus?.canSend)]
+                        ].map(([label, complete]) => (
+                          <div className="mac-wechat-status-item" key={String(label)}>
+                            <span
+                              className={complete ? 'is-ready' : 'is-pending'}
+                              aria-hidden="true"
+                            >
+                              {complete ? '✓' : '○'}
+                            </span>
+                            <strong>{label}</strong>
+                            <small>{loading ? '检测中' : complete ? '正常' : '待完成'}</small>
+                          </div>
+                        ))}
+                      </div>
+                      {senderStatus && macRuntimeAvailability?.state === 'available' ? (
+                        <div
+                          className="mac-wechat-capability-details"
+                          aria-label="文字、图片和语音能力"
+                        >
+                          {(
+                            [
+                              ['文字', senderStatus.canSendText],
+                              ['图片', senderStatus.canSendImage],
+                              ['语音', senderStatus.canSendVoice]
+                            ] as const
+                          ).map(([label, available]) => (
+                            <span key={label} className={available ? 'is-ready' : 'is-pending'}>
+                              {label} {available ? '可用' : '未就绪'}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="mac-wechat-setup-toggle"
+                        aria-expanded={setupExpanded ?? !macEnvironmentReady}
+                        aria-controls={setupBodyId}
+                        onClick={() =>
+                          setSetupExpanded((expanded) => !(expanded ?? !macEnvironmentReady))
+                        }
+                      >
+                        <span>首次使用配置</span>
+                        <span className="mac-wechat-setup-chevron" aria-hidden="true">
+                          ⌄
+                        </span>
+                      </button>
+                      <div
+                        id={setupBodyId}
+                        className="mac-wechat-setup-content"
+                        hidden={!(setupExpanded ?? !macEnvironmentReady)}
+                      >
+                        {macRuntimeAvailability?.state === 'available' ? (
+                          <PersonalWechatSetupGuide
+                            senderStatus={senderStatus}
+                            binding={binding}
+                            detecting={detecting}
+                            sessionBound={macBound}
+                            showBindAction={false}
+                            showCapabilityStatus={false}
+                            showBindingInstructionsInInitialization
+                            showAuthorizationWarning={false}
+                            canBind={macPrimaryAction.action === 'bind'}
+                            onStartSending={() =>
+                              onNotice('微信消息发送能力已就绪，请在档案中选择会话开始发送。')
+                            }
+                            showStartSendingAction={false}
+                            onOpenTextToSpeechSettings={onOpenTextToSpeechSettings}
+                          />
+                        ) : null}
+                      </div>
+                      <div className="mac-wechat-primary-action">
+                        <Button
+                          className="w-full"
+                          disabled={macPrimaryAction.disabled}
+                          onClick={() => {
+                            if (macPrimaryAction.action === 'bind') {
+                              void bindWechat()
+                            } else if (macPrimaryAction.action === 'send') {
+                              onNotice('微信消息发送能力已就绪，请在档案中选择会话开始发送。')
+                            } else if (!macPrimaryAction.disabled) {
+                              setSetupExpanded(true)
+                            }
+                          }}
+                        >
+                          {macPrimaryAction.label}
+                        </Button>
+                      </div>
+                    </section>
+                    {macUnavailable ? (
+                      <>
+                        <h2 className="settings-section-heading">发送能力授权</h2>
+                        <SendCapabilityAuthorizationCard />
+                      </>
+                    ) : null}
                   </>
                 ) : null}
               </>

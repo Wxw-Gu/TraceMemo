@@ -29,6 +29,7 @@ const MACOS_EDITION_CODE_PATHS = [
   ['wcdb', 'macos', 'arm64', 'libwcdb_api.dylib'],
   ['wcdb', 'macos', 'arm64', 'libWCDB.dylib'],
   ['wcdb', 'macos', 'arm64', 'tm-wcdb-config-helper'],
+  ['wcdb', 'macos', 'arm64', 'libtmlicense.dylib'],
   ['runtime', 'darwin-arm64', 'tm-wechat-host'],
   ['runtime', 'darwin-arm64', 'libtmwechat.dylib']
 ]
@@ -124,9 +125,21 @@ function validateMacEditionResources(runtimeResources, edition, platform) {
     .split(/\r?\n/)
     .map((line) => line.trim().split(/\s+/).pop() || '')
     .map((symbol) => symbol.replace(/^_/, ''))
-  const hasNativeAbi = symbols.some((symbol) => symbol.startsWith('wcdb_msg_insert_'))
-  if ((edition === 'public' && hasNativeAbi) || (edition === 'native' && !hasNativeAbi)) {
-    throw new Error(`Bundled WCDB API has the wrong ${edition} ABI`)
+  // OSS 合法保留的只读消息插入状态查询符号；其余 wcdb_msg_insert_* 都是写入入口。
+  const PUBLIC_READONLY_MSG_INSERT = new Set([
+    'wcdb_msg_insert_get_switches',
+    'wcdb_msg_insert_inspect_shard',
+    'wcdb_msg_insert_list_shard_catalog',
+    'wcdb_msg_insert_get_rooms_status'
+  ])
+  const msgInsertSymbols = symbols.filter((symbol) => symbol.startsWith('wcdb_msg_insert_'))
+  if (edition === 'public') {
+    const leaked = msgInsertSymbols.filter((symbol) => !PUBLIC_READONLY_MSG_INSERT.has(symbol))
+    if (leaked.length) {
+      throw new Error(`Bundled public WCDB API leaks write ABI: ${leaked.join(', ')}`)
+    }
+  } else if (msgInsertSymbols.length === 0) {
+    throw new Error('Bundled native WCDB API is missing message-insert ABI')
   }
   const nativeInput = marker.nativeInput || {}
   if (edition === 'public') {
@@ -216,14 +229,19 @@ function validateMacEditionResources(runtimeResources, edition, platform) {
       }
     }
     const stagedFiles = marker.nativeInput?.files
-    if (!Array.isArray(stagedFiles) || stagedFiles.length !== 6) {
+    if (!Array.isArray(stagedFiles) || stagedFiles.length !== 7) {
       throw new Error('Native build marker is missing its source Bundle file hashes')
     }
     for (const entry of stagedFiles) {
       const remainder = entry.path.replace(/^tracememo\//, '')
-      const relative = remainder.startsWith('runtime/')
-        ? remainder.replace(/^runtime\//, 'runtime/darwin-arm64/')
-        : path.join('wcdb', 'macos', 'arm64', remainder.replace(/^wcdb\//, ''))
+      let relative
+      if (remainder === 'runtime/libtmlicense.dylib') {
+        relative = path.join('wcdb', 'macos', 'arm64', 'libtmlicense.dylib')
+      } else if (remainder.startsWith('runtime/')) {
+        relative = remainder.replace(/^runtime\//, 'runtime/darwin-arm64/')
+      } else {
+        relative = path.join('wcdb', 'macos', 'arm64', remainder.replace(/^wcdb\//, ''))
+      }
       const binary = path.join(resources, relative)
       if (!existsSync(binary) || readFileSync(binary).length !== entry.bytes) {
         throw new Error(`Native packaged artifact size mismatch: ${entry.path}`)

@@ -9,8 +9,8 @@ const { readBinaryArchitectures } = require('./binary-arch.cjs')
 
 const ROOT = path.resolve(__dirname, '..')
 const WCDB_DIST_ROOT = resolveWcdbDistRoot()
-const NATIVE_DIST_ROOT = process.env.TRACEMEMO_NATIVE_DIST_ROOT ||
-  path.resolve(ROOT, '..', 'native-runtime-dist')
+const NATIVE_DIST_ROOT =
+  process.env.TRACEMEMO_NATIVE_DIST_ROOT || path.resolve(ROOT, '..', 'native-runtime-dist')
 const NATIVE_BUNDLE_ROOT = findNativeBundleRoot(NATIVE_DIST_ROOT)
 const PUBLIC_FILES = [
   'icon.png',
@@ -42,8 +42,18 @@ const REQUIRED_NATIVE_SYMBOLS = [
 const REQUIRED_PUBLIC_SYMBOLS = [
   'wcdb_get_messages',
   'wcdb_get_group_members_batch',
-  'wcdb_start_monitor_pipe'
+  'wcdb_start_monitor_pipe',
+  'wcdb_msg_insert_get_switches',
+  'wcdb_msg_insert_inspect_shard',
+  'wcdb_msg_insert_list_shard_catalog',
+  'wcdb_msg_insert_get_rooms_status'
 ]
+const PUBLIC_ALLOWED_MSG_INSERT = new Set([
+  'wcdb_msg_insert_get_switches',
+  'wcdb_msg_insert_inspect_shard',
+  'wcdb_msg_insert_list_shard_catalog',
+  'wcdb_msg_insert_get_rooms_status'
+])
 const PROTECTED_RESOURCE_PATHS = ['runtime/runtime.zip']
 
 function sha256(filePath) {
@@ -69,7 +79,11 @@ function findNativeBundleRoot(root) {
     if (fs.existsSync(manifest)) {
       try {
         const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8'))
-        if (parsed.platform === 'macos' && parsed.architecture === 'arm64' && Array.isArray(parsed.files)) {
+        if (
+          parsed.platform === 'macos' &&
+          parsed.architecture === 'arm64' &&
+          Array.isArray(parsed.files)
+        ) {
           return directory
         }
       } catch {
@@ -78,7 +92,8 @@ function findNativeBundleRoot(root) {
     }
     if (depth >= 3) continue
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      if (entry.isDirectory()) pending.push({ directory: path.join(directory, entry.name), depth: depth + 1 })
+      if (entry.isDirectory())
+        pending.push({ directory: path.join(directory, entry.name), depth: depth + 1 })
     }
   }
   return root
@@ -116,9 +131,17 @@ function validateWcdbPair(apiPath, dependencyPath, profile) {
   const missing = (profile === 'public' ? REQUIRED_PUBLIC_SYMBOLS : REQUIRED_NATIVE_SYMBOLS).filter(
     (symbol) => !symbols.includes(symbol)
   )
-  if (missing.length) throw new Error(`${profile} WCDB API is missing exports: ${missing.join(', ')}`)
-  if (profile === 'public' && symbols.some((symbol) => symbol.startsWith('wcdb_msg_insert_'))) {
-    throw new Error('Public WCDB API contains native message-insert exports')
+  if (missing.length)
+    throw new Error(`${profile} WCDB API is missing exports: ${missing.join(', ')}`)
+  if (profile === 'public') {
+    const leaked = symbols.filter(
+      (symbol) => symbol.startsWith('wcdb_msg_insert_') && !PUBLIC_ALLOWED_MSG_INSERT.has(symbol)
+    )
+    if (leaked.length) {
+      throw new Error(
+        `Public WCDB API contains forbidden message-insert exports: ${leaked.join(', ')}`
+      )
+    }
   }
   const dependencies = run('/usr/bin/otool', ['-L', apiPath])
   if (!dependencies.includes('@loader_path/libWCDB.dylib')) {
@@ -132,13 +155,19 @@ function readAndValidateNativeManifest(bundleRoot) {
   if (manifest.platform !== 'macos' || manifest.architecture !== 'arm64') {
     throw new Error('Native bundle manifest must target macos-arm64')
   }
-  if (!Array.isArray(manifest.files) || manifest.files.length !== 6) {
-    throw new Error('Native bundle manifest must list exactly six files')
+  if (!Array.isArray(manifest.files) || manifest.files.length !== 7) {
+    throw new Error(
+      'Native bundle manifest must list exactly seven files (six runtime/wcdb artifacts plus libtmlicense.dylib)'
+    )
   }
   const normalized = new Set()
   const listedNativePaths = new Set()
   for (const entry of manifest.files) {
-    if (!entry || typeof entry.path !== 'string' || !/^tracememo\/(runtime|wcdb)\//.test(entry.path)) {
+    if (
+      !entry ||
+      typeof entry.path !== 'string' ||
+      !/^tracememo\/(runtime|wcdb)\//.test(entry.path)
+    ) {
       throw new Error('Native bundle manifest contains an unexpected resource path')
     }
     if (normalized.has(entry.path) || !/^[a-f0-9]{64}$/.test(entry.sha256 || '')) {
@@ -151,9 +180,15 @@ function readAndValidateNativeManifest(bundleRoot) {
       throw new Error(`Native bundle manifest verification failed: ${entry.path}`)
     }
     listedNativePaths.add(entry.path)
-    if (/\/runtime\/(tm-wechat-host|libtmwechat\.dylib)$/.test(entry.path)) {
+    if (/\/runtime\/(tm-wechat-host|libtmwechat\.dylib|libtmlicense\.dylib)$/.test(entry.path)) {
       if (!binaryArchitectures(source).includes('arm64')) {
         throw new Error(`Native runtime binary is not arm64: ${entry.path}`)
+      }
+      if (entry.path.endsWith('libtmlicense.dylib')) {
+        const signature = run('/usr/bin/codesign', ['--verify', '--strict', source])
+        if (signature.trim() !== '') {
+          throw new Error(`libtmlicense.dylib code signature is invalid: ${signature.trim()}`)
+        }
       }
     }
     if (/\/wcdb\/(libwcdb_api\.dylib|tm-wcdb-config-helper)$/.test(entry.path)) {
@@ -163,6 +198,7 @@ function readAndValidateNativeManifest(bundleRoot) {
     }
   }
   const expected = [
+    'tracememo/runtime/libtmlicense.dylib',
     'tracememo/runtime/libtmwechat.dylib',
     'tracememo/runtime/runtime-manifest.json',
     'tracememo/runtime/tm-wechat-host',
@@ -173,7 +209,8 @@ function readAndValidateNativeManifest(bundleRoot) {
   if (expected.some((entry) => !normalized.has(entry))) {
     throw new Error('Native bundle manifest file list is incomplete')
   }
-  if (listedNativePaths.size !== expected.length) throw new Error('Native bundle manifest has unexpected files')
+  if (listedNativePaths.size !== expected.length)
+    throw new Error('Native bundle manifest has unexpected files')
   return { manifest, files: manifest.files }
 }
 
@@ -189,9 +226,20 @@ function validateNativeBundle(bundleRoot, files) {
   const host = bySuffix('/runtime/tm-wechat-host')
   const runtimeDylib = bySuffix('/runtime/libtmwechat.dylib')
   const runtimeManifestPath = bySuffix('/runtime/runtime-manifest.json')
+  const licenseDylib = bySuffix('/runtime/libtmlicense.dylib')
   validateWcdbPair(api, companion, 'native')
-  for (const [binary, label] of [[helper, 'WCDB helper'], [host, 'WeChat host'], [runtimeDylib, 'WeChat runtime']]) {
+  for (const [binary, label] of [
+    [helper, 'WCDB helper'],
+    [host, 'WeChat host'],
+    [runtimeDylib, 'WeChat runtime'],
+    [licenseDylib, 'License core']
+  ]) {
     assertArm64(binary, label)
+  }
+  // libtmlicense must carry a valid ad-hoc signature; it is dlopen'd at runtime.
+  const licenseSignature = run('/usr/bin/codesign', ['--verify', '--strict', licenseDylib])
+  if (licenseSignature.trim() !== '') {
+    throw new Error(`libtmlicense.dylib code signature is invalid: ${licenseSignature.trim()}`)
   }
   if (!run('/usr/bin/otool', ['-L', helper]).includes('@loader_path/libwcdb_api.dylib')) {
     throw new Error('WCDB helper does not resolve its API dylib via @loader_path')
@@ -202,37 +250,55 @@ function validateNativeBundle(bundleRoot, files) {
     throw new Error('Native bundle manifest does not declare the expected WCDB ABI')
   }
   const runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, 'utf8'))
-  if (runtimeManifest.platform !== 'darwin-arm64' || runtimeManifest.architecture !== 'arm64' || runtimeManifest.protocolVersion !== 1) {
+  if (
+    runtimeManifest.platform !== 'darwin-arm64' ||
+    runtimeManifest.architecture !== 'arm64' ||
+    runtimeManifest.protocolVersion !== 1
+  ) {
     throw new Error('Runtime manifest platform, architecture, or protocol is invalid')
   }
   if (runtimeManifest.runtime !== 'tm-wechat-native') throw new Error('Runtime name is invalid')
-  if (!Array.isArray(runtimeManifest.supportedWechatVersions) || runtimeManifest.supportedWechatVersions.length === 0) {
+  if (
+    !Array.isArray(runtimeManifest.supportedWechatVersions) ||
+    runtimeManifest.supportedWechatVersions.length === 0
+  ) {
     throw new Error('Runtime manifest has no supported WeChat versions')
   }
   for (const capability of ['text', 'image', 'voice']) {
-    if (!Array.isArray(runtimeManifest.capabilities) || !runtimeManifest.capabilities.includes(capability)) {
+    if (
+      !Array.isArray(runtimeManifest.capabilities) ||
+      !runtimeManifest.capabilities.includes(capability)
+    ) {
       throw new Error(`Runtime manifest is missing capability: ${capability}`)
     }
   }
   const runtimeBytes = fs.readFileSync(runtimeDylib)
   for (const key of ['tmSendSourceSha256', 'addressProfileSha256']) {
-    if (!/^[a-f0-9]{64}$/.test(runtimeManifest[key] || '') || !runtimeBytes.includes(Buffer.from(runtimeManifest[key]))) {
+    if (
+      !/^[a-f0-9]{64}$/.test(runtimeManifest[key] || '') ||
+      !runtimeBytes.includes(Buffer.from(runtimeManifest[key]))
+    ) {
       throw new Error(`Runtime dylib does not contain the manifest ${key}`)
     }
   }
   const apiDependencies = run('/usr/bin/otool', ['-L', api])
-  if (!apiDependencies.includes('@loader_path/libWCDB.dylib')) throw new Error('WCDB companion dependency missing')
+  if (!apiDependencies.includes('@loader_path/libWCDB.dylib'))
+    throw new Error('WCDB companion dependency missing')
   if (!run('/usr/bin/otool', ['-L', host]).includes('libSystem')) {
     throw new Error('Host is missing its system runtime dependency')
   }
-  if (runtimeDependencies.includes('@rpath/libtmwechat.dylib') && !runtimeDependencies.includes('/usr/lib/libSystem')) {
+  if (
+    runtimeDependencies.includes('@rpath/libtmwechat.dylib') &&
+    !runtimeDependencies.includes('/usr/lib/libSystem')
+  ) {
     throw new Error('Runtime dylib is missing required system dependencies')
   }
 }
 
 function assertStagingTargetDoesNotExist(stageRoot, outputRoot) {
   for (const target of [stageRoot, outputRoot]) {
-    if (fs.existsSync(target)) throw new Error(`Refusing to overwrite existing build target: ${target}`)
+    if (fs.existsSync(target))
+      throw new Error(`Refusing to overwrite existing build target: ${target}`)
   }
 }
 
@@ -262,26 +328,32 @@ function copyNative(source, destination) {
 }
 
 async function downloadFfmpegArm64(destination) {
-  const url = 'https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64.gz'
+  const url =
+    'https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64.gz'
   const archivePath = `${destination}.gz`
   await new Promise((resolve, reject) => {
-    const request = (target) => https.get(target, (response) => {
-      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-        response.resume()
-        request(response.headers.location)
-        return
-      }
-      if (response.statusCode !== 200) {
-        response.resume()
-        reject(new Error(`FFmpeg download failed with HTTP ${response.statusCode}`))
-        return
-      }
-      const output = fs.createWriteStream(archivePath, { flags: 'wx' })
-      pipeline(response, output).then(resolve, reject)
-    })
+    const request = (target) =>
+      https.get(target, (response) => {
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          response.resume()
+          request(response.headers.location)
+          return
+        }
+        if (response.statusCode !== 200) {
+          response.resume()
+          reject(new Error(`FFmpeg download failed with HTTP ${response.statusCode}`))
+          return
+        }
+        const output = fs.createWriteStream(archivePath, { flags: 'wx' })
+        pipeline(response, output).then(resolve, reject)
+      })
     request(url).on('error', reject)
   })
-  await pipeline(fs.createReadStream(archivePath), createGunzip(), fs.createWriteStream(destination, { flags: 'wx' }))
+  await pipeline(
+    fs.createReadStream(archivePath),
+    createGunzip(),
+    fs.createWriteStream(destination, { flags: 'wx' })
+  )
   fs.unlinkSync(archivePath)
   fs.chmodSync(destination, 0o755)
   assertArm64(destination, 'Staged FFmpeg')
@@ -315,7 +387,8 @@ function assertNoProtectedInputs(root) {
 }
 
 async function prepareEdition(edition) {
-  if (edition !== 'public' && edition !== 'native') throw new Error('Usage: prepare-macos-edition.cjs <public|native>')
+  if (edition !== 'public' && edition !== 'native')
+    throw new Error('Usage: prepare-macos-edition.cjs <public|native>')
   const stageRoot = path.join(ROOT, 'build', 'mac-staging', edition)
   const outputRoot = path.join(ROOT, 'dist', 'mac', edition)
   assertStagingTargetDoesNotExist(stageRoot, outputRoot)
@@ -325,48 +398,69 @@ async function prepareEdition(edition) {
   fs.mkdirSync(path.dirname(stageRoot), { recursive: true })
   fs.mkdirSync(stageRoot)
   try {
-  const stagedResources = path.join(stageRoot, 'resources')
-  fs.mkdirSync(stagedResources, { recursive: true })
-  copyPublicResources(sourceResources, stagedResources)
-  copyFfmpegLicenses(stagedResources)
-  const ffmpegSha256 = await prepareFfmpeg(stagedResources)
+    const stagedResources = path.join(stageRoot, 'resources')
+    fs.mkdirSync(stagedResources, { recursive: true })
+    copyPublicResources(sourceResources, stagedResources)
+    copyFfmpegLicenses(stagedResources)
+    const ffmpegSha256 = await prepareFfmpeg(stagedResources)
 
-  const marker = { profile: edition, appVersion: require(path.join(ROOT, 'package.json')).version, ffmpegSha256 }
-  if (edition === 'public') {
-    const api = path.join(WCDB_DIST_ROOT, 'libwcdb_api.dylib')
-    const companion = path.join(WCDB_DIST_ROOT, 'libWCDB.dylib')
-    validateWcdbPair(api, companion, 'public')
-    copyNative(api, path.join(stagedResources, 'wcdb', 'macos', 'arm64', 'libwcdb_api.dylib'))
-    copyNative(companion, path.join(stagedResources, 'wcdb', 'macos', 'arm64', 'libWCDB.dylib'))
-    marker.nativeInput = {
-      source: path.relative(ROOT, WCDB_DIST_ROOT),
-      libwcdbApiSha256: sha256(api),
-      libWCDBSha256: sha256(companion)
+    const marker = {
+      profile: edition,
+      appVersion: require(path.join(ROOT, 'package.json')).version,
+      ffmpegSha256
     }
-  } else {
-    const { manifest, files } = readAndValidateNativeManifest(NATIVE_BUNDLE_ROOT)
-    validateNativeBundle(NATIVE_BUNDLE_ROOT, files)
-    for (const entry of files) {
-      const remainder = entry.path.replace(/^tracememo\//, '')
-      const relative = remainder.startsWith('runtime/')
-        ? path.join(remainder.replace(/^runtime\//, 'runtime/darwin-arm64/'))
-        : path.join('wcdb', 'macos', 'arm64', remainder.replace(/^wcdb\//, ''))
-      copyNative(path.join(NATIVE_BUNDLE_ROOT, entry.path), path.join(stagedResources, relative))
+    if (edition === 'public') {
+      const api = path.join(WCDB_DIST_ROOT, 'libwcdb_api.dylib')
+      const companion = path.join(WCDB_DIST_ROOT, 'libWCDB.dylib')
+      validateWcdbPair(api, companion, 'public')
+      copyNative(api, path.join(stagedResources, 'wcdb', 'macos', 'arm64', 'libwcdb_api.dylib'))
+      copyNative(companion, path.join(stagedResources, 'wcdb', 'macos', 'arm64', 'libWCDB.dylib'))
+      marker.nativeInput = {
+        source: path.relative(ROOT, WCDB_DIST_ROOT),
+        libwcdbApiSha256: sha256(api),
+        libWCDBSha256: sha256(companion)
+      }
+    } else {
+      const { manifest, files } = readAndValidateNativeManifest(NATIVE_BUNDLE_ROOT)
+      validateNativeBundle(NATIVE_BUNDLE_ROOT, files)
+      for (const entry of files) {
+        const remainder = entry.path.replace(/^tracememo\//, '')
+        let relative
+        if (remainder === 'runtime/libtmlicense.dylib') {
+          // libtmlicense 只给 WCDB helper 用（main 进程的内嵌授权核是静态编译进
+          // libtmwechat.dylib 的）。放到 helper 同目录，helper 的 dlopen 候选路径
+          // <exe dir>/libtmlicense.dylib 才能命中；放 runtime/ 子目录会让
+          // helper 找不到它而 fail-closed。
+          relative = path.join('wcdb', 'macos', 'arm64', 'libtmlicense.dylib')
+        } else if (remainder.startsWith('runtime/')) {
+          relative = path.join(remainder.replace(/^runtime\//, 'runtime/darwin-arm64/'))
+        } else {
+          relative = path.join('wcdb', 'macos', 'arm64', remainder.replace(/^wcdb\//, ''))
+        }
+        copyNative(path.join(NATIVE_BUNDLE_ROOT, entry.path), path.join(stagedResources, relative))
+      }
+      marker.nativeInput = {
+        bundleVersion: manifest.bundleVersion,
+        manifestSha256: sha256(path.join(NATIVE_BUNDLE_ROOT, 'manifest.json')),
+        files: files.map(({ path: relative, sha256: digest, bytes }) => ({
+          path: relative,
+          sha256: digest,
+          bytes
+        }))
+      }
     }
-    marker.nativeInput = {
-      bundleVersion: manifest.bundleVersion,
-      manifestSha256: sha256(path.join(NATIVE_BUNDLE_ROOT, 'manifest.json')),
-      files: files.map(({ path: relative, sha256: digest, bytes }) => ({ path: relative, sha256: digest, bytes }))
-    }
-  }
 
-  for (const relative of ['1.txt', 'runtime/runtime.zip']) {
-    if (fs.existsSync(path.join(stagedResources, relative))) {
-      throw new Error(`Protected file leaked into ${edition} staging: ${relative}`)
+    for (const relative of ['1.txt', 'runtime/runtime.zip']) {
+      if (fs.existsSync(path.join(stagedResources, relative))) {
+        throw new Error(`Protected file leaked into ${edition} staging: ${relative}`)
+      }
     }
-  }
-  fs.writeFileSync(path.join(stagedResources, 'tracememo-build.json'), `${JSON.stringify(marker, null, 2)}\n`, { flag: 'wx' })
-  console.log(`[prepare-macos-edition] ${edition} resources staged at ${stagedResources}`)
+    fs.writeFileSync(
+      path.join(stagedResources, 'tracememo-build.json'),
+      `${JSON.stringify(marker, null, 2)}\n`,
+      { flag: 'wx' }
+    )
+    console.log(`[prepare-macos-edition] ${edition} resources staged at ${stagedResources}`)
   } catch (error) {
     fs.rmSync(stageRoot, { recursive: true, force: true })
     throw error
@@ -374,15 +468,20 @@ async function prepareEdition(edition) {
 }
 
 function validateStagedEdition(edition) {
-  if (edition !== 'public' && edition !== 'native') throw new Error('Usage: validate staged edition <public|native>')
+  if (edition !== 'public' && edition !== 'native')
+    throw new Error('Usage: validate staged edition <public|native>')
   const resources = path.join(ROOT, 'build', 'mac-staging', edition, 'resources')
   const markerPath = path.join(resources, 'tracememo-build.json')
   if (!fs.existsSync(markerPath)) throw new Error(`Missing staged edition marker: ${markerPath}`)
   const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'))
-  if (marker.profile !== edition || marker.appVersion !== require(path.join(ROOT, 'package.json')).version) {
+  if (
+    marker.profile !== edition ||
+    marker.appVersion !== require(path.join(ROOT, 'package.json')).version
+  ) {
     throw new Error('Staged edition marker does not match the expected edition/version')
   }
-  if (!/^[a-f0-9]{64}$/.test(marker.ffmpegSha256 || '')) throw new Error('Staged FFmpeg hash is invalid')
+  if (!/^[a-f0-9]{64}$/.test(marker.ffmpegSha256 || ''))
+    throw new Error('Staged FFmpeg hash is invalid')
   const ffmpeg = path.join(resources, 'ffmpeg', 'ffmpeg')
   if (!fs.existsSync(ffmpeg) || sha256(ffmpeg) !== marker.ffmpegSha256) {
     throw new Error('Staged FFmpeg SHA-256 does not match the edition marker')
@@ -399,50 +498,98 @@ function validateStagedEdition(edition) {
   }
   if (edition === 'native') {
     const nativeManifest = marker.nativeInput?.files
-    if (!Array.isArray(nativeManifest) || nativeManifest.length !== 6) {
-      throw new Error('Staged native bundle is missing its verified source manifest')
+    if (!Array.isArray(nativeManifest) || nativeManifest.length !== 7) {
+      throw new Error(
+        'Staged native bundle is missing its verified source manifest (expected seven files)'
+      )
     }
     for (const item of nativeManifest) {
       const relative = item.path.replace(/^tracememo\//, '')
-      const stagedRelative = relative.startsWith('runtime/')
-        ? relative.replace(/^runtime\//, 'runtime/darwin-arm64/')
-        : path.join('wcdb', 'macos', 'arm64', relative.replace(/^wcdb\//, ''))
+      let stagedRelative
+      if (relative === 'runtime/libtmlicense.dylib') {
+        stagedRelative = path.join('wcdb', 'macos', 'arm64', 'libtmlicense.dylib')
+      } else if (relative.startsWith('runtime/')) {
+        stagedRelative = relative.replace(/^runtime\//, 'runtime/darwin-arm64/')
+      } else {
+        stagedRelative = path.join('wcdb', 'macos', 'arm64', relative.replace(/^wcdb\//, ''))
+      }
       const staged = path.join(resources, stagedRelative)
-      if (!fs.existsSync(staged) || fs.statSync(staged).size !== item.bytes || sha256(staged) !== item.sha256) {
+      if (
+        !fs.existsSync(staged) ||
+        fs.statSync(staged).size !== item.bytes ||
+        sha256(staged) !== item.sha256
+      ) {
         throw new Error(`Staged native artifact hash mismatch: ${item.path}`)
       }
     }
-  validateNativeBundleFromStaging(resources)
+    validateNativeBundleFromStaging(resources)
   }
   for (const relative of ['1.txt', 'runtime/runtime.zip']) {
-    if (fs.existsSync(path.join(resources, relative))) throw new Error(`Protected file leaked into staging: ${relative}`)
+    if (fs.existsSync(path.join(resources, relative)))
+      throw new Error(`Protected file leaked into staging: ${relative}`)
   }
-  return { edition, appVersion: marker.appVersion, apiSha256: sha256(api), companionSha256: sha256(companion), ffmpegSha256: sha256(ffmpeg) }
+  return {
+    edition,
+    appVersion: marker.appVersion,
+    apiSha256: sha256(api),
+    companionSha256: sha256(companion),
+    ffmpegSha256: sha256(ffmpeg)
+  }
 }
 
 function validateNativeBundleFromStaging(resources) {
   const api = path.join(resources, 'wcdb', 'macos', 'arm64', 'libwcdb_api.dylib')
   const companion = path.join(resources, 'wcdb', 'macos', 'arm64', 'libWCDB.dylib')
   const helper = path.join(resources, 'wcdb', 'macos', 'arm64', 'tm-wcdb-config-helper')
+  const licenseDylib = path.join(resources, 'wcdb', 'macos', 'arm64', 'libtmlicense.dylib')
   const host = path.join(resources, 'runtime', 'darwin-arm64', 'tm-wechat-host')
   const runtimeDylib = path.join(resources, 'runtime', 'darwin-arm64', 'libtmwechat.dylib')
-  const runtimeManifestPath = path.join(resources, 'runtime', 'darwin-arm64', 'runtime-manifest.json')
+  const runtimeManifestPath = path.join(
+    resources,
+    'runtime',
+    'darwin-arm64',
+    'runtime-manifest.json'
+  )
+  if (!fs.existsSync(licenseDylib)) {
+    throw new Error('Staged native edition is missing libtmlicense.dylib next to the WCDB helper')
+  }
   const symbols = exportedSymbols(api)
   const missing = REQUIRED_NATIVE_SYMBOLS.filter((symbol) => !symbols.includes(symbol))
   if (missing.length) throw new Error(`Staged native WCDB ABI is missing: ${missing.join(', ')}`)
-  for (const [binary, label] of [[companion, 'WCDB companion'], [helper, 'WCDB helper'], [host, 'Host'], [runtimeDylib, 'Runtime dylib']]) {
+  for (const [binary, label] of [
+    [companion, 'WCDB companion'],
+    [helper, 'WCDB helper'],
+    [licenseDylib, 'License core'],
+    [host, 'Host'],
+    [runtimeDylib, 'Runtime dylib']
+  ]) {
     assertArm64(binary, label)
+  }
+  // helper must be able to dlopen libtmlicense.dylib: it must sit in the same directory.
+  const licenseSignature = run('/usr/bin/codesign', ['--verify', '--strict', licenseDylib])
+  if (licenseSignature.trim() !== '') {
+    throw new Error(
+      `Staged libtmlicense.dylib code signature is invalid: ${licenseSignature.trim()}`
+    )
   }
   if (!run('/usr/bin/otool', ['-L', helper]).includes('@loader_path/libwcdb_api.dylib')) {
     throw new Error('Staged helper lost its @loader_path WCDB dependency')
   }
   const runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, 'utf8'))
   const runtimeBytes = fs.readFileSync(runtimeDylib)
-  if (runtimeManifest.runtime !== 'tm-wechat-native' || runtimeManifest.platform !== 'darwin-arm64' || runtimeManifest.architecture !== 'arm64' || runtimeManifest.protocolVersion !== 1) {
+  if (
+    runtimeManifest.runtime !== 'tm-wechat-native' ||
+    runtimeManifest.platform !== 'darwin-arm64' ||
+    runtimeManifest.architecture !== 'arm64' ||
+    runtimeManifest.protocolVersion !== 1
+  ) {
     throw new Error('Staged Runtime Manifest identity is invalid')
   }
   for (const key of ['tmSendSourceSha256', 'addressProfileSha256']) {
-    if (!/^[a-f0-9]{64}$/.test(runtimeManifest[key] || '') || !runtimeBytes.includes(Buffer.from(runtimeManifest[key]))) {
+    if (
+      !/^[a-f0-9]{64}$/.test(runtimeManifest[key] || '') ||
+      !runtimeBytes.includes(Buffer.from(runtimeManifest[key]))
+    ) {
       throw new Error(`Staged runtime hash verification failed: ${key}`)
     }
   }
@@ -450,10 +597,10 @@ function validateNativeBundleFromStaging(resources) {
 
 if (require.main === module) {
   try {
-  prepareEdition(process.argv[2]).catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error))
-    process.exitCode = 1
-  })
+    prepareEdition(process.argv[2]).catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error))
+      process.exitCode = 1
+    })
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1
