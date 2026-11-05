@@ -14,6 +14,8 @@ import type {
   SaveGeneratedReportRequest,
   UpdateGeneratedReportTemplateRequest
 } from '../shared/report-history'
+import type { MacLicenseStatus } from '../shared/personal-wechat-mac-license'
+import type { MacWechatSendRuntimeAvailabilityResult } from '../shared/personal-wechat-mac-runtime'
 import type {
   AIChatRequestOptions,
   AiSearchExternalAuthorizationRequest,
@@ -585,6 +587,12 @@ const api = {
   },
   getPersonalWechatSenderStatus: (): Promise<PersonalWechatSenderStatus> =>
     ipcRenderer.invoke('wechat-personal:getStatus'),
+  getMacLicenseStatus: (): Promise<MacLicenseStatus> =>
+    ipcRenderer.invoke('wechat-personal:getMacLicenseStatus'),
+  getMacSendRuntimeAvailability: (): Promise<MacWechatSendRuntimeAvailabilityResult> =>
+    ipcRenderer.invoke('wechat-personal:getMacSendRuntimeAvailability'),
+  refreshMacLicense: (): Promise<MacLicenseStatus> =>
+    ipcRenderer.invoke('wechat-personal:refreshMacLicense'),
   getPersonalWechatSendCapability: (): Promise<PersonalWechatSendCapability> =>
     ipcRenderer.invoke('wechat-personal:getSendCapability'),
   checkPersonalWechatSenderStatus: (port?: string): Promise<PersonalWechatSenderStatus> =>

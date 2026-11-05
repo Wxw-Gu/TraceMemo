@@ -15,6 +15,13 @@ export type MacWechatRuntimeLifecycle =
   | 'crashed_unbound' // died while unbound — safe to auto-restart
   | 'crashed_bound' // died while bound — WeChat keeps an orphan agent
 
+export type MacWechatSendRuntimeAvailability = 'unavailable' | 'component_error' | 'available'
+
+export interface MacWechatSendRuntimeAvailabilityResult {
+  state: MacWechatSendRuntimeAvailability
+  message: string
+}
+
 export type MacWechatHostRuntimeState =
   | 'not_initialized'
   | 'wechat_not_running'
@@ -45,6 +52,16 @@ export interface MacWechatRuntimeManifest {
   addressProfileSha256: string
   supportedWechatVersions: string[]
   capabilities: Array<'text' | 'image' | 'voice'>
+  capabilitiesByVersion?: Record<
+    string,
+    {
+      text?: 'verified' | 'addresses-only' | 'unsupported'
+      image?: 'verified' | 'addresses-only' | 'unsupported'
+      voice?: 'verified' | 'addresses-only' | 'unsupported'
+      downloadImage?: 'verified' | 'addresses-only' | 'unsupported'
+      textMechanism?: string
+    }
+  >
 }
 
 export interface MacWechatBindingStatus {
@@ -60,7 +77,6 @@ export interface MacWechatBindingStatus {
   wechatPid: number
   wechatVersion?: string
   supported: boolean
-  supportedVersions?: string
   bindingState: MacWechatBindingState
   bound: boolean
   boundWechatPid: number
@@ -82,7 +98,6 @@ export interface MacWechatRuntimeSnapshot {
   endpoint: string
   port: number
   runtimeDir?: string
-  manifest?: MacWechatRuntimeManifest
   error?: string
   binding?: MacWechatBindingStatus
 }

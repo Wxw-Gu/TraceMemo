@@ -12,7 +12,7 @@ import {
 } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { delimiter, dirname, extname, join, sep } from 'path'
-import ffmpegStaticPath from 'ffmpeg-static'
+import { resolveBundledFfmpegPath } from '../ffmpeg-path'
 import { promisify } from 'util'
 import type {
   PersonalWechatSendRequest,
@@ -64,9 +64,7 @@ function windowsHookHost(port?: unknown): string | null {
 
 export function buildPersonalWechatRuntimePath(): string {
   const existing = String(process.env['PATH'] || '')
-  const bundledFfmpeg = String(ffmpegStaticPath || '')
-    .replace('app.asar', 'app.asar.unpacked')
-    .trim()
+  const bundledFfmpeg = resolveBundledFfmpegPath()
   if (!bundledFfmpeg || !existsSync(bundledFfmpeg)) return existing
   return [dirname(bundledFfmpeg), existing].filter(Boolean).join(delimiter)
 }
@@ -174,7 +172,7 @@ async function detectVoiceDurationMs(filePath: string): Promise<number | undefin
     }
   }
 
-  const ffmpegPath = String(ffmpegStaticPath || '').replace('app.asar', 'app.asar.unpacked')
+  const ffmpegPath = resolveBundledFfmpegPath()
   if (!ffmpegPath || !existsSync(ffmpegPath)) return undefined
   let output = ''
   try {
@@ -203,7 +201,7 @@ async function prepareWindowsVoiceFile(filePath: string): Promise<{
     return { filePath, durationMs: await detectVoiceDurationMs(filePath), temporary: false }
   }
 
-  const ffmpegPath = String(ffmpegStaticPath || '').replace('app.asar', 'app.asar.unpacked')
+  const ffmpegPath = resolveBundledFfmpegPath()
   if (!ffmpegPath || !existsSync(ffmpegPath)) {
     throw new Error('Windows 语音发送需要可用的 FFmpeg 才能转换为 SILK')
   }

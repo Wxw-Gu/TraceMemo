@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { isWcdbDebugEnabled } from './wcdb-debug'
 import {
   isLegacyMigrationHelper,
   isUserDataIsolated,
@@ -152,6 +153,18 @@ import {
   type MsgInsertSwitchName,
   type MsgInsertSwitchesSnapshot
 } from './services/msg-insert-switch-service'
+import type { MsgInsertErrorCode, MsgInsertSwitchStatus } from '../shared/msg-insert-switch'
+import {
+  msgInsertCapabilityService,
+  type MessageInsertCapability
+} from './services/msg-insert-capability-service'
+import { resolveExternalComponent } from './services/external-component-locator'
+import {
+  isDefinitelyBlocked,
+  isEntitlementBlocked,
+  resolveExitNoticeGate,
+  resolveSwitchPresentation
+} from './services/exit-notice-gate'
 import { GroupStatsService } from './services/group-stats-service'
 import {
   configureWechatLocalExitNotice,
@@ -225,6 +238,126 @@ function buildMsgInsertSwitchesSnapshot(): MsgInsertSwitchesSnapshot {
   }
 }
 
+/** 能力判定需要知道「微信库连没连」，但不需要知道发送是否就绪。 */
+function capabilityDatabaseReady(): boolean {
+  return Boolean(chat.getChatDb()?.getWcdb4Client())
+}
+
+/**
+ * 退群提示与防撤回同为发送能力：授权/组件不成立时 desired 与 effective 一起压
+ * （UI 读 desired），探测失败不落盘，否则正常用户会被误关。
+ */
+/** 明确不可用时把本地开关落盘关掉；只写设置文件，不动监控范围。 */
+function enforceExitNoticeGate(capability: MessageInsertCapability): void {
+  if (!isDefinitelyBlocked(capability)) return
+  if (!wechatLocalExitNoticeService.isEnabled()) return
+  const decision = resolveExitNoticeGate(capability, true)
+  if (!decision.persistDisable) return
+  const disabled = wechatLocalExitNoticeService.setEnabled(false)
+  syncExitNoticeScope()
+  appLogger.write({
+    level: 'warn',
+    scope: 'capability-gate',
+    message: '退群内提示已因发送能力不可用自动关闭',
+    details: {
+      reasonCode: capability.reasonCode,
+      entitlementState: capability.entitlementState,
+      nativeComponentState: capability.nativeComponentState,
+      persisted: !disabled.error
+    }
+  })
+}
+
+/** 把授权/组件判定挂到快照上；GET 仍是纯读，不写库不触发 DDL。 */
+async function attachCapability(
+  snapshot: MsgInsertSwitchesSnapshot
+): Promise<MsgInsertSwitchesSnapshot> {
+  const capability = await msgInsertCapabilityService.getCapability({
+    databaseReady: capabilityDatabaseReady()
+  })
+  enforceExitNoticeGate(capability)
+
+  /* 两个开关的呈现共用同一判定：授权不成立显示关闭，库没连只压 effective。 */
+  const switches = { ...snapshot.switches }
+  const applyPresentation = (
+    kind: 'recall_notice' | 'group_exit_notice',
+    status: MsgInsertSwitchStatus | undefined
+  ): MsgInsertSwitchStatus | undefined => {
+    if (!status) return status
+    const current =
+      kind === 'group_exit_notice'
+        ? wechatLocalExitNoticeService.isEnabled()
+        : status.desiredEnabled === true
+    const presentation = resolveSwitchPresentation(kind, current, capability)
+    if (presentation.effectiveEnabled) {
+      return {
+        ...status,
+        desiredEnabled: true,
+        effectiveEnabled: true,
+        operationOk: true
+      }
+    }
+    /*
+     * 不要无脑覆盖 errorCode：授权没问题、只是暂时不生效时（库没连、分片没读到），
+     * 用 CAPABILITY_READY 盖上去会把真实原因擦掉，用户看到的是「授权与组件均已就绪」
+     * 配一个点不动的开关。
+     */
+    const blocked = isEntitlementBlocked(capability)
+    return {
+      ...status,
+      desiredEnabled: presentation.desiredEnabled,
+      effectiveEnabled: false,
+      operationOk: false,
+      errorCode: blocked
+        ? (capability.reasonCode as MsgInsertErrorCode)
+        : (status.errorCode ?? (capability.reasonCode as MsgInsertErrorCode)),
+      message: blocked ? capability.message : (status.message ?? capability.message)
+    }
+  }
+  switches.recall_notice = applyPresentation('recall_notice', switches.recall_notice)!
+  switches.group_exit_notice = applyPresentation(
+    'group_exit_notice',
+    switches.group_exit_notice
+  )!
+  return {
+    ...snapshot,
+    switches,
+    capability: capability,
+    /* 旧字段保留一个与真实判定一致的值，避免老调用方继续读到一个恒 true */
+    sendCapabilityAvailable: capability.canEnable
+  }
+}
+
+/** 能力原因 → 开关错误码。三种「不可用」必须能区分开。 */
+function reasonToErrorCode(capability: MessageInsertCapability): MsgInsertErrorCode {
+  switch (capability.reasonCode) {
+    case 'LICENSE_REQUIRED':
+      return 'LICENSE_REQUIRED'
+    case 'LICENSE_PENDING':
+      return 'LICENSE_PENDING'
+    case 'LICENSE_EXPIRED':
+      return 'LICENSE_EXPIRED'
+    case 'COMPONENT_MISSING':
+    case 'COMPONENT_INVALID':
+      return 'COMPONENT_MISSING'
+    case 'DATABASE_UNAVAILABLE':
+      return 'DATABASE_UNAVAILABLE'
+    default:
+      return 'CAPABILITY_UNAVAILABLE'
+  }
+}
+
+/** 开启前的统一裁决：拿最新状态，不信页面缓存。 */
+async function requireCapability(): Promise<{
+  ok: boolean
+  capability: MessageInsertCapability
+}> {
+  const capability = await msgInsertCapabilityService.refresh({
+    databaseReady: capabilityDatabaseReady()
+  })
+  return { ok: capability.canEnable, capability }
+}
+
 /**
  * 轻量 reconciliation —— 把退群监控选中的群缺失的规则补齐，不动开关值。
  *
@@ -248,14 +381,14 @@ async function reconcileMsgInsertRulesOnStart(): Promise<void> {
   if (!scope || !client) return
 
   let enabled = false
+  let shardSignature = ''
   try {
     const shards = client.listMessageShardPaths()
-    const shardSignature = shards.map((item) => path.basename(item)).join(',')
+    shardSignature = shards.map((item) => path.basename(item)).join(',')
     if (lastMsgInsertReconciledShards && lastMsgInsertReconciledShards !== shardSignature) {
       /* 微信新建了 message_N.db（或清理了旧的）—— 分片集合变了就重新补齐。 */
       console.log('[MsgInsert] 检测到消息分片变化，重新补齐规则')
     }
-    lastMsgInsertReconciledShards = shardSignature
     for (const shardPath of shards) {
       const read = client.getMsgInsertSwitches(shardPath)
       if (read.success && read.switches?.recall_notice) {
@@ -268,15 +401,23 @@ async function reconcileMsgInsertRulesOnStart(): Promise<void> {
     return
   }
   if (!enabled) return
-  await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope))
+
+  /*
+   * 授权前置：没有有效授权时不许 spawn helper 装规则。
+   * 指纹**不在这里更新** —— 没补成功就记指纹，会让「无授权跳过 → 后来激活 →
+   * 分片没变 → 永远不再补」这个死循环成立。
+   */
+  const gate = await requireCapability()
+  if (!gate.ok) {
+    console.log(
+      `[MsgInsert] 启动补齐已跳过：${gate.capability.reasonCode}（${gate.capability.message}）`
+    )
+    return
+  }
+  const done = await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope))
+  if (done) lastMsgInsertReconciledShards = shardSignature
 }
 
-/**
- * 防撤回的作用面 = 全部可定位会话（群聊 + 私聊）。
- *
- * native 侧有「定义漂移就 DROP + 重建」的能力，但只有显式复核时才会跑；
- * 规则定义变了不自动铺开，用户就得手动关-开一次开关。
- */
 function recallRoomsForReconcile(scope: MsgInsertScopeInput): string[] {
   return resolveTargetRooms(scope, 'recall_notice').rooms
 }
@@ -285,6 +426,15 @@ async function reconcileMsgInsertRulesNow(extraRooms: string[] = []): Promise<bo
   const scope = resolveMsgInsertScopeInput()
   const client = chat.getChatDb()?.getWcdb4Client()
   if (!scope || !client) return false
+  /*
+   * 底层兜底：不管从哪条路径进来（启动 / 刷新 / 清理 / 未来的新调用方），
+   * 装规则前都过一次发送能力校验。上层已经判过也不亏——命中 TTL 缓存几乎零成本。
+   */
+  const gate = await requireCapability()
+  if (!gate.ok) {
+    console.warn(`[MsgInsert] 拒绝安装规则：${gate.capability.reasonCode}`)
+    return false
+  }
   try {
     const result = await reconcileMsgInsertRules({
       ...scope,
@@ -345,8 +495,21 @@ async function cleanupLegacyRecallResidueOnStart(): Promise<void> {
      * 删除必须借 helper 的可写连接：本进程对分片只有只读连接，自己发 DROP 一定失败。
      * helper 那条链路会在装规则时顺手清掉残留，顺带把新规则铺到所有会话。
      */
+    /*
+     * 清理只能借 helper 的 ensure-rules 完成（没有独立的 drop-only 动作），
+     * 而 ensure-rules 会顺手把新规则铺到所有会话 —— 那属于写库动作。
+     * 所以没有授权时只保留残留、不执行清理，绝不拿「清理」当借口绕开门禁。
+     */
     const scope = resolveMsgInsertScopeInput()
-    const applied = scope ? await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope)) : false
+    let applied = false
+    if (scope) {
+      const gate = await requireCapability()
+      if (gate.ok) {
+        applied = await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope))
+      } else {
+        console.log(`[RecallResidue] 无有效授权，跳过残留清理（${gate.capability.reasonCode}）`)
+      }
+    }
 
     /* 收尾结论以「重新扫描」为准，不采信 helper 的自述。 */
     const after = client.scanLegacyRecallResidue()
@@ -368,7 +531,10 @@ async function cleanupLegacyRecallResidueOnStart(): Promise<void> {
     })
   } catch (error) {
     /* 清理失败绝不能挡住启动 —— 它只是收尾工作。 */
-    console.warn('[RecallResidue] 清理失败:', error)
+    console.warn(
+      '[RecallResidue] 清理失败:',
+      isWcdbDebugEnabled() ? error : error instanceof Error ? error.message : String(error)
+    )
     appLogger.write({
       level: 'warn',
       scope: 'recall-residue',
@@ -1208,6 +1374,47 @@ app.whenReady().then(async () => {
     message: 'TraceMemo 启动',
     details: { build: BUILD_MARK, platform: process.platform, version: app.getVersion() }
   })
+  /*
+   * 发送能力组件解析结果单独落一条日志。
+   * 现场排障时这是第一分界线：「组件没解析到」和「解析到了但授权不过」是两条完全不同的
+   * 排查路径，用户报「装了没生效」先看这一行，不要先去怀疑授权。
+   */
+  const external = resolveExternalComponent()
+  console.log(
+    external
+      ? `[Component] resolved version=${external.version} dirty=${external.dirty} dir=${external.dir}`
+      : '[Component] not resolved (no current.json, or manifest size/sha256 check failed)'
+  )
+  appLogger.write({
+    level: external ? 'info' : 'warn',
+    scope: 'component-locate',
+    message: external ? '已加载发送能力组件' : '未找到可用的发送能力组件',
+    details: external
+      ? {
+          version: external.version,
+          dir: external.dir,
+          helper: external.helperPath,
+          worktreeDirty: external.dirty
+        }
+      : {
+          platform: process.platform,
+          expected: '%LOCALAPPDATA%\\TraceMemo\\Pro\\windows-x64\\current.json'
+        }
+  })
+  /* 启动即对齐本地开关，否则 enabled=true 会潜伏，授权一恢复就自己开跑。 */
+  void msgInsertCapabilityService
+    .refresh({ databaseReady: capabilityDatabaseReady() })
+    .then((capability) => {
+      enforceExitNoticeGate(capability)
+    })
+    .catch((error) => {
+      appLogger.write({
+        level: 'warn',
+        scope: 'capability-gate',
+        message: '启动对齐退群内提示失败',
+        details: { error: error instanceof Error ? error.message : String(error) }
+      })
+    })
   process.on('uncaughtException', (error) => {
     appLogger.write({
       level: 'error',
@@ -1354,15 +1561,16 @@ app.whenReady().then(async () => {
         /**
          * 正式 MessageListener（Observation Mode 接入）。
          *
-         * 本轮**只监听、回读、规范化、去重、统计**，不触发任何业务：
+         * 只监听、回读、规范化、去重、统计，不触发任何业务：
          * 不匹配关键词、不判断 @我、不出日报、不回复、不调 AI / Agent、不发送。
-         * 下一层的 Trigger 由后续任务接入。
+         * 业务响应由上层消费者自行订阅，不在监听层实现。
          */
         const messageListener = new MessageListenerService(wcdb4Client)
         /**
          * Automation v1（@我生成日报）。
          *
-         * `isListening` 要等下面 `startMonitor` 有结果才知道，所以先用闭包变量占位。
+         * `isListening` 反映 `startMonitor` 的实际结果，因此通过闭包读取，
+         * 而不是在初始化时传入快照。
          */
         let automationListening = false
         initAutomationService(wcdb4Client, { isListening: () => automationListening })
@@ -1518,8 +1726,12 @@ app.whenReady().then(async () => {
         )
         return { success: true, monitoring }
       } catch (error) {
-        console.error('Failed to init DB:', error)
         const detail = error instanceof Error ? error.message : String(error)
+        if (isWcdbDebugEnabled()) {
+          console.error('Failed to init DB:', error)
+        } else {
+          console.error('Failed to init DB:', detail)
+        }
         if (isWindowsVcRuntimeMissingError(detail, process.platform)) {
           return {
             success: false,
@@ -2200,10 +2412,11 @@ app.whenReady().then(async () => {
    * 状态里同时给出 desiredEnabled / effectiveEnabled：开关值写成功不等于功能
    * 真的生效（规则可能没装齐），渲染层不能只看前者。
    */
-  ipcMain.handle('automation:getMsgInsertSwitches', () => {
+  ipcMain.handle('automation:getMsgInsertSwitches', async () => {
     /* 🔴 纯读：任何 get/status 都不允许写微信库、不允许触发 DDL。
-     * 需要顺带补齐规则的场景走 automation:refreshMsgInsertSwitches。 */
-    return buildMsgInsertSwitchesSnapshot()
+     * 需要顺带补齐规则的场景走 automation:refreshMsgInsertSwitches。
+     * 授权判定只走本机 HTTP + 文件 stat，同样不碰数据库。 */
+    return attachCapability(buildMsgInsertSwitchesSnapshot())
   })
   /**
    * 微信消息插入开关 —— **运行期刷新**（允许在分片集合变化时补一次规则）。
@@ -2223,16 +2436,28 @@ app.whenReady().then(async () => {
           .listMessageShardPaths()
           .map((item) => path.basename(item))
           .join(',')
+        /*
+         * 分片变了只在「确实有授权」时补齐。
+         * 指纹必须**补齐成功之后**才更新：否则无授权跳过一次，等用户激活回来
+         * 分片没变，就再也不会补了（这正是原实现的坑）。
+         */
         if (signature !== lastMsgInsertReconciledShards) {
-          lastMsgInsertReconciledShards = signature
-          console.log('[MsgInsert] 运行期检测到消息分片变化，重新补齐规则')
-          await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope))
+          const gate = await requireCapability()
+          if (gate.ok) {
+            console.log('[MsgInsert] 运行期检测到消息分片变化，重新补齐规则')
+            const done = await reconcileMsgInsertRulesNow(recallRoomsForReconcile(scope))
+            if (done) lastMsgInsertReconciledShards = signature
+          } else {
+            console.log(
+              `[MsgInsert] 跳过运行期补齐：${gate.capability.reasonCode}（授权恢复后会自动重试）`
+            )
+          }
         }
       } catch (error) {
         console.warn('[MsgInsert] 运行期补齐失败:', error)
       }
     }
-    return buildMsgInsertSwitchesSnapshot()
+    return attachCapability(buildMsgInsertSwitchesSnapshot())
   })
   /**
    * 微信消息插入开关 —— 写入。
@@ -2250,6 +2475,19 @@ app.whenReady().then(async () => {
         status: emptyMsgInsertStatus('recall_notice'),
         errorCode: 'UNSUPPORTED_SWITCH',
         message: '未知的开关'
+      }
+    }
+    /* 只拦开启；关闭永远放行，否则规则会永久锁在微信库里。 */
+    if (payload.enabled === true) {
+      const gate = await requireCapability()
+      if (!gate.ok) {
+        const code = reasonToErrorCode(gate.capability)
+        return {
+          success: false,
+          status: emptyMsgInsertStatus(name, code, gate.capability.message),
+          errorCode: code,
+          message: gate.capability.message
+        }
       }
     }
     /*
@@ -3213,6 +3451,15 @@ app.whenReady().then(async () => {
     return { success: true }
   })
   ipcMain.handle('wechat-personal:getStatus', () => currentPersonalWechatSenderStatus())
+  ipcMain.handle('wechat-personal:getMacLicenseStatus', () =>
+    macWechatRuntimeManager.getMacLicenseStatus()
+  )
+  ipcMain.handle('wechat-personal:getMacSendRuntimeAvailability', () =>
+    macWechatRuntimeManager.getSendRuntimeAvailability()
+  )
+  ipcMain.handle('wechat-personal:refreshMacLicense', () =>
+    macWechatRuntimeManager.refreshMacLicense()
+  )
   ipcMain.handle('wechat-personal:checkStatus', (_, port?: string) =>
     personalWechatSendService.checkWindowsStatus(port)
   )

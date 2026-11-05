@@ -249,6 +249,248 @@
   background: var(--wxex-bg-elevated);
   padding: 24px 26px;
 }
+.mac-pro-license-card,
+.mac-wechat-environment-card {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 20px 22px;
+}
+.mac-pro-license-header,
+.mac-wechat-environment-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+
+  > strong {
+    color: var(--wxex-text-primary);
+    font-size: 15px;
+    font-weight: 650;
+  }
+}
+.mac-pro-license-status,
+.mac-wechat-environment-status {
+  flex: 0 0 auto;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+}
+.mac-pro-license-status.is-ready,
+.mac-wechat-environment-status.is-ready,
+.mac-wechat-status-item .is-ready,
+.mac-wechat-capability-details .is-ready {
+  color: var(--wxex-success);
+}
+.mac-pro-license-status.is-error {
+  color: var(--wxex-danger);
+}
+.mac-pro-license-status.is-neutral,
+.mac-wechat-environment-status.is-neutral {
+  color: var(--wxex-text-muted);
+}
+.mac-pro-device-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  border-radius: var(--wxex-radius-md);
+  background: color-mix(in srgb, var(--wxex-text-primary) 4%, transparent);
+  padding: 10px 12px;
+}
+.mac-pro-device-value {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
+
+  > span {
+    color: var(--wxex-text-muted);
+    font-size: 11px;
+  }
+
+  code {
+    overflow: hidden;
+    color: var(--wxex-text-primary);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+.mac-pro-license-hint {
+  margin: -5px 0 0;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+}
+.mac-pro-license-features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+
+  > span {
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--wxex-text-primary) 5%, transparent);
+    padding: 3px 8px;
+    color: var(--wxex-text-secondary);
+    font-size: 11px;
+  }
+}
+.mac-pro-license-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+
+  strong {
+    margin-left: 4px;
+    color: var(--wxex-text-secondary);
+    font-weight: 550;
+  }
+}
+.mac-pro-license-footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mac-pro-identity-note {
+  margin: 0;
+}
+.mac-wechat-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.mac-wechat-status-item {
+  display: grid;
+  min-width: 0;
+  justify-items: center;
+  gap: 5px;
+  border-radius: var(--wxex-radius-md);
+  background: color-mix(in srgb, var(--wxex-text-primary) 3%, transparent);
+  padding: 12px 8px;
+  text-align: center;
+
+  > span {
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .is-pending {
+    color: var(--wxex-text-muted);
+  }
+
+  strong {
+    color: var(--wxex-text-primary);
+    font-size: 12px;
+    font-weight: 550;
+  }
+
+  small {
+    color: var(--wxex-text-muted);
+    font-size: 10px;
+  }
+}
+.mac-wechat-capability-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--wxex-text-muted);
+  font-size: 11px;
+
+  .is-pending {
+    color: var(--wxex-text-muted);
+  }
+}
+.mac-wechat-setup-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  border-top: 1px solid var(--wxex-border);
+  background: transparent;
+  padding: 12px 0 0;
+  color: var(--wxex-text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+
+  &:focus-visible {
+    border-radius: 4px;
+    outline: 2px solid var(--wxex-brand);
+    outline-offset: 3px;
+  }
+}
+.mac-wechat-setup-chevron {
+  color: var(--wxex-text-muted);
+  font-size: 18px;
+  transition: transform 160ms ease;
+}
+.mac-wechat-setup-toggle[aria-expanded='true'] .mac-wechat-setup-chevron {
+  transform: rotate(180deg);
+}
+.mac-wechat-setup-content {
+  min-width: 0;
+
+  &[hidden] {
+    display: none;
+  }
+
+  .personal-wechat-setup {
+    gap: 12px;
+    border: 0;
+    padding: 2px 0 0;
+  }
+
+  .personal-wechat-setup-heading h2,
+  .personal-wechat-eyebrow {
+    display: none;
+  }
+}
+.mac-wechat-primary-action {
+  padding-top: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mac-wechat-setup-chevron {
+    transition: none;
+  }
+}
+@media (max-width: 560px) {
+  .mac-pro-license-card,
+  .mac-wechat-environment-card {
+    padding: 16px;
+  }
+
+  .mac-pro-license-header,
+  .mac-wechat-environment-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .mac-wechat-status-grid {
+    gap: 5px;
+  }
+
+  .mac-wechat-status-item {
+    padding: 10px 4px;
+
+    strong {
+      font-size: 10px;
+    }
+  }
+
+  .mac-pro-license-meta {
+    flex-direction: column;
+    gap: 5px;
+  }
+}
 .settings-account-overview {
   display: grid;
   grid-template-columns: minmax(190px, 1fr) minmax(220px, 1fr) auto;

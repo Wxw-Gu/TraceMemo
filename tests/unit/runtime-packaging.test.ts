@@ -19,6 +19,19 @@ const asar = nodeRequire('@electron/asar') as {
 const { hasWindowsSherpaRuntime } = nodeRequire('../../scripts/prepare-win-runtime.cjs') as {
   hasWindowsSherpaRuntime: (runtimeRoot: string) => boolean
 }
+const { createBuilderConfig } = nodeRequire('../../scripts/build-macos-edition.cjs') as {
+  createBuilderConfig: (options: {
+    edition: 'public' | 'native'
+    stageRoot: string
+    buildOutput: string
+    outputRoot: string
+    appVersion: string
+  }) => {
+    files: Array<string | { from?: string; to?: string }>
+    extraResources: Array<{ from: string; to: string }>
+    dmg: { artifactName: string }
+  }
+}
 const {
   validateAsarRuntimeDependencies,
   validateFfmpegRuntime,
@@ -32,7 +45,11 @@ const {
   signMacosAppBundle
 } = nodeRequire('../../scripts/after-pack.cjs') as {
   validateAsarRuntimeDependencies: (runtimeResources: string) => void
-  validateFfmpegRuntime: (runtimeResources: string, platform?: NodeJS.Platform) => void
+  validateFfmpegRuntime: (
+    runtimeResources: string,
+    platform?: NodeJS.Platform,
+    edition?: string
+  ) => string
   validateKoffiRuntime: (runtimeResources: string, platform: NodeJS.Platform, arch: string) => void
   validateReaderSkillRuntime: (runtimeResources: string) => string
   validateSherpaRuntime: (runtimeResources: string, platform: NodeJS.Platform, arch: string) => void
@@ -244,6 +261,48 @@ describe('production runtime packaging', () => {
 
     const config = readFileSync(resolve(__dirname, '../../electron-builder.yml'), 'utf8')
     expect(config).toContain('node_modules/ffmpeg-static/**')
+  })
+
+  it('requires staged arm64 edition ffmpeg before removing the shared binary', () => {
+    const resources = join(root, 'edition-ffmpeg-resources')
+    const shared = join(resources, 'app.asar.unpacked', 'node_modules', 'ffmpeg-static', 'ffmpeg')
+    mkdirSync(dirname(shared), { recursive: true })
+    writeFileSync(shared, 'existing shared binary')
+    expect(() => validateFfmpegRuntime(resources, 'darwin', 'public')).toThrow(/staged macOS ffmpeg/)
+    expect(readFileSync(shared, 'utf8')).toBe('existing shared binary')
+  })
+
+  it('builds each edition from an isolated native resource allowlist', () => {
+    const stageRoot = join(root, 'mac-staging', 'public')
+    const config = createBuilderConfig({
+      edition: 'public',
+      stageRoot,
+      buildOutput: join(stageRoot, 'out'),
+      outputRoot: join(root, 'dist', 'mac', 'public'),
+      appVersion: '2.5.2'
+    })
+    expect(config.extraResources.map((item) => item.to)).toEqual([
+      'resources',
+      'app-update.yml',
+      'skill/tracememo-reader'
+    ])
+    expect(config.extraResources[0].from).toBe(join(stageRoot, 'resources'))
+    expect(config.files).toContainEqual({ from: join(stageRoot, 'out'), to: 'out', filter: ['**/*'] })
+    expect(config.files).toContain('package.json')
+    expect(
+      config.files.some(
+        (item) => typeof item === 'string' && !item.startsWith('!') && item.includes('resources')
+      )
+    ).toBe(false)
+    expect(config.dmg.artifactName).toBe('TraceMemo-2.5.2-mac-arm64-public.dmg')
+    const nativeConfig = createBuilderConfig({
+      edition: 'native',
+      stageRoot: join(root, 'mac-staging', 'native'),
+      buildOutput: join(root, 'mac-staging', 'native', 'out'),
+      outputRoot: join(root, 'dist', 'mac', 'native'),
+      appVersion: '2.5.2'
+    })
+    expect(nativeConfig.dmg.artifactName).toBe('TraceMemo-2.5.2-mac-arm64-native.dmg')
   })
 
   it('requires the matching Windows and macOS sherpa native runtime', () => {

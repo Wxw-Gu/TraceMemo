@@ -2,9 +2,12 @@ import { resolve } from 'path'
 import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 
+const editionOutDir = process.env.TRACEMEMO_EDITION_OUT_DIR
+
 export default defineConfig({
   main: {
     build: {
+      ...(editionOutDir ? { outDir: editionOutDir } : {}),
       rollupOptions: {
         input: {
           index: resolve('src/main/index.ts'),
@@ -20,8 +23,9 @@ export default defineConfig({
       }
     }
   },
-  preload: {},
+  preload: editionOutDir ? { build: { outDir: editionOutDir } } : {},
   renderer: {
+    ...(editionOutDir ? { build: { outDir: editionOutDir } } : {}),
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src')

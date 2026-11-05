@@ -7,6 +7,10 @@ function unique(values: string[]): string[] {
 }
 
 export function getResourceRoots(): string[] {
+  if (app.isPackaged && process.platform === 'darwin') {
+    const packagedResources = join(process.resourcesPath || '', 'resources')
+    return existsSync(packagedResources) ? [packagedResources] : []
+  }
   const appPath = app.getAppPath()
   const appPathDir = dirname(appPath)
   const execDir = dirname(process.execPath)

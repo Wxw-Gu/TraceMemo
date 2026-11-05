@@ -23,7 +23,6 @@ const senderStatus = {
   boundWechatPid: 4668,
   endpoint: '127.0.0.1:4290',
   endpointReady: true,
-  wechatVersion: '4.1.11.53',
   runtimeReady: true,
   attachReady: true,
   baseAddress: '0x114ef8000',
@@ -59,7 +58,25 @@ describe('PersonalWechatSendPage on macOS', () => {
       value: {
         getPersonalWechatSendCapability: getCapability,
         getPersonalWechatSenderStatus: getSenderStatus,
-        rebindPersonalWechatSender: rebindSender
+        rebindPersonalWechatSender: rebindSender,
+        // 发送能力授权卡所需的两个入口。页面在 Native 档位会调用它们，
+        // 缺 mock 会让 refresh 抛错、整页停在错误态。
+        getMacSendRuntimeAvailability: vi.fn(async () => ({
+          state: 'available',
+          message: '微信发送组件可用'
+        })),
+        getMacLicenseStatus: vi.fn(async () => ({
+          deviceId: null,
+          state: 'unlicensed',
+          authorized: false,
+          source: 'none',
+          features: [],
+          lastCheckedAt: null,
+          licenseExpiresAt: null,
+          tokenExpiresAt: null,
+          message: '当前设备暂无发送能力授权'
+        })),
+        refreshMacLicense: vi.fn()
       }
     })
   })
@@ -67,7 +84,9 @@ describe('PersonalWechatSendPage on macOS', () => {
   it('shows the native runtime readiness', async () => {
     render(<PersonalWechatSendPage onNotice={vi.fn()} />)
 
-    expect(await screen.findByText('微信消息发送已配置完成')).toBeVisible()
+    // 页面重构后「就绪」的落点从 SetupGuide 尾部文案变成了「微信发送环境」卡片的状态标签；
+    // 断言改到新位置，语义仍是“运行时准备好了”。
+    expect(await screen.findByText('运行环境已就绪')).toBeVisible()
     expect(screen.getAllByText('已就绪')).not.toHaveLength(0)
     expect(screen.queryByText('查看支持的微信版本')).not.toBeInTheDocument()
     expect(screen.queryByText('高级诊断')).not.toBeInTheDocument()

@@ -5,7 +5,8 @@ import crypto from 'crypto'
 import { createRequire } from 'module'
 import { createConnection, Socket } from 'net'
 import { getResourceRoots } from './resource-paths'
-import { wcdbDebugLog } from './wcdb-debug'
+import { resolveWcdbLibrary } from './native-runtime-paths'
+import { wcdbDebugLog, isWcdbDebugEnabled } from './wcdb-debug'
 import { looksLikePermissionDenied, PathAccessDeniedError } from './services/path-access-probe'
 import type { ImageMessageCountProbe } from '../shared/image-text-index'
 import { imageTextWindowToSeconds } from '../shared/image-text-index'
@@ -147,6 +148,71 @@ type KoffiModule = {
 // library reference for every Wcdb4Client instance.
 let wcdbBootstrapLib: KoffiLibrary | null = null
 
+const DB_COMPONENT_UNAVAILABLE_MESSAGE = '本地数据库组件初始化失败，请确认应用安装完整。'
+
+class NativeDbInitError extends Error {
+  readonly nativeCode: number
+  readonly phase: string
+
+  constructor(message: string, nativeCode: number, phase: string) {
+    super(message)
+    this.name = 'NativeDbInitError'
+    this.nativeCode = nativeCode
+    this.phase = phase
+  }
+}
+
+// -3002 一码四因（密钥错、不存在、不可读、损坏），先看文件系统事实再判码。
+function describeDbOpenFailure(code: number, sessionDbPath: string): string {
+  if (code === -2003) return DB_COMPONENT_UNAVAILABLE_MESSAGE
+
+  let exists = false
+  try {
+    exists = Boolean(sessionDbPath) && fs.existsSync(sessionDbPath)
+  } catch {
+    exists = false
+  }
+  if (!exists) {
+    return '未找到微信数据库文件，请确认微信已登录目标账号，并重新选择数据目录。'
+  }
+
+  try {
+    fs.accessSync(sessionDbPath, fs.constants.R_OK)
+  } catch {
+    return '数据库文件不可读，请在系统设置中授予文件访问权限后重试。'
+  }
+
+  if (code === -3002) {
+    return '数据库无法打开：密钥与当前账号不匹配，或数据库文件已损坏。'
+  }
+  return '本地数据库初始化失败，请稍后重试。'
+}
+
+class NativeWcdbError extends Error {
+  readonly nativeCode: number
+  readonly phase = 'query'
+
+  constructor(nativeCode: number) {
+    super(describeWcdbQueryFailure(nativeCode))
+    this.name = 'NativeWcdbError'
+    this.nativeCode = nativeCode
+  }
+}
+
+function describeWcdbQueryFailure(code: number): string {
+  if (code === -2003) return DB_COMPONENT_UNAVAILABLE_MESSAGE
+  if (code === -3003 || code === -3004) {
+    return '读取微信数据库失败：密钥可能与该账号不匹配，或数据库文件已损坏。'
+  }
+  if (code === -3006) return '数据库连接已失效，请重新连接。'
+  return '本地数据库读取失败，请稍后重试。'
+}
+
+export function getNativeErrorCode(error: unknown): number | null {
+  const code = (error as { nativeCode?: unknown } | null | undefined)?.nativeCode
+  return typeof code === 'number' ? code : null
+}
+
 let wcdbBootstrapAsyncPromise: Promise<KoffiLibrary> | null = null
 
 export function bootstrapWcdbNative(libPath?: string, libDirOverride?: string): KoffiLibrary {
@@ -205,16 +271,28 @@ export function bootstrapWcdbNative(libPath?: string, libDirOverride?: string): 
     }
   }
   if (!initOk) {
-    console.warn(
-      `[WCDB4] bootstrap InitProtection 返回 ${lastCode}，继续尝试 wcdb_init/open; tried=${resourceRoots.join(' | ')}`
-    )
+    if (lastCode === -2003) {
+      // -2003 重试无效；其他非 0 仍要继续，兼容旧构建。
+      throw new NativeDbInitError(DB_COMPONENT_UNAVAILABLE_MESSAGE, lastCode, 'InitProtection')
+    }
+    if (isWcdbDebugEnabled()) {
+      console.warn(
+        `[WCDB4] bootstrap InitProtection rc=${lastCode}，继续尝试 wcdb_init/open; tried=${resourceRoots.join(' | ')}`
+      )
+    } else {
+      console.warn('[WCDB4] bootstrap InitProtection 未成功，继续尝试后续初始化')
+    }
   } else {
     const wcdbInit = lib.func('int32 wcdb_init()') as () => number
     console.log('[WCDB4] bootstrap wcdb_init begin')
     const initRc = Number(wcdbInit())
     console.log(`[WCDB4] bootstrap wcdb_init rc=${initRc}`)
     if (initRc !== 0) {
-      console.warn(`[WCDB4] bootstrap wcdb_init 返回 ${initRc}，继续尝试 wcdb_open_account`)
+      console.warn(
+        isWcdbDebugEnabled()
+          ? `[WCDB4] bootstrap wcdb_init rc=${initRc}，继续尝试 wcdb_open_account`
+          : '[WCDB4] bootstrap wcdb_init 未成功，继续尝试打开数据库'
+      )
     }
   }
 
@@ -261,15 +339,20 @@ export function bootstrapWcdbNativeAsync(
       )
     )
     let initOk = false
+    let lastInitCode = -1
     for (const resourceRoot of resourceRoots) {
       try {
-        if (Number(initProtection(resourceRoot)) === 0) {
+        lastInitCode = Number(initProtection(resourceRoot))
+        if (lastInitCode === 0) {
           initOk = true
           break
         }
       } catch {
         // Try the next resource root.
       }
+    }
+    if (!initOk && lastInitCode === -2003) {
+      throw new NativeDbInitError(DB_COMPONENT_UNAVAILABLE_MESSAGE, lastInitCode, 'InitProtection')
     }
     if (initOk) {
       const wcdbInit = lib.func('int32 wcdb_init()') as KoffiAsyncFunction
@@ -779,12 +862,16 @@ export class Wcdb4Client {
     openResult = this.wcdbOpenAccount(this.sessionDbPath, this.key, handleOut)
 
     if (openResult !== 0 || handleOut[0] <= 0) {
-      const hint =
-        openResult === -1005
-          ? '；这通常表示密钥与当前账号数据库不匹配，请确认微信已登录目标账号，并重新自动获取密钥'
-          : ''
-      throw new Error(
-        `wcdb_open_account 失败，错误码: ${openResult}${hint}; sessionDb=${this.sessionDbPath}; accountRoot=${this.accountRoot}; wxid=${this.wxid}; keyLength=${this.key.length}`
+      // message 只放分类文案；路径与 wxid 不进 message，原生码在 nativeCode 字段上。
+      if (isWcdbDebugEnabled()) {
+        console.warn(
+          `[WCDB4] wcdb_open_account rc=${openResult}; sessionDb=${this.sessionDbPath}; accountRoot=${this.accountRoot}; wxid=${this.wxid}; keyLength=${this.key.length}`
+        )
+      }
+      throw new NativeDbInitError(
+        describeDbOpenFailure(openResult, this.sessionDbPath),
+        openResult,
+        'wcdb_open_account'
       )
     }
 
@@ -812,8 +899,15 @@ export class Wcdb4Client {
       handleOut
     )
     if (openResult !== 0 || handleOut[0] <= 0) {
-      throw new Error(
-        `wcdb_open_account failed, code=${openResult}; sessionDb=${this.sessionDbPath}; accountRoot=${this.accountRoot}; wxid=${this.wxid}; keyLength=${this.key.length}`
+      if (isWcdbDebugEnabled()) {
+        console.warn(
+          `[WCDB4] wcdb_open_account(async) rc=${openResult}; sessionDb=${this.sessionDbPath}; accountRoot=${this.accountRoot}; wxid=${this.wxid}; keyLength=${this.key.length}`
+        )
+      }
+      throw new NativeDbInitError(
+        describeDbOpenFailure(openResult, this.sessionDbPath),
+        openResult,
+        'wcdb_open_account_async'
       )
     }
     this.handle = handleOut[0]
@@ -920,7 +1014,11 @@ export class Wcdb4Client {
       )
       if (startResult !== 0) {
         this.monitorCallback = null
-        console.warn(`[WCDB4] wcdb_start_monitor_pipe 失败，错误码: ${startResult}`)
+        console.warn(
+          isWcdbDebugEnabled()
+            ? `[WCDB4] wcdb_start_monitor_pipe rc=${startResult}`
+            : '[WCDB4] 消息监听启动失败，将退回轮询'
+        )
         return false
       }
       this.monitorStarted = true
@@ -935,7 +1033,11 @@ export class Wcdb4Client {
         outName
       )
       if (nameResult !== 0 || !outName[0]) {
-        console.warn(`[WCDB4] wcdb_get_monitor_pipe_name 失败，错误码: ${nameResult}`)
+        console.warn(
+          isWcdbDebugEnabled()
+            ? `[WCDB4] wcdb_get_monitor_pipe_name rc=${nameResult}`
+            : '[WCDB4] 消息监听通道不可用，将退回轮询'
+        )
         this.stopMonitor()
         return false
       }
@@ -3532,16 +3634,14 @@ export class Wcdb4Client {
   }
 
   static resolveNativeLibrary(): string {
-    const libName =
-      process.platform === 'darwin'
-        ? 'libwcdb_api.dylib'
-        : process.platform === 'linux'
-          ? 'libwcdb_api.so'
-          : 'wcdb_api.dll'
+    if (process.platform === 'darwin') {
+      const library = resolveWcdbLibrary()
+      if (library) return library
+      throw new Error('找不到当前发行版对应的 WCDB native 库')
+    }
+    const libName = process.platform === 'linux' ? 'libwcdb_api.so' : 'wcdb_api.dll'
     const platformDir =
-      process.platform === 'darwin'
-        ? 'macos'
-        : process.platform === 'win32'
+      process.platform === 'win32'
           ? 'win32'
           : process.platform
     const archDir = process.arch === 'arm64' ? 'arm64' : 'x64'
@@ -3618,7 +3718,10 @@ export class Wcdb4Client {
     const outJson: WcdbVoidOut = [null]
     const result = call(handle, outJson)
     if (result !== 0 || !outJson[0]) {
-      throw new Error(`WCDB 调用失败，错误码: ${result}`)
+      if (isWcdbDebugEnabled()) {
+        console.warn(`[WCDB4] native query rc=${result} handle=${handle}`)
+      }
+      throw new NativeWcdbError(result)
     }
 
     try {
@@ -3640,7 +3743,10 @@ export class Wcdb4Client {
         }
         const code = Number(result)
         if (code !== 0 || !outJson[0]) {
-          reject(new Error(`WCDB async call failed, code: ${code}`))
+          if (isWcdbDebugEnabled()) {
+            console.warn(`[WCDB4] native query(async) rc=${code} handle=${handle}`)
+          }
+          reject(new NativeWcdbError(code))
           return
         }
         try {

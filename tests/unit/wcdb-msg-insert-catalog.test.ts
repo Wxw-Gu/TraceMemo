@@ -12,6 +12,11 @@ vi.mock('../../src/main/resource-paths', () => ({
   findResource: () => null
 }))
 
+// wcdb4-client 现在通过 native-runtime-paths 解析 dylib 路径，那条链路读 electron.app。
+vi.mock('electron', () => ({
+  app: { isPackaged: false, getPath: () => '/tmp' }
+}))
+
 describe('message insert shard catalog', () => {
   const roots: string[] = []
   const room = 'fixture-group@chatroom'

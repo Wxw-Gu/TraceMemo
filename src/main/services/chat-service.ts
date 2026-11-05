@@ -15,6 +15,7 @@ import {
   WINDOWS_VC_RUNTIME_ERROR_MESSAGE
 } from '../../shared/windows-runtime'
 import { hasPermissionDeniedText, isPermissionDeniedError } from './path-access-probe'
+import { getNativeErrorCode } from '../wcdb4-client'
 import { mergeRecallArchiveMessages, recordRecallArchiveMessages } from './recall-archive-service'
 import type { ExportImageQuality } from '../../shared/image-quality'
 import type { ImageMessageCountProbe } from '../../shared/image-text-index'
@@ -1297,27 +1298,7 @@ export function databaseKeyErrorMessage(
   return DATABASE_KEY_ERROR_MESSAGES[code]
 }
 
-/**
- * 把底层抛出物归类成机器可读的错误码。
- *
- * 顺序是有约束的，别随意调整：
- *   1. VC runtime —— Windows 专属，特征明确，先摘掉；
- *   2. 账号不匹配 —— `-1005` 是 native 给出的确定信号；
- *   3. **权限不足** —— 必须排在"文件缺失"之前。原因见下；
- *   4. 文件缺失 / 根目录不可用 / 打开失败 —— 按文本兜底。
- *
- * 为什么权限要排在缺失之前：底层探测用的是 `fs.existsSync()`，它对 EPERM 也返回
- * `false`，所以走到这里时错误文本常常已经变成「未找到 … session.db」这种**缺失**措辞。
- * 只按文本判断就会永远归到 `DATABASE_FILE_MISSING`，把用户指向错误的方向。
- * 因此 errno 优先（调用方在探测层用 `statSync` 补问过），文本特征只作兜底。
- *
- * 判断文本时逐个列举显式模式，不用 `includes('permission')` 这类过宽匹配 ——
- * 那会把 "permission config not found" 之类无关错误也算进来。
- *
- * 导出是为了让分类规则本身可被回归测试钉住：这条链路上任何一处顺序调整都会让
- * 权限问题重新落回"文件缺失"，而那正是本函数要防的回归。
- * `platform` 可注入，否则 Windows 专属分支在测试里无法触发（`process.platform` 是只读的）。
- */
+// 顺序有约束：原生码先于文本匹配，权限先于文件缺失（existsSync 对 EPERM 返回 false）。
 export function mapConnectionError(
   error: unknown,
   platform: NodeJS.Platform = process.platform
@@ -1325,6 +1306,15 @@ export function mapConnectionError(
   const detail = error instanceof Error ? error.message : String(error)
   const normalized = detail.toLowerCase()
   if (isWindowsVcRuntimeMissingError(detail, platform)) return 'VC_RUNTIME_MISSING'
+
+  const nativeCode = getNativeErrorCode(error)
+  if (nativeCode !== null) {
+    if (nativeCode === -2003) return 'DATABASE_OPEN_FAILED'
+    if (nativeCode === -3003 || nativeCode === -3004) return 'ACCOUNT_MISMATCH'
+    if (nativeCode === -3006) return 'DATABASE_OPEN_FAILED'
+    if (nativeCode === -3005) return 'UNKNOWN_VALIDATION_ERROR'
+  }
+
   if (normalized.includes('-1005') || normalized.includes('不匹配')) return 'ACCOUNT_MISMATCH'
   if (isPermissionDeniedError(error) || hasPermissionDeniedText(normalized)) {
     return 'DATABASE_PERMISSION_DENIED'
