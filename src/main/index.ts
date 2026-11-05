@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { isWcdbDebugEnabled } from './wcdb-debug'
 import {
   isLegacyMigrationHelper,
   isUserDataIsolated,
@@ -530,7 +531,10 @@ async function cleanupLegacyRecallResidueOnStart(): Promise<void> {
     })
   } catch (error) {
     /* 清理失败绝不能挡住启动 —— 它只是收尾工作。 */
-    console.warn('[RecallResidue] 清理失败:', error)
+    console.warn(
+      '[RecallResidue] 清理失败:',
+      isWcdbDebugEnabled() ? error : error instanceof Error ? error.message : String(error)
+    )
     appLogger.write({
       level: 'warn',
       scope: 'recall-residue',
@@ -1722,8 +1726,12 @@ app.whenReady().then(async () => {
         )
         return { success: true, monitoring }
       } catch (error) {
-        console.error('Failed to init DB:', error)
         const detail = error instanceof Error ? error.message : String(error)
+        if (isWcdbDebugEnabled()) {
+          console.error('Failed to init DB:', error)
+        } else {
+          console.error('Failed to init DB:', detail)
+        }
         if (isWindowsVcRuntimeMissingError(detail, process.platform)) {
           return {
             success: false,
