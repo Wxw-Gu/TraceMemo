@@ -24,7 +24,10 @@ function makeTempDir(): string {
 }
 
 /** 造一个最小的合法 PE：MZ + e_lfanew + PE 签名 + machine */
-function writeFakePe(machine = 0x8664, size = 4096): string {
+function writeFakePe(
+  machine = process.arch === 'arm64' ? 0xaa64 : 0x8664,
+  size = 4096
+): string {
   const dir = makeTempDir()
   const file = path.join(dir, 'tm-wcdb-config-helper.exe')
   const buf = Buffer.alloc(size)

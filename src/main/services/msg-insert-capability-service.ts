@@ -168,8 +168,10 @@ export function probeLicenseStatus(timeoutMs = PROBE_TIMEOUT_MS): Promise<Licens
     req.on('error', (error: Error) => done({ ok: false, error: error.message }))
   })
 }
-
-/** 粗检组件：非 PE 或架构不符判 invalid，不做哈希白名单。 */
+/**
+ * 检查原生组件的文件格式及 CPU 架构兼容性。
+ * 支持 macOS Mach-O 和 Windows PE。
+ */
 export function inspectNativeComponent(
   filePath: string | null,
   arch: string,
@@ -183,6 +185,25 @@ export function inspectNativeComponent(
     try {
       const head = Buffer.alloc(0x40)
       fs.readSync(fd, head, 0, 0x40, 0)
+
+      const magicLE = head.readUInt32LE(0)
+      if (magicLE === 0xfeedfacf || magicLE === 0xfeedface) {
+        const cpuType = head.readUInt32LE(4)
+        const expected = arch === 'arm64' ? 0x0100000c : 0x01000007
+        return cpuType === expected ? 'ready' : 'incompatible'
+      }
+      if (magicLE === 0xbebafeca || magicLE === 0xcafebabe) {
+        const count = head.readUInt32BE(4)
+        if (count === 0 || count > 16) return 'invalid'
+        const expected = arch === 'arm64' ? 0x0100000c : 0x01000007
+        const slice = Buffer.alloc(20)
+        for (let index = 0; index < count; index += 1) {
+          fs.readSync(fd, slice, 0, 20, 8 + index * 20)
+          if (slice.readUInt32BE(0) === expected) return 'ready'
+        }
+        return 'incompatible'
+      }
+
       if (head[0] !== 0x4d || head[1] !== 0x5a) return 'invalid' // "MZ"
       const peOffset = head.readUInt32LE(0x3c)
       const pe = Buffer.alloc(6)
@@ -301,7 +322,13 @@ export class MessageInsertCapabilityService {
     reasonCode: CapabilityReasonCode
     message: string
   }): MessageInsertCapability {
-    return this.compose(args.input, args.entitlement, args.licenseStatus, args.reasonCode, args.message)
+    return this.compose(
+      args.input,
+      args.entitlement,
+      args.licenseStatus,
+      args.reasonCode,
+      args.message
+    )
   }
 
   private compose(
@@ -339,10 +366,7 @@ export class MessageInsertCapabilityService {
         text = text || '未检测到有效授权'
       } else if (component !== 'ready') {
         code = component === 'missing' ? 'COMPONENT_MISSING' : 'COMPONENT_INVALID'
-        text =
-          component === 'missing'
-            ? '未安装发送能力组件'
-            : '发送能力组件不完整或版本不匹配'
+        text = component === 'missing' ? '未安装发送能力组件' : '发送能力组件不完整或版本不匹配'
       } else if (!databaseReady) {
         code = 'DATABASE_UNAVAILABLE'
         text = '微信数据库尚未连接'
