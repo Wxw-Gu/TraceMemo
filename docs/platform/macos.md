@@ -19,7 +19,12 @@ TraceMemo 需要读取微信本地数据。macOS 会根据系统版本、微信�
 
 如果你在连接页看到「最近验证结果：无法读取微信数据库」（错误码 `DATABASE_PERMISSION_DENIED`），并且已经确认微信数据目录**实际存在**（例如在终端里能列出 `db_storage/session/session.db`），那说明是 **TraceMemo 这个进程**读不到，而不是文件缺失。
 
-macOS 27 及更高版本对其他应用的容器数据有更严格的访问控制。给 TraceMemo 授予「完全磁盘访问权限」：
+微信数据放在另一个应用的沙盒容器里，macOS 会对这种跨应用访问单独做校验。先看「完全磁盘访问权限」里 TraceMemo 的状态，再按情况处理：
+
+- **不在列表里，或开关是关的**：按下面的步骤授权。
+- **开关已经是开的，但仍然读不到**：这不是「没授权」，而是旧授权记录对不上当前版本的应用，需要先清掉旧记录再重新授权。完整步骤见[macOS 更新后读不到微信数据：权限恢复](../user-guide/macos27-permission-recovery.md)。
+
+首次授权的步骤：
 
 1. 打开 **系统设置 → 隐私与安全性 → 完全磁盘访问权限**
 2. 找到 **TraceMemo**，打开开关
@@ -61,6 +66,29 @@ TraceMemo 同时支持两种 Mac 架构：
 - Apple Silicon：`tracememo-<版本号>-arm64.dmg`
 - Intel：`tracememo-<版本号>-x64.dmg`
 
-两种架构都可以通过应用内的连接流程自动获取微信数据库密钥。首次连接时，TraceMemo 会根据当前机器架构进入对应的流程，按连接页面提示操作即可。
+两种架构都可以通过应用内的连接流程自动获取微信数据库密钥。首次连接时，TraceMemo 会按**当前运行的这个版本**进入对应流程，按连接页面提示操作即可。
+
+### 提示「Intel Mac 自动获取」，但电脑是 Apple 芯片
+
+如果在 M 系列 Mac 上看到「Intel Mac 自动获取」，或页面要求准备 Intel 连接环境，多数是**正在运行 Intel（x64）版 TraceMemo**。macOS 允许 Intel 版应用在 Apple 芯片上通过 Rosetta 运行，应用本身不会报错，但会如实把自己识别成 Intel 版本，于是走了 Intel 的密钥获取方式。
+
+判断当前跑的是哪个版本：
+
+- 打开「活动监视器」，选中 TraceMemo，看「种类」一列 —— 显示「Apple」是 arm64 版，显示「Intel」是 x64 版；
+- 或点连接页的「复制脱敏诊断摘要」，看「处理器架构」和「硬件架构」两行。
+
+**启动方式不会改变架构。** Finder、Dock、桌面文件夹、`open` 命令打开的都是同一个 `.app`。但如果电脑上存在多个 TraceMemo 副本（例如「应用程序」里一个、下载文件夹里一个），不同入口可能打开不同副本，表现出来就像「有时是 Intel、有时不是」。列出所有副本及架构：
+
+```bash
+mdfind "kMDItemCFBundleIdentifier == 'com.tracememo.app'" | while read -r p; do
+  [ -f "$p/Contents/MacOS/TraceMemo" ] && printf '%s -> ' "$p" && file -b "$p/Contents/MacOS/TraceMemo"
+done
+```
+
+输出里带 `arm64` 的是 Apple 芯片版，带 `x86_64` 的是 Intel 版。
+
+解决办法是从 [Releases](https://github.com/Wxw-Gu/TraceMemo/releases) 下载文件名带 `arm64` 的包，替换现有应用后重启。已保存的数据库密钥和连接配置不需要重新设置。
+
+这与[提示「无法读取微信数据库」](#提示无法读取微信数据库时)不是同一个问题：那边是系统授权失效，这里是装错了版本。两种情况的处理方式不同，都不需要关闭 SIP。
 
 Apple Silicon 和 Intel 已适配微信 macOS `4.1.13`。不同架构、微信版本和系统授权状态可能导致连接结果不同；文档不对所有组合做兼容性保证。

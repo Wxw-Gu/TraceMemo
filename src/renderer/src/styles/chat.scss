@@ -2158,6 +2158,36 @@
   word-break: break-word;
 }
 
+.database-login-arch-mismatch {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 1px solid #f0c9a8;
+  border-radius: 10px;
+  background: #fff7ef;
+  color: #6b4a2f;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.database-login-arch-mismatch strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #8a4b12;
+  font-size: 13px;
+}
+
+.database-login-arch-mismatch p {
+  margin: 0 0 4px;
+}
+
+.database-login-arch-mismatch a {
+  display: inline-block;
+  margin-top: 8px;
+  color: #8a4b12;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
 .database-login-diagnostics {
   margin: 0;
   border-top: 1px solid #e2e7e4;

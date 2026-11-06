@@ -7,6 +7,8 @@ import { isValidDatabaseKey } from './database-key-store'
 import crypto from 'crypto'
 import { findResource, getResourceCandidates } from './resource-paths'
 import { detectWechatVersion } from './services/connection-diagnostics'
+import { getMacArchSnapshot } from './macos-arch'
+import { ARCH_MISMATCH_X64_ON_ARM_ERROR, shouldProbeIntelEnvironment } from '../shared/macos-arch'
 
 const execFileAsync = promisify(execFile)
 
@@ -239,6 +241,15 @@ export class KeyServiceMac {
     fridaAvailable: boolean
     wechatAdhocSigned: boolean
   }> {
+    // 方法内部再守一道：调用方漏判时也不能起 x86 helper。
+    if (!shouldProbeIntelEnvironment(getMacArchSnapshot().macKeyFlow)) {
+      return {
+        sipDisabled: false,
+        pythonAvailable: false,
+        fridaAvailable: false,
+        wechatAdhocSigned: false
+      }
+    }
     const payload = await this.runMacKeyTool(
       ['status', '--runtime-dir', this.getMacKeyRuntimeDir()],
       15_000
@@ -254,7 +265,15 @@ export class KeyServiceMac {
   async installIntelKeyRuntime(
     onStatus?: (message: string) => void
   ): Promise<{ success: boolean; error?: string; code?: string }> {
-    if (process.platform !== 'darwin' || process.arch !== 'x64') {
+    const arch = getMacArchSnapshot()
+    if (arch.macKeyFlow === 'arch-mismatch') {
+      return {
+        success: false,
+        code: 'ARCH_MISMATCH_X64_ON_ARM',
+        error: ARCH_MISMATCH_X64_ON_ARM_ERROR
+      }
+    }
+    if (arch.macKeyFlow !== 'intel') {
       return { success: false, code: 'UNSUPPORTED_PLATFORM', error: '仅 Intel Mac 需要安装此运行环境' }
     }
     onStatus?.('正在准备连接环境，请保持网络连接…')
@@ -354,12 +373,25 @@ export class KeyServiceMac {
     if (process.platform !== 'darwin') {
       return { success: false, error: '自动获取密钥目前仅支持 macOS' }
     }
+    // 架构判定排在 SIP 之前：不匹配时先说明「当前跑的是 Intel 版」，
+    // 不能让用户先看到 SIP 提示、关闭 SIP 之后才发现问题依旧。
+    const arch = getMacArchSnapshot()
+    if (arch.macKeyFlow === 'arch-mismatch') {
+      return {
+        success: false,
+        code: 'ARCH_MISMATCH_X64_ON_ARM',
+        error: ARCH_MISMATCH_X64_ON_ARM_ERROR
+      }
+    }
+    if (arch.macKeyFlow === 'unsupported') {
+      return { success: false, error: '自动获取密钥目前仅支持 macOS' }
+    }
     if (await this.isSipEnabled()) {
       return { success: false, code: 'SIP_ENABLED', error: SIP_ENABLED_ERROR }
     }
 
     try {
-      if (process.arch === 'x64') {
+      if (arch.macKeyFlow === 'intel') {
         onStatus?.('Intel Mac 将通过 Frida 获取微信主密钥，请让微信停留在未登录界面')
         const result = await this.captureIntelDbKey(accountRoot, timeoutMs, onStatus)
         onStatus?.(result.success ? '密钥获取成功' : '密钥获取失败')

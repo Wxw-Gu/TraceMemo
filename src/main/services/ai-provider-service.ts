@@ -96,7 +96,15 @@ export class AIProviderRequestError extends Error {
 
   constructor(
     message: string,
-    details: { status?: number; code?: unknown; type?: unknown; responseBody?: unknown; contentType?: string; elapsedMs?: number; htmlInsteadOfJson?: boolean } = {}
+    details: {
+      status?: number
+      code?: unknown
+      type?: unknown
+      responseBody?: unknown
+      contentType?: string
+      elapsedMs?: number
+      htmlInsteadOfJson?: boolean
+    } = {}
   ) {
     super(message)
     this.name = 'AIProviderRequestError'
@@ -358,7 +366,10 @@ export class AIProviderService {
     try {
       if (options?.apiKey) throw new Error('Tool Calling 不支持 legacy provider 配置')
       const resolved = this.resolveProvider(options)
-      if (resolved.provider.type !== 'openai-compatible' || resolved.provider.advanced.apiProtocol === 'responses') {
+      if (
+        resolved.provider.type !== 'openai-compatible' ||
+        resolved.provider.advanced.apiProtocol === 'responses'
+      ) {
         throw new Error('当前 Provider 协议暂不支持 Tool Calling POC')
       }
       const result = await requestOpenAICompatibleWithTools(
@@ -377,7 +388,8 @@ export class AIProviderService {
         success: false,
         error: safeAIError(error),
         timedOut,
-        htmlInsteadOfJson: error instanceof AIProviderRequestError ? Boolean(error.htmlInsteadOfJson) : false,
+        htmlInsteadOfJson:
+          error instanceof AIProviderRequestError ? Boolean(error.htmlInsteadOfJson) : false,
         ...(error instanceof AIProviderRequestError
           ? {
               ...(error.status !== undefined ? { errorStatus: error.status } : {}),
@@ -638,7 +650,7 @@ function deepSeekProvider(baseUrl?: string, model?: string): AIProviderSummary {
       }
     ],
     defaultModel: modelId,
-    advanced: { timeoutMs: 120_000, temperature: 0.7, maxTokens: 4096, extraHeaders: {} },
+    advanced: { timeoutMs: 120_000, temperature: 0.7, maxTokens: 40960, extraHeaders: {} },
     hasApiKey: false,
     isDefault: true,
     status: 'untested'
@@ -981,7 +993,12 @@ async function requestOpenAICompatibleWithTools(
   messages: Array<Record<string, unknown>>,
   tools: AIChatToolDefinition[],
   signal?: AbortSignal
-): Promise<{ data: string; toolCalls: AIChatToolCall[]; usage?: AIRequestResult['usage']; elapsedMs?: number }> {
+): Promise<{
+  data: string
+  toolCalls: AIChatToolCall[]
+  usage?: AIRequestResult['usage']
+  elapsedMs?: number
+}> {
   const endpoint = provider.baseUrl.endsWith('/chat/completions')
     ? provider.baseUrl
     : `${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`
@@ -1013,7 +1030,8 @@ async function requestOpenAICompatibleWithTools(
       }
       if (!response.ok) {
         throw new AIProviderRequestError(
-          payload?.error?.message || (parseError ? safeAIError(parseError) : `AI 请求失败 (${response.status})`),
+          payload?.error?.message ||
+            (parseError ? safeAIError(parseError) : `AI 请求失败 (${response.status})`),
           {
             status: timing.status,
             contentType: timing.contentType,
@@ -1034,7 +1052,13 @@ async function requestOpenAICompatibleWithTools(
         toolCalls: (message?.tool_calls || []).flatMap((call, index) => {
           const name = call.function?.name
           if (!name) return []
-          return [{ id: call.id || `tool-call-${index + 1}`, name, arguments: call.function?.arguments || '{}' }]
+          return [
+            {
+              id: call.id || `tool-call-${index + 1}`,
+              name,
+              arguments: call.function?.arguments || '{}'
+            }
+          ]
         }),
         usage: toOpenAIUsage(payload.usage),
         elapsedMs: timing.elapsedMs

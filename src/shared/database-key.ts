@@ -1,3 +1,5 @@
+import type { MacHardwareArch, MacKeyFlow } from './macos-arch'
+
 export type DatabaseKeyValidationCode =
   | 'INVALID_FORMAT'
   | 'DATABASE_OPEN_FAILED'
@@ -66,7 +68,22 @@ export interface AccountDiscoveryResult {
 
 export interface DatabaseKeyEnvironment {
   platform: NodeJS.Platform
+  /**
+   * 进程运行架构（`process.arch`）。原生库按它选择，不要用硬件架构替换：
+   * Rosetta 下的 x64 进程无法加载 arm64 动态库。
+   */
   architecture?: string
+  /** CPU 实际架构，来自 `hw.optional.arm64`。 */
+  hardwareArchitecture?: MacHardwareArch
+  /** 当前进程是否被 Rosetta 翻译。 */
+  underARM64Translation?: boolean
+  /**
+   * 密钥流程的唯一判据。UI 读它，主进程分流也读它，避免两侧各自推断。
+   * 缺省时 UI 回落到 `architecture`，用于主进程尚未提供该字段的场景。
+   */
+  macKeyFlow?: MacKeyFlow
+  /** 架构信号矛盾时的诊断标记，例如 `hardware_arch_unknown`。 */
+  archAnomalies?: string[]
   osVersion: string
   appVersion: string
   wechatVersion: string

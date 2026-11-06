@@ -25,8 +25,11 @@ export function DatabaseKeyAutoDetect({
   const environment = state.environment
   const platform = environment?.platform || runtimePlatform
   const isMac = platform === 'darwin'
-  const isIntelMac = platform === 'darwin' && environment?.architecture === 'x64'
-  const isAppleSiliconMac = isMac && !isIntelMac
+  // 与连接页同源：读主进程给出的 macKeyFlow，不在这里重新推断硬件。
+  const macKeyFlow = environment?.macKeyFlow
+  const isArchMismatch = isMac && macKeyFlow === 'arch-mismatch'
+  const isIntelMac = isMac && (macKeyFlow ? macKeyFlow === 'intel' : environment?.architecture === 'x64')
+  const isAppleSiliconMac = isMac && !isIntelMac && !isArchMismatch
   const supported = environment?.autoDetectSupported ?? (platform === 'win32' || isMac)
   const phases = isAppleSiliconMac ? MAC_LOGIN_PHASES : DEFAULT_PHASES
   if (!supported) {
@@ -41,20 +44,43 @@ export function DatabaseKeyAutoDetect({
   }
   return (
     <section className="settings-card database-key-auto">
+      {isArchMismatch && (
+        <div className="database-login-arch-mismatch" role="alert">
+          <strong>当前电脑使用 Apple 芯片，但你正在运行 Intel 版 TraceMemo。</strong>
+          <p>这个版本无法使用当前的 Apple Silicon 自动获取密钥流程。</p>
+          <p>请下载并安装 arm64 版本，然后重新启动 TraceMemo。</p>
+          <p>已保存的微信数据库密钥无需重新获取。</p>
+          <a href="https://github.com/Wxw-Gu/TraceMemo/releases" target="_blank" rel="noreferrer">
+            前往 GitHub Releases 下载 arm64 版本
+          </a>
+        </div>
+      )}
       <div className="database-key-auto-heading">
         <div>
           <strong>
-            {isIntelMac ? 'Intel Mac 自动获取' : isMac ? 'macOS 自动获取' : 'Windows 自动获取'}
+            {isArchMismatch
+              ? '架构不匹配'
+              : isIntelMac
+                ? 'Intel Mac 自动获取'
+                : isMac
+                  ? 'macOS 自动获取'
+                  : 'Windows 自动获取'}
           </strong>
           <p>
-            {isIntelMac
-              ? '请让微信停在未登录界面，按页面提示操作即可。'
-              : isAppleSiliconMac
-                ? '执行时会请求管理员授权；授权后在微信登录界面点击“登录”即可，已有登录凭据时通常不需要扫码。监听最长两分钟，结束后会明确显示结果。'
-                : 'TraceMemo 可在微信桌面端正在运行时，通过本机内存扫描尝试获取数据库密钥。'}
+            {isArchMismatch
+              ? '当前应用的运行架构与这台 Mac 的芯片不匹配，自动获取已停用。'
+              : isIntelMac
+                ? '请让微信停在未登录界面，按页面提示操作即可。'
+                : isAppleSiliconMac
+                  ? '执行时会请求管理员授权；授权后在微信登录界面点击“登录”即可，已有登录凭据时通常不需要扫码。监听最长两分钟，结束后会明确显示结果。'
+                  : 'TraceMemo 可在微信桌面端正在运行时，通过本机内存扫描尝试获取数据库密钥。'}
           </p>
         </div>
-        <Button variant="outline" onClick={onDetect} disabled={disabled}>
+        <Button
+          variant="outline"
+          onClick={onDetect}
+          disabled={disabled || isArchMismatch}
+        >
           {state.status === 'auto-detecting' ? '正在获取…' : '自动获取密钥'}
         </Button>
       </div>

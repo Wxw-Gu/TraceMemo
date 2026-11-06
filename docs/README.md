@@ -45,6 +45,7 @@ Agent Hub 让微信机器人调用本机 TraceMemo；Reader Skill / Local HTTP A
 - [导出聊天](./user-guide/export.md)：导出 HTML、Markdown、CSV 或 JSON 档案。
 - [数据、隐私与安全](./user-guide/privacy.md)：本地处理、Provider、媒体和 Token 的数据边界。
 - [常见问题与排查](./user-guide/troubleshooting.md)：按安装、连接、AI、媒体和 Agent 现象排查。
+- [macOS 更新27后读不到微信数据](./user-guide/macos27-permission-recovery.md)：升级 macOS 或更新应用后失去微信数据访问权限的恢复步骤。
 
 ## 开发文档
 

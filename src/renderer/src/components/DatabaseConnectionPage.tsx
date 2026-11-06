@@ -136,8 +136,11 @@ export function DatabaseConnectionPage({
   onClearKey
 }: DatabaseConnectionPageProps): React.ReactElement {
   const isMac = platform === 'darwin'
-  const isIntelMac = isMac && environment?.architecture === 'x64'
-  const isAppleSiliconMac = isMac && !isIntelMac
+  // 流程由主进程的 macKeyFlow 决定；只有旧版主进程不回传该字段时才回落到运行架构。
+  const macKeyFlow = environment?.macKeyFlow
+  const isArchMismatch = isMac && macKeyFlow === 'arch-mismatch'
+  const isIntelMac = isMac && (macKeyFlow ? macKeyFlow === 'intel' : environment?.architecture === 'x64')
+  const isAppleSiliconMac = isMac && !isIntelMac && !isArchMismatch
   const defaultPath = isMac
     ? '~/Library/Containers/com.tencent.xinWeChat/Data/Library/Application Support/com.tencent.xinWeChat/'
     : 'C:\\Users\\...\\WeChat Files\\Msg'
@@ -282,6 +285,21 @@ export function DatabaseConnectionPage({
                   </div>
                   {guideStep === 1 && (
                     <>
+                      {isArchMismatch && (
+                        <div className="database-login-arch-mismatch" role="alert">
+                          <strong>当前电脑使用 Apple 芯片，但你正在运行 Intel 版 TraceMemo。</strong>
+                          <p>这个版本无法使用当前的 Apple Silicon 自动获取密钥流程。</p>
+                          <p>请下载并安装 arm64 版本，然后重新启动 TraceMemo。</p>
+                          <p>已保存的微信数据库密钥无需重新获取。</p>
+                          <a
+                            href="https://github.com/Wxw-Gu/TraceMemo/releases"
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            前往 GitHub Releases 下载 arm64 版本
+                          </a>
+                        </div>
+                      )}
                       <dl className="database-login-diagnostics">
                         <div>
                           <dt>操作系统</dt>
@@ -420,7 +438,7 @@ export function DatabaseConnectionPage({
                     <Button
                       className="database-login-primary"
                       onClick={onGuideNext}
-                      disabled={!selectedAccountId}
+                      disabled={!selectedAccountId || isArchMismatch}
                     >
                       检查完成，继续
                     </Button>
@@ -446,7 +464,11 @@ export function DatabaseConnectionPage({
                   </Button>
                 )}
                 {guideStep === 3 && (
-                  <Button className="database-login-primary" onClick={onAutoGetKey}>
+                  <Button
+                    className="database-login-primary"
+                    onClick={onAutoGetKey}
+                    disabled={isArchMismatch}
+                  >
                     {isMac ? '开始获取密钥' : '开始准备连接组件'}
                   </Button>
                 )}

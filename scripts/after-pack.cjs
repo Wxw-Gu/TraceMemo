@@ -552,6 +552,28 @@ function validateRuntimeBinaryArchitecture(filePath, platform, arch, label) {
 }
 
 /**
+ * 打包目标架构必须与 Electron 主程序一致。
+ *
+ * Electron 缓存残留另一架构时会静默产出「arm64 包 + x64 主程序」：这种包靠 Rosetta
+ * 仍能启动，于是被当成 Intel 机器、走错密钥流程。这里让它在打包阶段直接失败。
+ */
+function validateElectronMainBinary(appOutDir, productName, platform, arch) {
+  if (platform !== 'darwin') return
+  const binaryPath = path.join(appOutDir, `${productName}.app`, 'Contents', 'MacOS', productName)
+  if (!existsSync(binaryPath)) {
+    throw new Error(`Missing Electron main binary: ${binaryPath}`)
+  }
+  const architectures = readBinaryArchitectures(binaryPath)
+  if (!architectures.length) {
+    throw new Error(`Electron main binary is not a Mach-O executable: ${binaryPath}`)
+  }
+  if (arch === 'universal' || architectures.includes(arch)) return
+  throw new Error(
+    `Electron main binary is ${architectures.join('/')} but this bundle targets ${arch}: ${binaryPath}`
+  )
+}
+
+/**
  * The Intel Mac key helper is an x86_64 executable that only the x64 (or
  * universal) macOS bundle can run. Every other target — Apple Silicon macOS,
  * Windows, Linux — would otherwise ship a ~34MB binary it can never execute,
@@ -746,6 +768,12 @@ exports.default = async function afterPack(context) {
   validateReaderSkillRuntime(runtimeResources)
   validateSilkWasmRuntime(runtimeResources)
   const ffmpegPath = validateFfmpegRuntime(runtimeResources, context.electronPlatformName)
+  validateElectronMainBinary(
+    context.appOutDir,
+    context.packager.appInfo.productFilename,
+    context.electronPlatformName,
+    arch
+  )
   validateRuntimeBinaryArchitecture(
     ffmpegPath,
     context.electronPlatformName,
@@ -800,6 +828,7 @@ exports.pruneIntelMacKeyTool = pruneIntelMacKeyTool
 exports.pruneForeignArchConnectors = pruneForeignArchConnectors
 exports.pruneForeignArchNativeRuntimes = pruneForeignArchNativeRuntimes
 exports.validateRuntimeBinaryArchitecture = validateRuntimeBinaryArchitecture
+exports.validateElectronMainBinary = validateElectronMainBinary
 exports.findMacosHelperPaths = findMacosHelperPaths
 exports.isMacosCodeValid = isMacosCodeValid
 exports.signMacosHelpers = signMacosHelpers

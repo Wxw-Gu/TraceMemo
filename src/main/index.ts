@@ -76,6 +76,8 @@ import type {
 } from '../shared/image-insight'
 import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../shared/system-ocr'
 import { KeyServiceMac } from './key-service-mac'
+import { getMacArchSnapshot } from './macos-arch'
+import { shouldProbeIntelEnvironment } from '../shared/macos-arch'
 import { KeyService as KeyServiceWin } from './key-service-win'
 import * as chat from './services/chat-service'
 import {
@@ -1772,11 +1774,18 @@ app.whenReady().then(async () => {
     )
     const self = chat.getSelfAccountInfo()
     const settings = loadSettings()
-    const intelMac = process.platform === 'darwin' && process.arch === 'x64'
+    const arch = getMacArchSnapshot()
+    // 只有真正的 Intel Mac 才需要探测 Intel 运行环境。
+    // Apple 芯片上的 x64 进程（Rosetta）不能走这条路径，否则每次刷新环境都会起一个 x86 子进程。
+    const intelMac = shouldProbeIntelEnvironment(arch.macKeyFlow)
     const intelEnvironment = intelMac ? await keyServiceMac.getIntelEnvironmentStatus() : undefined
     const environment = {
       platform: process.platform,
       architecture: process.arch,
+      hardwareArchitecture: arch.hardwareArch,
+      underARM64Translation: arch.underARM64Translation,
+      macKeyFlow: arch.macKeyFlow,
+      archAnomalies: arch.anomalies,
       osVersion: getOsVersionLabel(),
       appVersion: `v${app.getVersion()}`,
       wechatVersion: await detectWechatVersion(),

@@ -25,9 +25,10 @@
 1. 数据目录是否指向当前登录账号，而不是旧备份或迁移前目录；
 2. 微信版本是否属于当前代码面向的 4.x 数据结构；
 3. 微信是否处于页面要求的登录/退出状态；
-4. macOS 是否完成页面要求的授权；
+4. macOS 是否完成页面要求的授权；如果是升级 macOS 或更新 TraceMemo 之后才失败的，按[权限恢复文档](./macos27-permission-recovery.md)处理，只打开开关通常不够；
 5. 连接页面的诊断项是否明确指出密钥、账号或数据库问题；
 6. macOS 上 Apple Silicon 与 Intel 使用不同的连接流程，按连接页面提示操作；两者都可以自动获取数据库密钥。
+7. 页面显示「Intel Mac 自动获取」但电脑是 Apple 芯片时，多半是装了 Intel 版，见[架构不匹配说明](../platform/macos.md#提示intel-mac-自动获取但电脑是-apple-芯片)。
 
 重新输入密钥或断开连接不会删除微信原始数据库。macOS 的 SIP 和授权说明见[平台说明](../platform/macos.md)。
 
@@ -35,11 +36,14 @@
 
 这是**权限问题，不是文件缺失** —— 如果你在终端里能列出 `db_storage/session/session.db`，说明数据目录是完整的，只是 TraceMemo 这个进程读不到。
 
-macOS 27 及更高版本需要给 TraceMemo 授予「完全磁盘访问权限」。注意：**终端能读到文件不代表 TraceMemo 有权限** —— macOS 的隐私权限按应用进程的身份判定，两者走的是不同的授权。
+注意：**终端能读到文件不代表 TraceMemo 有权限** —— macOS 的隐私权限按应用进程的身份判定，两者走的是不同的授权。
 
-处理步骤见 [macOS 数据访问与系统权限 → 提示「无法读取微信数据库」时](../platform/macos.md#提示无法读取微信数据库时)。
+按出现时机分两种情况：
 
-仍然失败时，记录 **macOS 版本、CPU 架构（Apple Silicon / Intel）、微信版本、TraceMemo 版本和页面错误提示**后 扫码 README 文档二维码进群提交消息, 或者提交 Issue。
+- **首次连接就没成功**：给 TraceMemo 授予「完全磁盘访问权限」即可，步骤见 [macOS 数据访问与系统权限 → 提示「无法读取微信数据库」时](../platform/macos.md#提示无法读取微信数据库时)。
+- **之前能用，升级 macOS 或更新 TraceMemo 之后才失败**：多数是旧授权记录对不上新版本的应用，只打开开关不够，需要先清掉旧记录再重新授权。完整步骤见[macOS 更新后读不到微信数据：权限恢复](./macos27-permission-recovery.md)。
+
+仍然失败时，记录 **macOS 版本、CPU 架构（Apple Silicon / Intel）、微信版本、TraceMemo 版本和页面错误提示** 后，扫码 README 文档二维码进群反馈，或提交 Issue。连接页的「复制脱敏诊断摘要」可以直接提供这些环境信息。
 
 ## 连接成功但没有联系人或消息
 
