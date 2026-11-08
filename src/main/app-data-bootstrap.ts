@@ -33,7 +33,7 @@ app.setPath('sessionData', selectedUserData)
 // Logs are intentionally independent from userData. New TraceMemo logs go to
 // the new visible directory while historical WechatExplorer logs remain in
 // place and are never moved or renamed.
-if (isLegacyMigrationHelper) {
+if (isLegacyMigrationHelper || isUserDataIsolated) {
   app.setPath('logs', path.join(selectedUserData, 'logs'))
 } else if (process.platform === 'darwin') {
   app.setPath('logs', path.join(app.getPath('home'), 'Library', 'Logs', 'TraceMemo'))

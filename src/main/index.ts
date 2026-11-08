@@ -7,6 +7,12 @@ import {
 } from './app-data-bootstrap'
 import './preload-env'
 import {
+  confirmChatGPTReport,
+  registerChatGPTPlanHandlers,
+  requestChatGPTPlan
+} from './services/chatgpt-plan-service'
+import { CHATGPT_PLAN_PROVIDER_PREFIX } from '../shared/chatgpt-plan'
+import {
   app,
   shell,
   BrowserWindow,
@@ -2692,10 +2698,20 @@ app.whenReady().then(async () => {
     }
   )
 
+  registerChatGPTPlanHandlers()
   ipcMain.handle(
     'ai:chat',
-    async (_, messages: { role: string; content: string }[], options?: AIChatRequestOptions) =>
-      aiProviderService.chat(messages, options)
+    async (event, messages: { role: string; content: string }[], options?: AIChatRequestOptions) => {
+      const providerId = options?.providerId
+      if (!providerId?.startsWith(CHATGPT_PLAN_PROVIDER_PREFIX)) {
+        return aiProviderService.chat(messages, options)
+      }
+      const window = BrowserWindow.fromWebContents(event.sender)
+      if (!window || !options?.modelId || !(await confirmChatGPTReport(window))) {
+        return { success: false, error: '已取消向 OpenAI 发送内容。' }
+      }
+      return requestChatGPTPlan(providerId, options.modelId, messages, options.timeoutMs)
+    }
   )
 
   ipcMain.handle('ai:listProviders', () => aiProviderService.list())

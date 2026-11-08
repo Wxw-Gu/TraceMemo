@@ -22,6 +22,7 @@ export async function launchTestApp(
     largeContacts?: number
     corruptCache?: boolean
     aiFailure?: string
+    chatGPTPlan?: boolean
     updateSimulation?: boolean
     unsignedMacUpdate?: boolean
     realtimeReorder?: boolean
@@ -53,6 +54,7 @@ export async function launchTestApp(
       WXE_E2E_LARGE_CONTACTS: String(options.largeContacts || 0),
       WXE_E2E_CORRUPT_CACHE: options.corruptCache ? '1' : '0',
       WXE_E2E_AI_FAILURE: options.aiFailure || '',
+      WXE_E2E_CHATGPT_PLAN: options.chatGPTPlan ? '1' : '0',
       WXE_E2E_UPDATE_SIMULATION: options.updateSimulation ? '1' : '0',
       WXE_E2E_UNSIGNED_MAC_UPDATE: options.unsignedMacUpdate ? '1' : '0',
       WXE_E2E_REALTIME_REORDER: options.realtimeReorder ? '1' : '0',

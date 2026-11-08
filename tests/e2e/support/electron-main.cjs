@@ -1153,7 +1153,17 @@ handle('ai:listProviders', () => ({
   defaultProviderId: 'fixture-provider'
 }))
 handle('ai:migrateLegacy', () => ({ success: true, providers: [] }))
-handle('ai:chat', (messages) => {
+const fixturePlan = process.env.WXE_E2E_CHATGPT_PLAN === '1'
+const fixturePlanModel = {
+  providerId: 'chatgpt-plan:fixture-profile',
+  providerName: 'ChatGPT 订阅',
+  model: 'fixture-plan-model',
+  modelName: '订阅测试模型',
+  configured: true,
+  status: 'untested'
+}
+handle('chatgpt-plan:models', () => (fixturePlan ? [fixturePlanModel] : []))
+handle('ai:chat', (messages, options) => {
   const failure = process.env.WXE_E2E_AI_FAILURE
   if (failure) return { success: false, error: `本地假服务错误 ${failure}` }
   const system = String(messages?.[0]?.content || '')
@@ -1164,6 +1174,13 @@ handle('ai:chat', (messages) => {
     }
   }
   if (system.includes('微信群聊日报编辑') || system.includes('JSON 格式修复器')) {
+    if (
+      fixturePlan &&
+      (options?.providerId !== fixturePlanModel.providerId ||
+        options?.modelId !== fixturePlanModel.model)
+    ) {
+      return { success: false, error: '日报请求没有使用所选订阅模型' }
+    }
     return { success: true, data: reportJson, usage: { input: 10, output: 20, total: 30 } }
   }
   return { success: true, data: '固定假回答：测试数据中的核心流程正常。' }

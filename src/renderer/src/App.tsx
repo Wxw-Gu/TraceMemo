@@ -1,8 +1,10 @@
+import { CHATGPT_PLAN_PROVIDER_PREFIX } from '../../shared/chatgpt-plan'
 import React, { useState } from 'react'
 import { Sidebar } from './components/Sidebar'
 import ChatWindow from './components/ChatWindow'
 import { AppShell } from './components/layout/AppShell'
 import { ApiWorkspace } from './features/api-center/ApiWorkspace'
+import { ChatGPTPlanCard } from './features/settings/ai-model/ChatGPTPlanCard'
 import { SettingsWorkspace } from './features/settings/SettingsWorkspace'
 import { AgentHubWorkspace } from './features/agent-hub/AgentHubWorkspace'
 import type { SettingsCategoryId } from './features/settings/model/types'
@@ -130,6 +132,9 @@ const reportModelChoices = (
         timeoutMs: provider.advanced.timeoutMs
       }))
   })
+
+const listChatGPTPlanModels = (): Promise<ReportModelChoice[]> =>
+  window.api.listChatGPTPlanModels?.().catch(() => []) ?? Promise.resolve([])
 
 const selectReportModel = (
   choices: ReportModelChoice[],
@@ -431,10 +436,11 @@ function App(): React.ReactElement {
             localStorage.removeItem('ai_model')
           }
         }
-        const [runtime, visionRuntime, providerList] = await Promise.all([
+        const [runtime, visionRuntime, providerList, planChoices] = await Promise.all([
           window.api.getAIRuntimeConfig(),
           window.api.getAIVisionRuntimeConfig(),
-          window.api.listAIProviders()
+          window.api.listAIProviders(),
+          listChatGPTPlanModels()
         ])
         const providers = providerList.success ? providerList.providers : []
         const textChoices = reportModelChoices(providers, 'chat')
@@ -445,7 +451,7 @@ function App(): React.ReactElement {
           REPORT_VISION_MODEL_STORAGE_KEY,
           visionRuntime
         )
-        setReportTextModelOptions(textChoices)
+        setReportTextModelOptions([...textChoices, ...planChoices])
         setReportVisionModelOptions(visionChoices)
         setAiModelConfig(runtime)
         setReportTextModelConfig(selectedText || runtime)
@@ -2065,7 +2071,9 @@ function App(): React.ReactElement {
               onSummaryMessageTypesChange={setSummaryMessageTypes}
               onOpenModelSettings={openModelSettings}
               onTextModelChange={(model) => {
-                localStorage.setItem(REPORT_TEXT_MODEL_STORAGE_KEY, reportModelKey(model))
+                if (!model.providerId.startsWith(CHATGPT_PLAN_PROVIDER_PREFIX)) {
+                  localStorage.setItem(REPORT_TEXT_MODEL_STORAGE_KEY, reportModelKey(model))
+                }
                 setReportTextModelConfig(model)
               }}
               onVisionModelChange={(model) => {
@@ -2166,13 +2174,14 @@ function App(): React.ReactElement {
               setAiModelConfig(config)
               void Promise.all([
                 window.api.getAIVisionRuntimeConfig(),
-                window.api.listAIProviders()
+                window.api.listAIProviders(),
+                listChatGPTPlanModels()
               ])
-                .then(([visionRuntime, providerList]) => {
+                .then(([visionRuntime, providerList, planChoices]) => {
                   const providers = providerList.success ? providerList.providers : []
                   const textChoices = reportModelChoices(providers, 'chat')
                   const visionChoices = reportModelChoices(providers, 'vision')
-                  setReportTextModelOptions(textChoices)
+                  setReportTextModelOptions([...textChoices, ...planChoices])
                   setReportVisionModelOptions(visionChoices)
                   setReportTextModelConfig(
                     (current) =>
@@ -2386,6 +2395,23 @@ function App(): React.ReactElement {
         onManualConnect={() => handleLogin()}
         onPasteKey={handlePasteAndSaveDbKey}
         onClearKey={handleClearSavedDbKey}
+        optionalSetup={
+          <details>
+            <summary>ChatGPT 订阅设置</summary>
+            <ChatGPTPlanCard
+              onChange={() => {
+                void listChatGPTPlanModels().then((planChoices) => {
+                  setReportTextModelOptions((current) => [
+                    ...current.filter(({ providerId }) =>
+                      !providerId.startsWith(CHATGPT_PLAN_PROVIDER_PREFIX)
+                    ),
+                    ...planChoices
+                  ])
+                })
+              }}
+            />
+          </details>
+        }
       />
     )
   }

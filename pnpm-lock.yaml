@@ -32,6 +32,7 @@ specifiers:
   '@radix-ui/react-toast': ^1.2.23
   '@radix-ui/react-tooltip': ^1.2.16
   '@rollup/rollup-darwin-arm64': ^4.62.2
+  '@siwc/local': file:vendor/siwc-local-0.1.0.tgz
   '@tanstack/react-virtual': ^3.14.6
   '@testing-library/dom': ^10.4.1
   '@testing-library/jest-dom': ^7.0.0
@@ -110,6 +111,7 @@ dependencies:
   '@radix-ui/react-tabs': 1.1.21_eijghdl4n2x4hz6j4cg7ctgbuu
   '@radix-ui/react-toast': 1.2.23_eijghdl4n2x4hz6j4cg7ctgbuu
   '@radix-ui/react-tooltip': 1.2.16_eijghdl4n2x4hz6j4cg7ctgbuu
+  '@siwc/local': file:vendor/siwc-local-0.1.0.tgz
   '@tanstack/react-virtual': 3.14.6_bokjwhiew3ov3ffvbmafuwoalq
   archiver: 8.0.0
   class-variance-authority: 0.7.1
@@ -6115,6 +6117,10 @@ packages:
     hasBin: true
     dev: true
 
+  /jose/6.2.15:
+    resolution: {integrity: sha512-qdF6ewcZARtef63fJ9AKKZPgxw+t7USH6HLXYcD4CrdmSvDp79rpJSPFEKc90QBeGS63u1KQtN2MZQHC0yDIzA==}
+    dev: false
+
   /js-tokens/10.0.0:
     resolution: {integrity: sha512-lM/UBzQmfJRo9ABXbPWemivdCW8V2G8FHaHdypQaIy523snUjog0W71ayWXTjiR+ixeMyVHN2XcpnTd/liPg/Q==}
     dev: true
@@ -6750,6 +6756,34 @@ packages:
         optional: true
     dev: false
 
+  /openai/7.53.0:
+    resolution: {integrity: sha512-PXiIZraFYMb2QYgTtWqDA16Oszj4fWRZNn7qLIAddmiJxM5uQPWBFaxp9O8MhLfTUOQ+iQsnFSRJhLPecsGovQ==}
+    engines: {node: '>=22.0.0'}
+    peerDependencies:
+      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
+      '@smithy/hash-node': '>=4.3.0 <5'
+      '@smithy/signature-v4': '>=5.4.0 <6'
+      google-auth-library: '>=9.15.1 <12'
+      undici: '>=5 <9'
+      ws: ^8.21.0
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      '@aws-sdk/credential-provider-node':
+        optional: true
+      '@smithy/hash-node':
+        optional: true
+      '@smithy/signature-v4':
+        optional: true
+      google-auth-library:
+        optional: true
+      undici:
+        optional: true
+      ws:
+        optional: true
+      zod:
+        optional: true
+    dev: false
+
   /optionator/0.9.4:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
     engines: {node: '>= 0.8.0'}
@@ -7097,6 +7131,14 @@ packages:
       react-is: 16.13.1
     dev: true
 
+  /proper-lockfile/4.1.2:
+    resolution: {integrity: sha512-TjNPblN4BwAWMXU8s9AEz4JmQxnD1NNL7bNOY/AKUzyamc379FWASUhc/K1pL2noVb+XmZKLL68cjzLsiOAMaA==}
+    dependencies:
+      graceful-fs: 4.2.11
+      retry: 0.12.0
+      signal-exit: 3.0.7
+    dev: false
+
   /pump/3.0.3:
     resolution: {integrity: sha512-todwxLMY7/heScKmntwQG8CXVkWUOdYxIvY2s0VWAAMh/nd8SoYiRaKjlr7+iCs984f2P8zvrfWcDDYVb73NfA==}
     dependencies:
@@ -7369,7 +7411,6 @@ packages:
   /retry/0.12.0:
     resolution: {integrity: sha512-9LkiTwjUh6rT555DtE9rTX+BKByPfrMzEAtnlEtdEwr3Nkffwiihqe2bWADg+OQRjt9gl6ICdmB/ZFDCGAtSow==}
     engines: {node: '>= 4'}
-    dev: true
 
   /reusify/1.1.0:
     resolution: {integrity: sha512-g6QUff04oZpHs0eG5p83rFLhHeV00ug/Yf9nZM6fLeUrPguBTkTQOdpAWWspMh55TZfVQDPaN3NQJfbVRAxdIw==}
@@ -7683,7 +7724,6 @@ packages:
 
   /signal-exit/3.0.7:
     resolution: {integrity: sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ==}
-    dev: true
 
   /signal-exit/4.1.0:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
@@ -8821,6 +8861,25 @@ packages:
   /zod/4.1.13:
     resolution: {integrity: sha512-AvvthqfqrAhNH9dnfmrfKzX5upOdjUVJYFqNSlkmGf64gRaTzlPwz99IHYnVs28qYAybvAlBV+H7pn0saFY4Ig==}
     dev: true
+
+  file:vendor/siwc-local-0.1.0.tgz:
+    resolution: {integrity: sha512-3dxfbFXdlJWyLrYibN7HmxU59Mn70iTkPyN/gWoraCzL74DTtSEptaWx5EKd0j0D/kCp39fRXsqNTxoAKgg7SQ==, tarball: file:vendor/siwc-local-0.1.0.tgz}
+    name: '@siwc/local'
+    version: 0.1.0
+    engines: {node: '>=22'}
+    dependencies:
+      jose: 6.2.15
+      openai: 7.53.0
+      proper-lockfile: 4.1.2
+    transitivePeerDependencies:
+      - '@aws-sdk/credential-provider-node'
+      - '@smithy/hash-node'
+      - '@smithy/signature-v4'
+      - google-auth-library
+      - undici
+      - ws
+      - zod
+    dev: false
 
   github.com/electron/node-gyp/06b29aafb7708acef8b3669835c8a7857ebc92d2:
     resolution: {tarball: https://codeload.github.com/electron/node-gyp/tar.gz/06b29aafb7708acef8b3669835c8a7857ebc92d2}

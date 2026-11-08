@@ -311,6 +311,16 @@ const api = {
   },
   aiChat: (messages: { role: string; content: string }[], options?: AIChatRequestOptions) =>
     ipcRenderer.invoke('ai:chat', messages, options),
+  getChatGPTPlanStatus: () => ipcRenderer.invoke('chatgpt-plan:status'),
+  signInChatGPTPlan: (profileId?: string, reconsent?: boolean) =>
+    ipcRenderer.invoke('chatgpt-plan:sign-in', profileId, reconsent),
+  cancelChatGPTPlanSignIn: () => ipcRenderer.invoke('chatgpt-plan:cancel'),
+  selectChatGPTPlan: (profileId: string) => ipcRenderer.invoke('chatgpt-plan:select', profileId),
+  disconnectChatGPTPlan: () => ipcRenderer.invoke('chatgpt-plan:disconnect'),
+  openChatGPTPlanUsage: () => ipcRenderer.invoke('chatgpt-plan:usage'),
+  listChatGPTPlanModels: () => ipcRenderer.invoke('chatgpt-plan:models'),
+  testChatGPTPlan: (providerId: string, model: string) =>
+    ipcRenderer.invoke('chatgpt-plan:test', providerId, model),
   listAIProviders: () => ipcRenderer.invoke('ai:listProviders'),
   getAIRuntimeConfig: () => ipcRenderer.invoke('ai:getRuntimeConfig'),
   getAIVisionRuntimeConfig: () => ipcRenderer.invoke('ai:getVisionRuntimeConfig'),

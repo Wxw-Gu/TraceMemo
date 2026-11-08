@@ -97,6 +97,7 @@
     "@radix-ui/react-tabs": "^1.1.21",
     "@radix-ui/react-toast": "^1.2.23",
     "@radix-ui/react-tooltip": "^1.2.16",
+    "@siwc/local": "file:vendor/siwc-local-0.1.0.tgz",
     "@tanstack/react-virtual": "^3.14.6",
     "archiver": "^8.0.0",
     "class-variance-authority": "^0.7.1",

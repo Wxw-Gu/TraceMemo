@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { AIRuntimeModelConfig } from '../../../../../shared/ai-provider'
 import { Button } from '../../../components/ui'
+import { ChatGPTPlanCard } from '../ai-model/ChatGPTPlanCard'
 import { AIProviderCard } from '../ai-model/AIProviderCard'
 import { AIProviderEditor } from '../ai-model/AIProviderEditor'
 import { AIImageUnderstandingTest } from '../ai-model/AIImageUnderstandingTest'
@@ -60,6 +61,11 @@ export function AIModelPage({
               {runtime?.configured ? '可用' : '未配置'}
             </span>
           </section>
+          <ChatGPTPlanCard
+            onChange={() => {
+              if (runtime) onRuntimeChange(runtime)
+            }}
+          />
           <AIImageUnderstandingTest
             runtime={runtime}
             provider={defaultProvider}
