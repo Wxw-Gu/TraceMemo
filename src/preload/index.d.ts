@@ -85,7 +85,12 @@ import type {
 } from '../shared/personal-wechat'
 import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
 import type { MacLicenseStatus } from '../shared/personal-wechat-mac-license'
-import type { MacWechatSendRuntimeAvailabilityResult } from '../shared/personal-wechat-mac-runtime'
+import type {
+  MacWechatResidualCleanupResult,
+  MacWechatResidualProcess,
+  MacWechatRuntimeSnapshot,
+  MacWechatSendRuntimeAvailabilityResult
+} from '../shared/personal-wechat-mac-runtime'
 import type { GroupMemberStatsQuery, GroupMemberStatsResult } from '../shared/group-stats'
 import type {
   ScheduledReportExecution,
@@ -753,9 +758,14 @@ declare global {
       repairImageTextIndex: () => Promise<ImageTextIndexRepairResult>
       onImageTextIndexStatus: (callback: (status: ImageTextIndexStatus) => void) => () => void
       getPersonalWechatSenderStatus: () => Promise<PersonalWechatSenderStatus>
-  getMacLicenseStatus: () => Promise<MacLicenseStatus>
-  getMacSendRuntimeAvailability: () => Promise<MacWechatSendRuntimeAvailabilityResult>
-  refreshMacLicense: () => Promise<MacLicenseStatus>
+      getMacLicenseStatus: () => Promise<MacLicenseStatus>
+      getMacSendRuntimeAvailability: () => Promise<MacWechatSendRuntimeAvailabilityResult>
+      startMacSendRuntime: () => Promise<MacWechatRuntimeSnapshot>
+      listMacWechatResidualProcesses: () => Promise<MacWechatResidualProcess[]>
+      cleanupMacWechatResidualProcesses: (
+        targets: Array<Pick<MacWechatResidualProcess, 'pid' | 'confirmationToken'>>
+      ) => Promise<MacWechatResidualCleanupResult>
+      refreshMacLicense: () => Promise<MacLicenseStatus>
       getPersonalWechatSendCapability: () => Promise<PersonalWechatSendCapability>
       checkPersonalWechatSenderStatus: (port?: string) => Promise<PersonalWechatSenderStatus>
       checkPersonalWechatVoiceEncodingEnvironment: () => Promise<PersonalWechatVoiceEncodingEnvironment>
@@ -774,9 +784,7 @@ declare global {
         ruleId: string
       ) => Promise<{ success: boolean; error?: string; data?: ScheduledRuleRunOutcome }>
       /** 定时日报：旧执行记录**只读存档**（旧记录无法无损转换，原样展示）。 */
-      listScheduledReportLegacyExecutions: (
-        ruleId?: string
-      ) => Promise<ScheduledReportExecution[]>
+      listScheduledReportLegacyExecutions: (ruleId?: string) => Promise<ScheduledReportExecution[]>
       /** 定时日报：微信异常通知开关与能力检测。 */
       getScheduledReportNotificationSettings: () => Promise<ScheduledReportNotificationSettings>
       getScheduledReportNotificationCapability: () => Promise<ScheduledReportNotificationCapability>

@@ -9,7 +9,19 @@ import type {
 } from '../../../../../shared/personal-wechat-mac-license'
 import type { MacWechatSendRuntimeAvailabilityResult } from '../../../../../shared/personal-wechat-mac-runtime'
 import { resolveMacSendPrimaryAction } from '../../../../../shared/personal-wechat-mac-send-action'
-import { Button, Input, Skeleton } from '../../../components/ui'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Button,
+  Input,
+  Skeleton
+} from '../../../components/ui'
 import { PersonalWechatSetupGuide } from '../../../components/chat/PersonalWechatSetupGuide'
 import { isMac, isWindows } from '../../../utils/runtime-environment'
 
@@ -31,6 +43,15 @@ function normalizeWindowsPort(value: string): string | null {
   if (!/^\d{1,5}$/.test(text)) return null
   const port = Number(text)
   return Number.isInteger(port) && port >= 1 && port <= 65_535 ? String(port) : null
+}
+
+function getEndpointPort(endpoint: string | undefined): string | null {
+  if (!endpoint) return null
+  try {
+    return new URL(endpoint).port || null
+  } catch {
+    return null
+  }
 }
 
 function boundToCurrentWechat(status: PersonalWechatSenderStatus | null): boolean {
@@ -92,6 +113,28 @@ function licenseTone(state: MacLicenseState): string {
   if (state === 'valid' || state === 'cached') return 'is-ready'
   if (state === 'revoked' || state === 'expired' || state === 'identity_error') return 'is-error'
   return 'is-neutral'
+}
+
+function licenseStateConflictsWithExpiry(license: MacLicenseStatus): boolean {
+  const expiresAt = license.licenseExpiresAt ? Date.parse(license.licenseExpiresAt) : NaN
+  return license.state === 'expired' && Number.isFinite(expiresAt) && expiresAt > Date.now()
+}
+
+function macLicenseStatusLabel(license: MacLicenseStatus): string {
+  if (license.state === 'valid' || license.state === 'cached') return '设备已授权'
+  if (licenseStateConflictsWithExpiry(license)) return '授权状态需刷新'
+  return macLicenseStateLabel[license.state]
+}
+
+function macLicenseStatusTone(license: MacLicenseStatus): string {
+  return licenseStateConflictsWithExpiry(license) ? 'is-neutral' : licenseTone(license.state)
+}
+
+function macLicenseStatusHint(license: MacLicenseStatus): string {
+  if (licenseStateConflictsWithExpiry(license)) {
+    return '当前授权状态与到期日不一致，请点击「重新检测授权」更新状态。'
+  }
+  return '将设备 ID 提供给授权管理员，完成授权后点击「重新检测授权」。'
 }
 
 function formatMacLicenseDateTime(iso: string | null): string {
@@ -191,10 +234,8 @@ export function MacProLicenseCard({
     <section className="settings-card mac-pro-license-card" aria-label="发送能力授权">
       <header className="mac-pro-license-header">
         <strong>发送能力授权</strong>
-        <span className={`mac-pro-license-status ${licenseTone(license.state)}`}>
-          {license.state === 'valid' || license.state === 'cached'
-            ? '设备已授权'
-            : macLicenseStateLabel[license.state]}
+        <span className={`mac-pro-license-status ${macLicenseStatusTone(license)}`}>
+          {macLicenseStatusLabel(license)}
         </span>
       </header>
 
@@ -215,10 +256,8 @@ export function MacProLicenseCard({
           {copied ? '已复制' : '复制'}
         </Button>
       </div>
-      {license.deviceId && !license.authorized ? (
-        <p className="mac-pro-license-hint">
-          将设备 ID 提供给授权管理员，完成授权后点击「重新检测授权」。
-        </p>
+      {license.deviceId && (!license.authorized || licenseStateConflictsWithExpiry(license)) ? (
+        <p className="mac-pro-license-hint">{macLicenseStatusHint(license)}</p>
       ) : null}
       {license.authorized && license.features.length > 0 ? (
         <div className="mac-pro-license-features" aria-label="已开通功能">
@@ -273,7 +312,33 @@ export function PersonalWechatSendPage({
   const [macLicenseStatus, setMacLicenseStatus] = useState<MacLicenseStatus | null>(null)
   const [macRuntimeAvailability, setMacRuntimeAvailability] =
     useState<MacWechatSendRuntimeAvailabilityResult | null>(null)
+  const [macResidualProcesses, setMacResidualProcesses] = useState<
+    Awaited<ReturnType<typeof window.api.listMacWechatResidualProcesses>>
+  >([])
+  const [macResidualDialogOpen, setMacResidualDialogOpen] = useState(false)
+  const [macResidualBusy, setMacResidualBusy] = useState(false)
+  const [macResidualRuntimeStopped, setMacResidualRuntimeStopped] = useState(false)
+  const [macWechatRebindRequired, setMacWechatRebindRequired] = useState(false)
+  const [mac4290PortStatus, setMac4290PortStatus] = useState<
+    | { state: 'loading' | 'available' | 'error'; processes: [] }
+    | { state: 'occupied'; processes: Array<{ pid: number; name: string }> }
+  >({ state: 'loading', processes: [] })
   const setupDefaultInitialized = useRef(false)
+  const refreshMac4290PortStatus = useCallback(async (): Promise<void> => {
+    try {
+      const processes = await window.api.listMacWechatResidualProcesses()
+      const listeners = processes
+        .filter((process) => process.targets.includes('port_4290'))
+        .map(({ pid, name }) => ({ pid, name }))
+      setMac4290PortStatus(
+        listeners.length > 0
+          ? { state: 'occupied', processes: listeners }
+          : { state: 'available', processes: [] }
+      )
+    } catch {
+      setMac4290PortStatus({ state: 'error', processes: [] })
+    }
+  }, [])
   const refresh = useCallback(async (): Promise<void> => {
     if (isWindows) {
       setLoading(false)
@@ -352,6 +417,13 @@ export function PersonalWechatSendPage({
   }, [refresh])
 
   useEffect(() => {
+    if (!isMac) return undefined
+    void refreshMac4290PortStatus()
+    const timer = window.setInterval(() => void refreshMac4290PortStatus(), 5_000)
+    return () => window.clearInterval(timer)
+  }, [refreshMac4290PortStatus])
+
+  useEffect(() => {
     if (isWindows || !senderStatus || senderStatus.canSend || senderStatus.state === 'error') {
       return undefined
     }
@@ -395,6 +467,9 @@ export function PersonalWechatSendPage({
     try {
       const nextStatus = await window.api.rebindPersonalWechatSender()
       setSenderStatus(nextStatus)
+      if (boundToCurrentWechat(nextStatus)) {
+        setMacWechatRebindRequired(false)
+      }
       const nextCapability = await window.api.getPersonalWechatSendCapability()
       setCapability(nextCapability)
       if (nextStatus.state === 'error' && nextStatus.message) setError(nextStatus.message)
@@ -416,6 +491,99 @@ export function PersonalWechatSendPage({
       await refresh()
     } finally {
       setDetecting(false)
+    }
+  }
+
+  const inspectMacResidualProcesses = async (): Promise<void> => {
+    if (macResidualBusy) return
+    setMacResidualBusy(true)
+    try {
+      const targets = await window.api.listMacWechatResidualProcesses()
+      setMacResidualProcesses(targets)
+      const listeners = targets
+        .filter((process) => process.targets.includes('port_4290'))
+        .map(({ pid, name }) => ({ pid, name }))
+      setMac4290PortStatus(
+        listeners.length > 0
+          ? { state: 'occupied', processes: listeners }
+          : { state: 'available', processes: [] }
+      )
+      if (targets.length === 0) {
+        onNotice('没有发现微信进程或占用 4290 端口的进程')
+        return
+      }
+      setMacResidualDialogOpen(true)
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : '读取残留进程失败')
+    } finally {
+      setMacResidualBusy(false)
+    }
+  }
+
+  const cleanupMacResidualProcesses = async (): Promise<void> => {
+    if (macResidualBusy || macResidualProcesses.length === 0) return
+    setMacResidualBusy(true)
+    try {
+      const result = await window.api.cleanupMacWechatResidualProcesses(
+        macResidualProcesses.map(({ pid, confirmationToken }) => ({ pid, confirmationToken }))
+      )
+      if (result.runtimeStopped) setMacResidualRuntimeStopped(true)
+      if (result.stopped.some((target) => target.targets.includes('wechat'))) {
+        setMacWechatRebindRequired(true)
+      }
+      if (result.stopped.length === 0) {
+        if (result.remaining.length > 0) {
+          setMacResidualProcesses(result.remaining)
+          onNotice('进程状态已变化，请核对更新后的清理目标。')
+          return
+        }
+        setMacResidualDialogOpen(false)
+        setMacResidualProcesses([])
+        await refreshMac4290PortStatus()
+        await refresh()
+        onNotice('目标进程已退出，发送环境状态已刷新。')
+        return
+      }
+      if (result.remaining.length > 0) {
+        setMacResidualProcesses(result.remaining)
+        onNotice(
+          '已结束 ' +
+            result.stopped.length +
+            ' 个进程，仍有 ' +
+            result.remaining.length +
+            ' 个；请核对后重试。'
+        )
+      } else {
+        setMacResidualDialogOpen(false)
+        setMacResidualProcesses([])
+      }
+      await refreshMac4290PortStatus()
+      await refresh()
+      if (result.remaining.length === 0) {
+        onNotice('已结束 ' + result.stopped.length + ' 个残留进程；发送环境状态已刷新。')
+      }
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : '清理残留进程失败')
+    } finally {
+      setMacResidualBusy(false)
+    }
+  }
+
+  const restartMacSendRuntime = async (): Promise<void> => {
+    if (macResidualBusy) return
+    setMacResidualBusy(true)
+    try {
+      const snapshot = await window.api.startMacSendRuntime()
+      if (snapshot.lifecycle !== 'online') {
+        throw new Error(snapshot.error || '发送组件启动失败')
+      }
+      setMacResidualRuntimeStopped(false)
+      await refresh()
+      onNotice('发送组件已启动；如刚才关闭了微信，请重新打开微信并绑定。')
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : '发送组件启动失败')
+    } finally {
+      setMacResidualBusy(false)
     }
   }
 
@@ -516,6 +684,7 @@ export function PersonalWechatSendPage({
   const macUnavailable = isMac && macRuntimeAvailability?.state === 'unavailable'
   const macComponentError = isMac && macRuntimeAvailability?.state === 'component_error'
   const macBound = boundToCurrentWechat(senderStatus)
+  const macSendPort = getEndpointPort(senderStatus?.endpoint)
   const macEnvironmentReady = Boolean(
     senderStatus?.runtimeReady && macBound && senderStatus.canSend
   )
@@ -723,6 +892,50 @@ export function PersonalWechatSendPage({
                           </div>
                         ))}
                       </div>
+                      {macSendPort && senderStatus?.endpointReady ? (
+                        <p
+                          className="mt-3 rounded-md border border-border-subtle p-3 text-sm"
+                          role="status"
+                        >
+                          当前发送能力占用端口为 {macSendPort}（TM_WECHAT_HOST_PORT）。
+                        </p>
+                      ) : null}
+                      <section
+                        className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border-subtle p-3"
+                        aria-label="4290 端口状态"
+                      >
+                        <div>
+                          <strong className="text-sm">4290 端口</strong>
+                          <p className="mt-1 text-sm text-muted-foreground" role="status">
+                            {mac4290PortStatus.state === 'loading'
+                              ? '正在检查占用状态…'
+                              : mac4290PortStatus.state === 'error'
+                                ? '占用状态读取失败'
+                                : mac4290PortStatus.state === 'available'
+                                  ? '未被占用'
+                                  : '已被占用：' +
+                                    mac4290PortStatus.processes
+                                      .map(({ name, pid }) => name + '（PID ' + pid + '）')
+                                      .join('、')}
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={macResidualBusy}
+                          onClick={() => void refreshMac4290PortStatus()}
+                        >
+                          刷新端口状态
+                        </Button>
+                      </section>
+                      {macWechatRebindRequired ? (
+                        <div
+                          className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
+                          role="status"
+                        >
+                          微信进程已清理。请重新打开微信，然后点击“绑定微信”；绑定完成后此提示会自动消失。
+                        </div>
+                      ) : null}
                       {senderStatus && macRuntimeAvailability?.state === 'available' ? (
                         <div
                           className="mac-wechat-capability-details"
@@ -795,6 +1008,24 @@ export function PersonalWechatSendPage({
                         >
                           {macPrimaryAction.label}
                         </Button>
+                        <Button
+                          className="mt-2 w-full"
+                          variant="outline"
+                          disabled={macResidualBusy}
+                          onClick={() => void inspectMacResidualProcesses()}
+                        >
+                          {macResidualBusy ? '检查中…' : '清理残留以及微信进程'}
+                        </Button>
+                        {macResidualRuntimeStopped ? (
+                          <Button
+                            className="mt-2 w-full"
+                            variant="outline"
+                            disabled={macResidualBusy}
+                            onClick={() => void restartMacSendRuntime()}
+                          >
+                            {macResidualBusy ? '启动中…' : '重新启动发送组件'}
+                          </Button>
+                        ) : null}
                       </div>
                     </section>
                     {macUnavailable ? (
@@ -810,6 +1041,43 @@ export function PersonalWechatSendPage({
           </div>
         </div>
       </div>
+      <AlertDialog open={macResidualDialogOpen} onOpenChange={setMacResidualDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>清理微信残留进程？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将结束下面列出的微信进程或占用 4290
+              端口的进程。若列表包含微信，微信会关闭；如曾绑定发送组件，之后需要重新打开微信并绑定。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <ul className="grid gap-2 rounded-md border border-border-subtle p-3 text-sm">
+            {macResidualProcesses.map((item) => (
+              <li key={item.pid} className="flex justify-between gap-4">
+                <span className="break-all">{item.name}</span>
+                <span className="shrink-0 text-muted-foreground">
+                  PID {item.pid} ·{' '}
+                  {item.targets
+                    .map((target) => (target === 'wechat' ? '微信进程' : '4290 端口'))
+                    .join('、')}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={macResidualBusy}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={macResidualBusy}
+              onClick={(event) => {
+                event.preventDefault()
+                void cleanupMacResidualProcesses()
+              }}
+            >
+              {macResidualBusy ? '清理中…' : '确认结束进程'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }

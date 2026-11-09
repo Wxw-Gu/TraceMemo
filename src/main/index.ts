@@ -162,6 +162,10 @@ import {
 } from './services/msg-insert-capability-service'
 import { resolveExternalComponent } from './services/external-component-locator'
 import {
+  cleanupMacWechatResidualProcesses,
+  inspectMacWechatResidualProcesses
+} from './services/mac-wechat-residual-cleanup'
+import {
   isDefinitelyBlocked,
   isEntitlementBlocked,
   resolveExitNoticeGate,
@@ -317,10 +321,7 @@ async function attachCapability(
     }
   }
   switches.recall_notice = applyPresentation('recall_notice', switches.recall_notice)!
-  switches.group_exit_notice = applyPresentation(
-    'group_exit_notice',
-    switches.group_exit_notice
-  )!
+  switches.group_exit_notice = applyPresentation('group_exit_notice', switches.group_exit_notice)!
   return {
     ...snapshot,
     switches,
@@ -1982,7 +1983,8 @@ app.whenReady().then(async () => {
    * 刻意不返回资源密钥、完整 XML、fileid 或任何 CDN 凭据。
    */
   ipcMain.handle(
-    'image:getDebugInfo',    async (_, request: ImageDebugInfoRequest): Promise<ImageDebugInfoResult> => {
+    'image:getDebugInfo',
+    async (_, request: ImageDebugInfoRequest): Promise<ImageDebugInfoResult> => {
       try {
         const service = ensureImageDecryptService()
         const self = chat.getSelfAccountInfo()
@@ -2003,7 +2005,9 @@ app.whenReady().then(async () => {
 
         // 复用真实选图逻辑；找不到就是 null，不根据文件名猜。
         const filePath = service
-          ? service.findImageFile(md5 || undefined, datName || undefined, { sessionId: sessionId || undefined })
+          ? service.findImageFile(md5 || undefined, datName || undefined, {
+              sessionId: sessionId || undefined
+            })
           : null
         const quality = filePath ? toDebugQuality(imageFileQuality(filePath)) : 'unknown'
         const relativePath =
@@ -3466,6 +3470,50 @@ app.whenReady().then(async () => {
   ipcMain.handle('wechat-personal:getMacSendRuntimeAvailability', () =>
     macWechatRuntimeManager.getSendRuntimeAvailability()
   )
+  ipcMain.handle('wechat-personal:startMacSendRuntime', () => {
+    if (process.platform !== 'darwin') throw new Error('仅 macOS 支持微信发送组件')
+    return macWechatRuntimeManager.startAfterResidualCleanup()
+  })
+  ipcMain.handle('wechat-personal:listMacResidualProcesses', () =>
+    inspectMacWechatResidualProcesses()
+  )
+  ipcMain.handle('wechat-personal:cleanupMacResidualProcesses', async (_, pids: unknown) => {
+    if (process.platform !== 'darwin') throw new Error('仅 macOS 支持清理微信残留进程')
+    if (!Array.isArray(pids)) throw new Error('清理目标无效')
+    const requestedTargets = pids.filter(
+      (target): target is { pid: number; confirmationToken: string } =>
+        Boolean(target) &&
+        typeof target === 'object' &&
+        Number.isSafeInteger((target as { pid?: unknown }).pid) &&
+        typeof (target as { confirmationToken?: unknown }).confirmationToken === 'string'
+    )
+    if (requestedTargets.length === 0) throw new Error('没有确认的清理目标')
+    const currentTargets = await inspectMacWechatResidualProcesses()
+    const confirmedTargets = requestedTargets.filter((requested) =>
+      currentTargets.some(
+        (current) =>
+          current.pid === requested.pid && current.confirmationToken === requested.confirmationToken
+      )
+    )
+    if (confirmedTargets.length === 0) {
+      return { stopped: [], remaining: currentTargets }
+    }
+    let runtimeStopped = false
+    const result = await cleanupMacWechatResidualProcesses(
+      confirmedTargets,
+      undefined,
+      (targets) => {
+        if (
+          macWechatRuntimeManager.getPort() === 4290 &&
+          targets.some((target) => target.targets.includes('port_4290'))
+        ) {
+          macWechatRuntimeManager.prepareForResidualCleanup()
+          runtimeStopped = true
+        }
+      }
+    )
+    return { ...result, runtimeStopped }
+  })
   ipcMain.handle('wechat-personal:refreshMacLicense', () =>
     macWechatRuntimeManager.refreshMacLicense()
   )

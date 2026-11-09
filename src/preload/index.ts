@@ -15,7 +15,12 @@ import type {
   UpdateGeneratedReportTemplateRequest
 } from '../shared/report-history'
 import type { MacLicenseStatus } from '../shared/personal-wechat-mac-license'
-import type { MacWechatSendRuntimeAvailabilityResult } from '../shared/personal-wechat-mac-runtime'
+import type {
+  MacWechatResidualCleanupResult,
+  MacWechatResidualProcess,
+  MacWechatRuntimeSnapshot,
+  MacWechatSendRuntimeAvailabilityResult
+} from '../shared/personal-wechat-mac-runtime'
 import type {
   AIChatRequestOptions,
   AiSearchExternalAuthorizationRequest,
@@ -591,6 +596,14 @@ const api = {
     ipcRenderer.invoke('wechat-personal:getMacLicenseStatus'),
   getMacSendRuntimeAvailability: (): Promise<MacWechatSendRuntimeAvailabilityResult> =>
     ipcRenderer.invoke('wechat-personal:getMacSendRuntimeAvailability'),
+  startMacSendRuntime: (): Promise<MacWechatRuntimeSnapshot> =>
+    ipcRenderer.invoke('wechat-personal:startMacSendRuntime'),
+  listMacWechatResidualProcesses: (): Promise<MacWechatResidualProcess[]> =>
+    ipcRenderer.invoke('wechat-personal:listMacResidualProcesses'),
+  cleanupMacWechatResidualProcesses: (
+    targets: Array<Pick<MacWechatResidualProcess, 'pid' | 'confirmationToken'>>
+  ): Promise<MacWechatResidualCleanupResult> =>
+    ipcRenderer.invoke('wechat-personal:cleanupMacResidualProcesses', targets),
   refreshMacLicense: (): Promise<MacLicenseStatus> =>
     ipcRenderer.invoke('wechat-personal:refreshMacLicense'),
   getPersonalWechatSendCapability: (): Promise<PersonalWechatSendCapability> =>

@@ -97,6 +97,63 @@ describe('personal WeChat unavailable product state', () => {
     expect(screen.queryByText(/manifest|dylib|runtime missing|文件缺失/i)).not.toBeInTheDocument()
   })
 
+  it('describes a ready runtime separately from pending send capability initialization', () => {
+    const boundStatus: PersonalWechatSenderStatus = {
+      ...unavailableStatus,
+      state: 'hook_not_ready',
+      wechatRunning: true,
+      wechatPid: 4668,
+      boundWechatPid: 4668,
+      endpointReady: true,
+      runtimeReady: true,
+      attachReady: true,
+      baseAddressReady: true,
+      message: '已绑定，等待发送 hook 就绪'
+    }
+
+    render(
+      <PersonalWechatSetupGuide
+        senderStatus={boundStatus}
+        binding={false}
+        detecting={false}
+        sessionBound
+        showBindAction={false}
+      />
+    )
+
+    expect(screen.getByText('微信已绑定，正在等待发送能力完成初始化…')).toBeVisible()
+    expect(screen.queryByText('正在等待发送运行时完成初始化…')).not.toBeInTheDocument()
+  })
+
+  it('does not say the runtime is still initializing when it is ready but message capabilities are pending', () => {
+    const boundButInitializing: PersonalWechatSenderStatus = {
+      ...unavailableStatus,
+      state: 'hook_not_ready',
+      wechatRunning: true,
+      wechatPid: 4668,
+      boundWechatPid: 4668,
+      endpointReady: true,
+      runtimeReady: true,
+      attachReady: true,
+      baseAddressReady: true,
+      message: '已绑定，等待发送 hook 就绪'
+    }
+
+    render(
+      <PersonalWechatSetupGuide
+        senderStatus={boundButInitializing}
+        binding={false}
+        detecting={false}
+        sessionBound
+        showBindAction={false}
+        showBindingInstructionsInInitialization
+      />
+    )
+
+    expect(screen.getByText('微信已绑定，正在等待发送能力完成初始化…')).toBeVisible()
+    expect(screen.queryByText('正在等待发送运行时完成初始化…')).not.toBeInTheDocument()
+  })
+
   it('shows the disabled binding flow on the settings page', async () => {
     render(<PersonalWechatSendPage onNotice={vi.fn()} />)
 
@@ -206,12 +263,17 @@ describe('personal WeChat unavailable product state', () => {
     const copyButton = await screen.findByRole('button', { name: '复制完整设备 ID' })
     fireEvent.click(copyButton)
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(deviceId))
-    expect(await screen.findByText('授权已过期')).toBeVisible()
+    expect(await screen.findByText('授权状态需刷新')).toBeVisible()
+    expect(
+      screen.getByText('当前授权状态与到期日不一致，请点击「重新检测授权」更新状态。')
+    ).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: '重新检测授权' }))
     expect(await screen.findByRole('button', { name: '检测中…' })).toBeDisabled()
     expect(copyButton).toBeEnabled()
     resolveRefresh?.({ ...licenseStatus, deviceId, state: 'valid', authorized: true })
+    expect(await screen.findByText('设备已授权')).toBeVisible()
+    expect(screen.queryByText('授权状态需刷新')).not.toBeInTheDocument()
   })
 
   it('does not query or render License when the send runtime is unavailable', async () => {
