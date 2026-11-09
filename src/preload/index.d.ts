@@ -239,6 +239,8 @@ declare global {
       downloadAppUpdate: () => Promise<AppUpdateCheckResult>
       installAppUpdate: () => Promise<AppUpdateInstallResult>
       openAppUpdateDownloadPage: () => Promise<AppUpdateOpenDownloadPageResult>
+      getIgnoredUpdateVersion: () => Promise<string>
+      setIgnoredUpdateVersion: (version: string | null) => Promise<string>
       onAppUpdateState: (callback: (state: AppUpdateState) => void) => () => void
       getCacheSummary: () => Promise<CacheSummary>
       clearCache: (scope: CacheClearScope) => Promise<CacheSummary>

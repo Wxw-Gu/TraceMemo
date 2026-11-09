@@ -16,13 +16,18 @@ const api = {
     updateListener = listener
     return vi.fn()
   }),
-  revealAppLog: vi.fn()
+  revealAppLog: vi.fn(),
+  getIgnoredUpdateVersion: vi.fn(async () => ''),
+  setIgnoredUpdateVersion: vi.fn(async (version: string | null) => version ?? '')
 }
 
 describe('app update UI', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     updateListener = undefined
+    // clearAllMocks 不清实现，逐个用例重设，避免上一条的"已忽略版本"串到下一题。
+    api.getIgnoredUpdateVersion.mockResolvedValue('')
+    api.setIgnoredUpdateVersion.mockImplementation(async (version: string | null) => version ?? '')
     Object.defineProperty(window, 'api', { configurable: true, value: api })
   })
 
@@ -51,6 +56,93 @@ describe('app update UI', () => {
       expect(
         screen.queryByRole('alertdialog', { name: '发现新版本 v2.0.0' })
       ).not.toBeInTheDocument()
+    )
+  })
+
+  it('stays quiet on startup for a version the user already ignored', async () => {
+    api.getAppUpdateState.mockResolvedValue({
+      status: 'available',
+      currentVersion: '1.9.0',
+      delivery: 'automatic',
+      version: '2.0.0',
+      source: 'startup',
+      isSimulation: true
+    })
+    api.getIgnoredUpdateVersion.mockResolvedValue('2.0.0')
+
+    render(<AppUpdatePrompt onDownloadStart={vi.fn()} onNotice={vi.fn()} />)
+
+    await waitFor(() => expect(api.getIgnoredUpdateVersion).toHaveBeenCalled())
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(screen.queryByRole('alertdialog', { name: '发现新版本 v2.0.0' })).not.toBeInTheDocument()
+  })
+
+  it('prompts again once a newer version supersedes the ignored one', async () => {
+    api.getAppUpdateState.mockResolvedValue({
+      status: 'available',
+      currentVersion: '1.9.0',
+      delivery: 'automatic',
+      version: '2.1.0',
+      source: 'startup',
+      isSimulation: true
+    })
+    api.getIgnoredUpdateVersion.mockResolvedValue('2.0.0')
+
+    render(<AppUpdatePrompt onDownloadStart={vi.fn()} onNotice={vi.fn()} />)
+
+    await screen.findByRole('alertdialog', { name: '发现新版本 v2.1.0' })
+  })
+
+  it('persists the ignored version and closes the prompt immediately', async () => {
+    const user = userEvent.setup()
+    api.getAppUpdateState.mockResolvedValue({
+      status: 'available',
+      currentVersion: '1.9.0',
+      delivery: 'automatic',
+      version: '2.0.0',
+      source: 'startup',
+      isSimulation: true
+    })
+    const onNotice = vi.fn()
+
+    render(<AppUpdatePrompt onDownloadStart={vi.fn()} onNotice={onNotice} />)
+
+    await screen.findByRole('alertdialog', { name: '发现新版本 v2.0.0' })
+    await user.click(screen.getByRole('button', { name: '忽略此版本' }))
+
+    expect(api.setIgnoredUpdateVersion).toHaveBeenCalledWith('2.0.0')
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('alertdialog', { name: '发现新版本 v2.0.0' })
+      ).not.toBeInTheDocument()
+    )
+    expect(onNotice).toHaveBeenCalledWith(expect.stringContaining('v2.0.0'))
+    expect(api.downloadAppUpdate).not.toHaveBeenCalled()
+  })
+
+  it('restores the startup prompt from About', async () => {
+    const user = userEvent.setup()
+    api.getAppUpdateState.mockResolvedValue({
+      status: 'up-to-date',
+      currentVersion: '2.2.2',
+      delivery: 'release-page',
+      message: '已是最新版本'
+    })
+    api.getIgnoredUpdateVersion.mockResolvedValue('2.2.3')
+    api.setIgnoredUpdateVersion.mockResolvedValue('')
+    const onNotice = vi.fn()
+
+    render(<AboutPage onNotice={onNotice} />)
+
+    await screen.findByText('已忽略 v2.2.3 的更新提示')
+    await user.click(screen.getByRole('button', { name: '恢复提示' }))
+
+    expect(api.setIgnoredUpdateVersion).toHaveBeenCalledWith(null)
+    expect(onNotice).toHaveBeenCalledWith('已恢复启动时的更新提示')
+    await waitFor(() =>
+      expect(screen.queryByText('已忽略 v2.2.3 的更新提示')).not.toBeInTheDocument()
     )
   })
 

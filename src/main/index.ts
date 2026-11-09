@@ -108,6 +108,7 @@ import {
   saveSettings,
   updateSettings,
   getSettingsPath,
+  normalizeSkippedUpdateVersion,
   AppSettings,
   validateDbRoot
 } from './services/settings-store'
@@ -1473,6 +1474,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('app-update:download', () => appUpdateService.download())
   ipcMain.handle('app-update:install', () => appUpdateService.install())
   ipcMain.handle('app-update:openDownloadPage', () => appUpdateService.openDownloadPage())
+  ipcMain.handle('app-update:getIgnoredVersion', () => loadSettings().skippedUpdateVersion)
+  /**
+   * 记录 / 清除「忽略此版本」。
+   *
+   * 传 null 或非法版本号 = 清除。校验放在主进程：渲染层传来的字符串不可信，
+   * 一个脏值会让「忽略」永远命中不了同一条记录，表现为每次都弹。
+   */
+  ipcMain.handle('app-update:setIgnoredVersion', (_, version: unknown) => {
+    const normalized = normalizeSkippedUpdateVersion(version)
+    saveSettings({ ...loadSettings(), skippedUpdateVersion: normalized })
+    return normalized
+  })
   appUpdateService.scheduleStartupCheck()
   ipcMain.handle('cache:getSummary', () => getCacheSummary())
   ipcMain.handle('cache:openKnowledgeDirectory', () => openKnowledgeDirectory())

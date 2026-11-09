@@ -142,6 +142,11 @@ const api = {
   downloadAppUpdate: () => ipcRenderer.invoke('app-update:download'),
   installAppUpdate: () => ipcRenderer.invoke('app-update:install'),
   openAppUpdateDownloadPage: () => ipcRenderer.invoke('app-update:openDownloadPage'),
+  getIgnoredUpdateVersion: (): Promise<string> =>
+    ipcRenderer.invoke('app-update:getIgnoredVersion'),
+  /** 传 `null` 清除忽略记录并恢复启动提示；返回写入后的值（非法版本会被收敛成空串）。 */
+  setIgnoredUpdateVersion: (version: string | null): Promise<string> =>
+    ipcRenderer.invoke('app-update:setIgnoredVersion', version),
   onAppUpdateState: (callback: (state: AppUpdateState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: AppUpdateState): void =>
       callback(state)
