@@ -166,7 +166,7 @@ function summarizeDeviceId(deviceId: string): string {
 }
 
 /** 展示当前设备的授权状态，并提供刷新与复制设备 ID 的操作。 */
-export function MacProLicenseCard({
+export function MacNativeLicenseCard({
   onNotice,
   onStatusChange
 }: {
@@ -231,16 +231,16 @@ export function MacProLicenseCard({
   }
 
   return (
-    <section className="settings-card mac-pro-license-card" aria-label="发送能力授权">
-      <header className="mac-pro-license-header">
+    <section className="settings-card mac-native-license-card" aria-label="发送能力授权">
+      <header className="mac-native-license-header">
         <strong>发送能力授权</strong>
-        <span className={`mac-pro-license-status ${macLicenseStatusTone(license)}`}>
+        <span className={`mac-native-license-status ${macLicenseStatusTone(license)}`}>
           {macLicenseStatusLabel(license)}
         </span>
       </header>
 
-      <div className="mac-pro-device-row">
-        <div className="mac-pro-device-value">
+      <div className="mac-native-device-row">
+        <div className="mac-native-device-value">
           <span>本机设备 ID</span>
           <code title={license.deviceId || undefined}>
             {license.deviceId ? summarizeDeviceId(license.deviceId) : '（尚未生成）'}
@@ -257,16 +257,16 @@ export function MacProLicenseCard({
         </Button>
       </div>
       {license.deviceId && (!license.authorized || licenseStateConflictsWithExpiry(license)) ? (
-        <p className="mac-pro-license-hint">{macLicenseStatusHint(license)}</p>
+        <p className="mac-native-license-hint">{macLicenseStatusHint(license)}</p>
       ) : null}
       {license.authorized && license.features.length > 0 ? (
-        <div className="mac-pro-license-features" aria-label="已开通功能">
+        <div className="mac-native-license-features" aria-label="已开通功能">
           {license.features.map((feature) => (
             <span key={feature}>{macLicenseFeatureLabel[feature] || feature}</span>
           ))}
         </div>
       ) : null}
-      <div className="mac-pro-license-meta">
+      <div className="mac-native-license-meta">
         <span>
           授权到期 <strong>{formatMacLicenseDate(license.licenseExpiresAt)}</strong>
         </span>
@@ -274,7 +274,7 @@ export function MacProLicenseCard({
           最近检测 <strong>{formatMacLicenseDateTime(license.lastCheckedAt)}</strong>
         </span>
       </div>
-      <div className="mac-pro-license-footer">
+      <div className="mac-native-license-footer">
         <span />
         <Button
           variant="outline"
@@ -852,7 +852,10 @@ export function PersonalWechatSendPage({
                     {/* 发送能力授权卡片：仅在加载了发送组件的档位渲染。
                         OSS（runtime_missing）下不渲染，保证免费版不出现授权入口。 */}
                     {macRuntimeAvailability?.state === 'available' ? (
-                      <MacProLicenseCard onNotice={onNotice} onStatusChange={setMacLicenseStatus} />
+                      <MacNativeLicenseCard
+                        onNotice={onNotice}
+                        onStatusChange={setMacLicenseStatus}
+                      />
                     ) : null}
                     <section
                       className="settings-card mac-wechat-environment-card"

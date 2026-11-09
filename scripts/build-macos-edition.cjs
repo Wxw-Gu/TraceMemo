@@ -1,13 +1,15 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
-const { assertStagingTargetDoesNotExist, prepareEdition, validateStagedEdition } = require('./prepare-macos-edition.cjs')
+const {
+  assertStagingTargetDoesNotExist,
+  prepareEdition,
+  resolveEditionRoots,
+  validateStagedEdition
+} = require('./prepare-macos-edition.cjs')
 
 const ROOT = path.resolve(__dirname, '..')
-const STAGE_ROOT = path.join(ROOT, 'build', 'mac-staging')
-const OUTPUT_ROOT = path.join(ROOT, 'dist', 'mac')
 const EDITIONS = ['public', 'native']
-const CONFIG_ROOT = path.join(STAGE_ROOT, 'configs')
 const YAML = require('yaml')
 
 function run(args, env) {
@@ -82,7 +84,7 @@ function createBuilderConfig({ edition, stageRoot, buildOutput, outputRoot, appV
       artifactName:
         edition === 'native'
           ? `TraceMemo-${appVersion}-mac-arm64-native.dmg`
-          : `TraceMemo-${appVersion}-mac-arm64-public.dmg`
+          : `TraceMemo-${appVersion}-mac-arm64-oss.dmg`
     },
     npmRebuild: false
   }
@@ -90,20 +92,22 @@ function createBuilderConfig({ edition, stageRoot, buildOutput, outputRoot, appV
 
 function buildEdition(edition, options = {}) {
   if (!EDITIONS.includes(edition)) throw new Error('Usage: build-macos-edition.cjs <public|native>')
-  const stageRoot = path.join(STAGE_ROOT, edition)
-  const outputRoot = path.join(OUTPUT_ROOT, edition)
+  const roots = resolveEditionRoots()
+  const stageRoot = path.join(roots.stageRoot, edition)
+  const outputRoot = path.join(roots.outputRoot, edition)
+  const configRoot = path.join(roots.stageRoot, 'configs')
   if (fs.existsSync(stageRoot) && !options.reuseStaging) {
     throw new Error(`Refusing to overwrite existing build staging: ${stageRoot}`)
   }
   if (fs.existsSync(outputRoot)) throw new Error(`Refusing to overwrite existing build output: ${outputRoot}`)
-  if (fs.existsSync(CONFIG_ROOT)) throw new Error(`Refusing to overwrite existing build config directory: ${CONFIG_ROOT}`)
+  if (fs.existsSync(configRoot)) throw new Error(`Refusing to overwrite existing build config directory: ${configRoot}`)
   const preparation = fs.existsSync(stageRoot)
     ? Promise.resolve(validateStagedEdition(edition))
     : prepareEdition(edition)
   if (!preparation || typeof preparation.then !== 'function') throw new Error('Edition staging preparation did not return a Promise')
   return preparation.then(() => {
     const buildOutput = path.join(stageRoot, 'out')
-    const configPath = path.join(CONFIG_ROOT, `electron-builder-${edition}.yml`)
+    const configPath = path.join(configRoot, `electron-builder-${edition}.yml`)
     let ownsConfigRoot = false
     let buildSucceeded = false
     try {
@@ -125,7 +129,7 @@ function buildEdition(edition, options = {}) {
         ],
         env
       )
-      fs.mkdirSync(CONFIG_ROOT)
+      fs.mkdirSync(configRoot, { recursive: true })
       ownsConfigRoot = true
       const config = createBuilderConfig({
         edition,
@@ -147,7 +151,7 @@ function buildEdition(edition, options = {}) {
       )
       buildSucceeded = true
     } finally {
-      if (ownsConfigRoot) fs.rmSync(CONFIG_ROOT, { recursive: true, force: true })
+      if (ownsConfigRoot) fs.rmSync(configRoot, { recursive: true, force: true })
       if (!buildSucceeded && fs.existsSync(outputRoot)) {
         fs.rmSync(outputRoot, { recursive: true, force: true })
       }

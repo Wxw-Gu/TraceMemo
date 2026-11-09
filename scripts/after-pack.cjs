@@ -186,7 +186,21 @@ function validateMacEditionResources(runtimeResources, edition, platform) {
       throw new Error(`Missing FFmpeg license/build notice: ${relative}`)
     }
   }
+  const ffmpegLicenseHashes = marker.ffmpegLicenseSha256
+  if (!ffmpegLicenseHashes || typeof ffmpegLicenseHashes !== 'object') {
+    throw new Error('Mac build marker is missing FFmpeg license/source notice hashes')
+  }
+  for (const [relative, expected] of Object.entries(ffmpegLicenseHashes)) {
+    const notice = path.join(resources, relative)
+    if (!/^[a-f0-9]{64}$/.test(expected) || !existsSync(notice) ||
+      createHash('sha256').update(readFileSync(notice)).digest('hex') !== expected) {
+      throw new Error(`Packaged FFmpeg license/source notice hash mismatch: ${relative}`)
+    }
+  }
   if (edition === 'native') {
+    if (!readFileSync(host).includes(Buffer.from('/license/status'))) {
+      throw new Error('Native Host does not implement GET /license/status')
+    }
     for (const binary of [helper, host, runtimeDylib]) {
       if (!readBinaryArchitectures(binary).includes('arm64')) {
         throw new Error(`Native binary lacks arm64 architecture: ${binary}`)

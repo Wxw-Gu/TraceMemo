@@ -8,6 +8,12 @@ const { pipeline } = require('node:stream/promises')
 const { readBinaryArchitectures } = require('./binary-arch.cjs')
 
 const ROOT = path.resolve(__dirname, '..')
+function resolveEditionRoots(projectRoot = ROOT, env = process.env) {
+  return {
+    stageRoot: path.resolve(env.TRACEMEMO_MAC_STAGE_ROOT || path.join(projectRoot, 'build', 'mac-staging')),
+    outputRoot: path.resolve(env.TRACEMEMO_MAC_OUTPUT_ROOT || path.join(projectRoot, 'dist', 'mac'))
+  }
+}
 const WCDB_DIST_ROOT = resolveWcdbDistRoot()
 const NATIVE_DIST_ROOT =
   process.env.TRACEMEMO_NATIVE_DIST_ROOT || path.resolve(ROOT, '..', 'native-runtime-dist')
@@ -121,6 +127,12 @@ function assertArm64(filePath, label) {
   }
 }
 
+function validateLicenseStatusRoute(hostPath) {
+  if (!fs.readFileSync(hostPath).includes(Buffer.from('/license/status'))) {
+    throw new Error(`Native Host does not implement GET /license/status: ${hostPath}`)
+  }
+}
+
 function validateWcdbPair(apiPath, dependencyPath, profile) {
   if (!fs.existsSync(apiPath) || !fs.existsSync(dependencyPath)) {
     throw new Error(`Missing ${profile} WCDB library pair: ${apiPath}`)
@@ -227,6 +239,7 @@ function validateNativeBundle(bundleRoot, files) {
   const runtimeDylib = bySuffix('/runtime/libtmwechat.dylib')
   const runtimeManifestPath = bySuffix('/runtime/runtime-manifest.json')
   const licenseDylib = bySuffix('/runtime/libtmlicense.dylib')
+  validateLicenseStatusRoute(host)
   validateWcdbPair(api, companion, 'native')
   for (const [binary, label] of [
     [helper, 'WCDB helper'],
@@ -312,9 +325,17 @@ function copyPublicResources(sourceResources, destination) {
 }
 
 function copyFfmpegLicenses(destination) {
-  const packageRoot = path.dirname(require.resolve('ffmpeg-static/package.json'))
-  for (const [sourceName, destinationRelative] of FFMPEG_LICENSE_FILES) {
-    const source = path.join(packageRoot, sourceName)
+  const suppliedLicenseRoot = String(process.env.TRACEMEMO_FFMPEG_LICENSE_DIR || '').trim()
+  const packageRoot = suppliedLicenseRoot || path.dirname(require.resolve('ffmpeg-static/package.json'))
+  const files = suppliedLicenseRoot
+    ? [
+        ['LICENSE', 'LICENSE', 'licenses/ffmpeg-static/LICENSE'],
+        ['FFMPEG-LICENSE.txt', 'FFMPEG-LICENSE.txt', 'licenses/ffmpeg-static/FFMPEG-LICENSE.txt'],
+        ['FFMPEG-BUILD-INFO.txt', 'FFMPEG-BUILD-INFO.txt', 'licenses/ffmpeg-static/FFMPEG-BUILD-INFO.txt']
+      ]
+    : FFMPEG_LICENSE_FILES.map(([source, relative]) => [source, source, relative])
+  for (const [sourceName, inputName, destinationRelative] of files) {
+    const source = path.join(packageRoot, inputName)
     if (!fs.existsSync(source)) throw new Error(`Missing FFmpeg license/source notice: ${source}`)
     const target = path.join(destination, destinationRelative)
     fs.mkdirSync(path.dirname(target), { recursive: true })
@@ -389,8 +410,9 @@ function assertNoProtectedInputs(root) {
 async function prepareEdition(edition) {
   if (edition !== 'public' && edition !== 'native')
     throw new Error('Usage: prepare-macos-edition.cjs <public|native>')
-  const stageRoot = path.join(ROOT, 'build', 'mac-staging', edition)
-  const outputRoot = path.join(ROOT, 'dist', 'mac', edition)
+  const roots = resolveEditionRoots()
+  const stageRoot = path.join(roots.stageRoot, edition)
+  const outputRoot = path.join(roots.outputRoot, edition)
   assertStagingTargetDoesNotExist(stageRoot, outputRoot)
 
   const sourceResources = path.join(ROOT, 'resources')
@@ -407,7 +429,13 @@ async function prepareEdition(edition) {
     const marker = {
       profile: edition,
       appVersion: require(path.join(ROOT, 'package.json')).version,
-      ffmpegSha256
+      ffmpegSha256,
+      ffmpegLicenseSource: process.env.TRACEMEMO_FFMPEG_LICENSE_DIR
+        ? 'provided verified license files'
+        : 'ffmpeg-static package',
+      ffmpegLicenseSha256: Object.fromEntries(
+        FFMPEG_LICENSE_FILES.map(([, relative]) => [relative, sha256(path.join(stagedResources, relative))])
+      )
     }
     if (edition === 'public') {
       const api = path.join(WCDB_DIST_ROOT, 'libwcdb_api.dylib')
@@ -470,7 +498,7 @@ async function prepareEdition(edition) {
 function validateStagedEdition(edition) {
   if (edition !== 'public' && edition !== 'native')
     throw new Error('Usage: validate staged edition <public|native>')
-  const resources = path.join(ROOT, 'build', 'mac-staging', edition, 'resources')
+  const resources = path.join(resolveEditionRoots().stageRoot, edition, 'resources')
   const markerPath = path.join(resources, 'tracememo-build.json')
   if (!fs.existsSync(markerPath)) throw new Error(`Missing staged edition marker: ${markerPath}`)
   const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'))
@@ -487,6 +515,13 @@ function validateStagedEdition(edition) {
     throw new Error('Staged FFmpeg SHA-256 does not match the edition marker')
   }
   assertArm64(ffmpeg, 'Staged FFmpeg')
+  for (const [, relative] of FFMPEG_LICENSE_FILES) {
+    const licensePath = path.join(resources, relative)
+    const expected = marker.ffmpegLicenseSha256?.[relative]
+    if (!fs.existsSync(licensePath) || !/^[a-f0-9]{64}$/.test(expected || '') || sha256(licensePath) !== expected) {
+      throw new Error(`Staged FFmpeg license/source notice hash mismatch: ${relative}`)
+    }
+  }
   const api = path.join(resources, 'wcdb', 'macos', 'arm64', 'libwcdb_api.dylib')
   const companion = path.join(resources, 'wcdb', 'macos', 'arm64', 'libWCDB.dylib')
   validateWcdbPair(api, companion, edition)
@@ -608,6 +643,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  resolveEditionRoots,
+  validateLicenseStatusRoute,
   assertNoProtectedInputs,
   assertStagingTargetDoesNotExist,
   copyPublicResources,
