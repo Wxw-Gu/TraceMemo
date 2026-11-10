@@ -714,6 +714,13 @@ describe('send runtime packaging boundary', () => {
       expect(command).not.toContain('electron-builder.send-runtime.yml')
       expect(command).not.toContain('TM_SEND_RUNTIME_BUILD')
     }
+
+    expect(pkg.scripts['release:mac:arm64']).toContain(
+      '--config.directories.output=dist/release/mac-arm64'
+    )
+    expect(pkg.scripts['release:mac:x64']).toContain(
+      '--config.directories.output=dist/release/mac-x64'
+    )
   })
 
   it('excludes the send runtime in the default builder config', () => {
