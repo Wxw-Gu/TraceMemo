@@ -6,7 +6,7 @@ import {
   isReady,
   listContacts,
   listContactsAsync,
-  listMessages,
+  listMessagesAsync,
   getGroupSnapshot,
   listRecentChat,
   resolveMd5,
@@ -433,7 +433,7 @@ const routes: Record<string, RouteHandler> = {
     sendJson(res, 200, { count: items.length, items })
   }),
 
-  '/api/v1/chatlog': withMethods(['GET'], ({ res, url }) => {
+  '/api/v1/chatlog': withMethods(['GET'], async ({ res, url }) => {
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
     const talker = url.searchParams.get('talker')
     if (!talker) return sendError(res, 400, '缺少必要参数 talker')
@@ -462,7 +462,15 @@ const routes: Record<string, RouteHandler> = {
       }
     }
 
-    const messages = listMessages(resolved.md5, startTime, endTime)
+    // A quiet time window can fall back to a long native history scan. Use the
+    // asynchronous, time-filtered shard reader so it cannot block /health or the UI.
+    const messages = await listMessagesAsync(
+      resolved.md5,
+      startTime,
+      endTime,
+      undefined,
+      String(res.getHeader('X-Request-Id') || '')
+    )
     sendJson(res, 200, {
       contact: resolved,
       query: { talker, time: timeParam, startTime, endTime },
