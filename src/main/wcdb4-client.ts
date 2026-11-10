@@ -1457,7 +1457,14 @@ export class Wcdb4Client {
       `[${requestId}] WCDB message source decision cursorSatisfiesLimit=${cursorSatisfiesLimit} tableScanExecuted=${tableScanExecuted} cursorRows=${cursorMessages.length} tableRows=${tableMessages.length}`
     )
     const mergeStartedAt = Date.now()
-    const messages = this.mergeMessageRows(cursorMessages, tableMessages, maxRows)
+    const recoveredMessages = this.recallJournalEnabled
+      ? await this.readRecallJournalAsync(username, startTime, endTime)
+      : []
+    const messages = this.mergeMessageRows(
+      this.mergeMessageRows(cursorMessages, tableMessages),
+      recoveredMessages,
+      maxRows
+    )
     wcdbDebugLog(
       `[${requestId}] WCDB mergeMessageRows cost=${Date.now() - mergeStartedAt}ms finalRows=${messages.length}`
     )
@@ -1906,14 +1913,14 @@ export class Wcdb4Client {
     limit?: number,
     requestId = 'NO-REQUEST'
   ): Promise<Wcdb4Message[]> {
-    if (!this.wcdbExecQuery) return []
+    if (!this.wcdbExecQuery) throw new Error('当前 WCDB 数据服务不支持消息分片查询')
 
     const startedAt = Date.now()
     wcdbDebugLog(`[${requestId}] WCDB table scan start username=${username}`)
     let tables: Wcdb4MessageStore[] = []
     try {
       const statsStartedAt = Date.now()
-      tables = await this.listMessageStoresAsync(username)
+      tables = await this.listMessageStoresAsync(username, true)
       wcdbDebugLog(
         `[${requestId}] WCDB get_message_table_stats end stores=${tables.length} cost=${Date.now() - statsStartedAt}ms`
       )
@@ -1935,32 +1942,37 @@ export class Wcdb4Client {
     const order = limit ? 'DESC' : 'ASC'
 
     const allRows: Record<string, unknown>[] = []
-    let successfulTables = 0
     for (const table of tables) {
+      let offset = 0
       try {
-        const sql = `${this.messageTableSelect(table)}${whereSql} ORDER BY "create_time" ${order} LIMIT ${rowLimit}`
-        const queryStartedAt = Date.now()
-        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
-          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
-          'message',
-          table.dbPath,
-          sql
-        )
-        wcdbDebugLog(
-          `[${requestId}] WCDB exec_query table=${table.tableName} db=${table.dbPath} rows=${Array.isArray(rows) ? rows.length : 0} cost=${Date.now() - queryStartedAt}ms`
-        )
-        successfulTables += 1
-        if (Array.isArray(rows)) allRows.push(...rows)
+        while (true) {
+          // An omitted limit means the complete range, not the first 5,000 rows.
+          // Stable ordering also keeps equal-timestamp messages across pages.
+          const sql = `${this.messageTableSelect(table)}${whereSql} ORDER BY "create_time" ${order}, "local_id" ${order} LIMIT ${rowLimit} OFFSET ${offset}`
+          const queryStartedAt = Date.now()
+          const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+            this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+            'message',
+            table.dbPath,
+            sql
+          )
+          if (!Array.isArray(rows)) throw new Error('消息分片返回格式无效')
+          wcdbDebugLog(
+            `[${requestId}] WCDB exec_query table=${table.tableName} db=${table.dbPath} rows=${rows.length} offset=${offset} cost=${Date.now() - queryStartedAt}ms`
+          )
+          allRows.push(...rows)
+          if (limit || rows.length < rowLimit) break
+          offset += rowLimit
+        }
       } catch (error) {
         console.warn(
           `[WCDB4] async message table scan failed username=${username} db=${table.dbPath} table=${table.tableName}:`,
           error
         )
+        // A partial history must not look like a successful complete range: callers
+        // may persist a cursor after this request and permanently skip unread rows.
+        throw new Error('历史消息分片读取失败，请检查数据目录或微信数据版本')
       }
-    }
-
-    if (tables.length > 0 && successfulTables === 0) {
-      throw new Error('历史消息分片均读取失败，请检查数据目录或微信数据版本')
     }
 
     const result = this.finalizeMessages(username, allRows, startTime, endTime, limit)
@@ -2144,7 +2156,10 @@ export class Wcdb4Client {
     return stores.length > 0 ? stores : this.listFallbackMessageStores(username)
   }
 
-  private async listMessageStoresAsync(username: string): Promise<Wcdb4MessageStore[]> {
+  private async listMessageStoresAsync(
+    username: string,
+    strict = false
+  ): Promise<Wcdb4MessageStore[]> {
     let stores: Wcdb4MessageStore[] = []
     if (this.wcdbGetMessageTableStats) {
       try {
@@ -2152,12 +2167,13 @@ export class Wcdb4Client {
           this.wcdbGetMessageTableStats as unknown as KoffiAsyncFunction,
           username
         )
+        if (strict && !Array.isArray(rows)) throw new Error('消息分片目录返回格式无效')
         stores = this.parseMessageStores(rows)
       } catch (error) {
         if (!username.startsWith('gh_')) throw error
       }
     }
-    return stores.length > 0 ? stores : this.listFallbackMessageStoresAsync(username)
+    return stores.length > 0 ? stores : this.listFallbackMessageStoresAsync(username, strict)
   }
 
   private parseMessageStores(rows: Record<string, unknown>[]): Wcdb4MessageStore[] {
@@ -2169,7 +2185,7 @@ export class Wcdb4Client {
       .filter((row) => row.tableName && row.dbPath)
   }
 
-  private getMessageDatabasePaths(username: string): string[] {
+  private getMessageDatabasePaths(username: string, strict = false): string[] {
     // Native shard discovery can return no stores on Windows even when SQL reads work.
     // Enumerate only canonical databases; sync-conflict copies are not message shards.
     const messageRoot = path.join(this.dbStoragePath, 'message')
@@ -2182,7 +2198,8 @@ export class Wcdb4Client {
         .filter((name) => pattern.test(name))
         .sort()
         .map((name) => path.join(messageRoot, name))
-    } catch {
+    } catch (error) {
+      if (strict) throw error
       return []
     }
   }
@@ -2218,12 +2235,18 @@ export class Wcdb4Client {
     return stores
   }
 
-  private async listFallbackMessageStoresAsync(username: string): Promise<Wcdb4MessageStore[]> {
-    if (!this.wcdbExecQuery) return []
+  private async listFallbackMessageStoresAsync(
+    username: string,
+    strict = false
+  ): Promise<Wcdb4MessageStore[]> {
+    if (!this.wcdbExecQuery) {
+      if (strict) throw new Error('当前 WCDB 数据服务不支持消息分片查询')
+      return []
+    }
     const tableName = `Msg_${this.md5(username)}`
     const escapedTableName = tableName.replace(/'/g, "''")
     const stores: Wcdb4MessageStore[] = []
-    for (const dbPath of this.getMessageDatabasePaths(username)) {
+    for (const dbPath of this.getMessageDatabasePaths(username, strict)) {
       try {
         const rows = await this.callJsonAsync<Record<string, unknown>[]>(
           this.wcdbExecQuery as unknown as KoffiAsyncFunction,
@@ -2231,6 +2254,7 @@ export class Wcdb4Client {
           dbPath,
           `SELECT name FROM sqlite_master WHERE type='table' AND (name='${escapedTableName}' OR name LIKE 'Name2Id%') ORDER BY name DESC`
         )
+        if (strict && !Array.isArray(rows)) throw new Error('消息分片目录返回格式无效')
         if (Array.isArray(rows) && rows.some((row) => row.name === tableName)) {
           const senderTableName = rows.find((row) => /^Name2Id/i.test(String(row.name)))?.name
           stores.push({
@@ -2239,7 +2263,8 @@ export class Wcdb4Client {
             ...(senderTableName ? { senderTableName: String(senderTableName) } : {})
           })
         }
-      } catch {
+      } catch (error) {
+        if (strict) throw error
         // A shard may use a different key; continue checking the other databases.
       }
     }
@@ -2336,6 +2361,35 @@ export class Wcdb4Client {
         recoveredRows.push(...rows)
       } catch {
         // The journal is optional until installation has completed for this store.
+      }
+    }
+    return this.finalizeMessages(username, recoveredRows, startTime, endTime)
+  }
+
+  private async readRecallJournalAsync(
+    username: string,
+    startTime?: number,
+    endTime?: number
+  ): Promise<Wcdb4Message[]> {
+    const recoveredRows: Record<string, unknown>[] = []
+    for (const store of await this.listMessageStoresAsync(username)) {
+      try {
+        const begin = this.normalizeTimestamp(startTime || 0)
+        const end = this.normalizeTimestamp(endTime || 0)
+        const where = [
+          `"_wxe_source_table" = '${store.tableName.replace(/'/g, "''")}'`,
+          begin > 0 ? `"create_time" >= ${begin}` : '',
+          end > 0 ? `"create_time" <= ${end}` : ''
+        ].filter(Boolean)
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          store.dbPath,
+          `SELECT *, 1 AS "_wxe_recovered" FROM ${this.quoteSqlIdentifier(this.recallJournalTableName(store.tableName))} WHERE ${where.join(' AND ')} ORDER BY "create_time" ASC LIMIT 500`
+        )
+        if (Array.isArray(rows)) recoveredRows.push(...rows)
+      } catch {
+        // Like the sync path, the optional journal may not exist on every store.
       }
     }
     return this.finalizeMessages(username, recoveredRows, startTime, endTime)
@@ -2691,7 +2745,13 @@ export class Wcdb4Client {
     limit?: number,
     requestId = 'NO-REQUEST'
   ): Promise<Wcdb4Message[]> {
-    if (!this.wcdbOpenMessageCursor || !this.wcdbFetchMessageBatch) return []
+    if (
+      !this.wcdbOpenMessageCursor ||
+      !this.wcdbFetchMessageBatch ||
+      !this.wcdbCloseMessageCursor
+    ) {
+      throw new Error('当前 WCDB 数据服务不支持消息游标')
+    }
 
     const handle = this.ensureHandle()
     const batchSize = limit ? Math.min(500, limit) : 1000
@@ -2716,7 +2776,9 @@ export class Wcdb4Client {
     wcdbDebugLog(
       `[${requestId}] WCDB open_message_cursor end code=${openResult} cursor=${cursorOut[0]} cost=${Date.now() - openStartedAt}ms`
     )
-    if (openResult !== 0 || cursorOut[0] <= 0) return []
+    if (openResult !== 0 || cursorOut[0] <= 0) {
+      throw new Error(`无法打开消息游标：${openResult}`)
+    }
 
     const cursor = cursorOut[0]
     const allRows: Record<string, unknown>[] = []
@@ -2739,13 +2801,15 @@ export class Wcdb4Client {
           wcdbDebugLog(
             `[${requestId}] WCDB fetch_message_batch #${fetchIndex} code=${fetchResult} nativeCost=${fetchNativeCost}ms output=${Boolean(outJson[0])}`
           )
-          break
+          if (outJson[0]) this.wcdbFreeString?.(outJson[0])
+          throw new Error(`消息游标读取失败：${fetchResult}`)
         }
         try {
           const decodeStartedAt = Date.now()
           const json = this.koffi!.decode(outJson[0], 'char', -1)
           const batch = JSON.parse(json) as Record<string, unknown>[]
-          if (Array.isArray(batch)) allRows.push(...batch)
+          if (!Array.isArray(batch)) throw new Error('消息游标返回格式无效')
+          allRows.push(...batch)
           wcdbDebugLog(
             `[${requestId}] WCDB fetch_message_batch #${fetchIndex} code=${fetchResult} nativeCost=${fetchNativeCost}ms jsonCost=${Date.now() - decodeStartedAt}ms batchRows=${Array.isArray(batch) ? batch.length : 0} hasMore=${outHasMore[0]}`
           )
@@ -2757,7 +2821,11 @@ export class Wcdb4Client {
     } finally {
       const closeStartedAt = Date.now()
       try {
-        this.wcdbCloseMessageCursor?.(handle, cursor)
+        await this.callAsyncCode(
+          this.wcdbCloseMessageCursor as unknown as KoffiAsyncFunction,
+          handle,
+          cursor
+        )
       } catch {
         // Best-effort cursor cleanup.
       }
