@@ -76,7 +76,7 @@ export function PersonalWechatSetupGuide({
         <div>
           <span className="personal-wechat-eyebrow">首次使用</span>
           <h2>先准备好微信消息功能</h2>
-          <p>只需几步，TraceMemo 就能在当前会话中生成并发送语音。</p>
+          <p>只需几步，TraceMemo 就能具备微信消息发送能力。</p>
         </div>
         {allReady && <span className="personal-wechat-setup-complete">已完成</span>}
       </div>
@@ -176,7 +176,11 @@ export function PersonalWechatSetupGuide({
             )}
             {initializing && (
               <p className="personal-wechat-step-hint" role="status">
-                {detecting ? '正在初始化发送能力…' : '正在等待发送运行时完成初始化…'}
+                {detecting
+                  ? '正在初始化发送能力…'
+                  : runtimeReady
+                    ? '微信已绑定，正在等待发送能力完成初始化…'
+                    : '正在等待发送运行时完成初始化…'}
               </p>
             )}
             {senderStatus?.state === 'error' && (

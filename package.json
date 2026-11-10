@@ -1,6 +1,6 @@
 {
   "name": "tracememo",
-  "version": "2.5.2",
+  "version": "2.6.0",
   "packageManager": "pnpm@7.33.7",
   "description": "TraceMemo（迹忆）是一款本地优先、可追溯的 AI 微信知识与分析工作台。 原名 WechatExplorer，支持聊天记录搜索、知识库、微信群聊总结和 Agent 助手。",
   "keywords": [
@@ -52,7 +52,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "benchmark:knowledge": "vitest run --config vitest.knowledge-benchmark.config.ts --reporter=verbose",
     "benchmark:knowledge:capacity": "cross-env KNOWLEDGE_CAPACITY=1 vitest run --config vitest.knowledge-benchmark.config.ts --reporter=verbose",
-    "test:e2e:build": "electron-vite build",
+    "test:e2e:build": "cross-env TRACEMEMO_SCHEDULED_E2E=1 electron-vite build",
     "test:knowledge-worker": "pnpm test:e2e:build && node scripts/test-knowledge-worker.cjs",
     "test:e2e": "pnpm test:e2e:build && playwright test --grep-invert @visual",
     "test:visual": "pnpm test:e2e:build && playwright test tests/e2e/visual.spec.ts",
@@ -68,8 +68,8 @@
     "build:mac:x64": "npm run typecheck && npm run prepare:ffmpeg:mac:x64 && electron-vite build && electron-builder --config electron-builder.yml --mac --x64",
     "release": "npm run release:mac && npm run release:win",
     "release:mac": "npm run typecheck && electron-vite build && npm run release:mac:arm64 && npm run release:mac:x64",
-    "release:mac:arm64": "npm run prepare:ffmpeg:mac:arm64 && electron-builder --config electron-builder.yml --mac --arm64 --publish always",
-    "release:mac:x64": "npm run prepare:ffmpeg:mac:x64 && electron-builder --config electron-builder.yml --mac --x64 --publish always",
+    "release:mac:arm64": "npm run prepare:ffmpeg:mac:arm64 && electron-builder --config electron-builder.yml --mac --arm64 --publish always --config.directories.output=dist/release/mac-arm64",
+    "release:mac:x64": "npm run prepare:ffmpeg:mac:x64 && electron-builder --config electron-builder.yml --mac --x64 --publish always --config.directories.output=dist/release/mac-x64",
     "release:win": "npm run typecheck && npm run prepare:win-runtime && electron-vite build && electron-builder --config electron-builder.win.yml --win --x64 --publish always",
     "release:beta": "cross-env EP_PRE_RELEASE=true npm run release",
     "release:stable": "npm run release",

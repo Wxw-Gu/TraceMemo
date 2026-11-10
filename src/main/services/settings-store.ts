@@ -60,6 +60,21 @@ export interface AppSettings {
    * 设置页随时可以改回来。
    */
   closeAction: CloseAction
+  /**
+   * 用户点过「忽略此版本」的更新版本号（不含 `v` 前缀）。
+   *
+   * 只影响**启动时的自动弹窗**：同一版本不再打扰。手动检查更新与「设置 → 关于」
+   * 始终展示最新版本 —— 忽略的是提示，不是版本本身。空串表示没有忽略任何版本。
+   */
+  skippedUpdateVersion: string
+}
+
+/** 只接受 `1.2.3` / `1.2.3-beta.1` 这类版本号；其它输入一律按"没有忽略"处理。 */
+const UPDATE_VERSION_PATTERN = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][0-9A-Za-z.-]{1,32})?$/
+
+export function normalizeSkippedUpdateVersion(value: unknown): string {
+  const text = String(value ?? '').trim()
+  return UPDATE_VERSION_PATTERN.test(text) ? text : ''
 }
 
 function getDefaultDbRoot(): string {
@@ -145,7 +160,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   windowsWechatPort: '',
   reportImagePostfixText: '今日日报',
   queryAgentEnabled: true,
-  closeAction: 'ask'
+  closeAction: 'ask',
+  skippedUpdateVersion: ''
 }
 
 const SETTINGS_FILE = path.join(
@@ -192,9 +208,15 @@ export function loadSettings(): AppSettings {
       }
       // 关闭行为可能来自旧版本或手改过的 settings.json —— 非法值一律收敛回 `ask`。
       // 放任非法值会造成最难排查的一种表现：点关闭窗口什么也不发生。
-      if (cache.closeAction !== 'ask' && cache.closeAction !== 'tray' && cache.closeAction !== 'quit') {
+      if (
+        cache.closeAction !== 'ask' &&
+        cache.closeAction !== 'tray' &&
+        cache.closeAction !== 'quit'
+      ) {
         cache.closeAction = 'ask'
       }
+      // 版本号是拿来逐字比对的：脏值会让「忽略」永远命中不了同一条记录。
+      cache.skippedUpdateVersion = normalizeSkippedUpdateVersion(cache.skippedUpdateVersion)
       // 防撤回已下线（设置入口已隐藏）：历史版本可能把它持久化为 true。
       // 这里强制收敛为 false 并回写磁盘，确保旧的撤回监听与撤回日志不会继续运行。
       if (cache.recallProtectionEnabled || retiredKeepProcess !== undefined) {

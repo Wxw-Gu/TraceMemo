@@ -27,6 +27,8 @@ const fixture = vi.hoisted(() => ({
       }
     }
   ],
+  readMessages: vi.fn(),
+  syncReadMessages: vi.fn(),
   testSend: vi.fn(async () => ({ success: true, status: 'sent' }))
 }))
 
@@ -52,7 +54,8 @@ vi.mock('../../src/main/services/chat-service', () => ({
   isReady: () => true,
   listContacts: () => fixture.contacts,
   listContactsAsync: async () => fixture.contacts,
-  listMessages: () => fixture.chatlogMessages,
+  listMessages: fixture.syncReadMessages,
+  listMessagesAsync: fixture.readMessages,
   getGroupSnapshot: () => ({ members: [] }),
   listRecentChat: () => [],
   resolveMd5: () => fixture.contacts[0]
@@ -120,6 +123,8 @@ describe('Local API authentication', () => {
 
   beforeEach(() => {
     fixture.storageAvailable = true
+    fixture.readMessages.mockReset().mockImplementation(async () => fixture.chatlogMessages)
+    fixture.syncReadMessages.mockReset().mockImplementation(() => fixture.chatlogMessages)
   })
 
   afterEach(async () => {
@@ -135,7 +140,11 @@ describe('Local API authentication', () => {
     const health = await fetch(`${baseUrl(handle)}/api/v1/health`)
     expect(health.status).toBe(200)
     const healthBody = await health.json()
-    expect(healthBody).toMatchObject({ ok: true, service: 'TraceMemo Reader', version: 'test-version' })
+    expect(healthBody).toMatchObject({
+      ok: true,
+      service: 'TraceMemo Reader',
+      version: 'test-version'
+    })
     expect(JSON.stringify(healthBody)).not.toMatch(
       /token|authorization|wxid|databasePath|provider/i
     )
@@ -256,7 +265,10 @@ describe('Local API authentication', () => {
     expect((await fetch(path)).status).toBe(401)
     const response = await fetch(path, { headers: { Authorization: `Bearer ${VALID_TOKEN}` } })
     expect(response.status).toBe(200)
-    await expect(response.json()).resolves.toMatchObject({ version: 1, tools: { query_messages: { limitMax: 200 } } })
+    await expect(response.json()).resolves.toMatchObject({
+      version: 1,
+      tools: { query_messages: { limitMax: 200 } }
+    })
   })
 
   it.each([
@@ -320,6 +332,62 @@ describe('Local API authentication', () => {
     expect(response.headers.get('content-length')).toBe('4')
     expect((await response.arrayBuffer()).byteLength).toBe(0)
     expect(provider).toHaveBeenCalledOnce()
+  })
+
+  it('keeps health responsive while an authenticated chatlog read is pending', async () => {
+    const handle = await startFixtureServer()
+    let finishRead!: (messages: typeof fixture.chatlogMessages) => void
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    fixture.readMessages.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRead = resolve
+          markStarted()
+        })
+    )
+    const pending = fetch(
+      `${baseUrl(handle)}/api/v1/chatlog?talker=fixture&time=2026-11-10/07:51~2026-11-10/07:56`,
+      {
+        headers: {
+          Authorization: `Bearer ${VALID_TOKEN}`,
+          'X-Request-Id': 'fixture-reader-pending'
+        }
+      }
+    )
+    await started
+    try {
+      const health = await fetch(`${baseUrl(handle)}/api/v1/health`, {
+        signal: AbortSignal.timeout(2000)
+      })
+      expect(health.status).toBe(200)
+      expect(fixture.syncReadMessages).not.toHaveBeenCalled()
+      expect(fixture.readMessages).toHaveBeenCalledWith(
+        'fixture-md5',
+        expect.any(Number),
+        expect.any(Number),
+        undefined,
+        'fixture-reader-pending'
+      )
+    } finally {
+      finishRead([])
+      const response = await pending
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({ count: 0, messages: [] })
+    }
+  })
+
+  it('returns a failed chatlog read as an error instead of an empty success', async () => {
+    const handle = await startFixtureServer()
+    fixture.readMessages.mockRejectedValueOnce(new Error('fixture-shard-read-failed'))
+    const response = await fetch(`${baseUrl(handle)}/api/v1/chatlog?talker=fixture`, {
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` }
+    })
+    expect(response.status).toBe(500)
+    expect(await response.json()).not.toHaveProperty('messages')
+    expect(fixture.syncReadMessages).not.toHaveBeenCalled()
   })
 
   it('adds media metadata to chatlog while redacting image keys', async () => {

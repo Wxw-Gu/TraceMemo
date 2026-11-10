@@ -15,7 +15,12 @@ import type {
   UpdateGeneratedReportTemplateRequest
 } from '../shared/report-history'
 import type { MacLicenseStatus } from '../shared/personal-wechat-mac-license'
-import type { MacWechatSendRuntimeAvailabilityResult } from '../shared/personal-wechat-mac-runtime'
+import type {
+  MacWechatResidualCleanupResult,
+  MacWechatResidualProcess,
+  MacWechatRuntimeSnapshot,
+  MacWechatSendRuntimeAvailabilityResult
+} from '../shared/personal-wechat-mac-runtime'
 import type {
   AIChatRequestOptions,
   AiSearchExternalAuthorizationRequest,
@@ -137,6 +142,11 @@ const api = {
   downloadAppUpdate: () => ipcRenderer.invoke('app-update:download'),
   installAppUpdate: () => ipcRenderer.invoke('app-update:install'),
   openAppUpdateDownloadPage: () => ipcRenderer.invoke('app-update:openDownloadPage'),
+  getIgnoredUpdateVersion: (): Promise<string> =>
+    ipcRenderer.invoke('app-update:getIgnoredVersion'),
+  /** 传 `null` 清除忽略记录并恢复启动提示；返回写入后的值（非法版本会被收敛成空串）。 */
+  setIgnoredUpdateVersion: (version: string | null): Promise<string> =>
+    ipcRenderer.invoke('app-update:setIgnoredVersion', version),
   onAppUpdateState: (callback: (state: AppUpdateState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: AppUpdateState): void =>
       callback(state)
@@ -601,6 +611,14 @@ const api = {
     ipcRenderer.invoke('wechat-personal:getMacLicenseStatus'),
   getMacSendRuntimeAvailability: (): Promise<MacWechatSendRuntimeAvailabilityResult> =>
     ipcRenderer.invoke('wechat-personal:getMacSendRuntimeAvailability'),
+  startMacSendRuntime: (): Promise<MacWechatRuntimeSnapshot> =>
+    ipcRenderer.invoke('wechat-personal:startMacSendRuntime'),
+  listMacWechatResidualProcesses: (): Promise<MacWechatResidualProcess[]> =>
+    ipcRenderer.invoke('wechat-personal:listMacResidualProcesses'),
+  cleanupMacWechatResidualProcesses: (
+    targets: Array<Pick<MacWechatResidualProcess, 'pid' | 'confirmationToken'>>
+  ): Promise<MacWechatResidualCleanupResult> =>
+    ipcRenderer.invoke('wechat-personal:cleanupMacResidualProcesses', targets),
   refreshMacLicense: (): Promise<MacLicenseStatus> =>
     ipcRenderer.invoke('wechat-personal:refreshMacLicense'),
   getPersonalWechatSendCapability: (): Promise<PersonalWechatSendCapability> =>

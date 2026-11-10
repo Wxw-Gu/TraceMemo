@@ -50,7 +50,7 @@ test('SCHEDULED-REPORT-UI-01 creates a scheduled report rule from the automation
     await expect(page.getByRole('heading', { name: '新建定时日报' })).toBeVisible()
 
     // 编辑器是内嵌面板（不是弹窗），三段结构齐全。
-    for (const heading of ['1 · 什么时候触发', '2 · 生成什么日报', '3 · 生成后发送到哪里']) {
+    for (const heading of ['1 · 什么时候触发', '2 · 生成什么日报', '3 · 生成后如何保存']) {
       await expect(page.getByRole('heading', { name: heading })).toBeVisible()
     }
 
@@ -95,8 +95,12 @@ test('SCHEDULED-REPORT-UI-01 creates a scheduled report rule from the automation
 
     await expect(page.getByRole('textbox', { name: '日报生成超时' })).toHaveValue('300')
 
-    // 发送目标四选一，默认「文件传输助手」。
+    // 新任务默认本地保存；明确选择微信投递时才显示旧的四种发送目标。
+    await expect(page.getByRole('radio', { name: '仅保存本地' })).toBeChecked()
+    await expect(page.getByRole('radio', { name: '文件传输助手' })).toHaveCount(0)
+    await page.getByRole('radio', { name: '发送到微信', exact: true }).click()
     await expect(page.getByRole('radio', { name: '文件传输助手' })).toBeChecked()
+    await page.getByRole('radio', { name: '仅保存本地' }).click()
 
     // 整页不允许出现横向滚动条（布局回归的硬门槛）。
     expect(
@@ -128,18 +132,11 @@ test('SCHEDULED-REPORT-UI-01 creates a scheduled report rule from the automation
     await page.getByRole('button', { name: '设置' }).click()
     await page.getByRole('button', { name: '微信发送', exact: true }).click()
     await expect(page.getByRole('heading', { name: '微信发送' })).toBeVisible()
-    /*
-     * 这一页的区块标题按平台分叉：macOS 用「配置状态」（SetupGuide 统一展示），
-     * Windows 才额外有「发送能力」卡。旧断言写死了「发送能力」，在 macOS 上恒假。
-     *
-     * `exact: true` 不能省：Windows 上同一页还有「发送能力授权」，
-     * 子串匹配会同时命中 —— 这正是 CI 上 strict mode violation 的来源。
-     */
+    // v2.6 的 macOS 页面使用环境 region，Windows 仍保留发送能力标题。
     await expect(
-      page.getByRole('heading', {
-        name: process.platform === 'darwin' ? '配置状态' : '发送能力',
-        exact: true
-      })
+      process.platform === 'darwin'
+        ? page.getByRole('region', { name: '微信发送环境', exact: true })
+        : page.getByRole('heading', { name: '发送能力', exact: true })
     ).toBeVisible()
 
     expect(pageErrors).toEqual([])
@@ -182,6 +179,36 @@ test('SCHEDULED-REPORT-UI-02 keeps the notification switch off and explains why 
     await expect(page.getByRole('heading', { name: 'Agent Hub', exact: true })).toBeVisible()
 
     expect(pageErrors).toEqual([])
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('saves and reopens a local scheduled report with its subscription model and consent', async () => {
+  const fixture = await launchTestApp({ now: FIXTURE_NOW, chatGPTPlan: true })
+  const page = fixture.page
+  try {
+    await openScheduledReportEditor(page)
+    await page.getByRole('textbox', { name: '定时日报任务名称' }).fill('订阅本地日报')
+    await page.getByRole('radio', { name: '产品测试群' }).click()
+    const model = page.getByRole('combobox', { name: '定时日报模型' })
+    await model.click()
+    await page.getByRole('option', { name: 'ChatGPT 订阅 · 订阅测试模型' }).click()
+    const save = page.getByRole('button', { name: '保存', exact: true })
+    await expect(save).toBeDisabled()
+    const consent = page.getByRole('checkbox', { name: /允许此规则按设定时间/ })
+    await consent.check()
+    await expect(save).toBeEnabled()
+    await save.click()
+    await expect(page.getByRole('heading', { name: '订阅本地日报' })).toBeVisible()
+    await page.getByRole('button', { name: '编辑', exact: true }).click()
+    await expect(model).toContainText('订阅测试模型')
+    await expect(consent).toBeChecked()
+    await expect(page.getByRole('radio', { name: '仅保存本地' })).toBeChecked()
+    // Changing the selected group requires fresh consent; stale consent cannot transfer.
+    await page.getByRole('radio', { name: '折叠群聊样本' }).click()
+    await expect(consent).not.toBeChecked()
+    await expect(save).toBeDisabled()
   } finally {
     await fixture.close()
   }

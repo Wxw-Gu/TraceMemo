@@ -22,6 +22,19 @@ export interface MacWechatSendRuntimeAvailabilityResult {
   message: string
 }
 
+export interface MacWechatResidualProcess {
+  pid: number
+  name: string
+  targets: Array<'wechat' | 'port_4290'>
+  confirmationToken: string
+}
+
+export interface MacWechatResidualCleanupResult {
+  stopped: MacWechatResidualProcess[]
+  remaining: MacWechatResidualProcess[]
+  runtimeStopped: boolean
+}
+
 export type MacWechatHostRuntimeState =
   | 'not_initialized'
   | 'wechat_not_running'

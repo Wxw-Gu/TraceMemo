@@ -1,4 +1,7 @@
 import * as React from 'react'
+import type { ReportModelChoice } from '../../../../shared/ai-provider'
+import { CHATGPT_PLAN_PROVIDER_PREFIX } from '../../../../shared/chatgpt-plan'
+import { loadScheduledReportModels, scheduledModelKey } from './model/scheduled-report-models'
 
 import {
   Button,
@@ -78,9 +81,47 @@ export function ScheduledReportEditor({
 }: ScheduledReportEditorProps): React.ReactElement {
   const [draft, setDraft] = React.useState<ScheduledReportDraft>(initialDraft)
   const [groupFilter, setGroupFilter] = React.useState('')
+  const [models, setModels] = React.useState<ReportModelChoice[]>([])
+  const [modelsLoading, setModelsLoading] = React.useState(true)
+  const [modelsError, setModelsError] = React.useState('')
+  const [defaultModelConfigured, setDefaultModelConfigured] = React.useState(false)
+  const [modelsRevision, refreshModels] = React.useReducer((value: number) => value + 1, 0)
+
+  React.useEffect(() => {
+    let active = true
+    setModelsLoading(true)
+    void loadScheduledReportModels()
+      .then((result) => {
+        if (!active) return
+        setModels(result.choices)
+        setDefaultModelConfigured(result.defaultConfigured)
+        setModelsError(result.error || '')
+        setModelsLoading(false)
+      })
+      .catch(() => {
+        if (!active) return
+        setModels([])
+        setDefaultModelConfigured(false)
+        setModelsError('模型加载失败，请检查连接后刷新。')
+        setModelsLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [modelsRevision])
 
   const patch = (next: Partial<ScheduledReportDraft>): void =>
-    setDraft((current) => ({ ...current, ...next }))
+    setDraft((current) => {
+      const changesInput = (
+        ['group', 'providerId', 'model', 'reportRange', 'messageTypes', 'memberNameMode'] as const
+      ).some((key) => key in next && next[key] !== current[key])
+      return { ...current, ...next, ...(changesInput ? { chatgptConsent: false } : {}) }
+    })
+  const usesSubscription = draft.providerId.startsWith(CHATGPT_PLAN_PROVIDER_PREFIX)
+  const selectedModel = models.find(
+    (item) => item.providerId === draft.providerId && item.model === draft.model
+  )
+  const unavailableModel = Boolean(draft.providerId) && !modelsLoading && !selectedModel
 
   /*
    * 时间的两个输入框保留**本地文本态**。
@@ -147,9 +188,17 @@ export function ScheduledReportEditor({
     ? '请填写任务名称'
     : !draft.group
       ? '请选择日报来源群'
-      : draft.targetType === 'contact' && !draft.targetContactId
+      : draft.deliveryMode === 'wechat' && draft.targetType === 'contact' && !draft.targetContactId
         ? '请选择要发送的指定好友'
-        : ''
+        : draft.enabled && usesSubscription && !draft.chatgptConsent
+          ? '请确认允许此规则定时使用 ChatGPT 订阅处理所选群聊'
+          : draft.enabled && modelsLoading
+            ? '正在确认所选模型，请稍候'
+            : draft.enabled && !draft.providerId && !defaultModelConfigured
+              ? '默认 API 模型未配置或暂不可用，请配置模型或选择已连接的 ChatGPT 订阅'
+              : draft.enabled && unavailableModel
+                ? '所选模型暂不可用，请连接对应账号或重新选择模型'
+                : ''
 
   const selectTargetType = (next: ScheduledReportTargetType): void => {
     // 切换目标类型时清空已选联系人，避免看起来"已经选好了"却发不出去。
@@ -168,7 +217,7 @@ export function ScheduledReportEditor({
       <header className="automation-editor-header">
         <div>
           <h2>{draft.name.trim() || '新建定时日报'}</h2>
-          <p>按设定时间自动生成日报，并发送到指定微信会话。</p>
+          <p>按设定时间自动生成日报，可保存本地或发送到微信。</p>
           <div className="automation-leave-status-row">
             <span className="automation-field-label">启用这条自动化</span>
             <Switch
@@ -198,8 +247,12 @@ export function ScheduledReportEditor({
         </p>
       ) : null}
 
-      {legacyTarget ? (
-        <p className="automation-notice warning" role="status" data-testid="scheduled-legacy-target">
+      {legacyTarget && draft.deliveryMode === 'wechat' ? (
+        <p
+          className="automation-notice warning"
+          role="status"
+          data-testid="scheduled-legacy-target"
+        >
           这条规则是升级前创建的，当时的发送目标（{legacyTarget}）无法自动对应到新的选项。
           请重新选择发送目标后再保存。
         </p>
@@ -216,7 +269,7 @@ export function ScheduledReportEditor({
               <div>
                 <span className="automation-field-label">执行频率</span>
                 <span className="automation-static-value">每天</span>
-                <small>当前定时日报只支持每天执行一次。</small>
+                <small>按本机时区每天执行一次。请保持 TraceMemo 运行、电脑唤醒并连接网络。</small>
               </div>
             </div>
 
@@ -341,15 +394,64 @@ export function ScheduledReportEditor({
               </small>
             </div>
 
-            <div className="automation-inline-row automation-model-row">
-              <div>
-                <span className="automation-field-label">模型配置</span>
-                <small>使用当前日报默认的文字总结和图片理解模型。</small>
-              </div>
-              {onOpenModelSettings ? (
-                <Button variant="link" size="sm" onClick={onOpenModelSettings}>
-                  更改模型
+            <div className="automation-field">
+              <span className="automation-field-label">模型配置</span>
+              <Select
+                value={scheduledModelKey(draft.providerId, draft.model)}
+                onValueChange={(value) => {
+                  const choice = models.find(
+                    (item) => scheduledModelKey(item.providerId, item.model) === value
+                  )
+                  patch({ providerId: choice?.providerId ?? '', model: choice?.model ?? '' })
+                }}
+                disabled={saving || modelsLoading}
+              >
+                <SelectTrigger aria-label="定时日报模型">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">当前默认 API 模型</SelectItem>
+                  {models.map((choice) => (
+                    <SelectItem
+                      key={scheduledModelKey(choice.providerId, choice.model)}
+                      value={scheduledModelKey(choice.providerId, choice.model)}
+                    >
+                      {choice.providerName} · {choice.modelName}
+                    </SelectItem>
+                  ))}
+                  {draft.providerId && !selectedModel ? (
+                    <SelectItem value={scheduledModelKey(draft.providerId, draft.model)} disabled>
+                      {usesSubscription ? 'ChatGPT 订阅' : '已保存模型'} · {draft.model || '未选择'}
+                      （{modelsLoading ? '加载中' : '暂不可用'}）
+                    </SelectItem>
+                  ) : null}
+                </SelectContent>
+              </Select>
+              <small>此选择仅用于这条规则。ChatGPT 订阅与 API 用量分别计费。</small>
+              <div className="automation-inline-row">
+                <Button variant="link" size="sm" disabled={modelsLoading} onClick={refreshModels}>
+                  刷新模型
                 </Button>
+                {onOpenModelSettings ? (
+                  <Button variant="link" size="sm" onClick={onOpenModelSettings}>
+                    更改模型
+                  </Button>
+                ) : null}
+              </div>
+              {modelsError ? <small role="status">{modelsError}</small> : null}
+              {usesSubscription ? (
+                <label className="automation-leave-radio option">
+                  <input
+                    type="checkbox"
+                    checked={draft.chatgptConsent}
+                    onChange={(event) => patch({ chatgptConsent: event.target.checked })}
+                    disabled={saving}
+                  />
+                  <span>
+                    允许此规则按设定时间将所选群聊的消息、转录文字和成员名称发送给 OpenAI，使用所选
+                    ChatGPT 订阅生成日报。
+                  </span>
+                </label>
               ) : null}
             </div>
 
@@ -415,67 +517,87 @@ export function ScheduledReportEditor({
           {/* ---------- 3 · 发送目标四选一（不提供"指定其他群聊"）---------- */}
           <section className="automation-section">
             <div className="automation-section-heading">
-              <h3>3 · 生成后发送到哪里</h3>
+              <h3>3 · 生成后如何保存</h3>
             </div>
-            <p className="automation-section-lead">
-              生成哪个群的日报，与把日报发到哪里，是两件事。
-            </p>
-
             <RadioGroup
-              value={draft.targetType}
-              onValueChange={(value) => selectTargetType(value as ScheduledReportTargetType)}
-              aria-label="生成后发送到哪里"
+              value={draft.deliveryMode}
+              onValueChange={(value) =>
+                patch({ deliveryMode: value as ScheduledReportDraft['deliveryMode'] })
+              }
+              aria-label="日报保存方式"
               className="automation-leave-targets"
             >
-              {SCHEDULED_REPORT_TARGET_OPTIONS.map((option) => (
-                <div key={option.type} className="automation-leave-radio option">
-                  <RadioGroupItem value={option.type} id={`scheduled-target-${option.type}`} />
-                  <div className="automation-leave-radio-body">
-                    <label htmlFor={`scheduled-target-${option.type}`}>{option.label}</label>
-                    <small>{option.description}</small>
-                  </div>
-                </div>
-              ))}
-            </RadioGroup>
-
-            {draft.targetType === 'contact' ? (
-              <div className="automation-field">
-                <span className="automation-field-label">指定好友</span>
-                <LeaveNotificationTargetPicker
-                  contacts={sendableContacts}
-                  selectedId={draft.targetContactId}
-                  onSelect={(id) => patch({ targetContactId: id })}
-                  ariaLabel="指定好友"
-                  searchPlaceholder="搜索好友"
-                  emptyText="没有可发送的联系人"
-                />
+              <div className="automation-leave-radio option">
+                <RadioGroupItem value="local_only" id="scheduled-delivery-local" />
+                <label htmlFor="scheduled-delivery-local">仅保存本地</label>
               </div>
-            ) : null}
+              <div className="automation-leave-radio option">
+                <RadioGroupItem value="wechat" id="scheduled-delivery-wechat" />
+                <label htmlFor="scheduled-delivery-wechat">发送到微信</label>
+              </div>
+            </RadioGroup>
+            {draft.deliveryMode === 'local_only' ? (
+              <p className="automation-section-lead">
+                生成结果保存在「日报」历史中，可查看 HTML 和 PNG。无需微信发送组件。
+              </p>
+            ) : (
+              <>
+                <p className="automation-section-lead">
+                  生成后保存日报历史，并通过已配置的微信发送能力投递。
+                </p>
+                <RadioGroup
+                  value={draft.targetType}
+                  onValueChange={(value) => selectTargetType(value as ScheduledReportTargetType)}
+                  aria-label="生成后发送到哪里"
+                  className="automation-leave-targets"
+                >
+                  {SCHEDULED_REPORT_TARGET_OPTIONS.map((option) => (
+                    <div key={option.type} className="automation-leave-radio option">
+                      <RadioGroupItem value={option.type} id={`scheduled-target-${option.type}`} />
+                      <div className="automation-leave-radio-body">
+                        <label htmlFor={`scheduled-target-${option.type}`}>{option.label}</label>
+                        <small>{option.description}</small>
+                      </div>
+                    </div>
+                  ))}
+                </RadioGroup>
 
-            {/* 后置词：从「手动发送日报图片」那个输入框原样搬运过来，只是改成按规则存。 */}
-            <div className="automation-field">
-              <span className="automation-field-label">发送后置词</span>
-              <Input
-                aria-label="发送后置词"
-                value={draft.postfixText}
-                maxLength={SCHEDULED_REPORT_POSTFIX_MAX_LENGTH}
-                placeholder={DEFAULT_REPORT_IMAGE_POSTFIX_TEXT}
-                disabled={saving}
-                onChange={(event) => patch({ postfixText: event.target.value })}
-              />
-              <small>图片确认发送成功后，会发送一条文本消息；留空则只发图片。</small>
-            </div>
+                {draft.targetType === 'contact' ? (
+                  <div className="automation-field">
+                    <span className="automation-field-label">指定好友</span>
+                    <LeaveNotificationTargetPicker
+                      contacts={sendableContacts}
+                      selectedId={draft.targetContactId}
+                      onSelect={(id) => patch({ targetContactId: id })}
+                      ariaLabel="指定好友"
+                      searchPlaceholder="搜索好友"
+                      emptyText="没有可发送的联系人"
+                    />
+                  </div>
+                ) : null}
 
+                {/* 后置词：从「手动发送日报图片」那个输入框原样搬运过来，只是改成按规则存。 */}
+                <div className="automation-field">
+                  <span className="automation-field-label">发送后置词</span>
+                  <Input
+                    aria-label="发送后置词"
+                    value={draft.postfixText}
+                    maxLength={SCHEDULED_REPORT_POSTFIX_MAX_LENGTH}
+                    placeholder={DEFAULT_REPORT_IMAGE_POSTFIX_TEXT}
+                    disabled={saving}
+                    onChange={(event) => patch({ postfixText: event.target.value })}
+                  />
+                  <small>图片确认发送成功后，会发送一条文本消息；留空则只发图片。</small>
+                </div>
+              </>
+            )}
             <p className="automation-editor-footnote">
-              微信数据库和聊天记录默认从本机读取。所选内容将发送至你配置的模型服务进行处理，
-              TraceMemo 本身不额外保存或转发内容。
+              微信数据库和聊天记录从本机读取。所选内容将发送至所选模型服务进行处理，生成的日报会保存在本机。
             </p>
           </section>
         </div>
 
-        <aside className="automation-editor-side">
-          {notificationSlot}
-        </aside>
+        <aside className="automation-editor-side">{notificationSlot}</aside>
       </div>
     </div>
   )

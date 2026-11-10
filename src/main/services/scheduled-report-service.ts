@@ -218,7 +218,7 @@ export class ScheduledReportService {
       if (rule.ruleType !== 'scheduled_report' || !config) continue
       if (!rule.enabled) continue
       // 迁移遗留的"目标待重选"：不调度、不创建记录，由 UI 提示用户处理。
-      if (config.targetNeedsReview) continue
+      if (config.deliveryMode !== 'local_only' && config.targetNeedsReview) continue
       if (!isValidScheduleTime(config.schedule.time)) continue
 
       // `resolveDueScheduledSlot` 承诺返回「已经到点、最近的那个」槽位
@@ -289,6 +289,7 @@ export class ScheduledReportService {
   ): ScheduledReportExecution {
     const nowMs = (this.deps.now?.() || new Date()).getTime()
     const startedAt = new Date(nowMs).toISOString()
+    const localOnly = rule.scheduledReport?.deliveryMode === 'local_only'
     const status = !outcome.executed
       ? ('skipped' as const)
       : outcome.status === 'success'
@@ -302,11 +303,11 @@ export class ScheduledReportService {
       startedAt,
       finishedAt: startedAt,
       status,
-      currentStage: 'send',
-      message: outcome.errorSummary || '日报执行完成',
+      currentStage: localOnly ? 'persist' : 'send',
+      message: outcome.errorSummary || (localOnly ? '日报已保存到本地历史' : '日报执行完成'),
       ...(outcome.errorSummary ? { error: outcome.errorSummary } : {}),
       retryCount: 0,
-      sendStatus: status === 'success' ? 'success' : 'failed',
+      sendStatus: localOnly ? 'unavailable' : status === 'success' ? 'success' : 'failed',
       notificationStatus: 'not_needed'
     }
   }
@@ -816,6 +817,10 @@ export class ScheduledReportService {
       ...current,
       schedule: { time: scheduleTime },
       report: {
+        ...current.report,
+        ...(input.group !== undefined && String(input.group).trim() !== current.report.sourceConversationId
+          ? { chatgptConsent: false }
+          : {}),
         sourceConversationId: String(input.group ?? current.report.sourceConversationId).trim(),
         range: input.reportRange ?? current.report.range,
         messageTypes: input.messageTypes ?? current.report.messageTypes,
@@ -888,7 +893,7 @@ export class ScheduledReportService {
   private isHttpProjectable(rule: AutomationRule): boolean {
     const config = rule.scheduledReport
     if (!config) return false
-    if (config.targetNeedsReview) return false
+    if (config.deliveryMode === 'local_only' || config.targetNeedsReview) return false
     return this.scheduledTargetType(rule) === 'source_chat'
   }
 
@@ -931,7 +936,10 @@ export class ScheduledReportService {
     const startedAt = new Date(execution.triggerTime).toISOString()
     const finishedAt = new Date(execution.triggerTime + Math.max(0, execution.durationMs)).toISOString()
     const sent = execution.steps.some((step) => step.key === 'report_sent' && step.status === 'success')
-    const currentStage: ScheduledReportExecutionStage = execution.steps.some(
+    const localOnly = execution.status === 'success' && execution.steps.some(
+      (step) => step.key === 'report_sent' && step.status === 'skipped'
+    )
+    const currentStage: ScheduledReportExecutionStage = localOnly ? 'persist' : execution.steps.some(
       (step) => step.key === 'report_sent' && step.status !== 'pending'
     )
       ? 'send'
@@ -944,10 +952,10 @@ export class ScheduledReportService {
       finishedAt,
       status: execution.status,
       currentStage,
-      message: execution.errorSummary || '日报执行完成',
+      message: execution.errorSummary || (localOnly ? '日报已保存到本地历史' : '日报执行完成'),
       ...(execution.status === 'failed' ? { error: execution.errorSummary } : {}),
       retryCount: 0,
-      sendStatus: (sent ? 'success' : execution.status === 'failed' ? 'failed' : 'pending') as ScheduledReportSendStatus,
+      sendStatus: (localOnly ? 'unavailable' : sent ? 'success' : execution.status === 'failed' ? 'failed' : 'pending') as ScheduledReportSendStatus,
       notificationStatus: 'not_needed'
     }
   }

@@ -48,7 +48,10 @@ import {
  *     auto-binding, that path dead-ends in a 20s attach timeout every time.
  */
 
-const PORT = 4290
+/* 默认 4290。进程会 fork 继承监听 fd（CLOEXEC 只挡 exec），
+ * host 崩溃后孤儿进程仍扣着端口，新 host bind 失败会返回 1 无限重启。
+ * 被占用时用 TM_WECHAT_HOST_PORT 指到备用端口。 */
+const PORT = Number(process.env.TM_WECHAT_HOST_PORT) || 4290
 const HOST = '127.0.0.1'
 const START_TIMEOUT_MS = 15_000
 const REQUEST_TIMEOUT_MS = 30_000
@@ -199,6 +202,7 @@ class MacWechatRuntimeManager {
   private manifest: MacWechatRuntimeManifest | null = null
   private lastError: string | null = null
   private restartTimer: NodeJS.Timeout | null = null
+  private manuallyStopped = false
 
   getPort(): number {
     return PORT
@@ -214,6 +218,22 @@ class MacWechatRuntimeManager {
       error: this.lastError ?? undefined,
       binding: this.lastBinding ?? undefined
     }
+  }
+
+  prepareForResidualCleanup(): void {
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer)
+      this.restartTimer = null
+    }
+    this.lifecycle = 'stopped'
+    this.manuallyStopped = true
+    this.child = null
+    this.lastBinding = null
+    this.lastError = null
+  }
+
+  async startAfterResidualCleanup(): Promise<MacWechatRuntimeSnapshot> {
+    return this.ensureStarted({ allowManualRestart: true })
   }
 
   private resolveRuntimeDir(): string | null {
@@ -261,7 +281,11 @@ class MacWechatRuntimeManager {
    * comes up WITHOUT touching WeChat (lazy init inside the host), so "runtime
    * online" and "WeChat bound" stay two independent states.
    */
-  async ensureStarted(): Promise<MacWechatRuntimeSnapshot> {
+  async ensureStarted(
+    options: { allowManualRestart?: boolean } = {}
+  ): Promise<MacWechatRuntimeSnapshot> {
+    if (this.manuallyStopped && !options.allowManualRestart) return this.getSnapshot()
+    if (options.allowManualRestart) this.manuallyStopped = false
     if (isMacNativeRuntimeUnavailable()) {
       this.manifest = null
       this.lifecycle = 'stopped'
@@ -603,6 +627,12 @@ class MacWechatRuntimeManager {
     if (availability.state !== 'available') {
       return offlineMacLicenseStatus('runtime_missing', availability.message)
     }
+    if (this.manuallyStopped) {
+      return offlineMacLicenseStatus(
+        'runtime_missing',
+        'Mac 发送组件已停止，请在发送页点击“绑定微信”重新启动。'
+      )
+    }
     if (this.lifecycle === 'stopped') await this.ensureStarted()
     const { status, body } = await this.request('GET', '/license/status', LICENSE_STATUS_TIMEOUT_MS)
     if (status === null) {
@@ -636,6 +666,12 @@ class MacWechatRuntimeManager {
     }
     if (availability.state !== 'available') {
       return offlineMacLicenseStatus('runtime_missing', availability.message)
+    }
+    if (this.manuallyStopped) {
+      return offlineMacLicenseStatus(
+        'runtime_missing',
+        'Mac 发送组件已停止，请在发送页点击“绑定微信”重新启动。'
+      )
     }
     if (this.lifecycle === 'stopped') await this.ensureStarted()
     if (this.licenseRefreshInFlight) {
@@ -725,7 +761,7 @@ class MacWechatRuntimeManager {
      * never succeed because the check itself is what should start the host.
      * Starting it never touches WeChat, so doing it from a read is safe.
      */
-    if (this.lifecycle === 'stopped') {
+    if (this.lifecycle === 'stopped' && !this.manuallyStopped) {
       await this.ensureStarted().catch(() => undefined)
     }
     /* Self-heal the status card too: if WeChat was restarted, drop the stale
@@ -817,7 +853,7 @@ class MacWechatRuntimeManager {
       return { ok: false, attached: false, state: 'runtime_offline', message: availability.message }
     }
     if (this.lifecycle !== 'online') {
-      const snapshot = await this.ensureStarted()
+      const snapshot = await this.ensureStarted({ allowManualRestart: true })
       if (snapshot.lifecycle !== 'online') {
         return {
           ok: false,
@@ -902,7 +938,7 @@ class MacWechatRuntimeManager {
   async reload(): Promise<MacWechatRuntimeSnapshot> {
     await this.shutdown().catch(() => undefined)
     await new Promise((resolve) => setTimeout(resolve, 2_000))
-    return this.ensureStarted()
+    return this.ensureStarted({ allowManualRestart: true })
   }
 
   private isProcessAlive(pid: number): boolean {

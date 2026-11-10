@@ -230,7 +230,12 @@ function builtInTemplate(template: ReportTemplateDefinition): InstalledReportTem
 }
 
 export class ReportTemplateService {
-  private readonly directory = rootPath()
+  /* 延迟到首次真正用到时再取 app.getPath('userData')。
+   * 这个类在模块顶层被 new（见文件末尾），而 import 顺序一变，模块就可能
+   * 在 electron.app 可用之前被 require —— 那时 app 是 undefined，getPath 直接抛。 */
+  private get directory(): string {
+    return rootPath()
+  }
 
   async list(): Promise<InstalledReportTemplate[]> {
     await fs.mkdir(path.join(this.directory, INSTALLED_DIR), { recursive: true })

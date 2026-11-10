@@ -172,6 +172,8 @@ interface Chain {
   log: AutomationExecutionLogService
   sends: PersonalWechatSendRequest[]
   ruleId: string
+  savedReports: GeneratedReportRecord[]
+  getCapability: ReturnType<typeof vi.fn>
 }
 
 function buildChain(
@@ -182,15 +184,18 @@ function buildChain(
     enabled?: boolean
     postfixText?: string
     generate?: () => Promise<AgentGroupReportResult>
+    localOnly?: boolean
+    targetNeedsReview?: boolean
   } = {}
 ): Chain {
   const sends: PersonalWechatSendRequest[] = []
   const savedReports: GeneratedReportRecord[] = []
   const capability = options.capability ?? readyCapability()
+  const getCapability = vi.fn(async () => capability)
 
   const gateway = new WechatActionGateway({
     getUserDataPath: () => root,
-    getCapability: async () => capability,
+    getCapability,
     // 传输层是唯一被替换的部分：策略、幂等、审计、节流都是真的。
     send: async (request) => {
       sends.push(request)
@@ -245,17 +250,18 @@ function buildChain(
     ruleStore: store,
     executionLog: log,
     runner,
-    getCapability: async () => capability,
+    getCapability,
     now: () => AFTER_SLOT_MS
   })
 
-  const ruleId = store.createRule(
-    scheduledDraft(options.target ?? 'source_chat', {
+  const draft = scheduledDraft(options.target ?? 'source_chat', {
       ...(options.contactId ? { contactId: options.contactId } : {}),
       ...(options.enabled === false ? { enabled: false } : {}),
       ...(options.postfixText ? { postfixText: options.postfixText } : {})
     })
-  ).id
+  if (draft.scheduledReport && options.localOnly) draft.scheduledReport.deliveryMode = 'local_only'
+  if (draft.scheduledReport && options.targetNeedsReview) draft.scheduledReport.targetNeedsReview = true
+  const ruleId = store.createRule(draft).id
 
   const scheduler = new ScheduledReportService({
     storageDir: path.join(root, 'scheduled-reports-legacy'),
@@ -266,7 +272,7 @@ function buildChain(
     now: () => AFTER_SLOT
   })
 
-  return { scheduler, service, store, log, sends, ruleId }
+  return { scheduler, service, store, log, sends, ruleId, savedReports, getCapability }
 }
 
 /** 每个用例都换一个干净的 userData 目录，避免审计 / 幂等记录互相污染。 */
@@ -316,6 +322,67 @@ describe('scheduled report end-to-end chain', () => {
     ])
     // `send_resolved` 的 detail 是**用户可读的目标名**，不是 roomId。
     expect(record.steps.find((step) => step.key === 'send_resolved')?.detail).toBe('技术交流群')
+  })
+
+  it('仅保存本地：没有发送组件且旧目标待确认时，仍保存成功，且同槽位只执行一次', async () => {
+    const generate = vi.fn(async () => ({ success: true, pngPath: '/fixture/local.png', htmlPath: '/fixture/local.html' }))
+    const chain = buildChain({
+      generate,
+      localOnly: true,
+      targetNeedsReview: true,
+      target: 'contact',
+      contactId: 'missing-contact',
+      postfixText: '不应发送',
+      capability: { ...readyCapability(), supported: false, ready: false }
+    })
+    const rule = chain.store.getRule(chain.ruleId)!
+    chain.store.updateRule(chain.ruleId, {
+      ...rule,
+      scheduledReport: {
+        ...rule.scheduledReport,
+        report: { ...rule.scheduledReport!.report, providerId: 'chatgpt-plan:test', model: 'test-model', chatgptConsent: true }
+      }
+    })
+
+    await chain.scheduler.tick(AFTER_SLOT)
+    await chain.scheduler.settle()
+    await chain.scheduler.tick(AFTER_SLOT)
+    await chain.scheduler.settle()
+
+    expect(chain.savedReports).toHaveLength(1)
+    expect(generate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      group: 'tech@chatroom', providerId: 'chatgpt-plan:test', model: 'test-model', chatgptConsent: true
+    }))
+    expect(chain.sends).toEqual([])
+    expect(chain.getCapability).not.toHaveBeenCalled()
+    expect(chain.log.list()).toHaveLength(1)
+    expect(chain.log.list()[0]).toMatchObject({ trigger: 'schedule', status: 'success' })
+    expect(chain.log.list()[0].steps.map((step) => `${step.key}:${step.status}`)).toEqual([
+      'schedule_triggered:success',
+      'report_generating:success',
+      'report_generated:success',
+      'send_resolved:skipped',
+      'report_sent:skipped'
+    ])
+    expect(chain.store.getRule(chain.ruleId)?.scheduledReport?.lastScheduledSlot).toBe(SLOT_ISO)
+    // 旧 HTTP 任务形状无法表达只保存本地，不能误报成发回来源群。
+    expect(await chain.scheduler.listTasks()).toEqual([])
+    expect((await chain.scheduler.listExecutions(chain.ruleId))[0]).toMatchObject({
+      status: 'success', sendStatus: 'unavailable', currentStage: 'persist'
+    })
+  })
+
+  it('仅保存本地：生成失败如实记失败，不发图片也不查询发送能力', async () => {
+    const chain = buildChain({
+      localOnly: true,
+      generate: async () => ({ success: false, error: '订阅已断开', errorCode: 'CHATGPT_DISCONNECTED' })
+    })
+    const result = await chain.service.executeScheduledRule(chain.ruleId, { trigger: 'manual' })
+    expect(result).toMatchObject({ executed: true, status: 'failed', reportGenerated: false })
+    expect(chain.savedReports).toEqual([])
+    expect(chain.sends).toEqual([])
+    expect(chain.getCapability).not.toHaveBeenCalled()
+    expect(chain.log.list()[0].errorSummary).toBe('订阅已断开')
   })
 
   it('配置了后置词 ⇒ 图片 sent 之后补发一条文本，两条各自独立', async () => {

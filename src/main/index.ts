@@ -114,6 +114,7 @@ import {
   saveSettings,
   updateSettings,
   getSettingsPath,
+  normalizeSkippedUpdateVersion,
   AppSettings,
   validateDbRoot
 } from './services/settings-store'
@@ -167,6 +168,10 @@ import {
   type MessageInsertCapability
 } from './services/msg-insert-capability-service'
 import { resolveExternalComponent } from './services/external-component-locator'
+import {
+  cleanupMacWechatResidualProcesses,
+  inspectMacWechatResidualProcesses
+} from './services/mac-wechat-residual-cleanup'
 import {
   isDefinitelyBlocked,
   isEntitlementBlocked,
@@ -323,10 +328,7 @@ async function attachCapability(
     }
   }
   switches.recall_notice = applyPresentation('recall_notice', switches.recall_notice)!
-  switches.group_exit_notice = applyPresentation(
-    'group_exit_notice',
-    switches.group_exit_notice
-  )!
+  switches.group_exit_notice = applyPresentation('group_exit_notice', switches.group_exit_notice)!
   return {
     ...snapshot,
     switches,
@@ -1478,6 +1480,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('app-update:download', () => appUpdateService.download())
   ipcMain.handle('app-update:install', () => appUpdateService.install())
   ipcMain.handle('app-update:openDownloadPage', () => appUpdateService.openDownloadPage())
+  ipcMain.handle('app-update:getIgnoredVersion', () => loadSettings().skippedUpdateVersion)
+  /**
+   * 记录 / 清除「忽略此版本」。
+   *
+   * 传 null 或非法版本号 = 清除。校验放在主进程：渲染层传来的字符串不可信，
+   * 一个脏值会让「忽略」永远命中不了同一条记录，表现为每次都弹。
+   */
+  ipcMain.handle('app-update:setIgnoredVersion', (_, version: unknown) => {
+    const normalized = normalizeSkippedUpdateVersion(version)
+    saveSettings({ ...loadSettings(), skippedUpdateVersion: normalized })
+    return normalized
+  })
   appUpdateService.scheduleStartupCheck()
   ipcMain.handle('cache:getSummary', () => getCacheSummary())
   ipcMain.handle('cache:openKnowledgeDirectory', () => openKnowledgeDirectory())
@@ -1988,7 +2002,8 @@ app.whenReady().then(async () => {
    * 刻意不返回资源密钥、完整 XML、fileid 或任何 CDN 凭据。
    */
   ipcMain.handle(
-    'image:getDebugInfo',    async (_, request: ImageDebugInfoRequest): Promise<ImageDebugInfoResult> => {
+    'image:getDebugInfo',
+    async (_, request: ImageDebugInfoRequest): Promise<ImageDebugInfoResult> => {
       try {
         const service = ensureImageDecryptService()
         const self = chat.getSelfAccountInfo()
@@ -2009,7 +2024,9 @@ app.whenReady().then(async () => {
 
         // 复用真实选图逻辑；找不到就是 null，不根据文件名猜。
         const filePath = service
-          ? service.findImageFile(md5 || undefined, datName || undefined, { sessionId: sessionId || undefined })
+          ? service.findImageFile(md5 || undefined, datName || undefined, {
+              sessionId: sessionId || undefined
+            })
           : null
         const quality = filePath ? toDebugQuality(imageFileQuality(filePath)) : 'unknown'
         const relativePath =
@@ -3394,10 +3411,10 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('api:getStatus', () => apiServer.getState())
 
-  ipcMain.handle('api:tokenStatus', () => apiTokenStore.ensureToken())
-  ipcMain.handle('api:revealToken', () => apiTokenStore.revealToken())
-  ipcMain.handle('api:copyToken', () => {
-    const result = apiTokenStore.revealToken()
+  ipcMain.handle('api:tokenStatus', () => apiTokenStore.ensureTokenAsync())
+  ipcMain.handle('api:revealToken', () => apiTokenStore.revealTokenAsync())
+  ipcMain.handle('api:copyToken', async () => {
+    const result = await apiTokenStore.revealTokenAsync()
     if (!result.token) return { ...result, success: false }
     try {
       clipboard.writeText(result.token)
@@ -3411,7 +3428,7 @@ app.whenReady().then(async () => {
       return { ...apiTokenStore.getStatus(), success: false, error: 'API Token 复制失败' }
     }
   })
-  ipcMain.handle('api:rotateToken', () => apiTokenStore.rotateToken())
+  ipcMain.handle('api:rotateToken', () => apiTokenStore.rotateTokenAsync())
 
   ipcMain.handle('api:start', async (_, host?: string, port?: number) => {
     const settings = loadSettings()
@@ -3482,6 +3499,50 @@ app.whenReady().then(async () => {
   ipcMain.handle('wechat-personal:getMacSendRuntimeAvailability', () =>
     macWechatRuntimeManager.getSendRuntimeAvailability()
   )
+  ipcMain.handle('wechat-personal:startMacSendRuntime', () => {
+    if (process.platform !== 'darwin') throw new Error('仅 macOS 支持微信发送组件')
+    return macWechatRuntimeManager.startAfterResidualCleanup()
+  })
+  ipcMain.handle('wechat-personal:listMacResidualProcesses', () =>
+    inspectMacWechatResidualProcesses()
+  )
+  ipcMain.handle('wechat-personal:cleanupMacResidualProcesses', async (_, pids: unknown) => {
+    if (process.platform !== 'darwin') throw new Error('仅 macOS 支持清理微信残留进程')
+    if (!Array.isArray(pids)) throw new Error('清理目标无效')
+    const requestedTargets = pids.filter(
+      (target): target is { pid: number; confirmationToken: string } =>
+        Boolean(target) &&
+        typeof target === 'object' &&
+        Number.isSafeInteger((target as { pid?: unknown }).pid) &&
+        typeof (target as { confirmationToken?: unknown }).confirmationToken === 'string'
+    )
+    if (requestedTargets.length === 0) throw new Error('没有确认的清理目标')
+    const currentTargets = await inspectMacWechatResidualProcesses()
+    const confirmedTargets = requestedTargets.filter((requested) =>
+      currentTargets.some(
+        (current) =>
+          current.pid === requested.pid && current.confirmationToken === requested.confirmationToken
+      )
+    )
+    if (confirmedTargets.length === 0) {
+      return { stopped: [], remaining: currentTargets }
+    }
+    let runtimeStopped = false
+    const result = await cleanupMacWechatResidualProcesses(
+      confirmedTargets,
+      undefined,
+      (targets) => {
+        if (
+          macWechatRuntimeManager.getPort() === 4290 &&
+          targets.some((target) => target.targets.includes('port_4290'))
+        ) {
+          macWechatRuntimeManager.prepareForResidualCleanup()
+          runtimeStopped = true
+        }
+      }
+    )
+    return { ...result, runtimeStopped }
+  })
   ipcMain.handle('wechat-personal:refreshMacLicense', () =>
     macWechatRuntimeManager.refreshMacLicense()
   )
@@ -3572,14 +3633,21 @@ app.whenReady().then(async () => {
   })
 
   // 启动本地 HTTP API（由 settings.apiEnabled 控制）
-  const settings = loadSettings()
   // v2.1.8 and earlier did not have an API token. Generate it once during
   // upgrade/startup without changing any existing API or database settings.
-  apiTokenStore.ensureToken()
-  if (settings.apiEnabled) {
-    await apiServer.start(settings.apiHost, settings.apiPort)
-  }
+  await apiTokenStore.initializeForStartup(15_000, async () => {
+    // Authorization may finish after the startup timeout. Honor settings changed
+    // while it was pending instead of reviving an API the user has since disabled.
+    const currentSettings = loadSettings()
+    if (!currentSettings.apiEnabled) return
+    try {
+      await apiServer.start(currentSettings.apiHost, currentSettings.apiPort)
+    } catch (error) {
+      console.warn('[ApiServer] startup after token initialization failed:', error)
+    }
+  })
 
+  const settings = loadSettings()
   await agentHubService.start(settings)
   await scheduledReportService.start()
 

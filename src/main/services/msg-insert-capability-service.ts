@@ -140,7 +140,7 @@ export function probeLicenseStatus(timeoutMs = PROBE_TIMEOUT_MS): Promise<Licens
     let req: http.ClientRequest
     try {
       req = http.get(
-        { host: '127.0.0.1', port: 4290, path: '/license/status', timeout: timeoutMs },
+        { host: '127.0.0.1', port: Number(process.env.TM_WECHAT_HOST_PORT) || 4290, path: '/license/status', timeout: timeoutMs },
         (res) => {
           const chunks: Buffer[] = []
           res.on('data', (chunk: Buffer) => chunks.push(chunk))

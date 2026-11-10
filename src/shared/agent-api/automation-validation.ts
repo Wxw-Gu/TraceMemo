@@ -7,6 +7,7 @@ import {
   type AutomationRuleDraft,
   type AutomationRuleType
 } from '../automation'
+import { CHATGPT_PLAN_PROVIDER_PREFIX } from '../chatgpt-plan'
 import { validateGroupExitNotificationTemplate } from '../group-exit-monitor'
 import { isSelectableReportTemplateId } from '../report-templates'
 import {
@@ -202,21 +203,25 @@ function validateDailyReport(raw: JsonRecord, issues: AgentAutomationValidationI
 function validateTarget(
   value: unknown,
   path: string,
-  issues: AgentAutomationValidationIssue[]
+  issues: AgentAutomationValidationIssue[],
+  requireDestination = true
 ): void {
+  if (!requireDestination && value === undefined) return
   const target = checkObject(value, path, ['type', 'contactId'], issues)
   if (!target) return
   checkEnum(target.type, `${path}.type`, TARGET_TYPES, issues, true)
   if (target.type === 'contact') {
-    checkString(target.contactId, `${path}.contactId`, issues, { required: true, max: 300 })
+    checkString(target.contactId, `${path}.contactId`, issues, { required: requireDestination, max: 300 })
   } else if (target.contactId !== undefined) {
     addIssue(issues, `${path}.contactId`, 'unexpected_field', '仅 contact 目标可设置 contactId')
   }
 }
 
 function validateScheduledReport(raw: JsonRecord, issues: AgentAutomationValidationIssue[]): void {
+  checkEnum(raw.deliveryMode, 'scheduledReport.deliveryMode', ['local_only', 'wechat'], issues)
+  const localOnly = raw.deliveryMode === 'local_only'
   checkBoolean(raw.targetNeedsReview, 'scheduledReport.targetNeedsReview', issues)
-  if (raw.targetNeedsReview === true) {
+  if (!localOnly && raw.targetNeedsReview === true) {
     addIssue(
       issues,
       'scheduledReport.targetNeedsReview',
@@ -247,11 +252,21 @@ function validateScheduledReport(raw: JsonRecord, issues: AgentAutomationValidat
       'messageTypes',
       'templateId',
       'memberNameMode',
-      'timeoutSeconds'
+      'timeoutSeconds',
+      'providerId',
+      'model',
+      'chatgptConsent'
     ],
     issues
   )
   if (report) {
+    checkString(report.providerId, 'scheduledReport.report.providerId', issues, { max: 300 })
+    const subscription = typeof report.providerId === 'string' && report.providerId.trim().startsWith(CHATGPT_PLAN_PROVIDER_PREFIX)
+    checkString(report.model, 'scheduledReport.report.model', issues, { required: subscription, max: 300 })
+    checkBoolean(report.chatgptConsent, 'scheduledReport.report.chatgptConsent', issues)
+    if (subscription && report.chatgptConsent !== true) {
+      addIssue(issues, 'scheduledReport.report.chatgptConsent', 'consent_required', '使用 ChatGPT 订阅前，须明确同意将此规则的群聊输入发送给 OpenAI')
+    }
     checkString(
       report.sourceConversationId,
       'scheduledReport.report.sourceConversationId',
@@ -294,7 +309,7 @@ function validateScheduledReport(raw: JsonRecord, issues: AgentAutomationValidat
       true
     )
   }
-  validateTarget(raw.target, 'scheduledReport.target', issues)
+  validateTarget(raw.target, 'scheduledReport.target', issues, !localOnly)
 }
 
 function validateLeaveNotification(
@@ -401,7 +416,7 @@ export function validateAutomationDraftShape(input: unknown): {
       const scheduled = checkObject(
         raw.scheduledReport,
         'scheduledReport',
-        ['schedule', 'report', 'target', 'postfixText', 'targetNeedsReview'],
+        ['deliveryMode', 'schedule', 'report', 'target', 'postfixText', 'targetNeedsReview'],
         issues
       )
       if (scheduled) validateScheduledReport(scheduled, issues)

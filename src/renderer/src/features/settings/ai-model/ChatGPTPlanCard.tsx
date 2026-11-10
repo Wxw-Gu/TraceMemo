@@ -74,7 +74,7 @@ export function ChatGPTPlanCard({ onChange }: { onChange: () => void }): React.R
       <header>
         <div>
           <h2>ChatGPT 订阅</h2>
-          <p>用于手动群聊日报的文字总结。授权后，在日报页选择订阅模型。</p>
+          <p>用于手动及定时群聊日报的文字总结。授权后，可在日报页或定时日报规则中选择订阅模型。</p>
         </div>
         <span className={`settings-status-badge ${status.sharing ? '' : 'unavailable'}`}>
           {busy === 'loading' ? '正在读取' : activeLabel}

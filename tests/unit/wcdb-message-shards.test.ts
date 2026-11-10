@@ -124,7 +124,11 @@ describe('WCDB message shard pagination', () => {
         expect(sql).toContain('n.user_name AS sender_username')
         expect(sql).toContain('n.rowid = m.real_sender_id')
         expect(sql).toContain('"create_time" <= 1800000000')
-        expect(sql).toContain('ORDER BY "create_time" DESC LIMIT 20')
+        // Sync queries keep their established ordering; async pagination adds a
+        // stable local-id tie break and an explicit first-page offset.
+        expect(sql).toMatch(
+          /ORDER BY "create_time" DESC(?:, "local_id" DESC)? LIMIT 20(?: OFFSET 0)?/
+        )
         const isLatestShard = dbPath.endsWith('message_7.db')
         return [
           {

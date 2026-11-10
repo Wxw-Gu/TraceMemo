@@ -9,9 +9,7 @@ import type {
   ScheduledReportMessageType,
   ScheduledReportRange
 } from '../../../../../shared/scheduled-report'
-import {
-  DEFAULT_REPORT_IMAGE_POSTFIX_TEXT
-} from '../../../../../shared/personal-wechat'
+import { DEFAULT_REPORT_IMAGE_POSTFIX_TEXT } from '../../../../../shared/personal-wechat'
 import {
   AUTOMATION_REPLY_DELAY_DEFAULT_SECONDS,
   SCHEDULED_REPORT_DEFAULT_MEMBER_NAME_MODE,
@@ -30,6 +28,7 @@ import {
   type ScheduledReportAutomationConfig,
   type ScheduledReportTargetType
 } from '../../../../../shared/automation'
+import { CHATGPT_PLAN_PROVIDER_PREFIX } from '../../../../../shared/chatgpt-plan'
 import { type SummaryMessageType } from '../../../utils/group-report'
 
 /**
@@ -66,6 +65,10 @@ export interface ScheduledReportDraft {
   memberNameMode: ScheduledReportMemberNameMode
   timeoutSeconds: number
   templateId: SelectableReportTemplateId
+  deliveryMode: 'local_only' | 'wechat'
+  providerId: string
+  model: string
+  chatgptConsent: boolean
   targetType: ScheduledReportTargetType
   targetContactId: string
   /**
@@ -138,14 +141,29 @@ export function scheduledReportTargetDisplayName(
   config: ScheduledReportAutomationConfig | undefined,
   resolveGroupDisplay: (raw: string) => string
 ): string {
+  if (config?.deliveryMode === 'local_only') return '日报历史（HTML / PNG）'
   const target = config?.target
   if (!target) return ''
   if (target.type === 'source_chat') {
     const group = resolveGroupDisplay(config.report.sourceConversationId)
-    return group ? `${scheduledReportTargetLabel('source_chat')}（${group}）` : scheduledReportTargetLabel('source_chat')
+    return group
+      ? `${scheduledReportTargetLabel('source_chat')}（${group}）`
+      : scheduledReportTargetLabel('source_chat')
   }
   if (target.type === 'contact') return scheduledReportTargetLabel('contact')
   return scheduledReportTargetLabel(target.type)
+}
+
+export const SCHEDULED_REPORT_CONSENT_REQUIRED_MESSAGE =
+  '请先编辑此规则并确认 ChatGPT 订阅授权，再启用或立即执行。'
+
+/** Disabled drafts may retain an unconsented selection, but list toggles must not enable it. */
+export function scheduledReportConsentRequired(rule: AutomationRule): boolean {
+  return (
+    rule.ruleType === 'scheduled_report' &&
+    Boolean(rule.scheduledReport?.report.providerId?.startsWith(CHATGPT_PLAN_PROVIDER_PREFIX)) &&
+    rule.scheduledReport?.report.chatgptConsent !== true
+  )
 }
 
 /** 新建草稿：目标默认「自己」，避免任何形式的"没选就发到群里"。 */
@@ -160,6 +178,10 @@ export function createEmptyScheduledReportDraft(): ScheduledReportDraft {
     memberNameMode: SCHEDULED_REPORT_DEFAULT_MEMBER_NAME_MODE,
     timeoutSeconds: SCHEDULED_REPORT_DEFAULT_TIMEOUT_SECONDS,
     templateId: SCHEDULED_REPORT_DEFAULT_TEMPLATE_ID,
+    deliveryMode: 'local_only',
+    providerId: '',
+    model: '',
+    chatgptConsent: false,
     targetType: SCHEDULED_REPORT_DEFAULT_TARGET_TYPE,
     targetContactId: '',
     // 刻意留空：新建规则默认**不**补发任何文本，用户明确要才填。
@@ -182,6 +204,10 @@ export function createDraftFromRule(rule: AutomationRule): ScheduledReportDraft 
     memberNameMode: config.report.memberNameMode,
     timeoutSeconds: config.report.timeoutSeconds,
     templateId: config.report.templateId,
+    deliveryMode: config.deliveryMode === 'local_only' ? 'local_only' : 'wechat',
+    providerId: config.report.providerId ?? '',
+    model: config.report.model ?? '',
+    chatgptConsent: config.report.chatgptConsent === true,
     targetType: config.target.type,
     targetContactId: config.target.contactId ?? '',
     postfixText: config.postfixText ?? ''
@@ -218,6 +244,7 @@ export function draftToAutomationRuleDraft(draft: ScheduledReportDraft): Automat
     cooldownSeconds: 0,
     replyDelaySeconds: AUTOMATION_REPLY_DELAY_DEFAULT_SECONDS,
     scheduledReport: normalizeScheduledReportConfig({
+      deliveryMode: draft.deliveryMode,
       schedule: { time: draft.scheduleTime },
       report: {
         sourceConversationId: draft.group,
@@ -225,7 +252,9 @@ export function draftToAutomationRuleDraft(draft: ScheduledReportDraft): Automat
         messageTypes: draft.messageTypes as ScheduledReportMessageType[],
         templateId: draft.templateId,
         memberNameMode: draft.memberNameMode,
-        timeoutSeconds: draft.timeoutSeconds
+        timeoutSeconds: draft.timeoutSeconds,
+        ...(draft.providerId ? { providerId: draft.providerId, model: draft.model } : {}),
+        ...(draft.chatgptConsent ? { chatgptConsent: true } : {})
       },
       target: {
         type: draft.targetType,
@@ -294,9 +323,7 @@ export function resolveGroupDisplayName(
 
 /** 内部标识形态：room id / 16 进制 hash / 纯数字串。 */
 function looksLikeInternalIdentifier(value: string): boolean {
-  return (
-    value.includes('@chatroom') || /^[0-9a-f]{16,}$/i.test(value) || /^\d{6,}$/.test(value)
-  )
+  return value.includes('@chatroom') || /^[0-9a-f]{16,}$/i.test(value) || /^\d{6,}$/.test(value)
 }
 
 function pad2(value: number): string {

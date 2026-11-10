@@ -32,6 +32,13 @@ const { createBuilderConfig } = nodeRequire('../../scripts/build-macos-edition.c
     dmg: { artifactName: string }
   }
 }
+const { resolveEditionRoots, validateLicenseStatusRoute } = nodeRequire('../../scripts/prepare-macos-edition.cjs') as {
+  resolveEditionRoots: (projectRoot?: string, env?: NodeJS.ProcessEnv) => {
+    stageRoot: string
+    outputRoot: string
+  }
+  validateLicenseStatusRoute: (hostPath: string) => void
+}
 const {
   validateAsarRuntimeDependencies,
   validateFfmpegRuntime,
@@ -294,7 +301,7 @@ describe('production runtime packaging', () => {
         (item) => typeof item === 'string' && !item.startsWith('!') && item.includes('resources')
       )
     ).toBe(false)
-    expect(config.dmg.artifactName).toBe('TraceMemo-2.5.2-mac-arm64-public.dmg')
+    expect(config.dmg.artifactName).toBe('TraceMemo-2.5.2-mac-arm64-oss.dmg')
     const nativeConfig = createBuilderConfig({
       edition: 'native',
       stageRoot: join(root, 'mac-staging', 'native'),
@@ -303,6 +310,30 @@ describe('production runtime packaging', () => {
       appVersion: '2.5.2'
     })
     expect(nativeConfig.dmg.artifactName).toBe('TraceMemo-2.5.2-mac-arm64-native.dmg')
+  })
+
+  it('supports isolated macOS staging and output roots without changing defaults', () => {
+    expect(resolveEditionRoots('/repo', {})).toEqual({
+      stageRoot: '/repo/build/mac-staging',
+      outputRoot: '/repo/dist/mac'
+    })
+    expect(
+      resolveEditionRoots('/repo', {
+        TRACEMEMO_MAC_STAGE_ROOT: '/tmp/candidate/staging',
+        TRACEMEMO_MAC_OUTPUT_ROOT: '/tmp/candidate/output'
+      })
+    ).toEqual({
+      stageRoot: '/tmp/candidate/staging',
+      outputRoot: '/tmp/candidate/output'
+    })
+  })
+
+  it('rejects a native Host that cannot serve the license status route', () => {
+    const host = join(root, 'license-route-host')
+    writeFileSync(host, 'GET /healthz')
+    expect(() => validateLicenseStatusRoute(host)).toThrow(/GET \/license\/status/)
+    writeFileSync(host, 'GET /healthz GET /license/status')
+    expect(() => validateLicenseStatusRoute(host)).not.toThrow()
   })
 
   it('requires the matching Windows and macOS sherpa native runtime', () => {
@@ -683,6 +714,13 @@ describe('send runtime packaging boundary', () => {
       expect(command).not.toContain('electron-builder.send-runtime.yml')
       expect(command).not.toContain('TM_SEND_RUNTIME_BUILD')
     }
+
+    expect(pkg.scripts['release:mac:arm64']).toContain(
+      '--config.directories.output=dist/release/mac-arm64'
+    )
+    expect(pkg.scripts['release:mac:x64']).toContain(
+      '--config.directories.output=dist/release/mac-x64'
+    )
   })
 
   it('excludes the send runtime in the default builder config', () => {

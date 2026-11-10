@@ -8,6 +8,8 @@ import {
 } from '../../../../shared/automation'
 import {
   formatNextRunAt,
+  scheduledReportConsentRequired,
+  SCHEDULED_REPORT_CONSENT_REQUIRED_MESSAGE,
   scheduledReportRangeLabel,
   scheduledReportTargetDisplayName,
   scheduledReportTemplateLabel
@@ -75,9 +77,7 @@ export function ScheduledReportRuleList({
           </span>
         </div>
 
-        <p className="automation-section-lead">
-          按设定时间自动生成日报，并发送到指定微信会话。
-        </p>
+        <p className="automation-section-lead">按设定时间自动生成日报，可保存本地或发送到微信。</p>
 
         <div className="automation-scheduled-toolbar">
           <Button onClick={onCreate}>+ 新建定时日报</Button>
@@ -96,13 +96,15 @@ export function ScheduledReportRuleList({
         ) : rules.length === 0 ? (
           <div className="automation-empty-card">
             <p>还没有定时日报</p>
-            <p>创建一条自动化，让 TraceMemo 在指定时间生成并发送日报。</p>
+            <p>创建一条自动化，让 TraceMemo 在指定时间生成日报。</p>
             <Button onClick={onCreate}>+ 新建定时日报</Button>
           </div>
         ) : (
           rules.map((rule) => {
             const config = normalizeScheduledReportConfig(rule.scheduledReport)
-            const needsReview = config.targetNeedsReview === true
+            const needsReview =
+              config.deliveryMode !== 'local_only' && config.targetNeedsReview === true
+            const needsConsent = scheduledReportConsentRequired(rule)
             const busy = busyRuleId === rule.id
             return (
               <article
@@ -113,10 +115,17 @@ export function ScheduledReportRuleList({
                   <div className="automation-rule-card-title">
                     <h3>{rule.name}</h3>
                     {/* 状态只出现两处：这个 badge + 右侧 toggle，不做第三重表达。 */}
-                    <span className={`automation-rule-state ${rule.enabled ? 'on' : 'off'}`}>
-                      {rule.enabled ? '运行中' : '已暂停'}
+                    <span
+                      className={`automation-rule-state ${needsConsent ? 'pending' : rule.enabled ? 'on' : 'off'}`}
+                    >
+                      {needsConsent ? '待授权' : rule.enabled ? '运行中' : '已暂停'}
                     </span>
                   </div>
+                  {needsConsent ? (
+                    <p className="automation-rule-warning" role="status">
+                      {SCHEDULED_REPORT_CONSENT_REQUIRED_MESSAGE}
+                    </p>
+                  ) : null}
                   {needsReview ? (
                     // 迁移过来但目标无法无损映射：如实提示，绝不冒充"配置正常"。
                     <p className="automation-rule-warning" role="status">
@@ -144,13 +153,13 @@ export function ScheduledReportRuleList({
                       <dd>{scheduledReportTemplateLabel(config.report.templateId)}</dd>
                     </div>
                     <div>
-                      <dt>发送到</dt>
+                      <dt>{config.deliveryMode === 'local_only' ? '保存到' : '发送到'}</dt>
                       <dd>{scheduledReportTargetDisplayName(config, resolveGroupDisplay)}</dd>
                     </div>
                     <div>
                       <dt>下次执行</dt>
                       <dd>
-                        {rule.enabled && !needsReview
+                        {rule.enabled && !needsReview && !needsConsent
                           ? formatNextRunAt(calculateNextRunAt(config.schedule.time, now))
                           : '—'}
                       </dd>
@@ -160,14 +169,14 @@ export function ScheduledReportRuleList({
                 <div className="automation-rule-card-side">
                   <Switch
                     checked={rule.enabled}
-                    disabled={busy}
+                    disabled={busy || (!rule.enabled && needsConsent)}
                     onCheckedChange={(checked) => onToggle(rule, checked)}
                     aria-label={`${rule.name} 启停`}
                   />
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={busy || needsReview}
+                    disabled={busy || needsReview || needsConsent}
                     onClick={() => onRunNow(rule)}
                   >
                     立即执行
@@ -175,12 +184,7 @@ export function ScheduledReportRuleList({
                   <Button variant="outline" size="sm" disabled={busy} onClick={() => onEdit(rule)}>
                     编辑
                   </Button>
-                  <Button
-                    variant="link"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => onDelete(rule)}
-                  >
+                  <Button variant="link" size="sm" disabled={busy} onClick={() => onDelete(rule)}>
                     删除
                   </Button>
                 </div>

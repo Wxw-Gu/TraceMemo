@@ -497,7 +497,8 @@ export class AutomationService {
       return { executed: false, reason: 'rule_not_found' }
     }
     if (!rule.enabled) return { executed: false, reason: 'disabled' }
-    if (rule.scheduledReport.targetNeedsReview) {
+    const localOnly = rule.scheduledReport.deliveryMode === 'local_only'
+    if (!localOnly && rule.scheduledReport.targetNeedsReview) {
       this.warn(`定时日报目标待重新选择，已跳过 ruleId=${rule.id}`)
       return { executed: false, reason: 'target_needs_review' }
     }
@@ -518,13 +519,11 @@ export class AutomationService {
           : randomUUID()
 
       const { contacts, selfWxid } = this.resolveTargetContext()
-      const resolution = resolveScheduledReportTarget({
-        config: rule.scheduledReport,
-        contacts,
-        selfWxid
-      })
+      const resolution = localOnly
+        ? { ok: false as const, error: '仅保存本地，无需发送目标。' }
+        : resolveScheduledReportTarget({ config: rule.scheduledReport, contacts, selfWxid })
       const sourceDisplayName = scheduledReportSourceDisplayName(rule.scheduledReport, contacts)
-      const sendBlockedReason = await this.scheduledReportCapabilityError()
+      const sendBlockedReason = localOnly ? undefined : await this.scheduledReportCapabilityError()
 
       let result: Awaited<ReturnType<AutomationActionRunner['runScheduledReport']>>
       try {

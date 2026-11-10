@@ -161,6 +161,16 @@ function deepMergeDraft(
     if (record(schedulePatch.target)?.type !== undefined) {
       delete (next.scheduledReport as Record<string, unknown>).targetNeedsReview
     }
+    const reportPatch = record(schedulePatch.report)
+    if (reportPatch && reportPatch.chatgptConsent !== true) {
+      const consentFields = ['sourceConversationId', 'providerId', 'model', 'range', 'messageTypes', 'memberNameMode']
+      const currentReport = currentConfig.report as unknown as Record<string, unknown>
+      if (consentFields.some((field) => Object.hasOwn(reportPatch, field) &&
+          JSON.stringify(reportPatch[field]) !== JSON.stringify(currentReport[field]))) {
+        const mergedReport = (next.scheduledReport as Record<string, unknown>).report as Record<string, unknown>
+        mergedReport.chatgptConsent = false
+      }
+    }
   }
   return next
 }
@@ -871,7 +881,7 @@ export class LocalAgentApiService {
         'scheduledReport.report.sourceConversationId'
       )
       if (source) draft.scheduledReport.report.sourceConversationId = source.m_nsUsrName
-      if (draft.scheduledReport.target.type === 'contact') {
+      if (draft.scheduledReport.deliveryMode !== 'local_only' && draft.scheduledReport.target.type === 'contact') {
         const target = resolve(
           draft.scheduledReport.target.contactId || '',
           'person',
@@ -922,7 +932,7 @@ export class LocalAgentApiService {
         )
       }
       if (copy.ruleType === 'scheduled_report' && copy.scheduledReport) {
-        copy.requiresReview = copy.scheduledReport.targetNeedsReview === true
+        copy.requiresReview = copy.scheduledReport.deliveryMode !== 'local_only' && copy.scheduledReport.targetNeedsReview === true
         delete copy.scheduledReport.legacyTarget
         delete copy.scheduledReport.legacySourceGroup
         delete copy.scheduledReport.lastRunAt
@@ -940,9 +950,10 @@ export class LocalAgentApiService {
       const config = draft.scheduledReport
       return {
         generatesReport: true,
-        sendsWechatMessage: true,
+        sendsWechatMessage: config.deliveryMode !== 'local_only',
+        savesLocalReport: true,
         sourceConversationId: config.report.sourceConversationId,
-        target: config.target
+        ...(config.deliveryMode === 'local_only' ? {} : { target: config.target })
       }
     }
     if (draft.ruleType === 'leave_notification' && draft.leaveNotification) {

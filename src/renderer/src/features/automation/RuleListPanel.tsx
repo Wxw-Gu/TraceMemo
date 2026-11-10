@@ -9,6 +9,10 @@ import {
   type AutomationRule
 } from '../../../../shared/automation'
 import { Button, Spinner, Switch } from '../../components/ui'
+import {
+  scheduledReportConsentRequired,
+  SCHEDULED_REPORT_CONSENT_REQUIRED_MESSAGE
+} from './model/scheduled-report-model'
 
 /**
  * RuleListPanel —— 规则列表（「规则」tab）。
@@ -59,6 +63,12 @@ export interface RuleListPanelProps {
 
 /** 把规则里的 conversationIds 翻成群名；找不到时显示占位而不是裸 id。 */
 function scopeLabel(rule: AutomationRule, groups: Array<{ id: string; name: string }>): string {
+  if (rule.ruleType === 'scheduled_report') {
+    const source = rule.scheduledReport?.report.sourceConversationId
+    return (
+      groups.find((group) => group.id === source)?.name || (source ? '已选 1 个群' : '未选择来源群')
+    )
+  }
   const selected = rule.conditions.conversationIds
   if (!selected.length) return '所有群聊'
   const names = selected
@@ -130,10 +140,21 @@ export function RuleListPanel({
                 <div className="automation-rule-card-main">
                   <div className="automation-rule-card-title">
                     <h3>{rule.name}</h3>
-                    <span className={`automation-rule-state ${rule.enabled ? 'on' : 'off'}`}>
-                      {rule.enabled ? '运行中' : '已停用'}
+                    <span
+                      className={`automation-rule-state ${scheduledReportConsentRequired(rule) ? 'pending' : rule.enabled ? 'on' : 'off'}`}
+                    >
+                      {scheduledReportConsentRequired(rule)
+                        ? '待授权'
+                        : rule.enabled
+                          ? '运行中'
+                          : '已停用'}
                     </span>
                   </div>
+                  {scheduledReportConsentRequired(rule) ? (
+                    <p className="automation-rule-warning" role="status">
+                      {SCHEDULED_REPORT_CONSENT_REQUIRED_MESSAGE}
+                    </p>
+                  ) : null}
                   <dl className="automation-rule-meta">
                     <div>
                       <dt>触发</dt>
@@ -145,7 +166,12 @@ export function RuleListPanel({
                     </div>
                     <div>
                       <dt>动作</dt>
-                      <dd>{describeRuleActions(rule)}</dd>
+                      <dd>
+                        {rule.ruleType === 'scheduled_report' &&
+                        rule.scheduledReport?.deliveryMode === 'local_only'
+                          ? '生成日报并保存本地'
+                          : describeRuleActions(rule)}
+                      </dd>
                     </div>
                     <div>
                       <dt>间隔</dt>
@@ -156,7 +182,10 @@ export function RuleListPanel({
                 <div className="automation-rule-card-side">
                   <Switch
                     checked={rule.enabled}
-                    disabled={busyRuleId === rule.id}
+                    disabled={
+                      busyRuleId === rule.id ||
+                      (!rule.enabled && scheduledReportConsentRequired(rule))
+                    }
                     onCheckedChange={(checked) => onToggle(rule, checked)}
                     aria-label={`${rule.name} 启停`}
                   />

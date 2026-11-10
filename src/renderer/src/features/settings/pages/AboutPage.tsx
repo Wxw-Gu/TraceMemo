@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button, Progress } from '../../../components/ui'
 import { useAppUpdateState } from '../../app-update/useAppUpdateState'
 
@@ -19,6 +19,30 @@ export function AboutPage({
 }): React.ReactElement {
   const update = useAppUpdateState()
   const [busy, setBusy] = useState(false)
+  const [ignoredUpdateVersion, setIgnoredUpdateVersion] = useState('')
+
+  useEffect(() => {
+    let active = true
+    void window.api
+      .getIgnoredUpdateVersion()
+      .then((version) => {
+        if (active) setIgnoredUpdateVersion(version || '')
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const restoreUpdatePrompt = async (): Promise<void> => {
+    try {
+      await window.api.setIgnoredUpdateVersion(null)
+      setIgnoredUpdateVersion('')
+      onNotice('已恢复启动时的更新提示')
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : '恢复更新提示失败')
+    }
+  }
 
   const action = useMemo(() => {
     if (update.status === 'available') {
@@ -152,6 +176,20 @@ export function AboutPage({
               )}
             </div>
           </section>
+
+          {ignoredUpdateVersion ? (
+            <section className="settings-card flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <strong>已忽略 v{ignoredUpdateVersion} 的更新提示</strong>
+                <span className="mt-1 block text-sm text-muted-foreground">
+                  该版本不会在启动时弹窗；更高版本仍会提醒。
+                </span>
+              </div>
+              <Button variant="outline" size="sm" onClick={() => void restoreUpdatePrompt()}>
+                恢复提示
+              </Button>
+            </section>
+          ) : null}
 
           <h2 className="settings-section-heading">支持</h2>
           <section className="settings-card about-links-card">

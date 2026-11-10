@@ -4,6 +4,8 @@ import type { GroupDailyReport, GroupReportMetadata } from '../../shared/group-r
 import { exportGroupReport } from '../group-report-service'
 import { getGroupSnapshot, listMessages, resolveMd5 } from './chat-service'
 import { AIProviderService } from './ai-provider-service'
+import { CHATGPT_PLAN_PROVIDER_PREFIX } from '../../shared/chatgpt-plan'
+import { requestChatGPTPlan } from './chatgpt-plan-service'
 import type {
   ScheduledReportMemberNameMode,
   ScheduledReportMessageType
@@ -14,6 +16,7 @@ import { resolveMemberName } from '../../shared/member-names'
 import {
   buildGroupReportInput,
   getSummaryDateRange,
+  getSummaryDateRangeAt,
   GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT,
   GROUP_REPORT_SYSTEM_PROMPT,
   isInternalName,
@@ -69,6 +72,9 @@ export interface AgentGroupReportRequest {
   templateId?: SelectableReportTemplateId
   memberNameMode?: ScheduledReportMemberNameMode
   timeoutSeconds?: number
+  providerId?: string
+  model?: string
+  chatgptConsent?: boolean
 }
 
 export interface AgentGroupReportResult {
@@ -94,16 +100,27 @@ export interface AgentGroupReportResult {
   errorType?: string
 }
 
+/** External I/O boundaries only; prompt, parsing, rendering and persistence remain production code. */
+export interface AgentGroupReportDependencies {
+  resolveContact?: (query: string) => Contact | null
+  readMessages?: (conversationId: string, startTime: number, endTime: number) => Message[]
+  readGroupSnapshot?: typeof getGroupSnapshot
+  requestSubscription?: typeof requestChatGPTPlan
+  now?: () => number
+}
+
 export async function generateAgentGroupReport(
-  request: AgentGroupReportRequest
+  request: AgentGroupReportRequest,
+  dependencies: AgentGroupReportDependencies = {}
 ): Promise<AgentGroupReportResult> {
-  const startedAt = Date.now()
+  const now = dependencies.now || Date.now
+  const startedAt = now()
   const query = String(request.group || '')
     .trim()
     .replace(/群聊?$/, '')
     .trim()
   if (!query) return reportFailure('缺少群聊名称', 'data', 'CHAT_NOT_FOUND')
-  const contact = resolveMd5(query)
+  const contact = (dependencies.resolveContact || resolveMd5)(query)
   if (!contact) return reportFailure(`没有找到群聊“${query}”`, 'data', 'CHAT_NOT_FOUND')
   if (contact.type !== 'group' && !contact.m_nsUsrName.endsWith('@chatroom')) {
     return reportFailure(`“${query}”不是群聊`, 'data', 'CHAT_NOT_FOUND')
@@ -113,11 +130,17 @@ export async function generateAgentGroupReport(
   const { startTime, endTime } =
     request.range === 'recent24h'
       ? (() => {
-          const now = Math.floor(Date.now() / 1000)
-          return { startTime: now - 86400, endTime: now }
+          const end = Math.floor(now() / 1000)
+          return { startTime: end - 86400, endTime: end }
         })()
-      : getSummaryDateRange(range)
-  let messages = listMessages(contact.md5, startTime, endTime) as Message[]
+      : dependencies.now
+        ? getSummaryDateRangeAt(range, new Date(now()))
+        : getSummaryDateRange(range)
+  let messages = (dependencies.readMessages || listMessages)(
+    contact.md5,
+    startTime,
+    endTime
+  ) as Message[]
   if (!messages.length) return reportFailure('所选时间范围没有可总结的消息', 'data', 'NO_MESSAGES')
 
   const messageTypeMap: Record<ScheduledReportMessageType, string[]> = {
@@ -138,7 +161,7 @@ export async function generateAgentGroupReport(
   messages = messages.filter((message) => selectedTypes.has(message.type))
   if (!messages.length) return reportFailure('所选时间范围没有可总结的消息', 'data', 'NO_MESSAGES')
 
-  const snapshot = getGroupSnapshot(contact.md5)
+  const snapshot = (dependencies.readGroupSnapshot || getGroupSnapshot)(contact.md5)
   if (snapshot) {
     messages = hydrateGroupMemberIdentity(
       messages,
@@ -147,16 +170,64 @@ export async function generateAgentGroupReport(
     )
   }
 
+  const providerId = String(request.providerId || '').trim()
+  const selectedModel = String(request.model || '').trim()
+  const subscription = providerId.startsWith(CHATGPT_PLAN_PROVIDER_PREFIX)
+  let modelName: string
+  if (subscription) {
+    if (request.chatgptConsent !== true) {
+      return reportFailure(
+        '请编辑定时日报并同意将该群聊的输入发送给 OpenAI，保存后再执行。',
+        'ai',
+        'CHATGPT_CONSENT_REQUIRED'
+      )
+    }
+    if (!selectedModel) {
+      return reportFailure('请为定时日报选择 ChatGPT 订阅模型。', 'ai', 'AI_MODEL_REQUIRED')
+    }
+    modelName = `ChatGPT 订阅 · ${selectedModel}`
+  } else if (providerId) {
+    // AIProviderService 历史上会把失效的 providerId 回落到默认项；定时任务不能悄悄换供应商。
+    const provider = aiProvider.list().providers.find((item) => item.id === providerId)
+    const model = provider?.models.find(
+      (item) => item.id === (selectedModel || provider.defaultModel)
+    )
+    if (!provider || !model) {
+      return reportFailure(
+        '定时日报的 AI 供应商或模型已变更，请重新选择。',
+        'ai',
+        'AI_MODEL_UNAVAILABLE'
+      )
+    }
+    modelName = model.name || model.id
+  } else {
+    const runtime = aiProvider.getRuntimeConfig()
+    modelName = selectedModel || runtime.modelName || runtime.model
+  }
+
   const input = await buildGroupReportInput(messages, contact as Contact, true, 'full')
-  const runtime = aiProvider.getRuntimeConfig()
   const sessionId = randomUUID()
-  const ai = await aiProvider.chat(
-    [
-      { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
-      { role: 'user', content: input.prompt }
-    ],
-    { sessionId, timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
-  )
+  const timeoutMs = Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000
+  const requestAI = (
+    messages: Array<{ role: string; content: string }>
+  ): ReturnType<AIProviderService['chat']> =>
+    subscription
+      ? (dependencies.requestSubscription || requestChatGPTPlan)(
+          providerId,
+          selectedModel,
+          messages,
+          timeoutMs
+        )
+      : aiProvider.chat(messages, {
+          sessionId,
+          timeoutMs,
+          ...(providerId ? { providerId } : {}),
+          ...(selectedModel ? { modelId: selectedModel } : {})
+        })
+  const ai = await requestAI([
+    { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
+    { role: 'user', content: input.prompt }
+  ])
   if (!ai.success || !ai.data) {
     return {
       ...reportFailure(ai.error || 'AI 总结失败', 'ai', ai.errorCode),
@@ -178,13 +249,10 @@ export async function generateAgentGroupReport(
   try {
     report = parseReport(ai.data)
   } catch (parseError) {
-    const repaired = await aiProvider.chat(
-      [
-        { role: 'system', content: GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT },
-        { role: 'user', content: ai.data }
-      ],
-      { sessionId, timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
-    )
+    const repaired = await requestAI([
+      { role: 'system', content: GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT },
+      { role: 'user', content: ai.data }
+    ])
     if (!repaired.success || !repaired.data) {
       const cause = parseError instanceof Error ? parseError.message : String(parseError)
       return {
@@ -224,9 +292,9 @@ export async function generateAgentGroupReport(
     messageCount: messages.length,
     reportSnapshot: report,
     reportMetadata: input.metadata,
-    modelName: runtime.modelName || runtime.model,
+    modelName,
     tokenUsage,
-    duration: Date.now() - startedAt
+    duration: now() - startedAt
   }
 }
 

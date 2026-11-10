@@ -11,6 +11,9 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/main/index.ts'),
+          ...(process.env.TRACEMEMO_SCHEDULED_E2E === '1'
+            ? { scheduledReportTest: resolve('tests/e2e/support/scheduled-report-main.ts') }
+            : {}),
           reportTemplateTest: resolve('src/main/report-template-test-entry.ts'),
           queryAgentPoc: resolve('src/main/query-agent-poc-entry.ts'),
           voiceRecognitionWorker: resolve('src/main/voice-pipeline/voice-recognition-worker.ts'),
