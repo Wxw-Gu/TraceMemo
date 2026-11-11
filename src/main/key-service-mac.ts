@@ -9,6 +9,7 @@ import { findResource, getResourceCandidates } from './resource-paths'
 import { detectWechatVersion } from './services/connection-diagnostics'
 import { getMacArchSnapshot } from './macos-arch'
 import { ARCH_MISMATCH_X64_ON_ARM_ERROR, shouldProbeIntelEnvironment } from '../shared/macos-arch'
+import type { MacKeyHelperMode } from '../shared/database-key'
 
 const execFileAsync = promisify(execFile)
 
@@ -27,36 +28,111 @@ export interface ImageKeyResult {
   error?: string
 }
 
-export type XkeyHelperMode = 'legacy' | 'wechat-4.1.13'
+export type XkeyHelperMode = Exclude<MacKeyHelperMode, 'auto'>
+
+/**
+ * 用户可显式指定的 helper 覆盖项。
+ *
+ * 微信 macOS 端的 `CFBundleShortVersionString` 是外壳版本，可能与实际内核不一致；
+ * 一旦自动匹配选错 helper，就会得到 `SCAN_FAILED: sink pattern not found`。
+ * 这些字段让调用方跳过（或部分跳过）自动选择。
+ */
+export interface MacKeyHelperSelection {
+  mode?: MacKeyHelperMode
+  /** helper 可执行文件绝对路径；为空时使用 mode 对应的内置资源。 */
+  helperPath?: string
+  /** 新版 helper 的 `--profile`；为空时使用 `wechat-4.1.13`。 */
+  profile?: string
+}
 
 export function resolveXkeyHelperMode(wechatVersion: string): XkeyHelperMode {
   return /^4\.1\.13(?:\.|$)/.test(wechatVersion.trim()) ? 'wechat-4.1.13' : 'legacy'
 }
 
-export function buildXkeyHelperArguments(pid: number, timeoutMs: number): string[] {
-  return [String(pid), String(timeoutMs), '--profile', 'wechat-4.1.13', '--account']
+/**
+ * 从 helper 文件名推断模式，例如自定义路径 `.../xkey_helper_4_1_13`。
+ * 无法推断时返回 null，交给调用方决定。
+ */
+export function inferXkeyHelperModeFromName(name: string): XkeyHelperMode | null {
+  return /(?:^|[^0-9])4[._-]1[._-]13(?:[^0-9]|$)/.test(name) ? 'wechat-4.1.13' : null
+}
+
+/**
+ * 只有完全依赖自动模式时，才需要读取微信版本来选择 helper。
+ * 显式 mode 或自定义路径都应跳过版本检测。
+ */
+export function shouldDetectWechatVersion(selection?: MacKeyHelperSelection): boolean {
+  return (
+    (!selection?.mode || selection.mode === 'auto') && !String(selection?.helperPath || '').trim()
+  )
+}
+
+/**
+ * profile 会原样拼进 AppleScript 命令行，只接受安全字符，避免空格/引号破坏命令。
+ */
+export function normalizeXkeyHelperProfile(value: unknown): string {
+  const profile = String(value || '').trim()
+  return /^[A-Za-z0-9._-]{1,64}$/.test(profile) ? profile : 'wechat-4.1.13'
+}
+
+/**
+ * 解析最终的 helper 选择。
+ *
+ * 优先级：显式 mode > 自定义 helper 文件名推断 > 微信版本自动匹配。
+ */
+export function resolveXkeyHelperSelection(
+  wechatVersion: string,
+  selection?: MacKeyHelperSelection
+): { mode: XkeyHelperMode; helper: string; profile?: string } {
+  const helperPath = String(selection?.helperPath || '').trim()
+  const requestedMode = selection?.mode
+  const mode =
+    requestedMode && requestedMode !== 'auto'
+      ? requestedMode
+      : helperPath
+        ? (inferXkeyHelperModeFromName(helperPath) ?? 'legacy')
+        : resolveXkeyHelperMode(wechatVersion)
+
+  return {
+    mode,
+    helper: helperPath || (mode === 'wechat-4.1.13' ? 'xkey_helper_4_1_13' : 'xkey_helper'),
+    profile: mode === 'wechat-4.1.13' ? normalizeXkeyHelperProfile(selection?.profile) : undefined
+  }
+}
+
+export function buildXkeyHelperArguments(
+  pid: number,
+  timeoutMs: number,
+  profile = 'wechat-4.1.13'
+): string[] {
+  return [String(pid), String(timeoutMs), '--profile', profile, '--account']
 }
 
 export function buildAppleSiliconXkeyInvocation(
   wechatVersion: string,
   pid: number,
-  timeoutMs: number
+  timeoutMs: number,
+  selection?: MacKeyHelperSelection
 ): {
   mode: XkeyHelperMode
   resourceName: string
+  profile?: string
   args: string[]
   waitMs: number
   timeoutSeconds: number
   execTimeoutMs: number
 } {
-  const mode = resolveXkeyHelperMode(wechatVersion)
-  const isWechat413 = mode === 'wechat-4.1.13'
+  const resolved = resolveXkeyHelperSelection(wechatVersion, selection)
+  const isWechat413 = resolved.mode === 'wechat-4.1.13'
   const waitMs = Math.max(isWechat413 ? 120_000 : 30_000, timeoutMs)
   const timeoutSeconds = Math.ceil(waitMs / 1000) + (isWechat413 ? 10 : 30)
   return {
-    mode,
-    resourceName: isWechat413 ? 'xkey_helper_4_1_13' : 'xkey_helper',
-    args: isWechat413 ? buildXkeyHelperArguments(pid, waitMs) : [String(pid), String(waitMs)],
+    mode: resolved.mode,
+    resourceName: resolved.helper,
+    ...(resolved.profile ? { profile: resolved.profile } : {}),
+    args: isWechat413
+      ? buildXkeyHelperArguments(pid, waitMs, resolved.profile)
+      : [String(pid), String(waitMs)],
     waitMs,
     timeoutSeconds,
     execTimeoutMs: isWechat413 ? timeoutSeconds * 1000 + 5_000 : waitMs + 20_000
@@ -118,6 +194,17 @@ export function mapXkeyHelperFailure(
   }
 }
 
+const SCAN_FAILED_HELPER_HINT =
+  '如果微信是 4.2 外壳但内核仍为 4.1.x，可在“设置 → 数据库密钥”页面的“密钥工具”中手动指定“新版工具（xkey_helper_4_1_13）”后重试。'
+
+function appendScanFailureHint(
+  result: DatabaseKeyResult,
+  autoSelectedLegacyHelper: boolean
+): DatabaseKeyResult {
+  if (!autoSelectedLegacyHelper || result.success || result.code !== 'SCAN_FAILED') return result
+  return { ...result, error: `${result.error}\n${SCAN_FAILED_HELPER_HINT}` }
+}
+
 export function parseXkeyHelperOutput(output: string): DatabaseKeyResult {
   const payloads: Record<string, unknown>[] = []
   for (const match of output.matchAll(/\{[^{}]*\}/g)) {
@@ -173,6 +260,8 @@ export class KeyServiceMac {
       let pending = ''
       let lastError = ''
       let finalPayload: Record<string, unknown> | null = null
+      // finish() 在 timer 赋值前就已定义，只能先声明、后赋值。
+      // eslint-disable-next-line prefer-const
       let timer: ReturnType<typeof setTimeout> | undefined
       const finish = (payload: Record<string, unknown>): void => {
         if (settled) return
@@ -274,7 +363,11 @@ export class KeyServiceMac {
       }
     }
     if (arch.macKeyFlow !== 'intel') {
-      return { success: false, code: 'UNSUPPORTED_PLATFORM', error: '仅 Intel Mac 需要安装此运行环境' }
+      return {
+        success: false,
+        code: 'UNSUPPORTED_PLATFORM',
+        error: '仅 Intel Mac 需要安装此运行环境'
+      }
     }
     onStatus?.('正在准备连接环境，请保持网络连接…')
     const payload = await this.runMacKeyTool(
@@ -295,7 +388,8 @@ export class KeyServiceMac {
     onStatus?: (message: string) => void
   ): Promise<DatabaseKeyResult> {
     const selectedRoot = String(accountRoot || '').trim()
-    if (!selectedRoot) return { success: false, code: 'ACCOUNT_REQUIRED', error: '请先选择微信账号' }
+    if (!selectedRoot)
+      return { success: false, code: 'ACCOUNT_REQUIRED', error: '请先选择微信账号' }
     const waitMs = Math.max(30_000, timeoutMs)
     const payload = await this.runMacKeyTool(
       [
@@ -322,10 +416,17 @@ export class KeyServiceMac {
   }
 
   private getHelperPath(resourceName = 'xkey_helper'): string {
-    const helperPath = findResource(resourceName)
+    const requested = String(resourceName || '').trim()
+    if (path.isAbsolute(requested)) {
+      if (!fs.existsSync(requested)) {
+        throw new Error(`找不到指定的密钥工具：${requested}`)
+      }
+      return requested
+    }
+    const helperPath = findResource(requested)
     if (!helperPath) {
       throw new Error(
-        `找不到 ${resourceName}（已检查：${getResourceCandidates(resourceName).join('；')}）`
+        `找不到 ${requested}（已检查：${getResourceCandidates(requested).join('；')}）`
       )
     }
     return helperPath
@@ -363,12 +464,12 @@ export class KeyServiceMac {
   async autoGetDbKey(
     onStatus?: (message: string) => void,
     timeoutMs = 60_000,
-    accountRoot?: string
+    accountRoot?: string,
+    helperSelection?: MacKeyHelperSelection
   ): Promise<DatabaseKeyResult> {
     if (onStatus) {
       const emitStatus = onStatus
-      onStatus = (message: string): void =>
-        emitStatus(message.replace(/Frida/gi, '连接组件'))
+      onStatus = (message: string): void => emitStatus(message.replace(/Frida/gi, '连接组件'))
     }
     if (process.platform !== 'darwin') {
       return { success: false, error: '自动获取密钥目前仅支持 macOS' }
@@ -397,10 +498,18 @@ export class KeyServiceMac {
         onStatus?.(result.success ? '密钥获取成功' : '密钥获取失败')
         return result
       }
-      const wechatVersion = await detectWechatVersion()
+      // 显式指定 tool（mode 或路径）时不再依赖微信版本检测：
+      // 外壳版本可能与实际内核不一致，按版本匹配正是需要绕开的环节。
+      const needsWechatVersion = shouldDetectWechatVersion(helperSelection)
+      const wechatVersion = needsWechatVersion ? await detectWechatVersion() : ''
       onStatus?.('正在查找微信进程...')
       const pid = await this.getWeChatPid()
-      const invocation = buildAppleSiliconXkeyInvocation(wechatVersion, pid, timeoutMs)
+      const invocation = buildAppleSiliconXkeyInvocation(
+        wechatVersion,
+        pid,
+        timeoutMs,
+        helperSelection
+      )
       const isWechat413 = invocation.mode === 'wechat-4.1.13'
       const helperPath = this.getHelperPath(invocation.resourceName)
       onStatus?.('正在请求管理员授权...')
@@ -435,15 +544,22 @@ export class KeyServiceMac {
         const [, errorNumber = 'UNKNOWN', ...errorParts] = output.split('::')
         const result = mapXkeyHelperFailure(errorParts.join('::'), `OSASCRIPT_${errorNumber}`)
         onStatus?.('密钥获取失败')
-        return result
+        return appendScanFailureHint(result, needsWechatVersion && invocation.mode === 'legacy')
       }
       const result = parseXkeyHelperOutput(output.startsWith('OK::') ? output.slice(4) : output)
       onStatus?.(result.success ? '密钥获取成功' : '密钥获取失败')
-      return result
+      return appendScanFailureHint(result, needsWechatVersion && invocation.mode === 'legacy')
     } catch (error) {
       const processError = error as NodeJS.ErrnoException & {
         killed?: boolean
         signal?: NodeJS.Signals | null
+      }
+      if (processError.message?.includes('找不到指定的密钥工具')) {
+        return {
+          success: false,
+          code: 'HELPER_NOT_FOUND',
+          error: processError.message
+        }
       }
       if (processError.message?.includes('未找到微信主进程')) {
         return {

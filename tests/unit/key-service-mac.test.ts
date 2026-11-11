@@ -13,7 +13,9 @@ import {
   mapXkeyHelperFailure,
   parseSipEnabled,
   parseXkeyHelperOutput,
-  resolveXkeyHelperMode
+  resolveXkeyHelperMode,
+  resolveXkeyHelperSelection,
+  shouldDetectWechatVersion
 } from '../../src/main/key-service-mac'
 
 describe('parseXkeyHelperOutput', () => {
@@ -97,15 +99,85 @@ describe('parseXkeyHelperOutput', () => {
     ])
   })
 
-  it('uses the new helper only for WeChat 4.1.13', () => {
+  it('uses the new helper by default for WeChat 4.1.13', () => {
     expect(buildAppleSiliconXkeyInvocation('4.1.13.91', 60037, 60_000)).toEqual({
       mode: 'wechat-4.1.13',
       resourceName: 'xkey_helper_4_1_13',
+      profile: 'wechat-4.1.13',
       args: ['60037', '120000', '--profile', 'wechat-4.1.13', '--account'],
       waitMs: 120_000,
       timeoutSeconds: 130,
       execTimeoutMs: 135_000
     })
+  })
+
+  it('lets an explicit mode bypass the detected WeChat version', () => {
+    expect(
+      buildAppleSiliconXkeyInvocation('4.2.0', 60037, 60_000, {
+        mode: 'wechat-4.1.13'
+      })
+    ).toEqual({
+      mode: 'wechat-4.1.13',
+      resourceName: 'xkey_helper_4_1_13',
+      profile: 'wechat-4.1.13',
+      args: ['60037', '120000', '--profile', 'wechat-4.1.13', '--account'],
+      waitMs: 120_000,
+      timeoutSeconds: 130,
+      execTimeoutMs: 135_000
+    })
+  })
+
+  it('can force the legacy helper even when the version matches 4.1.13', () => {
+    expect(buildAppleSiliconXkeyInvocation('4.1.13.91', 60037, 60_000, { mode: 'legacy' })).toEqual(
+      {
+        mode: 'legacy',
+        resourceName: 'xkey_helper',
+        args: ['60037', '60000'],
+        waitMs: 60_000,
+        timeoutSeconds: 90,
+        execTimeoutMs: 80_000
+      }
+    )
+  })
+
+  it('uses a custom helper path and profile when provided', () => {
+    expect(
+      buildAppleSiliconXkeyInvocation('4.2.0', 60037, 60_000, {
+        mode: 'wechat-4.1.13',
+        helperPath: '/tmp/custom/xkey_helper',
+        profile: 'wechat-4.1.8'
+      })
+    ).toEqual({
+      mode: 'wechat-4.1.13',
+      resourceName: '/tmp/custom/xkey_helper',
+      profile: 'wechat-4.1.8',
+      args: ['60037', '120000', '--profile', 'wechat-4.1.8', '--account'],
+      waitMs: 120_000,
+      timeoutSeconds: 130,
+      execTimeoutMs: 135_000
+    })
+  })
+
+  it('infers the new helper from a custom helper file name in auto mode', () => {
+    expect(
+      buildAppleSiliconXkeyInvocation('4.2.0', 60037, 60_000, {
+        helperPath: '/tmp/custom/xkey_helper_4_1_13'
+      })
+    ).toMatchObject({
+      mode: 'wechat-4.1.13',
+      resourceName: '/tmp/custom/xkey_helper_4_1_13',
+      profile: 'wechat-4.1.13'
+    })
+  })
+
+  it('rejects unsafe profile values instead of splicing them into the command', () => {
+    const invocation = buildAppleSiliconXkeyInvocation('4.2.0', 60037, 60_000, {
+      mode: 'wechat-4.1.13',
+      profile: 'wechat-4.1.13; rm -rf /'
+    })
+
+    expect(invocation.profile).toBe('wechat-4.1.13')
+    expect(invocation.args).toEqual(['60037', '120000', '--profile', 'wechat-4.1.13', '--account'])
   })
 
   it.each(['4.1.8', '4.1.9.57', '4.1.10', '未检测到'])(
@@ -121,6 +193,35 @@ describe('parseXkeyHelperOutput', () => {
       })
     }
   )
+
+  it('only detects the WeChat version when auto-selecting the helper', () => {
+    expect(shouldDetectWechatVersion()).toBe(true)
+    expect(shouldDetectWechatVersion({ mode: 'auto' })).toBe(true)
+    expect(shouldDetectWechatVersion({ mode: 'wechat-4.1.13' })).toBe(false)
+    expect(shouldDetectWechatVersion({ mode: 'legacy' })).toBe(false)
+    expect(shouldDetectWechatVersion({ helperPath: '/tmp/xkey_helper' })).toBe(false)
+  })
+
+  it('resolves the helper, mode and profile from the override settings', () => {
+    expect(
+      resolveXkeyHelperSelection('4.2.0', {
+        mode: 'wechat-4.1.13',
+        profile: 'wechat-4.1.8'
+      })
+    ).toEqual({
+      mode: 'wechat-4.1.13',
+      helper: 'xkey_helper_4_1_13',
+      profile: 'wechat-4.1.8'
+    })
+  })
+
+  it('keeps auto mode when nothing is specified', () => {
+    expect(resolveXkeyHelperSelection('4.1.13.91')).toEqual({
+      mode: 'wechat-4.1.13',
+      helper: 'xkey_helper_4_1_13',
+      profile: 'wechat-4.1.13'
+    })
+  })
 
   it('extracts a helper error embedded in AppleScript diagnostics', () => {
     expect(

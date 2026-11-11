@@ -75,7 +75,7 @@ import type {
   ImageInsight
 } from '../shared/image-insight'
 import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../shared/system-ocr'
-import { KeyServiceMac } from './key-service-mac'
+import { KeyServiceMac, type DatabaseKeyResult } from './key-service-mac'
 import { getMacArchSnapshot } from './macos-arch'
 import { shouldProbeIntelEnvironment } from '../shared/macos-arch'
 import { KeyService as KeyServiceWin } from './key-service-win'
@@ -1849,10 +1849,17 @@ app.whenReady().then(async () => {
       const onStatus = (message: string): void => {
         if (!event.sender.isDestroyed()) event.sender.send('key:dbKeyStatus', { message })
       }
-      const result =
-        process.platform === 'win32'
-          ? await keyServiceWin.autoGetDbKey(60_000, onStatus)
-          : await keyServiceMac.autoGetDbKey(onStatus, 60_000, accountRoot)
+      let result: DatabaseKeyResult
+      if (process.platform === 'win32') {
+        result = await keyServiceWin.autoGetDbKey(60_000, onStatus)
+      } else {
+        const settings = loadSettings()
+        result = await keyServiceMac.autoGetDbKey(onStatus, 60_000, accountRoot, {
+          mode: settings.macKeyHelperMode,
+          helperPath: settings.macKeyHelperPath,
+          profile: settings.macKeyHelperProfile
+        })
+      }
       if (!result.success || !result.key) return result
 
       const selectedRoot = String(accountRoot || '').trim()

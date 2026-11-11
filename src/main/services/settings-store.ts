@@ -3,6 +3,7 @@ import fs from 'fs-extra'
 import path from 'path'
 import os from 'os'
 import type { TextToSpeechModel } from '../../shared/text-to-speech'
+import type { MacKeyHelperMode } from '../../shared/database-key'
 
 /**
  * 把 V3 时代的 "...\\Documents\\WeChat Files" 路径重定向到
@@ -42,6 +43,15 @@ export interface AppSettings {
   ttsSelectedVoiceId: string
   ttsModel: TextToSpeechModel
   windowsWechatPort: string
+  /**
+   * macOS Apple Silicon 密钥捕获工具覆盖。默认 `auto` 按微信版本选择；
+   * 微信外壳版本与实际内核不一致时可显式指定。
+   */
+  macKeyHelperMode: MacKeyHelperMode
+  /** 自定义 helper 可执行文件绝对路径；空串表示使用内置资源。 */
+  macKeyHelperPath: string
+  /** 新版 helper 的 `--profile`；空串表示 `wechat-4.1.13`。 */
+  macKeyHelperProfile: string
   reportImagePostfixText: string
   /**
    * Query Agent 是否为桌面「问问微信」与 Agent Hub 查询类问题的主路径。
@@ -75,6 +85,15 @@ const UPDATE_VERSION_PATTERN = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][0-9A-Za-z.-]{1
 export function normalizeSkippedUpdateVersion(value: unknown): string {
   const text = String(value ?? '').trim()
   return UPDATE_VERSION_PATTERN.test(text) ? text : ''
+}
+
+/** 非法/历史值一律收敛为 `auto`，避免把无效模式传给 helper 选择逻辑。 */
+export function normalizeMacKeyHelperMode(value: unknown): MacKeyHelperMode {
+  return value === 'legacy' || value === 'wechat-4.1.13' ? value : 'auto'
+}
+
+function normalizeTrimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 function getDefaultDbRoot(): string {
@@ -158,6 +177,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   ttsSelectedVoiceId: '',
   ttsModel: 's2.1-pro-free',
   windowsWechatPort: '',
+  macKeyHelperMode: 'auto',
+  macKeyHelperPath: '',
+  macKeyHelperProfile: '',
   reportImagePostfixText: '今日日报',
   queryAgentEnabled: true,
   closeAction: 'ask',
@@ -217,6 +239,9 @@ export function loadSettings(): AppSettings {
       }
       // 版本号是拿来逐字比对的：脏值会让「忽略」永远命中不了同一条记录。
       cache.skippedUpdateVersion = normalizeSkippedUpdateVersion(cache.skippedUpdateVersion)
+      cache.macKeyHelperMode = normalizeMacKeyHelperMode(cache.macKeyHelperMode)
+      cache.macKeyHelperPath = normalizeTrimmedString(cache.macKeyHelperPath)
+      cache.macKeyHelperProfile = normalizeTrimmedString(cache.macKeyHelperProfile)
       // 防撤回已下线（设置入口已隐藏）：历史版本可能把它持久化为 true。
       // 这里强制收敛为 false 并回写磁盘，确保旧的撤回监听与撤回日志不会继续运行。
       if (cache.recallProtectionEnabled || retiredKeepProcess !== undefined) {
@@ -239,6 +264,9 @@ export function saveSettings(next: AppSettings): AppSettings {
     keepPersonalWechatProcess?: unknown
   }
   delete sanitized.keepPersonalWechatProcess
+  sanitized.macKeyHelperMode = normalizeMacKeyHelperMode(sanitized.macKeyHelperMode)
+  sanitized.macKeyHelperPath = normalizeTrimmedString(sanitized.macKeyHelperPath)
+  sanitized.macKeyHelperProfile = normalizeTrimmedString(sanitized.macKeyHelperProfile)
   cache = { ...sanitized, recallProtectionEnabled: false }
   try {
     ensureDir()

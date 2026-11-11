@@ -579,6 +579,9 @@ declare global {
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
+          macKeyHelperMode: import('../shared/database-key').MacKeyHelperMode
+          macKeyHelperPath: string
+          macKeyHelperProfile: string
           reportImagePostfixText: string
           imageXorKey: string
           imageAesKey: string
@@ -621,6 +624,9 @@ declare global {
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
+          macKeyHelperMode: import('../shared/database-key').MacKeyHelperMode
+          macKeyHelperPath: string
+          macKeyHelperProfile: string
           reportImagePostfixText: string
           imageXorKey: string
           imageAesKey: string
@@ -646,6 +652,9 @@ declare global {
           ttsSelectedVoiceId: string
           ttsModel: import('../shared/text-to-speech').TextToSpeechModel
           windowsWechatPort: string
+          macKeyHelperMode: import('../shared/database-key').MacKeyHelperMode
+          macKeyHelperPath: string
+          macKeyHelperProfile: string
           reportImagePostfixText: string
           imageXorKey: string
           imageAesKey: string
@@ -667,6 +676,9 @@ declare global {
           showStartupProgress: boolean
           closeAction: 'ask' | 'tray' | 'quit'
           windowsWechatPort: string
+          macKeyHelperMode: import('../shared/database-key').MacKeyHelperMode
+          macKeyHelperPath: string
+          macKeyHelperProfile: string
           imageXorKey: string
           imageAesKey: string
         }

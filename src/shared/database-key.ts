@@ -19,6 +19,19 @@ export type DatabaseKeyValidationCode =
 
 export type DatabaseInitCode = DatabaseKeyValidationCode | 'ACCOUNT_SELECTION_REQUIRED'
 
+/**
+ * macOS Apple Silicon 自动获取密钥时使用的工具。
+ *
+ * 微信 macOS 端的 `CFBundleShortVersionString` 是外壳版本，可能与实际内核版本不一致
+ * （例如显示 4.2.0，内核仍是 4.1.12）。自动模式按外壳版本选择 helper 时会选错，
+ * 因此允许用户显式指定：
+ *
+ * - `auto`：按检测到的微信版本自动选择（默认）
+ * - `legacy`：强制旧版 `xkey_helper`
+ * - `wechat-4.1.13`：强制 `xkey_helper_4_1_13`
+ */
+export type MacKeyHelperMode = 'auto' | 'legacy' | 'wechat-4.1.13'
+
 export interface DatabaseInitResult {
   success: boolean
   code?: DatabaseInitCode

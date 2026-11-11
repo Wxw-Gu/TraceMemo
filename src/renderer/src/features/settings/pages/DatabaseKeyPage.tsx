@@ -4,6 +4,7 @@ import { DatabaseKeyDiagnostics } from '../database-key/DatabaseKeyDiagnostics'
 import { DatabaseKeyEditor } from '../database-key/DatabaseKeyEditor'
 import { DatabaseKeyStatus } from '../database-key/DatabaseKeyStatus'
 import { DatabaseKeyValidation } from '../database-key/DatabaseKeyValidation'
+import { MacKeyHelperSettings } from '../database-key/MacKeyHelperSettings'
 import { useDatabaseKeyController } from '../database-key/useDatabaseKeyController'
 import type { Contact } from '../../../../../shared/types'
 import type { SettingsSelfInfo } from '../model/types'
@@ -50,6 +51,14 @@ export function DatabaseKeyPage({
     onReturnToLogin,
     onNotice
   })
+
+  const environment = controller.state.environment
+  // 与 DatabaseKeyAutoDetect 同源：只有 Apple Silicon 的 arm64 流程才使用 xkey_helper。
+  const isAppleSiliconMac =
+    environment?.platform === 'darwin' &&
+    (environment.macKeyFlow
+      ? environment.macKeyFlow === 'apple-silicon'
+      : environment.architecture === 'arm64')
 
   const scrollToEditor = (): void => {
     document.getElementById('database-key-editor')?.scrollIntoView({ behavior: 'smooth' })
@@ -110,6 +119,7 @@ export function DatabaseKeyPage({
             onDetect={() => void controller.autoDetectKey()}
             onRefresh={() => void controller.refreshEnvironment()}
           />
+          {isAppleSiliconMac && <MacKeyHelperSettings onNotice={onNotice} />}
 
           <h2 className="settings-section-heading">安全说明</h2>
           <div className="database-key-security-info">

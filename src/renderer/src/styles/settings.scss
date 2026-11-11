@@ -947,6 +947,56 @@
 .database-key-auto-error p {
   color: #79501f;
 }
+.database-key-helper {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+.database-key-helper-heading strong {
+  color: #35403b;
+  font-size: 14px;
+}
+.database-key-helper-heading p {
+  margin: 6px 0 0;
+  color: #66706b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.database-key-helper-field {
+  display: grid;
+  gap: 6px;
+  color: #4a5550;
+  font-size: 12px;
+}
+.database-key-helper-advanced {
+  padding-top: 4px;
+  border-top: 1px solid #edf0ee;
+}
+.database-key-helper-advanced summary {
+  cursor: pointer;
+  color: #66706b;
+  font-size: 12px;
+}
+.database-key-helper-advanced .database-key-helper-field {
+  margin-top: 10px;
+}
+.database-key-helper-advanced small,
+.database-key-helper-actions small {
+  display: block;
+  margin-top: 8px;
+  color: #8b958f;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.database-key-helper-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.database-key-helper-actions small {
+  margin-top: 0;
+}
 .database-key-security-info {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
