@@ -526,37 +526,18 @@ export function PersonalWechatSendPage({
       if (result.stopped.some((target) => target.targets.includes('wechat'))) {
         setMacWechatRebindRequired(true)
       }
-      if (result.stopped.length === 0) {
-        if (result.remaining.length > 0) {
-          setMacResidualProcesses(result.remaining)
-          onNotice('进程状态已变化，请核对更新后的清理目标。')
-          return
-        }
-        setMacResidualDialogOpen(false)
-        setMacResidualProcesses([])
-        await refreshMac4290PortStatus()
-        await restartMacSendRuntime()
-        return
-      }
-      if (result.remaining.length > 0) {
-        setMacResidualProcesses(result.remaining)
-        onNotice(
-          '已结束 ' +
-            result.stopped.length +
-            ' 个进程，仍有 ' +
-            result.remaining.length +
-            ' 个；请核对后重试。'
-        )
-      } else {
-        setMacResidualDialogOpen(false)
-        setMacResidualProcesses([])
-      }
+      const stillAlive = result.remaining
+      setMacResidualProcesses([])
+      setMacResidualDialogOpen(false)
       await refreshMac4290PortStatus()
-      if (result.remaining.length === 0) {
-        await restartMacSendRuntime()
-      } else {
-        await refresh()
+      if (stillAlive.length > 0) {
+        onNotice(
+          `${result.stopped.length} 个进程已退出，${stillAlive.length} 个系统无法结束（${stillAlive
+            .map((target) => target.name)
+            .join('、')}）；正在改用可用端口启动发送组件…`
+        )
       }
+      await restartMacSendRuntime()
     } catch (reason) {
       onNotice(reason instanceof Error ? reason.message : '清理残留进程失败')
     } finally {
@@ -571,9 +552,21 @@ export function PersonalWechatSendPage({
       if (snapshot.lifecycle !== 'online') {
         throw new Error(snapshot.error || '发送组件启动失败')
       }
+      if (snapshot.binding?.runtimeState === 'ready' && snapshot.binding.bound) {
+        onNotice('发送 Host 已启动并连接到已有微信会话。')
+      }
       await refresh()
       await refreshMac4290PortStatus()
-      onNotice('已清理并重启发送 Host；如刚才关闭了微信，请重新打开微信并绑定。')
+      if (!snapshot.binding?.bound) {
+        const fallback = snapshot.portFallbackFrom
+          ? `${snapshot.portFallbackFrom} 已被占用，已改用 ${snapshot.port} 端口。`
+          : ''
+        onNotice(
+          fallback
+            ? `发送 Host 已在 ${snapshot.port} 端口启动。${fallback}`
+            : '已清理并重启发送 Host；如刚才关闭了微信，请重新打开微信并绑定。'
+        )
+      }
     } catch (reason) {
       onNotice(reason instanceof Error ? reason.message : '发送组件启动失败')
     } finally {
@@ -1033,8 +1026,8 @@ export function PersonalWechatSendPage({
           <AlertDialogHeader>
             <AlertDialogTitle>清理微信残留进程？</AlertDialogTitle>
             <AlertDialogDescription>
-              将结束下面列出的微信进程，以及所有 TraceMemo 发送 Host（包括未占用 4290 的 Host）。
-              完成清理后会自动重启发送 Host；若列表包含微信，微信会关闭，之后需要重新打开微信并绑定。
+              将结束下面列出的微信进程、TraceMemo 发送 Host 和由 TraceMemo Runtime 启动的 Frida Helper。
+              所有目标都退出后才会自动重启发送 Host；若列表包含微信，微信会关闭，之后需要重新打开微信并绑定。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <ul className="grid gap-2 rounded-md border border-border-subtle p-3 text-sm">
@@ -1045,9 +1038,20 @@ export function PersonalWechatSendPage({
                   PID {item.pid} ·{' '}
                   {item.targets
                     .map((target) =>
-                      target === 'wechat' ? '微信进程' : target === 'host' ? '发送 Host' : '4290 端口'
+                      target === 'wechat'
+                        ? '微信进程'
+                        : target === 'host'
+                          ? '发送 Host'
+                          : target === 'frida_helper'
+                            ? 'Frida Helper'
+                            : '4290 端口'
                     )
                     .join('、')}
+                  {item.uninterruptible
+                    ? ` · 内核不可中断${item.state ? `（${item.state}）` : ''}`
+                    : item.state
+                      ? ` · 状态 ${item.state}`
+                      : ''}
                 </span>
               </li>
             ))}

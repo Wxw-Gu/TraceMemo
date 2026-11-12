@@ -225,6 +225,23 @@ describe('POST /api/v1/wechat/send', () => {
     expect(invalid.status).toBe(400)
   })
 
+  it('透传群聊 @ 全体目标', async () => {
+    const response = await post({
+      to: 'fixture-room@chatroom',
+      isGroup: true,
+      type: 'text',
+      text: '@所有人 请查看这条测试消息',
+      at: { 'notify@all': '所有人' }
+    })
+
+    expect(response.status).toBe(200)
+    expect(lastAction().content).toEqual({
+      type: 'text',
+      text: '@所有人 请查看这条测试消息',
+      at: { 'notify@all': '所有人' }
+    })
+  })
+
   it('拒绝格式错误的群聊 @ 成员映射', async () => {
     const response = await post({
       to: 'fixture-room@chatroom',

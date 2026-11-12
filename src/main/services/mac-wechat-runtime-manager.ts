@@ -1,4 +1,5 @@
-import { execFileSync, spawn, type ChildProcess } from 'child_process'
+import { execFile, execFileSync, spawn, type ChildProcess } from 'child_process'
+import { promisify } from 'node:util'
 import { chmodSync, existsSync } from 'fs'
 import { get, request as httpRequest } from 'http'
 import { join } from 'path'
@@ -30,6 +31,8 @@ import {
   MacWechatRuntimeManifestCache
 } from './mac-wechat-runtime-artifact'
 
+const execFileAsync = promisify(execFile)
+
 /*
  * MacWechatRuntimeManager — lifecycle owner of the built-in macOS native
  * WeChat runtime (tm-wechat-host + libtmwechat.dylib).
@@ -48,10 +51,10 @@ import {
  *     auto-binding, that path dead-ends in a 20s attach timeout every time.
  */
 
-/* 默认 4290。进程会 fork 继承监听 fd（CLOEXEC 只挡 exec），
- * host 崩溃后孤儿进程仍扣着端口，新 host bind 失败会返回 1 无限重启。
- * 被占用时用 TM_WECHAT_HOST_PORT 指到备用端口。 */
-const PORT = Number(process.env.TM_WECHAT_HOST_PORT) || 4290
+/* Helper 会继承监听 fd，并在 Host 退出后继续持有；它卡在内核不可中断态时
+ * SIGKILL 也不回收，重试同一端口永远失败，所以启动必须允许备用端口。 */
+const DEFAULT_PORT = Number(process.env.TM_WECHAT_HOST_PORT) || 4290
+const PORT_FALLBACK_SPAN = 3
 const HOST = '127.0.0.1'
 const START_TIMEOUT_MS = 15_000
 const REQUEST_TIMEOUT_MS = 30_000
@@ -60,6 +63,36 @@ const CRASH_RESTART_DELAY_MS = 1_500
  * real challenge->sign->check cycle inside the host, which is bounded at 15s. */
 const LICENSE_STATUS_TIMEOUT_MS = 8_000
 const LICENSE_REFRESH_TIMEOUT_MS = 20_000
+
+/* 仅地址占用可以通过切换端口恢复。 */
+function isPortConflictDiagnostic(diagnostic: string): boolean {
+  return /address already in use|EADDRINUSE|bind .*failed/i.test(diagnostic)
+}
+
+async function describePortHolder(port: number): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      '/usr/sbin/lsof',
+      ['-nP', '-t', `-iTCP:${port}`, '-sTCP:LISTEN'],
+      { timeout: 2_000 }
+    )
+    const pid = Number(stdout.trim().split(/\s+/)[0])
+    if (!Number.isSafeInteger(pid) || pid <= 0) return ''
+    try {
+      const { stdout: command } = await execFileAsync(
+        '/bin/ps',
+        ['-p', String(pid), '-o', 'comm='],
+        { timeout: 2_000 }
+      )
+      const name = command.trim().split('/').pop() || 'unknown'
+      return `${name}（PID ${pid}）`
+    } catch {
+      return `PID ${pid}（进程信息不可读，可能卡在退出中）`
+    }
+  } catch {
+    return ''
+  }
+}
 
 interface MacWechatSenderStatusInput {
   snapshot: MacWechatRuntimeSnapshot
@@ -73,6 +106,15 @@ export function shouldClearWechatRestartRequired(
   currentWechatPid: number
 ): boolean {
   return orphanWechatPid > 0 && currentWechatPid > 0 && orphanWechatPid !== currentWechatPid
+}
+
+export function formatMacWechatHostStartupFailure(code: number | null, diagnostic: string): string {
+  const lines = diagnostic.trim().split('\n').filter(Boolean)
+  const detail = lines[lines.length - 1]
+  if (detail) return `发送运行时启动失败（进程退出码 ${code ?? '未知'}）：${detail}`
+  return code === null
+    ? '发送运行时在启动过程中退出'
+    : `发送运行时启动失败（进程退出码 ${code}）`
 }
 
 export function resolveMacWechatSendMechanism(
@@ -226,17 +268,20 @@ export class MacWechatRuntimeManager {
   private lastError: string | null = null
   private restartTimer: NodeJS.Timeout | null = null
   private manuallyStopped = false
+  private activePort = DEFAULT_PORT
+  private portFallbackFrom: number | null = null
 
   getPort(): number {
-    return PORT
+    return this.activePort
   }
 
   getSnapshot(): MacWechatRuntimeSnapshot {
     return {
       lifecycle: this.lifecycle,
       wechatRestartRequired: this.wechatRestartRequired,
-      endpoint: `http://${HOST}:${PORT}`,
-      port: PORT,
+      endpoint: `http://${HOST}:${this.activePort}`,
+      port: this.activePort,
+      ...(this.portFallbackFrom === null ? {} : { portFallbackFrom: this.portFallbackFrom }),
       runtimeDir: this.resolveRuntimeDir() ?? undefined,
       error: this.lastError ?? undefined,
       binding: this.lastBinding ?? undefined
@@ -394,7 +439,7 @@ export class MacWechatRuntimeManager {
      * frida session, so the app is immediately ready with NO re-bind, exactly
      * the "keep the send capability process" behaviour the user asked to carry over.
      */
-    if (await this.ping()) {
+    if (await this.adoptRunningHost()) {
       this.lifecycle = 'online'
       this.child = null
       this.wechatRestartRequired = false
@@ -458,46 +503,151 @@ export class MacWechatRuntimeManager {
       return this.getSnapshot()
     }
 
-    this.lifecycle = 'starting'
-    this.lastError = null
+    const manifestPath = join(runtimeDir, 'runtime-manifest.json')
+    /* stderr 保持管道以便启动失败时取诊断；运行日志走 hostLogFile。 */
+    const hostLogFile = join(app.getPath('logs'), 'tm-wechat-host.log')
+    const candidates = this.candidatePorts()
+    const failures: Array<{ port: number; detail: string; portConflict: boolean }> = []
 
-    try {
-      /* Host stderr goes to /dev/null (stdio ignored, see note above), so the
-       * host writes its own log file via TM_WECHAT_LOG_FILE. Without this the
-       * agent's stage beacons (send-enter / cdn-enter / …) are invisible and a
-       * media/CDN stall is undiagnosable. info level so stage beacons show. */
-      const hostLogFile = join(app.getPath('logs'), 'tm-wechat-host.log')
-      this.child = spawn(
-        hostPath,
-        [
-          '--port',
-          String(PORT),
-          '--manifest',
-          join(runtimeDir, 'runtime-manifest.json'),
-          '--log-level',
-          'info'
-        ],
-        {
-          cwd: runtimeDir,
-          stdio: 'ignore',
-          detached: false,
-          env: { ...process.env, TM_WECHAT_LOG_FILE: hostLogFile }
+    for (const port of candidates) {
+      this.activePort = port
+      this.lifecycle = 'starting'
+      this.lastError = null
+
+      let child: ChildProcess
+      try {
+        child = spawn(
+          hostPath,
+          ['--port', String(port), '--manifest', manifestPath, '--log-level', 'info'],
+          {
+            cwd: runtimeDir,
+            stdio: ['ignore', 'ignore', 'pipe'],
+            detached: false,
+            env: { ...process.env, TM_WECHAT_LOG_FILE: hostLogFile }
+          }
+        )
+      } catch (error) {
+        this.lifecycle = 'stopped'
+        this.lastError = String(error)
+        return this.getSnapshot()
+      }
+      this.child = child
+
+      let startupDiagnostic = ''
+      let exitedDuringStartup = false
+      child.stderr?.setEncoding('utf8')
+      child.stderr?.on('data', (chunk: string) => {
+        startupDiagnostic = (startupDiagnostic + chunk).slice(-2_000)
+      })
+      child.on('exit', () => {
+        exitedDuringStartup = true
+        if (this.child === child) this.child = null
+      })
+      child.on('error', (error) => {
+        exitedDuringStartup = true
+        startupDiagnostic += `\nspawn error: ${error.message}`
+        if (this.child === child) this.child = null
+      })
+
+      /* Host 退出就结束等待，不必耗满 healthz 超时。 */
+      let reachable = false
+      const deadline = Date.now() + START_TIMEOUT_MS
+      while (Date.now() < deadline) {
+        if (await this.ping()) {
+          reachable = true
+          break
         }
-      )
-    } catch (error) {
-      this.lifecycle = 'stopped'
-      this.lastError = String(error)
-      return this.getSnapshot()
+        if (exitedDuringStartup) break
+        await new Promise((resolve) => setTimeout(resolve, 300))
+      }
+
+      if (reachable) {
+        this.lifecycle = 'online'
+        this.portFallbackFrom = port === DEFAULT_PORT ? null : DEFAULT_PORT
+        this.attachChildLifecycleHandlers(child, startupDiagnostic)
+        if (this.portFallbackFrom !== null) {
+          appLogger.write({
+            level: 'warn',
+            scope: 'mac-wechat-runtime',
+            message: 'host_port_fallback',
+            details: { preferredPort: DEFAULT_PORT, activePort: port }
+          })
+        }
+        await this.refreshBinding().catch(() => undefined)
+        if (
+          !this.lastBinding ||
+          !this.manifest ||
+          !bindingMatchesRuntimeManifest(this.lastBinding, this.manifest)
+        ) {
+          this.lifecycle = 'crashed_unbound'
+          this.lastError = '运行中的 host 与 runtime manifest 不一致'
+          return this.getSnapshot()
+        }
+        return this.getSnapshot()
+      }
+
+      const portConflict = isPortConflictDiagnostic(startupDiagnostic)
+      failures.push({
+        port,
+        detail: exitedDuringStartup
+          ? formatMacWechatHostStartupFailure(child.exitCode, startupDiagnostic)
+          : '发送运行时未在超时内响应 /healthz',
+        portConflict
+      })
+      appLogger.write({
+        level: 'warn',
+        scope: 'mac-wechat-runtime',
+        message: 'host_port_attempt_failed',
+        details: { port, portConflict }
+      })
+      /* 其他启动失败换端口也不会好，直接停。 */
+      if (!portConflict) break
+      if (child.exitCode === null && child.signalCode === null) {
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          /* 进程可能已在状态检查后退出。 */
+        }
+      }
     }
 
-    this.child.on('exit', (code) => {
-      const exitedDuringStartup = this.lifecycle === 'starting' && this.startInFlight !== null
+    this.lifecycle = 'crashed_unbound'
+    this.lastError = await this.formatPortRotationFailure(failures)
+    return this.getSnapshot()
+  }
+
+  /* Always retry the preferred port first so it is reused once available. */
+  private candidatePorts(): number[] {
+    const ports = [DEFAULT_PORT, this.activePort]
+    for (let offset = 1; offset <= PORT_FALLBACK_SPAN; offset++) ports.push(DEFAULT_PORT + offset)
+    return ports.filter(
+      (port, index) =>
+        Number.isSafeInteger(port) && port > 0 && port < 65_536 && ports.indexOf(port) === index
+    )
+  }
+
+  /* Reuse an existing Host on any supported port before spawning another one. */
+  private async adoptRunningHost(): Promise<boolean> {
+    for (const port of this.candidatePorts()) {
+      const previous = this.activePort
+      this.activePort = port
+      if (await this.ping()) {
+        this.portFallbackFrom = port === DEFAULT_PORT ? null : DEFAULT_PORT
+        return true
+      }
+      this.activePort = previous
+    }
+    return false
+  }
+
+  private attachChildLifecycleHandlers(child: ChildProcess, startupDiagnostic: string): void {
+    child.on('exit', (code) => {
       const wasBound =
         this.lastBinding?.bound === true ||
         this.lastBinding?.sessionAttached === true ||
         this.lastBinding?.bindingState === 'binding'
       const orphanPid = this.lastBinding?.boundWechatPid || this.lastBinding?.wechatPid || 0
-      this.child = null
+      if (this.child === child) this.child = null
       this.lastBinding = null
       if (this.lifecycle === 'stopped') return // deliberate shutdown
 
@@ -511,31 +661,24 @@ export class MacWechatRuntimeManager {
           message: 'host_died_while_bound',
           details: { code: code ?? null, orphanWechatPid: orphanPid }
         })
-      } else {
-        this.lifecycle = 'crashed_unbound'
-        if (exitedDuringStartup) {
-          this.lastError =
-            code === null
-              ? '发送运行时在启动过程中退出'
-              : `发送运行时启动失败（进程退出码 ${code}）`
-        }
-        appLogger.write({
-          level: 'warn',
-          scope: 'mac-wechat-runtime',
-          message: 'host_died_while_unbound_auto_restart',
-          details: { code: code ?? null }
-        })
-        if (!exitedDuringStartup) {
-          if (this.restartTimer) clearTimeout(this.restartTimer)
-          this.restartTimer = setTimeout(() => {
-            void this.ensureStarted()
-          }, CRASH_RESTART_DELAY_MS)
-        }
+        return
       }
+      this.lifecycle = 'crashed_unbound'
+      this.lastError = formatMacWechatHostStartupFailure(code, startupDiagnostic)
+      appLogger.write({
+        level: 'warn',
+        scope: 'mac-wechat-runtime',
+        message: 'host_died_while_unbound_auto_restart',
+        details: { code: code ?? null }
+      })
+      if (this.restartTimer) clearTimeout(this.restartTimer)
+      this.restartTimer = setTimeout(() => {
+        void this.ensureStarted()
+      }, CRASH_RESTART_DELAY_MS)
     })
-    this.child.on('error', (error) => {
+    child.on('error', (error) => {
       if (this.lifecycle === 'stopped') return
-      this.child = null
+      if (this.child === child) this.child = null
       this.lifecycle = 'crashed_unbound'
       this.lastError = '无法启动发送 Host：' + error.message
       appLogger.write({
@@ -545,33 +688,18 @@ export class MacWechatRuntimeManager {
         details: { detail: error.message }
       })
     })
+  }
 
-    // Wait for /healthz
-    const deadline = Date.now() + START_TIMEOUT_MS
-    while (Date.now() < deadline) {
-      if (await this.ping()) {
-        this.lifecycle = 'online'
-        await this.refreshBinding().catch(() => undefined)
-        if (
-          !this.lastBinding ||
-          !this.manifest ||
-          !bindingMatchesRuntimeManifest(this.lastBinding, this.manifest)
-        ) {
-          this.lifecycle = 'crashed_unbound'
-          this.lastError = '运行中的 host 与 runtime manifest 不一致'
-          return this.getSnapshot()
-        }
-        return this.getSnapshot()
-      }
-      if (this.child === null) break // died during startup
-      await new Promise((resolve) => setTimeout(resolve, 300))
-    }
-
-    if (this.lifecycle === 'starting') {
-      this.lifecycle = 'crashed_unbound'
-      this.lastError = 'host did not answer /healthz in time'
-    }
-    return this.getSnapshot()
+  private async formatPortRotationFailure(
+    failures: Array<{ port: number; detail: string; portConflict: boolean }>
+  ): Promise<string> {
+    const last = failures[failures.length - 1]
+    if (!last) return '发送运行时启动失败'
+    if (!failures.some((failure) => failure.portConflict)) return last.detail
+    const holder = await describePortHolder(last.port)
+    const holderText = holder ? `，占用者 ${holder}` : ''
+    if (failures.length === 1) return `${last.detail}${holderText}`
+    return `端口 ${failures.map((failure) => failure.port).join('、')} 均被占用${holderText}。请重启系统释放端口，或用 TM_WECHAT_HOST_PORT 指定其他端口。`
   }
 
   private request(
@@ -588,7 +716,7 @@ export class MacWechatRuntimeManager {
       const req = transport(
         {
           host: HOST,
-          port: PORT,
+          port: this.activePort,
           path,
           method,
           timeout: timeoutMs,
@@ -836,7 +964,7 @@ export class MacWechatRuntimeManager {
         arch: process.arch,
         sipDisabled: true,
         wechatRunning: false,
-        endpoint: `http://${HOST}:${PORT}`,
+        endpoint: `http://${HOST}:${this.activePort}`,
         endpointReady: false,
         runtimeReady: false,
         attachReady: false,
@@ -891,7 +1019,7 @@ export class MacWechatRuntimeManager {
         arch: process.arch,
         sipDisabled: true,
         wechatRunning: false,
-        endpoint: `http://${HOST}:${PORT}`,
+        endpoint: `http://${HOST}:${this.activePort}`,
         endpointReady: false,
         runtimeReady: false,
         attachReady: false,

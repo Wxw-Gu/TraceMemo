@@ -173,6 +173,53 @@ describe('PersonalWechatSendPage on macOS', () => {
     )
   })
 
+  it('still starts the runtime when a target survives cleanup, and names it', async () => {
+    const onNotice = vi.fn()
+    cleanupResidualProcesses.mockResolvedValueOnce({
+      stopped: [],
+      remaining: [
+        {
+          pid: 404,
+          name: 'frida-helper',
+          state: 'UE',
+          uninterruptible: true,
+          targets: ['frida_helper', 'port_4290'],
+          confirmationToken: 'process-identity-404'
+        }
+      ],
+      runtimeStopped: false
+    })
+    render(<PersonalWechatSendPage onNotice={onNotice} />)
+
+    await screen.findByText('运行环境已就绪')
+    fireEvent.click(screen.getByRole('button', { name: '清理残留以及微信进程' }))
+    fireEvent.click(await screen.findByRole('button', { name: '确认结束进程' }))
+
+    await waitFor(() => expect(startMacRuntime).toHaveBeenCalledOnce())
+    expect(onNotice).toHaveBeenCalledWith(
+      '0 个进程已退出，1 个系统无法结束（frida-helper）；正在改用可用端口启动发送组件…'
+    )
+  })
+
+  it('reports the fallback port when the runtime comes up on a spare one', async () => {
+    listResidualProcesses.mockResolvedValue([])
+    startMacRuntime.mockResolvedValueOnce({
+      lifecycle: 'online',
+      port: 4291,
+      portFallbackFrom: 4290
+    })
+    const onNotice = vi.fn()
+    render(<PersonalWechatSendPage onNotice={onNotice} />)
+
+    await screen.findByText('运行环境已就绪')
+    fireEvent.click(screen.getByRole('button', { name: '清理残留以及微信进程' }))
+
+    await waitFor(() => expect(startMacRuntime).toHaveBeenCalledOnce())
+    expect(onNotice).toHaveBeenCalledWith(
+      '发送 Host 已在 4291 端口启动。4290 已被占用，已改用 4291 端口。'
+    )
+  })
+
   it('uses the same cleanup button to start the runtime when no residual process exists', async () => {
     listResidualProcesses.mockResolvedValue([])
     const onNotice = vi.fn()

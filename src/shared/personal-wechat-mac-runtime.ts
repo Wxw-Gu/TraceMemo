@@ -25,7 +25,10 @@ export interface MacWechatSendRuntimeAvailabilityResult {
 export interface MacWechatResidualProcess {
   pid: number
   name: string
-  targets: Array<'wechat' | 'host' | 'port_4290'>
+  state?: string
+  /** 明确处于内核不可中断等待状态。 */
+  uninterruptible?: boolean
+  targets: Array<'wechat' | 'host' | 'port_4290' | 'frida_helper'>
   confirmationToken: string
 }
 
@@ -110,6 +113,8 @@ export interface MacWechatRuntimeSnapshot {
   wechatRestartRequired: boolean
   endpoint: string
   port: number
+  /** 自动切换端口时记录首选端口。 */
+  portFallbackFrom?: number
   runtimeDir?: string
   error?: string
   binding?: MacWechatBindingStatus

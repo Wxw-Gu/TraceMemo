@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   deriveMacWechatSenderStatus,
+  formatMacWechatHostStartupFailure,
   MacWechatRuntimeManager,
   resolveMacWechatSendMechanism
 } from '../../src/main/services/mac-wechat-runtime-manager'
@@ -96,6 +97,11 @@ class ConcurrentStartManager extends MacWechatRuntimeManager {
 }
 
 describe('deriveMacWechatSenderStatus', () => {
+  it('shows the Native Host startup diagnostic instead of only exit code 1', () => {
+    expect(formatMacWechatHostStartupFailure(1, 'bind 127.0.0.1:4290 failed: Address already in use\n'))
+      .toBe('发送运行时启动失败（进程退出码 1）：bind 127.0.0.1:4290 failed: Address already in use')
+  })
+
   it('shares one in-flight start promise with concurrent status reads', async () => {
     const manager = new ConcurrentStartManager()
 

@@ -3524,6 +3524,7 @@ app.whenReady().then(async () => {
           targets.some(
             (target) =>
               target.targets.includes('host') ||
+              target.targets.includes('frida_helper') ||
               (macWechatRuntimeManager.getPort() === 4290 &&
                 target.targets.includes('port_4290'))
           )
