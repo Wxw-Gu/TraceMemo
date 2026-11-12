@@ -493,6 +493,20 @@ export function normalizeActionRequest(value: unknown): WechatActionRequest | nu
   if (contentType === 'text') {
     const text = String((content as { text?: unknown }).text || '').trim()
     if (!text || text.length > 2_000) return null
+    const rawAt = (content as { at?: unknown }).at
+    let at: Record<string, string> | undefined
+    if (rawAt !== undefined) {
+      if (!rawAt || typeof rawAt !== 'object' || Array.isArray(rawAt)) return null
+      if (recipientType !== 'group' && !recipientId.endsWith('@chatroom')) return null
+      const entries = Object.entries(rawAt as Record<string, unknown>)
+      if (entries.length > 50) return null
+      at = {}
+      for (const [rawWxid, rawName] of entries) {
+        const wxid = rawWxid.trim()
+        if (!wxid || typeof rawName !== 'string') return null
+        at[wxid] = rawName.trim()
+      }
+    }
     return {
       ...input,
       origin,
@@ -509,7 +523,7 @@ export function normalizeActionRequest(value: unknown): WechatActionRequest | nu
           ? { name: String((recipient as { name?: unknown }).name).trim() }
           : {})
       },
-      content: { type: 'text', text }
+      content: { type: 'text', text, ...(at ? { at } : {}) }
     } as WechatActionRequest
   }
   if (contentType !== 'image' && contentType !== 'voice') return null
@@ -560,7 +574,14 @@ function toPersonalWechatSendRequest(request: WechatActionRequest): PersonalWech
     to: request.recipient.id,
     isGroup: request.recipient.type === 'group'
   }
-  if (request.content.type === 'text') return { ...base, type: 'text', text: request.content.text }
+  if (request.content.type === 'text') {
+    return {
+      ...base,
+      type: 'text',
+      text: request.content.text,
+      ...(request.content.at ? { at: request.content.at } : {})
+    }
+  }
   if (request.content.type === 'image') {
     return { ...base, type: 'image', filePath: request.content.path }
   }

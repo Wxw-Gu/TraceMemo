@@ -127,14 +127,16 @@ function buildRunner(options: {
 
 const run = (
   runner: AutomationActionRunner,
-  rule: AutomationRule
+  rule: AutomationRule,
+  triggerSender?: { wxid: string; displayName: string }
 ): Promise<Awaited<ReturnType<AutomationActionRunner['run']>>> =>
   runner.run({
     executionId: EXECUTION_ID,
     rule,
     conversationId: GROUP_ID,
     isGroup: true,
-    sourceDisplayName: '测试群'
+    sourceDisplayName: '测试群',
+    ...(triggerSender ? { triggerSender } : {})
   })
 
 const statusOf = (
@@ -145,7 +147,10 @@ const statusOf = (
 describe('AutomationActionRunner', () => {
   it('按 收到消息 → 规则匹配 → 回复确认 → 生成日报 → 发送图片 的顺序执行', async () => {
     const { runner, calls, reports } = buildRunner({})
-    const result = await run(runner, makeRule())
+    const result = await run(runner, makeRule(), {
+      wxid: 'wxid_fixture_sender',
+      displayName: '测试成员'
+    })
 
     expect(result.status).toBe('success')
     expect(result.pngPath).toBe('/tmp/report.png')
@@ -167,13 +172,21 @@ describe('AutomationActionRunner', () => {
     // 先回文字，再发图片 —— 顺序反了用户会先收到图再收到"正在生成"。
     expect(calls).toHaveLength(2)
     expect(calls[0].content.type).toBe('text')
+    expect(calls[0].content).toMatchObject({
+      type: 'text',
+      at: { wxid_fixture_sender: '测试成员' }
+    })
     expect(calls[1].content.type).toBe('image')
+    expect(calls[1].content).not.toHaveProperty('at')
     expect(reports).toEqual([{ group: GROUP_ID, range: 'today' }])
   })
 
   it('每一步都带独立的起止时间与耗时', async () => {
     const { runner } = buildRunner({})
-    const result = await run(runner, makeRule())
+    const result = await run(runner, makeRule(), {
+      wxid: 'wxid_fixture_sender',
+      displayName: '测试成员'
+    })
     for (const step of result.steps) {
       expect(step.startedAt).toBeTypeOf('number')
       expect(step.finishedAt).toBeTypeOf('number')
@@ -365,8 +378,36 @@ describe('AutomationActionRunner', () => {
         action.type === 'replyText' ? { ...action, text: '   ' } : action
       )
     })
-    await run(runner, rule)
-    expect(calls[0].content).toEqual({ type: 'text', text: '收到，正在生成今日日报' })
+    await run(runner, rule, { wxid: 'wxid_fixture_sender', displayName: '测试成员' })
+    expect(calls[0].content).toMatchObject({
+      type: 'text',
+      text: '收到，正在生成今日日报',
+      at: { wxid_fixture_sender: '测试成员' }
+    })
+  })
+
+  it('没有可用的触发者昵称时，确认回复不猜测 @ 对象', async () => {
+    const { runner, calls } = buildRunner({})
+    await run(runner, makeRule())
+
+    expect(calls[0].content).toEqual({
+      type: 'text',
+      text: '收到，正在生成今日日报'
+    })
+  })
+
+  it('自定义规则确认回复不附加 @', async () => {
+    const { runner, calls } = buildRunner({})
+    const rule = makeRule((item) => {
+      item.id = 'fixture-custom-rule'
+    })
+
+    await run(runner, rule, { wxid: 'wxid_fixture_sender', displayName: '测试成员' })
+
+    expect(calls[0].content).toEqual({
+      type: 'text',
+      text: '收到，正在生成今日日报'
+    })
   })
 
   it('私聊场景下收件人类型是联系人', async () => {
@@ -390,6 +431,7 @@ describe('AutomationActionRunner', () => {
       type: 'contact',
       id: 'wxid_friend'
     })
+    expect(executeAction.mock.calls[0][0].content).not.toHaveProperty('at')
   })
 
   /**

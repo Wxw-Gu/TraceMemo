@@ -1,5 +1,6 @@
 import {
   AUTOMATION_STEP_LABELS,
+  BUILTIN_DAILY_REPORT_RULE_ID,
   AUTOMATION_SEND_ORIGIN,
   AUTOMATION_SEND_PURPOSE,
   DEFAULT_REPLY_TEXT,
@@ -99,6 +100,8 @@ export interface AutomationRunInput {
   isGroup: boolean
   /** 用户可读的来源名（群名 / 昵称）。**不是** id。 */
   sourceDisplayName: string
+  /** 群消息触发者；仅内置日报确认回复会使用它构造 @。 */
+  triggerSender?: { wxid: string; displayName: string }
 }
 
 export interface AutomationRunResult {
@@ -302,9 +305,19 @@ export class AutomationActionRunner {
       const replyStep = stepAt('reply')
       replyStep.status = 'running'
       replyStep.startedAt = this.now()
+      const triggerWxid = input.triggerSender?.wxid.trim()
+      const triggerDisplayName = input.triggerSender?.displayName.trim()
+      const confirmationAt =
+        input.rule.id === BUILTIN_DAILY_REPORT_RULE_ID &&
+        input.isGroup &&
+        triggerWxid &&
+        triggerDisplayName
+          ? { [triggerWxid]: triggerDisplayName }
+          : undefined
       const sent = await this.sendThroughGateway(input, 'reply', {
         type: 'text',
-        text: replyAction.text?.trim() || DEFAULT_REPLY_TEXT
+        text: replyAction.text?.trim() || DEFAULT_REPLY_TEXT,
+        ...(confirmationAt ? { at: confirmationAt } : {})
       })
       if (!sent.ok) {
         markFailed(replyStep, this.now(), sent.error || '回复确认失败')

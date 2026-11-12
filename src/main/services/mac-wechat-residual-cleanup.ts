@@ -13,6 +13,7 @@ type PidCommandRunner = (
 export interface MacWechatResidualCleanupDependencies {
   platform: NodeJS.Platform
   listWechatPids: () => Promise<number[]>
+  listHostPids: () => Promise<number[]>
   listPortPids: () => Promise<number[]>
   processName: (pid: number) => Promise<string>
   processIdentity: (pid: number) => Promise<string>
@@ -49,6 +50,7 @@ const defaultDependencies: MacWechatResidualCleanupDependencies = {
     return [...new Set(results.flat())]
   },
   listPortPids: () => readPids('/usr/sbin/lsof', ['-nP', '-t', '-iTCP:4290', '-sTCP:LISTEN']),
+  listHostPids: () => readPids('/usr/bin/pgrep', ['-x', 'tm-wechat-host']),
   processName: async (pid) => {
     try {
       const { stdout } = await execFileAsync('/bin/ps', ['-p', String(pid), '-o', 'comm='], {
@@ -81,20 +83,27 @@ interface ObservedTarget extends MacWechatResidualProcess {
 
 function mergeTargets(
   wechatPids: number[],
+  hostPids: number[],
   portPids: number[],
   processNames: Map<number, string>,
   processIdentities: Map<number, string>
 ): ObservedTarget[] {
-  const targets = new Map<number, Set<'wechat' | 'port_4290'>>()
+  const targets = new Map<number, Set<'wechat' | 'host' | 'port_4290'>>()
   for (const pid of wechatPids) {
     if (!Number.isSafeInteger(pid) || pid <= 0) continue
-    const reasons = targets.get(pid) || new Set<'wechat' | 'port_4290'>()
+    const reasons = targets.get(pid) || new Set<'wechat' | 'host' | 'port_4290'>()
     reasons.add('wechat')
+    targets.set(pid, reasons)
+  }
+  for (const pid of hostPids) {
+    if (!Number.isSafeInteger(pid) || pid <= 0) continue
+    const reasons = targets.get(pid) || new Set<'wechat' | 'host' | 'port_4290'>()
+    reasons.add('host')
     targets.set(pid, reasons)
   }
   for (const pid of portPids) {
     if (!Number.isSafeInteger(pid) || pid <= 0) continue
-    const reasons = targets.get(pid) || new Set<'wechat' | 'port_4290'>()
+    const reasons = targets.get(pid) || new Set<'wechat' | 'host' | 'port_4290'>()
     reasons.add('port_4290')
     targets.set(pid, reasons)
   }
@@ -112,20 +121,25 @@ async function inspectObservedTargets(
   dependencies: MacWechatResidualCleanupDependencies
 ): Promise<ObservedTarget[]> {
   if (dependencies.platform !== 'darwin') return []
-  const [rawWechatPids, rawPortPids] = await Promise.all([
+  const [rawWechatPids, rawHostPids, rawPortPids] = await Promise.all([
     dependencies.listWechatPids(),
+    dependencies.listHostPids(),
     dependencies.listPortPids()
   ])
   const wechatPids = rawWechatPids.filter((pid) => pid !== process.pid)
+  const hostPids = rawHostPids.filter((pid) => pid !== process.pid)
   const portPids = rawPortPids.filter((pid) => pid !== process.pid)
   const pids = [...new Set([...wechatPids, ...portPids])].filter(
     (pid) => Number.isSafeInteger(pid) && pid > 0
   )
+  for (const pid of hostPids) {
+    if (Number.isSafeInteger(pid) && pid > 0 && !pids.includes(pid)) pids.push(pid)
+  }
   const [names, identities] = await Promise.all([
     Promise.all(pids.map(async (pid) => [pid, await dependencies.processName(pid)] as const)),
     Promise.all(pids.map(async (pid) => [pid, await dependencies.processIdentity(pid)] as const))
   ])
-  return mergeTargets(wechatPids, portPids, new Map(names), new Map(identities))
+  return mergeTargets(wechatPids, hostPids, portPids, new Map(names), new Map(identities))
 }
 
 export async function inspectMacWechatResidualProcesses(
@@ -170,14 +184,17 @@ export async function cleanupMacWechatResidualProcesses(
   ): Promise<void> => {
     const identity = await dependencies.processIdentity(target.pid)
     if (!expectedIdentity || identity !== expectedIdentity) return
+    if (
+      (target.targets.includes('host') || target.targets.includes('port_4290')) &&
+      !cleanupTargetsNotified
+    ) {
+      cleanupTargetsNotified = true
+      onTargetsConfirmed?.([target])
+    }
     try {
       dependencies.signal(target.pid, signal)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
-    }
-    if (target.targets.includes('port_4290') && !cleanupTargetsNotified) {
-      cleanupTargetsNotified = true
-      onTargetsConfirmed?.([target])
     }
   }
 

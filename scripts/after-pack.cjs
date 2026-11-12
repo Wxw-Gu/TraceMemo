@@ -417,6 +417,7 @@ function isMacosCodeValid(targetPath, run = runCodesign) {
 
 function findMacosHelperPaths(runtimeResources) {
   const paths = MACOS_HELPER_NAMES.map((name) => path.join(runtimeResources, 'resources', name))
+  paths.push(path.join(runtimeResources, 'runtime', 'darwin-arm64', 'tm-wechat-host'))
   if (process.env.TRACEMEMO_EDITION) {
     paths.push(...MACOS_EDITION_CODE_PATHS.map((segments) => path.join(runtimeResources, 'resources', ...segments)))
   }
@@ -427,7 +428,8 @@ function signMacosHelpers(runtimeResources, run = runCodesign) {
   const helperPaths = findMacosHelperPaths(runtimeResources)
   for (const helperPath of helperPaths) {
     if (!helperPath.endsWith('.dylib')) chmodSync(helperPath, 0o755)
-    if (!isMacosCodeValid(helperPath, run)) {
+    const runtimeHost = path.basename(helperPath) === 'tm-wechat-host'
+    if (runtimeHost || !isMacosCodeValid(helperPath, run)) {
       run(['--force', '--sign', '-', helperPath])
     }
     const architectures = readBinaryArchitectures(helperPath)

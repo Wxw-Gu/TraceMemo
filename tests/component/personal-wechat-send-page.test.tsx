@@ -154,7 +154,7 @@ describe('PersonalWechatSendPage on macOS', () => {
     expect(cleanupResidualProcesses).not.toHaveBeenCalled()
   })
 
-  it('cleans only the process the user confirmed and refreshes the runtime state', async () => {
+  it('cleans the confirmed runtime host and automatically restarts it', async () => {
     const onNotice = vi.fn()
     render(<PersonalWechatSendPage onNotice={onNotice} />)
 
@@ -167,10 +167,22 @@ describe('PersonalWechatSendPage on macOS', () => {
         { pid: 202, confirmationToken: 'process-identity-202' }
       ])
     })
-    expect(onNotice).toHaveBeenCalledWith('已结束 1 个残留进程；发送环境状态已刷新。')
-    expect(await screen.findByRole('button', { name: '重新启动发送组件' })).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: '重新启动发送组件' }))
     await waitFor(() => expect(startMacRuntime).toHaveBeenCalledOnce())
+    expect(onNotice).toHaveBeenCalledWith(
+      '已清理并重启发送 Host；如刚才关闭了微信，请重新打开微信并绑定。'
+    )
+  })
+
+  it('uses the same cleanup button to start the runtime when no residual process exists', async () => {
+    listResidualProcesses.mockResolvedValue([])
+    const onNotice = vi.fn()
+    render(<PersonalWechatSendPage onNotice={onNotice} />)
+
+    await screen.findByText('运行环境已就绪')
+    fireEvent.click(screen.getByRole('button', { name: '清理残留以及微信进程' }))
+
+    await waitFor(() => expect(startMacRuntime).toHaveBeenCalledOnce())
+    expect(screen.queryByRole('heading', { name: '清理微信残留进程？' })).not.toBeInTheDocument()
   })
 
   it('shows that WeChat must be reopened and rebound after its process is cleaned', async () => {
@@ -216,6 +228,11 @@ describe('PersonalWechatSendPage on macOS', () => {
       canSendVoice: false
     }
     getSenderStatus.mockReset().mockResolvedValueOnce(senderStatus).mockResolvedValue(stoppedStatus)
+    getCapability
+      .mockReset()
+      .mockResolvedValueOnce(capability)
+      .mockResolvedValue({ ...capability, senderStatus: stoppedStatus })
+    rebindSender.mockReset().mockResolvedValueOnce(stoppedStatus).mockResolvedValueOnce(senderStatus)
     getMacLicenseStatus.mockResolvedValue({
       deviceId: 'mac_test',
       state: 'valid',

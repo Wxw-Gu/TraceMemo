@@ -74,6 +74,7 @@ interface PersonalWechatSendBaseRequest {
 export interface PersonalWechatSendTextRequest extends PersonalWechatSendBaseRequest {
   type: 'text'
   text: string
+  at?: Record<string, string>
 }
 
 export interface PersonalWechatSendImageRequest extends PersonalWechatSendBaseRequest {

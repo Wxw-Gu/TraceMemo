@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'child_process'
+import { execFileSync, spawn, type ChildProcess } from 'child_process'
 import { chmodSync, existsSync } from 'fs'
 import { get, request as httpRequest } from 'http'
 import { join } from 'path'
@@ -27,7 +27,7 @@ import type { PersonalWechatSenderStatus } from '../../shared/personal-wechat'
 import { hasValidWechatLicense } from '../../shared/personal-wechat-mac-send-action'
 import {
   bindingMatchesRuntimeManifest,
-  readMacWechatRuntimeManifest
+  MacWechatRuntimeManifestCache
 } from './mac-wechat-runtime-artifact'
 
 /*
@@ -75,6 +75,16 @@ export function shouldClearWechatRestartRequired(
   return orphanWechatPid > 0 && currentWechatPid > 0 && orphanWechatPid !== currentWechatPid
 }
 
+export function resolveMacWechatSendMechanism(
+  binding: MacWechatBindingStatus | null,
+  manifest: MacWechatRuntimeManifest | null
+): string | undefined {
+  if (!binding || !manifest || !bindingMatchesRuntimeManifest(binding, manifest)) return undefined
+  return binding.wechatVersion
+    ? manifest.capabilitiesByVersion?.[binding.wechatVersion]?.textMechanism
+    : undefined
+}
+
 export function deriveMacWechatSenderStatus({
   snapshot,
   binding,
@@ -86,10 +96,12 @@ export function deriveMacWechatSenderStatus({
   const versionCapabilities = binding?.wechatVersion
     ? manifest.capabilitiesByVersion?.[binding.wechatVersion]
     : undefined
-  const nativeMechanism = versionCapabilities?.textMechanism === 'native-msg-object'
+  const contextIndependentMechanism =
+    versionCapabilities?.textMechanism === 'native-msg-object' ||
+    versionCapabilities?.textMechanism === 'tm-message-source-send'
   const nativeBindingReady =
     identityMatches &&
-    nativeMechanism &&
+    contextIndependentMechanism &&
     binding?.runtimeState === 'ready' &&
     binding.sessionAttached &&
     binding.scriptLoaded
@@ -99,6 +111,12 @@ export function deriveMacWechatSenderStatus({
   if (snapshot.wechatRestartRequired) {
     state = 'error'
     message = '微信发送组件异常退出。由于当前微信进程中可能残留上一发送会话，请重启微信后重新绑定。'
+  } else if (snapshot.lifecycle === 'crashed_unbound') {
+    state = 'error'
+    message = snapshot.error || '微信发送运行时启动失败，请重新启动发送组件。'
+  } else if (snapshot.lifecycle === 'stopped' && snapshot.error) {
+    state = 'error'
+    message = snapshot.error
   } else if (binding && !identityMatches) {
     state = 'error'
     message = '运行中的微信发送 host 与当前 Native Runtime 不一致，请退出旧 host 后重启 TraceMemo。'
@@ -115,7 +133,9 @@ export function deriveMacWechatSenderStatus({
     message = '个人微信已准备好发送日报'
   } else if (binding?.bindingState === 'bound' || binding?.bindingState === 'binding') {
     state = 'hook_not_ready'
-    message = nativeMechanism ? '已绑定，等待原生发送 hook 就绪' : '已绑定，等待捕获微信发送上下文'
+    message = contextIndependentMechanism
+      ? '已绑定，等待原生发送 hook 就绪'
+      : '已绑定，等待捕获微信发送上下文'
   } else if (stale) {
     state = 'stopped'
     message = '检测到微信已重启，请重新绑定'
@@ -190,8 +210,9 @@ export function resolveLicenseRefreshFailure(
   return offlineMacLicenseStatus('server_unavailable', diagnostic)
 }
 
-class MacWechatRuntimeManager {
+export class MacWechatRuntimeManager {
   private child: ChildProcess | null = null
+  private startInFlight: Promise<MacWechatRuntimeSnapshot> | null = null
   private lifecycle: MacWechatRuntimeLifecycle = 'stopped'
   private wechatRestartRequired = false
   /* The WeChat pid that was bound when the host died / bind hit the orphan
@@ -200,6 +221,8 @@ class MacWechatRuntimeManager {
   private orphanWechatPid = 0
   private lastBinding: MacWechatBindingStatus | null = null
   private manifest: MacWechatRuntimeManifest | null = null
+  private readonly manifestCache = new MacWechatRuntimeManifestCache()
+  private senderStatusInFlight: Promise<PersonalWechatSenderStatus> | null = null
   private lastError: string | null = null
   private restartTimer: NodeJS.Timeout | null = null
   private manuallyStopped = false
@@ -254,7 +277,7 @@ class MacWechatRuntimeManager {
     try {
       const runtimeDir = this.resolveRuntimeDir()
       if (!runtimeDir) return false
-      this.manifest = readMacWechatRuntimeManifest(runtimeDir)
+      this.manifest = this.manifestCache.read(runtimeDir)
       return true
     } catch {
       return false
@@ -268,7 +291,7 @@ class MacWechatRuntimeManager {
     try {
       const runtimeDir = this.resolveRuntimeDir()
       if (!runtimeDir) throw new Error('发送 Runtime 目录缺失')
-      this.manifest = readMacWechatRuntimeManifest(runtimeDir)
+      this.manifest = this.manifestCache.read(runtimeDir)
       return { state: 'available', message: '微信发送组件可用' }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
@@ -281,8 +304,26 @@ class MacWechatRuntimeManager {
    * comes up WITHOUT touching WeChat (lazy init inside the host), so "runtime
    * online" and "WeChat bound" stay two independent states.
    */
-  async ensureStarted(
+  ensureStarted(
     options: { allowManualRestart?: boolean } = {}
+  ): Promise<MacWechatRuntimeSnapshot> {
+    if (this.startInFlight) return this.startInFlight
+
+    const startPromise = this.ensureStartedOnce(options)
+    this.startInFlight = startPromise
+    void startPromise.then(
+      () => {
+        if (this.startInFlight === startPromise) this.startInFlight = null
+      },
+      () => {
+        if (this.startInFlight === startPromise) this.startInFlight = null
+      }
+    )
+    return startPromise
+  }
+
+  protected async ensureStartedOnce(
+    options: { allowManualRestart?: boolean }
   ): Promise<MacWechatRuntimeSnapshot> {
     if (this.manuallyStopped && !options.allowManualRestart) return this.getSnapshot()
     if (options.allowManualRestart) this.manuallyStopped = false
@@ -303,7 +344,7 @@ class MacWechatRuntimeManager {
       return this.getSnapshot()
     }
     try {
-      this.manifest = readMacWechatRuntimeManifest(runtimeDir)
+      this.manifest = this.manifestCache.read(runtimeDir)
       appLogger.write({
         level: 'info',
         scope: 'mac-wechat-runtime',
@@ -393,6 +434,29 @@ class MacWechatRuntimeManager {
     } catch {
       /* best effort — dev checkouts usually keep the exec bit */
     }
+    try {
+      if (!app.isPackaged) {
+        execFileSync('/usr/bin/codesign', [
+          '--force',
+          '--sign',
+          '-',
+          '--timestamp=none',
+          hostPath
+        ])
+      }
+      execFileSync('/usr/bin/codesign', ['--verify', '--strict', hostPath])
+    } catch (error) {
+      this.lifecycle = 'stopped'
+      this.lastError = '无法验证发送 Host 签名：' +
+        (error instanceof Error ? error.message : String(error))
+      appLogger.write({
+        level: 'error',
+        scope: 'mac-wechat-runtime',
+        message: 'host_signature_invalid',
+        details: { detail: this.lastError }
+      })
+      return this.getSnapshot()
+    }
 
     this.lifecycle = 'starting'
     this.lastError = null
@@ -427,6 +491,7 @@ class MacWechatRuntimeManager {
     }
 
     this.child.on('exit', (code) => {
+      const exitedDuringStartup = this.lifecycle === 'starting' && this.startInFlight !== null
       const wasBound =
         this.lastBinding?.bound === true ||
         this.lastBinding?.sessionAttached === true ||
@@ -448,17 +513,37 @@ class MacWechatRuntimeManager {
         })
       } else {
         this.lifecycle = 'crashed_unbound'
+        if (exitedDuringStartup) {
+          this.lastError =
+            code === null
+              ? '发送运行时在启动过程中退出'
+              : `发送运行时启动失败（进程退出码 ${code}）`
+        }
         appLogger.write({
           level: 'warn',
           scope: 'mac-wechat-runtime',
           message: 'host_died_while_unbound_auto_restart',
           details: { code: code ?? null }
         })
-        if (this.restartTimer) clearTimeout(this.restartTimer)
-        this.restartTimer = setTimeout(() => {
-          void this.ensureStarted()
-        }, CRASH_RESTART_DELAY_MS)
+        if (!exitedDuringStartup) {
+          if (this.restartTimer) clearTimeout(this.restartTimer)
+          this.restartTimer = setTimeout(() => {
+            void this.ensureStarted()
+          }, CRASH_RESTART_DELAY_MS)
+        }
       }
+    })
+    this.child.on('error', (error) => {
+      if (this.lifecycle === 'stopped') return
+      this.child = null
+      this.lifecycle = 'crashed_unbound'
+      this.lastError = '无法启动发送 Host：' + error.message
+      appLogger.write({
+        level: 'error',
+        scope: 'mac-wechat-runtime',
+        message: 'host_spawn_failed',
+        details: { detail: error.message }
+      })
     })
 
     // Wait for /healthz
@@ -614,6 +699,10 @@ class MacWechatRuntimeManager {
     return this.lastBinding
   }
 
+  async getSendMechanism(): Promise<string | undefined> {
+    return resolveMacWechatSendMechanism(await this.getBindingStatus(), this.manifest)
+  }
+
   // GET reads the local snapshot; POST runs one real online check.
   // Neither touches the WeChat binding.
 
@@ -723,7 +812,22 @@ class MacWechatRuntimeManager {
    * capability mapping and the send path report the same facts without a
    * circular import.
    */
-  async buildSenderStatus(): Promise<PersonalWechatSenderStatus> {
+  buildSenderStatus(): Promise<PersonalWechatSenderStatus> {
+    if (this.senderStatusInFlight) return this.senderStatusInFlight
+    const statusPromise = this.buildSenderStatusOnce()
+    this.senderStatusInFlight = statusPromise
+    void statusPromise.then(
+      () => {
+        if (this.senderStatusInFlight === statusPromise) this.senderStatusInFlight = null
+      },
+      () => {
+        if (this.senderStatusInFlight === statusPromise) this.senderStatusInFlight = null
+      }
+    )
+    return statusPromise
+  }
+
+  private async buildSenderStatusOnce(): Promise<PersonalWechatSenderStatus> {
     if (isMacNativeRuntimeUnavailable()) {
       const message = '当前环境不包含微信发送能力'
       return {
@@ -769,7 +873,7 @@ class MacWechatRuntimeManager {
     try {
       const runtimeDir = this.resolveRuntimeDir()
       if (!runtimeDir) throw new Error('runtime missing')
-      this.manifest = readMacWechatRuntimeManifest(runtimeDir)
+      this.manifest = this.manifestCache.read(runtimeDir)
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       appLogger.write({

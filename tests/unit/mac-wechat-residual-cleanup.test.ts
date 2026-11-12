@@ -12,6 +12,7 @@ function createDependencies(
   return {
     platform: 'darwin',
     listWechatPids: vi.fn(async () => [101]),
+    listHostPids: vi.fn(async () => []),
     listPortPids: vi.fn(async () => [202]),
     processName: vi.fn(async (pid) => (pid === 101 ? 'WeChat' : 'tm-wechat-host')),
     processIdentity: vi.fn(async (pid) => 'identity-' + pid),
@@ -43,6 +44,24 @@ describe('macOS WeChat residual cleanup', () => {
       }
     ])
     expect(dependencies.processName).toHaveBeenCalledTimes(2)
+  })
+
+  it('lists every TraceMemo Host, including hosts that do not own port 4290', async () => {
+    const dependencies = createDependencies({
+      listWechatPids: vi.fn(async () => []),
+      listHostPids: vi.fn(async () => [303]),
+      listPortPids: vi.fn(async () => []),
+      processName: vi.fn(async () => 'tm-wechat-host')
+    })
+
+    await expect(inspectMacWechatResidualProcesses(dependencies)).resolves.toEqual([
+      {
+        pid: 303,
+        name: 'tm-wechat-host',
+        targets: ['host'],
+        confirmationToken: 'identity-303'
+      }
+    ])
   })
 
   it('does not signal a PID whose process identity changed after confirmation', async () => {

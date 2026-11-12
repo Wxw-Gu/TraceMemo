@@ -317,7 +317,6 @@ export function PersonalWechatSendPage({
   >([])
   const [macResidualDialogOpen, setMacResidualDialogOpen] = useState(false)
   const [macResidualBusy, setMacResidualBusy] = useState(false)
-  const [macResidualRuntimeStopped, setMacResidualRuntimeStopped] = useState(false)
   const [macWechatRebindRequired, setMacWechatRebindRequired] = useState(false)
   const [mac4290PortStatus, setMac4290PortStatus] = useState<
     | { state: 'loading' | 'available' | 'error'; processes: [] }
@@ -346,12 +345,9 @@ export function PersonalWechatSendPage({
     }
     setError('')
     try {
-      const [nextCapability, nextSender] = await Promise.all([
-        window.api.getPersonalWechatSendCapability(),
-        window.api.getPersonalWechatSenderStatus()
-      ])
+      const nextCapability = await window.api.getPersonalWechatSendCapability()
       setCapability(nextCapability)
-      setSenderStatus(nextSender)
+      setSenderStatus(nextCapability.senderStatus)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '微信发送能力读取失败')
     } finally {
@@ -394,14 +390,13 @@ export function PersonalWechatSendPage({
           setLoading(false)
           return
         }
-        const [nextCapability, nextSender, license] = await Promise.all([
+        const [nextCapability, license] = await Promise.all([
           window.api.getPersonalWechatSendCapability(),
-          window.api.getPersonalWechatSenderStatus(),
           window.api.getMacLicenseStatus()
         ])
         if (!active) return
         setCapability(nextCapability)
-        setSenderStatus(nextSender)
+        setSenderStatus(nextCapability.senderStatus)
         setMacLicenseStatus(license)
       } catch (reason) {
         if (!active) return
@@ -509,7 +504,8 @@ export function PersonalWechatSendPage({
           : { state: 'available', processes: [] }
       )
       if (targets.length === 0) {
-        onNotice('没有发现微信进程或占用 4290 端口的进程')
+        setMacResidualBusy(false)
+        await restartMacSendRuntime()
         return
       }
       setMacResidualDialogOpen(true)
@@ -527,7 +523,6 @@ export function PersonalWechatSendPage({
       const result = await window.api.cleanupMacWechatResidualProcesses(
         macResidualProcesses.map(({ pid, confirmationToken }) => ({ pid, confirmationToken }))
       )
-      if (result.runtimeStopped) setMacResidualRuntimeStopped(true)
       if (result.stopped.some((target) => target.targets.includes('wechat'))) {
         setMacWechatRebindRequired(true)
       }
@@ -540,8 +535,7 @@ export function PersonalWechatSendPage({
         setMacResidualDialogOpen(false)
         setMacResidualProcesses([])
         await refreshMac4290PortStatus()
-        await refresh()
-        onNotice('目标进程已退出，发送环境状态已刷新。')
+        await restartMacSendRuntime()
         return
       }
       if (result.remaining.length > 0) {
@@ -558,9 +552,10 @@ export function PersonalWechatSendPage({
         setMacResidualProcesses([])
       }
       await refreshMac4290PortStatus()
-      await refresh()
       if (result.remaining.length === 0) {
-        onNotice('已结束 ' + result.stopped.length + ' 个残留进程；发送环境状态已刷新。')
+        await restartMacSendRuntime()
+      } else {
+        await refresh()
       }
     } catch (reason) {
       onNotice(reason instanceof Error ? reason.message : '清理残留进程失败')
@@ -570,16 +565,15 @@ export function PersonalWechatSendPage({
   }
 
   const restartMacSendRuntime = async (): Promise<void> => {
-    if (macResidualBusy) return
     setMacResidualBusy(true)
     try {
       const snapshot = await window.api.startMacSendRuntime()
       if (snapshot.lifecycle !== 'online') {
         throw new Error(snapshot.error || '发送组件启动失败')
       }
-      setMacResidualRuntimeStopped(false)
       await refresh()
-      onNotice('发送组件已启动；如刚才关闭了微信，请重新打开微信并绑定。')
+      await refreshMac4290PortStatus()
+      onNotice('已清理并重启发送 Host；如刚才关闭了微信，请重新打开微信并绑定。')
     } catch (reason) {
       onNotice(reason instanceof Error ? reason.message : '发送组件启动失败')
     } finally {
@@ -1019,16 +1013,6 @@ export function PersonalWechatSendPage({
                         >
                           {macResidualBusy ? '检查中…' : '清理残留以及微信进程'}
                         </Button>
-                        {macResidualRuntimeStopped ? (
-                          <Button
-                            className="mt-2 w-full"
-                            variant="outline"
-                            disabled={macResidualBusy}
-                            onClick={() => void restartMacSendRuntime()}
-                          >
-                            {macResidualBusy ? '启动中…' : '重新启动发送组件'}
-                          </Button>
-                        ) : null}
                       </div>
                     </section>
                     {macUnavailable ? (
@@ -1049,8 +1033,8 @@ export function PersonalWechatSendPage({
           <AlertDialogHeader>
             <AlertDialogTitle>清理微信残留进程？</AlertDialogTitle>
             <AlertDialogDescription>
-              将结束下面列出的微信进程或占用 4290
-              端口的进程。若列表包含微信，微信会关闭；如曾绑定发送组件，之后需要重新打开微信并绑定。
+              将结束下面列出的微信进程，以及所有 TraceMemo 发送 Host（包括未占用 4290 的 Host）。
+              完成清理后会自动重启发送 Host；若列表包含微信，微信会关闭，之后需要重新打开微信并绑定。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <ul className="grid gap-2 rounded-md border border-border-subtle p-3 text-sm">
@@ -1060,7 +1044,9 @@ export function PersonalWechatSendPage({
                 <span className="shrink-0 text-muted-foreground">
                   PID {item.pid} ·{' '}
                   {item.targets
-                    .map((target) => (target === 'wechat' ? '微信进程' : '4290 端口'))
+                    .map((target) =>
+                      target === 'wechat' ? '微信进程' : target === 'host' ? '发送 Host' : '4290 端口'
+                    )
                     .join('、')}
                 </span>
               </li>

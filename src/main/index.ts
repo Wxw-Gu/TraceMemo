@@ -1917,7 +1917,11 @@ app.whenReady().then(async () => {
         recipient,
         content:
           request.type === 'text'
-            ? { type: 'text', text: String(request.text || '') }
+            ? {
+                type: 'text',
+                text: String(request.text || ''),
+                ...(request.at ? { at: request.at } : {})
+              }
             : { type: 'image', path: String(request.filePath || '') }
       })
       // 返回契约保持 `PersonalWechatSendResult`，界面判读不用改。
@@ -3517,8 +3521,12 @@ app.whenReady().then(async () => {
       undefined,
       (targets) => {
         if (
-          macWechatRuntimeManager.getPort() === 4290 &&
-          targets.some((target) => target.targets.includes('port_4290'))
+          targets.some(
+            (target) =>
+              target.targets.includes('host') ||
+              (macWechatRuntimeManager.getPort() === 4290 &&
+                target.targets.includes('port_4290'))
+          )
         ) {
           macWechatRuntimeManager.prepareForResidualCleanup()
           runtimeStopped = true

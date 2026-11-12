@@ -719,7 +719,15 @@ export class AutomationService {
         rule,
         conversationId: message.sessionId,
         isGroup,
-        sourceDisplayName
+        sourceDisplayName,
+        ...(message.senderId && message.senderNickname
+          ? {
+              triggerSender: {
+                wxid: message.senderId,
+                displayName: message.senderNickname
+              }
+            }
+          : {})
       })
     } catch (error) {
       result = {

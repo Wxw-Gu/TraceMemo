@@ -11,8 +11,7 @@ function assertFile(path: string, label: string): void {
   }
 }
 
-function assertMachOArm64(path: string, label: string): void {
-  const binary = readFileSync(path)
+function assertMachOArm64(binary: Buffer, label: string): void {
   if (binary.length < 8 || binary.readUInt32LE(0) !== 0xfeedfacf) {
     throw new Error(`${label} is not a 64-bit Mach-O binary`)
   }
@@ -71,15 +70,72 @@ export function readMacWechatRuntimeManifest(
       throw new Error(`runtime manifest capability missing: ${capability}`)
     }
   }
-  assertMachOArm64(hostPath, 'runtime host')
-  assertMachOArm64(dylibPath, 'runtime dylib')
-  if (!readFileSync(dylibPath).includes(Buffer.from(manifest.tmSendSourceSha256, 'utf8'))) {
+  assertMachOArm64(readFileSync(hostPath), 'runtime host')
+  const dylib = readFileSync(dylibPath)
+  assertMachOArm64(dylib, 'runtime dylib')
+  if (!dylib.includes(Buffer.from(manifest.tmSendSourceSha256, 'utf8'))) {
     throw new Error('runtime dylib embedded agent hash does not match manifest')
   }
-  if (!readFileSync(dylibPath).includes(Buffer.from(manifest.addressProfileSha256, 'utf8'))) {
+  if (!dylib.includes(Buffer.from(manifest.addressProfileSha256, 'utf8'))) {
     throw new Error('runtime dylib embedded address profile hash does not match manifest')
   }
   return manifest
+}
+
+type RuntimeFileSignature = readonly [
+  path: string,
+  device: string,
+  inode: string,
+  size: string,
+  modifiedNs: string,
+  changedNs: string
+]
+
+function getRuntimeFileSignatures(runtimeDir: string): RuntimeFileSignature[] {
+  return ['runtime-manifest.json', 'tm-wechat-host', 'libtmwechat.dylib'].map((name) => {
+    const filePath = join(runtimeDir, name)
+    assertFile(filePath, name)
+    const stats = statSync(filePath, { bigint: true })
+    if (!stats.isFile()) throw new Error(`runtime artifact is not a file: ${filePath}`)
+    return [
+      filePath,
+      stats.dev.toString(),
+      stats.ino.toString(),
+      stats.size.toString(),
+      stats.mtimeNs.toString(),
+      stats.ctimeNs.toString()
+    ]
+  })
+}
+
+export class MacWechatRuntimeManifestCache {
+  private entry: {
+    runtimeDir: string
+    architecture: string
+    signatures: RuntimeFileSignature[]
+    manifest: MacWechatRuntimeManifest
+  } | null = null
+
+  read(runtimeDir: string, architecture = process.arch): MacWechatRuntimeManifest {
+    const signatures = getRuntimeFileSignatures(runtimeDir)
+    if (
+      this.entry?.runtimeDir === runtimeDir &&
+      this.entry.architecture === architecture &&
+      signatures.every((signature, index) =>
+        signature.every((value, part) => value === this.entry?.signatures[index]?.[part])
+      )
+    ) {
+      return this.entry.manifest
+    }
+
+    const manifest = readMacWechatRuntimeManifest(runtimeDir, architecture)
+    this.entry = { runtimeDir, architecture, signatures, manifest }
+    return manifest
+  }
+
+  clear(): void {
+    this.entry = null
+  }
 }
 
 export function bindingMatchesRuntimeManifest(

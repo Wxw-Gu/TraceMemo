@@ -202,6 +202,40 @@ describe('POST /api/v1/wechat/send', () => {
     expect(action.content).toEqual({ type: 'text', text: '你好' })
   })
 
+  it('验证并透传群聊原生 @ 成员映射', async () => {
+    const response = await post({
+      to: 'fixture-room@chatroom',
+      isGroup: true,
+      type: 'text',
+      text: '早上好',
+      at: { wxid_fixture_member: '测试成员' }
+    })
+    expect(response.status).toBe(200)
+    expect(lastAction().content).toEqual({
+      type: 'text',
+      text: '早上好',
+      at: { wxid_fixture_member: '测试成员' }
+    })
+    const invalid = await post({
+      to: 'fixture-room@chatroom',
+      type: 'text',
+      text: '早上好',
+      at: ['wxid_fixture_member']
+    })
+    expect(invalid.status).toBe(400)
+  })
+
+  it('拒绝格式错误的群聊 @ 成员映射', async () => {
+    const response = await post({
+      to: 'fixture-room@chatroom',
+      type: 'text',
+      text: '早上好',
+      at: ['wxid_fixture_member']
+    })
+    expect(response.status).toBe(400)
+    expect(execute).not.toHaveBeenCalled()
+  })
+
   it('type 省略时按文本发送', async () => {
     await post({ to: 'wxid_friend', text: 'hi' })
     expect(lastAction().content).toEqual({ type: 'text', text: 'hi' })

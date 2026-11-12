@@ -25,7 +25,7 @@ export interface MacWechatSendRuntimeAvailabilityResult {
 export interface MacWechatResidualProcess {
   pid: number
   name: string
-  targets: Array<'wechat' | 'port_4290'>
+  targets: Array<'wechat' | 'host' | 'port_4290'>
   confirmationToken: string
 }
 

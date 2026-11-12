@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,13 +10,41 @@ import {
 } from 'fs'
 import { tmpdir } from 'os'
 import { join, sep } from 'path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const runtimeMocks = vi.hoisted(() => ({
+  ensureStarted: vi.fn(),
+  buildSenderStatus: vi.fn(),
+  getSendMechanism: vi.fn(),
+  getPort: vi.fn(() => 4290)
+}))
 
 vi.mock('electron', () => ({
   app: {
     getAppPath: () => '/fixture/app',
     getPath: () => '/tmp/tracememo-test-user-data',
     isPackaged: false
+  }
+}))
+vi.mock('../../src/main/services/mac-wechat-runtime-manager', () => ({
+  macWechatRuntimeManager: runtimeMocks
+}))
+vi.mock('../../src/main/voice-pipeline/audio-decoder', () => ({
+  SilkAudioDecoder: class {
+    async decode() {
+      return { pcm: Buffer.alloc(48_000), channels: 1, sampleRate: 24_000 }
+    }
+  },
+  SilkAudioEncoder: class {}
+}))
+vi.mock('../../src/main/services/local-account-identity', () => ({
+  readLocalAccountIdentity: () => ({ wxid: 'wxid_fixture_self' }),
+  accountDirectoryBelongsToIdentity: (directory: string, wxid: string) => {
+    const normalizedDirectory = directory.toLowerCase()
+    const normalizedWxid = wxid.toLowerCase()
+    if (normalizedDirectory === normalizedWxid) return true
+    if (!normalizedDirectory.startsWith(`${normalizedWxid}_`)) return false
+    return /^[a-z0-9]{4}$/.test(normalizedDirectory.slice(normalizedWxid.length + 1))
   }
 }))
 
@@ -29,6 +58,7 @@ import {
   prepareWindowsImageFile,
   WindowsHookHttpError
 } from '../../src/main/services/personal-wechat-send-service'
+import { PersonalWechatSendService } from '../../src/main/services/personal-wechat-send-service'
 
 const temporaryDirectories: string[] = []
 
@@ -39,9 +69,252 @@ function temporaryDirectory(): string {
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   while (temporaryDirectories.length > 0) {
     rmSync(temporaryDirectories.pop()!, { recursive: true, force: true })
   }
+})
+
+beforeEach(() => {
+  runtimeMocks.ensureStarted.mockReset().mockResolvedValue(undefined)
+  runtimeMocks.buildSenderStatus
+    .mockReset()
+    .mockResolvedValue({ canSendText: true, canSendImage: true, canSendVoice: true })
+  runtimeMocks.getSendMechanism.mockReset().mockResolvedValue('legacy-req2buf')
+  runtimeMocks.getPort.mockReset().mockReturnValue(4290)
+})
+
+describe('macOS message-source send routing', () => {
+  it('sends a message-source image through one local-path request without CDN upload', async () => {
+    const root = temporaryDirectory()
+    const filePath = join(root, 'fixture-image.png')
+    writeFileSync(filePath, 'fixture-image')
+    const imageTemp = join(root, 'wxid_fixture_self', 'temp', 'ImageTemp', '2026-11')
+    mkdirSync(imageTemp, { recursive: true })
+    runtimeMocks.getSendMechanism.mockResolvedValue('tm-message-source-send')
+    let stagedPath = ''
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 0, ok: true, message: 'sent' })
+    })
+    fetchMock.mockImplementation(async (_url, init) => {
+      stagedPath = String((JSON.parse(String(init?.body)) as { path: string }).path)
+      expect(stagedPath).toContain(imageTemp)
+      expect(readFileSync(stagedPath, 'utf8')).toBe('fixture-image')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 0, ok: true, message: 'sent' })
+      } as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await new PersonalWechatSendService(root).send({
+      type: 'image', to: 'fixture-contact', isGroup: false, filePath
+    })
+
+    expect(result.success).toBe(true)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0][0]).toContain('/sendMsg')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      type: 'image', to: 'fixture-contact', path: stagedPath
+    })
+    expect(stagedPath).not.toBe(filePath)
+    expect(existsSync(stagedPath)).toBe(false)
+  })
+
+  it('uses the legacy image path only when source preparation is definitively rejected', async () => {
+    const root = temporaryDirectory()
+    const filePath = join(root, 'fixture-image.png')
+    writeFileSync(filePath, 'fixture-image')
+    const imageTemp = join(root, 'wxid_fixture_self', 'temp', 'ImageTemp', '2026-11')
+    mkdirSync(imageTemp, { recursive: true })
+    runtimeMocks.getSendMechanism.mockResolvedValue('tm-message-source-send')
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => String(url).endsWith('/sendMsg')
+        ? { code: 6, ok: false, message: 'IMAGE_PREPARATION_FAILED:0' }
+        : { code: 0, ok: true, message: 'sent' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await new PersonalWechatSendService(root).send({
+      type: 'image', to: 'fixture-contact', isGroup: false, filePath
+    })
+
+    expect(result.success).toBe(true)
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://127.0.0.1:4290/sendMsg',
+      'http://127.0.0.1:4290/uploadImage',
+      'http://127.0.0.1:4290/sendImage'
+    ])
+    const uploadBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body)) as Record<
+      string,
+      unknown
+    >
+    expect(String(uploadBody.filePath)).toContain(imageTemp)
+  })
+
+  it('does not retry image submission after a timeout or an ambiguous failure', async () => {
+    const root = temporaryDirectory()
+    const filePath = join(root, 'fixture-image.png')
+    writeFileSync(filePath, 'fixture-image')
+    const imageTemp = join(root, 'wxid_fixture_self', 'temp', 'ImageTemp', '2026-11')
+    mkdirSync(imageTemp, { recursive: true })
+    runtimeMocks.getSendMechanism.mockResolvedValue('tm-message-source-send')
+    const fetchMock = vi.fn().mockRejectedValue(new Error('request timed out'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await new PersonalWechatSendService(root).send({
+      type: 'image', to: 'fixture-contact', isGroup: false, filePath
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('图片发送失败')
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0][0]).toContain('/sendMsg')
+  })
+
+  it('keeps other image mechanisms on the upload-then-send endpoints', async () => {
+    const root = temporaryDirectory()
+    const filePath = join(root, 'fixture-image.png')
+    writeFileSync(filePath, 'fixture-image')
+    const imageTemp = join(root, 'wxid_fixture_self', 'temp', 'ImageTemp', '2026-11')
+    mkdirSync(imageTemp, { recursive: true })
+    runtimeMocks.getSendMechanism.mockResolvedValue('native-msg-object')
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 0, ok: true, message: 'sent' })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await new PersonalWechatSendService(root).send({
+      type: 'image', to: 'fixture-contact', isGroup: false, filePath
+    })
+
+    expect(result.success).toBe(true)
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://127.0.0.1:4290/uploadImage',
+      'http://127.0.0.1:4290/sendImage'
+    ])
+    const uploadBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as Record<
+      string,
+      unknown
+    >
+    expect(String(uploadBody.filePath)).toContain(imageTemp)
+  })
+
+  it('sends message-source text and its mention map through the unified endpoint', async () => {
+    runtimeMocks.getSendMechanism.mockResolvedValue('tm-message-source-send')
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 0, ok: true, message: 'sent' })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await new PersonalWechatSendService().send({
+      type: 'text',
+      to: 'fixture-room@chatroom',
+      isGroup: true,
+      text: '早上好',
+      at: { wxid_fixture_member: '测试成员' }
+    })
+
+    expect(result.success).toBe(true)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0][0]).toContain('/sendMsg')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      type: 'text',
+      to: 'fixture-room@chatroom',
+      text: '早上好',
+      is_group: true,
+      at: { wxid_fixture_member: '测试成员' }
+    })
+  })
+
+  it('sends a message-source SILK voice through the unified request', async () => {
+    const root = temporaryDirectory()
+    const filePath = join(root, 'fixture-voice.silk')
+    writeFileSync(filePath, Buffer.concat([Buffer.from('\x02#!SILK_V3'), Buffer.from([1, 2, 3])]))
+    runtimeMocks.getSendMechanism.mockResolvedValue('tm-message-source-send')
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 0, ok: true, message: 'sent' })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await new PersonalWechatSendService().send({
+      type: 'voice', to: 'fixture-contact', isGroup: false, filePath, durationMs: 1200
+    })
+
+    expect(result.success).toBe(true)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0][0]).toContain('/sendMsg')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      type: 'voice', to: 'fixture-contact', voice_hex: expect.any(String), duration_ms: 1200
+    })
+  })
+
+  it('rejects a sub-second message-source voice instead of sending an invalid duration', async () => {
+    const root = temporaryDirectory()
+    const filePath = join(root, 'fixture-voice.silk')
+    writeFileSync(filePath, Buffer.concat([Buffer.from('\x02#!SILK_V3'), Buffer.from([1, 2, 3])]))
+    runtimeMocks.getSendMechanism.mockResolvedValue('tm-message-source-send')
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await new PersonalWechatSendService().send({
+      type: 'voice', to: 'fixture-contact', isGroup: false, filePath, durationMs: 500
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('至少 1 秒')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps other text mechanisms on the existing endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 0, ok: true, message: 'sent' })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await new PersonalWechatSendService().send({
+      type: 'text', to: 'fixture-contact', isGroup: false, text: 'hello'
+    })
+
+    expect(result.success).toBe(true)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0][0]).toContain('/sendText')
+  })
+
+  it('keeps other voice mechanisms on the upload-then-send endpoints', async () => {
+    const root = temporaryDirectory()
+    const filePath = join(root, 'fixture-voice.silk')
+    writeFileSync(filePath, Buffer.concat([Buffer.from('\x02#!SILK_V3'), Buffer.from([1, 2, 3])]))
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 0, ok: true, message: 'sent' })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await new PersonalWechatSendService().send({
+      type: 'voice', to: 'fixture-contact', isGroup: false, filePath, durationMs: 1200
+    })
+
+    expect(result.success).toBe(true)
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://127.0.0.1:4290/uploadVoice',
+      'http://127.0.0.1:4290/sendVoice'
+    ])
+  })
 })
 
 describe('personal WeChat voice diagnostics', () => {
@@ -223,5 +496,20 @@ describe('personal WeChat runtime discovery', () => {
     expect(findWechatImagePath(root, new Date('2026-08-06'))).toBe(
       `${join(tempRoot, 'ImageTemp', '2026-08')}${sep}`
     )
+  })
+
+  it('does not choose a newer image directory belonging to another WeChat account', () => {
+    const root = temporaryDirectory()
+    const ownPath = join(root, 'wxid_fixture_self', 'temp', 'ImageTemp', '2026-08')
+    const otherPath = join(root, 'wxid_other_account', 'temp', 'ImageTemp', '2026-08')
+    mkdirSync(ownPath, { recursive: true })
+    mkdirSync(otherPath, { recursive: true })
+    utimesSync(ownPath, new Date('2026-08-01'), new Date('2026-08-01'))
+    utimesSync(otherPath, new Date('2026-08-05'), new Date('2026-08-05'))
+
+    expect(findWechatImagePath(root, new Date('2026-08-06'), 'wxid_fixture_self')).toBe(
+      `${ownPath}${sep}`
+    )
+    expect(findWechatImagePath(root, new Date('2026-08-06'), 'wxid_missing_account')).toBeUndefined()
   })
 })

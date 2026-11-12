@@ -63,6 +63,7 @@ export function PersonalWechatSetupGuide({
   canBind = true
 }: PersonalWechatSetupGuideProps): React.ReactElement {
   const runtimeUnavailable = senderStatus?.state === 'runtime_missing'
+  const runtimeError = senderStatus?.state === 'error' && !senderStatus.endpointReady
   const runtimeLabel = '发送运行时'
   const runtimeReady = senderStatus?.runtimeReady === true
   const connected = sessionBound && (senderStatus ? isWechatBound(senderStatus) : false)
@@ -82,7 +83,11 @@ export function PersonalWechatSetupGuide({
       </div>
 
       <ol className="personal-wechat-steps">
-        <li className={runtimeReady ? 'is-complete' : 'is-current'}>
+        <li
+          className={
+            runtimeReady ? 'is-complete' : runtimeError ? 'is-error' : 'is-current'
+          }
+        >
           <span className="personal-wechat-step-number">{runtimeReady ? '✓' : '1'}</span>
           <div className="personal-wechat-step-content">
             <strong>准备 {runtimeLabel}</strong>
@@ -95,6 +100,10 @@ export function PersonalWechatSetupGuide({
               <span className="personal-wechat-step-status">✓ {runtimeLabel}已就绪</span>
             ) : runtimeUnavailable ? (
               <span className="personal-wechat-step-error">当前版本暂未提供微信消息发送功能</span>
+            ) : runtimeError ? (
+              <span className="personal-wechat-step-error" role="alert">
+                {senderStatus.message || '发送运行时启动失败，请重新启动发送组件。'}
+              </span>
             ) : (
               <span className="personal-wechat-step-status">正在检查 {runtimeLabel}…</span>
             )}
@@ -183,7 +192,7 @@ export function PersonalWechatSetupGuide({
                     : '正在等待发送运行时完成初始化…'}
               </p>
             )}
-            {senderStatus?.state === 'error' && (
+            {senderStatus?.state === 'error' && !runtimeError && (
               <p className="personal-wechat-step-hint" role="status">
                 {senderStatus.message || '发送能力初始化失败，请重新绑定。'}
               </p>

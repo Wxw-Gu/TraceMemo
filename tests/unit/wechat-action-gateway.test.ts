@@ -100,6 +100,25 @@ describe('WechatActionGateway', () => {
     ])
   })
 
+  it('preserves the native mention map when forwarding a manual text action', async () => {
+    const gateway = createGateway()
+    await gateway.execute({
+      origin: 'user_manual',
+      purpose: 'manual_text',
+      triggerType: 'user',
+      recipient: { type: 'group', id: 'fixture-room@chatroom' },
+      content: { type: 'text', text: '早上好', at: { wxid_fixture: '测试成员' } }
+    })
+
+    expect(mocks.sender.send).toHaveBeenCalledWith({
+      type: 'text',
+      to: 'fixture-room@chatroom',
+      isGroup: true,
+      text: '早上好',
+      at: { wxid_fixture: '测试成员' }
+    })
+  })
+
   it('deduplicates the same leave event across repeated execution calls', async () => {
     const gateway = createGateway()
     const first = await leaveNotificationAction(gateway)

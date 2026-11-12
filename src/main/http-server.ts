@@ -690,7 +690,21 @@ function parseWechatSendPayload(payload: unknown): ParsedWechatSend {
         message: `text 长度 ${text.length} 超过上限 ${WECHAT_SEND_MAX_TEXT_LENGTH} 字符`
       }
     }
-    content = { type: 'text', text }
+    let at: Record<string, string> | undefined
+    if (body.at !== undefined) {
+      if (!body.at || typeof body.at !== 'object' || Array.isArray(body.at)) {
+        return { ok: false, status: 400, code: 'INVALID_REQUEST', message: 'at 必须是 wxid 到显示名称的对象' }
+      }
+      const entries = Object.entries(body.at as Record<string, unknown>)
+      if (entries.length > 50 || entries.some(([wxid, name]) => !wxid.trim() || typeof name !== 'string')) {
+        return { ok: false, status: 400, code: 'INVALID_REQUEST', message: 'at 最多支持 50 个有效成员' }
+      }
+      if (recipient.type !== 'group') {
+        return { ok: false, status: 400, code: 'INVALID_REQUEST', message: 'at 只能用于群聊' }
+      }
+      at = Object.fromEntries(entries.map(([wxid, name]) => [wxid.trim(), String(name).trim()]))
+    }
+    content = { type: 'text', text, ...(at ? { at } : {}) }
   } else {
     const filePath = readSendString(body.filePath)
     if (!filePath) {

@@ -97,6 +97,30 @@ describe('personal WeChat unavailable product state', () => {
     expect(screen.queryByText(/manifest|dylib|runtime missing|文件缺失/i)).not.toBeInTheDocument()
   })
 
+  it('shows a runtime startup failure instead of an endless checking message', () => {
+    const failedRuntimeStatus: PersonalWechatSenderStatus = {
+      ...unavailableStatus,
+      state: 'error',
+      endpointReady: false,
+      runtimeReady: false,
+      message: '发送运行时启动失败（进程退出码 1）',
+      error: '发送运行时启动失败（进程退出码 1）'
+    }
+
+    render(
+      <PersonalWechatSetupGuide
+        senderStatus={failedRuntimeStatus}
+        binding={false}
+        detecting={false}
+        sessionBound={false}
+        showBindAction={false}
+      />
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent('发送运行时启动失败（进程退出码 1）')
+    expect(screen.queryByText('正在检查 发送运行时…')).not.toBeInTheDocument()
+  })
+
   it('describes a ready runtime separately from pending send capability initialization', () => {
     const boundStatus: PersonalWechatSenderStatus = {
       ...unavailableStatus,

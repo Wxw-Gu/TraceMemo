@@ -492,6 +492,19 @@ describe('production runtime packaging', () => {
     expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'x86_64', helperPath])
   })
 
+  it('always re-signs the Native Host before packaging', () => {
+    const runtimeDirectory = join(root, 'runtime-sign-resources', 'runtime', 'darwin-arm64')
+    mkdirSync(runtimeDirectory, { recursive: true })
+    const hostPath = join(runtimeDirectory, 'tm-wechat-host')
+    writeFileSync(hostPath, 'fixture')
+    const stub = createCodesignStub()
+
+    expect(signMacosHelpers(join(root, 'runtime-sign-resources'), stub.run)).toEqual([hostPath])
+    expect(stub.calls[0]).toEqual(['--force', '--sign', '-', hostPath])
+    expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'arm64', hostPath])
+    expect(stub.calls).toContainEqual(['--verify', '--strict', '--arch', 'x86_64', hostPath])
+  })
+
   it('fails packaging when a helper signature cannot be repaired', () => {
     const resources = join(root, 'helper-broken-resources', 'resources')
     mkdirSync(resources, { recursive: true })

@@ -33,6 +33,8 @@ import type {
 import type { Wcdb4Client } from '../../src/main/wcdb4-client'
 import type { NormalizedIncomingMessage } from '../../src/main/services/message-listener-service'
 import { WechatActionGateway } from '../../src/main/services/wechat-action-gateway'
+import { WechatSendGateway } from '../../src/main/services/wechat-send-gateway'
+import { WechatSendLogService } from '../../src/main/services/wechat-send-log-service'
 import { AutomationRuleStore } from '../../src/main/services/automation-rule-store'
 import { AutomationExecutionLogService } from '../../src/main/services/automation-execution-log-service'
 import { AutomationActionRunner } from '../../src/main/services/automation-action-runner'
@@ -120,14 +122,18 @@ function buildChain(): Chain {
   const sends: PersonalWechatSendRequest[] = []
   const reports: string[] = []
 
+  const sendGateway = new WechatSendGateway({
+    log: new WechatSendLogService({ getUserDataPath: () => root }),
+    sendPersonal: async (request) => {
+      sends.push(request)
+      return { success: true, status: readyCapability().senderStatus }
+    }
+  })
   const gateway = new WechatActionGateway({
     getUserDataPath: () => root,
     getCapability: async () => readyCapability(),
-    // 传输层是唯一被替换的部分：其余（策略、幂等、审计、节流）都是真的。
-    send: async (request) => {
-      sends.push(request)
-      return { success: true, status: readyCapability().senderStatus }
-    },
+    // 从 Action Gateway 穿过真实 Send Gateway，只替换最终个人微信发送适配器。
+    send: (request) => sendGateway.sendPersonal(request),
     // 节流本身要保留，但不想让测试真的等 3 秒。
     wait: async () => undefined
   })
@@ -179,7 +185,8 @@ describe('automation end-to-end chain', () => {
       type: 'text',
       to: GROUP_ID,
       isGroup: true,
-      text: '收到，正在生成今日日报'
+      text: '收到，正在生成今日日报',
+      at: { wxid_sender: '张三' }
     })
     expect(chain.sends[1]).toMatchObject({
       type: 'image',

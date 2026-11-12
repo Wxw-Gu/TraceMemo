@@ -72,7 +72,7 @@ export interface WechatActionRecipient {
 }
 
 export type WechatActionContent =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; at?: Record<string, string> }
   | { type: 'image'; path: string }
   | { type: 'voice'; path: string }
 

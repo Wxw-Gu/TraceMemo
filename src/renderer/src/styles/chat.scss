@@ -801,6 +801,12 @@
   color: var(--wxex-success);
 }
 
+.personal-wechat-steps>li.is-error .personal-wechat-step-number {
+  border-color: color-mix(in srgb, var(--wxex-danger) 45%, transparent);
+  background: color-mix(in srgb, var(--wxex-danger) 10%, var(--wxex-bg-elevated));
+  color: var(--wxex-danger);
+}
+
 .personal-wechat-step-content {
   display: grid;
   gap: 7px;
