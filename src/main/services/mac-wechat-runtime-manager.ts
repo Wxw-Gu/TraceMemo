@@ -112,9 +112,7 @@ export function formatMacWechatHostStartupFailure(code: number | null, diagnosti
   const lines = diagnostic.trim().split('\n').filter(Boolean)
   const detail = lines[lines.length - 1]
   if (detail) return `发送运行时启动失败（进程退出码 ${code ?? '未知'}）：${detail}`
-  return code === null
-    ? '发送运行时在启动过程中退出'
-    : `发送运行时启动失败（进程退出码 ${code}）`
+  return code === null ? '发送运行时在启动过程中退出' : `发送运行时启动失败（进程退出码 ${code}）`
 }
 
 export function resolveMacWechatSendMechanism(
@@ -201,6 +199,12 @@ export function deriveMacWechatSenderStatus({
   const canSendText = bindingReady && supportsCapability('text') && binding?.canSendText === true
   const canSendImage = bindingReady && supportsCapability('image') && binding?.canSendImage === true
   const canSendVoice = bindingReady && supportsCapability('voice') && binding?.canSendVoice === true
+  /*
+   * 视频复用图片的媒体通道（Host 的 `/SendMsg` type=video）。
+   * Runtime manifest 不单独声明 video 能力，因此以图片通道是否可用作为判据；
+   * 真正的发送结果仍以 Host 返回为准，不在 UI 层假装支持。
+   */
+  const canSendVideo = bindingReady && binding?.canSendImage === true
   const sessionAttached = identityMatches && (binding?.sessionAttached ?? false)
   const scriptLoaded = identityMatches && (binding?.scriptLoaded ?? false)
 
@@ -224,10 +228,11 @@ export function deriveMacWechatSenderStatus({
     imageHookInstalled: identityMatches && (binding?.canSendImage ?? false),
     imageHookReady: identityMatches && (binding?.canSendImage ?? false),
     messageListenerReady: scriptLoaded,
-    canSend: canSendText || canSendImage || canSendVoice,
+    canSend: canSendText || canSendImage || canSendVoice || canSendVideo,
     canSendText,
     canSendImage,
     canSendVoice,
+    canSendVideo,
     message,
     error: state === 'error' ? message : undefined
   }
@@ -349,9 +354,7 @@ export class MacWechatRuntimeManager {
    * comes up WITHOUT touching WeChat (lazy init inside the host), so "runtime
    * online" and "WeChat bound" stay two independent states.
    */
-  ensureStarted(
-    options: { allowManualRestart?: boolean } = {}
-  ): Promise<MacWechatRuntimeSnapshot> {
+  ensureStarted(options: { allowManualRestart?: boolean } = {}): Promise<MacWechatRuntimeSnapshot> {
     if (this.startInFlight) return this.startInFlight
 
     const startPromise = this.ensureStartedOnce(options)
@@ -367,9 +370,9 @@ export class MacWechatRuntimeManager {
     return startPromise
   }
 
-  protected async ensureStartedOnce(
-    options: { allowManualRestart?: boolean }
-  ): Promise<MacWechatRuntimeSnapshot> {
+  protected async ensureStartedOnce(options: {
+    allowManualRestart?: boolean
+  }): Promise<MacWechatRuntimeSnapshot> {
     if (this.manuallyStopped && !options.allowManualRestart) return this.getSnapshot()
     if (options.allowManualRestart) this.manuallyStopped = false
     if (isMacNativeRuntimeUnavailable()) {
@@ -481,19 +484,13 @@ export class MacWechatRuntimeManager {
     }
     try {
       if (!app.isPackaged) {
-        execFileSync('/usr/bin/codesign', [
-          '--force',
-          '--sign',
-          '-',
-          '--timestamp=none',
-          hostPath
-        ])
+        execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', '--timestamp=none', hostPath])
       }
       execFileSync('/usr/bin/codesign', ['--verify', '--strict', hostPath])
     } catch (error) {
       this.lifecycle = 'stopped'
-      this.lastError = '无法验证发送 Host 签名：' +
-        (error instanceof Error ? error.message : String(error))
+      this.lastError =
+        '无法验证发送 Host 签名：' + (error instanceof Error ? error.message : String(error))
       appLogger.write({
         level: 'error',
         scope: 'mac-wechat-runtime',

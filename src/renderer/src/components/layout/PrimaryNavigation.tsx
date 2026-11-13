@@ -46,6 +46,15 @@ function NavIcon({ page }: NavIconProps): React.ReactElement {
           <path d="m16.5 9 3 3-3 3" />
         </svg>
       )
+    case 'extensions':
+      // 拼图：扩展是「往现有能力上加一块」，与自动化的闪电区分开。
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M9.5 4.5h5v2a1.5 1.5 0 1 0 3 0v-2h1.5v15h-15v-15H5.5v2a1.5 1.5 0 1 1-3 0v-2H5" />
+          <path d="M8.5 12h7" />
+          <path d="M8.5 16h4.5" />
+        </svg>
+      )
     case 'export':
       return (
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">

@@ -46,6 +46,7 @@ import { Button, useToast } from './components/ui'
 import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
 import { GroupExitMonitorWorkspace, type GroupExitMonitorOpenViewRequest } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
 import { AutomationWorkspace, type AutomationOpenRuleRequest } from './features/automation/AutomationWorkspace'
+import { ExtensionWorkspace } from './features/extensions/ExtensionWorkspace'
 import { selectContactAvatarRefreshUsernames } from './utils/contact-avatar'
 import {
   buildContactSearchIndex,
@@ -2139,6 +2140,8 @@ function App(): React.ReactElement {
         )
       case 'agent-hub':
         return <AgentHubWorkspace selfInfo={selfInfo} />
+      case 'extensions':
+        return <ExtensionWorkspace />
       case 'api':
         return (
           <ApiWorkspace

@@ -5,6 +5,7 @@ export type AppPage =
   | 'exit-monitor'
   | 'automation'
   | 'agent-hub'
+  | 'extensions'
   | 'export'
   | 'api'
   | 'settings'
@@ -20,6 +21,7 @@ export const PRIMARY_NAV_ITEMS: NavigationItem[] = [
   { id: 'report', label: '日报' },
   { id: 'exit-monitor', label: '退群监控' },
   { id: 'automation', label: '自动化' },
+  { id: 'extensions', label: '扩展' },
   { id: 'agent-hub', label: 'Agent' },
   { id: 'export', label: '导出' },
   { id: 'api', label: 'API' },

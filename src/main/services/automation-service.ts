@@ -1,8 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import {
-  matchAutomationRule,
-  type AutomationMatchInput
-} from '../../shared/automation-matcher'
+import { matchAutomationRule, type AutomationMatchInput } from '../../shared/automation-matcher'
 import {
   AUTOMATION_SEND_PURPOSE,
   BUILTIN_LEAVE_NOTIFICATION_RULE_ID,
@@ -14,6 +11,8 @@ import {
   type ScheduledRuleRunOutcome
 } from '../../shared/automation'
 import type { GroupMemberExitedEvent } from '../../shared/group-exit-event'
+import { buildExtensionMessageEvent } from '../../shared/extensions/events'
+import { buildEventId } from '../extensions/extension-event-bus'
 import type { PersonalWechatSendCapability } from '../../shared/personal-wechat'
 import type { Wcdb4Client } from '../wcdb4-client'
 import type { NormalizedIncomingMessage } from './message-listener-service'
@@ -28,18 +27,12 @@ import {
   scheduledReportSourceDisplayName
 } from './scheduled-report-target'
 import type { AutomationTargetContact } from './automation-wechat-target'
-import {
-  automationRuleStore,
-  type AutomationRuleStore
-} from './automation-rule-store'
+import { automationRuleStore, type AutomationRuleStore } from './automation-rule-store'
 import {
   automationExecutionLogService,
   type AutomationExecutionLogService
 } from './automation-execution-log-service'
-import {
-  automationActionRunner,
-  type AutomationActionRunner
-} from './automation-action-runner'
+import { automationActionRunner, type AutomationActionRunner } from './automation-action-runner'
 /**
  * AutomationService —— Automation v1 的编排层。
  *
@@ -137,9 +130,7 @@ export function leaveNotificationIdempotencyKey(eventId: string): string {
  * 「立即执行」会因为幂等而被静默吞掉。
  */
 export function scheduledReportExecutionId(ruleId: string, slot: string): string {
-  return createHash('sha1')
-    .update(`scheduled_report\u0001${ruleId}\u0001${slot}`)
-    .digest('hex')
+  return createHash('sha1').update(`scheduled_report\u0001${ruleId}\u0001${slot}`).digest('hex')
 }
 
 /** 定时日报一次执行的结果（定义在 shared 层，便于 IPC / 渲染层共用）。 */
@@ -291,7 +282,7 @@ export class AutomationService {
 
       const sourceDisplayName = this.resolveDisplayName(message)
       try {
-        await this.execute(rule, message, sourceDisplayName)
+        await this.execute(rule, message, sourceDisplayName, selfUsernames)
       } finally {
         // 无论 success / failed / 抛异常都要解除 in-flight。
         // 漏掉这一步会让这条规则在这个会话里**永久锁死**。
@@ -660,7 +651,10 @@ export class AutomationService {
     return true
   }
 
-  /** 「在哪些聊天生效」的可选项。`id` 必须是 `xxx@chatroom`，与 message.sessionId 对齐。 */  listGroups(): Array<{ id: string; name: string }> {
+  /** 「在哪些聊天生效」的可选项。`id` 必须是 `xxx@chatroom`，与 message.sessionId 对齐。 */ listGroups(): Array<{
+    id: string
+    name: string
+  }> {
     try {
       return listContacts()
         .filter((contact) => contact.type === 'group' || contact.m_nsUsrName?.endsWith('@chatroom'))
@@ -683,7 +677,8 @@ export class AutomationService {
   private async execute(
     rule: AutomationRule,
     message: NormalizedIncomingMessage,
-    sourceDisplayName: string
+    sourceDisplayName: string,
+    selfUsernames: string[]
   ): Promise<void> {
     const executionId = randomUUID()
     const startedAt = this.now()
@@ -726,6 +721,24 @@ export class AutomationService {
                 wxid: message.senderId,
                 displayName: message.senderNickname
               }
+            }
+          : {}),
+        ...(rule.actions.some((action) => action.type === 'extensionAction' && action.enabled)
+          ? {
+              message: buildExtensionMessageEvent({
+                eventId: buildEventId(message.sessionId, message.localId),
+                accountId: String(getSelfAccountInfo()?.wxid || ''),
+                conversationId: message.sessionId,
+                messageId: message.serverId || message.localId,
+                ...(message.senderId ? { senderId: message.senderId } : {}),
+                ...(message.senderNickname ? { senderName: message.senderNickname } : {}),
+                isGroup: message.isGroup,
+                isSelf: message.isSelf,
+                messageType: message.messageType,
+                ...(message.content !== undefined ? { content: message.content } : {}),
+                mentionsMe: message.mentionTargets.some((target) => selfUsernames.includes(target)),
+                createTimeSeconds: message.createTime
+              })
             }
           : {})
       })

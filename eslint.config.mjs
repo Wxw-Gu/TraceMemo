@@ -34,5 +34,14 @@ export default defineConfig(
       ...eslintPluginReactRefresh.configs.vite.rules
     }
   },
+  {
+    // 扩展示例是给第三方作者抄的 CommonJS，不是 TS 源码：
+    // 返回类型/require 规则在这里没有意义，强制它们只会让示例变成反例。
+    files: ['examples/**/*.{js,mjs}'],
+    rules: {
+      '@typescript-eslint/explicit-function-return-type': 'off',
+      '@typescript-eslint/no-require-imports': 'off'
+    }
+  },
   eslintConfigPrettier
 )

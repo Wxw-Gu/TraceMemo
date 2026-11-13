@@ -6,10 +6,7 @@
  */
 
 import { normalizeGroupExitNotificationTemplate } from './group-exit-monitor'
-import {
-  isSelectableReportTemplateId,
-  type SelectableReportTemplateId
-} from './report-templates'
+import { isSelectableReportTemplateId, type SelectableReportTemplateId } from './report-templates'
 import type {
   ScheduledReportMemberNameMode,
   ScheduledReportMessageType,
@@ -321,9 +318,7 @@ export function calculateNextRunAt(scheduleTime: string, from: Date = new Date()
 }
 
 /** 收敛定时日报配置：未知值一律回落到安全默认，绝不落一条跑不起来的规则。 */
-export function normalizeScheduledReportConfig(
-  input: unknown
-): ScheduledReportAutomationConfig {
+export function normalizeScheduledReportConfig(input: unknown): ScheduledReportAutomationConfig {
   const raw = (input ?? {}) as Partial<ScheduledReportAutomationConfig>
   const scheduleRaw = (raw.schedule ?? {}) as Partial<ScheduledReportAutomationConfig['schedule']>
   const reportRaw = (raw.report ?? {}) as Partial<ScheduledReportAutomationConfig['report']>
@@ -421,13 +416,23 @@ export interface AutomationConditions {
 }
 
 /** 执行动作类型。顺序由 `actions` 数组顺序决定。 */
-export type AutomationActionType = 'replyText' | 'generateReport' | 'sendReportImage'
+export type AutomationActionType =
+  | 'replyText'
+  | 'generateReport'
+  | 'sendReportImage'
+  | 'extensionAction'
 
 export interface AutomationAction {
   type: AutomationActionType
   enabled: boolean
   /** `replyText` 的文案。 */
   text?: string
+  /** `extensionAction`：提供动作的扩展 id。 */
+  extensionId?: string
+  /** `extensionAction`：扩展内注册的动作 id。 */
+  actionId?: string
+  /** `extensionAction`：用户配置的静态输入（JSON 对象）。 */
+  input?: Record<string, unknown>
 }
 
 export interface AutomationRule {
@@ -483,6 +488,7 @@ export type AutomationStepStatus = 'pending' | 'running' | 'success' | 'failed' 
 export type AutomationStepKey =
   | 'received'
   | 'matched'
+  | 'extension_action'
   | 'reply'
   | 'report'
   | 'send'
@@ -771,6 +777,7 @@ export const LEAVE_NOTIFICATION_RULE_NAME = '退群通知'
 export const AUTOMATION_STEP_LABELS: Record<AutomationStepKey, string> = {
   received: '收到消息',
   matched: '规则匹配',
+  extension_action: '执行扩展动作',
   reply: '回复确认',
   report: '生成日报',
   send: '发送日报图片',
@@ -998,7 +1005,8 @@ export function describeRuleActions(rule: AutomationRule): string {
   const labels: Record<AutomationActionType, string> = {
     replyText: '回复确认',
     generateReport: '生成日报',
-    sendReportImage: '发送图片'
+    sendReportImage: '发送图片',
+    extensionAction: '执行扩展动作'
   }
   const enabled = rule.actions.filter((action) => action.enabled)
   return enabled.length ? enabled.map((action) => labels[action.type]).join(' → ') : '无动作'
@@ -1152,6 +1160,29 @@ export function createDefaultScheduledReportRule(
   }
 }
 
+/** 扩展动作静态输入的体积上限（序列化后字符数）。 */
+export const EXTENSION_ACTION_INPUT_MAX_CHARS = 4_000
+
+/**
+ * 收敛扩展动作的静态输入。
+ *
+ * 只接受 JSON 对象：数组 / 字符串会让「输入」变成不可预期的形状，
+ * 扩展作者无法在 `inputSchema` 里表达；超限直接丢弃而不是截断，
+ * 截断后的 JSON 可能语义完全不同。
+ */
+export function normalizeExtensionActionInput(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  try {
+    const text = JSON.stringify(value)
+    if (!text || text.length > EXTENSION_ACTION_INPUT_MAX_CHARS) return undefined
+    const parsed = JSON.parse(text) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    return parsed as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}
+
 /** 归一化用户提交的草稿：把未知值收敛成合法值，避免脏数据落盘。 */
 export function normalizeRuleDraft(
   input: unknown,
@@ -1177,13 +1208,19 @@ export function normalizeRuleDraft(
     .map((action) => ({
       type: action.type,
       enabled: action.enabled !== false,
-      ...(typeof action.text === 'string' ? { text: action.text } : {})
+      ...(typeof action.text === 'string' ? { text: action.text } : {}),
+      ...(typeof action.extensionId === 'string' ? { extensionId: action.extensionId.trim() } : {}),
+      ...(typeof action.actionId === 'string' ? { actionId: action.actionId.trim() } : {}),
+      ...(normalizeExtensionActionInput(action.input)
+        ? { input: normalizeExtensionActionInput(action.input) }
+        : {})
     }))
     .filter(
       (action) =>
         action.type === 'replyText' ||
         action.type === 'generateReport' ||
-        action.type === 'sendReportImage'
+        action.type === 'sendReportImage' ||
+        (action.type === 'extensionAction' && Boolean(action.extensionId && action.actionId))
     )
   const cooldown = Number(raw.cooldownSeconds)
   const base = {
@@ -1243,7 +1280,8 @@ export function normalizeLeaveNotificationConfig(input: unknown): LeaveNotificat
       ...(effectiveType === 'contact' ? { contactId } : {})
     },
     template: normalizeLeaveNotificationTemplate(raw.template),
-    notifyScope: raw.notifyScope === 'selected' ? 'selected' : LEAVE_NOTIFICATION_DEFAULT_NOTIFY_SCOPE,
+    notifyScope:
+      raw.notifyScope === 'selected' ? 'selected' : LEAVE_NOTIFICATION_DEFAULT_NOTIFY_SCOPE,
     notifyRoomIds: normalizeLeaveNotificationRoomIds(raw.notifyRoomIds),
     // 用户手动保存一次即视为已确认目标，清除迁移提示。
     ...(raw.targetNeedsReview === true ? { targetNeedsReview: true } : {})

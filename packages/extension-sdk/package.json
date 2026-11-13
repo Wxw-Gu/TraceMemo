@@ -1,0 +1,9 @@
+{
+  "name": "@tracememo/extension-sdk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TraceMemo 扩展 SDK 的类型定义（v1）。运行期由宿主注入 tm 对象，无需打包进扩展。",
+  "types": "index.d.ts",
+  "files": ["index.d.ts", "README.md"],
+  "license": "MIT"
+}

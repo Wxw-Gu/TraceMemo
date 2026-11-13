@@ -74,6 +74,7 @@ export interface WechatActionRecipient {
 export type WechatActionContent =
   | { type: 'text'; text: string; at?: Record<string, string> }
   | { type: 'image'; path: string }
+  | { type: 'video'; path: string }
   | { type: 'voice'; path: string }
 
 export interface WechatActionRequest {
@@ -127,6 +128,8 @@ export interface PolicyDecision {
 export interface WechatActionAuditRecord {
   actionId: string
   idempotencyKey?: string
+  /** 扩展来源时为扩展 id；其他来源省略。 */
+  extensionId?: string
   origin: WechatActionOrigin
   purpose: WechatActionPurpose
   triggerType: WechatActionTriggerType

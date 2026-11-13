@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>关键词回复机器人</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <div>
+          <h1>关键词回复机器人</h1>
+          <p>收到文本消息后按规则匹配，命中即经 TraceMemo Gateway 回复。本页只写配置，不直接发送。</p>
+        </div>
+        <label class="switch">
+          <input id="enabled" type="checkbox" />
+          <span>启用机器人</span>
+        </label>
+      </header>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>关键词规则</h2>
+          <button id="add-rule" type="button" class="ghost">添加规则</button>
+        </div>
+        <div id="rules" class="rules"></div>
+      </section>
+
+      <section class="panel">
+        <h2>监听范围</h2>
+        <div class="field">
+          <span>只监听这些群聊（可多选、可搜索；留空表示全部群聊）</span>
+          <div id="group-picker" class="group-picker">
+            <div id="group-chips" class="group-chips" hidden></div>
+            <input
+              id="group-search"
+              type="text"
+              placeholder="搜索群聊名称或 id…"
+              autocomplete="off"
+            />
+            <div id="group-options" class="group-options" hidden></div>
+          </div>
+        </div>
+        <div class="row">
+          <label class="check"><input id="include-direct" type="checkbox" /><span>同时处理私聊</span></label>
+          <label class="check"><input id="require-mention" type="checkbox" /><span>只处理真正 @ 我的消息</span></label>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>运行统计</h2>
+          <button id="refresh-stats" type="button" class="ghost">刷新</button>
+        </div>
+        <p id="stats-summary" class="stats-summary">暂无命中记录</p>
+        <ul id="stats-list" class="stats-list"></ul>
+        <p class="hint">统计只记录规则编号、命中时间与发送结果，不含会话、昵称与消息正文。</p>
+      </section>
+
+      <footer class="page-footer">
+        <div class="row">
+          <button id="save" type="button" class="primary">保存配置</button>
+          <button id="reset" type="button" class="ghost">恢复默认</button>
+        </div>
+        <p id="status" class="status" role="status"></p>
+      </footer>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

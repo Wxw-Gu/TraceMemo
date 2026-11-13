@@ -1,0 +1,35 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.douyin-sender",
+  "name": "抖音视频搬运",
+  "version": "1.0.3",
+  "apiVersion": "1",
+  "minAppVersion": "2.6.0",
+  "description": "被 @ 且消息里带抖音分享链接时，解析视频并发送回原会话。",
+  "author": "TraceMemo Examples",
+  "permissions": [
+    "messages.subscribe",
+    "contacts.list",
+    "wechat.send.video",
+    "wechat.send.text",
+    "storage"
+  ],
+  "entrypoints": {
+    "page": "ui/index.html",
+    "background": "background/index.js"
+  },
+  "subscriptions": {
+    "messageTypes": ["text"],
+    "conversationIds": [],
+    "requireMentionMe": true,
+    "includeSelf": false
+  },
+  "contributions": {
+    "pages": [
+      {
+        "id": "settings",
+        "title": "抖音解析设置"
+      }
+    ]
+  }
+}

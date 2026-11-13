@@ -39,7 +39,15 @@ const AUTOMATION_PURPOSE_ALLOWLIST = new Set([
   // purpose，各自有幂等位 —— 少这一条会被 evaluateWechatActionPolicy 拦下。
   'automation_scheduled_report_postfix',
   'manual_report_image',
-  'manual_report_postfix'
+  'manual_report_postfix',
+  /*
+   * 扩展来源的两个用途。
+   *
+   * 扩展不能自己决定 purpose：`ExtensionSendGateway` 与自动化 runner 分别填这两个值，
+   * 且 `evaluateWechatActionPolicy` 要求 `origin === 'extension'`，两边同时成立才放行。
+   */
+  'extension_send',
+  'extension_action'
 ])
 
 export interface ReportImageSequenceRequest {
@@ -135,6 +143,46 @@ export class WechatActionGateway {
 
   listAuditRecords(): WechatActionAuditRecord[] {
     return this.loadAuditState().records.map((record) => ({ ...record }))
+  }
+
+  /**
+   * 扩展来源的发送入口。
+   *
+   * 与 `execute()` 的区别只有一个：`origin` / `purpose` / `metadata.extensionId`
+   * 由这里按宿主规则填，扩展侧传不进来。其余检查（能力、审计、幂等、
+   * 自动化发送节流）与普通发送完全一致。
+   */
+  async executeFromExtension(input: {
+    extensionId: string
+    purpose: 'extension_send' | 'extension_action'
+    recipient: WechatActionRequest['recipient']
+    content: WechatActionContent
+    idempotencyKey?: string
+    executionId?: string
+  }): Promise<WechatActionResult> {
+    const extensionId = String(input.extensionId || '').trim()
+    const startedAt = this.deps.now().toISOString()
+    if (!extensionId) {
+      return {
+        actionId: randomUUID(),
+        status: 'blocked',
+        decision: 'block',
+        errorCode: 'INVALID_REQUEST',
+        reason: '扩展发送缺少扩展标识',
+        startedAt,
+        finishedAt: startedAt
+      }
+    }
+    return this.execute({
+      ...(input.idempotencyKey ? { idempotencyKey: String(input.idempotencyKey) } : {}),
+      ...(input.executionId ? { executionId: String(input.executionId) } : {}),
+      origin: 'extension',
+      purpose: input.purpose,
+      triggerType: 'automation',
+      recipient: input.recipient,
+      content: input.content,
+      metadata: { extensionId }
+    })
   }
 
   async execute(request: WechatActionRequest): Promise<WechatActionResult> {
@@ -256,9 +304,10 @@ export class WechatActionGateway {
 
     const queued = this.automationSendTail.then(async () => {
       const now = this.deps.now().getTime()
-      const remaining = this.lastAutomationSendStartedAt !== undefined
-        ? Math.max(0, AUTOMATION_SEND_INTERVAL_MS - (now - this.lastAutomationSendStartedAt))
-        : 0
+      const remaining =
+        this.lastAutomationSendStartedAt !== undefined
+          ? Math.max(0, AUTOMATION_SEND_INTERVAL_MS - (now - this.lastAutomationSendStartedAt))
+          : 0
       if (remaining > 0) await this.deps.wait(remaining)
       this.lastAutomationSendStartedAt = this.deps.now().getTime()
       return this.deps.send(sendRequest)
@@ -393,14 +442,20 @@ export class WechatActionGateway {
       !request.content ||
       (request.content.type !== 'text' &&
         request.content.type !== 'image' &&
+        request.content.type !== 'video' &&
         request.content.type !== 'voice')
     ) {
       return
     }
     const state = this.loadAuditState()
+    const extensionId =
+      request.metadata && typeof request.metadata.extensionId === 'string'
+        ? request.metadata.extensionId.trim().slice(0, 128)
+        : ''
     const record: WechatActionAuditRecord = {
       actionId: result.actionId,
       ...(idempotencyKey ? { idempotencyKey } : {}),
+      ...(extensionId ? { extensionId } : {}),
       origin: request.origin,
       purpose: request.purpose,
       triggerType: request.triggerType,
@@ -465,6 +520,18 @@ export function evaluateWechatActionPolicy(request: WechatActionRequest): Policy
       reason: `自动化动作不允许执行 purpose=${request.purpose}`
     }
   }
+  /*
+   * 扩展用途必须来自扩展来源。少了这一条，任何能构造 `WechatActionRequest` 的
+   * 内部调用都可以用 `extension_send` 绕过自动化用途白名单。
+   */
+  if (String(request.purpose).startsWith('extension_') && request.origin !== 'extension') {
+    return {
+      decision: 'block',
+      source: 'deterministic',
+      reasonCode: 'ACTION_NOT_ALLOWED',
+      reason: '扩展发送用途只能用于扩展来源的请求'
+    }
+  }
   return { decision: 'allow', source: 'deterministic' }
 }
 
@@ -526,7 +593,7 @@ export function normalizeActionRequest(value: unknown): WechatActionRequest | nu
       content: { type: 'text', text, ...(at ? { at } : {}) }
     } as WechatActionRequest
   }
-  if (contentType !== 'image' && contentType !== 'voice') return null
+  if (contentType !== 'image' && contentType !== 'video' && contentType !== 'voice') return null
   const filePath = String((content as { path?: unknown }).path || '').trim()
   if (!filePath) return null
   return {
@@ -585,6 +652,9 @@ function toPersonalWechatSendRequest(request: WechatActionRequest): PersonalWech
   if (request.content.type === 'image') {
     return { ...base, type: 'image', filePath: request.content.path }
   }
+  if (request.content.type === 'video') {
+    return { ...base, type: 'video', filePath: request.content.path }
+  }
   const metadata = request.metadata && typeof request.metadata === 'object' ? request.metadata : {}
   const fromId = typeof metadata.fromId === 'string' ? metadata.fromId.trim() : ''
   const durationMs =
@@ -638,7 +708,7 @@ function contentAudit(
 }
 
 function contentTypeLabel(type: WechatActionContent['type']): string {
-  return type === 'text' ? '文字' : type === 'image' ? '图片' : '语音'
+  return type === 'text' ? '文字' : type === 'image' ? '图片' : type === 'video' ? '视频' : '语音'
 }
 
 function normalizeAuditRecords(values: unknown[]): WechatActionAuditRecord[] {

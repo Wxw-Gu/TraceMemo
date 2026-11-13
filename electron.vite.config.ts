@@ -11,6 +11,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/main/index.ts'),
+          /* 扩展后台宿主：由 `ExtensionHost` 以子进程方式 fork，不在主进程加载。 */
+          extensionHost: resolve('src/main/extensions/host-runtime.ts'),
           reportTemplateTest: resolve('src/main/report-template-test-entry.ts'),
           queryAgentPoc: resolve('src/main/query-agent-poc-entry.ts'),
           voiceRecognitionWorker: resolve('src/main/voice-pipeline/voice-recognition-worker.ts'),

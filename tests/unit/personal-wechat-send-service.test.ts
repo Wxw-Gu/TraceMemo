@@ -418,6 +418,20 @@ describe('Windows request', () => {
     })
   })
 
+  it('builds the unified video request with type=video', () => {
+    expect(
+      buildWindowsWechatRequest({
+        to: 'room@chatroom',
+        type: 'video',
+        filePath: '/tmp/tm-test.mp4',
+        isGroup: true
+      })
+    ).toEqual({
+      endpoint: '/SendMsg',
+      body: { toWxid: 'room@chatroom', type: 'video', msg: '/tmp/tm-test.mp4' }
+    })
+  })
+
   it('builds the unified voice request with sender wxid and duration', () => {
     expect(
       buildWindowsWechatRequest(
