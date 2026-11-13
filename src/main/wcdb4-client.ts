@@ -1442,8 +1442,16 @@ export class Wcdb4Client {
     // cannot silently stop at a shard boundary.
     let tableMessages: Wcdb4Message[] = []
     const cursorSatisfiesLimit = maxRows !== undefined && cursorMessages.length >= maxRows
+    const cursorMissingSource =
+      cursorMessages.length > 0 &&
+      cursorMessages.some(
+        (msg) => !msg.raw || !Object.prototype.hasOwnProperty.call(msg.raw, 'source')
+      )
     let tableScanExecuted = false
-    if (!cursorSatisfiesLimit && (endTime || cursorMessages.length === 0)) {
+    if (
+      (!cursorSatisfiesLimit && (endTime || cursorMessages.length === 0)) ||
+      (Boolean(endTime) && cursorMissingSource)
+    ) {
       tableScanExecuted = true
       tableMessages = await this.getMessagesByTableScanAsync(
         username,
@@ -2411,7 +2419,19 @@ export class Wcdb4Client {
             ? `local:${message.mesLocalID}:${message.msgCreateTime || 0}`
             : `${message.msgCreateTime}:${message.msgContent}`
       const key = recoveredRow ? `recovered:${identity}` : identity
-      merged.set(key, message)
+      const existing = merged.get(key)
+      if (existing?.raw && message.raw) {
+        merged.set(key, {
+          ...existing,
+          ...message,
+          raw: {
+            ...existing.raw,
+            ...message.raw
+          }
+        })
+      } else {
+        merged.set(key, message)
+      }
     }
     const messages = Array.from(merged.values()).sort(
       (left, right) =>

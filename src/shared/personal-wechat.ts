@@ -39,6 +39,8 @@ export interface PersonalWechatSenderStatus {
   canSendText: boolean
   canSendImage: boolean
   canSendVoice: boolean
+  /** 视频与图片共用媒体通道；旧 runtime 不报告该字段。 */
+  canSendVideo?: boolean
   message: string
   error?: string
 }
@@ -60,6 +62,8 @@ export interface PersonalWechatSendCapability {
     text: boolean
     image: boolean
     voice: boolean
+    /** 图片/视频共用媒体通道；未报告的旧 runtime 视为 false。 */
+    video?: boolean
   }
   senderStatus: PersonalWechatSenderStatus
   message: string
@@ -93,10 +97,22 @@ export interface PersonalWechatSendVoiceRequest extends PersonalWechatSendBaseRe
   durationMs?: number
 }
 
+/**
+ * 视频发送。
+ *
+ * 原生 Host 走 `POST /SendMsg`，body 为 `{toWxid, type:'video', msg:<绝对路径>}`；
+ * `filePath` 必须是本机可访问的普通文件。
+ */
+export interface PersonalWechatSendVideoRequest extends PersonalWechatSendBaseRequest {
+  type: 'video'
+  filePath: string
+}
+
 export type PersonalWechatSendRequest =
   | PersonalWechatSendTextRequest
   | PersonalWechatSendImageRequest
   | PersonalWechatSendVoiceRequest
+  | PersonalWechatSendVideoRequest
 
 /** Renderer 请求发送刚刚生成的 TTS 语音；Action 元数据由主进程补齐。 */
 export interface PersonalWechatGeneratedTtsVoiceRequest {

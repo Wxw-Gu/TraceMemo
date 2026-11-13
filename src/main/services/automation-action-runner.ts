@@ -19,8 +19,21 @@ import {
   renderLeaveNotificationText,
   type GroupMemberExitedEvent
 } from '../../shared/group-exit-event'
-import type { WechatActionContent, WechatActionRequest, WechatActionResult } from '../../shared/wechat-action'
-import type { SaveGeneratedReportRequest, SaveGeneratedReportResult } from '../../shared/report-history'
+import type {
+  WechatActionContent,
+  WechatActionRequest,
+  WechatActionResult
+} from '../../shared/wechat-action'
+import type { ExtensionMessageEvent } from '../../shared/extensions/events'
+import type { ExtensionAutomationActionOutput } from '../../shared/extensions/rpc'
+import {
+  canExtensionSendText,
+  invokeExtensionAction
+} from '../extensions/extension-automation-bridge'
+import type {
+  SaveGeneratedReportRequest,
+  SaveGeneratedReportResult
+} from '../../shared/report-history'
 import {
   generateAgentGroupReport,
   type AgentGroupReportRequest,
@@ -44,6 +57,21 @@ import type { AutomationTargetResolution } from './automation-wechat-target'
 
 /** 一步执行完毕后，后续步骤的处置方式。 */
 const STEP_ORDER: AutomationStepKey[] = ['received', 'matched', 'reply', 'report', 'send']
+
+/**
+ * 配了扩展动作时的步骤顺序。
+ *
+ * 只有规则真的配了扩展动作才把这一步加进来：给每条日报都渲染一条
+ * 「执行扩展动作 已跳过」是纯噪声，用户会以为规则配错了。
+ */
+const EXTENSION_STEP_ORDER: AutomationStepKey[] = [
+  'received',
+  'matched',
+  'extension_action',
+  'reply',
+  'report',
+  'send'
+]
 
 /** 退群通知的步骤顺序（与消息型规则**不共用**）。 */
 const LEAVE_NOTIFICATION_STEP_ORDER: AutomationStepKey[] = [
@@ -74,6 +102,7 @@ const SCHEDULED_REPORT_STEP_ORDER: AutomationStepKey[] = [
  */
 const SKIPPED_AFTER_REPLY_FAILURE = '前置步骤失败（回复确认未成功），本次不再继续。'
 const SKIPPED_AFTER_REPORT_FAILURE = '前置步骤失败（日报未生成），没有图片可发送。'
+const SKIPPED_AFTER_EXTENSION_FAILURE = '前置步骤失败（扩展动作未成功），本次不再继续。'
 
 /**
  * 定时日报「生成 / 落库」失败时，后续步骤的 `skipReason`。
@@ -102,6 +131,8 @@ export interface AutomationRunInput {
   sourceDisplayName: string
   /** 群消息触发者；仅内置日报确认回复会使用它构造 @。 */
   triggerSender?: { wxid: string; displayName: string }
+  /** 触发本次执行的消息（扩展动作的运行时上下文）。 */
+  message?: ExtensionMessageEvent
 }
 
 export interface AutomationRunResult {
@@ -185,6 +216,22 @@ export interface ScheduledReportRunResult {
 export interface AutomationActionRunnerDependencies {
   generateReport?: (request: AgentGroupReportRequest) => Promise<AgentGroupReportResult>
   executeAction?: (request: WechatActionRequest) => Promise<WechatActionResult>
+  /**
+   * 扩展动作调用。默认走 `ExtensionManager`；单测注入假实现即可绕开子进程。
+   */
+  invokeExtensionAction?: (
+    extensionId: string,
+    actionId: string,
+    input: Record<string, unknown>,
+    context: {
+      conversationId: string
+      isGroup: boolean
+      accountId: string
+      message?: ExtensionMessageEvent
+    }
+  ) => Promise<ExtensionAutomationActionOutput>
+  /** 扩展是否具备发送文本的权限。默认读扩展中心授予集合。 */
+  canExtensionSendText?: (extensionId: string) => boolean
   now?: () => number
   /** 延迟实现。默认真 sleep；单测注入即时 resolve 的假实现，避免真的等 2 秒。 */
   delay?: (ms: number) => Promise<void>
@@ -246,7 +293,9 @@ function actionErrorMessage(code: string | undefined, fallback: string | undefin
 }
 
 export class AutomationActionRunner {
-  private readonly generateReport: (request: AgentGroupReportRequest) => Promise<AgentGroupReportResult>
+  private readonly generateReport: (
+    request: AgentGroupReportRequest
+  ) => Promise<AgentGroupReportResult>
   private readonly executeAction: (request: WechatActionRequest) => Promise<WechatActionResult>
   private readonly now: () => number
   private readonly delay: (ms: number) => Promise<void>
@@ -257,21 +306,31 @@ export class AutomationActionRunner {
     AutomationActionRunnerDependencies['resolveReportContact']
   >
   private readonly getContactAvatars: (usernames: string[]) => Promise<Record<string, string>>
+  private readonly invokeExtensionAction: NonNullable<
+    AutomationActionRunnerDependencies['invokeExtensionAction']
+  >
+  private readonly canExtensionSendText: (extensionId: string) => boolean
 
   constructor(dependencies: AutomationActionRunnerDependencies = {}) {
     this.generateReport = dependencies.generateReport ?? generateAgentGroupReport
-    this.executeAction = dependencies.executeAction ?? ((request) => wechatActionGateway.execute(request))
+    this.executeAction =
+      dependencies.executeAction ?? ((request) => wechatActionGateway.execute(request))
     this.now = dependencies.now ?? (() => Date.now())
     this.delay =
-      dependencies.delay ??
-      ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+      dependencies.delay ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
     this.saveGeneratedReport = dependencies.saveGeneratedReport ?? saveGeneratedReport
     this.resolveReportContact = dependencies.resolveReportContact ?? ((raw) => resolveMd5(raw))
     this.getContactAvatars = dependencies.getContactAvatars ?? ((ids) => getContactAvatars(ids))
+    this.invokeExtensionAction =
+      dependencies.invokeExtensionAction ??
+      ((id, actionId, input, context) => invokeExtensionAction(id, actionId, input, context))
+    this.canExtensionSendText = dependencies.canExtensionSendText ?? canExtensionSendText
   }
 
   async run(input: AutomationRunInput): Promise<AutomationRunResult> {
-    const steps = STEP_ORDER.map((key) => createStep(key))
+    const extensionAction = findAction(input.rule, 'extensionAction')
+    const order = extensionAction ? EXTENSION_STEP_ORDER : STEP_ORDER
+    const steps = order.map((key) => createStep(key))
     const stepAt = (key: AutomationStepKey): AutomationStep =>
       steps.find((step) => step.key === key) as AutomationStep
 
@@ -282,25 +341,77 @@ export class AutomationActionRunner {
     const reportAction = findAction(input.rule, 'generateReport')
     const sendAction = findAction(input.rule, 'sendReportImage')
 
-    // ---- 步骤 3：回复确认 ----
+    // ---- 步骤 3：扩展动作 ----
     //
-    // 回复等待：规则一命中就秒回，看起来就是个机器人（消息刚到、回复就到）。
-    // 等待时长是**规则自己的一项执行参数**（`rule.replyDelaySeconds`，在
-    // 「编辑自动化 → 3 · 触发后执行」里配），所以不同规则可以不一样。
-    //
-    // 等待刻意放在 `reply` 步骤计时**之外** —— `reply.durationMs` 只应该反映发送本身，
-    // 否则用户看到「回复确认 2000ms」会误以为是发送慢。
-    // 已经命中就不再回头重判规则：等待窗口里规则被停用/删掉也不中断本次执行，
-    // 与 cooldown、同消息幂等的口径一致（都是「命中那一刻」的快照）。
-    if (replyAction) {
+    // 扩展动作先跑，它产出的 `reply` 会成为下一步「回复确认」的内容。
+    // 扩展本身**不发送**：内容交回宿主，由宿主在权限与授权都通过后经 Gateway 发出。
+    let extensionOutput: ExtensionAutomationActionOutput | undefined
+    if (extensionAction) {
+      const extensionStep = stepAt('extension_action')
+      extensionStep.status = 'running'
+      extensionStep.startedAt = this.now()
+      try {
+        extensionOutput = await this.invokeExtensionAction(
+          String(extensionAction.extensionId || ''),
+          String(extensionAction.actionId || ''),
+          extensionAction.input ?? {},
+          {
+            conversationId: input.conversationId,
+            isGroup: input.isGroup,
+            accountId: input.message?.accountId ?? '',
+            ...(input.message ? { message: input.message } : {})
+          }
+        )
+      } catch (error) {
+        markFailed(
+          extensionStep,
+          this.now(),
+          error instanceof Error ? error.message : '扩展动作执行失败'
+        )
+        markRemainingSkipped(steps, order, 'extension_action', SKIPPED_AFTER_EXTENSION_FAILURE)
+        return { steps, status: 'failed', errorSummary: extensionStep.error }
+      }
+      if (!extensionOutput || extensionOutput.success === false) {
+        markFailed(extensionStep, this.now(), extensionOutput?.error || '扩展动作返回失败')
+        markRemainingSkipped(steps, order, 'extension_action', SKIPPED_AFTER_EXTENSION_FAILURE)
+        return { steps, status: 'failed', errorSummary: extensionStep.error }
+      }
+      if (extensionOutput.reply) extensionStep.detail = '已生成回复内容'
+      markSuccess(extensionStep, this.now())
+    }
+
+    const extensionReply = extensionOutput?.reply
+
+    // 步骤 4：回复确认。
+    // 命中即视为快照：等待窗口内规则被停用/删除也不中断本次执行。
+    // 等待时长来自 rule.replyDelaySeconds，且不计入 reply.durationMs。
+    const willReply = Boolean(extensionReply) || Boolean(replyAction)
+    if (willReply) {
       // 用共享的归一化函数，而不是 `Number(...) || 0`：旧版 rules.json 里没有这个字段，
       // 那应该按**默认 2 秒**处理（否则「默认 2 秒」要等用户手动进编辑页才会生效）。
       const replyDelayMs = normalizeReplyDelaySeconds(input.rule.replyDelaySeconds) * 1_000
       if (replyDelayMs > 0) await this.delay(replyDelayMs)
     }
 
-    if (!replyAction) {
+    if (!willReply) {
       markSkipped(stepAt('reply'))
+    } else if (extensionReply) {
+      const replyStep = stepAt('reply')
+      const extensionId = String(extensionAction?.extensionId || '')
+      if (!this.canExtensionSendText(extensionId)) {
+        markFailed(replyStep, this.now(), '扩展没有 wechat.send.text 权限，回复未发送')
+        markRemainingSkipped(steps, order, 'reply', SKIPPED_AFTER_REPLY_FAILURE)
+        return { steps, status: 'failed', errorSummary: replyStep.error }
+      }
+      replyStep.status = 'running'
+      replyStep.startedAt = this.now()
+      const sent = await this.sendExtensionReply(input, extensionId, extensionReply)
+      if (!sent.ok) {
+        markFailed(replyStep, this.now(), sent.error || '回复确认失败')
+        markRemainingSkipped(steps, order, 'reply', SKIPPED_AFTER_REPLY_FAILURE)
+        return { steps, status: 'failed', errorSummary: replyStep.error }
+      }
+      markSuccess(replyStep, this.now())
     } else {
       const replyStep = stepAt('reply')
       replyStep.status = 'running'
@@ -316,12 +427,12 @@ export class AutomationActionRunner {
           : undefined
       const sent = await this.sendThroughGateway(input, 'reply', {
         type: 'text',
-        text: replyAction.text?.trim() || DEFAULT_REPLY_TEXT,
+        text: replyAction?.text?.trim() || DEFAULT_REPLY_TEXT,
         ...(confirmationAt ? { at: confirmationAt } : {})
       })
       if (!sent.ok) {
         markFailed(replyStep, this.now(), sent.error || '回复确认失败')
-        markRemainingSkipped(steps, 'reply', SKIPPED_AFTER_REPLY_FAILURE)
+        markRemainingSkipped(steps, order, 'reply', SKIPPED_AFTER_REPLY_FAILURE)
         return { steps, status: 'failed', errorSummary: replyStep.error }
       }
       markSuccess(replyStep, this.now())
@@ -346,7 +457,7 @@ export class AutomationActionRunner {
       }
       if (!result.success || !result.pngPath) {
         markFailed(reportStep, this.now(), result.error || '日报生成失败')
-        markRemainingSkipped(steps, 'report', SKIPPED_AFTER_REPORT_FAILURE)
+        markRemainingSkipped(steps, order, 'report', SKIPPED_AFTER_REPORT_FAILURE)
         return { steps, status: 'failed', errorSummary: reportStep.error }
       }
       pngPath = result.pngPath
@@ -393,6 +504,43 @@ export class AutomationActionRunner {
     }
     markSuccess(sendStep, this.now())
     return { steps, status: 'success', pngPath }
+  }
+
+  /**
+   * 发送扩展产出的回复。
+   *
+   * 内容来自扩展，**发送动作来自宿主**：`origin` / `purpose` / 幂等键都在这里填，
+   * 扩展返回的只是「想说什么」。所以扩展无法借这条链路绕过发送策略。
+   */
+  private async sendExtensionReply(
+    input: AutomationRunInput,
+    extensionId: string,
+    reply: NonNullable<ExtensionAutomationActionOutput['reply']>
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const result = await this.executeAction({
+        idempotencyKey: `extension_action:${input.executionId}`,
+        origin: 'extension',
+        purpose: 'extension_action',
+        triggerType: 'automation',
+        executionId: input.executionId,
+        recipient: {
+          type: input.isGroup ? 'group' : 'contact',
+          id: input.conversationId,
+          name: input.sourceDisplayName
+        },
+        content: {
+          type: 'text',
+          text: reply.text,
+          ...(reply.at ? { at: reply.at } : {})
+        },
+        metadata: { extensionId }
+      })
+      if (result.status === 'sent') return { ok: true }
+      return { ok: false, error: actionErrorMessage(result.errorCode, result.reason) }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   /**
@@ -522,7 +670,9 @@ export class AutomationActionRunner {
           generated.groupName || reportContact?.m_nsNickName || input.sourceDisplayName || '群聊',
         contactAvatar,
         source: 'scheduled',
-        dateRange: generated.reportMetadata?.dateRange || scheduledReportRangeLabel(input.config.report.range),
+        dateRange:
+          generated.reportMetadata?.dateRange ||
+          scheduledReportRangeLabel(input.config.report.range),
         reportDate: generated.reportMetadata?.reportDate,
         messageCount: generated.messageCount ?? generated.reportMetadata?.messageCount ?? 0,
         generatedAt: new Date(this.now()).toISOString(),
@@ -674,7 +824,9 @@ export class AutomationActionRunner {
    * 与 `run()` 的差别：没有动作链、没有回复等待、没有 cooldown
    * （退群是低频事件，且**不能被时间窗合并** —— 两个成员先后退出就是两条通知）。
    */
-  async runLeaveNotification(input: LeaveNotificationRunInput): Promise<LeaveNotificationRunResult> {
+  async runLeaveNotification(
+    input: LeaveNotificationRunInput
+  ): Promise<LeaveNotificationRunResult> {
     const steps = LEAVE_NOTIFICATION_STEP_ORDER.map((key) => createStep(key))
     const stepAt = (key: AutomationStepKey): AutomationStep =>
       steps.find((step) => step.key === key) as AutomationStep
@@ -792,18 +944,22 @@ export class AutomationActionRunner {
   }
 }
 
-function findAction(rule: AutomationRule, type: AutomationAction['type']): AutomationAction | undefined {
+function findAction(
+  rule: AutomationRule,
+  type: AutomationAction['type']
+): AutomationAction | undefined {
   return rule.actions.find((action) => action.type === type && action.enabled)
 }
 
 /** 把 `after` 之后的步骤全部标成 `skipped`（前一步挂了，后面的不许再动）。 */
 function markRemainingSkipped(
   steps: AutomationStep[],
+  order: AutomationStepKey[],
   after: AutomationStepKey,
   skipReason?: string
 ): void {
-  const from = STEP_ORDER.indexOf(after) + 1
-  for (const key of STEP_ORDER.slice(from)) {
+  const from = order.indexOf(after) + 1
+  for (const key of order.slice(from)) {
     const step = steps.find((item) => item.key === key)
     if (step) markSkipped(step, skipReason)
   }

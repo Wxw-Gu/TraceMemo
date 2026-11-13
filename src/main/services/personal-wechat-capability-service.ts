@@ -37,7 +37,8 @@ export class PersonalWechatCapabilityService {
     const capabilities = {
       text: Boolean(senderStatus.canSendText),
       image: Boolean(senderStatus.canSendImage),
-      voice: Boolean(senderStatus.canSendVoice)
+      voice: Boolean(senderStatus.canSendVoice),
+      video: Boolean(senderStatus.canSendVideo)
     }
     const status = this.mapState(senderStatus)
     const ready = status === 'ready'

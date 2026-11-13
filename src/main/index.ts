@@ -141,6 +141,16 @@ import {
   leaveNotificationContactDisplayName
 } from './services/leave-notification-target'
 import { MessageListenerService } from './services/message-listener-service'
+import { EXTENSION_IPC } from '../shared/extensions/ipc'
+import { installExtensionProtocolHandler, registerExtensionScheme } from './extensions/extension-protocol'
+import { registerExtensionIpc } from './extensions/extension-ipc'
+import { getExtensionPaths } from './extensions/extension-paths'
+import {
+  disposeExtensionSystem,
+  getExtensionManager,
+  hasExtensionManager,
+  initExtensionSystem
+} from './extensions/extension-service'
 import { automationRuleStore } from './services/automation-rule-store'
 import { automationExecutionLogService } from './services/automation-execution-log-service'
 import { initAutomationService, getAutomationService } from './services/automation-service'
@@ -1079,8 +1089,10 @@ function createWindow(): void {
 
 // Electron 初始化完成并准备创建浏览器窗口后，将调用此方法
 // 某些 API 只能在此事件发生后使用
-app.whenReady().then(async () => {
-  if (isLegacyMigrationHelper) {
+/* 扩展页面走自定义协议；scheme 必须在 app ready 之前登记为特权协议。 */
+registerExtensionScheme()
+
+app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
     try {
       runLegacySafeStorageHelper()
       app.exit(0)
@@ -1442,7 +1454,24 @@ app.whenReady().then(async () => {
   // Create the renderer before native WCDB bootstrap so startup progress is visible immediately.
   await reportTemplateService.recover()
   registerReportTemplateIpc()
+  installExtensionProtocolHandler(getExtensionPaths())
+  registerExtensionIpc({
+    getManager: getExtensionManager,
+    paths: getExtensionPaths(),
+    isTrustedSender: (senderId) =>
+      BrowserWindow.getAllWindows().some((window) => window.webContents.id === senderId)
+  })
   createWindow()
+  void initExtensionSystem({
+    appVersion: app.getVersion(),
+    onChange: (extensionId, reason) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) {
+          window.webContents.send(EXTENSION_IPC.changed, { extensionId, reason })
+        }
+      }
+    }
+  })
   wcdbBootstrapPromise = bootstrapWcdbNativeAsync().then(() => {
     console.log('[WCDB4] async bootstrap complete')
   })
@@ -1706,6 +1735,21 @@ app.whenReady().then(async () => {
               }`
             )
           }
+          /*
+           * 扩展事件分发：与 Automation 并行、互不影响。
+           * 扩展侧的异常不能污染 MessageListener 的投递循环，也不能阻断 Automation。
+           */
+          if (hasExtensionManager()) {
+            try {
+              getExtensionManager().handleMessage(message)
+            } catch (error) {
+              console.warn(
+                `[Extension] handleMessage failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              )
+            }
+          }
         })
         const sessions = await wcdb4Client.getSessionsAsync({ hydrateDisplayNames: false })
         configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
@@ -1884,7 +1928,7 @@ app.whenReady().then(async () => {
     // 排查「消息到底发没发出去」时恰好缺的就是那份证据。
     // 普通手动发送保持 triggerType=user；带 postfixText 的日报图片由 Gateway 编排成
     // 两个 automation action，以复用同一条 3s 队列，并严格在图片 sent 后才发后置词。
-    if (request.type === 'text' || request.type === 'image') {
+    if (request.type === 'text' || request.type === 'image' || request.type === 'video') {
       const to = String(request.to || '').trim()
       const recipient = {
         type:
@@ -1912,7 +1956,12 @@ app.whenReady().then(async () => {
       }
       const action = await wechatActionGateway.execute({
         origin: 'user_manual',
-        purpose: request.type === 'text' ? 'manual_text' : 'manual_image',
+        purpose:
+          request.type === 'text'
+            ? 'manual_text'
+            : request.type === 'video'
+              ? 'manual_video'
+              : 'manual_image',
         triggerType: 'user',
         recipient,
         content:
@@ -1922,7 +1971,9 @@ app.whenReady().then(async () => {
                 text: String(request.text || ''),
                 ...(request.at ? { at: request.at } : {})
               }
-            : { type: 'image', path: String(request.filePath || '') }
+            : request.type === 'video'
+              ? { type: 'video', path: String(request.filePath || '') }
+              : { type: 'image', path: String(request.filePath || '') }
       })
       // 返回契约保持 `PersonalWechatSendResult`，界面判读不用改。
       return toPersonalWechatSendResult(action, await currentPersonalWechatSenderStatus())
@@ -3674,6 +3725,7 @@ app.on('before-quit', (event) => {
     agentHubService.stop()
     scheduledReportService.stop()
     groupExitMonitorService.stop()
+    await disposeExtensionSystem().catch(() => undefined)
     flushBootstrapCacheWritesSync()
     const [, nativeCallsDrained] = await Promise.all([
       apiServer.stop().catch(() => undefined),

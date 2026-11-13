@@ -103,6 +103,11 @@ describe('mention parser（纯函数）', () => {
     // 若实现里写了 `startsWith('wxid_')` 过滤，这条会变成 []
     expect(extractMentionTargets(source)).toEqual(['SELF_USER'])
   })
+
+  it('多人 @（逗号分隔）能够拆分为独立 username 列表', () => {
+    const source = '<msgsource><atuserlist><![CDATA[,OTHER_USER,SELF_USER]]></atuserlist></msgsource>'
+    expect(extractMentionTargets(source)).toEqual(['OTHER_USER', 'SELF_USER'])
+  })
 })
 
 describe('decodeSourcePayload', () => {
@@ -121,8 +126,14 @@ describe('decodeSourcePayload', () => {
     expect(decodeSourcePayload(jsonForm)).toBe(xml)
   })
 
+  it('TEXT 列直接返回明文 XML 字符串时原样保留', () => {
+    const xml = '<msgsource><atuserlist>SELF_USER</atuserlist></msgsource>'
+    expect(decodeSourcePayload(xml)).toBe(xml)
+  })
+
   it('空值 / 非 zstd 内容安全返回', () => {
     expect(decodeSourcePayload(undefined)).toBeUndefined()
+    expect(decodeSourcePayload('')).toBeUndefined()
     expect(decodeSourcePayload(Buffer.alloc(0))).toBeUndefined()
     expect(decodeSourcePayload(Buffer.from('plain text'))).toBe('plain text')
   })

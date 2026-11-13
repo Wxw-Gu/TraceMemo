@@ -23,7 +23,10 @@ import type {
 import { loadSettings } from './settings-store'
 import { SilkAudioDecoder, SilkAudioEncoder } from '../voice-pipeline/audio-decoder'
 import { appLogger } from '../app-logger'
-import { accountDirectoryBelongsToIdentity, readLocalAccountIdentity } from './local-account-identity'
+import {
+  accountDirectoryBelongsToIdentity,
+  readLocalAccountIdentity
+} from './local-account-identity'
 import { macWechatRuntimeManager } from './mac-wechat-runtime-manager'
 
 const execFileAsync = promisify(execFile)
@@ -31,6 +34,8 @@ const WINDOWS_LOOPBACK_HOST = '127.0.0.1'
 const REQUEST_TIMEOUT_MS = 20_000
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const MAX_VOICE_BYTES = 20 * 1024 * 1024
+/** 视频与扩展发送通道的上限保持一致。 */
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024
 // 语音编码由 native runtime 内的 SILK 实现完成，不再是外部编码器进程。
 const VOICE_ENCODER_NAME = 'silk'
 const VOICE_ENCODER_VERSION = 'tm-wechat-native'
@@ -327,6 +332,73 @@ function stageMacWechatImageForMessageSourceSend(
   return stagedPath
 }
 
+const MAC_VIDEO_STAGE_PREFIX = 'tm-video-'
+const MAC_VIDEO_STAGE_RETENTION_MS = 10 * 60 * 1000
+
+/**
+ * macOS WeChat 运行在 App Sandbox 容器中，注入在微信进程内的 `libtmwechat.dylib`
+ * 只能读取 `~/Library/Containers/com.tencent.xinWeChat/Data/...` 容器内路径，
+ * 直接传 `~/Library/Application Support/TraceMemo/...` 会触发 `VIDEO_PREPARATION_FAILED:0`。
+ * 因此发送前需将容器外视频暂存到微信容器的 `Documents` 目录。
+ */
+export function stageMacWechatVideoForSend(
+  filePath: string,
+  wechatFilesRoot = WECHAT_FILES_ROOT
+): { stagedPath: string; cleanup: () => void } {
+  const normalized = String(filePath || '').trim()
+  const containerDataRoot = dirname(dirname(wechatFilesRoot))
+  if (
+    containerDataRoot.includes('com.tencent.xinWeChat') &&
+    normalized.startsWith(`${containerDataRoot}${sep}`)
+  ) {
+    return { stagedPath: normalized, cleanup: () => {} }
+  }
+
+  const documentsDir = dirname(wechatFilesRoot)
+  const stageDir = existsSync(documentsDir) ? documentsDir : wechatFilesRoot
+  mkdirSync(stageDir, { recursive: true })
+
+  // 顺手清理超过 10 分钟的历史暂存视频，防止异常退出残留。
+  const now = Date.now()
+  try {
+    for (const entry of readdirSync(stageDir)) {
+      if (!entry.startsWith(MAC_VIDEO_STAGE_PREFIX)) continue
+      const candidate = join(stageDir, entry)
+      try {
+        if (now - statSync(candidate).mtimeMs > MAC_VIDEO_STAGE_RETENTION_MS) {
+          unlinkSync(candidate)
+        }
+      } catch {
+        // Best-effort stale file cleanup.
+      }
+    }
+  } catch {
+    // Ignore directory listing errors.
+  }
+
+  const extension = extname(normalized).toLowerCase()
+  const safeExtension = /^\.[a-z0-9]{1,8}$/.test(extension) ? extension : '.mp4'
+  const stagedPath = join(
+    stageDir,
+    `${MAC_VIDEO_STAGE_PREFIX}${randomBytes(6).toString('hex')}-${now}${safeExtension}`
+  )
+  copyFileSync(normalized, stagedPath)
+
+  return {
+    stagedPath,
+    cleanup: () => {
+      const timer = setTimeout(() => {
+        try {
+          unlinkSync(stagedPath)
+        } catch {
+          // Best-effort delayed cleanup after WeChat finishes asynchronous video upload.
+        }
+      }, 120_000)
+      timer.unref?.()
+    }
+  }
+}
+
 /** Locate the current account's temporary image directory consumed by the image send path. */
 export function findWechatImagePath(
   root = WECHAT_FILES_ROOT,
@@ -441,6 +513,12 @@ export function buildWindowsWechatRequest(
     return {
       endpoint: '/SendMsg',
       body: { toWxid: target, type: 'image', msg: String(request.filePath || '').trim() }
+    }
+  }
+  if (request.type === 'video') {
+    return {
+      endpoint: '/SendMsg',
+      body: { toWxid: target, type: 'video', msg: String(request.filePath || '').trim() }
     }
   }
 
@@ -609,6 +687,7 @@ export class PersonalWechatSendService {
       if (request.type === 'text') return this.sendMacText(request)
       if (request.type === 'image') return this.sendMacImage(request)
       if (request.type === 'voice') return this.sendMacVoice(request)
+      if (request.type === 'video') return this.sendMacVideo(request)
     }
     return {
       success: false,
@@ -772,11 +851,78 @@ export class PersonalWechatSendService {
       signal: AbortSignal.timeout(timeoutMs)
     }).catch(() => null)
     if (response === null || !response.ok) return null
-    return (await response.json().catch(() => null)) as {
-      code: number
-      ok: boolean
-      message: string
-    } | null
+    const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null
+    if (!payload) return null
+    /*
+     * 不同 Host 路由的响应形状不一致：`/sendText` 等返回 `{ok}`，
+     * `/SendMsg` 兼容层可能返回 `{status:true}` 或 Windows 风格的 `{ret:0}`。
+     * 这里统一收敛，避免「实际已发送、界面报失败」。
+     */
+    const explicitFailure = payload.ok === false || payload.status === false
+    const ok =
+      !explicitFailure &&
+      (payload.ok === true || payload.status === true || payload.ret === 0 || payload.code === 0)
+    return {
+      code: Number(payload.code ?? payload.ret ?? (ok ? 0 : 1)),
+      ok,
+      message: String(payload.message ?? payload.msg ?? '')
+    }
+  }
+
+  /**
+   * macOS 视频发送：`POST /SendMsg`，body 为 `{toWxid, type:'video', msg:<绝对路径>}`。
+   *
+   * 微信运行在 App Sandbox 容器中，注入的 `libtmwechat.dylib` 在微信进程内执行，
+   * 只能访问微信沙盒容器目录（`~/Library/Containers/com.tencent.xinWeChat/Data/...`）。
+   * 因此先将容器外视频暂存到微信容器 `Documents` 目录，再调用 `/SendMsg`。
+   */
+  private async sendMacVideo(
+    request: Extract<PersonalWechatSendRequest, { type: 'video' }>
+  ): Promise<PersonalWechatSendResult> {
+    await macWechatRuntimeManager.ensureStarted()
+    const status = await macWechatRuntimeManager.buildSenderStatus()
+    if (!status.canSendVideo) {
+      return {
+        success: false,
+        status,
+        error: status.message || '当前微信发送组件不支持视频，请升级后重试'
+      }
+    }
+    const filePath = String(request.filePath || '').trim()
+    if (!filePath || !existsSync(filePath)) {
+      return { success: false, status, error: '请选择有效的视频文件' }
+    }
+    const size = statSync(filePath).size
+    if (size <= 0 || size > MAX_VIDEO_BYTES) {
+      return { success: false, status, error: '视频必须小于 100 MB' }
+    }
+
+    let staged: { stagedPath: string; cleanup: () => void } | null = null
+    try {
+      staged = stageMacWechatVideoForSend(filePath, this.wechatFilesRoot)
+    } catch (error) {
+      const latest = await macWechatRuntimeManager.buildSenderStatus()
+      return {
+        success: false,
+        status: latest,
+        error: error instanceof Error ? error.message : '无法将视频暂存到微信沙盒目录'
+      }
+    }
+
+    try {
+      const result = await this.postMacHost(
+        '/SendMsg',
+        { toWxid: request.to, type: 'video', msg: staged.stagedPath },
+        180_000
+      )
+      const latest = await macWechatRuntimeManager.buildSenderStatus()
+      if (!result?.ok) {
+        return { success: false, status: latest, error: result?.message || '视频发送失败' }
+      }
+      return { success: true, status: latest }
+    } finally {
+      staged.cleanup()
+    }
   }
 
   private async sendMacImage(
@@ -974,21 +1120,24 @@ export class PersonalWechatSendService {
       request = { ...request, to, text }
     } else {
       const filePath = String(request.filePath || '').trim()
+      const label = request.type === 'voice' ? '语音' : request.type === 'video' ? '视频' : '图片'
+      const limit =
+        request.type === 'voice'
+          ? MAX_VOICE_BYTES
+          : request.type === 'video'
+            ? MAX_VIDEO_BYTES
+            : MAX_IMAGE_BYTES
       if (!filePath || !existsSync(filePath)) {
         const status = await this.getWindowsStatus()
-        return {
-          success: false,
-          status,
-          error: `请选择有效的${request.type === 'voice' ? '语音' : '图片'}文件`
-        }
+        return { success: false, status, error: `请选择有效的${label}文件` }
       }
       const size = statSync(filePath).size
-      if (size <= 0 || size > (request.type === 'voice' ? MAX_VOICE_BYTES : MAX_IMAGE_BYTES)) {
+      if (size <= 0 || size > limit) {
         const status = await this.getWindowsStatus()
         return {
           success: false,
           status,
-          error: `${request.type === 'voice' ? '语音' : '图片'}必须小于 20 MB`
+          error: `${label}必须小于 ${Math.round(limit / (1024 * 1024))} MB`
         }
       }
       request = { ...request, to, filePath }
@@ -1019,6 +1168,10 @@ export class PersonalWechatSendService {
           filePath: preparedImage.filePath
         })
         await requestWindowsHook(windowsRequest.endpoint, windowsRequest.body, 60_000)
+      } else if (request.type === 'video') {
+        // 视频不复制到临时目录：原生 Host 直接按绝对路径读取。
+        const windowsRequest = buildWindowsWechatRequest(request)
+        await requestWindowsHook(windowsRequest.endpoint, windowsRequest.body, 180_000)
       } else if (request.type === 'voice') {
         const fromId = String(request.fromId || '').trim()
         if (!fromId) throw new Error('无法识别当前微信账号 wxid，无法发送语音')

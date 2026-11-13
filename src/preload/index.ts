@@ -131,6 +131,16 @@ import type {
   SaveTextToSpeechSettingsRequest,
   SynthesizeTextToSpeechRequest
 } from '../shared/text-to-speech'
+import type { ExtensionChangedEvent } from '../shared/extensions/ipc'
+import type {
+  ExtensionInstallResult,
+  ExtensionLogEntry,
+  ExtensionOperationResult,
+  ExtensionPageDescriptor,
+  ExtensionPageRequest,
+  ExtensionPageResponse,
+  InstalledExtension
+} from '../shared/extensions/types'
 
 // 渲染器的自定义 API
 const api = {
@@ -265,6 +275,36 @@ const api = {
     enabled: boolean
   ): Promise<MsgInsertApplyResult> =>
     ipcRenderer.invoke('automation:setMsgInsertSwitch', { name, enabled }),
+  listExtensions: (): Promise<InstalledExtension[]> => ipcRenderer.invoke('extension:list'),
+  getExtension: (extensionId: string): Promise<InstalledExtension | null> =>
+    ipcRenderer.invoke('extension:get', extensionId),
+  pickExtensionDirectory: (): Promise<string | null> =>
+    ipcRenderer.invoke('extension:pickDirectory'),
+  pickExtensionPackage: (): Promise<string | null> => ipcRenderer.invoke('extension:pickPackage'),
+  installExtensionFromDirectory: (directory: string): Promise<ExtensionInstallResult> =>
+    ipcRenderer.invoke('extension:installDirectory', directory),
+  installExtensionFromPackage: (packagePath: string): Promise<ExtensionInstallResult> =>
+    ipcRenderer.invoke('extension:installPackage', packagePath),
+  setExtensionEnabled: (extensionId: string, enabled: boolean): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:setEnabled', { id: extensionId, enabled }),
+  uninstallExtension: (extensionId: string, keepData = true): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:uninstall', { id: extensionId, keepData }),
+  getExtensionLogs: (extensionId: string, limit?: number): Promise<ExtensionLogEntry[]> =>
+    ipcRenderer.invoke('extension:getLogs', { id: extensionId, limit }),
+  clearExtensionLogs: (extensionId: string): Promise<{ success: true }> =>
+    ipcRenderer.invoke('extension:clearLogs', extensionId),
+  getExtensionPageUrl: (extensionId: string, pageId?: string): Promise<ExtensionPageDescriptor> =>
+    ipcRenderer.invoke('extension:getPageUrl', { id: extensionId, pageId }),
+  extensionPageRequest: (request: ExtensionPageRequest): Promise<ExtensionPageResponse> =>
+    ipcRenderer.invoke('extension:pageRequest', request),
+  openExtensionDataDir: (extensionId: string): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('extension:openDataDir', extensionId),
+  onExtensionChanged: (callback: (event: ExtensionChangedEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: ExtensionChangedEvent): void =>
+      callback(payload)
+    ipcRenderer.on('extension:changed', listener)
+    return () => ipcRenderer.removeListener('extension:changed', listener)
+  },
   onGroupExitMonitorState: (callback: (state: GroupExitMonitorState) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: GroupExitMonitorState): void =>
       callback(state)

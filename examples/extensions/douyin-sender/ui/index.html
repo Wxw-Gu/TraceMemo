@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>抖音视频搬运</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <div>
+          <h1>抖音视频搬运</h1>
+          <p>
+            被 @ 且消息里带抖音分享链接时，解析视频并发回原会话。本页只写配置，发送全部由后台经
+            TraceMemo Gateway 完成。
+          </p>
+        </div>
+        <label class="switch">
+          <input id="enabled" type="checkbox" />
+          <span>启用</span>
+        </label>
+      </header>
+
+      <section class="panel">
+        <h2>运行环境</h2>
+        <label class="field">
+          <span>Python 可执行文件</span>
+          <input id="python-path" type="text" placeholder="python3" />
+        </label>
+        <label class="field">
+          <span>解析脚本路径（默认相对于扩展目录，支持 <code>~</code>，首次运行会在缓存目录创建 venv）</span>
+          <input
+            id="script-path"
+            type="text"
+            placeholder="scripts/douyin.py"
+          />
+        </label>
+        <label class="field">
+          <span>画质</span>
+          <select id="quality">
+            <option value="">最高</option>
+            <option value="1080">1080</option>
+            <option value="720">720</option>
+            <option value="540">540</option>
+          </select>
+        </label>
+        <label class="check">
+          <input id="show-ui" type="checkbox" />
+          <span>显示浏览器窗口（排障用；可观察作品页实际停留状态，不保证改变平台响应）</span>
+        </label>
+      </section>
+
+      <section class="panel">
+        <h2>抖音 Cookie</h2>
+        <label class="field">
+          <span>Cookie（安全加密保存；仅本机使用）</span>
+          <input
+            id="cookie-header"
+            type="password"
+            autocomplete="new-password"
+            spellcheck="false"
+            placeholder="粘贴抖音 Cookie header"
+          />
+        </label>
+        <p id="cookie-state" class="muted">未配置</p>
+        <div class="row">
+          <button id="cookie-save" type="button" class="primary">保存 Cookie</button>
+          <button id="cookie-clear" type="button" class="ghost">清除 Cookie</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>回复与文案</h2>
+        <label class="field">
+          <span>触发后先回复一句（留空表示不回复）</span>
+          <input id="ack-text" type="text" maxlength="200" placeholder="收到，正在解析，请稍候…" />
+        </label>
+        <label class="check"
+          ><input id="error-reply" type="checkbox" /><span
+            >失败时在原会话回一条简短说明</span
+          ></label
+        >
+      </section>
+
+      <section class="panel">
+        <h2>监听范围</h2>
+        <div class="field">
+          <span>只处理这些群（可多选、可搜索；留空表示全部群）</span>
+          <div id="group-picker" class="group-picker">
+            <div id="group-chips" class="group-chips" hidden></div>
+            <input
+              id="group-search"
+              type="text"
+              placeholder="搜索群聊名称或 id…"
+              autocomplete="off"
+            />
+            <div id="group-options" class="group-options" hidden></div>
+          </div>
+        </div>
+        <div class="row">
+          <label class="check"
+            ><input id="include-direct" type="checkbox" /><span>同时处理私聊</span></label
+          >
+        </div>
+        <div class="grid-2">
+          <label class="field">
+            <span>冷却秒数（0–3600，按会话计）</span>
+            <input id="cooldown" type="number" min="0" max="3600" step="1" />
+          </label>
+          <label class="field">
+            <span>文件大小上限（MB，1–100）</span>
+            <input id="max-file-mb" type="number" min="1" max="100" step="1" />
+          </label>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>测试发送</h2>
+        <label class="field">
+          <span>目标群聊</span>
+          <select id="test-group">
+            <option value="">加载中…</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>抖音分享链接或整段分享文案</span>
+          <textarea
+            id="test-url"
+            rows="3"
+            placeholder="https://v.douyin.com/xxxxxx/ 复制打开抖音…"
+          ></textarea>
+        </label>
+        <div class="row">
+          <button id="test-send" type="button" class="primary">测试发送</button>
+          <button id="test-refresh" type="button" class="ghost">刷新群列表</button>
+        </div>
+        <p id="test-result" class="status">
+          选择群聊、粘贴链接后点「测试发送」，解析完成后视频会直接发到该群。已保存的 Cookie
+          自动用于测试。
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>当前任务</h2>
+          <span id="progress-badge" class="badge">空闲</span>
+        </div>
+        <p class="progress-line">
+          <strong id="progress-stage">暂无任务</strong>
+          <span id="progress-time" class="muted"></span>
+        </p>
+        <p id="progress-detail" class="muted">触发后这里会显示解析、下载、发送进行到哪一步。</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>统计</h2>
+          <span class="muted"
+            >今日 总计 <strong id="today-total">0</strong> · 成功
+            <strong id="today-success">0</strong> · 失败 <strong id="today-failure">0</strong></span
+          >
+        </div>
+        <table class="stats">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>作品 ID</th>
+              <th>阶段</th>
+              <th>结果</th>
+              <th>错误</th>
+            </tr>
+          </thead>
+          <tbody id="job-rows">
+            <tr>
+              <td colspan="5" class="empty">暂无记录</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <footer class="page-footer">
+        <div class="row">
+          <button id="save" type="button" class="primary">保存配置</button>
+          <button id="reload" type="button" class="ghost">重新读取</button>
+        </div>
+        <p id="status" class="status" role="status"></p>
+      </footer>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

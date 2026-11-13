@@ -1,5 +1,17 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import { Contact, Message, MessagesAroundResult } from '../shared/types'
+import type {
+  ExtensionChangedEvent,
+  ExtensionPageRequest
+} from '../shared/extensions/ipc'
+import type {
+  ExtensionInstallResult,
+  ExtensionLogEntry,
+  ExtensionOperationResult,
+  ExtensionPageDescriptor,
+  ExtensionPageResponse,
+  InstalledExtension
+} from '../shared/extensions/types'
 import {
   GroupReportExportRequest,
   GroupReportExportResult,
@@ -817,6 +829,30 @@ declare global {
       onAgentHubConversationsCleared: (callback: () => void) => () => void
       onAgentHubStatus: (callback: (status: AgentHubStatus) => void) => () => void
       onAgentHubLog: (callback: (entry: AgentHubLogEntry) => void) => () => void
+      /* 扩展中心 */
+      listExtensions: () => Promise<InstalledExtension[]>
+      getExtension: (extensionId: string) => Promise<InstalledExtension | null>
+      pickExtensionDirectory: () => Promise<string | null>
+      pickExtensionPackage: () => Promise<string | null>
+      installExtensionFromDirectory: (directory: string) => Promise<ExtensionInstallResult>
+      installExtensionFromPackage: (packagePath: string) => Promise<ExtensionInstallResult>
+      setExtensionEnabled: (
+        extensionId: string,
+        enabled: boolean
+      ) => Promise<ExtensionOperationResult>
+      uninstallExtension: (
+        extensionId: string,
+        keepData?: boolean
+      ) => Promise<ExtensionOperationResult>
+      getExtensionLogs: (extensionId: string, limit?: number) => Promise<ExtensionLogEntry[]>
+      clearExtensionLogs: (extensionId: string) => Promise<{ success: true }>
+      getExtensionPageUrl: (
+        extensionId: string,
+        pageId?: string
+      ) => Promise<ExtensionPageDescriptor>
+      extensionPageRequest: (request: ExtensionPageRequest) => Promise<ExtensionPageResponse>
+      openExtensionDataDir: (extensionId: string) => Promise<{ success: boolean; error?: string }>
+      onExtensionChanged: (callback: (event: ExtensionChangedEvent) => void) => () => void
     }
   }
 }

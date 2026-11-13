@@ -1,0 +1,42 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.keyword-bot",
+  "name": "关键词回复机器人",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "minAppVersion": "2.6.0",
+  "description": "监听微信文本消息，命中关键词后经 TraceMemo Gateway 回复。",
+  "author": "TraceMemo Examples",
+  "permissions": [
+    "messages.subscribe",
+    "contacts.list",
+    "wechat.send.text",
+    "storage",
+    "automation.action"
+  ],
+  "entrypoints": {
+    "page": "ui/index.html",
+    "background": "background/index.js"
+  },
+  "subscriptions": {
+    "messageTypes": ["text"],
+    "conversationIds": [],
+    "requireMentionMe": false,
+    "includeSelf": false
+  },
+  "contributions": {
+    "pages": [
+      {
+        "id": "settings",
+        "title": "机器人配置"
+      }
+    ],
+    "automationActions": [
+      {
+        "id": "keyword.reply",
+        "title": "关键词回复",
+        "description": "按机器人配置匹配关键词并返回回复内容"
+      }
+    ]
+  }
+}

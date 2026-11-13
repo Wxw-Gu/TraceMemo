@@ -31,3 +31,6 @@ task_plan.md
 *libtmlicense*
 debug-originals
 /build/mac-staging/
+
+# 去水印脚本
+/examples/extensions/douyin-sender/scripts/douyin.py

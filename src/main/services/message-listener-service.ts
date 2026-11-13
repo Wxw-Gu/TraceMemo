@@ -137,14 +137,39 @@ export function extractMentionTargets(source: string | undefined): string[] {
   if (!match) return []
   const inner = match[1].trim()
   const unwrapped = inner.replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '').trim()
-  return unwrapped ? [unwrapped] : []
+  if (!unwrapped) return []
+  return unwrapped
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
 }
 
-/** 把 WCDB 的 `source` 列（zstd 压缩的 Buffer）还原成 XML 文本。 */
+/** 把 WCDB 的 `source` 列（明文 XML 字符串或 zstd 压缩的 Buffer）还原成 XML 文本。 */
 export function decodeSourcePayload(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return undefined
+    if (
+      trimmed.length >= 8 &&
+      trimmed.length % 2 === 0 &&
+      /^28b52ffd[0-9a-f]+$/i.test(trimmed)
+    ) {
+      try {
+        return Buffer.from(zstdDecompress(Buffer.from(trimmed, 'hex'))).toString('utf8')
+      } catch {
+        return undefined
+      }
+    }
+    return trimmed
+  }
+
   let buffer: Buffer | null = null
   if (Buffer.isBuffer(value)) {
     buffer = value
+  } else if (value instanceof Uint8Array) {
+    buffer = Buffer.from(value)
+  } else if (Array.isArray(value)) {
+    buffer = Buffer.from(value)
   } else {
     const candidate = value as { type?: string; data?: unknown } | null
     if (candidate?.type === 'Buffer' && Array.isArray(candidate.data)) {
@@ -193,6 +218,7 @@ export class MessageListenerService {
   private readonly pendingSessions = new Set<string>()
   private coalesceTimer: ReturnType<typeof setTimeout> | null = null
   private readbackInFlight = false
+  private pendingReadback = false
   private disposed = false
 
   private readonly coalesceMs: number
@@ -282,8 +308,13 @@ export class MessageListenerService {
    * - **legacy（protocol v1，旧 runtime）**：只能退回「最近活跃会话」`getSessions()[0]`。
    */
   private async readback(): Promise<void> {
-    if (this.disposed || this.readbackInFlight) return
+    if (this.disposed) return
+    if (this.readbackInFlight) {
+      this.pendingReadback = true
+      return
+    }
     this.readbackInFlight = true
+    this.pendingReadback = false
     const startedAt = Date.now()
 
     const preciseSessions = Array.from(this.pendingSessions)
@@ -321,6 +352,15 @@ export class MessageListenerService {
       )
     } finally {
       this.readbackInFlight = false
+      if (!this.disposed && (this.pendingReadback || this.pendingSessions.size > 0)) {
+        this.pendingReadback = false
+        if (!this.coalesceTimer) {
+          this.coalesceTimer = setTimeout(() => {
+            this.coalesceTimer = null
+            void this.readback()
+          }, this.coalesceMs)
+        }
+      }
     }
   }
 
