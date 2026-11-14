@@ -7,6 +7,12 @@ import {
 } from './app-data-bootstrap'
 import './preload-env'
 import {
+  confirmChatGPTReport,
+  registerChatGPTPlanHandlers,
+  requestChatGPTPlan
+} from './services/chatgpt-plan-service'
+import { CHATGPT_PLAN_PROVIDER_PREFIX } from '../shared/chatgpt-plan'
+import {
   app,
   shell,
   BrowserWindow,
@@ -2713,10 +2719,20 @@ app.whenReady().then(async () => {
     }
   )
 
+  registerChatGPTPlanHandlers()
   ipcMain.handle(
     'ai:chat',
-    async (_, messages: { role: string; content: string }[], options?: AIChatRequestOptions) =>
-      aiProviderService.chat(messages, options)
+    async (event, messages: { role: string; content: string }[], options?: AIChatRequestOptions) => {
+      const providerId = options?.providerId
+      if (!providerId?.startsWith(CHATGPT_PLAN_PROVIDER_PREFIX)) {
+        return aiProviderService.chat(messages, options)
+      }
+      const window = BrowserWindow.fromWebContents(event.sender)
+      if (!window || !options?.modelId || !(await confirmChatGPTReport(window))) {
+        return { success: false, error: '已取消向 OpenAI 发送内容。' }
+      }
+      return requestChatGPTPlan(providerId, options.modelId, messages, options.timeoutMs)
+    }
   )
 
   ipcMain.handle('ai:listProviders', () => aiProviderService.list())
@@ -3399,10 +3415,10 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('api:getStatus', () => apiServer.getState())
 
-  ipcMain.handle('api:tokenStatus', () => apiTokenStore.ensureToken())
-  ipcMain.handle('api:revealToken', () => apiTokenStore.revealToken())
-  ipcMain.handle('api:copyToken', () => {
-    const result = apiTokenStore.revealToken()
+  ipcMain.handle('api:tokenStatus', () => apiTokenStore.ensureTokenAsync())
+  ipcMain.handle('api:revealToken', () => apiTokenStore.revealTokenAsync())
+  ipcMain.handle('api:copyToken', async () => {
+    const result = await apiTokenStore.revealTokenAsync()
     if (!result.token) return { ...result, success: false }
     try {
       clipboard.writeText(result.token)
@@ -3416,7 +3432,7 @@ app.whenReady().then(async () => {
       return { ...apiTokenStore.getStatus(), success: false, error: 'API Token 复制失败' }
     }
   })
-  ipcMain.handle('api:rotateToken', () => apiTokenStore.rotateToken())
+  ipcMain.handle('api:rotateToken', () => apiTokenStore.rotateTokenAsync())
 
   ipcMain.handle('api:start', async (_, host?: string, port?: number) => {
     const settings = loadSettings()
@@ -3626,14 +3642,21 @@ app.whenReady().then(async () => {
   })
 
   // 启动本地 HTTP API（由 settings.apiEnabled 控制）
-  const settings = loadSettings()
   // v2.1.8 and earlier did not have an API token. Generate it once during
   // upgrade/startup without changing any existing API or database settings.
-  apiTokenStore.ensureToken()
-  if (settings.apiEnabled) {
-    await apiServer.start(settings.apiHost, settings.apiPort)
-  }
+  await apiTokenStore.initializeForStartup(15_000, async () => {
+    // Authorization may finish after the startup timeout. Honor settings changed
+    // while it was pending instead of reviving an API the user has since disabled.
+    const currentSettings = loadSettings()
+    if (!currentSettings.apiEnabled) return
+    try {
+      await apiServer.start(currentSettings.apiHost, currentSettings.apiPort)
+    } catch (error) {
+      console.warn('[ApiServer] startup after token initialization failed:', error)
+    }
+  })
 
+  const settings = loadSettings()
   await agentHubService.start(settings)
   await scheduledReportService.start()
 

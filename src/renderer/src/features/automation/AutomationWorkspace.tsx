@@ -249,7 +249,7 @@ export function AutomationWorkspace({
     const running = scheduledRules.filter((rule) => rule.enabled)
     const nextRuns = running
       .map((rule) => normalizeScheduledReportConfig(rule.scheduledReport))
-      .filter((config) => !config.targetNeedsReview)
+      .filter((config) => config.deliveryMode === 'local_only' || !config.targetNeedsReview)
       .map((config) => calculateNextRunAt(config.schedule.time, now))
       .sort()
     return {

@@ -41,6 +41,7 @@ interface DatabaseConnectionPageProps {
   onManualConnect: () => void
   onPasteKey: () => void
   onClearKey: () => void
+  optionalSetup?: React.ReactNode
 }
 
 function LineIcon({
@@ -133,7 +134,8 @@ export function DatabaseConnectionPage({
   onCopyDiagnostics,
   onManualConnect,
   onPasteKey,
-  onClearKey
+  onClearKey,
+  optionalSetup
 }: DatabaseConnectionPageProps): React.ReactElement {
   const isMac = platform === 'darwin'
   // 流程由主进程的 macKeyFlow 决定；只有旧版主进程不回传该字段时才回落到运行架构。
@@ -621,6 +623,7 @@ export function DatabaseConnectionPage({
             )}
           </Tabs>
 
+          {optionalSetup}
           <div className="database-login-footer-actions">
             <Button variant="destructive" size="sm" onClick={onClearKey}>
               清除已保存密钥

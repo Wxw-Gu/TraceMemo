@@ -1721,6 +1721,61 @@
   margin: 6px 0 0;
   font-size: 12px;
 }
+.chatgpt-plan-card {
+  display: grid;
+  gap: 12px;
+  text-align: left;
+
+  > header,
+  .chatgpt-plan-actions,
+  li {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+  }
+
+  > header,
+  li {
+    justify-content: space-between;
+  }
+
+  h2 {
+    margin: 0 0 4px;
+    font-size: 18px;
+  }
+
+  p,
+  small {
+    margin: 0;
+    color: var(--wxex-text-muted);
+    font-size: 13px;
+  }
+
+  > button {
+    justify-self: start;
+  }
+}
+
+.chatgpt-plan-connections {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  li {
+    padding: 10px 0;
+    border-top: 1px solid var(--wxex-border);
+  }
+
+  li > div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
 .ai-provider-editor {
   display: grid;
   gap: 18px;

@@ -5,6 +5,7 @@ directories:
   buildResources: build
 files:
   - out
+  - '!out/main/scheduledReportTest.js'
   - '!**/.vscode/*'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'

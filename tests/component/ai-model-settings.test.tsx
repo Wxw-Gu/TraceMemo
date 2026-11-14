@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AIImageUnderstandingTest } from '../../src/renderer/src/features/settings/ai-model/AIImageUnderstandingTest'
 import { AIProviderCard } from '../../src/renderer/src/features/settings/ai-model/AIProviderCard'
+import { ChatGPTPlanCard } from '../../src/renderer/src/features/settings/ai-model/ChatGPTPlanCard'
 import { AIModelPage } from '../../src/renderer/src/features/settings/pages/AIModelPage'
 import type { AIProviderSummary, AIRuntimeModelConfig } from '../../src/shared/ai-provider'
 import type { AIVisionTestState } from '../../src/renderer/src/features/settings/ai-model/types'
@@ -70,6 +71,31 @@ describe('AI model settings', () => {
       getAIRuntimeConfig: vi.fn().mockResolvedValue(runtime),
       getSystemOcrCapability: vi.fn().mockResolvedValue(systemOcrCapability)
     } as typeof window.api
+  })
+
+  it('reauthorizes the active subscription connection without creating another', async () => {
+    const saved = {
+      profileId: 'existing',
+      sharing: false,
+      profiles: [
+        { id: 'existing', label: 'Connection 2', status: 'reauth_required', sharing: false }
+      ]
+    }
+    const connected = {
+      ...saved,
+      sharing: true,
+      profiles: [{ ...saved.profiles[0], status: 'connected', sharing: true }]
+    }
+    window.api.getChatGPTPlanStatus = vi.fn().mockResolvedValue(saved)
+    window.api.signInChatGPTPlan = vi.fn().mockResolvedValue(connected)
+    const onChange = vi.fn()
+
+    render(<ChatGPTPlanCard onChange={onChange} />)
+    await userEvent.click(await screen.findByRole('button', { name: '重新登录' }))
+
+    expect(window.api.signInChatGPTPlan).toHaveBeenCalledWith('existing', false)
+    expect(await screen.findByRole('button', { name: '测试订阅推理' })).toBeEnabled()
+    expect(onChange).toHaveBeenCalledOnce()
   })
 
   it('reveals the new provider editor and labels model identity fields', async () => {

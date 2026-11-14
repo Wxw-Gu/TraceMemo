@@ -1,3 +1,5 @@
+import type { ChatGPTPlanStatus } from '../shared/chatgpt-plan'
+import type { ReportModelChoice } from '../shared/ai-provider'
 import { ElectronAPI } from '@electron-toolkit/preload'
 import { Contact, Message, MessagesAroundResult } from '../shared/types'
 import {
@@ -389,6 +391,18 @@ declare global {
           total?: number
           estimated?: boolean
         }
+        error?: string
+      }>
+      getChatGPTPlanStatus: () => Promise<ChatGPTPlanStatus>
+      signInChatGPTPlan: (profileId?: string, reconsent?: boolean) => Promise<ChatGPTPlanStatus>
+      cancelChatGPTPlanSignIn: () => Promise<void>
+      selectChatGPTPlan: (profileId: string) => Promise<ChatGPTPlanStatus>
+      disconnectChatGPTPlan: () => Promise<ChatGPTPlanStatus>
+      openChatGPTPlanUsage: () => Promise<void>
+      listChatGPTPlanModels: () => Promise<ReportModelChoice[]>
+      testChatGPTPlan: (providerId: string, model: string) => Promise<{
+        success: boolean
+        data?: string
         error?: string
       }>
       listAIProviders: () => Promise<AIProviderListResult>

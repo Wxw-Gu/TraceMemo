@@ -480,7 +480,10 @@ export class AutomationActionRunner {
         messageTypes: input.config.report.messageTypes,
         templateId: input.config.report.templateId,
         memberNameMode: input.config.report.memberNameMode,
-        timeoutSeconds: input.config.report.timeoutSeconds
+        timeoutSeconds: input.config.report.timeoutSeconds,
+        ...(input.config.report.providerId ? { providerId: input.config.report.providerId } : {}),
+        ...(input.config.report.model ? { model: input.config.report.model } : {}),
+        ...(input.config.report.chatgptConsent === true ? { chatgptConsent: true } : {})
       })
     } catch (error) {
       generated = {
@@ -555,6 +558,13 @@ export class AutomationActionRunner {
     markSuccess(generatedStep, this.now())
     const messageCount = generated.messageCount ?? 0
     if (messageCount > 0) generatedStep.detail = `共 ${messageCount} 条消息`
+
+    if (input.config.deliveryMode === 'local_only') {
+      generatedStep.detail = `${messageCount > 0 ? `共 ${messageCount} 条消息，` : ''}已保存到日报历史`
+      markSkipped(stepAt('send_resolved'), '仅保存本地，无需发送目标。')
+      markSkipped(stepAt('report_sent'), '仅保存本地，未发送微信消息。')
+      return { steps, status: 'success', reportGenerated: true, pngPath }
+    }
 
     // ---- 目标解析失败：不许 fallback 到任何地方，直接判失败 ----
     const targetStep = stepAt('send_resolved')

@@ -127,6 +127,8 @@ export interface ScheduledReportTarget {
  * 没有任何"按 UI 猜出来的"配置，也没有丢掉任何一项已有能力。
  */
 export interface ScheduledReportAutomationConfig {
+  /** 缺省保留旧规则的微信投递；本地模式只保存日报历史与文件。 */
+  deliveryMode?: 'local_only' | 'wechat'
   schedule: {
     /** `HH:mm`，**每天一次**。当前只支持每日。 */
     time: string
@@ -144,6 +146,11 @@ export interface ScheduledReportAutomationConfig {
     templateId: SelectableReportTemplateId
     memberNameMode: ScheduledReportMemberNameMode
     timeoutSeconds: number
+    /** 固定本规则使用的账号与模型；缺省使用默认 API 配置。 */
+    providerId?: string
+    model?: string
+    /** 用户已同意将此规则的群聊输入发送给 ChatGPT 订阅。 */
+    chatgptConsent?: boolean
   }
   target: ScheduledReportTarget
   /**
@@ -381,8 +388,13 @@ export function normalizeScheduledReportConfig(
   const lastRunAt = String(raw.lastRunAt ?? '').trim()
   const lastScheduledSlot = String(raw.lastScheduledSlot ?? '').trim()
   const postfixText = normalizeScheduledReportPostfixText(raw.postfixText)
+  const providerId = String(reportRaw.providerId ?? '').trim()
+  const model = String(reportRaw.model ?? '').trim()
 
   return {
+    ...(raw.deliveryMode === 'local_only' || raw.deliveryMode === 'wechat'
+      ? { deliveryMode: raw.deliveryMode }
+      : {}),
     schedule: { time: normalizeScheduleTime(scheduleRaw.time) },
     report: {
       sourceConversationId: String(reportRaw.sourceConversationId ?? '').trim(),
@@ -394,7 +406,10 @@ export function normalizeScheduledReportConfig(
         ? reportRaw.templateId
         : SCHEDULED_REPORT_DEFAULT_TEMPLATE_ID,
       memberNameMode,
-      timeoutSeconds
+      timeoutSeconds,
+      ...(providerId ? { providerId } : {}),
+      ...(model ? { model } : {}),
+      ...(reportRaw.chatgptConsent === true ? { chatgptConsent: true } : {})
     },
     target: {
       type: effectiveTargetType,

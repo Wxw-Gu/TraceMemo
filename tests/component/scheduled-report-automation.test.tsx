@@ -84,9 +84,11 @@ function installApi(rules: AutomationRule[] = RULES_FIXTURE): Spies {
         updatedAt: Date.now()
       })
     ),
-    updateRule: vi.fn().mockImplementation((id: string, draft: unknown) =>
-      Promise.resolve({ ...(draft as AutomationRule), id, createdAt: 0, updatedAt: 0 })
-    ),
+    updateRule: vi
+      .fn()
+      .mockImplementation((id: string, draft: unknown) =>
+        Promise.resolve({ ...(draft as AutomationRule), id, createdAt: 0, updatedAt: 0 })
+      ),
     deleteRule: vi.fn().mockResolvedValue(true),
     setEnabled: vi.fn().mockImplementation((id: string, enabled: boolean) => {
       const found = rules.find((rule) => rule.id === id)
@@ -100,6 +102,15 @@ function installApi(rules: AutomationRule[] = RULES_FIXTURE): Spies {
   }
 
   window.api = {
+    getAIRuntimeConfig: vi
+      .fn()
+      .mockResolvedValue({
+        configured: true,
+        providerName: '测试 API',
+        model: 'test',
+        modelName: '测试模型',
+        status: 'untested'
+      }),
     getAutomationStatus: vi.fn().mockResolvedValue({
       listening: true,
       listeningDegraded: false,
@@ -113,11 +124,13 @@ function installApi(rules: AutomationRule[] = RULES_FIXTURE): Spies {
         message: 'ready'
       }
     }),
-    listAutomationRules: vi.fn().mockResolvedValue([
-      createDefaultDailyReportRule(Date.now()),
-      createDefaultLeaveNotificationRule(Date.now()),
-      ...rules
-    ]),
+    listAutomationRules: vi
+      .fn()
+      .mockResolvedValue([
+        createDefaultDailyReportRule(Date.now()),
+        createDefaultLeaveNotificationRule(Date.now()),
+        ...rules
+      ]),
     createAutomationRule: spies.createRule,
     updateAutomationRule: spies.updateRule,
     deleteAutomationRule: spies.deleteRule,
@@ -194,7 +207,7 @@ describe('自动化 · 规则类型 Tab（定时日报）', () => {
     await openScheduledTab()
 
     expect(await screen.findByRole('heading', { name: '定时日报' })).toBeVisible()
-    expect(screen.getByText('按设定时间自动生成日报，并发送到指定微信会话。')).toBeVisible()
+    expect(screen.getByText('按设定时间自动生成日报，可保存本地或发送到微信。')).toBeVisible()
     expect(screen.getByText('2 条规则')).toBeVisible()
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull()
   })
@@ -266,13 +279,18 @@ describe('定时日报 · 真写入', () => {
     const draft = spies.createRule.mock.calls[0][0] as {
       name: string
       ruleType: string
-      scheduledReport: { report: { sourceConversationId: string }; target: { type: string } }
+      scheduledReport: {
+        deliveryMode: string
+        report: { sourceConversationId: string }
+        target: { type: string }
+      }
     }
     expect(draft.name).toBe('新的定时日报')
     expect(draft.ruleType).toBe('scheduled_report')
     // 来源群存的是**稳定会话 id**，不是群名。
     expect(draft.scheduledReport.report.sourceConversationId).toBe('g2@chatroom')
-    // 新建默认发到文件传输助手（不会误打扰群聊）。
+    // 新建默认仅保存本地；切换发送时才使用旧默认目标。
+    expect(draft.scheduledReport.deliveryMode).toBe('local_only')
     expect(draft.scheduledReport.target.type).toBe('file_transfer')
     expect(spies.updateRule).not.toHaveBeenCalled()
   })
@@ -426,15 +444,11 @@ describe('定时日报 · 四选一发送目标', () => {
     await openScheduledTab()
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
+    await user.click(screen.getByRole('radio', { name: '发送到微信' }))
 
     const group = screen.getByRole('radiogroup', { name: '生成后发送到哪里' })
     const labels = Array.from(group.querySelectorAll('label')).map((el) => el.textContent?.trim())
-    expect(labels).toEqual([
-      '发送到日报来源群',
-      '文件传输助手',
-      '发给自己',
-      '指定好友'
-    ])
+    expect(labels).toEqual(['发送到日报来源群', '文件传输助手', '发给自己', '指定好友'])
     expect(screen.queryByRole('radio', { name: '指定群聊' })).toBeNull()
     expect(screen.getByRole('radio', { name: '文件传输助手' })).toBeChecked()
   })
@@ -445,6 +459,7 @@ describe('定时日报 · 四选一发送目标', () => {
     await openScheduledTab()
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
+    await user.click(screen.getByRole('radio', { name: '发送到微信' }))
     // 先把名称 / 来源群补齐：阻断提示是有优先级的（名称 → 来源群 → 指定好友），
     // 否则这里看到的是「请填写任务名称」，断言就打偏了。
     await user.type(screen.getByLabelText('定时日报任务名称'), '发给指定好友的日报')
@@ -462,9 +477,7 @@ describe('定时日报 · 四选一发送目标', () => {
     await user.click(screen.getByRole('radio', { name: '指定好友' }))
     expect(screen.getByPlaceholderText('搜索好友')).toBeVisible()
     // 选了「指定好友」却没选人 → 不允许保存（否则运行期必然失败）。
-    expect(screen.getByTestId('scheduled-save-blocker')).toHaveTextContent(
-      '请选择要发送的指定好友'
-    )
+    expect(screen.getByTestId('scheduled-save-blocker')).toHaveTextContent('请选择要发送的指定好友')
     expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
   })
 })
@@ -532,9 +545,7 @@ describe('定时日报 · 微信异常通知入口', () => {
     await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
 
     expect(screen.getByRole('heading', { name: '微信异常通知' })).toBeVisible()
-    expect(
-      screen.getByText('需要先连接 Agent Hub 微信机器人，才能接收异常通知。')
-    ).toBeVisible()
+    expect(screen.getByText('需要先连接 Agent Hub 微信机器人，才能接收异常通知。')).toBeVisible()
   })
 })
 
@@ -584,5 +595,258 @@ describe('定时日报 · 空态', () => {
 
     expect(await screen.findByText('还没有定时日报')).toBeVisible()
     expect(screen.getAllByRole('button', { name: '+ 新建定时日报' }).length).toBeGreaterThan(0)
+  })
+})
+
+describe('定时日报 · 本地保存和订阅模型', () => {
+  it('新规则默认仅保存本地，发送目标及后置词不可见', async () => {
+    installApi()
+    renderWorkspace()
+    await openScheduledTab()
+    await userEvent.setup().click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
+    expect(screen.getByRole('radio', { name: '仅保存本地' })).toBeChecked()
+    expect(screen.queryByRole('radiogroup', { name: '生成后发送到哪里' })).toBeNull()
+    expect(screen.queryByLabelText('发送后置词')).toBeNull()
+    expect(screen.getByText(/无需微信发送组件/)).toBeVisible()
+  })
+
+  it('订阅按规则保存，需要明确同意；换群后重新确认', async () => {
+    const spies = installApi()
+    window.api.listChatGPTPlanModels = vi.fn().mockResolvedValue([
+      {
+        providerId: 'chatgpt-plan:profile-1',
+        providerName: 'ChatGPT 订阅',
+        model: 'test-model',
+        modelName: '测试模型',
+        configured: true,
+        status: 'untested'
+      }
+    ])
+    renderWorkspace()
+    await openScheduledTab()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
+    await user.type(screen.getByLabelText('定时日报任务名称'), '订阅本地日报')
+    await user.click(screen.getByRole('radio', { name: '技术交流群' }))
+    await waitFor(() => expect(screen.getByLabelText('定时日报模型')).toBeEnabled())
+    await user.click(screen.getByLabelText('定时日报模型'))
+    await user.click(await screen.findByRole('option', { name: 'ChatGPT 订阅 · 测试模型' }))
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+    const consent = screen.getByRole('checkbox', { name: /允许此规则按设定时间/ })
+    await user.click(consent)
+    expect(screen.getByRole('button', { name: '保存' })).toBeEnabled()
+    await user.click(screen.getByRole('radio', { name: 'TraceMemo 交流群' }))
+    expect(consent).not.toBeChecked()
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+    await user.click(consent)
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(spies.createRule).toHaveBeenCalledOnce())
+    expect(spies.createRule.mock.calls[0][0]).toMatchObject({
+      scheduledReport: {
+        deliveryMode: 'local_only',
+        report: {
+          sourceConversationId: 'g1@chatroom',
+          providerId: 'chatgpt-plan:profile-1',
+          model: 'test-model',
+          chatgptConsent: true
+        }
+      }
+    })
+  })
+
+  it('已保存订阅模型断开时保留选择，不自动改用默认 API', async () => {
+    const rule = createDefaultScheduledReportRule(Date.now(), {
+      id: 'local-plan',
+      name: '订阅规则',
+      config: normalizeScheduledReportConfig({
+        deliveryMode: 'local_only',
+        schedule: { time: '09:00' },
+        report: {
+          sourceConversationId: 'g1@chatroom',
+          providerId: 'chatgpt-plan:profile-1',
+          model: 'test-model',
+          chatgptConsent: true
+        }
+      })
+    })
+    installApi([rule])
+    window.api.listChatGPTPlanModels = vi.fn().mockResolvedValue([])
+    renderWorkspace()
+    await openScheduledTab()
+    const user = userEvent.setup()
+    await user.click(
+      within((await screen.findByText('订阅规则')).closest('article') as HTMLElement).getByRole(
+        'button',
+        { name: '编辑' }
+      )
+    )
+    expect(await screen.findByText('所选模型暂不可用，请连接对应账号或重新选择模型')).toBeVisible()
+    expect(screen.getByLabelText('定时日报模型')).toHaveTextContent('test-model')
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+  })
+
+  it('本地规则在首页显示确切来源和动作，列表允许无发送目标的运行', async () => {
+    const rule = createDefaultScheduledReportRule(Date.now(), {
+      id: 'local-only',
+      name: '本地日报',
+      config: normalizeScheduledReportConfig({
+        deliveryMode: 'local_only',
+        targetNeedsReview: true,
+        schedule: { time: '09:00' },
+        report: { sourceConversationId: 'g2@chatroom' }
+      })
+    })
+    installApi([rule])
+    renderWorkspace()
+    const card = (await screen.findByText('本地日报')).closest('article') as HTMLElement
+    expect(within(card).getByText('技术交流群')).toBeVisible()
+    expect(within(card).getByText('生成日报并保存本地')).toBeVisible()
+    expect(within(card).queryByText('所有群聊')).toBeNull()
+    await openScheduledTab()
+    expect(screen.getByText('日报历史（HTML / PNG）')).toBeVisible()
+    expect(screen.getByRole('button', { name: '立即执行' })).toBeEnabled()
+  })
+})
+
+describe('定时日报 · 启用前配置检查', () => {
+  it('默认 API 未配置时不能启用保存，但允许保存暂停草稿', async () => {
+    const spies = installApi()
+    window.api.getAIRuntimeConfig = vi.fn().mockResolvedValue({ configured: false } as never)
+    renderWorkspace()
+    await openScheduledTab()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
+    await user.type(screen.getByLabelText('定时日报任务名称'), '稍后配置模型')
+    await user.click(screen.getByRole('radio', { name: '技术交流群' }))
+    expect(
+      await screen.findByText(
+        '默认 API 模型未配置或暂不可用，请配置模型或选择已连接的 ChatGPT 订阅'
+      )
+    ).toBeVisible()
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+    await user.click(screen.getByRole('switch', { name: '启用这条自动化' }))
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(spies.createRule).toHaveBeenCalledOnce())
+    expect(spies.createRule.mock.calls[0][0]).toMatchObject({
+      enabled: false,
+      scheduledReport: { deliveryMode: 'local_only' }
+    })
+  })
+
+  it('模型加载失败后可以刷新恢复，加载失败期间不启用默认 API 任务', async () => {
+    installApi()
+    const runtime = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue({
+        configured: true,
+        providerName: '测试 API',
+        model: 'test',
+        modelName: '测试模型',
+        status: 'untested'
+      })
+    window.api.getAIRuntimeConfig = runtime
+    renderWorkspace()
+    await openScheduledTab()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
+    await user.type(screen.getByLabelText('定时日报任务名称'), '重试模型')
+    await user.click(screen.getByRole('radio', { name: '技术交流群' }))
+    expect(
+      await screen.findByText('部分模型加载失败，请检查模型配置或 ChatGPT 订阅连接后刷新。')
+    ).toBeVisible()
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: '刷新模型' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeEnabled())
+    expect(runtime).toHaveBeenCalledTimes(2)
+    expect(
+      screen.queryByText('部分模型加载失败，请检查模型配置或 ChatGPT 订阅连接后刷新。')
+    ).toBeNull()
+  })
+
+  it('默认 API 未配置仍可选择可用订阅，明确授权后启用保存', async () => {
+    installApi()
+    window.api.getAIRuntimeConfig = vi.fn().mockResolvedValue({ configured: false } as never)
+    window.api.listChatGPTPlanModels = vi.fn().mockResolvedValue([
+      {
+        providerId: 'chatgpt-plan:profile-1',
+        providerName: 'ChatGPT 订阅',
+        model: 'test-model',
+        modelName: '测试模型',
+        configured: true,
+        status: 'untested'
+      }
+    ])
+    renderWorkspace()
+    await openScheduledTab()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '+ 新建定时日报' }))
+    await user.type(screen.getByLabelText('定时日报任务名称'), '订阅任务')
+    await user.click(screen.getByRole('radio', { name: '技术交流群' }))
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+    await user.click(screen.getByLabelText('定时日报模型'))
+    await user.click(await screen.findByRole('option', { name: 'ChatGPT 订阅 · 测试模型' }))
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+    await user.click(screen.getByRole('checkbox', { name: /允许此规则按设定时间/ }))
+    expect(screen.getByRole('button', { name: '保存' })).toBeEnabled()
+  })
+
+  it('未授权的暂停订阅规则不能从首页或定时列表直接启用', async () => {
+    const rule = createDefaultScheduledReportRule(Date.now(), {
+      id: 'unconsented',
+      name: '待授权订阅',
+      enabled: false,
+      config: normalizeScheduledReportConfig({
+        deliveryMode: 'local_only',
+        report: {
+          sourceConversationId: 'g1@chatroom',
+          providerId: 'chatgpt-plan:profile-1',
+          model: 'test-model'
+        }
+      })
+    })
+    const spies = installApi([rule])
+    renderWorkspace()
+    const user = userEvent.setup()
+    const toggle = await screen.findByRole('switch', { name: '待授权订阅 启停' })
+    expect(toggle).toBeDisabled()
+    expect(
+      screen.getByText('请先编辑此规则并确认 ChatGPT 订阅授权，再启用或立即执行。')
+    ).toBeVisible()
+    await user.click(toggle)
+    expect(spies.setEnabled).not.toHaveBeenCalled()
+    await openScheduledTab()
+    expect(screen.getByRole('switch', { name: '待授权订阅 启停' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '立即执行' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '编辑' })).toBeEnabled()
+    expect(
+      screen.getByText('请先编辑此规则并确认 ChatGPT 订阅授权，再启用或立即执行。')
+    ).toBeVisible()
+  })
+
+  it('已启用但缺授权的存量规则仍能关闭', async () => {
+    const rule = createDefaultScheduledReportRule(Date.now(), {
+      id: 'invalid-active',
+      name: '可暂停订阅',
+      enabled: true,
+      config: normalizeScheduledReportConfig({
+        deliveryMode: 'local_only',
+        report: {
+          sourceConversationId: 'g1@chatroom',
+          providerId: 'chatgpt-plan:profile-1',
+          model: 'test-model'
+        }
+      })
+    })
+    const spies = installApi([rule])
+    renderWorkspace()
+    const user = userEvent.setup()
+    await openScheduledTab()
+    const toggle = screen.getByRole('switch', { name: '可暂停订阅 启停' })
+    expect(toggle).toBeEnabled()
+    expect(screen.getByRole('button', { name: '立即执行' })).toBeDisabled()
+    await user.click(toggle)
+    expect(spies.setEnabled).toHaveBeenCalledWith('invalid-active', false)
+    await waitFor(() => expect(toggle).toBeDisabled())
   })
 })
