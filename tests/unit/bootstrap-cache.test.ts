@@ -419,44 +419,48 @@ describe('bootstrap cache write gating', () => {
     expect(snapshotFile(file).ino).not.toBe(beforeMerge.ino)
   })
 
-  it('keeps the previous cache when replacement fails, then recovers', async () => {
-    const root = '/fixture/gate-rename-failure'
-    const file = cacheFileFor(root)
-    const directory = join(cacheFileFor(root), '..')
+  // Windows 的只读目标会让 MoveFileEx/REPLACE_EXISTING 抛 EPERM；
+  // POSIX 的 rename 不看文件 mode，这个场景在 macOS 上无法复现。
+  it.skipIf(process.platform !== 'win32')(
+    'keeps the previous cache when replacement fails, then recovers',
+    async () => {
+      const root = '/fixture/gate-rename-failure'
+      const file = cacheFileFor(root)
+      const directory = join(cacheFileFor(root), '..')
 
-    saveBootstrapContacts(root, makeContacts(2))
-    await settle()
-    const good = snapshotFile(file)
-    const goodContent = readFileSync(file, 'utf8')
-    expect(good.exists).toBe(true)
+      saveBootstrapContacts(root, makeContacts(2))
+      await settle()
+      const good = snapshotFile(file)
+      const goodContent = readFileSync(file, 'utf8')
+      expect(good.exists).toBe(true)
 
-    // 只读目标在 Windows 上让 MoveFileEx/REPLACE_EXISTING 抛 EPERM；
-    // 这不是 mock，是真实的文件系统行为。
-    chmodSync(file, 0o444)
-    try {
-      saveBootstrapContacts(
-        root,
-        makeContacts(3, (contact) => ({ ...contact, remark: '失败尝试' }))
-      )
-      await settle(1500)
+      // 只读目标让 MoveFileEx/REPLACE_EXISTING 抛 EPERM；这不是 mock，是真实的文件系统行为。
+      chmodSync(file, 0o444)
+      try {
+        saveBootstrapContacts(
+          root,
+          makeContacts(3, (contact) => ({ ...contact, remark: '失败尝试' }))
+        )
+        await settle(1500)
 
-      const failed = snapshotFile(file)
-      expect(failed.ino, '替换失败时目标文件必须原样保留').toBe(good.ino)
-      expect(readFileSync(file, 'utf8')).toBe(goodContent)
-      expect(tempFilesIn(directory), '失败后不能残留 .tmp').toHaveLength(0)
-    } finally {
-      chmodSync(file, 0o666)
+        const failed = snapshotFile(file)
+        expect(failed.ino, '替换失败时目标文件必须原样保留').toBe(good.ino)
+        expect(readFileSync(file, 'utf8')).toBe(goodContent)
+        expect(tempFilesIn(directory), '失败后不能残留 .tmp').toHaveLength(0)
+      } finally {
+        chmodSync(file, 0o666)
+      }
+
+      // 失败过的内容再存一次必须能真正落盘，不能被指纹闸门吞掉
+      const target = makeContacts(3, (contact) => ({ ...contact, remark: '失败尝试' }))
+      saveBootstrapContacts(root, target)
+      await settle()
+      const recovered = snapshotFile(file)
+      expect(recovered.ino).not.toBe(good.ino)
+      expect(JSON.parse(readFileSync(file, 'utf8')).contacts).toHaveLength(3)
+      expect(tempFilesIn(directory)).toHaveLength(0)
     }
-
-    // 失败过的内容再存一次必须能真正落盘，不能被指纹闸门吞掉
-    const target = makeContacts(3, (contact) => ({ ...contact, remark: '失败尝试' }))
-    saveBootstrapContacts(root, target)
-    await settle()
-    const recovered = snapshotFile(file)
-    expect(recovered.ino).not.toBe(good.ino)
-    expect(JSON.parse(readFileSync(file, 'utf8')).contacts).toHaveLength(3)
-    expect(tempFilesIn(directory)).toHaveLength(0)
-  })
+  )
 
   it('lands the newest revision under rapid changes', async () => {
     const root = '/fixture/gate-rapid'

@@ -58,8 +58,26 @@ export function getExtensionPaths(): ExtensionPaths {
   return cached
 }
 
-/** 判断 `child` 是否在 `parent` 内（含自身）。符号链接需调用方先 realpath。 */
+/**
+ * 判断 `child` 是否在 `parent` 内（含自身）。符号链接需调用方先 realpath。
+ *
+ * Windows 上盘符大小写、分隔符与短文件名都可能让字符串比较失手，
+ * 这里统一把两侧规范化后再比：`path.resolve` 处理分隔符，Windows 额外折叠大小写。
+ */
 export function isPathInside(parent: string, child: string): boolean {
-  const relative = path.relative(path.resolve(parent), path.resolve(child))
+  const normalize = (value: string): string => {
+    const resolved = path.resolve(value)
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+  }
+  const relative = path.relative(normalize(parent), normalize(child))
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+/** 只比路径本身，不跟随符号链接；用于判断两个字符串是否指向同一位置。 */
+export function isSamePath(left: string, right: string): boolean {
+  const normalize = (value: string): string => {
+    const resolved = path.resolve(value)
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+  }
+  return normalize(left) === normalize(right)
 }

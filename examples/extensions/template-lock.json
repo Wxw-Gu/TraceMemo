@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "templates": {
+    "douyin-sender@1.0.3": {
+      "sha256": "01cd4b1a7af2b9e0208145b64e487af2a17f354ab7344f32cf9ff7565deb11a6",
+      "bytes": 32839
+    },
+    "douyin-sender@1.0.4": {
+      "sha256": "4fd4a478232d6b52a68187d2e0c3f42733acda1e65ce9f9594f99440e6edd3e5",
+      "bytes": 32981
+    },
+    "douyin-sender@1.0.5": {
+      "sha256": "d33559d6620ca173c97a19aafc8570521bf6426f6420e6fb8f90923333b554c8",
+      "bytes": 33471
+    },
+    "keyword-bot@1.0.0": {
+      "sha256": "3d8e5453e7ae6de7e29c16eb3c9e718a98bae27e9ed2edfd10399fb158e1c87d",
+      "bytes": 19121
+    },
+    "keyword-bot@1.0.1": {
+      "sha256": "ae379a10dac553b60cc8c823186734d917b604b6dff27e2e7d2d62f5cf5e4d41",
+      "bytes": 19517
+    }
+  }
+}

@@ -3,7 +3,9 @@ import path from 'node:path'
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { EXTENSION_IPC } from '../../shared/extensions/ipc'
 import type {
+  ExtensionActionInfo,
   ExtensionInstallResult,
+  ExtensionProjectResult,
   ExtensionLogEntry,
   ExtensionOperationResult,
   ExtensionPageDescriptor,
@@ -121,6 +123,193 @@ export function registerExtensionIpc(options: ExtensionIpcOptions): void {
   )
 
   ipcMain.handle(
+    EXTENSION_IPC.health,
+    guard(() => manager().getHealth())
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.grantPermissions,
+    guard((payload: unknown): Promise<ExtensionOperationResult> => {
+      const input = (payload ?? {}) as { id?: unknown; permissions?: unknown }
+      const permissions = Array.isArray(input.permissions)
+        ? input.permissions.filter((item): item is string => typeof item === 'string')
+        : []
+      return manager().grantPermissions(
+        requireId(input.id),
+        permissions as Parameters<ExtensionManager['grantPermissions']>[1]
+      )
+    })
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.revokePermission,
+    guard((payload: unknown): Promise<ExtensionOperationResult> => {
+      const input = (payload ?? {}) as { id?: unknown; permission?: unknown }
+      const permission = String(input.permission || '').trim()
+      if (!permission) throw new Error('权限名不合法')
+      return manager().revokePermission(
+        requireId(input.id),
+        permission as Parameters<ExtensionManager['revokePermission']>[1]
+      )
+    })
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.resetStorage,
+    guard(
+      (extensionId: unknown): ExtensionOperationResult =>
+        manager().resetStorage(requireId(extensionId))
+    )
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.templates,
+    guard(() => manager().listTemplates())
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.installTemplate,
+    guard(
+      (templateId: unknown): Promise<ExtensionInstallResult> =>
+        manager().installTemplate(requireTemplateId(templateId))
+    )
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.acknowledgeRecovery,
+    guard((): ExtensionOperationResult => manager().acknowledgeRegistryRecovery())
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.acknowledgeStorage,
+    guard(
+      (extensionId: unknown): ExtensionOperationResult =>
+        manager().acknowledgeStorageRecovery(requireId(extensionId))
+    )
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.adoptInstalledCode,
+    guard(
+      (extensionId: unknown): ExtensionOperationResult =>
+        manager().adoptInstalledCode(requireId(extensionId))
+    )
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.pickProjectDirectory,
+    guard(async (): Promise<string | null> => {
+      const window = BrowserWindow.getFocusedWindow()
+      const options: Electron.OpenDialogOptions = {
+        properties: ['openDirectory', 'createDirectory'],
+        title: '选择扩展项目目录'
+      }
+      const result = window
+        ? await dialog.showOpenDialog(window, options)
+        : await dialog.showOpenDialog(options)
+      return result.canceled || !result.filePaths.length ? null : result.filePaths[0]
+    })
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.linkDevelopment,
+    guard(
+      (directory: unknown): Promise<ExtensionInstallResult> =>
+        manager().linkDevelopmentProject(requirePath(directory))
+    )
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.reloadDevelopment,
+    guard(
+      (extensionId: unknown): Promise<ExtensionOperationResult> =>
+        manager().reloadDevelopment(requireId(extensionId))
+    )
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.unlinkDevelopment,
+    guard((payload: unknown): Promise<ExtensionOperationResult> => {
+      const input = (payload ?? {}) as { id?: unknown; keepData?: unknown }
+      return manager().unlinkDevelopment(requireId(input.id), {
+        keepData: input.keepData !== false
+      })
+    })
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.convertDevelopment,
+    guard(
+      (extensionId: unknown): Promise<ExtensionOperationResult> =>
+        manager().convertDevelopmentToInstalled(requireId(extensionId))
+    )
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.createProjectFromTemplate,
+    guard((payload: unknown): Promise<ExtensionProjectResult> => {
+      const input = (payload ?? {}) as {
+        templateId?: unknown
+        targetDirectory?: unknown
+        extensionId?: unknown
+        name?: unknown
+      }
+      return manager().createProjectFromTemplate(
+        requireTemplateId(input.templateId),
+        requirePath(input.targetDirectory),
+        {
+          extensionId: requireId(input.extensionId),
+          ...(typeof input.name === 'string' && input.name.trim()
+            ? { name: input.name.trim().slice(0, 60) }
+            : {})
+        }
+      )
+    })
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.exportInstalledAsProject,
+    guard((payload: unknown): Promise<ExtensionProjectResult> => {
+      const input = (payload ?? {}) as { id?: unknown; targetDirectory?: unknown }
+      return manager().exportInstalledAsProject(
+        requireId(input.id),
+        requirePath(input.targetDirectory)
+      )
+    })
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.actions,
+    guard((): ExtensionActionInfo[] => manager().listActions())
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.openDevelopmentSource,
+    guard(async (extensionId: unknown): Promise<ExtensionOperationResult> => {
+      const extension = manager().get(requireId(extensionId))
+      if (!extension?.development?.available) {
+        return {
+          success: false,
+          error: { code: 'EXTENSION_SOURCE_MISSING', message: '源码目录不可用' }
+        }
+      }
+      // 路径来自主进程的 registry，渲染层只能传 id，无法指定任意目录。
+      const error = await shell.openPath(extension.development.sourcePath)
+      return error
+        ? { success: false, error: { code: 'ACTION_FAILED', message: error } }
+        : { success: true }
+    })
+  )
+
+  ipcMain.handle(
+    EXTENSION_IPC.rollbackUpgrade,
+    guard(
+      (extensionId: unknown): Promise<ExtensionOperationResult> =>
+        manager().rollbackInterruptedUpgrade(requireId(extensionId))
+    )
+  )
+
+  ipcMain.handle(
     EXTENSION_IPC.uninstall,
     guard((payload: unknown): Promise<ExtensionOperationResult> => {
       const input = (payload ?? {}) as { id?: unknown; keepData?: unknown }
@@ -184,6 +373,13 @@ export function registerExtensionIpc(options: ExtensionIpcOptions): void {
 function requireId(value: unknown): string {
   const id = String(value || '').trim()
   if (!/^[a-z0-9.-]{3,128}$/.test(id)) throw new Error('扩展 id 不合法')
+  return id
+}
+
+/** 模板 id 只允许稳定的短标识，不允许携带路径片段。 */
+function requireTemplateId(value: unknown): string {
+  const id = String(value || '').trim()
+  if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(id)) throw new Error('模板 id 不合法')
   return id
 }
 

@@ -744,19 +744,41 @@ export interface AutomationRuleTemplate {
   id: string
   name: string
   description: string
-  /** 该能力是否已经真正接通。 */
-  available: boolean
-  /** 未接通时的说明文案。 */
-  unavailableReason?: string
+  /** 提供该能力的官方模板 id（扩展中心里的模板目录）。 */
+  templateId: string
+  /** 提供该能力的扩展 id。 */
+  extensionId: string
+  /**
+   * 该模板要引用的扩展动作 id。
+   *
+   * **可选**：有些扩展（如抖音搬运）只靠消息事件驱动，没有注册自动化动作。
+   * 它们仍然要出现在这里——用户需要从这里找到入口——只是不能「用规则触发」。
+   */
+  actionId?: string
 }
 
+/**
+ * 规则模板目录。
+ *
+ * 这里只描述「模板依赖哪个官方模板 / 扩展 / 动作」，**不描述可用性**：
+ * 能不能用取决于本机是否装了、启用了、授权了，那是运行时事实，
+ * 写在常量里必然过期。
+ */
 export const AUTOMATION_RULE_TEMPLATES: AutomationRuleTemplate[] = [
   {
     id: 'keyword-reply',
     name: '关键词自动回复',
     description: '消息命中关键词时自动回复指定内容',
-    available: false,
-    unavailableReason: ''
+    templateId: 'keyword-bot',
+    extensionId: 'com.example.keyword-bot',
+    actionId: 'keyword.reply'
+  },
+  {
+    id: 'douyin-process',
+    name: '抖音视频搬运',
+    description: '被 @ 且消息里带抖音分享链接时，解析视频并发送回原会话',
+    templateId: 'douyin-sender',
+    extensionId: 'com.example.douyin-sender'
   }
 ]
 

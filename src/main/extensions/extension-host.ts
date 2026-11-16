@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from 'node:child_process'
+import { fork, spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { ExtensionError, toExtensionErrorPayload } from '../../shared/extensions/errors'
 import type { ExtensionRuntimeSnapshot } from '../../shared/extensions/types'
@@ -23,7 +23,12 @@ import {
 } from '../../shared/extensions/rpc'
 import type { ExtensionEventEnvelope } from '../../shared/extensions/events'
 import type { ExtensionCapabilitySnapshot } from '../../shared/extensions/types'
+import {
+  parseActionInputSchema,
+  type ExtensionActionInputSchema
+} from '../../shared/extensions/action-schema'
 import type { ExtensionStorage } from './extension-storage'
+import type { ExtensionSecretStore } from './extension-secret-store'
 
 const DEFAULT_ACTIVATE_TIMEOUT_MS = 8_000
 const DEFAULT_ACTION_TIMEOUT_MS = 15_000
@@ -33,14 +38,52 @@ const RESTART_BASE_DELAY_MS = 1_000
 const EVENT_BUCKET_CAPACITY = 100
 const EVENT_REFILL_PER_SECOND = 60
 
+/** 发出 shutdown 后等待扩展自行退出的时间。 */
+const GRACEFUL_EXIT_MS = 2_500
+/** 结束进程树之后等待 exit 事件的时间。 */
+const FORCE_EXIT_MS = 3_000
+
+/** stderr 采样窗口：只把有代表性的片段写进日志，避免日志洪水拖住主进程。 */
+const STDERR_WINDOW_MS = 10_000
+const STDERR_WINDOW_BYTES = 64 * 1024
+const STDERR_WINDOW_ENTRIES = 20
+const STDERR_MAX_CHUNK_CHARS = 400
+
+/**
+ * stderr 里常见的凭据写法。
+ *
+ * 扩展的 stderr 是任意文本，可能包含用户配置的 Cookie / Token；
+ * 落日志前统一抹掉值，只保留键名。
+ */
+const SECRET_ASSIGNMENT =
+  /\b(cookie|token|authorization|password|passwd|secret|api[_-]?key)\b(\s*[:=]\s*)(?!Bearer\b)([^\s,;"']{4,})/gi
+const BEARER_TOKEN = /\bBearer\s+[A-Za-z0-9._~+/-]{8,}=*/gi
+
+export function redactSecrets(value: string): string {
+  // 顺序不能反：先抹 `Bearer <token>` 整体，再按「键=值」处理，
+  // 否则 `Authorization: Bearer xxx` 会只抹掉 `Bearer`，token 本体留在日志里。
+  return String(value ?? '')
+    .replace(BEARER_TOKEN, 'Bearer ***')
+    .replace(
+      SECRET_ASSIGNMENT,
+      (_match, name: string, separator: string) => `${name}${separator}***`
+    )
+}
+
 export interface ExtensionHostChild {
   send(message: unknown): void
+  /** 终止本扩展的整棵进程树；实现方负责平台差异。 */
   kill(): void
   on(event: 'message', listener: (message: unknown) => void): void
   on(event: 'exit', listener: (code: number | null, signal: string | null) => void): void
   on(event: 'error', listener: (error: Error) => void): void
   once?(event: 'exit', listener: () => void): void
   readonly pid?: number
+  /**
+   * 子进程的 stderr。必须被消费：管道写满会让子进程在 `write` 上阻塞，
+   * 表现为「扩展还活着但不再响应」。
+   */
+  readonly stderr?: NodeJS.ReadableStream | null
 }
 
 export interface ExtensionHostSpawnOptions {
@@ -55,6 +98,7 @@ export interface ExtensionHostDependencies {
   dataDir: string
   permissions: ExtensionPermission[]
   storage: ExtensionStorage
+  secrets?: ExtensionSecretStore
   spawn: (options: ExtensionHostSpawnOptions) => ExtensionHostChild
   onLog?: (level: 'info' | 'warn' | 'error', message: string) => void
   onStateChange?: (snapshot: ExtensionRuntimeSnapshot) => void
@@ -83,6 +127,10 @@ export interface ExtensionHostDependencies {
   now?: () => number
   activateTimeoutMs?: number
   actionTimeoutMs?: number
+  /** 覆盖「等扩展自行退出」的时间；生产默认 2.5s。 */
+  gracefulExitMs?: number
+  /** 覆盖「结束进程树后等 exit」的时间；生产默认 3s。 */
+  forceExitMs?: number
 }
 
 interface PendingAction {
@@ -95,6 +143,9 @@ interface RegisteredAction {
   id: string
   title: string
   description?: string
+  /** 已校验的参数 Schema；非法时为 undefined 且 `schemaError` 有值。 */
+  inputSchema?: ExtensionActionInputSchema
+  schemaError?: string
 }
 
 interface ActivationWaiter {
@@ -133,17 +184,27 @@ export class ExtensionHost {
     }
   >()
   private readonly actions = new Map<string, RegisteredAction>()
+  private readonly pendingPageRequests = new Map<
+    string,
+    {
+      resolve: (value: unknown) => void
+      reject: (error: Error) => void
+      timer: ReturnType<typeof setTimeout>
+    }
+  >()
   private eventTokens = EVENT_BUCKET_CAPACITY
   private eventTokensAt: number
   private droppedEvents = 0
   private mutedDropLog = false
   private restartTimestamps: number[] = []
+  private stderrWindow = { bytes: 0, entries: 0, dropped: 0, at: 0 }
 
   constructor(dependencies: ExtensionHostDependencies) {
     this.dependencies = dependencies
     this.storage = dependencies.storage
     this.now = dependencies.now ?? (() => Date.now())
     this.eventTokensAt = this.now()
+    this.stderrWindow.at = this.now()
     this.state = { state: 'inactive', since: this.now(), restarts: 0 }
   }
 
@@ -153,6 +214,51 @@ export class ExtensionHost {
 
   registeredActions(): RegisteredAction[] {
     return Array.from(this.actions.values()).map((action) => ({ ...action }))
+  }
+
+  /**
+   * 把页面请求转给同扩展的后台处理器。
+   *
+   * 这是唯一入口：页面拿不到 Node，后台必须显式注册 `tm.page.onRequest`。
+   * 响应大小与超时都在这里收口，避免页面被一个坏 handler 拖死。
+   */
+  async requestPage(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs = 10_000
+  ): Promise<unknown> {
+    const child = this.child
+    if (!child) throw new ExtensionError('EXTENSION_HOST_UNAVAILABLE')
+    const requestId = randomUUID()
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(
+        () => {
+          this.pendingPageRequests.delete(requestId)
+          reject(new ExtensionError('ACTION_TIMEOUT', '页面请求超时'))
+        },
+        Math.max(1_000, timeoutMs)
+      )
+      this.pendingPageRequests.set(requestId, { resolve, reject, timer })
+      try {
+        child.send({
+          type: 'page-request',
+          version: EXTENSION_HOST_PROTOCOL_VERSION,
+          requestId,
+          method,
+          params,
+          timeoutMs
+        })
+      } catch (error) {
+        clearTimeout(timer)
+        this.pendingPageRequests.delete(requestId)
+        reject(
+          new ExtensionError(
+            'EXTENSION_HOST_UNAVAILABLE',
+            error instanceof Error ? error.message : '扩展进程不可用'
+          )
+        )
+      }
+    })
   }
 
   async testSend(params: Record<string, unknown>): Promise<unknown> {
@@ -204,6 +310,13 @@ export class ExtensionHost {
     return this.activation
   }
 
+  /**
+   * 停止后台进程。
+   *
+   * 三段式：先请扩展自行退出，超时后结束整棵进程树，再等真实的 exit 事件。
+   * 只有收到 exit 才算停止完成——只发信号就返回，会让上层在进程仍占用
+   * 文件时去替换扩展目录（Windows 上必然失败，POSIX 上会留下旧代码在跑）。
+   */
   async stop(): Promise<void> {
     this.stopping = true
     if (this.restartTimer) {
@@ -216,26 +329,66 @@ export class ExtensionHost {
     this.failPendingActions(new ExtensionError('EXTENSION_HOST_UNAVAILABLE', '扩展已停止'))
     this.failPendingTests(new ExtensionError('EXTENSION_HOST_UNAVAILABLE', '扩展已停止'))
     this.actions.clear()
-    this.setState('inactive')
-    if (!child) return
+    if (!child) {
+      this.setState('inactive')
+      return
+    }
+
     try {
       child.send({ type: 'shutdown', version: EXTENSION_HOST_PROTOCOL_VERSION })
     } catch {
-      // 进程可能已经断开；kill 兜底。
+      // 进程可能已经断开；后续按「未退出」处理。
     }
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        try {
-          child.kill()
-        } catch {
-          // ignore
-        }
-        resolve()
-      }, 1_500)
-      child.once?.('exit', () => {
+
+    if (await this.waitForExit(child, this.dependencies.gracefulExitMs ?? GRACEFUL_EXIT_MS)) {
+      this.setState('inactive')
+      return
+    }
+
+    this.dependencies.onLog?.('warn', '扩展未在预期时间内退出，正在结束进程树')
+    this.killTree(child)
+    if (!(await this.waitForExit(child, this.dependencies.forceExitMs ?? FORCE_EXIT_MS))) {
+      this.dependencies.onLog?.('error', '扩展进程树未能退出，可能有子进程仍在运行')
+    }
+    this.setState('inactive')
+  }
+
+  /**
+   * 结束扩展进程及其派生进程。
+   *
+   * POSIX 依赖 `fork` 时的 `detached` 建立独立进程组，`kill(-pid)` 一次覆盖整组；
+   * 组不存在时退化为只杀直接子进程，并记一条降级日志。
+   *
+   * Windows 用 `taskkill /T /F`，且必须**在父进程仍存活时**执行：
+   * 父进程先退出后，进程树的父子关系消失，`/T` 再也找不到孙进程。
+   */
+  private killTree(child: ExtensionHostChild): void {
+    const pid = child.pid
+    if (!pid) {
+      try {
+        child.kill()
+      } catch {
+        // ignore
+      }
+      return
+    }
+    const result = killProcessTree(pid)
+    if (result !== 'group' && process.platform !== 'win32') {
+      this.dependencies.onLog?.('warn', '未能结束扩展进程组，已退化为只结束主进程')
+    }
+  }
+
+  private waitForExit(child: ExtensionHostChild, timeoutMs: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      let settled = false
+      const finish = (exited: boolean): void => {
+        if (settled) return
+        settled = true
         clearTimeout(timer)
-        resolve()
-      })
+        resolve(exited)
+      }
+      const timer = setTimeout(() => finish(false), timeoutMs)
+      child.once?.('exit', () => finish(true))
     })
   }
 
@@ -398,6 +551,62 @@ export class ExtensionHost {
       this.dependencies.onLog?.('error', `扩展进程错误：${error.message}`)
     })
     child.on('exit', (code) => this.handleExit(child, code))
+    this.consumeStderr(child)
+  }
+
+  /**
+   * 消费子进程 stderr。
+   *
+   * 两点必须同时成立：管道始终有人读（否则子进程写满缓冲会阻塞），
+   * 且进入日志的内容有速率与长度上限（否则一次日志风暴能把主进程拖垮）。
+   * 凭据形态的字段在落日志前抹掉值。
+   */
+  private consumeStderr(child: ExtensionHostChild): void {
+    const stream = child.stderr
+    if (!stream || typeof stream.on !== 'function') return
+
+    const onData = (chunk: Buffer | string): void => {
+      try {
+        const now = this.now()
+        if (now - this.stderrWindow.at >= STDERR_WINDOW_MS) {
+          const dropped = this.stderrWindow.dropped
+          this.stderrWindow = { bytes: 0, entries: 0, dropped: 0, at: now }
+          if (dropped > 0) {
+            this.dependencies.onLog?.('warn', `扩展 stderr 有 ${dropped} 字节省略未记录`)
+          }
+        }
+        const text = redactSecrets(String(chunk)).replace(/\s+/g, ' ').trim()
+        if (!text) return
+        const bytes = Buffer.byteLength(text, 'utf8')
+        if (
+          this.stderrWindow.entries >= STDERR_WINDOW_ENTRIES ||
+          this.stderrWindow.bytes + bytes > STDERR_WINDOW_BYTES
+        ) {
+          this.stderrWindow.dropped += bytes
+          return
+        }
+        this.stderrWindow.bytes += bytes
+        this.stderrWindow.entries += 1
+        this.dependencies.onLog?.('warn', `[stderr] ${text.slice(0, STDERR_MAX_CHUNK_CHARS)}`)
+      } catch {
+        // stderr 处理失败不能影响扩展运行。
+      }
+    }
+
+    const onEnd = (): void => {
+      if (this.stderrWindow.dropped > 0) {
+        this.dependencies.onLog?.(
+          'warn',
+          `扩展 stderr 有 ${this.stderrWindow.dropped} 字节省略未记录`
+        )
+        this.stderrWindow.dropped = 0
+      }
+      stream.removeListener?.('data', onData)
+      stream.removeListener?.('end', onEnd)
+    }
+
+    stream.on('data', onData)
+    stream.on('end', onEnd)
   }
 
   private handleExit(child: ExtensionHostChild, code: number | null): void {
@@ -450,12 +659,43 @@ export class ExtensionHost {
       case 'register-action': {
         const action = message.action
         if (!action || typeof action.id !== 'string') return
+        // Schema 不合法的动作仍然登记：界面上要能看到它，并显示具体原因，
+        // 而不是让它凭空消失。
+        let inputSchema: ExtensionActionInputSchema | undefined
+        let schemaError: string | undefined
+        if (action.inputSchema !== undefined) {
+          const parsed = parseActionInputSchema(action.inputSchema)
+          if (parsed.ok) inputSchema = parsed.schema
+          else schemaError = parsed.reason
+        }
         this.actions.set(action.id, {
           id: action.id,
           title: String(action.title || action.id).slice(0, 60),
-          ...(action.description ? { description: String(action.description).slice(0, 200) } : {})
+          ...(action.description ? { description: String(action.description).slice(0, 200) } : {}),
+          ...(inputSchema ? { inputSchema } : {}),
+          ...(schemaError ? { schemaError } : {})
         })
+        if (schemaError) {
+          this.dependencies.onLog?.(
+            'warn',
+            `动作 ${action.id} 的参数 Schema 不可用：${schemaError}`
+          )
+        }
         this.dependencies.onActionsChanged?.()
+        return
+      }
+      case 'page-result': {
+        const pending = this.pendingPageRequests.get(message.requestId)
+        if (!pending) return
+        clearTimeout(pending.timer)
+        this.pendingPageRequests.delete(message.requestId)
+        if (message.ok) {
+          pending.resolve(message.result)
+        } else {
+          pending.reject(
+            new ExtensionError('ACTION_FAILED', message.error?.message || '扩展页面请求失败')
+          )
+        }
         return
       }
       case 'log':
@@ -533,6 +773,31 @@ export class ExtensionHost {
       case 'storage.list':
         this.requirePermission('storage')
         return { entries: this.storage.list(extensionId) }
+      case 'secrets.get': {
+        this.requirePermission('secrets')
+        if (!this.dependencies.secrets) throw new ExtensionError('CAPABILITY_UNAVAILABLE')
+        return this.dependencies.secrets.get(extensionId, String(params.key ?? ''))
+      }
+      case 'secrets.set': {
+        this.requirePermission('secrets')
+        if (!this.dependencies.secrets) throw new ExtensionError('CAPABILITY_UNAVAILABLE')
+        this.dependencies.secrets.set(
+          extensionId,
+          String(params.key ?? ''),
+          String(params.value ?? '')
+        )
+        return { ok: true }
+      }
+      case 'secrets.delete': {
+        this.requirePermission('secrets')
+        if (!this.dependencies.secrets) throw new ExtensionError('CAPABILITY_UNAVAILABLE')
+        return { removed: this.dependencies.secrets.delete(extensionId, String(params.key ?? '')) }
+      }
+      case 'secrets.has': {
+        this.requirePermission('secrets')
+        if (!this.dependencies.secrets) throw new ExtensionError('CAPABILITY_UNAVAILABLE')
+        return this.dependencies.secrets.has(extensionId, String(params.key ?? ''))
+      }
       case 'messages.query': {
         this.requirePermission('messages.query')
         if (!this.dependencies.queryMessages) throw new ExtensionError('CAPABILITY_UNAVAILABLE')
@@ -642,6 +907,49 @@ export class ExtensionHost {
   }
 }
 
+/**
+ * 结束 `pid` 对应的进程树。
+ *
+ * 返回值表示实际使用的手段：
+ * - `group`：POSIX 进程组，覆盖扩展派生的全部子进程；
+ * - `taskkill`：Windows 进程树，必须在父进程仍存活时调用；
+ * - `fallback`：只能结束进程本身，调用方应记录降级。
+ */
+export function killProcessTree(
+  pid: number | undefined,
+  options: { platform?: NodeJS.Platform; signal?: NodeJS.Signals } = {}
+): 'group' | 'taskkill' | 'fallback' {
+  if (!pid) return 'fallback'
+  const platform = options.platform ?? process.platform
+  const signal = options.signal ?? 'SIGKILL'
+
+  if (platform === 'win32') {
+    try {
+      const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore'
+      })
+      killer.on('error', () => undefined)
+      killer.unref?.()
+      return 'taskkill'
+    } catch {
+      return 'fallback'
+    }
+  }
+
+  try {
+    process.kill(-pid, signal)
+    return 'group'
+  } catch {
+    try {
+      process.kill(pid, signal)
+    } catch {
+      // 进程已经退出。
+    }
+    return 'fallback'
+  }
+}
+
 /** 真实子进程：`ELECTRON_RUN_AS_NODE` 让 Electron 二进制以 Node 模式运行。 */
 export function forkExtensionHost(
   scriptPath: string
@@ -650,6 +958,9 @@ export function forkExtensionHost(
     const child: ChildProcess = fork(scriptPath, [], {
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
       serialization: 'advanced',
+      // POSIX 上建立独立进程组，停止时才能一次覆盖扩展派生的子进程。
+      // Windows 用 taskkill /T，不需要（也不支持）detached。
+      detached: process.platform !== 'win32',
       env: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: '1',
@@ -671,6 +982,7 @@ export function forkExtensionHost(
       once: (event, listener) => {
         child.once(event, listener)
       },
+      stderr: child.stderr,
       ...(child.pid ? { pid: child.pid } : {})
     }
   }

@@ -13,7 +13,9 @@ import {
 } from '../../../../shared/automation'
 import { Button, Input, SegmentedControl, SegmentedControlItem, Switch } from '../../components/ui'
 import { EffectPreview } from './EffectPreview'
+import { ExtensionActionList } from './ExtensionActionList'
 import type { AutomationGroupOption } from './model/api'
+import type { ExtensionActionInfo } from '../../../../shared/extensions/types'
 
 /**
  * RuleEditorPanel —— 规则编辑页（对应 Stitch 设计稿 1）。
@@ -90,18 +92,55 @@ export function RuleEditorPanel({
     setValidationError('')
   }, [rule])
 
+  /** 扩展动作列表：随扩展启用/停用自动刷新，规则里保存的引用不会被清掉。 */
+  const [extensionActions, setExtensionActions] = React.useState<ExtensionActionInfo[]>([])
+  React.useEffect(() => {
+    let active = true
+    const load = (): void => {
+      // 旧宿主或测试环境可能没有扩展 API：此时退化成「没有扩展动作」，
+      // 不能让整个规则编辑器崩掉。
+      const loader = window.api?.listExtensionActions
+      if (!loader) {
+        setExtensionActions([])
+        return
+      }
+      void Promise.resolve(loader.call(window.api))
+        .then((list) => {
+          if (active) setExtensionActions(Array.isArray(list) ? list : [])
+        })
+        .catch(() => undefined)
+    }
+    load()
+    const subscribe = window.api?.onExtensionChanged
+    const unsubscribe = subscribe ? subscribe.call(window.api, () => load()) : () => undefined
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [])
+
   const patchConditions = (patch: Partial<AutomationRuleDraft['conditions']>): void => {
     setDraft((current) => ({ ...current, conditions: { ...current.conditions, ...patch } }))
   }
 
-  const patchAction = (type: AutomationActionType, patch: { enabled?: boolean; text?: string }): void => {
+  /**
+   * 按**索引**更新动作。
+   *
+   * 固定动作每类只有一条，但扩展动作可以有多条同类型：
+   * 按 `type` 批量更新会把它们一起改掉。
+   */
+  const patchActionAt = (index: number, patch: { enabled?: boolean; text?: string }): void => {
+    if (index < 0) return
     setDraft((current) => ({
       ...current,
-      actions: current.actions.map((action) =>
-        action.type === type ? { ...action, ...patch } : action
+      actions: current.actions.map((action, currentIndex) =>
+        currentIndex === index ? { ...action, ...patch } : action
       )
     }))
   }
+
+  const indexOfType = (type: AutomationActionType): number =>
+    draft.actions.findIndex((action) => action.type === type)
 
   const actionOf = (type: AutomationActionType): { enabled: boolean; text?: string } =>
     draft.actions.find((action) => action.type === type) ?? { enabled: false }
@@ -268,7 +307,11 @@ export function RuleEditorPanel({
                       key={group.id}
                       className={`automation-group-option ${checked ? 'selected' : ''}`}
                     >
-                      <input type="checkbox" checked={checked} onChange={() => toggleGroup(group.id)} />
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleGroup(group.id)}
+                      />
                       <span>{group.name}</span>
                     </label>
                   )
@@ -305,9 +348,7 @@ export function RuleEditorPanel({
                   const next = Number(event.target.value)
                   setDraft((current) => ({
                     ...current,
-                    replyDelaySeconds: normalizeReplyDelaySeconds(
-                      Number.isFinite(next) ? next : 0
-                    )
+                    replyDelaySeconds: normalizeReplyDelaySeconds(Number.isFinite(next) ? next : 0)
                   }))
                 }}
                 className="automation-number-input"
@@ -326,13 +367,17 @@ export function RuleEditorPanel({
                       </div>
                       <Switch
                         checked={action.enabled}
-                        onCheckedChange={(checked) => patchAction(meta.type, { enabled: checked })}
+                        onCheckedChange={(checked) =>
+                          patchActionAt(indexOfType(meta.type), { enabled: checked })
+                        }
                       />
                     </div>
                     {meta.type === 'replyText' && action.enabled ? (
                       <Input
                         value={action.text ?? ''}
-                        onChange={(event) => patchAction(meta.type, { text: event.target.value })}
+                        onChange={(event) =>
+                          patchActionAt(indexOfType(meta.type), { text: event.target.value })
+                        }
                         placeholder={DEFAULT_REPLY_TEXT}
                         aria-label="回复内容"
                       />
@@ -341,6 +386,18 @@ export function RuleEditorPanel({
                 </div>
               )
             })}
+
+            <div className="automation-subsection">
+              <div className="automation-subsection-heading">
+                <h4>执行扩展动作</h4>
+                <small>由扩展注册，参数按扩展声明的 Schema 填写</small>
+              </div>
+              <ExtensionActionList
+                actions={draft.actions}
+                available={extensionActions}
+                onChange={(next) => setDraft((current) => ({ ...current, actions: next }))}
+              />
+            </div>
           </section>
 
           <section className="automation-section">

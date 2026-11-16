@@ -44,9 +44,16 @@ import { switchGeneratedReportTemplate } from './utils/report-template-switch'
 import { runtimePlatform } from './utils/runtime-environment'
 import { Button, useToast } from './components/ui'
 import { AppUpdatePrompt } from './features/app-update/AppUpdatePrompt'
-import { GroupExitMonitorWorkspace, type GroupExitMonitorOpenViewRequest } from './features/group-exit-monitor/GroupExitMonitorWorkspace'
-import { AutomationWorkspace, type AutomationOpenRuleRequest } from './features/automation/AutomationWorkspace'
+import {
+  GroupExitMonitorWorkspace,
+  type GroupExitMonitorOpenViewRequest
+} from './features/group-exit-monitor/GroupExitMonitorWorkspace'
+import {
+  AutomationWorkspace,
+  type AutomationOpenRuleRequest
+} from './features/automation/AutomationWorkspace'
 import { ExtensionWorkspace } from './features/extensions/ExtensionWorkspace'
+import type { ExtensionDeepLink } from '../../shared/extensions/types'
 import { selectContactAvatarRefreshUsernames } from './utils/contact-avatar'
 import {
   buildContactSearchIndex,
@@ -258,6 +265,8 @@ function App(): React.ReactElement {
   const [databaseEnvironment, setDatabaseEnvironment] = useState<DatabaseKeyEnvironment>()
   const connectionOperationRef = React.useRef(0)
   const [activePage, setActivePage] = useState<AppPage>('archive')
+  /** 从其它页面跳到扩展中心时的定位目标；扩展中心消费后清空。 */
+  const [extensionDeepLink, setExtensionDeepLink] = useState<ExtensionDeepLink | null>(null)
   /**
    * 「退群监控 ⇄ 自动化」之间的跨页深链。
    *
@@ -1612,6 +1621,12 @@ function App(): React.ReactElement {
   const isGroupContact = (contact: Contact | null): boolean =>
     Boolean(contact?.type === 'group' || contact?.m_nsUsrName?.endsWith('@chatroom'))
 
+  /** 跳到扩展中心并带上定位目标（模板 / 扩展）。 */
+  const openExtensionDeepLink = (target: ExtensionDeepLink): void => {
+    setExtensionDeepLink(target)
+    handlePageChange('extensions')
+  }
+
   const handlePageChange = (page: AppPage): void => {
     setActivePage(page)
     if (page === 'archive' && selectedContact) void handleSelectContact(selectedContact)
@@ -2136,12 +2151,18 @@ function App(): React.ReactElement {
             openRuleRequest={automationOpenRuleRequest}
             onOpenModelSettings={openModelSettings}
             onOpenAgentHub={openAgentHub}
+            onOpenExtension={openExtensionDeepLink}
           />
         )
       case 'agent-hub':
         return <AgentHubWorkspace selfInfo={selfInfo} />
       case 'extensions':
-        return <ExtensionWorkspace />
+        return (
+          <ExtensionWorkspace
+            deepLink={extensionDeepLink}
+            onConsumeDeepLink={() => setExtensionDeepLink(null)}
+          />
+        )
       case 'api':
         return (
           <ApiWorkspace

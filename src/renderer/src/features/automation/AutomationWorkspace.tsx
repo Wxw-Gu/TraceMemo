@@ -1,5 +1,6 @@
 import * as React from 'react'
 import {
+  AUTOMATION_RULE_TEMPLATES,
   BUILTIN_DAILY_REPORT_RULE_ID,
   BUILTIN_LEAVE_NOTIFICATION_RULE_ID,
   calculateNextRunAt,
@@ -18,12 +19,12 @@ import {
 } from '../../components/ui'
 import { RuleListPanel } from './RuleListPanel'
 import { RuleEditorPanel } from './RuleEditorPanel'
+import type { RuleTemplateCardModel } from './RuleListPanel'
+import type { ExtensionTemplateStatus } from '../../../../shared/extensions/templates'
+import type { ExtensionDeepLink, InstalledExtension } from '../../../../shared/extensions/types'
 import { ExecutionLogPanel } from './ExecutionLogPanel'
 import { ExecutionDetailDrawer } from './ExecutionDetailDrawer'
-import {
-  AutomationRuleTypeTabs,
-  type AutomationRuleTabType
-} from './AutomationRuleTypeTabs'
+import { AutomationRuleTypeTabs, type AutomationRuleTabType } from './AutomationRuleTypeTabs'
 import { MessageInsertSwitches } from './MessageInsertSwitches'
 import { ScheduledReportEditor } from './ScheduledReportEditor'
 import { ScheduledReportRuleList } from './ScheduledReportRuleList'
@@ -36,12 +37,14 @@ import {
   resolveGroupDisplayName,
   type ScheduledReportDraft
 } from './model/scheduled-report-model'
-import {
-  LeaveNotificationEditor,
-  type LeaveNotificationSaveInput
-} from './LeaveNotificationEditor'
+import { LeaveNotificationEditor, type LeaveNotificationSaveInput } from './LeaveNotificationEditor'
 import type { LeaveNotificationContactOption } from './LeaveNotificationTargetPicker'
-import { UNAVAILABLE_STATUS, automationApi, isAutomationApiAvailable, type AutomationGroupOption } from './model/api'
+import {
+  UNAVAILABLE_STATUS,
+  automationApi,
+  isAutomationApiAvailable,
+  type AutomationGroupOption
+} from './model/api'
 
 /**
  * AutomationWorkspace —— 自动化一级菜单。
@@ -63,6 +66,16 @@ export interface AutomationOpenRuleRequest {
   requestId: number
 }
 
+/** 可选能力加载：宿主没有该 API 时返回兜底值，不抛错。 */
+async function safeLoad<T>(loader: () => Promise<T> | undefined, fallback: T): Promise<T> {
+  try {
+    const result = await loader()
+    return result ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
 export interface AutomationWorkspaceProps {
   dbReady: boolean
   /** 发送能力不可用时，引导用户去设置页。 */
@@ -75,6 +88,8 @@ export interface AutomationWorkspaceProps {
   onOpenAgentHub?: () => void
   /** 深链请求（来自退群监控页的「退群通知自动化」入口）。 */
   openRuleRequest?: AutomationOpenRuleRequest | null
+  /** 跳到扩展中心并定位模板 / 扩展 / 开发引导（规则模板卡片用）。 */
+  onOpenExtension?: (target: ExtensionDeepLink) => void
 }
 
 interface EditorState {
@@ -90,7 +105,8 @@ export function AutomationWorkspace({
   onOpenExitMonitorGroups,
   onOpenModelSettings,
   onOpenAgentHub,
-  openRuleRequest
+  openRuleRequest,
+  onOpenExtension
 }: AutomationWorkspaceProps): React.ReactElement {
   const { toast } = useToast()
   const apiAvailable = React.useMemo(() => isAutomationApiAvailable(), [])
@@ -100,7 +116,9 @@ export function AutomationWorkspace({
   const [rules, setRules] = React.useState<AutomationRule[]>([])
   const [groups, setGroups] = React.useState<AutomationGroupOption[]>([])
   const [executions, setExecutions] = React.useState<AutomationExecution[]>([])
-  const [sendableContacts, setSendableContacts] = React.useState<LeaveNotificationContactOption[]>([])
+  const [sendableContacts, setSendableContacts] = React.useState<LeaveNotificationContactOption[]>(
+    []
+  )
   const [monitoredGroupCount, setMonitoredGroupCount] = React.useState(0)
   /** 已监控群聊清单（含显示名）—— 退群通知「通知群聊」二次勾选的候选项。 */
   const [monitoredGroups, setMonitoredGroups] = React.useState<AutomationGroupOption[]>([])
@@ -109,6 +127,63 @@ export function AutomationWorkspace({
   const [saving, setSaving] = React.useState(false)
   const [busyRuleId, setBusyRuleId] = React.useState<string | null>(null)
   const [editor, setEditor] = React.useState<EditorState | null>(null)
+  /** 规则模板依赖的本机事实：官方模板目录 + 已安装扩展。 */
+  const [extensionTemplates, setExtensionTemplates] = React.useState<ExtensionTemplateStatus[]>([])
+  const [installedExtensions, setInstalledExtensions] = React.useState<InstalledExtension[]>([])
+
+  /**
+   * 规则模板卡片的真实状态。
+   *
+   * 只读「官方模板目录 + 已装扩展」，不在自动化页维护第二份安装状态。
+   */
+  const ruleTemplates = React.useMemo<RuleTemplateCardModel[]>(() => {
+    return AUTOMATION_RULE_TEMPLATES.map((template) => {
+      const installed = installedExtensions.find((item) => item.id === template.extensionId)
+      const catalog = extensionTemplates.find(
+        (item) => item.template.templateId === template.templateId
+      )
+      if (!installed) {
+        const reason =
+          catalog?.state === 'damaged'
+            ? catalog.message
+            : catalog?.state === 'conflict'
+              ? catalog.message
+              : undefined
+        return { ...template, state: 'not-installed', ...(reason ? { reason } : {}) }
+      }
+      if (!installed.compatibility.compatible) {
+        return {
+          ...template,
+          state: 'unavailable',
+          reason: installed.compatibility.reason || '扩展与当前 TraceMemo 版本不兼容'
+        }
+      }
+      if (installed.runtime.state === 'error') {
+        return {
+          ...template,
+          state: 'unavailable',
+          reason: installed.runtime.lastError || '扩展运行异常'
+        }
+      }
+      if (!installed.enabled) {
+        return { ...template, state: 'installed-disabled', reason: '已安装但未启用' }
+      }
+      return { ...template, state: 'ready' }
+    })
+  }, [extensionTemplates, installedExtensions])
+
+  const useRuleTemplate = (template: RuleTemplateCardModel): void => {
+    if (!template.actionId) return
+    // 打开的是「新建」，不复用上一次日报的编辑目标。
+    setEditor({ mode: 'create', rule: null, ruleType: 'daily_report' })
+    toast({
+      title: '已打开新建规则',
+      description:
+        `在执行动作里添加「${template.name}」，选择扩展动作 ${template.actionId}。` +
+        '若机器人当前是主动订阅模式，规则路径会自动跳过，不会双回复。',
+      variant: 'default'
+    })
+  }
   const [selectedExecution, setSelectedExecution] = React.useState<AutomationExecution | null>(null)
   const [pendingDelete, setPendingDelete] = React.useState<AutomationRule | null>(null)
 
@@ -131,6 +206,15 @@ export function AutomationWorkspace({
       automationApi.getMonitoredGroupCount(),
       automationApi.getMonitoredGroups()
     ])
+    // 扩展状态是「模板能不能用」的唯一依据：不自己维护第二份。
+    // 扩展 API 在旧版宿主或测试环境里可能整体缺失，缺失时按空列表处理，
+    // 卡片会退化成「未安装」，而不是让整个自动化页崩掉。
+    const [nextTemplates, nextExtensions] = await Promise.all([
+      safeLoad<ExtensionTemplateStatus[]>(() => window.api?.listExtensionTemplates?.(), []),
+      safeLoad<InstalledExtension[]>(() => window.api?.listExtensions?.(), [])
+    ])
+    setExtensionTemplates(nextTemplates)
+    setInstalledExtensions(nextExtensions)
     setStatus(nextStatus)
     setRules(nextRules)
     setGroups(nextGroups)
@@ -185,7 +269,6 @@ export function AutomationWorkspace({
   /** 退群通知是 singleton 规则，永远从规则表里取（不存在则由 main 侧播种）。 */
   const leaveNotificationRule =
     rules.find((item) => item.id === BUILTIN_LEAVE_NOTIFICATION_RULE_ID) ?? null
-
 
   /** 「指定好友」目标的显示名（首页卡片用；拿不到时留空，不伪造）。 */
   const leaveContactName = React.useMemo((): string => {
@@ -413,9 +496,7 @@ export function AutomationWorkspace({
    * 走独立的 singleton upsert 通道：这条规则 id 固定，保存永远不会多出一条。
    * 保存成功后清掉迁移遗留的 `targetNeedsReview`（用户已经做过选择）。
    */
-  const handleLeaveNotificationSave = async (
-    input: LeaveNotificationSaveInput
-  ): Promise<void> => {
+  const handleLeaveNotificationSave = async (input: LeaveNotificationSaveInput): Promise<void> => {
     // 静默 return 会让"点保存没反应"变成用户眼里的坏掉，必须说出来。
     if (!leaveNotificationRule) {
       toast({
@@ -522,7 +603,11 @@ export function AutomationWorkspace({
         <div className="automation-status-card">
           <span className="automation-status-label">发送能力</span>
           <span className={`automation-status-value ${capabilityReady ? 'ok' : 'warn'}`}>
-            {capabilityReady ? '可以发送文字和图片' : capability.ready ? '发送能力不完整' : '尚未就绪'}
+            {capabilityReady
+              ? '可以发送文字和图片'
+              : capability.ready
+                ? '发送能力不完整'
+                : '尚未就绪'}
           </span>
           <small className="automation-status-note">{capability.message}</small>
           {!capabilityReady && onOpenSendSettings ? (
@@ -637,9 +722,7 @@ export function AutomationWorkspace({
                 {...(onOpenModelSettings ? { onOpenModelSettings } : {})}
                 {...(scheduledEditor.ruleId
                   ? (() => {
-                      const rule = scheduledRules.find(
-                        (item) => item.id === scheduledEditor.ruleId
-                      )
+                      const rule = scheduledRules.find((item) => item.id === scheduledEditor.ruleId)
                       const legacy = rule?.scheduledReport?.legacyTarget
                       return legacy ? { legacyTarget: legacy } : {}
                     })()
@@ -709,8 +792,8 @@ export function AutomationWorkspace({
             <div className="automation-notice warning automation-notice-stack">
               <p>没有找到内置的退群通知规则。</p>
               <small>
-                这条规则应由主进程在首次启动时自动创建。如果你刚更新过版本，
-                请重启 TraceMemo —— 已经跑起来的主进程不会自动换成新代码。
+                这条规则应由主进程在首次启动时自动创建。如果你刚更新过版本， 请重启 TraceMemo ——
+                已经跑起来的主进程不会自动换成新代码。
               </small>
               <Button
                 variant="outline"
@@ -760,6 +843,9 @@ export function AutomationWorkspace({
           onEditLeaveNotification={() =>
             setEditor({ mode: 'edit', rule: null, ruleType: 'leave_notification' })
           }
+          ruleTemplates={ruleTemplates}
+          onOpenExtension={onOpenExtension}
+          onUseRuleTemplate={useRuleTemplate}
         />
       ) : (
         <ExecutionLogPanel
@@ -777,7 +863,11 @@ export function AutomationWorkspace({
       />
 
       {pendingDelete ? (
-        <div className="automation-confirm-layer" role="presentation" onClick={() => setPendingDelete(null)}>
+        <div
+          className="automation-confirm-layer"
+          role="presentation"
+          onClick={() => setPendingDelete(null)}
+        >
           <div
             className="automation-confirm"
             role="alertdialog"

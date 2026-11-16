@@ -10,8 +10,12 @@ import type {
   ExtensionOperationResult,
   ExtensionPageDescriptor,
   ExtensionPageResponse,
+  ExtensionActionInfo,
+  ExtensionProjectResult,
+  ExtensionSystemHealth,
   InstalledExtension
 } from '../shared/extensions/types'
+import type { ExtensionTemplateStatus } from '../shared/extensions/templates'
 import {
   GroupReportExportRequest,
   GroupReportExportResult,
@@ -840,6 +844,42 @@ declare global {
         extensionId: string,
         enabled: boolean
       ) => Promise<ExtensionOperationResult>
+      getExtensionHealth: () => Promise<ExtensionSystemHealth>
+      grantExtensionPermissions: (
+        extensionId: string,
+        permissions: string[]
+      ) => Promise<ExtensionOperationResult>
+      revokeExtensionPermission: (
+        extensionId: string,
+        permission: string
+      ) => Promise<ExtensionOperationResult>
+      resetExtensionStorage: (extensionId: string) => Promise<ExtensionOperationResult>
+      listExtensionTemplates: () => Promise<ExtensionTemplateStatus[]>
+      installExtensionTemplate: (templateId: string) => Promise<ExtensionInstallResult>
+      acknowledgeExtensionRecovery: () => Promise<ExtensionOperationResult>
+      acknowledgeExtensionStorage: (extensionId: string) => Promise<ExtensionOperationResult>
+      adoptExtensionCode: (extensionId: string) => Promise<ExtensionOperationResult>
+      rollbackExtensionUpgrade: (extensionId: string) => Promise<ExtensionOperationResult>
+      pickExtensionProjectDirectory: () => Promise<string | null>
+      linkExtensionDevelopment: (directory: string) => Promise<ExtensionInstallResult>
+      reloadExtensionDevelopment: (extensionId: string) => Promise<ExtensionOperationResult>
+      unlinkExtensionDevelopment: (
+        extensionId: string,
+        keepData?: boolean
+      ) => Promise<ExtensionOperationResult>
+      convertExtensionDevelopment: (extensionId: string) => Promise<ExtensionOperationResult>
+      createExtensionProject: (input: {
+        templateId: string
+        targetDirectory: string
+        extensionId: string
+        name?: string
+      }) => Promise<ExtensionProjectResult>
+      listExtensionActions: () => Promise<ExtensionActionInfo[]>
+      openExtensionDevelopmentSource: (extensionId: string) => Promise<ExtensionOperationResult>
+      exportExtensionAsProject: (
+        extensionId: string,
+        targetDirectory: string
+      ) => Promise<ExtensionProjectResult>
       uninstallExtension: (
         extensionId: string,
         keepData?: boolean

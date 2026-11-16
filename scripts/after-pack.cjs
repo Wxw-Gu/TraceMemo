@@ -768,6 +768,60 @@ function enforceSendRuntimeBoundary(
   return null
 }
 
+
+/**
+ * 官方模板资源必须随包发布，且索引与 ZIP 的哈希一致。
+ *
+ * 这一层挡的是「打包时忘了跑构建脚本」：没有它，安装包会静默少两个模板，
+ * 而用户看到的只是空列表。
+ */
+function validateExtensionTemplates(runtimeResources) {
+  const root = path.join(runtimeResources, 'extension-templates')
+  const indexPath = path.join(root, 'index.json')
+  if (!existsSync(indexPath)) {
+    throw new Error(
+      'Missing extension templates: ' +
+        indexPath +
+        '. Run `node scripts/build-extension-templates.cjs` before packaging.'
+    )
+  }
+  let index
+  try {
+    index = JSON.parse(readFileSync(indexPath, 'utf8'))
+  } catch (error) {
+    throw new Error('Invalid extension template index: ' + error.message)
+  }
+  if (!index || index.version !== 1 || !Array.isArray(index.templates)) {
+    throw new Error('Invalid extension template index structure')
+  }
+  if (index.templates.length === 0) {
+    throw new Error('Extension template index is empty')
+  }
+  for (const template of index.templates) {
+    const fileName = String(template.file || '')
+    if (!fileName || fileName.includes('/') || fileName.includes('\\')) {
+      throw new Error('Invalid extension template file name: ' + fileName)
+    }
+    const zipPath = path.join(root, fileName)
+    if (!existsSync(zipPath)) {
+      throw new Error('Missing extension template archive: ' + fileName)
+    }
+    const digest = createHash('sha256').update(readFileSync(zipPath)).digest('hex')
+    if (digest !== template.sha256) {
+      throw new Error(
+        'Extension template checksum mismatch: ' +
+          fileName +
+          ' (index=' +
+          template.sha256 +
+          ', actual=' +
+          digest +
+          ')'
+      )
+    }
+  }
+  console.log('[afterPack] extension templates verified: ' + index.templates.length)
+}
+
 exports.default = async function afterPack(context) {
   const runtimeResources = getRuntimeResources(context)
   const arch = normalizeBuilderArch(context.arch)
@@ -782,6 +836,7 @@ exports.default = async function afterPack(context) {
   }
   validateAsarRuntimeDependencies(runtimeResources)
   validateReaderSkillRuntime(runtimeResources)
+  validateExtensionTemplates(runtimeResources)
   validateSilkWasmRuntime(runtimeResources)
   const ffmpegPath = validateFfmpegRuntime(runtimeResources, context.electronPlatformName)
   validateElectronMainBinary(

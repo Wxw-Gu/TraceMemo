@@ -46,7 +46,16 @@ export function registerExtensionScheme(): void {
   ])
 }
 
-export function installExtensionProtocolHandler(paths: ExtensionPaths): void {
+export interface ExtensionProtocolDependencies {
+  paths: ExtensionPaths
+  /**
+   * 解析扩展代码根目录。开发模式下是外部源码目录，
+   * 必须与后台进程、Manifest 读取使用同一个解析器，否则页面会读到旧副本。
+   */
+  resolveRoot: (extensionId: string) => string | null
+}
+
+export function installExtensionProtocolHandler(dependencies: ExtensionProtocolDependencies): void {
   protocol.handle(EXTENSION_SCHEME, async (request) => {
     try {
       const url = new URL(request.url)
@@ -55,7 +64,8 @@ export function installExtensionProtocolHandler(paths: ExtensionPaths): void {
       const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '')
       if (!isSafeRelativeEntryPath(relative)) return notFound()
 
-      const root = paths.installDir(extensionId)
+      const root = dependencies.resolveRoot(extensionId)
+      if (!root) return notFound()
       const resolved = path.resolve(root, relative)
       if (!isPathInside(root, resolved)) return notFound()
       const realRoot = await fs.realpath(root).catch(() => null)

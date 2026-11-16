@@ -22,10 +22,7 @@ const ALLOWED_METHODS = new Set([
   'storage.list',
   'capabilities.get',
   'contacts.listGroups',
-  'test.send',
-  'douyin.cookie.get',
-  'douyin.cookie.set',
-  'douyin.cookie.clear',
+  'extension.request',
   'extension.info'
 ])
 
@@ -484,7 +481,7 @@ async function loadConfig() {
 
 async function loadCookieState() {
   try {
-    const result = await callHost('douyin.cookie.get', {})
+    const result = await callHost('extension.request', { method: 'douyinCookie.status', params: {} })
     cookieState.textContent =
       result && result.configured ? '已保存 Cookie（内容不可回显）' : '未配置'
   } catch {
@@ -529,11 +526,9 @@ document.getElementById('test-send').addEventListener('click', async () => {
   activeTestId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   setTestResult('已提交，等待后台开始解析…', 'running')
   try {
-    const submitted = callHost('test.send', {
-      id: activeTestId,
-      to,
-      text,
-      at: Date.now()
+    const submitted = callHost('extension.request', {
+      method: 'testSend',
+      params: { id: activeTestId, to, text, at: Date.now() }
     })
     void pollTestResult()
     await submitted
@@ -550,7 +545,10 @@ document.getElementById('cookie-save').addEventListener('click', async () => {
     return
   }
   try {
-    await callHost('douyin.cookie.set', { cookieHeader: value })
+    await callHost('extension.request', {
+      method: 'douyinCookie.set',
+      params: { cookieHeader: value }
+    })
     cookieHeader.value = ''
     await loadCookieState()
     setStatus('Cookie 已安全保存。', 'ok')
@@ -561,7 +559,7 @@ document.getElementById('cookie-save').addEventListener('click', async () => {
 
 document.getElementById('cookie-clear').addEventListener('click', async () => {
   try {
-    await callHost('douyin.cookie.clear', {})
+    await callHost('extension.request', { method: 'douyinCookie.clear', params: {} })
     cookieHeader.value = ''
     await loadCookieState()
     setStatus('Cookie 已清除。', 'ok')

@@ -139,8 +139,12 @@ import type {
   ExtensionPageDescriptor,
   ExtensionPageRequest,
   ExtensionPageResponse,
+  ExtensionActionInfo,
+  ExtensionProjectResult,
+  ExtensionSystemHealth,
   InstalledExtension
 } from '../shared/extensions/types'
+import type { ExtensionTemplateStatus } from '../shared/extensions/templates'
 
 // 渲染器的自定义 API
 const api = {
@@ -287,6 +291,64 @@ const api = {
     ipcRenderer.invoke('extension:installPackage', packagePath),
   setExtensionEnabled: (extensionId: string, enabled: boolean): Promise<ExtensionOperationResult> =>
     ipcRenderer.invoke('extension:setEnabled', { id: extensionId, enabled }),
+  getExtensionHealth: (): Promise<ExtensionSystemHealth> =>
+    ipcRenderer.invoke('extension:health'),
+  grantExtensionPermissions: (
+    extensionId: string,
+    permissions: string[]
+  ): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:grantPermissions', { id: extensionId, permissions }),
+  revokeExtensionPermission: (
+    extensionId: string,
+    permission: string
+  ): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:revokePermission', { id: extensionId, permission }),
+  resetExtensionStorage: (extensionId: string): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:resetStorage', extensionId),
+  listExtensionTemplates: (): Promise<ExtensionTemplateStatus[]> =>
+    ipcRenderer.invoke('extension:templates'),
+  installExtensionTemplate: (templateId: string): Promise<ExtensionInstallResult> =>
+    ipcRenderer.invoke('extension:installTemplate', templateId),
+  acknowledgeExtensionRecovery: (): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:acknowledgeRecovery'),
+  acknowledgeExtensionStorage: (extensionId: string): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:acknowledgeStorage', extensionId),
+  adoptExtensionCode: (extensionId: string): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:adoptInstalledCode', extensionId),
+  rollbackExtensionUpgrade: (extensionId: string): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:rollbackUpgrade', extensionId),
+  pickExtensionProjectDirectory: (): Promise<string | null> =>
+    ipcRenderer.invoke('extension:pickProjectDirectory'),
+  linkExtensionDevelopment: (directory: string): Promise<ExtensionInstallResult> =>
+    ipcRenderer.invoke('extension:linkDevelopment', directory),
+  reloadExtensionDevelopment: (extensionId: string): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:reloadDevelopment', extensionId),
+  unlinkExtensionDevelopment: (
+    extensionId: string,
+    keepData = true
+  ): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:unlinkDevelopment', { id: extensionId, keepData }),
+  convertExtensionDevelopment: (extensionId: string): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:convertDevelopment', extensionId),
+  createExtensionProject: (input: {
+    templateId: string
+    targetDirectory: string
+    extensionId: string
+    name?: string
+  }): Promise<ExtensionProjectResult> =>
+    ipcRenderer.invoke('extension:createProjectFromTemplate', input),
+  listExtensionActions: (): Promise<ExtensionActionInfo[]> =>
+    ipcRenderer.invoke('extension:actions'),
+  openExtensionDevelopmentSource: (extensionId: string): Promise<ExtensionOperationResult> =>
+    ipcRenderer.invoke('extension:openDevelopmentSource', extensionId),
+  exportExtensionAsProject: (
+    extensionId: string,
+    targetDirectory: string
+  ): Promise<ExtensionProjectResult> =>
+    ipcRenderer.invoke('extension:exportInstalledAsProject', {
+      id: extensionId,
+      targetDirectory
+    }),
   uninstallExtension: (extensionId: string, keepData = true): Promise<ExtensionOperationResult> =>
     ipcRenderer.invoke('extension:uninstall', { id: extensionId, keepData }),
   getExtensionLogs: (extensionId: string, limit?: number): Promise<ExtensionLogEntry[]> =>

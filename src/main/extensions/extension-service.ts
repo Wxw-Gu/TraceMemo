@@ -1,3 +1,5 @@
+import { app, safeStorage } from 'electron'
+import path from 'node:path'
 import { AIProviderService } from '../services/ai-provider-service'
 import {
   getChatDb,
@@ -19,6 +21,19 @@ import { ExtensionManager } from './extension-manager'
 import { getExtensionPaths } from './extension-paths'
 
 let manager: ExtensionManager | null = null
+
+/**
+ * 官方模板资源根目录。
+ *
+ * 打包后是 `<resources>/extension-templates`；开发态读构建产物目录。
+ * 两者都不指向 `examples/extensions`——源码树不是运行时依赖。
+ */
+function resolveTemplateRoot(): string {
+  const override = process.env.TRACEMEMO_EXTENSION_TEMPLATES_DIR
+  if (override && override.trim()) return path.resolve(override.trim())
+  if (app.isPackaged) return path.join(process.resourcesPath, 'extension-templates')
+  return path.join(app.getAppPath(), 'build', 'extension-templates')
+}
 
 export interface ExtensionSystemOptions {
   appVersion: string
@@ -53,6 +68,11 @@ export async function initExtensionSystem(options: ExtensionSystemOptions): Prom
       }
     },
     aiChat: chatWithConfiguredProvider,
+    aiStatus: () => {
+      // 只读「是否已配置 + 模型显示名」，不返回 key 或 endpoint。
+      const config = new AIProviderService().getRuntimeConfig()
+      return { configured: config.configured, modelName: config.modelName }
+    },
     getAccountId: () => String(getSelfAccountInfo()?.wxid || ''),
     getSelfUsernames: () => {
       try {
@@ -67,6 +87,12 @@ export async function initExtensionSystem(options: ExtensionSystemOptions): Prom
       } catch {
         return false
       }
+    },
+    templatesRoot: resolveTemplateRoot(),
+    secretCipher: {
+      isAvailable: () => safeStorage.isEncryptionAvailable(),
+      encrypt: (plain: string) => safeStorage.encryptString(plain),
+      decrypt: (payload: Buffer) => safeStorage.decryptString(payload)
     },
     onChange: (extensionId, reason) => options.onChange(extensionId, reason)
   })

@@ -142,6 +142,12 @@ function createManager(): {
   const manager = new ExtensionManager({
     paths,
     appVersion: '2.6.0',
+    secretCipher: {
+      isAvailable: () => true,
+      encrypt: (plain: string) => Buffer.from(plain, 'utf8'),
+      decrypt: (payload: Buffer) => payload.toString('utf8')
+    },
+
     spawn: (options: ExtensionHostSpawnOptions) => {
       void options
       const child = new FakeChild()
@@ -175,7 +181,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.removeSync(root)
 })
 
-describe('extension lifecycle', () => {
+// 全量并发时文件级调度会拖慢每个用例；这里只放宽超时，断言不变。
+describe('extension lifecycle', { timeout: 20_000 }, () => {
   it('安装 → 页面读写配置 → 启用 → 事件 → 动作 → 发送 → 停用 → 卸载', async () => {
     const { manager, paths, children, executeAction } = createManager()
     await manager.initialize()
@@ -202,15 +209,23 @@ describe('extension lifecycle', () => {
     expect((await manager.pageRequest('com.example.fixture-bot', 'wechat.send.text', {})).ok).toBe(
       false
     )
-    // 页面可以读取群列表（manifest 已声明 contacts.list）。
+    // contacts.list 是 medium 风险，安装时未授予；页面桥不能用「manifest 声明过」当授权。
+    const deniedGroups = await manager.pageRequest(
+      'com.example.fixture-bot',
+      'contacts.listGroups',
+      {}
+    )
+    expect(deniedGroups.ok).toBe(false)
+    expect(deniedGroups.error?.code).toBe('PERMISSION_DENIED')
+
+    const enabled = await manager.setEnabled('com.example.fixture-bot', true)
+    expect(enabled.success).toBe(true)
+    // 启用时用户已确认全部权限，此时页面才能读群列表。
     const groups = await manager.pageRequest('com.example.fixture-bot', 'contacts.listGroups', {})
     expect(groups.ok).toBe(true)
     expect(groups.result).toEqual({
       groups: [{ id: 'fixture-room@chatroom', name: '测试群' }]
     })
-
-    const enabled = await manager.setEnabled('com.example.fixture-bot', true)
-    expect(enabled.success).toBe(true)
     await tick()
     const child = children[0]
     expect(manager.get('com.example.fixture-bot')?.runtime.state).toBe('active')

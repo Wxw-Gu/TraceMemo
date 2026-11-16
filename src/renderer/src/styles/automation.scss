@@ -1764,3 +1764,34 @@
   font-size: 12px;
   line-height: 18px;
 }
+
+/* 规则模板卡片的真实状态与操作入口 */
+.automation-template-flag.is-ready {
+  color: var(--tm-success, #15803d);
+  border-color: color-mix(in srgb, var(--tm-success, #15803d) 35%, transparent);
+  background: color-mix(in srgb, var(--tm-success, #15803d) 10%, transparent);
+}
+
+.automation-template-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.automation-template-note {
+  color: var(--tm-text-muted, #6b7280);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* 「做自己的扩展」引导卡：和模板卡同宽，但用虚线边框区分它不是模板 */
+.automation-template-card.is-guide {
+  border-style: dashed;
+  background: transparent;
+}
+
+.automation-template-card.is-guide h3 {
+  color: var(--tm-text-muted, #6b7280);
+}

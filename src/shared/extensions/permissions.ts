@@ -14,7 +14,8 @@ export const EXTENSION_PERMISSIONS = [
   'wechat.send.video',
   'ai.chat',
   'storage',
-  'automation.action'
+  'automation.action',
+  'secrets'
 ] as const
 
 export type ExtensionPermission = (typeof EXTENSION_PERMISSIONS)[number]
@@ -28,6 +29,12 @@ export interface ExtensionPermissionInfo {
 }
 
 export const EXTENSION_PERMISSION_INFO: Record<ExtensionPermission, ExtensionPermissionInfo> = {
+  secrets: {
+    label: '保存私有凭据',
+    description:
+      '在本机以系统安全存储加密保存该扩展自己的凭据（如 Cookie），只有该扩展能读取；不写入明文文件。',
+    risk: 'medium'
+  },
   'messages.subscribe': {
     label: '接收新消息事件',
     description:

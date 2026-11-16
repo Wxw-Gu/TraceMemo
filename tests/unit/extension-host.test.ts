@@ -18,6 +18,7 @@ class FakeChild implements ExtensionHostChild {
   killed = false
   autoActivate = true
   activationOk = true
+  autoRespondAction = true
   actionOutput: unknown = { success: true, output: { matched: true } }
 
   send(message: unknown): void {
@@ -36,7 +37,7 @@ class FakeChild implements ExtensionHostChild {
     if (payload.type === 'shutdown') {
       queueMicrotask(() => this.emit('exit', 0, null))
     }
-    if (payload.type === 'invoke-action') {
+    if (payload.type === 'invoke-action' && this.autoRespondAction) {
       queueMicrotask(() => {
         this.emit('message', {
           type: 'action-result',
@@ -226,5 +227,21 @@ describe('extension host', () => {
     const result = child.sent.find((message) => message.type === 'call-result')
     expect(result?.ok).toBe(false)
     expect((result?.error as { code: string }).code).toBe('PERMISSION_DENIED')
+  })
+
+  it('停止时未完成的动作以扩展不可用失败，不会永远挂起', async () => {
+    const { host, child } = createHost()
+    child.autoRespondAction = false
+    await host.start()
+    child.emit('message', {
+      type: 'register-action',
+      version: EXTENSION_HOST_PROTOCOL_VERSION,
+      action: { id: 'keyword.reply', title: '关键词回复', hasInputSchema: false }
+    })
+
+    const pending = host.invokeAction('keyword.reply', { text: '长时间任务' })
+    await host.stop()
+
+    await expect(pending).rejects.toMatchObject({ code: 'EXTENSION_HOST_UNAVAILABLE' })
   })
 })
