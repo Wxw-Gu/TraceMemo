@@ -254,7 +254,11 @@ function windowsImageTempRoot(): string {
   throw new Error('无法创建 Windows 图片临时目录')
 }
 
-export function prepareWindowsImageFile(filePath: string): {
+/** hook 侧用 ANSI API 判文件存在，非 ASCII 路径一律判成不存在，先拷一份 ASCII 副本。 */
+export function prepareWindowsMediaFile(
+  filePath: string,
+  options: { prefix: string; fallbackExtension: string }
+): {
   filePath: string
   temporary: boolean
 } {
@@ -262,12 +266,12 @@ export function prepareWindowsImageFile(filePath: string): {
   if (isAsciiPath(normalized)) return { filePath: normalized, temporary: false }
 
   const extension = extname(normalized).toLowerCase()
-  const safeExtension = /^\.[a-z0-9]{1,8}$/.test(extension) ? extension : '.png'
+  const safeExtension = /^\.[a-z0-9]{1,8}$/.test(extension) ? extension : options.fallbackExtension
   const temporaryPath = join(
     windowsImageTempRoot(),
-    `tm-img-${randomBytes(8).toString('hex')}${safeExtension}`
+    `${options.prefix}${randomBytes(8).toString('hex')}${safeExtension}`
   )
-  if (!isAsciiPath(temporaryPath)) throw new Error('Windows 图片临时路径必须只包含 ASCII 字符')
+  if (!isAsciiPath(temporaryPath)) throw new Error('Windows 媒体临时路径必须只包含 ASCII 字符')
   try {
     copyFileSync(normalized, temporaryPath)
   } catch (error) {
@@ -279,6 +283,13 @@ export function prepareWindowsImageFile(filePath: string): {
     throw error
   }
   return { filePath: temporaryPath, temporary: true }
+}
+
+export function prepareWindowsImageFile(filePath: string): {
+  filePath: string
+  temporary: boolean
+} {
+  return prepareWindowsMediaFile(filePath, { prefix: 'tm-img-', fallbackExtension: '.png' })
 }
 
 function prepareMacWechatImageFile(
@@ -558,6 +569,7 @@ function windowsStatusBase(host = windowsHookHost() || ''): PersonalWechatSender
     canSendText: false,
     canSendImage: false,
     canSendVoice: false,
+    canSendVideo: false,
     message: '正在检查 Windows 微信消息接口'
   }
 }
@@ -606,6 +618,21 @@ function logSendDiagnostic(
  * 仍然没到 ⇒ 与文件生命周期无关。
  */
 const WINDOWS_TEMP_IMAGE_GRACE_MS = 0
+
+/** 视频上传在 send_message 返回后才开始，删早了接收端只能拿到空文件。 */
+const WINDOWS_TEMP_VIDEO_GRACE_MS = 10 * 60 * 1000
+
+// unref: 不让清理定时器拖住进程退出
+function scheduleTempFileCleanup(target: string, delayMs: number): void {
+  const timer = setTimeout(() => {
+    try {
+      unlinkSync(target)
+    } catch {
+      // best effort
+    }
+  }, delayMs)
+  timer.unref?.()
+}
 
 async function requestWindowsHook(
   endpoint: string,
@@ -744,6 +771,7 @@ export class PersonalWechatSendService {
         canSendText: true,
         canSendImage: true,
         canSendVoice: true,
+        canSendVideo: true,
         message: 'Windows 微信发送能力已连接，可以发送消息'
       }
     } catch (error) {
@@ -1147,6 +1175,7 @@ export class PersonalWechatSendService {
     if (!status.canSend) return { success: false, status, error: status.error || status.message }
 
     let temporaryImagePath: string | undefined
+    let temporaryVideoPath: string | undefined
     let temporaryVoicePath: string | undefined
     try {
       if (request.type === 'text') {
@@ -1169,8 +1198,20 @@ export class PersonalWechatSendService {
         })
         await requestWindowsHook(windowsRequest.endpoint, windowsRequest.body, 60_000)
       } else if (request.type === 'video') {
-        // 视频不复制到临时目录：原生 Host 直接按绝对路径读取。
-        const windowsRequest = buildWindowsWechatRequest(request)
+        const preparedVideo = prepareWindowsMediaFile(request.filePath, {
+          prefix: 'tm-video-',
+          fallbackExtension: '.mp4'
+        })
+        temporaryVideoPath = preparedVideo.temporary ? preparedVideo.filePath : undefined
+        logSendDiagnostic('video-prepared', {
+          sourceBytes: safeFileSize(request.filePath),
+          usedTempCopy: preparedVideo.temporary,
+          copiedBytes: safeFileSize(preparedVideo.filePath)
+        })
+        const windowsRequest = buildWindowsWechatRequest({
+          ...request,
+          filePath: preparedVideo.filePath
+        })
         await requestWindowsHook(windowsRequest.endpoint, windowsRequest.body, 180_000)
       } else if (request.type === 'voice') {
         const fromId = String(request.fromId || '').trim()
@@ -1222,6 +1263,9 @@ export class PersonalWechatSendService {
             // Temporary files are best-effort cleanup only.
           }
         }
+      }
+      if (temporaryVideoPath) {
+        scheduleTempFileCleanup(temporaryVideoPath, WINDOWS_TEMP_VIDEO_GRACE_MS)
       }
       if (temporaryVoicePath) {
         try {

@@ -16,6 +16,7 @@ const {
   extractDouyinUrl,
   parseResolveJson,
   parseSavedPath,
+  isAbsoluteMediaPath,
   parseDownloadedResult,
   renderCaption,
   shouldHandle,
@@ -190,6 +191,31 @@ test('从 JSON 下载结果同时提取作品元数据和保存路径', () => {
   )
 })
 
+test('Windows 盘符路径同样算绝对路径', () => {
+  const winPath = 'C:\\fixture\\Downloads\\张三 - 标题 - 730.mp4'
+  assert.equal(isAbsoluteMediaPath(winPath), true)
+  assert.equal(isAbsoluteMediaPath('C:/fixture/a.mp4'), true)
+  assert.equal(isAbsoluteMediaPath('\\\\server\\share\\a.mp4'), true)
+  assert.equal(isAbsoluteMediaPath('Downloads/a.mp4'), false)
+  assert.equal(isAbsoluteMediaPath(''), false)
+  assert.equal(isAbsoluteMediaPath(null), false)
+
+  // 只认 '/' 开头会把 Windows 的 ✅ 行整条丢掉
+  const stdout = [
+    '  ✓ 解析成功：video | 张三 | 标题',
+    '  ✅ ' + winPath,
+    '     5.2MB | MP4'
+  ].join('\n')
+  assert.equal(parseSavedPath(stdout), winPath)
+
+  const json = JSON.stringify([
+    { url: 'https://v.douyin.com/fixture123', ok: true, type: 'video', saved: [winPath] }
+  ])
+  const parsed = parseDownloadedResult(json)
+  assert.equal(parsed.ok, true)
+  assert.equal(parsed.path, winPath)
+})
+
 test('JSON 下载失败保留脚本错误，图集保持不支持状态', () => {
   assert.deepEqual(
     parseDownloadedResult(
@@ -247,7 +273,8 @@ test('默认配置符合约定', () => {
   const config = normalizeConfig(undefined)
   assert.equal(config.configVersion, 1)
   assert.equal(config.enabled, false)
-  assert.equal(config.pythonPath, 'python3')
+  // Windows 的 python3.exe 通常是 Microsoft Store 的应用执行别名，默认改用 python。
+  assert.equal(config.pythonPath, process.platform === 'win32' ? 'python' : 'python3')
   assert.equal(config.scriptPath, 'scripts/douyin.py')
   assert.equal(config.quality, '720')
   assert.equal(config.showUi, false)

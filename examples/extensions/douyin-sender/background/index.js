@@ -260,12 +260,55 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
-/**
- * 在 Apple Silicon macOS 上，若宿主的默认 python3 是 x86_64（Rosetta 2），
- * 直接启动会把 P_TRANSLATED 标志遗传给子进程 Google Chrome，导致抖音页面卡在加载中。
- * 这里优先选用缓存 venv 的原生 Python，并通过 /usr/bin/arch -arm64 强制切换为原生 arm64。
- */
+/** WindowsApps 下的是 Microsoft Store 别名，执行不成脚本，探测时要跳过。 */
+function isStoreAliasPath(value) {
+  return /[\\/]WindowsApps[\\/]/i.test(String(value || ''))
+}
+
+/** 在 PATH 中按顺序找第一个真实存在的可执行文件。 */
+function findOnPath(names) {
+  const dirs = String(process.env.PATH || '')
+    .split(path.delimiter)
+    .filter((dir) => dir && !isStoreAliasPath(dir))
+  for (const name of names) {
+    for (const dir of dirs) {
+      for (const ext of ['.exe', '.EXE', '']) {
+        const candidate = path.join(dir, name + ext)
+        try {
+          if (fsSync.existsSync(candidate) && fsSync.statSync(candidate).isFile()) return candidate
+        } catch {
+          // 目录不可读就跳过，继续下一个候选。
+        }
+      }
+    }
+  }
+  return ''
+}
+
+/** 配置为空或是默认名时，按 py -3 → python 的顺序探测。 */
+function resolveWindowsPython(pythonPath) {
+  const configured = expandHome(pythonPath)
+  const looksDefault = !configured || configured === 'python' || configured === 'python3'
+  if (!looksDefault && !isStoreAliasPath(configured)) {
+    return { file: configured, prefixArgs: [] }
+  }
+  const py = findOnPath(['py'])
+  if (py) return { file: py, prefixArgs: ['-3'] }
+  const python = findOnPath(['python'])
+  if (python) return { file: python, prefixArgs: [] }
+  return { file: 'python', prefixArgs: [] }
+}
+
+// Apple Silicon 上 x86_64 的 python3 会把 P_TRANSLATED 传给 Chrome，页面卡加载；
+// 优先用 venv 原生解释器并经 /usr/bin/arch -arm64 强制原生运行。
 function resolvePythonInvocation(pythonPath, scriptPath, args) {
+  if (process.platform === 'win32') {
+    const resolved = resolveWindowsPython(pythonPath)
+    return {
+      file: resolved.file,
+      args: [...resolved.prefixArgs, scriptPath, ...args]
+    }
+  }
   if (process.platform !== 'darwin') {
     return { file: pythonPath, args: [scriptPath, ...args] }
   }
@@ -414,10 +457,10 @@ async function resolveAndDownloadVideo(url, config, options = {}) {
   } catch (error) {
     stdout = String((error && error.stdout) || '')
     if (!stdout.trim()) {
-      return parseFailure(
-        temporaryCookieFile ? 'Cookie 文件不可用或解析超时' : describeExecError(error),
-        temporaryCookieFile ? 'COOKIE_OR_TIMEOUT' : errorType(error)
-      )
+      // 别把失败统一报成「Cookie 不可用」，否则 ENOENT 和脚本退出码都被盖掉。
+      const reason = describeExecError(error)
+      const withMode = temporaryCookieFile ? `${reason}（Cookie 模式）` : reason
+      return parseFailure(withMode, temporaryCookieFile ? 'COOKIE_OR_TIMEOUT' : errorType(error))
     }
   } finally {
     if (temporaryCookieFile) {
