@@ -20,10 +20,14 @@ const DEFAULT_SCRIPT_PATH = 'scripts/douyin.py'
 /** 画质白名单；空串表示「最高」，不传 `-q` 给脚本。 */
 const QUALITY_VALUES = ['', '1080', '720', '540']
 
+// Windows 的 python3.exe 通常是 Microsoft Store 别名，执行不成脚本。
+const DEFAULT_PYTHON_PATH =
+  typeof process !== 'undefined' && process.platform === 'win32' ? 'python' : 'python3'
+
 const DEFAULT_CONFIG = {
   configVersion: 1,
   enabled: false,
-  pythonPath: 'python3',
+  pythonPath: DEFAULT_PYTHON_PATH,
   scriptPath: DEFAULT_SCRIPT_PATH,
   quality: '720',
   /** 排障开关：显示浏览器窗口以观察实际页面状态。 */
@@ -214,10 +218,21 @@ function parseSavedPath(stdout) {
     // 去掉尾部的「（N 个文件）」之类附注，它不属于路径。
     rest = rest.replace(/\s*[（(][^（()）]*[)）]\s*$/, '').trim()
     if (!rest) continue
-    if (rest[0] !== '/') continue
+    if (!isAbsoluteMediaPath(rest)) continue
     return rest
   }
   return null
+}
+
+// 绝对路径判定：POSIX `/x`、Windows `C:\x` / `C:/x`、UNC `\\server\share`。
+function isAbsoluteMediaPath(value) {
+  if (typeof value !== 'string') return false
+  const text = value.trim()
+  if (!text) return false
+  if (text.startsWith('/')) return true // POSIX
+  if (/^[A-Za-z]:[\\/]/.test(text)) return true // C:\ 或 C:/
+  if (text.startsWith('\\\\')) return true // UNC \\server\share
+  return false
 }
 
 function parseDownloadedResult(stdout) {
@@ -225,7 +240,7 @@ function parseDownloadedResult(stdout) {
   const video = pickVideoResult(results)
   if (video) {
     const saved = Array.isArray(video.saved)
-      ? video.saved.find((value) => typeof value === 'string' && value.startsWith('/'))
+      ? video.saved.find((value) => isAbsoluteMediaPath(value))
       : null
     if (saved) return { ok: true, meta: video, path: saved }
     if (video.error) return { ok: false, message: video.error, errorType: 'DOWNLOAD_FAILED' }
@@ -346,6 +361,7 @@ module.exports = {
   extractDouyinUrl,
   parseResolveJson,
   parseSavedPath,
+  isAbsoluteMediaPath,
   parseDownloadedResult,
   renderCaption,
   shouldHandle,

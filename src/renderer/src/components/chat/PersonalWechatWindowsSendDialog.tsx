@@ -30,6 +30,7 @@ function fallbackStatus(error: unknown): PersonalWechatSenderStatus {
     canSendText: false,
     canSendImage: false,
     canSendVoice: false,
+    canSendVideo: false,
     message: '无法检测 Windows 微信发送能力',
     error: error instanceof Error ? error.message : String(error)
   }
