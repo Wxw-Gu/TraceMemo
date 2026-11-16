@@ -1,6 +1,5 @@
 import * as React from 'react'
 import {
-  AUTOMATION_RULE_TEMPLATES,
   BUILTIN_LEAVE_NOTIFICATION_RULE_ID,
   describeLeaveNotificationNotifyScope,
   describeLeaveNotificationTarget,
@@ -8,6 +7,7 @@ import {
   describeRuleTrigger,
   type AutomationRule
 } from '../../../../shared/automation'
+import type { ExtensionDeepLink } from '../../../../shared/extensions/types'
 import { Button, Spinner, Switch } from '../../components/ui'
 
 /**
@@ -40,6 +40,25 @@ export interface ScheduledReportCardModel {
   nextRunLabel: string
 }
 
+/**
+ * 规则模板卡片的本机状态。
+ *
+ * 由工作区根据「官方模板目录 + 已安装扩展 + 运行状态」算出，
+ * 面板只负责渲染，不自己判断可用性。
+ */
+export interface RuleTemplateCardModel {
+  id: string
+  name: string
+  description: string
+  templateId: string
+  extensionId: string
+  /** 没有动作的模板只能打开配置，不能「用规则触发」。 */
+  actionId?: string
+  state: 'not-installed' | 'installed-disabled' | 'ready' | 'unavailable'
+  /** 不可用/需要处理时的真实原因。 */
+  reason?: string
+}
+
 export interface RuleListPanelProps {
   rules: AutomationRule[]
   groups: Array<{ id: string; name: string }>
@@ -55,6 +74,12 @@ export interface RuleListPanelProps {
   onEditLeaveNotification: () => void
   /** 打开「定时日报」规则类型（多条，所以是"管理"而不是"编辑"）。 */
   onManageScheduledReport: () => void
+  /** 规则模板卡片（真实状态）。 */
+  ruleTemplates?: RuleTemplateCardModel[]
+  /** 跳到扩展中心并定位模板/扩展/开发引导。 */
+  onOpenExtension?: (target: ExtensionDeepLink) => void
+  /** 用该模板预填一条引用扩展动作的规则。 */
+  onUseRuleTemplate?: (template: RuleTemplateCardModel) => void
 }
 
 /** 把规则里的 conversationIds 翻成群名；找不到时显示占位而不是裸 id。 */
@@ -92,7 +117,10 @@ export function RuleListPanel({
   onDelete,
   onCreate,
   onEditLeaveNotification,
-  onManageScheduledReport
+  onManageScheduledReport,
+  ruleTemplates,
+  onOpenExtension,
+  onUseRuleTemplate
 }: RuleListPanelProps): React.ReactElement {
   // 退群通知有自己的卡片，别在「已配置的自动化」里重复渲染一遍。
   const configuredRules = rules.filter((rule) => rule.id !== BUILTIN_LEAVE_NOTIFICATION_RULE_ID)
@@ -267,16 +295,99 @@ export function RuleListPanel({
           <h2>更多模板</h2>
         </div>
         <div className="automation-template-grid">
-          {AUTOMATION_RULE_TEMPLATES.map((template) => (
-            <article key={template.id} className="automation-template-card">
-              <div className="automation-template-title">
-                <h3>{template.name}</h3>
-                <span className="automation-template-flag">即将支持</span>
-              </div>
-              <p>{template.description}</p>
-              {template.unavailableReason ? <small>{template.unavailableReason}</small> : null}
-            </article>
-          ))}
+          {(ruleTemplates ?? []).map((template) => {
+            const badge =
+              template.state === 'ready'
+                ? '已就绪'
+                : template.state === 'installed-disabled'
+                  ? '已安装 · 未启用'
+                  : template.state === 'not-installed'
+                    ? '未安装'
+                    : '不可用'
+            return (
+              <article key={template.id} className="automation-template-card">
+                <div className="automation-template-title">
+                  <h3>{template.name}</h3>
+                  <span
+                    className={
+                      template.state === 'ready'
+                        ? 'automation-template-flag is-ready'
+                        : 'automation-template-flag'
+                    }
+                  >
+                    {badge}
+                  </span>
+                </div>
+                <p>{template.description}</p>
+                {template.reason ? <small>{template.reason}</small> : null}
+
+                <div className="automation-template-actions">
+                  {template.state === 'not-installed' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onOpenExtension?.({ templateId: template.templateId })}
+                    >
+                      去扩展中心安装 →
+                    </Button>
+                  )}
+                  {template.state === 'installed-disabled' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onOpenExtension?.({ extensionId: template.extensionId })}
+                    >
+                      去启用 →
+                    </Button>
+                  )}
+                  {template.state === 'ready' && (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onOpenExtension?.({ extensionId: template.extensionId })}
+                      >
+                        打开扩展配置 →
+                      </Button>
+                      {template.actionId ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onUseRuleTemplate?.(template)}
+                        >
+                          用规则触发
+                        </Button>
+                      ) : (
+                        <small className="automation-template-note">
+                          该扩展没有注册自动化动作，靠消息事件触发
+                        </small>
+                      )}
+                    </>
+                  )}
+                </div>
+              </article>
+            )
+          })}
+
+          {/* 模板之外还要有出口：没有现成模板可用时，用户应该能自己做一个。 */}
+          <article className="automation-template-card is-guide">
+            <div className="automation-template-title">
+              <h3>做自己的扩展</h3>
+            </div>
+            <p>
+              从官方模板克隆一份代码，改完直接在本地调试；官方升级不会覆盖你的改动。 也可以链接已经
+              clone 到别处的项目。
+            </p>
+            <div className="automation-template-actions">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onOpenExtension?.({ development: true })}
+              >
+                开始二次开发 →
+              </Button>
+            </div>
+          </article>
         </div>
       </section>
     </div>

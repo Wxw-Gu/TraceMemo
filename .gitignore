@@ -34,3 +34,6 @@ debug-originals
 
 # 去水印脚本
 /examples/extensions/douyin-sender/scripts/douyin.py
+
+# 官方扩展模板构建产物（由 scripts/build-extension-templates.cjs 生成）
+/build/extension-templates/

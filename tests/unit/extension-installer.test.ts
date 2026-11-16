@@ -1,7 +1,7 @@
 import fs from 'fs-extra'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createExtensionPaths } from '../../src/main/extensions/extension-paths'
 import { ExtensionRegistry } from '../../src/main/extensions/extension-registry'
 import { ExtensionInstaller } from '../../src/main/extensions/extension-installer'
@@ -74,7 +74,7 @@ describe('extension installer', () => {
     const first = createExtensionSource(root)
     await installer.installFromDirectory(first, { appVersion: '2.6.0' })
     registry.setEnabled('com.example.fixture', true)
-    registry.setGrantedPermissions('com.example.fixture', ['storage', 'messages.subscribe'])
+    registry.setGrantedPermissions('com.example.fixture', ['storage', 'wechat.send.text'])
     fs.ensureDirSync(paths.extensionDataDir('com.example.fixture'))
     fs.writeJsonSync(path.join(paths.extensionDataDir('com.example.fixture'), 'storage.json'), {
       version: 1,
@@ -83,18 +83,58 @@ describe('extension installer', () => {
 
     const second = path.join(root, 'source-v2')
     fs.copySync(first, second)
-    fs.writeJsonSync(path.join(second, 'manifest.json'), MANIFEST({ version: '1.2.0' }))
+    fs.writeJsonSync(
+      path.join(second, 'manifest.json'),
+      // 新版本仍声明这两项权限，升级不应把它们清掉。
+      MANIFEST({ version: '1.2.0', permissions: ['storage', 'wechat.send.text'] })
+    )
     const outcome = await installer.installFromDirectory(second, { appVersion: '2.6.0' })
     expect(outcome.upgraded).toBe(true)
     expect(outcome.previousVersion).toBe('1.0.0')
     const record = registry.get('com.example.fixture')
     expect(record?.version).toBe('1.2.0')
     expect(record?.enabled).toBe(true)
-    expect(record?.grantedPermissions).toEqual(['storage', 'messages.subscribe'])
+    expect(record?.grantedPermissions).toEqual(['storage', 'wechat.send.text'])
     expect(
       fs.readJsonSync(path.join(paths.extensionDataDir('com.example.fixture'), 'storage.json'))
         .values.greeting
     ).toBe('保留我')
+  })
+
+  it('新版本删除的权限在升级后立即失效', async () => {
+    const { paths, registry, installer } = setup()
+    const root = path.dirname(paths.userData)
+    const first = createExtensionSource(root, { permissions: ['storage', 'wechat.send.text'] })
+    await installer.installFromDirectory(first, { appVersion: '2.6.0' })
+    registry.setGrantedPermissions('com.example.fixture', ['storage', 'wechat.send.text'])
+
+    const second = path.join(root, 'source-v2')
+    fs.copySync(first, second)
+    fs.writeJsonSync(
+      path.join(second, 'manifest.json'),
+      MANIFEST({ version: '1.1.0', permissions: ['storage'] })
+    )
+    await installer.installFromDirectory(second, { appVersion: '2.6.0' })
+
+    expect(registry.get('com.example.fixture')?.grantedPermissions).toEqual(['storage'])
+  })
+
+  it('新版本新增的权限不会自动授予', async () => {
+    const { paths, registry, installer } = setup()
+    const root = path.dirname(paths.userData)
+    const first = createExtensionSource(root, { permissions: ['storage'] })
+    await installer.installFromDirectory(first, { appVersion: '2.6.0' })
+    registry.setGrantedPermissions('com.example.fixture', ['storage'])
+
+    const second = path.join(root, 'source-v2')
+    fs.copySync(first, second)
+    fs.writeJsonSync(
+      path.join(second, 'manifest.json'),
+      MANIFEST({ version: '1.1.0', permissions: ['storage', 'wechat.send.text'] })
+    )
+    await installer.installFromDirectory(second, { appVersion: '2.6.0' })
+
+    expect(registry.get('com.example.fixture')?.grantedPermissions).toEqual(['storage'])
   })
 
   it('卸载默认保留数据，选择清除时一并删除', async () => {
@@ -175,6 +215,142 @@ describe('extension installer', () => {
     expect(
       fs.existsSync(path.join(paths.installDir('com.example.fixture'), 'ui', 'index.html'))
     ).toBe(true)
+  })
+
+  it('替换代码前仍能读到旧版本，beforeReplace 早于目录改名', async () => {
+    const { paths, registry, installer } = setup()
+    const root = path.dirname(paths.userData)
+    const first = createExtensionSource(root)
+    await installer.installFromDirectory(first, { appVersion: '2.6.0' })
+    registry.setEnabled('com.example.fixture', true)
+
+    const second = path.join(root, 'source-v2')
+    fs.copySync(first, second)
+    fs.writeJsonSync(path.join(second, 'manifest.json'), MANIFEST({ version: '1.2.0' }))
+
+    let versionDuringCallback = ''
+    await installer.installFromDirectory(second, {
+      appVersion: '2.6.0',
+      beforeReplace: async () => {
+        versionDuringCallback = fs.readJsonSync(
+          path.join(paths.installDir('com.example.fixture'), 'manifest.json')
+        ).version as string
+      }
+    })
+    expect(versionDuringCallback).toBe('1.0.0')
+    expect(
+      fs.readJsonSync(path.join(paths.installDir('com.example.fixture'), 'manifest.json')).version
+    ).toBe('1.2.0')
+  })
+
+  it('beforeReplace 抛错时磁盘保持原样，只清掉 staging', async () => {
+    const { paths, registry, installer } = setup()
+    const root = path.dirname(paths.userData)
+    const first = createExtensionSource(root)
+    await installer.installFromDirectory(first, { appVersion: '2.6.0' })
+    registry.setEnabled('com.example.fixture', true)
+
+    const second = path.join(root, 'source-v2')
+    fs.copySync(first, second)
+    fs.writeJsonSync(path.join(second, 'manifest.json'), MANIFEST({ version: '1.2.0' }))
+
+    await expect(
+      installer.installFromDirectory(second, {
+        appVersion: '2.6.0',
+        beforeReplace: async () => {
+          throw new Error('旧进程未能停止')
+        }
+      })
+    ).rejects.toThrow(/旧进程/)
+
+    expect(
+      fs.readJsonSync(path.join(paths.installDir('com.example.fixture'), 'manifest.json')).version
+    ).toBe('1.0.0')
+    expect(fs.existsSync(paths.stagingDir) ? fs.readdirSync(paths.stagingDir) : []).toEqual([])
+  })
+
+  it('rollback 把代码与 Registry 一起退回旧版本', async () => {
+    const { paths, registry, installer } = setup()
+    const root = path.dirname(paths.userData)
+    const first = createExtensionSource(root)
+    await installer.installFromDirectory(first, { appVersion: '2.6.0' })
+    registry.setEnabled('com.example.fixture', true)
+
+    const second = path.join(root, 'source-v2')
+    fs.copySync(first, second)
+    fs.writeJsonSync(path.join(second, 'manifest.json'), MANIFEST({ version: '1.2.0' }))
+
+    const outcome = await installer.installFromDirectory(second, { appVersion: '2.6.0' })
+    expect(registry.get('com.example.fixture')?.version).toBe('1.2.0')
+
+    await outcome.rollback()
+    expect(
+      fs.readJsonSync(path.join(paths.installDir('com.example.fixture'), 'manifest.json')).version
+    ).toBe('1.0.0')
+    expect(registry.get('com.example.fixture')?.version).toBe('1.0.0')
+    expect(registry.get('com.example.fixture')?.enabled).toBe(true)
+  })
+
+  it('cleanup 删除过渡备份，不留 backup 目录', async () => {
+    const { paths, installer } = setup()
+    const root = path.dirname(paths.userData)
+    const first = createExtensionSource(root)
+    await installer.installFromDirectory(first, { appVersion: '2.6.0' })
+
+    const second = path.join(root, 'source-v2')
+    fs.copySync(first, second)
+    fs.writeJsonSync(path.join(second, 'manifest.json'), MANIFEST({ version: '1.2.0' }))
+
+    const outcome = await installer.installFromDirectory(second, { appVersion: '2.6.0' })
+    await outcome.cleanup()
+    expect(fs.readdirSync(paths.extensionsDir).filter((name) => name.includes('.backup-'))).toEqual(
+      []
+    )
+    // cleanup 之后不能再回滚，避免删掉已确认的新版本。
+    await expect(outcome.rollback()).rejects.toMatchObject({ code: 'EXTENSION_INSTALL_FAILED' })
+  })
+
+  it('Registry 写入失败时目录回滚，旧版本仍可用', async () => {
+    const { paths, registry, installer } = setup()
+    const root = path.dirname(paths.userData)
+    const first = createExtensionSource(root)
+    await installer.installFromDirectory(first, { appVersion: '2.6.0' })
+
+    const second = path.join(root, 'source-v2')
+    fs.copySync(first, second)
+    fs.writeJsonSync(path.join(second, 'manifest.json'), MANIFEST({ version: '1.2.0' }))
+
+    const spy = vi.spyOn(registry, 'upsert').mockImplementationOnce(() => {
+      throw new Error('磁盘写入失败')
+    })
+    await expect(
+      installer.installFromDirectory(second, { appVersion: '2.6.0' })
+    ).rejects.toMatchObject({ code: 'EXTENSION_INSTALL_FAILED' })
+    spy.mockRestore()
+
+    expect(
+      fs.readJsonSync(path.join(paths.installDir('com.example.fixture'), 'manifest.json')).version
+    ).toBe('1.0.0')
+    expect(registry.get('com.example.fixture')?.version).toBe('1.0.0')
+    expect(fs.readdirSync(paths.extensionsDir).filter((name) => name.includes('.backup-'))).toEqual(
+      []
+    )
+  })
+
+  it('文件夹安装跳过 .git 与 node_modules', async () => {
+    const { paths, installer } = setup()
+    const root = path.dirname(paths.userData)
+    const source = createExtensionSource(root)
+    fs.ensureDirSync(path.join(source, 'node_modules', 'dep'))
+    fs.writeFileSync(path.join(source, 'node_modules', 'dep', 'index.js'), 'x')
+    fs.ensureDirSync(path.join(source, '.git', 'objects'))
+    fs.writeFileSync(path.join(source, '.git', 'HEAD'), 'ref: refs/heads/main')
+
+    await installer.installFromDirectory(source, { appVersion: '2.6.0' })
+    const installed = paths.installDir('com.example.fixture')
+    expect(fs.existsSync(path.join(installed, 'node_modules'))).toBe(false)
+    expect(fs.existsSync(path.join(installed, '.git'))).toBe(false)
+    expect(fs.existsSync(path.join(installed, 'manifest.json'))).toBe(true)
   })
 })
 

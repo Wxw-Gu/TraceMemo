@@ -29,6 +29,8 @@ const execFileAsync = promisify(execFile)
 
 const CONFIG_KEY = 'config'
 const STATS_KEY = 'stats'
+/** 安全存储里的 Cookie 键名。 */
+const SECRET_COOKIE_KEY = 'douyinCookie'
 const PROGRESS_KEY = 'progress'
 const TEST_RESULT_KEY = 'testResult'
 const CONFIG_TTL_MS = 1000
@@ -312,23 +314,7 @@ function resolvePythonInvocation(pythonPath, scriptPath, args) {
   if (process.platform !== 'darwin') {
     return { file: pythonPath, args: [scriptPath, ...args] }
   }
-  let resolvedPython = pythonPath
-  if (pythonPath === 'python3') {
-    const venvPython = path.join(
-      os.homedir(),
-      'Library',
-      'Caches',
-      'douyin-video',
-      'venv',
-      'bin',
-      'python'
-    )
-    try {
-      if (fsSync.existsSync(venvPython)) resolvedPython = venvPython
-    } catch {
-      // 缓存 venv 不可读时退回配置里的 pythonPath。
-    }
-  }
+  const resolvedPython = pythonPath
   try {
     if (fsSync.existsSync('/usr/bin/arch')) {
       return {
@@ -343,10 +329,10 @@ function resolvePythonInvocation(pythonPath, scriptPath, args) {
 }
 
 /**
- * 解析可用的抖音 Cookie：
- * 1. 优先使用调用方显式传入的 cookieHeader（测试发送 / 测试下载）；
- * 2. 尝试向宿主读取已保存的 Cookie（若宿主暴露接口）；
- * 3. 回退读取扩展私有目录或桌面上的 `douyin-cookie` 文件（供 @我自己 自动回复链路使用）。
+ * 解析可用的抖音 Cookie。
+ *
+ * 只认两个来源：调用方显式传入的 header，以及扩展私有目录里由用户配置生成的文件。
+ * **不扫描桌面**——扩展不该去读用户没有明确交给它的文件。
  */
 async function resolveCookieHeader(explicitHeader) {
   const direct = String(explicitHeader || '').trim()
@@ -356,23 +342,47 @@ async function resolveCookieHeader(explicitHeader) {
       const fromHost = String((await tm.douyin.getCookie()) || '').trim()
       if (fromHost) return fromHost
     } catch {
-      // 宿主未提供或读取失败时继续尝试本地文件。
+      // 宿主未提供或读取失败时按「未配置」处理。
     }
   }
-  const candidates = [
-    path.join(tm.extension.dataDir, 'douyin-cookie.txt'),
-    path.join(os.homedir(), 'Desktop', 'douyin-cookie'),
-    path.join(os.homedir(), 'Desktop', 'douyin-cookie.txt')
-  ]
-  for (const file of candidates) {
+  // 优先用安全存储；未授权或不可用时再退回旧的扩展数据文件（迁移期兼容）。
+  if (tm.secrets) {
     try {
-      const content = String(await fs.readFile(file, 'utf8')).trim()
-      if (content) return content
+      const stored = await tm.secrets.get(SECRET_COOKIE_KEY)
+      if (stored) return String(stored).trim()
     } catch {
-      // 文件不存在或无权限时跳过。
+      // 未授予 secrets 权限或系统安全存储不可用：继续走兼容分支。
     }
+  }
+  try {
+    const content = String(await fs.readFile(path.join(tm.extension.dataDir, 'douyin-cookie.txt'), 'utf8')).trim()
+    if (content) return content
+  } catch {
+    // 未配置 Cookie 时走游客模式。
   }
   return ''
+}
+
+/**
+ * 把旧的明文 Cookie 迁进安全存储，成功后删除明文文件。
+ *
+ * 只在「安全存储可用 + 用户已授权 secrets」时执行；否则保持原样，
+ * 绝不把加密数据降级成明文，也不谎报迁移成功。
+ */
+async function migrateLegacyCookie() {
+  if (!tm.secrets) return
+  try {
+    const existing = await tm.secrets.get(SECRET_COOKIE_KEY)
+    if (existing) return
+    const legacyPath = path.join(tm.extension.dataDir, 'douyin-cookie.txt')
+    const legacy = String(await fs.readFile(legacyPath, 'utf8')).trim()
+    if (!legacy) return
+    await tm.secrets.set(SECRET_COOKIE_KEY, legacy)
+    await fs.unlink(legacyPath).catch(() => undefined)
+    tm.log.info('已把旧版明文 Cookie 迁入系统安全存储，并删除明文文件')
+  } catch {
+    // 未授权或不可用时静默保留旧文件，由页面提示用户重新填写。
+  }
 }
 
 function resolveScriptPath(value) {
@@ -380,6 +390,27 @@ function resolveScriptPath(value) {
   if (!expanded) return path.resolve(__dirname, '..', 'scripts', 'douyin.py')
   if (path.isAbsolute(expanded)) return expanded
   return path.resolve(__dirname, '..', expanded)
+}
+
+/**
+ * 解析脚本不随应用分发（来源与分发许可未确认），缺失时整条视频链路必须停住。
+ * 缺失提示只打一次，避免每条消息刷日志。
+ */
+let scriptMissingLogged = false
+
+function ensureScriptReady(config) {
+  let ready = false
+  try {
+    ready = fsSync.existsSync(resolveScriptPath(config.scriptPath))
+  } catch {
+    ready = false
+  }
+  if (!ready && !scriptMissingLogged) {
+    scriptMissingLogged = true
+    safeLog('warn', '缺少解析脚本 scripts/douyin.py，视频处理已暂停；请按扩展说明自行提供后重启')
+  }
+  if (ready) scriptMissingLogged = false
+  return ready
 }
 
 /** 统一封装脚本调用：固定 cwd、超时、输出上限、UTF-8 与 macOS 原生 arm64 执行。 */
@@ -544,6 +575,7 @@ async function reportFailure(event, config, message) {
  * 进度快照与统计都会落盘；失败原因只保留错误类型，不写 URL / 路径 / 标题。
  */
 async function processLink(event, config, url, options = {}) {
+  if (!ensureScriptReady(config)) return
   const jobId = event.eventId
   let awemeId = ''
   let stage = 'accepted'
@@ -609,6 +641,7 @@ async function processLink(event, config, url, options = {}) {
 async function handleEvent(event) {
   try {
     const config = await loadConfig()
+    if (!ensureScriptReady(config)) return
     const decision = shouldHandle(event, config, cooldownUntil, Date.now())
     if (!decision.handle) return
 

@@ -1454,7 +1454,19 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
   // Create the renderer before native WCDB bootstrap so startup progress is visible immediately.
   await reportTemplateService.recover()
   registerReportTemplateIpc()
-  installExtensionProtocolHandler(getExtensionPaths())
+  installExtensionProtocolHandler({
+    paths: getExtensionPaths(),
+    // 开发模式下代码在用户自己的目录里：协议必须走同一个解析器，
+    // 否则页面会读到旧的安装副本。管理器尚未就绪时回退到安装目录。
+    resolveRoot: (extensionId) => {
+      if (!hasExtensionManager()) return getExtensionPaths().installDir(extensionId)
+      try {
+        return getExtensionManager().resolveExtensionRoot(extensionId)
+      } catch {
+        return null
+      }
+    }
+  })
   registerExtensionIpc({
     getManager: getExtensionManager,
     paths: getExtensionPaths(),

@@ -40,6 +40,12 @@ extraResources:
     to: skill/tracememo-reader
     filter:
       - '**/*'
+  # 官方扩展模板：构建期由 scripts/build-extension-templates.cjs 生成，
+  # 安装包必须自带，运行时不依赖源码树或网络。
+  - from: build/extension-templates
+    to: extension-templates
+    filter:
+      - '**/*'
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

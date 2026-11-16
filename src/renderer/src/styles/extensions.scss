@@ -251,6 +251,28 @@
   line-height: 18px;
 }
 
+/* 状态文件损坏/降级提示：需要跨整行提醒，不能只在详情页里出现。 */
+.extension-health-banner {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: var(--wxex-radius-sm);
+  background: color-mix(in srgb, var(--wxex-warning, #b45309) 12%, transparent);
+  color: var(--wxex-warning, #b45309);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.extension-pending-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--wxex-text-muted);
+}
+
 .extension-detail-actions {
   display: flex;
   align-items: center;
@@ -594,4 +616,415 @@
   .extension-detail-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* ── 官方模板画廊 ─────────────────────────────────────────── */
+
+.extension-template-entry {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.extension-template-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 2px 24px;
+  overflow-y: auto;
+}
+
+.extension-template-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.extension-template-header p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--wxex-text-muted);
+}
+
+.extension-template-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.extension-template-card {
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border-radius: var(--wxex-radius-md, 10px);
+  background: color-mix(in srgb, currentColor 3%, transparent);
+}
+
+.extension-template-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.extension-template-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.extension-template-version {
+  font-size: 12px;
+  color: var(--wxex-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.extension-template-desc {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--wxex-text-muted);
+}
+
+.extension-template-meta {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--wxex-text-muted);
+}
+
+.extension-template-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.extension-template-warning {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border-radius: var(--wxex-radius-sm);
+  background: color-mix(in srgb, var(--wxex-warning, #b45309) 10%, transparent);
+  color: var(--wxex-warning, #b45309);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.extension-template-detail {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.extension-template-detail h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.extension-template-deps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.extension-template-deps li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.extension-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--wxex-text-muted);
+}
+
+.extension-dot.is-ok {
+  background: var(--wxex-success, #15803d);
+}
+
+.extension-dot.is-missing {
+  background: var(--wxex-danger);
+}
+
+.extension-template-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--wxex-text-muted);
+}
+
+.extension-template-empty h3 {
+  margin: 0;
+  font-size: 14px;
+  color: inherit;
+}
+
+.extension-template-empty p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  max-width: 420px;
+}
+
+/* 横幅与告警条需要「一句话 + 一个按钮」并排 */
+.extension-health-banner,
+.extension-alert-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.extension-health-banner span,
+.extension-alert-row span {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── 开发项目 ─────────────────────────────────────────────── */
+
+.extension-project-dialog {
+  position: fixed;
+  z-index: 40;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(460px, calc(100vw - 48px));
+  padding: 18px 20px;
+  border-radius: var(--wxex-radius-md, 10px);
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  background: var(--wxex-surface, #fff);
+  box-shadow: 0 18px 48px color-mix(in srgb, currentColor 18%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.extension-project-dialog h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.extension-project-dialog p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.extension-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.extension-field input {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--wxex-radius-sm);
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.extension-field-error {
+  color: var(--wxex-danger);
+  font-size: 11px;
+}
+
+.extension-project-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.extension-source-path {
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+/* ── 二次开发引导页 ───────────────────────────────────────── */
+
+.extension-development-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 2px 2px 24px;
+  overflow-y: auto;
+}
+
+.extension-guide-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* 标题块可以被压缩，右侧按钮不能：窄窗口下「返回扩展列表」不该折成两行 */
+.extension-guide-header > div {
+  min-width: 0;
+}
+
+.extension-guide-header > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.extension-guide-header h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.extension-guide-header p {
+  margin: 0;
+  max-width: 620px;
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--wxex-text-muted);
+}
+
+/* 序号自己画，关掉 <ol> 的默认 marker，否则会出现「1.」和徽标两套编号 */
+.extension-guide-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.extension-guide-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.extension-guide-index {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--wxex-text-muted);
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.extension-guide-steps strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.extension-guide-steps p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--wxex-text-muted);
+}
+
+.extension-guide-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.extension-guide-docs h4,
+.extension-guide-boundary h4 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.extension-guide-docs ul,
+.extension-guide-boundary ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.extension-guide-docs li {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.extension-guide-docs li > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.extension-guide-docs strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.extension-guide-docs code {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--wxex-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.extension-guide-docs > p {
+  margin: 10px 0 0;
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.extension-guide-boundary li {
+  position: relative;
+  padding-left: 12px;
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--wxex-text-muted);
+}
+
+.extension-guide-boundary li::before {
+  content: '·';
+  position: absolute;
+  left: 2px;
+  color: var(--wxex-text-muted);
+}
+
+.extension-guide-boundary code {
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* 侧栏里被选中的次级入口：不抢主操作，只做位置指示 */
+.extension-template-entry.is-active {
+  border-color: color-mix(in srgb, currentColor 26%, transparent);
+  background: color-mix(in srgb, currentColor 6%, transparent);
 }

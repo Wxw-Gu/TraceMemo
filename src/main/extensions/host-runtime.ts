@@ -10,6 +10,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { validateActionInput as validateWithSchema } from '../../shared/extensions/action-schema'
 import {
   EXTENSION_HOST_PROTOCOL_VERSION,
   type ExtensionAutomationActionOutput,
@@ -18,6 +19,7 @@ import {
   type ExtensionHostCallResult,
   type ExtensionHostEvent,
   type ExtensionHostInboundMessage,
+  type ExtensionHostPageRequest,
   type ExtensionHostInvokeAction,
   type ExtensionHostTestSend,
   type ExtensionHostOutboundMessage,
@@ -44,6 +46,10 @@ interface PendingCall {
 const pendingCalls = new Map<string, PendingCall>()
 const eventHandlers = new Set<MessageHandler>()
 const actions = new Map<string, RegisteredActionDefinition>()
+const pageHandlers = new Map<string, (params: Record<string, unknown>) => unknown>()
+/** 页面请求方法名：小写开头，允许点号分段，长度受限。 */
+const PAGE_REQUEST_METHOD = /^[a-z][a-zA-Z0-9]*(?:[._-][a-zA-Z0-9]+){0,3}$/
+const PAGE_RESULT_MAX_BYTES = 64 * 1024
 let permissions: string[] = []
 let activated = false
 let extensionDir = ''
@@ -100,6 +106,45 @@ const tm = {
     },
     get permissions(): string[] {
       return [...permissions]
+    }
+  },
+  /**
+   * 页面 → 同扩展后台的通用请求处理器注册。
+   *
+   * 不需要额外权限：注册本身不产生任何能力，handler 内部若调用
+   * `tm.wechat.send` 等能力，仍然各自走权限检查。
+   */
+  page: {
+    onRequest(method: string, handler: (params: Record<string, unknown>) => unknown): void {
+      const name = String(method || '').trim()
+      if (!PAGE_REQUEST_METHOD.test(name)) throw new Error(`页面请求方法名不合法：${name}`)
+      if (typeof handler !== 'function') throw new Error('页面请求必须提供 handler')
+      if (pageHandlers.has(name)) throw new Error(`页面请求重复注册：${name}`)
+      pageHandlers.set(name, handler)
+    }
+  },
+  /**
+   * 扩展私有凭据。
+   *
+   * 真正加密发生在主进程（`safeStorage`）；子进程只在需要时拿到明文。
+   * 每个扩展一个命名空间，A 扩展拿不到 B 的密钥。
+   */
+  secrets: {
+    async get(key: string): Promise<string | null> {
+      requirePermission('secrets')
+      return (await callHost('secrets.get', { key })) as string | null
+    },
+    async set(key: string, value: string): Promise<void> {
+      requirePermission('secrets')
+      await callHost('secrets.set', { key, value })
+    },
+    async delete(key: string): Promise<void> {
+      requirePermission('secrets')
+      await callHost('secrets.delete', { key })
+    },
+    async has(key: string): Promise<boolean> {
+      requirePermission('secrets')
+      return (await callHost('secrets.has', { key })) as boolean
     }
   },
   events: {
@@ -338,27 +383,62 @@ async function dispatchEvent(message: ExtensionHostEvent): Promise<void> {
   }
 }
 
+/**
+ * 与 UI 共用同一套校验规则。
+ *
+ * 两套实现一定会在某个边界上分叉，用户看到的就是「表单填得进去、执行时说参数错」。
+ */
 function validateActionInput(
   schema: Record<string, unknown> | undefined,
   input: Record<string, unknown>
 ): void {
   if (!schema) return
-  const required = Array.isArray(schema.required) ? schema.required : []
-  for (const key of required) {
-    if (typeof key === 'string' && !(key in input)) {
-      throw new Error(`缺少必填参数：${key}`)
-    }
+  const result = validateWithSchema(schema as never, input)
+  if (result.ok) return
+  const [key, message] = Object.entries(result.errors)[0] ?? ['参数', '不合法']
+  throw new Error(`参数 ${key} ${message}`)
+}
+
+async function handlePageRequest(message: ExtensionHostPageRequest): Promise<void> {
+  const handler = pageHandlers.get(message.method)
+  if (!handler) {
+    post({
+      type: 'page-result',
+      version: EXTENSION_HOST_PROTOCOL_VERSION,
+      requestId: message.requestId,
+      ok: false,
+      error: { code: 'ACTION_FAILED', message: `页面请求未注册：${message.method}` }
+    })
+    return
   }
-  const properties = schema.properties
-  if (!properties || typeof properties !== 'object') return
-  for (const [key, definition] of Object.entries(properties as Record<string, unknown>)) {
-    if (!(key in input)) continue
-    const type = (definition as { type?: unknown })?.type
-    const value = input[key]
-    if (type === 'string' && typeof value !== 'string') throw new Error(`参数 ${key} 必须是字符串`)
-    if (type === 'number' && typeof value !== 'number') throw new Error(`参数 ${key} 必须是数字`)
-    if (type === 'boolean' && typeof value !== 'boolean')
-      throw new Error(`参数 ${key} 必须是布尔值`)
+  try {
+    const raw = await withTimeout(
+      Promise.resolve(handler(message.params ?? {})),
+      Math.max(1_000, Math.min(message.timeoutMs - 500, 30_000))
+    )
+    // 只允许纯 JSON：函数、循环引用、类实例都在这一步被拒绝。
+    const serialized = JSON.stringify(raw ?? null)
+    if (new TextEncoder().encode(serialized).length > PAGE_RESULT_MAX_BYTES) {
+      throw new Error('页面请求响应超过 64KB')
+    }
+    post({
+      type: 'page-result',
+      version: EXTENSION_HOST_PROTOCOL_VERSION,
+      requestId: message.requestId,
+      ok: true,
+      result: JSON.parse(serialized) as unknown
+    })
+  } catch (error) {
+    post({
+      type: 'page-result',
+      version: EXTENSION_HOST_PROTOCOL_VERSION,
+      requestId: message.requestId,
+      ok: false,
+      error: {
+        code: 'ACTION_FAILED',
+        message: error instanceof Error ? error.message.slice(0, 200) : '页面请求失败'
+      }
+    })
   }
 }
 
@@ -465,8 +545,12 @@ process.on('message', (raw: unknown) => {
       void invokeAction(message)
       return
     case 'test-send':
+      // 旧协议：只有抖音扩展认这个入口。新代码统一走 page-request。
       if (extensionId !== 'com.example.douyin-sender') return
       void dispatchTestSend(message)
+      return
+    case 'page-request':
+      void handlePageRequest(message)
       return
     case 'call-result': {
       const result = message as ExtensionHostCallResult

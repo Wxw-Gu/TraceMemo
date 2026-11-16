@@ -149,6 +149,8 @@ function describeError(error) {
 async function onMessage(event) {
   try {
     const config = await loadConfig()
+    // 交给自动化规则处理时，订阅路径必须彻底闭嘴，否则同一条消息回复两次。
+    if (config.executionMode === 'automation') return
     const now = Date.now()
     const verdict = shouldReply(event, config, cooldownUntil, now)
     if (!verdict.reply || !verdict.rule) return
@@ -197,6 +199,10 @@ module.exports = function activate(api) {
       const config = await loadConfig()
       if (!config.enabled) {
         return { success: false, error: '机器人未启用' }
+      }
+      // 订阅模式下这条路径同样会发送：直接跳过，避免与事件路径重复回复。
+      if (config.executionMode === 'subscribe') {
+        return { success: true, output: { matched: false, skipped: 'subscribe-mode' } }
       }
       const rule = pickRule(input.text, config)
       if (!rule) {

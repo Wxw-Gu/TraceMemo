@@ -23,7 +23,17 @@ export const EXTENSION_ERROR_CODES = [
   'ACTION_FAILED',
   'RATE_LIMITED',
   'INVALID_REQUEST',
-  'STORAGE_LIMIT_EXCEEDED'
+  'STORAGE_LIMIT_EXCEEDED',
+  /** 状态文件损坏且无法恢复；写入被拒绝，现场保留。 */
+  'EXTENSION_REGISTRY_UNREADABLE',
+  /** 扩展配置损坏且没有可用备份；写入被拒绝。 */
+  'EXTENSION_STORAGE_CORRUPTED',
+  /** 开发模式的源码目录被移动或删除；Registry 与配置保留。 */
+  'EXTENSION_SOURCE_MISSING',
+  /** 目标目录已有文件 / 目标不可写；创建项目被拒绝。 */
+  'EXTENSION_PROJECT_EXISTS',
+  /** 检测到安装副本被用户修改，拒绝自动覆盖。 */
+  'EXTENSION_MODIFIED_LOCALLY'
 ] as const
 
 export type ExtensionErrorCode = (typeof EXTENSION_ERROR_CODES)[number]
@@ -46,7 +56,12 @@ export const EXTENSION_ERROR_MESSAGES: Record<ExtensionErrorCode, string> = {
   ACTION_FAILED: '扩展执行失败',
   RATE_LIMITED: '触发频率限制，请稍后再试',
   INVALID_REQUEST: '请求格式不合法',
-  STORAGE_LIMIT_EXCEEDED: '扩展存储已超出上限'
+  STORAGE_LIMIT_EXCEEDED: '扩展存储已超出上限',
+  EXTENSION_REGISTRY_UNREADABLE: '扩展状态文件损坏且无法恢复',
+  EXTENSION_STORAGE_CORRUPTED: '扩展配置已损坏',
+  EXTENSION_SOURCE_MISSING: '开发源码目录不可用',
+  EXTENSION_PROJECT_EXISTS: '目标项目目录不可用',
+  EXTENSION_MODIFIED_LOCALLY: '扩展代码已被本地修改'
 }
 
 export interface ExtensionErrorPayload {

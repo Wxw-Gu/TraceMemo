@@ -21,6 +21,15 @@ const MAX_GROUPS = 200
 const MODES = new Set(['contains', 'exact', 'prefix'])
 
 /**
+ * 两条回复入口的执行模式。
+ *
+ * 同一条消息若同时被「事件订阅」和「自动化动作」处理，会回复两次。
+ * 这里用互斥模式从根上避免：默认保留订阅（兼容旧用户），
+ * 切到 `automation` 后订阅路径完全不再发送。
+ */
+const EXECUTION_MODES = new Set(['subscribe', 'automation'])
+
+/**
  * 把任意来源的配置规范化为 `configVersion: 2`。
  *
  * 启用中的空规则丢弃，停用的空规则保留为草稿；顶层 `enabled` 缺省 `false`，
@@ -49,6 +58,7 @@ function normalizeConfig(raw) {
   return {
     configVersion: CONFIG_VERSION,
     enabled: input.enabled === true,
+    executionMode: EXECUTION_MODES.has(input.executionMode) ? input.executionMode : 'subscribe',
     rules,
     scope: {
       groups: Array.isArray(scope.groups)
@@ -204,6 +214,7 @@ function clampNumber(value, min, max) {
 
 module.exports = {
   CONFIG_VERSION,
+  EXECUTION_MODES,
   normalizeConfig,
   matchRule,
   pickRule,

@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "com.example.keyword-bot",
   "name": "关键词回复机器人",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": "1",
   "minAppVersion": "2.6.0",
   "description": "监听微信文本消息，命中关键词后经 TraceMemo Gateway 回复。",
@@ -19,7 +19,9 @@
     "background": "background/index.js"
   },
   "subscriptions": {
-    "messageTypes": ["text"],
+    "messageTypes": [
+      "text"
+    ],
     "conversationIds": [],
     "requireMentionMe": false,
     "includeSelf": false

@@ -22,6 +22,10 @@ export type ExtensionHostCallMethod =
   | 'wechat.send.video'
   | 'ai.chat'
   | 'capabilities.get'
+  | 'secrets.get'
+  | 'secrets.set'
+  | 'secrets.delete'
+  | 'secrets.has'
 
 export interface ExtensionHostReady {
   type: 'ready'
@@ -81,7 +85,15 @@ export interface ExtensionHostRegisterAction {
     id: string
     title: string
     description?: string
-    hasInputSchema: boolean
+    /**
+     * 完整参数 Schema（未经校验的原始 JSON）。
+     *
+     * 宿主收到后统一走 `parseActionInputSchema`：非法或超限时**保留动作但不给 Schema**，
+     * 并把原因记进日志与动作信息，绝不静默截断。
+     */
+    inputSchema?: unknown
+    /** 兼容字段：旧宿主只认这个布尔值。新宿主用 `inputSchema`。 */
+    hasInputSchema?: boolean
   }
 }
 
@@ -126,6 +138,30 @@ export interface ExtensionHostLog {
   message: string
 }
 
+/**
+ * 扩展页面 → 同扩展后台的通用请求。
+ *
+ * 宿主只做路由与限额：页面拿不到任意 Node 能力，后台必须显式注册处理器。
+ * 这是移除「宿主硬编码某个具体扩展业务」的关键通道。
+ */
+export interface ExtensionHostPageRequest {
+  type: 'page-request'
+  version: number
+  requestId: string
+  method: string
+  params: Record<string, unknown>
+  timeoutMs: number
+}
+
+export interface ExtensionHostPageResult {
+  type: 'page-result'
+  version: number
+  requestId: string
+  ok: boolean
+  result?: unknown
+  error?: { code: string; message: string }
+}
+
 export type ExtensionHostOutboundMessage =
   | ExtensionHostReady
   | ExtensionHostActivated
@@ -134,6 +170,7 @@ export type ExtensionHostOutboundMessage =
   | ExtensionHostLog
   | ExtensionHostActionResult
   | ExtensionHostTestResult
+  | ExtensionHostPageResult
 
 export type ExtensionHostInboundMessage =
   | ExtensionHostActivate
@@ -143,6 +180,7 @@ export type ExtensionHostInboundMessage =
   | ExtensionHostInvokeAction
   | ExtensionHostTestSend
   | ExtensionHostTestResult
+  | ExtensionHostPageRequest
 
 /**
  * 自动化动作的返回值。

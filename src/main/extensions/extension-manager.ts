@@ -1,15 +1,22 @@
 import fs from 'fs-extra'
-import os from 'node:os'
 import path from 'node:path'
-import { safeStorage } from 'electron'
 import { ExtensionError, toExtensionErrorPayload } from '../../shared/extensions/errors'
+import { isPathInside } from './extension-paths'
+import { computeDirectoryDigest } from './extension-code-digest'
+import { ExtensionSecretStore, type ExtensionSecretCipher } from './extension-secret-store'
+import {
+  createProjectFromTemplate as createProjectFiles,
+  exportInstalledCopy
+} from './extension-project-files'
 import {
   autoGrantedPermissions,
   hasExtensionPermission,
+  normalizeExtensionPermissions,
   type ExtensionPermission
 } from '../../shared/extensions/permissions'
 import {
   checkExtensionCompatibility,
+  isValidExtensionId,
   parseExtensionManifest,
   type ExtensionManifest
 } from '../../shared/extensions/manifest'
@@ -21,6 +28,9 @@ import type {
   ExtensionPageDescriptor,
   ExtensionPageMethod,
   ExtensionPageResponse,
+  ExtensionActionInfo,
+  ExtensionProjectResult,
+  ExtensionSystemHealth,
   InstalledExtension
 } from '../../shared/extensions/types'
 import type {
@@ -44,7 +54,16 @@ import {
   type ExtensionHostChild,
   type ExtensionHostSpawnOptions
 } from './extension-host'
-import { ExtensionInstaller } from './extension-installer'
+import { ExtensionInstaller, type InstallOutcome } from './extension-installer'
+import {
+  assertSafeDevelopmentRoot,
+  createExtensionRootResolver,
+  type ExtensionRootResolver
+} from './extension-root-resolver'
+import {
+  ExtensionTemplateCatalog,
+  type ExtensionTemplateStatus
+} from './extension-template-catalog'
 import { ExtensionLogStore } from './extension-log'
 import { ExtensionRegistry, type ExtensionRegistryRecord } from './extension-registry'
 import { ExtensionSendGateway } from './extension-send-gateway'
@@ -63,15 +82,24 @@ export interface ExtensionManagerDependencies {
   /** 群列表（id + 显示名）；用于扩展配置页选择发送目标。 */
   listGroups: () => Promise<Array<{ id: string; name: string }>>
   aiChat: (messages: Array<{ role: string; content: string }>) => Promise<{ text: string }>
+  /** 当前 AI 是否已配置；不暴露 key、endpoint 或任何凭据。 */
+  aiStatus?: () => { configured: boolean; modelName: string }
   getAccountId: () => string
   getSelfUsernames: () => string[]
   isDatabaseReady: () => boolean
+  /** 官方模板资源根目录；未提供时扩展中心只显示「我的扩展」。 */
+  templatesRoot?: string
+  /** 扩展凭据的加密实现；未提供时凭据能力不可用（明确失败，不退化明文）。 */
+  secretCipher: ExtensionSecretCipher
   now?: () => number
   onChange?: (
     extensionId: string,
     reason: 'installed' | 'enabled' | 'disabled' | 'uninstalled' | 'runtime' | 'actions'
   ) => void
 }
+
+/** 页面请求方法名：与 SDK 侧保持同一规则。 */
+const PAGE_REQUEST_METHOD = /^[a-z][a-zA-Z0-9]*(?:[._-][a-zA-Z0-9]+){0,3}$/
 
 const PAGE_METHODS: ExtensionPageMethod[] = [
   'storage.get',
@@ -80,10 +108,7 @@ const PAGE_METHODS: ExtensionPageMethod[] = [
   'storage.list',
   'capabilities.get',
   'contacts.listGroups',
-  'test.send',
-  'douyin.cookie.get',
-  'douyin.cookie.set',
-  'douyin.cookie.clear',
+  'extension.request',
   'extension.info'
 ]
 
@@ -111,18 +136,51 @@ export class ExtensionManager {
   private readonly eventBus: ExtensionEventBus
   private readonly now: () => number
   private initialized = false
+  /** 代码与 Registry 版本不一致的扩展：值为面向用户的原因，存在即禁止启动。 */
+  private readonly inconsistencies = new Map<string, string>()
+  /** 配置从旧备份恢复、尚未被用户确认的扩展。 */
+  private readonly storageHolds = new Set<string>()
+  private readonly templates: ExtensionTemplateCatalog | null
+  /** 扩展代码根目录的唯一解析器：安装副本与外部开发目录共用一条路径。 */
+  private readonly roots: ExtensionRootResolver
+  private readonly secrets: ExtensionSecretStore
 
   constructor(dependencies: ExtensionManagerDependencies) {
     this.dependencies = dependencies
     this.paths = dependencies.paths
     this.now = dependencies.now ?? (() => Date.now())
-    this.registry = new ExtensionRegistry({ registryFile: this.paths.registryFile, now: this.now })
+    this.registry = new ExtensionRegistry({
+      registryFile: this.paths.registryFile,
+      now: this.now,
+      // 状态文件与备份都不可用时，用磁盘上的目录重建「有哪些扩展」；
+      // 重建结果不带启用状态与授权，用户必须重新确认。
+      recover: () => this.installer.recoverFromDisk()
+    })
     this.installer = new ExtensionInstaller({
       paths: this.paths,
       registry: this.registry,
       now: this.now
     })
-    this.storage = new ExtensionStorage({ dataRoot: this.paths.dataDir })
+    this.templates = dependencies.templatesRoot
+      ? new ExtensionTemplateCatalog({
+          templateRoot: dependencies.templatesRoot,
+          getRecord: (extensionId) => this.registry.get(extensionId),
+          resolveInstallDir: (extensionId) => this.paths.installDir(extensionId),
+          platform: dependencies.platform
+        })
+      : null
+    this.roots = createExtensionRootResolver({
+      paths: this.paths,
+      getRecord: (extensionId) => this.registry.get(extensionId)
+    })
+    this.secrets = new ExtensionSecretStore({
+      root: path.join(this.paths.stateDir, 'secrets'),
+      cipher: dependencies.secretCipher
+    })
+    this.storage = new ExtensionStorage({
+      dataRoot: this.paths.dataDir,
+      onHealthChange: (extensionId, health) => this.handleStorageHealthChange(extensionId, health)
+    })
     this.logs = new ExtensionLogStore(this.paths.logsDir)
     this.sendGateway = new ExtensionSendGateway({
       getCapability: dependencies.getCapability,
@@ -153,6 +211,12 @@ export class ExtensionManager {
       fs.ensureDirSync(directory)
     }
     this.eventBus.setAccountId(this.dependencies.getAccountId())
+    const health = this.registry.getHealth()
+    if (health.state !== 'ok') {
+      // 宿主级事件没有归属扩展，走主进程日志；界面通过 `getHealth()` 展示。
+      console.warn(`[Extension] ${health.message || '扩展状态文件曾损坏，已进入恢复状态'}`)
+    }
+
     for (const record of this.registry.list()) {
       const manifest = this.readManifest(record.id)
       if (!manifest) {
@@ -160,7 +224,39 @@ export class ExtensionManager {
         continue
       }
       this.syncDeclared(record.id, manifest)
+
+      // 代码与状态可能在上次升级中断时分叉：先判一致性，不一致就不启动。
+      const drift = this.checkInstallConsistency(record, manifest)
+      if (drift) {
+        this.inconsistencies.set(record.id, drift)
+        this.logs.append(record.id, 'error', 'core', drift)
+        continue
+      }
+      this.inconsistencies.delete(record.id)
+
       if (!record.enabled) continue
+
+      // 配置从旧备份恢复过：先暂停，等用户确认「接受恢复的配置」。
+      const storageHealth = this.storage.health(record.id)
+      if (storageHealth.state !== 'ok') {
+        this.storageHolds.add(record.id)
+        this.logs.append(
+          record.id,
+          'warn',
+          'core',
+          storageHealth.state === 'recovered-from-backup'
+            ? '扩展配置曾从备份恢复，已暂停启动；请在详情页确认后再启用'
+            : '扩展配置损坏且无可用备份，已暂停启动；请重置配置后重新启用'
+        )
+        try {
+          this.registry.setEnabled(record.id, false)
+        } catch {
+          // 状态文件不可写时保持内存中的暂停状态即可。
+        }
+        continue
+      }
+      this.storageHolds.delete(record.id)
+
       const compatibility = checkExtensionCompatibility(manifest, this.dependencies.appVersion)
       if (!compatibility.compatible) {
         this.logs.append(record.id, 'error', 'core', compatibility.reason || '扩展不兼容')
@@ -177,6 +273,28 @@ export class ExtensionManager {
         )
       }
     }
+  }
+
+  /**
+   * 校验状态记录与磁盘上的 manifest 是否描述同一个版本。
+   *
+   * 升级会在「换代码」与「写状态」之间留下一个窗口；进程在该窗口被杀时，
+   * 磁盘上是新代码、状态里是旧版本。这种扩展不能带着旧授权直接跑。
+   */
+  private checkInstallConsistency(
+    record: ExtensionRegistryRecord,
+    manifest: ExtensionManifest
+  ): string | null {
+    if (record.id !== manifest.id) {
+      return '扩展目录中的 manifest.id 与状态记录不一致'
+    }
+    if (record.version !== manifest.version) {
+      return `代码版本 ${manifest.version} 与状态记录 ${record.version} 不一致，上次升级可能中断`
+    }
+    if (record.apiVersion !== manifest.apiVersion) {
+      return `扩展 API 版本不一致（代码 ${manifest.apiVersion} / 状态 ${record.apiVersion}）`
+    }
+    return null
   }
 
   list(): InstalledExtension[] {
@@ -201,18 +319,647 @@ export class ExtensionManager {
   }
 
   async installFromDirectory(directory: string): Promise<ExtensionInstallResult> {
-    return this.install(() =>
-      this.installer.installFromDirectory(directory, { appVersion: this.dependencies.appVersion })
+    return this.install((beforeReplace) =>
+      this.installer.installFromDirectory(directory, {
+        appVersion: this.dependencies.appVersion,
+        beforeReplace
+      })
     )
   }
 
   async installFromPackage(packagePath: string): Promise<ExtensionInstallResult> {
-    return this.install(() =>
+    return this.install((beforeReplace) =>
       this.installer.installFromPackage(packagePath, {
         appVersion: this.dependencies.appVersion,
-        source: 'package'
+        source: 'package',
+        beforeReplace
       })
     )
+  }
+
+  /** 官方模板列表；模板资源缺失时返回空数组，不影响「我的扩展」。 */
+  async listTemplates(): Promise<ExtensionTemplateStatus[]> {
+    if (!this.templates) return []
+    return this.templates.list()
+  }
+
+  /**
+   * 安装官方模板。
+   *
+   * 三条硬约束：
+   * 1. 只接受模板索引里的 id，ZIP 路径由目录服务解析并校验哈希；
+   * 2. 同 id 已被非模板来源占用时拒绝接管；
+   * 3. 安装只落代码，不启用——启用仍需用户确认权限。
+   */
+  async installTemplate(templateId: string): Promise<ExtensionInstallResult> {
+    const templates = this.templates
+    if (!templates) {
+      return {
+        success: false,
+        error: { code: 'CAPABILITY_UNAVAILABLE', message: '模板目录不可用' }
+      }
+    }
+    let resolved: Awaited<ReturnType<ExtensionTemplateCatalog['resolveZip']>>
+    try {
+      resolved = await templates.resolveZip(templateId)
+    } catch (error) {
+      return { success: false, error: toExtensionErrorPayload(error) }
+    }
+
+    const existing = this.registry.get(resolved.template.extensionId)
+    if (existing && (existing.source !== 'template' || existing.templateId !== templateId)) {
+      return {
+        success: false,
+        error: {
+          code: 'EXTENSION_ALREADY_INSTALLED',
+          message: '已存在同 ID 的非官方扩展，未自动替换'
+        }
+      }
+    }
+    if (existing && existing.version === resolved.template.version) {
+      return {
+        success: false,
+        error: { code: 'EXTENSION_ALREADY_INSTALLED', message: '该模板版本已安装' }
+      }
+    }
+
+    return this.install((beforeReplace) =>
+      this.installer.installFromPackage(resolved.path, {
+        appVersion: this.dependencies.appVersion,
+        source: 'template',
+        template: { id: resolved.template.templateId, version: resolved.template.version },
+        beforeReplace
+      })
+    )
+  }
+
+  /**
+   * 该扩展当前是否被暂停（配置待确认 / 版本不一致）。
+   *
+   * 这是唯一的判断入口：事件投递、动作调用、发送出口都走它，
+   * 避免出现「某处放行、某处拦截」的不一致状态。
+   */
+  private isSuspended(extensionId: string): boolean {
+    return this.storageHolds.has(extensionId) || this.inconsistencies.has(extensionId)
+  }
+
+  /**
+   * 运行期检测到配置回退：立刻收住这个扩展。
+   *
+   * 顺序很重要：先停后台（切断正在跑的回复循环），再改状态、记日志。
+   * 已经交给 Native Host 的发送请求无法撤回，属于已知边界。
+   */
+  private handleStorageHealthChange(
+    extensionId: string,
+    health: { state: string; message?: string }
+  ): void {
+    if (health.state === 'ok') return
+    if (this.storageHolds.has(extensionId)) return
+    this.storageHolds.add(extensionId)
+    void this.stopHost(extensionId).catch(() => undefined)
+    try {
+      this.registry.setEnabled(extensionId, false)
+    } catch {
+      // 状态文件不可写时保持内存中的暂停状态即可。
+    }
+    this.logs.append(
+      extensionId,
+      'warn',
+      'core',
+      health.state === 'recovered-from-backup'
+        ? '扩展配置在运行期间从备份恢复，已暂停该扩展；请确认后再启用'
+        : '扩展配置在运行期间损坏，已暂停该扩展'
+    )
+    this.dependencies.onChange?.(extensionId, 'runtime')
+  }
+
+  /** 供自定义协议解析代码根目录；开发目录不可用时返回 null（页面 404 而不是 500）。 */
+  resolveExtensionRoot(extensionId: string): string | null {
+    try {
+      return this.roots.resolve(extensionId).root
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 链接外部开发项目。
+   *
+   * 只读用户显式选择的目录：校验 manifest、入口文件、路径边界与 ID 冲突，
+   * 然后登记为 `development` 来源。**不复制代码**，也不写回源码目录。
+   */
+  async linkDevelopmentProject(directory: string): Promise<ExtensionInstallResult> {
+    const raw = String(directory || '').trim()
+    if (!raw) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: '请选择项目目录' } }
+    }
+    let realRoot: string
+    try {
+      realRoot = fs.realpathSync(raw)
+    } catch {
+      return {
+        success: false,
+        error: { code: 'EXTENSION_SOURCE_MISSING', message: '目录不存在或无法访问' }
+      }
+    }
+    let isDirectory = false
+    try {
+      isDirectory = fs.statSync(realRoot).isDirectory()
+    } catch {
+      isDirectory = false
+    }
+    if (!isDirectory) {
+      return {
+        success: false,
+        error: { code: 'EXTENSION_INVALID_PATH', message: '所选路径不是目录' }
+      }
+    }
+
+    const manifestPath = path.join(realRoot, 'manifest.json')
+    let parsedManifest: ReturnType<typeof parseExtensionManifest>
+    try {
+      parsedManifest = parseExtensionManifest(fs.readJsonSync(manifestPath) as unknown)
+    } catch {
+      return {
+        success: false,
+        error: { code: 'EXTENSION_INVALID_MANIFEST', message: '目录里没有可读的 manifest.json' }
+      }
+    }
+    if (!parsedManifest.ok || !parsedManifest.manifest) {
+      return {
+        success: false,
+        error: {
+          code: 'EXTENSION_INVALID_MANIFEST',
+          message: 'manifest.json 不合法'
+        }
+      }
+    }
+    const manifest = parsedManifest.manifest
+
+    // 先判路径边界：指向宿主私有目录时，连入口检查都不该做。
+    try {
+      assertSafeDevelopmentRoot(this.paths, manifest.id, realRoot)
+    } catch (error) {
+      return { success: false, error: toExtensionErrorPayload(error) }
+    }
+
+    for (const [key, value] of Object.entries(manifest.entrypoints)) {
+      if (!value) continue
+      const entryPath = path.join(realRoot, value)
+      if (!this.isFileInside(realRoot, entryPath)) {
+        return {
+          success: false,
+          error: { code: 'EXTENSION_INVALID_MANIFEST', message: `入口 ${key} 无法解析` }
+        }
+      }
+    }
+
+    const existing = this.registry.get(manifest.id)
+    if (existing && existing.source !== 'development') {
+      return {
+        success: false,
+        error: {
+          code: 'EXTENSION_ALREADY_INSTALLED',
+          message: '该扩展 ID 已被正式安装占用；请先「导出为开发项目」切换来源'
+        }
+      }
+    }
+    if (existing && existing.developmentSourcePath === realRoot) {
+      return {
+        success: false,
+        error: { code: 'EXTENSION_ALREADY_INSTALLED', message: '该目录已经链接过' }
+      }
+    }
+
+    const timestamp = this.now()
+    this.registry.upsert({
+      id: manifest.id,
+      version: manifest.version,
+      apiVersion: manifest.apiVersion,
+      // 链接不等于信任：默认停用；只自动授予低风险权限（与安装策略一致），
+      // 高风险能力仍需用户在启用时确认。
+      enabled: false,
+      grantedPermissions: autoGrantedPermissions(manifest.permissions),
+      installedAt: existing?.installedAt ?? timestamp,
+      updatedAt: timestamp,
+      source: 'development',
+      developmentSourcePath: realRoot
+    })
+    this.manifests.set(manifest.id, manifest)
+    this.syncDeclared(manifest.id, manifest)
+    this.logs.append(manifest.id, 'info', 'core', '已链接外部开发项目')
+    this.dependencies.onChange?.(manifest.id, 'installed')
+    const extension = this.get(manifest.id)
+    return { success: true, ...(extension ? { extension } : {}) }
+  }
+
+  /**
+   * 重新加载开发项目。
+   *
+   * 停后台 → 清 manifest 缓存 → 重新解析 → 权限取交集 → 原本启用则重启。
+   * 页面侧由界面刷新 iframe 完成，两者互不依赖。
+   */
+  async reloadDevelopment(extensionId: string): Promise<ExtensionOperationResult> {
+    const record = this.registry.get(extensionId)
+    if (!record) return failure(new ExtensionError('EXTENSION_NOT_FOUND'))
+    if (record.source !== 'development') {
+      return failure(new ExtensionError('INVALID_REQUEST', '该扩展不是开发模式'))
+    }
+
+    await this.stopHost(extensionId)
+    this.manifests.delete(extensionId)
+
+    try {
+      // 先确认源码目录仍然可达；不可达时给出「重新选择目录」而不是「manifest 读不到」。
+      this.roots.resolve(extensionId)
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+    const manifest = this.readManifest(extensionId)
+    if (!manifest) {
+      return failure(new ExtensionError('EXTENSION_INVALID_MANIFEST', 'manifest 无法读取'))
+    }
+    if (manifest.id !== extensionId) {
+      return failure(
+        new ExtensionError(
+          'EXTENSION_INVALID_MANIFEST',
+          `目录内 manifest.id 为 ${manifest.id}，与链接时不一致`
+        )
+      )
+    }
+
+    try {
+      const drift = this.checkInstallConsistency(record, manifest)
+      if (drift && manifest.version !== record.version) {
+        // 开发模式允许版本自由变化：这里把状态对齐到磁盘，而不是拒绝启动。
+        this.registry.upsert({
+          ...record,
+          version: manifest.version,
+          apiVersion: manifest.apiVersion,
+          grantedPermissions: record.grantedPermissions.filter((permission) =>
+            manifest.permissions.includes(permission)
+          ),
+          updatedAt: this.now()
+        })
+      }
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+
+    this.manifests.set(extensionId, manifest)
+    this.syncDeclared(extensionId, manifest)
+    this.inconsistencies.delete(extensionId)
+    this.storageHolds.delete(extensionId)
+
+    let startError: unknown = null
+    if (record.enabled) {
+      try {
+        await this.startHost(extensionId, manifest)
+      } catch (error) {
+        startError = error
+      }
+    }
+    this.logs.append(extensionId, 'info', 'core', '开发项目已重新加载')
+    this.dependencies.onChange?.(extensionId, 'installed')
+    if (startError) {
+      return failure(toExtensionErrorPayload(startError) as unknown as ExtensionError)
+    }
+    return { success: true }
+  }
+
+  /**
+   * 移除开发链接。
+   *
+   * 绝不删除外部源码目录。若安装副本还在，把来源退回安装副本；
+   * 否则移除 Registry 记录。用户数据按 `keepData` 决定。
+   */
+  async unlinkDevelopment(
+    extensionId: string,
+    options: { keepData: boolean }
+  ): Promise<ExtensionOperationResult> {
+    const record = this.registry.get(extensionId)
+    if (!record) return failure(new ExtensionError('EXTENSION_NOT_FOUND'))
+    if (record.source !== 'development') {
+      return failure(new ExtensionError('INVALID_REQUEST', '该扩展不是开发模式'))
+    }
+
+    await this.stopHost(extensionId)
+    this.manifests.delete(extensionId)
+    this.inconsistencies.delete(extensionId)
+    this.storageHolds.delete(extensionId)
+
+    const installedRoot = this.paths.installDir(extensionId)
+    const hasInstalledCopy = fs.existsSync(path.join(installedRoot, 'manifest.json'))
+    try {
+      if (hasInstalledCopy) {
+        // 回到安装副本：不是删除，只是换来源。
+        this.registry.upsert({
+          ...record,
+          source: 'directory',
+          enabled: false,
+          updatedAt: this.now()
+        })
+        const restored = this.readManifest(extensionId)
+        if (restored) {
+          this.manifests.set(extensionId, restored)
+          this.syncDeclared(extensionId, restored)
+        }
+      } else {
+        this.registry.remove(extensionId)
+      }
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+
+    if (!options.keepData) {
+      await fs
+        .rm(this.paths.extensionDataDir(extensionId), { recursive: true, force: true })
+        .catch(() => undefined)
+    }
+    this.logs.append(extensionId, 'info', 'core', '已移除开发链接（外部源码未删除）')
+    this.dependencies.onChange?.(extensionId, hasInstalledCopy ? 'installed' : 'uninstalled')
+    return { success: true }
+  }
+
+  /**
+   * 把开发项目转成正式安装副本。
+   *
+   * 只复制代码；用户配置本来就在 `extensions-data`，不受影响。
+   */
+  async convertDevelopmentToInstalled(extensionId: string): Promise<ExtensionOperationResult> {
+    const record = this.registry.get(extensionId)
+    if (!record) return failure(new ExtensionError('EXTENSION_NOT_FOUND'))
+    if (record.source !== 'development') {
+      return failure(new ExtensionError('INVALID_REQUEST', '该扩展不是开发模式'))
+    }
+    let root: string
+    try {
+      root = this.roots.resolve(extensionId).root
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+
+    await this.stopHost(extensionId)
+    // 转换后不自动运行：先把启用状态落成 false，安装器才会保留它。
+    try {
+      this.registry.setEnabled(extensionId, false)
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+
+    try {
+      const outcome = await this.installer.installFromDirectory(root, {
+        appVersion: this.dependencies.appVersion,
+        source: 'directory',
+        beforeReplace: async () => {
+          await this.stopHost(extensionId)
+        }
+      })
+      await outcome.cleanup()
+      this.manifests.delete(extensionId)
+      this.manifests.set(extensionId, outcome.manifest)
+      this.syncDeclared(extensionId, outcome.manifest)
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+
+    this.logs.append(extensionId, 'info', 'core', '开发项目已转为正式安装')
+    this.dependencies.onChange?.(extensionId, 'installed')
+    return { success: true }
+  }
+
+  /**
+   * 从官方模板生成一个独立项目（不安装、不启用）。
+   *
+   * ZIP 来自官方模板目录并已校验哈希；生成过程在暂存目录完成，
+   * 目标目录非空时不会写入任何文件。
+   */
+  async createProjectFromTemplate(
+    templateId: string,
+    targetDirectory: string,
+    options: { extensionId: string; name?: string }
+  ): Promise<ExtensionProjectResult> {
+    if (!this.templates) {
+      return {
+        success: false,
+        error: { code: 'CAPABILITY_UNAVAILABLE', message: '模板目录不可用' }
+      }
+    }
+    if (!isValidExtensionId(options.extensionId)) {
+      return {
+        success: false,
+        error: { code: 'INVALID_REQUEST', message: '扩展 id 必须是反向域名格式' }
+      }
+    }
+    if (this.registry.get(options.extensionId)) {
+      return {
+        success: false,
+        error: { code: 'EXTENSION_ALREADY_INSTALLED', message: '该扩展 id 已被占用' }
+      }
+    }
+
+    let resolved: Awaited<ReturnType<ExtensionTemplateCatalog['resolveZip']>>
+    try {
+      resolved = await this.templates.resolveZip(templateId)
+    } catch (error) {
+      return { success: false, error: toExtensionErrorPayload(error) }
+    }
+
+    try {
+      const outcome = await createProjectFiles({
+        zipPath: resolved.path,
+        targetDir: targetDirectory,
+        extensionId: options.extensionId,
+        templateExtensionId: resolved.template.extensionId,
+        ...(options.name ? { name: options.name } : {})
+      })
+      this.logs.append(
+        options.extensionId,
+        'info',
+        'core',
+        `已从模板 ${resolved.template.templateId} 生成独立项目`
+      )
+      return {
+        success: true,
+        projectPath: outcome.projectPath,
+        rewrittenFiles: outcome.rewrittenFiles
+      }
+    } catch (error) {
+      return { success: false, error: toExtensionErrorPayload(error) }
+    }
+  }
+
+  /**
+   * 把已安装副本导出成外部项目，并把来源切换为 development。
+   *
+   * 导出的必须是**用户改过的安装副本**，不能重新解压官方 ZIP——
+   * 那样会把二开内容换回原版。原安装副本保留，作为显式恢复来源。
+   */
+  async exportInstalledAsProject(
+    extensionId: string,
+    targetDirectory: string
+  ): Promise<ExtensionProjectResult> {
+    const record = this.registry.get(extensionId)
+    if (!record) return { success: false, error: { code: 'EXTENSION_NOT_FOUND', message: '' } }
+    if (record.source === 'development') {
+      return {
+        success: false,
+        error: { code: 'INVALID_REQUEST', message: '该扩展已经是开发模式' }
+      }
+    }
+    const installRoot = this.paths.installDir(extensionId)
+
+    await this.stopHost(extensionId)
+    let projectPath: string
+    try {
+      const outcome = await exportInstalledCopy(installRoot, targetDirectory)
+      projectPath = fs.realpathSync(outcome.projectPath)
+    } catch (error) {
+      // 导出失败时把旧 Host 拉回来，别让扩展停在半死状态。
+      await this.restoreHostAfterFailure(extensionId)
+      return { success: false, error: toExtensionErrorPayload(error) }
+    }
+
+    const parsed = (() => {
+      try {
+        return parseExtensionManifest(fs.readJsonSync(path.join(projectPath, 'manifest.json')))
+      } catch {
+        return null
+      }
+    })()
+    if (!parsed?.ok || !parsed.manifest || parsed.manifest.id !== extensionId) {
+      return {
+        success: false,
+        error: {
+          code: 'EXTENSION_INVALID_MANIFEST',
+          message: '导出的项目 manifest 与原扩展不一致，未切换来源'
+        }
+      }
+    }
+
+    const next = {
+      ...record,
+      source: 'development' as const,
+      developmentSourcePath: projectPath,
+      // 转换后不自动运行；授权按新 manifest 取交集。
+      enabled: false,
+      grantedPermissions: record.grantedPermissions.filter((permission) =>
+        parsed.manifest!.permissions.includes(permission)
+      ),
+      updatedAt: this.now()
+    }
+    // 模板身份与旧指纹在新来源下没有意义，必须清掉。
+    delete next.templateId
+    delete next.templateVersion
+    delete next.installedCodeDigest
+
+    try {
+      this.registry.upsert(next)
+    } catch {
+      return {
+        success: false,
+        error: {
+          code: 'EXTENSION_REGISTRY_UNREADABLE',
+          message: '项目已导出，但扩展状态写入失败；请用「链接本地项目」重新接入'
+        }
+      }
+    }
+
+    this.manifests.delete(extensionId)
+    this.manifests.set(extensionId, parsed.manifest)
+    this.syncDeclared(extensionId, parsed.manifest)
+    this.logs.append(extensionId, 'info', 'core', '已导出为开发项目并切换来源')
+    this.dependencies.onChange?.(extensionId, 'installed')
+    return { success: true, projectPath }
+  }
+
+  /** 目标文件必须真实落在扩展根目录内（跟随符号链接后仍在内）。 */
+  private isFileInside(root: string, target: string): boolean {
+    try {
+      const realRoot = fs.realpathSync(root)
+      const realTarget = fs.realpathSync(target)
+      return isPathInside(realRoot, realTarget) && fs.statSync(realTarget).isFile()
+    } catch {
+      return false
+    }
+  }
+
+  /** 状态文件的可信度；`unreadable` 时界面必须提示，而不是显示「没有扩展」。 */
+  getHealth(): ExtensionSystemHealth {
+    const health = this.registry.getHealth()
+    return {
+      registry: {
+        state: health.state,
+        ...(health.message ? { message: health.message } : {})
+      }
+    }
+  }
+
+  /**
+   * 授予扩展已声明的权限。
+   *
+   * 只接受 manifest 里出现过的权限：渲染层传来的字符串不能扩大扩展的能力面。
+   * 权限在子进程启动时快照，因此已启用的扩展需要重启后台才会生效。
+   */
+  async grantPermissions(
+    extensionId: string,
+    permissions: ExtensionPermission[]
+  ): Promise<ExtensionOperationResult> {
+    const record = this.registry.get(extensionId)
+    if (!record) return failure(new ExtensionError('EXTENSION_NOT_FOUND'))
+    const manifest = this.readManifest(extensionId)
+    if (!manifest) return failure(new ExtensionError('EXTENSION_INVALID_MANIFEST', '扩展文件缺失'))
+
+    const granted = normalizeExtensionPermissions([
+      ...record.grantedPermissions,
+      ...permissions.filter((permission) => manifest.permissions.includes(permission))
+    ])
+    try {
+      this.registry.setGrantedPermissions(extensionId, granted)
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+    if (record.enabled && manifest.entrypoints.background) {
+      await this.startHost(extensionId, manifest).catch(() => undefined)
+    }
+    this.dependencies.onChange?.(extensionId, 'enabled')
+    return { success: true }
+  }
+
+  /** 撤销单项授权；已启用时需要重启后台，正在运行的能力随之失效。 */
+  async revokePermission(
+    extensionId: string,
+    permission: ExtensionPermission
+  ): Promise<ExtensionOperationResult> {
+    const record = this.registry.get(extensionId)
+    if (!record) return failure(new ExtensionError('EXTENSION_NOT_FOUND'))
+    const manifest = this.readManifest(extensionId)
+    try {
+      this.registry.setGrantedPermissions(
+        extensionId,
+        record.grantedPermissions.filter((item) => item !== permission)
+      )
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+    if (record.enabled && manifest?.entrypoints.background) {
+      await this.startHost(extensionId, manifest).catch(() => undefined)
+    }
+    this.dependencies.onChange?.(extensionId, 'enabled')
+    return { success: true }
+  }
+
+  /** 重置扩展私有存储；损坏现场已经由存储层另存为 `.corrupt-*`。 */
+  resetStorage(extensionId: string): ExtensionOperationResult {
+    const record = this.registry.get(extensionId)
+    if (!record) return failure(new ExtensionError('EXTENSION_NOT_FOUND'))
+    try {
+      this.storage.reset(extensionId)
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+    this.dependencies.onChange?.(extensionId, 'runtime')
+    return { success: true }
   }
 
   async setEnabled(extensionId: string, enabled: boolean): Promise<ExtensionOperationResult> {
@@ -229,6 +976,27 @@ export class ExtensionManager {
       return { success: true }
     }
 
+    const drift = this.checkInstallConsistency(record, manifest)
+    if (drift) {
+      this.inconsistencies.set(extensionId, drift)
+      return failure(new ExtensionError('EXTENSION_INCOMPATIBLE', drift))
+    }
+
+    // 配置还没被用户确认前不允许启动：恢复出来的开关可能还停在旧值上。
+    const storageHealth = this.storage.health(extensionId)
+    if (storageHealth.state !== 'ok') {
+      this.storageHolds.add(extensionId)
+      return failure(
+        new ExtensionError(
+          'EXTENSION_STORAGE_CORRUPTED',
+          storageHealth.state === 'recovered-from-backup'
+            ? '扩展配置曾从备份恢复，请先在详情页确认后再启用'
+            : '扩展配置已损坏，请先重置配置再启用'
+        )
+      )
+    }
+    this.storageHolds.delete(extensionId)
+
     const compatibility = checkExtensionCompatibility(manifest, this.dependencies.appVersion)
     if (!compatibility.compatible) {
       return failure(new ExtensionError('EXTENSION_INCOMPATIBLE', compatibility.reason))
@@ -244,6 +1012,93 @@ export class ExtensionManager {
       }
     }
     this.dependencies.onChange?.(extensionId, 'enabled')
+    return { success: true }
+  }
+
+  /** 清除「状态文件曾恢复」的提示；不改动任何扩展的启用状态。 */
+  acknowledgeRegistryRecovery(): ExtensionOperationResult {
+    try {
+      this.registry.acknowledgeRecovery()
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+    this.dependencies.onChange?.('', 'runtime')
+    return { success: true }
+  }
+
+  /** 接受从备份恢复出来的扩展配置，之后才允许启用该扩展。 */
+  acknowledgeStorageRecovery(extensionId: string): ExtensionOperationResult {
+    const record = this.registry.get(extensionId)
+    if (!record) return failure(new ExtensionError('EXTENSION_NOT_FOUND'))
+    try {
+      this.storage.acknowledge(extensionId)
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+    this.storageHolds.delete(extensionId)
+    this.dependencies.onChange?.(extensionId, 'runtime')
+    return { success: true }
+  }
+
+  /**
+   * 采用磁盘上的代码版本：把状态记录的版本对齐到 manifest。
+   *
+   * 用于「上次升级中断」后的修复。授权按新 manifest 取交集，不会扩大能力。
+   */
+  adoptInstalledCode(extensionId: string): ExtensionOperationResult {
+    const record = this.registry.get(extensionId)
+    const manifest = this.readManifest(extensionId)
+    if (!record) return failure(new ExtensionError('EXTENSION_NOT_FOUND'))
+    if (!manifest) return failure(new ExtensionError('EXTENSION_INVALID_MANIFEST', '扩展文件缺失'))
+    try {
+      this.registry.upsert({
+        ...record,
+        version: manifest.version,
+        apiVersion: manifest.apiVersion,
+        grantedPermissions: record.grantedPermissions.filter((permission) =>
+          manifest.permissions.includes(permission)
+        ),
+        updatedAt: this.now()
+      })
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+    this.inconsistencies.delete(extensionId)
+    this.manifests.delete(extensionId)
+    this.dependencies.onChange?.(extensionId, 'installed')
+    return { success: true }
+  }
+
+  /** 把最近的升级过渡备份换回来，用于「新代码可疑、旧代码还在」的场景。 */
+  async rollbackInterruptedUpgrade(extensionId: string): Promise<ExtensionOperationResult> {
+    const record = this.registry.get(extensionId)
+    if (!record) return failure(new ExtensionError('EXTENSION_NOT_FOUND'))
+    await this.stopHost(extensionId)
+    let restored: { restored: boolean; manifest?: ExtensionManifest }
+    try {
+      restored = await this.installer.restoreLatestBackup(extensionId)
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+    if (!restored.restored || !restored.manifest) {
+      return failure(new ExtensionError('EXTENSION_INSTALL_FAILED', '没有可用的升级备份'))
+    }
+    try {
+      this.registry.upsert({
+        ...record,
+        version: restored.manifest.version,
+        apiVersion: restored.manifest.apiVersion,
+        grantedPermissions: record.grantedPermissions.filter((permission) =>
+          restored.manifest!.permissions.includes(permission)
+        ),
+        updatedAt: this.now()
+      })
+    } catch (error) {
+      return failure(toExtensionErrorPayload(error) as unknown as ExtensionError)
+    }
+    this.inconsistencies.delete(extensionId)
+    this.manifests.delete(extensionId)
+    this.dependencies.onChange?.(extensionId, 'installed')
     return { success: true }
   }
 
@@ -297,17 +1152,18 @@ export class ExtensionManager {
       if (!PAGE_METHODS.includes(method as ExtensionPageMethod)) {
         throw new ExtensionError('PERMISSION_DENIED', `页面不能调用 ${method}`)
       }
-      if (method.startsWith('douyin.cookie.') && extensionId !== 'com.example.douyin-sender') {
-        throw new ExtensionError('PERMISSION_DENIED', 'Cookie 能力不适用于此扩展')
-      }
       const record = this.registry.get(extensionId)
       if (!record) throw new ExtensionError('EXTENSION_NOT_FOUND')
       const manifest = this.readManifest(extensionId)
       if (!manifest) throw new ExtensionError('EXTENSION_INVALID_MANIFEST', '扩展文件缺失')
-      if (!manifest.permissions.includes('storage') && method.startsWith('storage.')) {
+      // 页面桥只认「已授予」的权限：manifest 声明只是申请，不代表用户同意。
+      if (!record.grantedPermissions.includes('storage') && method.startsWith('storage.')) {
         throw new ExtensionError('PERMISSION_DENIED', '扩展没有 storage 权限')
       }
-      if (method === 'contacts.listGroups' && !manifest.permissions.includes('contacts.list')) {
+      if (
+        method === 'contacts.listGroups' &&
+        !record.grantedPermissions.includes('contacts.list')
+      ) {
         throw new ExtensionError('PERMISSION_DENIED', '扩展没有 contacts.list 权限')
       }
       switch (method as ExtensionPageMethod) {
@@ -334,38 +1190,34 @@ export class ExtensionManager {
             }
           }
         }
-        case 'test.send': {
-          if (extensionId !== 'com.example.douyin-sender') {
-            throw new ExtensionError('PERMISSION_DENIED', '测试能力不适用于此扩展')
+        case 'extension.request': {
+          // 通用转发：只进入**同一扩展**的后台，宿主不知道任何具体业务。
+          const inner = String(params.method || '').trim()
+          if (!PAGE_REQUEST_METHOD.test(inner)) {
+            throw new ExtensionError('INVALID_REQUEST', '页面请求方法名不合法')
+          }
+          if (!record.enabled) throw new ExtensionError('EXTENSION_DISABLED')
+          if (this.isSuspended(extensionId)) {
+            throw new ExtensionError('EXTENSION_STORAGE_CORRUPTED', '扩展已暂停，页面请求被拒绝')
           }
           const host = this.hosts.get(extensionId)
-          if (!host) throw new ExtensionError('EXTENSION_DISABLED')
-          const cookieHeader = String(params.cookieHeader || '') || this.readDouyinCookie()
-          try {
-            return { ok: true, result: await host.testSend({ ...params, cookieHeader }) }
-          } finally {
-            params.cookieHeader = ''
+          if (!host) throw new ExtensionError('EXTENSION_HOST_UNAVAILABLE')
+          const rawParams = params.params
+          if (
+            rawParams !== undefined &&
+            (typeof rawParams !== 'object' || Array.isArray(rawParams))
+          ) {
+            throw new ExtensionError('INVALID_REQUEST', 'params 必须是对象')
+          }
+          return {
+            ok: true,
+            result: await host.requestPage(
+              inner,
+              (rawParams as Record<string, unknown> | undefined) ?? {},
+              10_000
+            )
           }
         }
-        case 'douyin.cookie.get':
-          return { ok: true, result: { configured: Boolean(this.readDouyinCookie()) } }
-        case 'douyin.cookie.set': {
-          const value = String(params.cookieHeader || '').trim()
-          if (!value) throw new ExtensionError('INVALID_REQUEST', 'Cookie 不能为空')
-          if (!safeStorage.isEncryptionAvailable())
-            throw new ExtensionError('CAPABILITY_UNAVAILABLE', '系统安全存储不可用')
-          fs.writeFileSync(
-            path.join(this.paths.userData, 'douyin-cookie.bin'),
-            safeStorage.encryptString(value),
-            { mode: 0o600 }
-          )
-          fs.chmodSync(path.join(this.paths.userData, 'douyin-cookie.bin'), 0o600)
-          this.syncDouyinCookieToExtensionData(value)
-          return { ok: true, result: { configured: true } }
-        }
-        case 'douyin.cookie.clear':
-          this.clearDouyinCookie()
-          return { ok: true, result: { configured: false } }
         case 'extension.info':
           return {
             ok: true,
@@ -389,53 +1241,6 @@ export class ExtensionManager {
     this.eventBus.handleMessage(message)
   }
 
-  private syncDouyinCookieToExtensionData(value: string): void {
-    try {
-      const dataDir = this.paths.extensionDataDir('com.example.douyin-sender')
-      fs.ensureDirSync(dataDir)
-      const target = path.join(dataDir, 'douyin-cookie.txt')
-      fs.writeFileSync(target, value, { mode: 0o600 })
-      fs.chmodSync(target, 0o600)
-    } catch {
-      // 扩展数据目录同步失败不影响加密主存储。
-    }
-  }
-
-  private readDouyinCookie(): string {
-    const file = path.join(this.paths.userData, 'douyin-cookie.bin')
-    if (fs.existsSync(file) && safeStorage.isEncryptionAvailable()) {
-      try {
-        const decrypted = safeStorage.decryptString(fs.readFileSync(file)).trim()
-        if (decrypted) {
-          this.syncDouyinCookieToExtensionData(decrypted)
-          return decrypted
-        }
-      } catch {
-        // 加密文件损坏或不可解密时继续尝试桌面 Cookie 文件。
-      }
-    }
-    const desktopCookie = path.join(os.homedir(), 'Desktop', 'douyin-cookie')
-    if (fs.existsSync(desktopCookie)) {
-      try {
-        return fs.readFileSync(desktopCookie, 'utf8').trim()
-      } catch {
-        return ''
-      }
-    }
-    return ''
-  }
-
-  private clearDouyinCookie(): void {
-    try {
-      fs.removeSync(path.join(this.paths.userData, 'douyin-cookie.bin'))
-      fs.removeSync(
-        path.join(this.paths.extensionDataDir('com.example.douyin-sender'), 'douyin-cookie.txt')
-      )
-    } catch {
-      throw new ExtensionError('INVALID_REQUEST', '无法清除抖音 Cookie')
-    }
-  }
-
   setAccountId(accountId: string): void {
     this.eventBus.setAccountId(accountId)
   }
@@ -450,6 +1255,9 @@ export class ExtensionManager {
     const record = this.registry.get(extensionId)
     if (!record) throw new ExtensionError('EXTENSION_NOT_FOUND')
     if (!record.enabled) throw new ExtensionError('EXTENSION_DISABLED')
+    if (this.isSuspended(extensionId)) {
+      throw new ExtensionError('EXTENSION_STORAGE_CORRUPTED', '扩展配置待确认，动作已暂停')
+    }
     if (!hasExtensionPermission(record.grantedPermissions, 'automation.action')) {
       throw new ExtensionError('PERMISSION_DENIED', '扩展没有 automation.action 权限')
     }
@@ -465,27 +1273,97 @@ export class ExtensionManager {
     return this.actions.list()
   }
 
+  /**
+   * 供自动化编辑器使用的动作列表。
+   *
+   * `registered` 只是「后台注册过」，是否可用要逐条判断：停用、代码缺失、
+   * 权限未授予、Storage 暂停、Schema 非法，任一成立都不可执行。
+   */
+  listActions(): ExtensionActionInfo[] {
+    return this.actions.list().map((action) => {
+      const record = this.registry.get(action.extensionId)
+      const manifest = this.manifests.get(action.extensionId)
+      const base: ExtensionActionInfo = {
+        extensionId: action.extensionId,
+        extensionName: action.extensionName,
+        actionId: action.actionId,
+        title: action.title,
+        ...(action.description ? { description: action.description } : {}),
+        declared: action.declared,
+        registered: action.registered,
+        enabled: record?.enabled === true,
+        available: false,
+        ...(action.inputSchema ? { inputSchema: action.inputSchema } : {})
+      }
+      const block = (reason: string): ExtensionActionInfo => ({
+        ...base,
+        unavailableReason: reason
+      })
+
+      if (!record) return block('扩展已卸载')
+      if (!manifest) return block('扩展代码缺失或 manifest 无法读取')
+      const compatibility = checkExtensionCompatibility(manifest, this.dependencies.appVersion)
+      if (!compatibility.compatible) return block(compatibility.reason || '扩展与当前版本不兼容')
+      if (!record.enabled) return block('扩展未启用')
+      if (this.isSuspended(record.id)) return block('扩展已暂停（配置待确认）')
+      if (!hasExtensionPermission(record.grantedPermissions, 'automation.action')) {
+        return block('未授予「执行自动化动作」权限')
+      }
+      if (action.schemaError) return block(`参数 Schema 不可用：${action.schemaError}`)
+      if (!action.registered) {
+        return block(action.declared ? '后台未注册该动作（可能仍在启动或代码报错）' : '动作未注册')
+      }
+      return { ...base, available: true }
+    })
+  }
+
   async dispose(): Promise<void> {
     const ids = Array.from(this.hosts.keys())
     await Promise.all(ids.map((id) => this.stopHost(id)))
   }
 
+  /**
+   * 安装 / 升级的编排。
+   *
+   * 顺序是「停旧进程 → 换代码 → 写状态 → 起新进程」，任何一步失败都要让
+   * 磁盘与 Registry 回到同一个版本。仅靠多次 rename 不构成跨进程事务，
+   * 所以失败时显式回滚，并把错误原样返回给界面，不吞成成功。
+   */
   private async install(
-    run: () => Promise<{ manifest: ExtensionManifest; upgraded: boolean; previousVersion?: string }>
+    run: (
+      beforeReplace: (
+        manifest: ExtensionManifest,
+        previous: ExtensionRegistryRecord | undefined
+      ) => Promise<void>
+    ) => Promise<InstallOutcome>
   ): Promise<ExtensionInstallResult> {
-    let outcome: Awaited<ReturnType<typeof run>>
+    let upgradingId: string | null = null
+    const beforeReplace = async (
+      manifest: ExtensionManifest,
+      previous: ExtensionRegistryRecord | undefined
+    ): Promise<void> => {
+      upgradingId = manifest.id
+      // 模板来源的代码被用户改过时，不允许任何安装路径静默覆盖。
+      if (previous?.source === 'template') this.assertTemplateCodeUntouched(previous)
+      // manifest 缓存必须先失效：否则后续读到的仍是旧版本的入口与权限。
+      this.manifests.delete(manifest.id)
+      if (previous?.enabled) await this.stopHost(manifest.id)
+    }
+
+    let outcome: InstallOutcome
     try {
-      outcome = await run()
+      outcome = await run(beforeReplace)
     } catch (error) {
+      // 失败可能发生在旧 Host 已停止之后：旧代码仍在磁盘上，尽量把它拉回来。
+      if (upgradingId) await this.restoreHostAfterFailure(upgradingId)
       return { success: false, error: toExtensionErrorPayload(error) }
     }
-    const { manifest } = outcome
-    const wasEnabled = this.registry.get(manifest.id)?.enabled === true
-    if (wasEnabled) await this.stopHost(manifest.id)
-    this.manifests.delete(manifest.id)
+
+    const { manifest, previousRecord } = outcome
+    const wasEnabled = previousRecord?.enabled === true
     this.manifests.set(manifest.id, manifest)
     this.syncDeclared(manifest.id, manifest)
-    // 新安装只自动授予低风险权限；升级保留用户已经授予的集合。
+    // 新安装只自动授予低风险权限；升级保留用户已经授予的集合（已按新 manifest 取交集）。
     if (!outcome.upgraded) {
       this.registry.setGrantedPermissions(manifest.id, autoGrantedPermissions(manifest.permissions))
     }
@@ -498,22 +1376,87 @@ export class ExtensionManager {
         : `扩展已安装：${manifest.version}`
     )
     this.dependencies.onChange?.(manifest.id, 'installed')
+
     if (wasEnabled && manifest.entrypoints.background) {
-      await this.startHost(manifest.id, manifest).catch(() => undefined)
+      try {
+        await this.startHost(manifest.id, manifest)
+      } catch (error) {
+        // 新版本起不来：代码与状态一起退回旧版本，并把旧版本重新拉起。
+        await this.stopHost(manifest.id)
+        await outcome.rollback().catch(() => undefined)
+        this.manifests.delete(manifest.id)
+        await this.restoreHostAfterFailure(manifest.id)
+        const message = error instanceof Error ? error.message : '新版本启动失败'
+        this.logs.append(manifest.id, 'error', 'core', `新版本启动失败，已回滚：${message}`)
+        this.dependencies.onChange?.(manifest.id, 'installed')
+        return {
+          success: false,
+          error: {
+            code: 'EXTENSION_INSTALL_FAILED',
+            message: `扩展已回滚到上一版本：${message}`
+          }
+        }
+      }
     }
+
+    await outcome.cleanup().catch(() => undefined)
     const installed = this.get(manifest.id)
     return { success: true, ...(installed ? { extension: installed } : {}) }
   }
 
+  /**
+   * 模板来源的「本地改动」检查。
+   *
+   * 只保护 `template` 来源：用户自己装的 ZIP / 目录本来就会被覆盖，
+   * 开发模式根本没有安装副本可覆盖。
+   */
+  private assertTemplateCodeUntouched(record: ExtensionRegistryRecord): void {
+    const root = this.paths.installDir(record.id)
+    if (!fs.existsSync(path.join(root, 'manifest.json'))) return
+    if (!record.installedCodeDigest) {
+      throw new ExtensionError(
+        'EXTENSION_MODIFIED_LOCALLY',
+        '无法确认该模板的代码是否被修改过；请先「导出为开发项目」再更新'
+      )
+    }
+    const current = computeDirectoryDigest(root)
+    if (current !== record.installedCodeDigest) {
+      throw new ExtensionError(
+        'EXTENSION_MODIFIED_LOCALLY',
+        '检测到安装代码已被修改，已阻止自动覆盖；请先「导出为开发项目」'
+      )
+    }
+  }
+
+  /** 安装流程中断后，把 Registry 里仍标记为启用的扩展重新拉起来。 */
+  private async restoreHostAfterFailure(extensionId: string): Promise<void> {
+    const record = this.registry.get(extensionId)
+    if (!record?.enabled) return
+    this.manifests.delete(extensionId)
+    const manifest = this.readManifest(extensionId)
+    if (!manifest?.entrypoints.background) return
+    await this.startHost(extensionId, manifest).catch(() => undefined)
+  }
+
   private async startHost(extensionId: string, manifest: ExtensionManifest): Promise<void> {
     if (!manifest.entrypoints.background) return
+    // 双保险：任何路径（含自动恢复、自动化触发）都不能绕过这两道闸。
+    const drift = this.inconsistencies.get(extensionId)
+    if (drift) {
+      throw new ExtensionError('EXTENSION_INCOMPATIBLE', drift)
+    }
+    if (this.storageHolds.has(extensionId)) {
+      throw new ExtensionError('EXTENSION_STORAGE_CORRUPTED', '扩展配置尚未确认恢复，已阻止启动')
+    }
     await this.stopHost(extensionId)
+    const resolvedRoot = this.roots.resolve(extensionId)
     const host = new ExtensionHost({
       extensionId,
-      extensionDir: this.paths.installDir(extensionId),
+      extensionDir: resolvedRoot.root,
       dataDir: this.paths.extensionDataDir(extensionId),
       permissions: this.registry.get(extensionId)?.grantedPermissions ?? [],
       storage: this.storage,
+      secrets: this.secrets,
       spawn: this.dependencies.spawn ?? this.defaultSpawn(),
       onLog: (level, message) => {
         this.logs.append(extensionId, level, 'core', message)
@@ -577,6 +1520,8 @@ export class ExtensionManager {
       const record = this.registry.get(extensionId)
       const manifest = this.manifests.get(extensionId)
       if (!record?.enabled || !manifest) continue
+      // 暂停中的扩展不再收事件：否则它仍会用旧规则回复。
+      if (this.isSuspended(extensionId)) continue
       if (!hasExtensionPermission(record.grantedPermissions, 'messages.subscribe')) continue
       if (host.snapshot().state !== 'active') continue
       subscribers.push({
@@ -625,6 +1570,9 @@ export class ExtensionManager {
     const record = this.registry.get(extensionId)
     if (!record) throw new ExtensionError('EXTENSION_NOT_FOUND')
     if (!record.enabled) throw new ExtensionError('EXTENSION_DISABLED')
+    if (this.isSuspended(extensionId)) {
+      throw new ExtensionError('EXTENSION_STORAGE_CORRUPTED', '扩展已暂停，发送被拒绝')
+    }
     const manifest = this.manifests.get(extensionId)
     return this.sendGateway.sendText(
       {
@@ -643,6 +1591,9 @@ export class ExtensionManager {
     const record = this.registry.get(extensionId)
     if (!record) throw new ExtensionError('EXTENSION_NOT_FOUND')
     if (!record.enabled) throw new ExtensionError('EXTENSION_DISABLED')
+    if (this.isSuspended(extensionId)) {
+      throw new ExtensionError('EXTENSION_STORAGE_CORRUPTED', '扩展已暂停，发送被拒绝')
+    }
     const manifest = this.manifests.get(extensionId)
     return this.sendGateway.sendImage(
       {
@@ -661,6 +1612,9 @@ export class ExtensionManager {
     const record = this.registry.get(extensionId)
     if (!record) throw new ExtensionError('EXTENSION_NOT_FOUND')
     if (!record.enabled) throw new ExtensionError('EXTENSION_DISABLED')
+    if (this.isSuspended(extensionId)) {
+      throw new ExtensionError('EXTENSION_STORAGE_CORRUPTED', '扩展已暂停，发送被拒绝')
+    }
     const manifest = this.manifests.get(extensionId)
     return this.sendGateway.sendVideo(
       {
@@ -696,10 +1650,16 @@ export class ExtensionManager {
         licensed,
         message: capability?.message || '暂时无法获知微信发送能力'
       },
-      ai: {
-        configured: false,
-        modelName: ''
-      }
+      ai: (() => {
+        try {
+          const status = this.dependencies.aiStatus?.()
+          return status
+            ? { configured: status.configured, modelName: status.modelName }
+            : { configured: false, modelName: '' }
+        } catch {
+          return { configured: false, modelName: '' }
+        }
+      })()
     }
   }
 
@@ -709,13 +1669,11 @@ export class ExtensionManager {
       ? checkExtensionCompatibility(manifest, this.dependencies.appVersion)
       : { compatible: false, code: 'manifest' as const, reason: '扩展文件缺失或 manifest 无法读取' }
     const host = this.hosts.get(record.id)
-    const runtime = host
-      ? host.snapshot()
-      : {
-          state: record.enabled ? ('active' as const) : ('inactive' as const),
-          since: record.updatedAt,
-          restarts: 0
-        }
+    const runtime = host ? host.snapshot() : this.deriveIdleRuntime(record, manifest)
+    const pendingPermissions = manifest
+      ? manifest.permissions.filter((permission) => !record.grantedPermissions.includes(permission))
+      : []
+    const storageHealth = this.storage.health(record.id)
     return {
       id: record.id,
       name: manifest?.name || record.id,
@@ -728,21 +1686,101 @@ export class ExtensionManager {
       installedAt: record.installedAt,
       updatedAt: record.updatedAt,
       compatibility,
+      source: record.source,
+      ...(record.templateId
+        ? {
+            template: {
+              id: record.templateId,
+              version: record.templateVersion || ''
+            }
+          }
+        : {}),
+      ...(record.source === 'development'
+        ? {
+            development: {
+              sourcePath: record.developmentSourcePath || '',
+              available: this.isDevelopmentRootAvailable(record.id)
+            }
+          }
+        : {}),
       permissions: manifest?.permissions ?? [],
       grantedPermissions: record.grantedPermissions,
+      pendingPermissions,
       runtime,
       pages: (manifest?.contributions.pages ?? []).map((page) => ({
         id: page.id,
         title: page.title
       })),
       automationActions: this.actions.summariesFor(record.id),
-      filesPresent: Boolean(manifest)
+      filesPresent: Boolean(manifest),
+      storage: {
+        state: storageHealth.state,
+        ...(storageHealth.message ? { message: storageHealth.message } : {})
+      }
+    }
+  }
+
+  /**
+   * 没有 Host 时的运行状态。
+   *
+   * 只有页面入口的扩展本来就不会有后台进程，必须与「启用但启动失败」区分开：
+   * 前者是 `inactive` 加说明，后者是 `error` 加原因。
+   */
+  private deriveIdleRuntime(
+    record: ExtensionRegistryRecord,
+    manifest: ExtensionManifest | null
+  ): InstalledExtension['runtime'] {
+    const base = { since: record.updatedAt, restarts: 0 }
+    // 版本不一致优先展示：即使扩展已停用，用户也需要知道上一次升级可能中断。
+    const drift = this.inconsistencies.get(record.id)
+    if (drift) return { state: 'error', ...base, lastError: drift }
+    if (this.storageHolds.has(record.id) && record.enabled) {
+      return {
+        state: 'error',
+        ...base,
+        lastError: '扩展配置曾从备份恢复，确认后才能启动'
+      }
+    }
+    if (!record.enabled) return { state: 'inactive', ...base }
+    if (!manifest) {
+      return {
+        state: 'error',
+        ...base,
+        lastError: '扩展文件缺失或 manifest 无法读取'
+      }
+    }
+    if (!manifest.entrypoints.background) {
+      return { state: 'inactive', ...base, note: '仅提供页面，没有后台任务' }
+    }
+    const compatibility = checkExtensionCompatibility(manifest, this.dependencies.appVersion)
+    if (!compatibility.compatible) {
+      return {
+        state: 'error',
+        ...base,
+        lastError: compatibility.reason || '扩展与当前版本不兼容'
+      }
+    }
+    return { state: 'error', ...base, lastError: '后台进程未启动' }
+  }
+
+  private isDevelopmentRootAvailable(extensionId: string): boolean {
+    try {
+      return Boolean(this.roots.resolve(extensionId).root)
+    } catch {
+      return false
     }
   }
 
   private readManifest(extensionId: string): ExtensionManifest | null {
     if (this.manifests.has(extensionId)) return this.manifests.get(extensionId) ?? null
-    const file = path.join(this.paths.installDir(extensionId), 'manifest.json')
+    let root: string
+    try {
+      root = this.roots.resolve(extensionId).root
+    } catch {
+      // 开发目录不可用或扩展不存在：交给调用方按「没有 manifest」处理。
+      return null
+    }
+    const file = path.join(root, 'manifest.json')
     let manifest: ExtensionManifest | null = null
     try {
       const parsed = parseExtensionManifest(fs.readJsonSync(file) as unknown)

@@ -1,5 +1,6 @@
 import type { ExtensionAutomationActionContribution } from '../../shared/extensions/manifest'
 import type { ExtensionAutomationActionSummary } from '../../shared/extensions/types'
+import type { ExtensionActionInputSchema } from '../../shared/extensions/action-schema'
 
 export interface RegisteredExtensionAction {
   extensionId: string
@@ -11,6 +12,9 @@ export interface RegisteredExtensionAction {
   registered: boolean
   /** manifest 是否声明了它（声明了但没注册 = 扩展代码有问题）。 */
   declared: boolean
+  inputSchema?: ExtensionActionInputSchema
+  /** Schema 校验失败的原因；有值时动作不可配置。 */
+  schemaError?: string
 }
 
 /**
@@ -25,7 +29,15 @@ export interface RegisteredExtensionAction {
 export class ExtensionActionRegistry {
   private readonly registered = new Map<
     string,
-    Map<string, { title: string; description?: string }>
+    Map<
+      string,
+      {
+        title: string
+        description?: string
+        inputSchema?: ExtensionActionInputSchema
+        schemaError?: string
+      }
+    >
   >()
   private readonly declared = new Map<
     string,
@@ -45,7 +57,13 @@ export class ExtensionActionRegistry {
   setRegistered(
     extensionId: string,
     extensionName: string,
-    actions: Array<{ id: string; title: string; description?: string }>
+    actions: Array<{
+      id: string
+      title: string
+      description?: string
+      inputSchema?: ExtensionActionInputSchema
+      schemaError?: string
+    }>
   ): void {
     this.names.set(extensionId, extensionName)
     this.registered.set(
@@ -55,7 +73,9 @@ export class ExtensionActionRegistry {
           action.id,
           {
             title: action.title,
-            ...(action.description ? { description: action.description } : {})
+            ...(action.description ? { description: action.description } : {}),
+            ...(action.inputSchema ? { inputSchema: action.inputSchema } : {}),
+            ...(action.schemaError ? { schemaError: action.schemaError } : {})
           }
         ])
       )
@@ -91,7 +111,9 @@ export class ExtensionActionRegistry {
         ? { description: runtime?.description || declaredAction?.description }
         : {}),
       registered: Boolean(runtime),
-      declared: Boolean(declaredAction)
+      declared: Boolean(declaredAction),
+      ...(runtime?.inputSchema ? { inputSchema: runtime.inputSchema } : {}),
+      ...(runtime?.schemaError ? { schemaError: runtime.schemaError } : {})
     }
   }
 
