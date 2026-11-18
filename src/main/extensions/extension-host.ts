@@ -43,6 +43,8 @@ const EVENT_REFILL_PER_SECOND = 60
 const GRACEFUL_EXIT_MS = 2_500
 /** 结束进程树之后等待 exit 事件的时间。 */
 const FORCE_EXIT_MS = 3_000
+/** taskkill 的等待上限：卡住时按降级处理，不能拖死停用流程。 */
+const TASKKILL_TIMEOUT_MS = 5_000
 
 /** stderr 采样窗口：只把有代表性的片段写进日志，避免日志洪水拖住主进程。 */
 const STDERR_WINDOW_MS = 10_000
@@ -324,7 +326,7 @@ export class ExtensionHost {
     }
 
     this.dependencies.onLog?.('warn', '扩展未在预期时间内退出，正在结束进程树')
-    this.killTree(child)
+    await this.killTree(child)
     if (!(await this.waitForExit(child, this.dependencies.forceExitMs ?? FORCE_EXIT_MS))) {
       this.dependencies.onLog?.('error', '扩展进程树未能退出，可能有子进程仍在运行')
     }
@@ -332,7 +334,7 @@ export class ExtensionHost {
   }
 
   /** 结束进程树；Windows 的 taskkill /T 必须在父进程存活时执行，否则找不到孙进程。 */
-  private killTree(child: ExtensionHostChild): void {
+  private async killTree(child: ExtensionHostChild): Promise<void> {
     const pid = child.pid
     if (!pid) {
       try {
@@ -342,10 +344,15 @@ export class ExtensionHost {
       }
       return
     }
-    const result = killProcessTree(pid)
-    if (result !== 'group' && process.platform !== 'win32') {
-      this.dependencies.onLog?.('warn', '未能结束扩展进程组，已退化为只结束主进程')
+    const result = await killProcessTree(pid, {
+      timeoutMs: this.dependencies.forceExitMs ?? TASKKILL_TIMEOUT_MS
+    })
+    if (result === 'group') return
+    if (process.platform === 'win32') {
+      this.dependencies.onLog?.('warn', '结束扩展进程树失败，可能有子进程仍在运行')
+      return
     }
+    this.dependencies.onLog?.('warn', '未能结束扩展进程组，已退化为只结束主进程')
   }
 
   private waitForExit(child: ExtensionHostChild, timeoutMs: number): Promise<boolean> {
@@ -874,27 +881,19 @@ export class ExtensionHost {
   }
 }
 
-/** 结束 `pid` 对应的进程树；`taskkill`：Windows 进程树，必须在父进程仍存活时调用。 */
-export function killProcessTree(
+/** 结束进程树；taskkill 只在 exit 0 时算成功，发起成功不算。 */
+export type ProcessTreeKillResult = 'group' | 'taskkill' | 'fallback'
+
+export async function killProcessTree(
   pid: number | undefined,
-  options: { platform?: NodeJS.Platform; signal?: NodeJS.Signals } = {}
-): 'group' | 'taskkill' | 'fallback' {
+  options: { platform?: NodeJS.Platform; signal?: NodeJS.Signals; timeoutMs?: number } = {}
+): Promise<ProcessTreeKillResult> {
   if (!pid) return 'fallback'
   const platform = options.platform ?? process.platform
   const signal = options.signal ?? 'SIGKILL'
 
   if (platform === 'win32') {
-    try {
-      const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
-        windowsHide: true,
-        stdio: 'ignore'
-      })
-      killer.on('error', () => undefined)
-      killer.unref?.()
-      return 'taskkill'
-    } catch {
-      return 'fallback'
-    }
+    return killWindowsProcessTree(pid, options.timeoutMs ?? TASKKILL_TIMEOUT_MS)
   }
 
   try {
@@ -908,6 +907,46 @@ export function killProcessTree(
     }
     return 'fallback'
   }
+}
+
+/** Windows：等 taskkill 真实退出，只认 exit code 0。 */
+function killWindowsProcessTree(
+  pid: number,
+  timeoutMs: number
+): Promise<'taskkill' | 'fallback'> {
+  return new Promise((resolve) => {
+    let killer: ChildProcess
+    try {
+      killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore'
+      })
+    } catch {
+      // 无法启动 taskkill（极少数受限环境）：只能退化为「主进程可能已退出」。
+      resolve('fallback')
+      return
+    }
+
+    let settled = false
+    const finish = (result: 'taskkill' | 'fallback'): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+
+    const timer = setTimeout(() => {
+      try {
+        killer.kill()
+      } catch {
+        // 已经退出。
+      }
+      finish('fallback')
+    }, timeoutMs)
+
+    killer.on('error', () => finish('fallback'))
+    killer.on('exit', (code) => finish(code === 0 ? 'taskkill' : 'fallback'))
+  })
 }
 
 /** 真实子进程：`ELECTRON_RUN_AS_NODE` 让 Electron 二进制以 Node 模式运行。 */

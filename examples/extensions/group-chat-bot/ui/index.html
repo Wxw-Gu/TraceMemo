@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>群聊机器人设置</title>
+    <title>群聊机器人 - 模板(如需使用请找授权你的人</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
@@ -12,7 +12,7 @@
         <div>
           <p class="eyebrow">TraceMemo 官方扩展模板 · com.example.group-chat-bot</p>
           <div class="hero-title-row">
-            <h1>群聊机器人</h1>
+            <h1>群聊机器人 - 模板(如需使用请找授权你的人</h1>
             <span id="hero-send-warn" class="send-warn-badge" hidden>
               <span class="send-warn-bang" aria-hidden="true">!</span>
               当前暂无发送能力
@@ -205,10 +205,7 @@
 
       <section class="card">
         <h2>触发策略、节奏与安全防护</h2>
-        <label class="check">
-          <input id="bot-enabled" type="checkbox" />
-          <span>启用群聊机器人自动接话（需同时在扩展中心启用本扩展并选择生效群聊）</span>
-        </label>
+        <p class="hint">扩展在扩展中心启用后即开始接话，接话范围由下方勾选的群聊决定。</p>
 
         <div class="grid two">
           <label class="field">
@@ -322,28 +319,39 @@
           <div>
             <h2>生效群聊与单群策略</h2>
             <p class="hint">
-              只对下方勾选的群聊生效。可为每个群单独分配人格、回复形式（文字/语音/随机）与群聊记忆。
+              先在上方下拉里挑选群聊，选中的会列在下方；每行的「生效」控制该群是否接话。人格、回复形式与群记忆可按群单独设置。
             </p>
           </div>
           <button id="reload-groups-btn" type="button" class="ghost">刷新群列表</button>
         </div>
 
         <div class="field">
-          <span>搜索并添加微信群聊</span>
+          <span>选择群聊</span>
           <div id="roster-picker" class="roster-picker">
-            <div id="roster-chips" class="roster-chips" hidden></div>
-            <input
-              id="roster-search"
-              type="text"
-              autocomplete="off"
-              placeholder="输入群名称或 chatroom ID 搜索并勾选…"
-            />
-            <div id="roster-menu" class="roster-menu" hidden></div>
+            <button
+              id="roster-toggle"
+              type="button"
+              class="roster-toggle"
+              aria-haspopup="true"
+              aria-expanded="false"
+            >
+              选择群聊…
+            </button>
+            <div id="roster-menu" class="roster-menu" hidden>
+              <input
+                id="roster-search"
+                type="text"
+                autocomplete="off"
+                placeholder="搜索群名称或 chatroom ID…"
+              />
+              <div id="roster-options"></div>
+            </div>
           </div>
         </div>
 
         <div class="group-table-header">
           <span>群聊名称</span>
+          <span>生效</span>
           <span>绑定人格</span>
           <span>回复形式</span>
           <span>群记忆</span>
@@ -351,7 +359,7 @@
         </div>
         <div id="group-list" class="group-list"></div>
         <p id="group-empty" class="empty-hint">
-          暂未选择任何群聊。请在上方搜索框中选择需要启用机器人的群聊。
+          还未选择群聊。请在上方下拉中选择需要接话的群聊。
         </p>
       </section>
 

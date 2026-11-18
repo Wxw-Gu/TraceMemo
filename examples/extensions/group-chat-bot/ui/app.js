@@ -92,17 +92,12 @@ let hostCanSend = true
 let sendMaskDismissed = false
 
 function syncSendCapabilityGating() {
-  const botEnabledEl = document.getElementById('bot-enabled')
   const saveBtnEl = document.getElementById('save-config-btn')
   const autoSendBtn = document.getElementById('test-send-auto-btn')
   const textSendBtn = document.getElementById('test-send-text-btn')
   const voiceSendBtn = document.getElementById('test-send-voice-btn')
 
   if (!hostCanSend) {
-    if (botEnabledEl) {
-      botEnabledEl.checked = false
-      botEnabledEl.disabled = true
-    }
     if (saveBtnEl) {
       saveBtnEl.disabled = true
       saveBtnEl.title = '当前暂无发送能力，仅可预览界面，无法保存启用'
@@ -111,7 +106,6 @@ function syncSendCapabilityGating() {
     if (textSendBtn) textSendBtn.disabled = true
     if (voiceSendBtn) voiceSendBtn.disabled = true
   } else {
-    if (botEnabledEl) botEnabledEl.disabled = false
     if (saveBtnEl) {
       saveBtnEl.disabled = false
       saveBtnEl.title = ''
@@ -192,9 +186,8 @@ function normalizeConfig(raw) {
   const rawGroups = input.groups && typeof input.groups === 'object' ? input.groups : {}
   for (const [groupId, value] of Object.entries(rawGroups)) {
     const item = value && typeof value === 'object' ? value : {}
-    if (item.enabled === false) continue
     groups[groupId] = {
-      enabled: true,
+      enabled: item.enabled !== false,
       name: String(item.name || '').slice(0, 64),
       personaId: validPersonaIds.has(item.personaId) ? item.personaId : defaultPersonaId,
       deliveryMode: ['inherit', 'text_only', 'voice_only', 'random_mix'].includes(
@@ -208,7 +201,7 @@ function normalizeConfig(raw) {
 
   return {
     version: 1,
-    enabled: input.enabled === true,
+    enabled: true,
     defaultPersonaId,
     triggerMode: ['mention', 'wake_word', 'mention_or_wake', 'ambient'].includes(input.triggerMode)
       ? input.triggerMode
@@ -554,71 +547,69 @@ function populatePersonaForm() {
 
 /* ---------- 群聊选择与单群配置 ---------- */
 
-function renderRosterChips() {
-  const container = document.getElementById('roster-chips')
-  const ids = Object.keys(config.groups)
-  container.textContent = ''
-  container.hidden = ids.length === 0
-
-  for (const id of ids) {
-    const chip = document.createElement('span')
-    chip.className = 'roster-chip'
-    const label = document.createElement('span')
-    label.textContent = groupDisplayName(id)
-    label.title = id
-    const removeBtn = document.createElement('button')
-    removeBtn.type = 'button'
-    removeBtn.textContent = '×'
-    removeBtn.setAttribute('aria-label', `移除 ${groupDisplayName(id)}`)
-    removeBtn.addEventListener('click', (event) => {
-      event.stopPropagation()
-      delete config.groups[id]
-      renderRosterChips()
-      renderRosterMenu()
-      renderGroupTable()
-      renderGroupDropdowns()
-    })
-    chip.append(label, removeBtn)
-    container.append(chip)
+function ensureGroupEntry(id, name) {
+  if (!config.groups[id]) {
+    config.groups[id] = {
+      enabled: true,
+      name: name || '',
+      personaId: config.defaultPersonaId,
+      deliveryMode: 'inherit',
+      memoryEnabled: true
+    }
   }
+  return config.groups[id]
 }
 
-function renderRosterMenu() {
-  const menu = document.getElementById('roster-menu')
-  if (menu.hidden) return
-  const query = document.getElementById('roster-search').value.trim().toLowerCase()
-  menu.textContent = ''
+function selectedGroupIds() {
+  return Object.keys(config.groups)
+}
+
+/** 下拉按钮文案：没选时说清楚，选了就给数量。 */
+function renderRosterToggle() {
+  const btn = document.getElementById('roster-toggle')
+  if (!btn) return
+  const count = selectedGroupIds().length
+  btn.textContent = count === 0 ? '选择群聊…' : `已选 ${count} 个群聊`
+}
+
+/** 下拉里的全量群列表，勾选即加入表格，取消即移出。 */
+function renderRosterOptions() {
+  const box = document.getElementById('roster-options')
+  if (!box) return
+  const searchEl = document.getElementById('roster-search')
+  const query = String(searchEl && searchEl.value ? searchEl.value : '').trim().toLowerCase()
+  box.textContent = ''
+
+  const empty = document.createElement('div')
+  empty.className = 'roster-empty'
 
   if (rosterError) {
-    const empty = document.createElement('div')
-    empty.className = 'roster-empty'
     empty.textContent = rosterError
-    menu.append(empty)
+    box.append(empty)
     return
   }
-
   if (!allGroups.length) {
-    const empty = document.createElement('div')
-    empty.className = 'roster-empty'
-    empty.textContent = '暂无可选群会话（需先连接本地微信库并开启群列表读取权限）'
-    menu.append(empty)
+    empty.textContent = '暂未读取到群会话，请点「刷新群列表」并确认已授予群列表读取权限'
+    box.append(empty)
     return
   }
 
   const matched = allGroups.filter((group) => {
+    if (!group || !group.id) return false
     if (!query) return true
-    return group.id.toLowerCase().includes(query) || group.name.toLowerCase().includes(query)
+    return (
+      group.id.toLowerCase().includes(query) ||
+      String(group.name || '').toLowerCase().includes(query)
+    )
   })
 
   if (!matched.length) {
-    const empty = document.createElement('div')
-    empty.className = 'roster-empty'
     empty.textContent = '没有匹配的微信群聊'
-    menu.append(empty)
+    box.append(empty)
     return
   }
 
-  for (const group of matched.slice(0, 200)) {
+  for (const group of matched.slice(0, 300)) {
     const row = document.createElement('label')
     row.className = 'roster-option'
     const checkbox = document.createElement('input')
@@ -626,39 +617,36 @@ function renderRosterMenu() {
     checkbox.checked = Boolean(config.groups[group.id])
     checkbox.addEventListener('change', () => {
       if (checkbox.checked) {
-        config.groups[group.id] = {
-          enabled: true,
-          name: group.name || '',
-          personaId: config.defaultPersonaId,
-          deliveryMode: 'inherit',
-          memoryEnabled: true
-        }
+        ensureGroupEntry(group.id, group.name)
       } else {
         delete config.groups[group.id]
       }
-      renderRosterChips()
+      renderRosterToggle()
       renderGroupTable()
       renderGroupDropdowns()
     })
     const text = document.createElement('span')
     text.textContent =
-      group.name && group.name !== group.id ? `${group.name} (${group.id})` : group.id
+      group.name && group.name !== group.id ? `${group.name}（${group.id}）` : group.id
     row.append(checkbox, text)
-    menu.append(row)
+    box.append(row)
   }
 }
 
+/** 只渲染已选中的群；每行的「生效」控制该群是否接话。 */
 function renderGroupTable() {
   const listEl = document.getElementById('group-list')
   const emptyEl = document.getElementById('group-empty')
   listEl.textContent = ''
-  const ids = Object.keys(config.groups)
+  const ids = selectedGroupIds()
   emptyEl.hidden = ids.length > 0
 
   for (const id of ids) {
-    const groupCfg = config.groups[id]
+    const entry = config.groups[id] || null
+    const active = Boolean(entry && entry.enabled === true)
+
     const row = document.createElement('div')
-    row.className = 'group-row'
+    row.className = active ? 'group-row' : 'group-row is-off'
 
     const title = document.createElement('div')
     title.className = 'group-title'
@@ -667,6 +655,23 @@ function renderGroupTable() {
     sub.textContent = id
     title.append(sub)
 
+    const enableWrap = document.createElement('label')
+    enableWrap.className = 'check'
+    enableWrap.style.marginTop = '0'
+    const enableCheck = document.createElement('input')
+    enableCheck.type = 'checkbox'
+    enableCheck.checked = active
+    enableCheck.title = active ? '取消后该群不再回复' : '勾选后该群开始接话'
+    enableCheck.addEventListener('change', () => {
+      if (enableCheck.checked) {
+        ensureGroupEntry(id, '').enabled = true
+      } else {
+        config.groups[id].enabled = false
+      }
+      renderGroupTable()
+    })
+    enableWrap.append(enableCheck)
+
     const personaSelect = document.createElement('select')
     for (const persona of config.personas) {
       const opt = document.createElement('option')
@@ -674,9 +679,9 @@ function renderGroupTable() {
       opt.textContent = persona.name
       personaSelect.append(opt)
     }
-    personaSelect.value = groupCfg.personaId
+    personaSelect.value = (entry && entry.personaId) || config.defaultPersonaId
     personaSelect.addEventListener('change', () => {
-      config.groups[id].personaId = personaSelect.value
+      ensureGroupEntry(id, '').personaId = personaSelect.value
     })
 
     const modeSelect = document.createElement('select')
@@ -686,15 +691,15 @@ function renderGroupTable() {
       { value: 'text_only', label: '仅回复文字' },
       { value: 'voice_only', label: '仅发送语音' }
     ]
-    for (const item of modes) {
+    for (const mode of modes) {
       const opt = document.createElement('option')
-      opt.value = item.value
-      opt.textContent = item.label
+      opt.value = mode.value
+      opt.textContent = mode.label
       modeSelect.append(opt)
     }
-    modeSelect.value = groupCfg.deliveryMode || 'inherit'
+    modeSelect.value = (entry && entry.deliveryMode) || 'inherit'
     modeSelect.addEventListener('change', () => {
-      config.groups[id].deliveryMode = modeSelect.value
+      ensureGroupEntry(id, '').deliveryMode = modeSelect.value
     })
 
     const memoryWrap = document.createElement('label')
@@ -702,9 +707,9 @@ function renderGroupTable() {
     memoryWrap.style.marginTop = '0'
     const memoryCheck = document.createElement('input')
     memoryCheck.type = 'checkbox'
-    memoryCheck.checked = groupCfg.memoryEnabled !== false
+    memoryCheck.checked = !entry || entry.memoryEnabled !== false
     memoryCheck.addEventListener('change', () => {
-      config.groups[id].memoryEnabled = memoryCheck.checked
+      ensureGroupEntry(id, '').memoryEnabled = memoryCheck.checked
     })
     const memorySpan = document.createElement('span')
     memorySpan.textContent = '开启'
@@ -719,7 +724,7 @@ function renderGroupTable() {
       void loadGroupMemoryToForm(id)
     })
 
-    row.append(title, personaSelect, modeSelect, memoryWrap, memoryBtn)
+    row.append(title, enableWrap, personaSelect, modeSelect, memoryWrap, memoryBtn)
     listEl.append(row)
   }
 }
@@ -874,7 +879,6 @@ function syncConditionalFields() {
 }
 
 function syncFormFromConfig() {
-  document.getElementById('bot-enabled').checked = config.enabled === true
   document.getElementById('trigger-mode').value = config.triggerMode
   document.getElementById('wake-words').value = config.wakeWords.join(', ')
   document.getElementById('ambient-chance').value = String(config.ambientReplyChance)
@@ -901,7 +905,7 @@ function syncFormFromConfig() {
   editingPersonaId = config.defaultPersonaId || config.personas[0].id
   renderPersonaSelectors()
   populatePersonaForm()
-  renderRosterChips()
+  renderRosterToggle()
   renderGroupTable()
   renderGroupDropdowns()
   syncConditionalFields()
@@ -909,7 +913,8 @@ function syncFormFromConfig() {
 
 function collectConfigFromForm() {
   commitCurrentPersona()
-  config.enabled = document.getElementById('bot-enabled').checked
+  // 是否启用由扩展中心决定，配置层恒为开启。
+  config.enabled = true
   config.defaultPersonaId = document.getElementById('default-persona-select').value
   config.triggerMode = document.getElementById('trigger-mode').value
   config.wakeWords = document
@@ -980,8 +985,8 @@ async function loadGroupsRoster() {
     allGroups = []
     rosterError = `读取群列表受限：${error.message}`
   }
-  renderRosterChips()
-  renderRosterMenu()
+  renderRosterToggle()
+  renderRosterOptions()
   renderGroupTable()
   renderGroupDropdowns()
 }
@@ -1099,22 +1104,24 @@ document.getElementById('persona-delete-btn').addEventListener('click', () => {
   setBanner('已删除该人格，关联群聊已切回默认人格。', 'ok')
 })
 
-const rosterPicker = document.getElementById('roster-picker')
+const rosterToggle = document.getElementById('roster-toggle')
 const rosterSearch = document.getElementById('roster-search')
 const rosterMenu = document.getElementById('roster-menu')
 
-rosterSearch.addEventListener('focus', () => {
-  rosterMenu.hidden = false
-  renderRosterMenu()
+function setRosterOpen(open) {
+  rosterMenu.hidden = !open
+  rosterToggle.setAttribute('aria-expanded', open ? 'true' : 'false')
+  if (open) renderRosterOptions()
+}
+
+rosterToggle.addEventListener('click', (event) => {
+  event.stopPropagation()
+  setRosterOpen(rosterMenu.hidden)
 })
-rosterSearch.addEventListener('input', () => {
-  rosterMenu.hidden = false
-  renderRosterMenu()
-})
-document.addEventListener('click', (event) => {
-  if (!rosterPicker.contains(event.target)) {
-    rosterMenu.hidden = true
-  }
+rosterSearch.addEventListener('input', () => renderRosterOptions())
+rosterMenu.addEventListener('click', (event) => event.stopPropagation())
+document.addEventListener('click', () => {
+  if (!rosterMenu.hidden) setRosterOpen(false)
 })
 
 document.getElementById('reload-groups-btn').addEventListener('click', async () => {
@@ -1311,7 +1318,7 @@ async function initializePage() {
     document.getElementById('memory-group-select').value = groupIds[0]
     await loadGroupMemoryToForm(groupIds[0])
   }
-  setBanner('群聊机器人配置已就绪。默认处于关闭状态，配置完成后勾选启用并保存即可。')
+  setBanner('群聊机器人配置已就绪。选中群聊并勾选「生效」后保存，即可开始接话。')
 }
 
 initializePage().catch((error) => {
