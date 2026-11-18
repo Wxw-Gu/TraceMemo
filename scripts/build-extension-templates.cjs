@@ -87,6 +87,13 @@ function crc32(buffer) {
   return (crc ^ 0xffffffff) >>> 0
 }
 
+/** 归一化 CRLF：Windows 检出与 macOS 基线必须产出同一份字节，否则 sha256 必然不匹配。 */
+function normalizeLineEndings(buffer) {
+  if (buffer.includes(0)) return buffer
+  if (!buffer.includes(0x0d)) return buffer
+  return Buffer.from(buffer.toString('latin1').replace(/\r\n/g, '\n'), 'latin1')
+}
+
 function isSafeRelativePath(value) {
   if (typeof value !== 'string' || !value || value.length > 240) return false
   if (value.includes('\0')) return false
@@ -129,7 +136,10 @@ function collectTemplateFiles(spec, sourceRoot = SOURCE_ROOT) {
       if (!isSafeRelativePath(relative)) {
         throw new Error(`模板内文件路径不合法：${spec.dir}/${relative}`)
       }
-      files.push({ path: relative, data: fs.readFileSync(path.join(directory, entry.name)) })
+      files.push({
+        path: relative,
+        data: normalizeLineEndings(fs.readFileSync(path.join(directory, entry.name)))
+      })
     }
   }
   walk(root, '')

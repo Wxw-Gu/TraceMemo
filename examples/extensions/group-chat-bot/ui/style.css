@@ -156,6 +156,7 @@ h2 {
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  white-space: normal;
   margin-bottom: 12px;
 }
 
@@ -342,7 +343,12 @@ button.primary:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 
-button.ghost {
+.card-header > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.ghost {
   background: transparent;
   border-color: var(--border);
   color: var(--text);
@@ -356,30 +362,29 @@ button.ghost.danger {
   position: relative;
 }
 
-.roster-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.roster-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 9px;
-  border-radius: 999px;
+/* 下拉开关：外观对齐同排 select，右侧给个箭头。 */
+.roster-toggle {
+  width: 100%;
+  padding: 9px 12px;
   border: 1px solid var(--border);
-  background: var(--surface-subtle);
-  font-size: 12px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
 }
 
-.roster-chip button {
-  padding: 0 3px;
-  border: 0;
-  background: transparent;
+.roster-toggle::after {
+  content: '▾';
+  float: right;
   color: var(--muted);
-  font-size: 14px;
+}
+
+.roster-options {
+  margin-top: 4px;
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 .roster-menu {
@@ -419,7 +424,7 @@ button.ghost.danger {
 
 .group-table-header {
   display: grid;
-  grid-template-columns: minmax(140px, 1.4fr) minmax(120px, 1fr) minmax(130px, 1fr) 80px 88px;
+  grid-template-columns: minmax(140px, 1.4fr) 64px minmax(120px, 1fr) minmax(130px, 1fr) 80px 88px;
   gap: 8px;
   margin-top: 14px;
   padding: 0 8px 6px;
@@ -437,13 +442,22 @@ button.ghost.danger {
 
 .group-row {
   display: grid;
-  grid-template-columns: minmax(140px, 1.4fr) minmax(120px, 1fr) minmax(130px, 1fr) 80px 88px;
+  grid-template-columns: minmax(140px, 1.4fr) 64px minmax(120px, 1fr) minmax(130px, 1fr) 80px 88px;
   gap: 8px;
   align-items: center;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-subtle);
+}
+
+/* 未勾选生效的群：整行降透明，但仍可编辑人格/回复形式。 */
+.group-row.is-off {
+  opacity: 0.62;
+}
+
+.group-row.is-off:hover {
+  opacity: 0.85;
 }
 
 .group-title {

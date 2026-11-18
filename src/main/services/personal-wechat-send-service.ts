@@ -705,6 +705,9 @@ function logSendDiagnostic(
   console.log(`[SendDiag] ${stage} ${JSON.stringify(detail)}`)
 }
 
+/** 能力轮询会反复打这些端点，成功时不计入发送诊断，否则日志被探测刷满。 */
+const WINDOWS_PROBE_ENDPOINTS = new Set(['/getLoginInfo'])
+
 /** 发送完成后**保留**图片临时文件的时长（毫秒）。默认 `0` = 立刻删除（现行行为）。 */
 const WINDOWS_TEMP_IMAGE_GRACE_MS = 0
 
@@ -740,12 +743,15 @@ async function requestWindowsHook(
     headers: { 'Content-Type': 'application/json' }
   }
   if (method !== 'GET') init.body = JSON.stringify(body)
-  logSendDiagnostic('hook-request', {
-    endpoint,
-    method,
-    // 只报 payload 里有没有内容，不报内容本身。
-    hasPayload: method !== 'GET' ? init.body !== undefined : false
-  })
+  const isProbe = WINDOWS_PROBE_ENDPOINTS.has(endpoint)
+  if (!isProbe) {
+    logSendDiagnostic('hook-request', {
+      endpoint,
+      method,
+      // 只报 payload 里有没有内容，不报内容本身。
+      hasPayload: method !== 'GET' ? init.body !== undefined : false
+    })
+  }
   const response = await requestWithTimeout(`http://${host}${endpoint}`, init, timeoutMs)
   const responseText = await response.text()
   if (!response.ok) {
@@ -760,14 +766,16 @@ async function requestWindowsHook(
     throw new WindowsHookHttpError(response.status, responseText)
   }
   const parsed = parseWindowsHookResponse(responseText, method === 'POST')
-  logSendDiagnostic('hook-response', {
-    endpoint,
-    httpStatus: response.status,
-    ok: true,
-    ret: typeof parsed.ret === 'number' ? parsed.ret : null,
-    retMessageLength: String(parsed.retmsg ?? parsed.msg ?? '').length,
-    elapsedMs: Date.now() - startedAt
-  })
+  if (!isProbe) {
+    logSendDiagnostic('hook-response', {
+      endpoint,
+      httpStatus: response.status,
+      ok: true,
+      ret: typeof parsed.ret === 'number' ? parsed.ret : null,
+      retMessageLength: String(parsed.retmsg ?? parsed.msg ?? '').length,
+      elapsedMs: Date.now() - startedAt
+    })
+  }
   return parsed
 }
 

@@ -93,20 +93,19 @@ describe('killProcessTree', () => {
     await sleep(100)
     expect(isAlive(grandchildPid)).toBe(true)
 
-    expect(killProcessTree(parent.pid)).toBe('group')
+    expect(await killProcessTree(parent.pid)).toBe('group')
     await sleep(300)
     expect(isAlive(grandchildPid)).toBe(false)
     expect(isAlive(parent.pid as number)).toBe(false)
   })
 
-  it('不存在的 pid 返回 fallback 且不抛错', () => {
-    expect(() => killProcessTree(999_999_999)).not.toThrow()
-    expect(killProcessTree(999_999_999)).toBe('fallback')
-    expect(killProcessTree(undefined)).toBe('fallback')
+  it('不存在的 pid 返回 fallback 且不抛错', async () => {
+    // 不存在的 PID 会让 taskkill 以 128 退出，断言必须落在真实结果上。
+    await expect(killProcessTree(999_999_999)).resolves.toBe('fallback')
+    await expect(killProcessTree(undefined)).resolves.toBe('fallback')
   })
 
-  it('只结束指定组，不影响另一个进程组', async () => {
-    if (process.platform === 'win32') return
+  it.skipIf(process.platform === 'win32')('只结束指定组，不影响另一个进程组', async () => {
     const dir = tempRoot()
     const script = path.join(dir, 'parent.js')
     fs.writeFileSync(script, 'setInterval(() => {}, 1000)')
@@ -116,11 +115,56 @@ describe('killProcessTree', () => {
     spawned.push(first.pid as number, second.pid as number)
     await sleep(120)
 
-    killProcessTree(first.pid)
+    await killProcessTree(first.pid)
     await sleep(300)
     expect(isAlive(first.pid as number)).toBe(false)
     expect(isAlive(second.pid as number)).toBe(true)
   })
+
+  /** 覆盖 Windows 进程树：父+孙都被结束，且不波及无关进程。 */
+  it.skipIf(process.platform !== 'win32')(
+    'Windows 结束父进程树时连带孙进程，且不影响无关进程',
+    async () => {
+      const dir = tempRoot()
+      const script = path.join(dir, 'tree-parent.js')
+      fs.writeFileSync(
+        script,
+        `const { spawn } = require('node:child_process')
+         const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+           stdio: 'ignore'
+         })
+         process.send({ grandchild: child.pid })
+         setInterval(() => {}, 1000)`
+      )
+
+      const parent = spawn(process.execPath, [script], {
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc']
+      })
+      spawned.push(parent.pid as number)
+
+      const grandchildPid = await new Promise<number>((resolve) => {
+        parent.on('message', (message) => resolve((message as { grandchild: number }).grandchild))
+      })
+      spawned.push(grandchildPid)
+
+      // 无关进程：验证杀树不会波及别的扩展。
+      const bystander = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        stdio: 'ignore'
+      })
+      spawned.push(bystander.pid as number)
+
+      await sleep(200)
+      expect(isAlive(grandchildPid)).toBe(true)
+      expect(isAlive(bystander.pid as number)).toBe(true)
+
+      expect(await killProcessTree(parent.pid)).toBe('taskkill')
+
+      await sleep(600)
+      expect(isAlive(parent.pid as number)).toBe(false)
+      expect(isAlive(grandchildPid)).toBe(false)
+      expect(isAlive(bystander.pid as number)).toBe(true)
+    }
+  )
 })
 
 describe('extension host 进程生命周期', () => {

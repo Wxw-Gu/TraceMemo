@@ -105,6 +105,9 @@ function NavIcon({ page }: NavIconProps): React.ReactElement {
   }
 }
 
+/** 发送能力探活间隔：轮询只为点亮导航红点，低频足够。 */
+const SEND_CAPABILITY_POLL_MS = 30 * 60 * 1000
+
 export function PrimaryNavigation({
   activePage,
   onPageChange
@@ -125,10 +128,16 @@ export function PrimaryNavigation({
         .catch(() => undefined)
     }
     checkSendCapability()
-    const timer = window.setInterval(checkSendCapability, 8_000)
+    const timer = window.setInterval(checkSendCapability, SEND_CAPABILITY_POLL_MS)
+    // 半小时才轮一次，红点会过期；窗口重新可见时补查一次，成本可忽略。
+    const onVisibilityChange = (): void => {
+      if (!document.hidden) checkSendCapability()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       disposed = true
       window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [activePage])
 
