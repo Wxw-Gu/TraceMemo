@@ -188,7 +188,7 @@ export function deriveMacWechatSenderStatus({
   }
 
   const runtimeCapabilities = new Set(manifest.capabilities)
-  const supportsCapability = (name: 'text' | 'image' | 'voice'): boolean => {
+  const supportsCapability = (name: 'text' | 'image' | 'voice' | 'file'): boolean => {
     if (manifest.capabilitiesByVersion) return versionCapabilities?.[name] === 'verified'
     return runtimeCapabilities.has(name)
   }
@@ -205,6 +205,10 @@ export function deriveMacWechatSenderStatus({
    * 真正的发送结果仍以 Host 返回为准，不在 UI 层假装支持。
    */
   const canSendVideo = bindingReady && binding?.canSendImage === true
+  const canSendFile =
+    bindingReady &&
+    supportsCapability('file') &&
+    versionCapabilities?.textMechanism === 'tm-message-source-send'
   const sessionAttached = identityMatches && (binding?.sessionAttached ?? false)
   const scriptLoaded = identityMatches && (binding?.scriptLoaded ?? false)
 
@@ -228,11 +232,12 @@ export function deriveMacWechatSenderStatus({
     imageHookInstalled: identityMatches && (binding?.canSendImage ?? false),
     imageHookReady: identityMatches && (binding?.canSendImage ?? false),
     messageListenerReady: scriptLoaded,
-    canSend: canSendText || canSendImage || canSendVoice || canSendVideo,
+    canSend: canSendText || canSendImage || canSendVoice || canSendVideo || canSendFile,
     canSendText,
     canSendImage,
     canSendVoice,
     canSendVideo,
+    canSendFile,
     message,
     error: state === 'error' ? message : undefined
   }

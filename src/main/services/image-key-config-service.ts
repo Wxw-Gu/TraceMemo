@@ -55,7 +55,12 @@ export class ImageKeyConfigService {
       return migrated.success ? this.getConfig() : legacy
     }
 
-    const envAesKey = String(import.meta.env.VITE_IMAGE_AES_KEY || '').trim()
+    // 只有 dev 构建读 .env：生产包里带上开发者的 key，会让所有用户拿同一个人的密钥
+    // 去解自己的图，直接表现为「图片解密失败」。VITE_* 是编译期字面量，不加这道闸
+    // 就会被打进 app.asar。
+    const envAesKey = import.meta.env.DEV
+      ? String(import.meta.env.VITE_IMAGE_AES_KEY || '').trim()
+      : ''
     if (!settings.imageKeyFallbackDisabled && envAesKey) {
       return this.buildResult({
         source: 'environment',

@@ -11,7 +11,7 @@ import {
   writeFileSync
 } from 'fs'
 import { homedir, tmpdir } from 'os'
-import { delimiter, dirname, extname, join, sep } from 'path'
+import { delimiter, dirname, extname, join, sep, basename } from 'path'
 import { resolveBundledFfmpegPath } from '../ffmpeg-path'
 import { promisify } from 'util'
 import type {
@@ -36,6 +36,7 @@ const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const MAX_VOICE_BYTES = 20 * 1024 * 1024
 /** 视频与扩展发送通道的上限保持一致。 */
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024
+const MAX_FILE_BYTES = 100 * 1024 * 1024
 // 语音编码由 native runtime 内的 SILK 实现完成，不再是外部编码器进程。
 const VOICE_ENCODER_NAME = 'silk'
 const VOICE_ENCODER_VERSION = 'tm-wechat-native'
@@ -398,6 +399,66 @@ export function stageMacWechatVideoForSend(
   }
 }
 
+const MAC_FILE_STAGE_PREFIX = 'tm-file-'
+const MAC_FILE_STAGE_RETENTION_MS = 10 * 60 * 1000
+
+export function stageMacWechatFileForSend(
+  filePath: string,
+  wechatFilesRoot = WECHAT_FILES_ROOT
+): { stagedPath: string; cleanup: () => void } {
+  const normalized = String(filePath || '').trim()
+  const containerDataRoot = dirname(dirname(wechatFilesRoot))
+  if (
+    containerDataRoot.includes('com.tencent.xinWeChat') &&
+    normalized.startsWith(`${containerDataRoot}${sep}`)
+  ) {
+    return { stagedPath: normalized, cleanup: () => {} }
+  }
+
+  const documentsDir = dirname(wechatFilesRoot)
+  const stageDir = existsSync(documentsDir) ? documentsDir : wechatFilesRoot
+  mkdirSync(stageDir, { recursive: true })
+
+  const now = Date.now()
+  try {
+    for (const entry of readdirSync(stageDir)) {
+      if (!entry.startsWith(MAC_FILE_STAGE_PREFIX)) continue
+      const candidate = join(stageDir, entry)
+      try {
+        if (now - statSync(candidate).mtimeMs > MAC_FILE_STAGE_RETENTION_MS) {
+          unlinkSync(candidate)
+        }
+      } catch {
+        // Best-effort stale file cleanup.
+      }
+    }
+  } catch {
+    // Ignore directory listing errors.
+  }
+
+  const extension = extname(normalized).toLowerCase()
+  const safeExtension = /^\.[a-z0-9]{1,12}$/.test(extension) ? extension : '.bin'
+  const stagedPath = join(
+    stageDir,
+    `${MAC_FILE_STAGE_PREFIX}${randomBytes(6).toString('hex')}-${now}${safeExtension}`
+  )
+  copyFileSync(normalized, stagedPath)
+
+  return {
+    stagedPath,
+    cleanup: () => {
+      const timer = setTimeout(() => {
+        try {
+          unlinkSync(stagedPath)
+        } catch {
+          // Best-effort delayed cleanup after WeChat finishes asynchronous upload.
+        }
+      }, 300_000)
+      timer.unref?.()
+    }
+  }
+}
+
 /** Locate the current account's temporary image directory consumed by the image send path. */
 export function findWechatImagePath(
   root = WECHAT_FILES_ROOT,
@@ -521,6 +582,13 @@ export function buildWindowsWechatRequest(
     }
   }
 
+  if (request.type === 'file') {
+    return {
+      endpoint: '/SendMsg',
+      body: { toWxid: target, type: 'file', msg: String(request.filePath || '').trim() }
+    }
+  }
+
   const fromId = String(request.fromId || '').trim()
   const filePath = String(options.filePath || request.filePath || '').trim()
   const durationMs = options.durationMs ?? request.durationMs
@@ -558,6 +626,7 @@ function windowsStatusBase(host = windowsHookHost() || ''): PersonalWechatSender
     canSendImage: false,
     canSendVoice: false,
     canSendVideo: false,
+    canSendFile: false,
     message: '正在检查 Windows 微信消息接口'
   }
 }
@@ -687,6 +756,7 @@ export class PersonalWechatSendService {
       if (request.type === 'image') return this.sendMacImage(request)
       if (request.type === 'voice') return this.sendMacVoice(request)
       if (request.type === 'video') return this.sendMacVideo(request)
+      if (request.type === 'file') return this.sendMacFile(request)
     }
     return {
       success: false,
@@ -907,6 +977,56 @@ export class PersonalWechatSendService {
     }
   }
 
+  private async sendMacFile(
+    request: Extract<PersonalWechatSendRequest, { type: 'file' }>
+  ): Promise<PersonalWechatSendResult> {
+    await macWechatRuntimeManager.ensureStarted()
+    const status = await macWechatRuntimeManager.buildSenderStatus()
+    if (!status.canSendFile) {
+      return {
+        success: false,
+        status,
+        error: status.message || '当前微信发送组件不支持文件，请升级后重试'
+      }
+    }
+    const filePath = String(request.filePath || '').trim()
+    if (!filePath || !existsSync(filePath)) {
+      return { success: false, status, error: '请选择有效的文件' }
+    }
+    const size = statSync(filePath).size
+    if (size <= 0 || size > MAX_FILE_BYTES) {
+      return { success: false, status, error: '文件必须小于 100 MB' }
+    }
+    const fileName = String(request.fileName || '').trim() || basename(filePath)
+
+    let staged: { stagedPath: string; cleanup: () => void } | null = null
+    try {
+      staged = stageMacWechatFileForSend(filePath, this.wechatFilesRoot)
+    } catch (error) {
+      const latest = await macWechatRuntimeManager.buildSenderStatus()
+      return {
+        success: false,
+        status: latest,
+        error: error instanceof Error ? error.message : '无法将文件暂存到微信沙盒目录'
+      }
+    }
+
+    try {
+      const result = await this.postMacHost(
+        '/sendMsg',
+        { to: request.to, type: 'file', path: staged.stagedPath, name: fileName },
+        180_000
+      )
+      const latest = await macWechatRuntimeManager.buildSenderStatus()
+      if (!result?.ok) {
+        return { success: false, status: latest, error: result?.message || '文件发送失败' }
+      }
+      return { success: true, status: latest }
+    } finally {
+      staged.cleanup()
+    }
+  }
+
   private async sendMacImage(
     request: Extract<PersonalWechatSendRequest, { type: 'image' }>
   ): Promise<PersonalWechatSendResult> {
@@ -1100,6 +1220,10 @@ export class PersonalWechatSendService {
       }
       request = { ...request, to, text }
     } else {
+      if (request.type === 'file') {
+        const status = await this.getWindowsStatus()
+        return { success: false, status, error: 'Windows 端暂不支持文件发送' }
+      }
       const filePath = String(request.filePath || '').trim()
       const label = request.type === 'voice' ? '语音' : request.type === 'video' ? '视频' : '图片'
       const limit =

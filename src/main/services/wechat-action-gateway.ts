@@ -443,7 +443,8 @@ export class WechatActionGateway {
       (request.content.type !== 'text' &&
         request.content.type !== 'image' &&
         request.content.type !== 'video' &&
-        request.content.type !== 'voice')
+        request.content.type !== 'voice' &&
+        request.content.type !== 'file')
     ) {
       return
     }
@@ -593,9 +594,18 @@ export function normalizeActionRequest(value: unknown): WechatActionRequest | nu
       content: { type: 'text', text, ...(at ? { at } : {}) }
     } as WechatActionRequest
   }
-  if (contentType !== 'image' && contentType !== 'video' && contentType !== 'voice') return null
+  if (
+    contentType !== 'image' &&
+    contentType !== 'video' &&
+    contentType !== 'voice' &&
+    contentType !== 'file'
+  ) {
+    return null
+  }
   const filePath = String((content as { path?: unknown }).path || '').trim()
   if (!filePath) return null
+  const contentName =
+    contentType === 'file' ? String((content as { name?: unknown }).name || '').trim() : ''
   return {
     ...input,
     origin,
@@ -612,7 +622,10 @@ export function normalizeActionRequest(value: unknown): WechatActionRequest | nu
         ? { name: String((recipient as { name?: unknown }).name).trim() }
         : {})
     },
-    content: { type: contentType, path: filePath }
+    content:
+      contentType === 'file'
+        ? { type: 'file', path: filePath, ...(contentName ? { name: contentName } : {}) }
+        : { type: contentType, path: filePath }
   } as WechatActionRequest
 }
 
@@ -654,6 +667,14 @@ function toPersonalWechatSendRequest(request: WechatActionRequest): PersonalWech
   }
   if (request.content.type === 'video') {
     return { ...base, type: 'video', filePath: request.content.path }
+  }
+  if (request.content.type === 'file') {
+    return {
+      ...base,
+      type: 'file',
+      filePath: request.content.path,
+      ...(request.content.name ? { fileName: request.content.name } : {})
+    }
   }
   const metadata = request.metadata && typeof request.metadata === 'object' ? request.metadata : {}
   const fromId = typeof metadata.fromId === 'string' ? metadata.fromId.trim() : ''
@@ -700,7 +721,12 @@ function contentAudit(
   content: WechatActionContent
 ): Pick<WechatActionAuditRecord, 'contentPreview' | 'contentHash'> {
   const raw = content.type === 'text' ? content.text : content.path
-  const preview = content.type === 'text' ? raw : path.basename(raw)
+  const preview =
+    content.type === 'text'
+      ? raw
+      : content.type === 'file' && content.name
+        ? content.name
+        : path.basename(raw)
   return {
     contentPreview: preview.slice(0, MAX_CONTENT_PREVIEW_LENGTH),
     contentHash: createHash('sha256').update(raw).digest('hex')
@@ -708,7 +734,15 @@ function contentAudit(
 }
 
 function contentTypeLabel(type: WechatActionContent['type']): string {
-  return type === 'text' ? '文字' : type === 'image' ? '图片' : type === 'video' ? '视频' : '语音'
+  return type === 'text'
+    ? '文字'
+    : type === 'image'
+      ? '图片'
+      : type === 'video'
+        ? '视频'
+        : type === 'file'
+          ? '文件'
+          : '语音'
 }
 
 function normalizeAuditRecords(values: unknown[]): WechatActionAuditRecord[] {

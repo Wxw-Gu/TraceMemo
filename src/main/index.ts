@@ -1940,7 +1940,12 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
     // 排查「消息到底发没发出去」时恰好缺的就是那份证据。
     // 普通手动发送保持 triggerType=user；带 postfixText 的日报图片由 Gateway 编排成
     // 两个 automation action，以复用同一条 3s 队列，并严格在图片 sent 后才发后置词。
-    if (request.type === 'text' || request.type === 'image' || request.type === 'video') {
+    if (
+      request.type === 'text' ||
+      request.type === 'image' ||
+      request.type === 'video' ||
+      request.type === 'file'
+    ) {
       const to = String(request.to || '').trim()
       const recipient = {
         type:
@@ -1973,7 +1978,9 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
             ? 'manual_text'
             : request.type === 'video'
               ? 'manual_video'
-              : 'manual_image',
+              : request.type === 'file'
+                ? 'manual_file'
+                : 'manual_image',
         triggerType: 'user',
         recipient,
         content:
@@ -1985,7 +1992,13 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
               }
             : request.type === 'video'
               ? { type: 'video', path: String(request.filePath || '') }
-              : { type: 'image', path: String(request.filePath || '') }
+              : request.type === 'file'
+                ? {
+                    type: 'file',
+                    path: String(request.filePath || ''),
+                    ...(request.fileName ? { name: request.fileName } : {})
+                  }
+                : { type: 'image', path: String(request.filePath || '') }
       })
       // 返回契约保持 `PersonalWechatSendResult`，界面判读不用改。
       return toPersonalWechatSendResult(action, await currentPersonalWechatSenderStatus())
@@ -3675,6 +3688,22 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
   ipcMain.handle('wechat-personal:getVoiceDiagnostic', () =>
     personalWechatSendService.getLatestVoiceDiagnostic()
   )
+  ipcMain.handle('wechat-personal:selectFile', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showOpenDialog(window!, {
+      title: '选择要发送的文件',
+      properties: ['openFile']
+    })
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true }
+    const filePath = result.filePaths[0]
+    let size = 0
+    try {
+      size = (await fsPromises.stat(filePath)).size
+    } catch {
+      return { canceled: true }
+    }
+    return { canceled: false, path: filePath, name: path.basename(filePath), size }
+  })
   ipcMain.handle('agent-hub:selectTestImage', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const result = await dialog.showOpenDialog(window!, {

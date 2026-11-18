@@ -67,13 +67,14 @@ export interface MacWechatRuntimeManifest {
   tmSendSourceSha256: string
   addressProfileSha256: string
   supportedWechatVersions: string[]
-  capabilities: Array<'text' | 'image' | 'voice'>
+  capabilities: Array<'text' | 'image' | 'voice' | 'file'>
   capabilitiesByVersion?: Record<
     string,
     {
       text?: 'verified' | 'addresses-only' | 'unsupported'
       image?: 'verified' | 'addresses-only' | 'unsupported'
       voice?: 'verified' | 'addresses-only' | 'unsupported'
+      file?: 'verified' | 'addresses-only' | 'unsupported'
       downloadImage?: 'verified' | 'addresses-only' | 'unsupported'
       textMechanism?: string
     }

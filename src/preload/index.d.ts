@@ -797,6 +797,12 @@ declare global {
       sendPersonalWechatMessage: (
         request: PersonalWechatSendRequest
       ) => Promise<PersonalWechatSendResult>
+      selectPersonalWechatFile: () => Promise<{
+        canceled: boolean
+        path?: string
+        name?: string
+        size?: number
+      }>
       /** 定时日报：「立即执行」——与 scheduler 走同一条执行链路（manual trigger）。 */
       runScheduledReportRule: (
         ruleId: string
