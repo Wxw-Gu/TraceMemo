@@ -212,9 +212,6 @@ TraceMemo 在早期适配微信 4.x 时，曾参考 **[WeFlow](https://github.co
 - **[chatlog](https://github.com/sjzar/chatlog)**
   - 提供了数据处理方面的参考。
 
-- **[wechat_chatter](https://github.com/yincongcyincong/wechat_chatter)**
-  - 提供了发送方面的参考。
-
 感谢所有开源作者，也感谢所有帮助 TraceMemo 发现问题、提出建议和持续使用它的人。
 
 ---

@@ -55,6 +55,7 @@ import {
   normalizeWindowsWechatPort,
   parseWindowsLoginStatus,
   parseWindowsHookResponse,
+  prepareWindowsFileForSend,
   prepareWindowsImageFile,
   WindowsHookHttpError
 } from '../../src/main/services/personal-wechat-send-service'
@@ -374,7 +375,7 @@ describe('Windows request', () => {
     expect(() => parseWindowsHookResponse('', true)).toThrow('空响应')
   })
 
-  it('preserves the Windows Hook HTTP status and response body', () => {
+  it('preserves the Windows send HTTP status and response body', () => {
     const error = new WindowsHookHttpError(500, '{"ret":-9,"retmsg":"image failed"}')
     expect(error.message).toBe('HTTP 500: {"ret":-9,"retmsg":"image failed"}')
     expect(error.status).toBe(500)
@@ -432,8 +433,43 @@ describe('Windows request', () => {
     })
   })
 
-  it('builds the unified voice request with sender wxid and duration', () => {
+  it('builds the unified file request with type=file', () => {
     expect(
+      buildWindowsWechatRequest({
+        to: 'room@chatroom',
+        type: 'file',
+        filePath: 'C:\\Temp\\tm-report.pdf',
+        fileName: 'report.pdf',
+        isGroup: true
+      })
+    ).toEqual({
+      endpoint: '/SendMsg',
+      body: { toWxid: 'room@chatroom', type: 'file', msg: 'C:\\Temp\\tm-report.pdf' }
+    })
+  })
+
+  it('copies non-ASCII file paths to an ASCII temporary name', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tm-file-send-'))
+    const source = join(root, '季度报告.pdf')
+    writeFileSync(source, 'fixture-file')
+    const prepared = prepareWindowsFileForSend(source, '季度报告.pdf')
+    expect(prepared.temporary).toBe(true)
+    expect(prepared.filePath).toMatch(/^[\x20-\x7e]+$/)
+    expect(prepared.filePath.endsWith('.pdf')).toBe(true)
+    expect(readFileSync(prepared.filePath)).toEqual(readFileSync(source))
+    if (prepared.temporary) unlinkSync(prepared.filePath)
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('keeps an ASCII file path unchanged when the name matches', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tm-file-send-'))
+    const source = join(root, 'tm-report.pdf')
+    writeFileSync(source, 'fixture-file')
+    expect(prepareWindowsFileForSend(source)).toEqual({ filePath: source, temporary: false })
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('builds the unified voice request with sender wxid and duration', () => {    expect(
       buildWindowsWechatRequest(
         {
           to: 'wxid_fixture',
