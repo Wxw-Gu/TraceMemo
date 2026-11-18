@@ -1,10 +1,4 @@
-/**
- * TraceMemo 扩展 SDK v1 —— 仅类型定义。
- *
- * 运行期没有这个包：宿主在后台子进程里注入全局 `tm`，扩展入口只需要
- * `module.exports = function activate(tm: TraceMemoApi) {}`。
- * 把本文件放进扩展仓库即可获得补全与类型检查。
- */
+/** TraceMemo 扩展 SDK v1：仅类型定义，运行期由宿主注入全局 tm。 */
 
 export type ExtensionMessageType =
   | 'text'
@@ -58,9 +52,7 @@ export interface TraceMemoSendTextRequest {
   dedupeKey?: string
 }
 
-/**
- * 图片发送。
- */
+/** 图片发送。 */
 export interface TraceMemoSendImageRequest {
   type: 'image'
   to: string
@@ -68,10 +60,7 @@ export interface TraceMemoSendImageRequest {
   dedupeKey?: string
 }
 
-/**
- * 视频发送。原生 Host 以 `{toWxid, type:'video', msg:<路径>}` 提交。
- * 路径必须位于扩展数据目录或系统临时目录。
- */
+/** 视频发送。原生 Host 以 `{toWxid, type:'video', msg:<路径>}` 提交；路径必须位于扩展数据目录或系统临时目录。 */
 export interface TraceMemoSendVideoRequest {
   type: 'video'
   to: string
@@ -79,10 +68,23 @@ export interface TraceMemoSendVideoRequest {
   dedupeKey?: string
 }
 
+export interface TraceMemoSendVoiceRequest {
+  type: 'voice'
+  to: string
+  /** 传 `text` 时由宿主使用已配置的文字转语音服务合成并发送。 */
+  text?: string
+  /** 传 `path` 时发送扩展数据目录或系统临时目录中的音频文件。 */
+  path?: string
+  /** 可选音色 ID；省略时使用 TraceMemo 设置页选定的默认音色。 */
+  voiceId?: string
+  dedupeKey?: string
+}
+
 export type TraceMemoSendRequest =
   | TraceMemoSendTextRequest
   | TraceMemoSendImageRequest
   | TraceMemoSendVideoRequest
+  | TraceMemoSendVoiceRequest
 
 export interface TraceMemoAutomationActionDefinition {
   id: string
@@ -116,10 +118,26 @@ export interface TraceMemoCapabilities {
     canSendText: boolean
     canSendImage: boolean
     canSendVideo: boolean
+    canSendVoice?: boolean
     licensed: boolean
     message: string
   }
   ai: { configured: boolean; modelName: string }
+  tts?: {
+    configured: boolean
+    model: string
+    selectedVoiceId: string
+    selectedVoice: {
+      id: string
+      name: string
+      description: string
+      tags: string[]
+      languages: string[]
+      authorName?: string
+      previewUrl?: string
+      coverImage?: string
+    } | null
+  }
 }
 
 export interface TraceMemoApi {
@@ -174,13 +192,7 @@ export interface TraceMemoApi {
   }
 }
 
-/**
- * 后台入口签名。
- *
- * ```js
- * module.exports = function activate(tm) { ... }
- * ```
- */
+/** 后台入口签名。 */
 export type TraceMemoActivate = (tm: TraceMemoApi) => void | Promise<void>
 
 declare global {

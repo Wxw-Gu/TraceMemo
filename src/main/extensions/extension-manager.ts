@@ -31,6 +31,7 @@ import type {
   ExtensionActionInfo,
   ExtensionProjectResult,
   ExtensionSystemHealth,
+  ExtensionTtsCapabilitySnapshot,
   InstalledExtension
 } from '../../shared/extensions/types'
 import type {
@@ -40,7 +41,8 @@ import type {
   ExtensionSendImageRequest,
   ExtensionSendTextRequest,
   ExtensionSendTextResult,
-  ExtensionSendVideoRequest
+  ExtensionSendVideoRequest,
+  ExtensionSendVoiceRequest
 } from '../../shared/extensions/rpc'
 import type { PersonalWechatSendCapability } from '../../shared/personal-wechat'
 import type { WechatActionRequest, WechatActionResult } from '../../shared/wechat-action'
@@ -84,6 +86,13 @@ export interface ExtensionManagerDependencies {
   aiChat: (messages: Array<{ role: string; content: string }>) => Promise<{ text: string }>
   /** 当前 AI 是否已配置；不暴露 key、endpoint 或任何凭据。 */
   aiStatus?: () => { configured: boolean; modelName: string }
+  /** 当前文字转语音配置与选定音色摘要；不暴露 key。 */
+  ttsStatus?: () => Promise<ExtensionTtsCapabilitySnapshot> | ExtensionTtsCapabilitySnapshot
+  synthesizeVoice?: (request: {
+    text: string
+    voiceId?: string
+  }) => Promise<{ filePath: string }>
+  cleanupVoice?: (filePath: string) => void
   getAccountId: () => string
   getSelfUsernames: () => string[]
   isDatabaseReady: () => boolean
@@ -112,16 +121,7 @@ const PAGE_METHODS: ExtensionPageMethod[] = [
   'extension.info'
 ]
 
-/**
- * 扩展系统的编排层。
- *
- * 职责边界：
- * - **只做编排**：清单读取、安装、启停、进程托管、事件分发、能力转发；
- * - 不实现消息监听（复用 `MessageListenerService`）、不实现发送（复用
- *   `WechatActionGateway`）、不实现自动化规则存储（复用 `AutomationRuleStore`）。
- *
- * 所有扩展代码都在 `ExtensionHost` 的子进程里运行；本类不 `require` 任何扩展文件。
- */
+/** 扩展系统的编排层：只管编排，不实现消息监听、发送与规则存储。 */
 export class ExtensionManager {
   private readonly dependencies: ExtensionManagerDependencies
   private readonly paths: ExtensionPaths
@@ -187,6 +187,9 @@ export class ExtensionManager {
       checkEntitlement: dependencies.checkEntitlement,
       executeAction: dependencies.executeAction,
       getExtensionDataRoot: (extensionId) => this.paths.extensionDataDir(extensionId),
+      synthesizeVoice: dependencies.synthesizeVoice,
+      cleanupVoice: dependencies.cleanupVoice,
+      getFromId: () => dependencies.getAccountId(),
       now: this.now
     })
     this.eventBus = new ExtensionEventBus({
@@ -275,12 +278,7 @@ export class ExtensionManager {
     }
   }
 
-  /**
-   * 校验状态记录与磁盘上的 manifest 是否描述同一个版本。
-   *
-   * 升级会在「换代码」与「写状态」之间留下一个窗口；进程在该窗口被杀时，
-   * 磁盘上是新代码、状态里是旧版本。这种扩展不能带着旧授权直接跑。
-   */
+  /** 校验状态记录与磁盘上的 manifest 是否描述同一个版本；这种扩展不能带着旧授权直接跑。 */
   private checkInstallConsistency(
     record: ExtensionRegistryRecord,
     manifest: ExtensionManifest
@@ -343,14 +341,7 @@ export class ExtensionManager {
     return this.templates.list()
   }
 
-  /**
-   * 安装官方模板。
-   *
-   * 三条硬约束：
-   * 1. 只接受模板索引里的 id，ZIP 路径由目录服务解析并校验哈希；
-   * 2. 同 id 已被非模板来源占用时拒绝接管；
-   * 3. 安装只落代码，不启用——启用仍需用户确认权限。
-   */
+  /** 安装官方模板；同 id 被非模板来源占用时拒绝接管。 */
   async installTemplate(templateId: string): Promise<ExtensionInstallResult> {
     const templates = this.templates
     if (!templates) {
@@ -393,22 +384,12 @@ export class ExtensionManager {
     )
   }
 
-  /**
-   * 该扩展当前是否被暂停（配置待确认 / 版本不一致）。
-   *
-   * 这是唯一的判断入口：事件投递、动作调用、发送出口都走它，
-   * 避免出现「某处放行、某处拦截」的不一致状态。
-   */
+  /** 该扩展是否被暂停（配置待确认 / 版本不一致）；事件、动作、发送都看它。 */
   private isSuspended(extensionId: string): boolean {
     return this.storageHolds.has(extensionId) || this.inconsistencies.has(extensionId)
   }
 
-  /**
-   * 运行期检测到配置回退：立刻收住这个扩展。
-   *
-   * 顺序很重要：先停后台（切断正在跑的回复循环），再改状态、记日志。
-   * 已经交给 Native Host 的发送请求无法撤回，属于已知边界。
-   */
+  /** 运行期检测到配置回退：立刻收住这个扩展。 */
   private handleStorageHealthChange(
     extensionId: string,
     health: { state: string; message?: string }
@@ -442,12 +423,7 @@ export class ExtensionManager {
     }
   }
 
-  /**
-   * 链接外部开发项目。
-   *
-   * 只读用户显式选择的目录：校验 manifest、入口文件、路径边界与 ID 冲突，
-   * 然后登记为 `development` 来源。**不复制代码**，也不写回源码目录。
-   */
+  /** 链接外部开发项目：只读用户选的目录，不复制代码，也不写回源码目录。 */
   async linkDevelopmentProject(directory: string): Promise<ExtensionInstallResult> {
     const raw = String(directory || '').trim()
     if (!raw) {
@@ -553,12 +529,7 @@ export class ExtensionManager {
     return { success: true, ...(extension ? { extension } : {}) }
   }
 
-  /**
-   * 重新加载开发项目。
-   *
-   * 停后台 → 清 manifest 缓存 → 重新解析 → 权限取交集 → 原本启用则重启。
-   * 页面侧由界面刷新 iframe 完成，两者互不依赖。
-   */
+  /** 重新加载开发项目。 */
   async reloadDevelopment(extensionId: string): Promise<ExtensionOperationResult> {
     const record = this.registry.get(extensionId)
     if (!record) return failure(new ExtensionError('EXTENSION_NOT_FOUND'))
@@ -627,12 +598,7 @@ export class ExtensionManager {
     return { success: true }
   }
 
-  /**
-   * 移除开发链接。
-   *
-   * 绝不删除外部源码目录。若安装副本还在，把来源退回安装副本；
-   * 否则移除 Registry 记录。用户数据按 `keepData` 决定。
-   */
+  /** 移除开发链接：有安装副本就退回它，否则删记录；外部目录永不删除。 */
   async unlinkDevelopment(
     extensionId: string,
     options: { keepData: boolean }
@@ -681,11 +647,7 @@ export class ExtensionManager {
     return { success: true }
   }
 
-  /**
-   * 把开发项目转成正式安装副本。
-   *
-   * 只复制代码；用户配置本来就在 `extensions-data`，不受影响。
-   */
+  /** 把开发项目转成正式安装副本。 */
   async convertDevelopmentToInstalled(extensionId: string): Promise<ExtensionOperationResult> {
     const record = this.registry.get(extensionId)
     if (!record) return failure(new ExtensionError('EXTENSION_NOT_FOUND'))
@@ -728,12 +690,7 @@ export class ExtensionManager {
     return { success: true }
   }
 
-  /**
-   * 从官方模板生成一个独立项目（不安装、不启用）。
-   *
-   * ZIP 来自官方模板目录并已校验哈希；生成过程在暂存目录完成，
-   * 目标目录非空时不会写入任何文件。
-   */
+  /** 从官方模板生成一个独立项目（不安装、不启用）。 */
   async createProjectFromTemplate(
     templateId: string,
     targetDirectory: string,
@@ -789,12 +746,7 @@ export class ExtensionManager {
     }
   }
 
-  /**
-   * 把已安装副本导出成外部项目，并把来源切换为 development。
-   *
-   * 导出的必须是**用户改过的安装副本**，不能重新解压官方 ZIP——
-   * 那样会把二开内容换回原版。原安装副本保留，作为显式恢复来源。
-   */
+  /** 把已安装副本导出成外部项目，并把来源切换为 development。 */
   async exportInstalledAsProject(
     extensionId: string,
     targetDirectory: string
@@ -895,12 +847,7 @@ export class ExtensionManager {
     }
   }
 
-  /**
-   * 授予扩展已声明的权限。
-   *
-   * 只接受 manifest 里出现过的权限：渲染层传来的字符串不能扩大扩展的能力面。
-   * 权限在子进程启动时快照，因此已启用的扩展需要重启后台才会生效。
-   */
+  /** 授予扩展已声明的权限；只接受 manifest 里出现过的权限：渲染层传来的字符串不能扩大扩展的能力面。 */
   async grantPermissions(
     extensionId: string,
     permissions: ExtensionPermission[]
@@ -1040,11 +987,7 @@ export class ExtensionManager {
     return { success: true }
   }
 
-  /**
-   * 采用磁盘上的代码版本：把状态记录的版本对齐到 manifest。
-   *
-   * 用于「上次升级中断」后的修复。授权按新 manifest 取交集，不会扩大能力。
-   */
+  /** 采用磁盘上的代码版本：把状态记录的版本对齐到 manifest。 */
   adoptInstalledCode(extensionId: string): ExtensionOperationResult {
     const record = this.registry.get(extensionId)
     const manifest = this.readManifest(extensionId)
@@ -1137,12 +1080,7 @@ export class ExtensionManager {
     }
   }
 
-  /**
-   * 扩展页面可调用的能力。
-   *
-   * 页面**没有**发送 / 查询 / AI 权限：那些能力只从后台进程按权限申请。
-   * 页面与后台共享同一个 `storage` 命名空间，所以配置页保存的内容后台能直接读到。
-   */
+  /** 扩展页面可调用的能力。 */
   async pageRequest(
     extensionId: string,
     method: string,
@@ -1214,7 +1152,7 @@ export class ExtensionManager {
             result: await host.requestPage(
               inner,
               (rawParams as Record<string, unknown> | undefined) ?? {},
-              10_000
+              90_000
             )
           }
         }
@@ -1273,12 +1211,7 @@ export class ExtensionManager {
     return this.actions.list()
   }
 
-  /**
-   * 供自动化编辑器使用的动作列表。
-   *
-   * `registered` 只是「后台注册过」，是否可用要逐条判断：停用、代码缺失、
-   * 权限未授予、Storage 暂停、Schema 非法，任一成立都不可执行。
-   */
+  /** 供自动化编辑器使用的动作列表。 */
   listActions(): ExtensionActionInfo[] {
     return this.actions.list().map((action) => {
       const record = this.registry.get(action.extensionId)
@@ -1322,13 +1255,7 @@ export class ExtensionManager {
     await Promise.all(ids.map((id) => this.stopHost(id)))
   }
 
-  /**
-   * 安装 / 升级的编排。
-   *
-   * 顺序是「停旧进程 → 换代码 → 写状态 → 起新进程」，任何一步失败都要让
-   * 磁盘与 Registry 回到同一个版本。仅靠多次 rename 不构成跨进程事务，
-   * 所以失败时显式回滚，并把错误原样返回给界面，不吞成成功。
-   */
+  /** 安装 / 升级的编排。 */
   private async install(
     run: (
       beforeReplace: (
@@ -1404,12 +1331,7 @@ export class ExtensionManager {
     return { success: true, ...(installed ? { extension: installed } : {}) }
   }
 
-  /**
-   * 模板来源的「本地改动」检查。
-   *
-   * 只保护 `template` 来源：用户自己装的 ZIP / 目录本来就会被覆盖，
-   * 开发模式根本没有安装副本可覆盖。
-   */
+  /** 模板来源的「本地改动」检查。 */
   private assertTemplateCodeUntouched(record: ExtensionRegistryRecord): void {
     const root = this.paths.installDir(record.id)
     if (!fs.existsSync(path.join(root, 'manifest.json'))) return
@@ -1471,6 +1393,7 @@ export class ExtensionManager {
       sendText: (id, request) => this.sendText(id, request),
       sendImage: (id, request) => this.sendImage(id, request),
       sendVideo: (id, request) => this.sendVideo(id, request),
+      sendVoice: (id, request) => this.sendVoice(id, request),
       aiChat: (_id, messages) => this.dependencies.aiChat(messages),
       capabilities: (id) => this.buildCapabilitySnapshot(id)
     })
@@ -1544,14 +1467,14 @@ export class ExtensionManager {
     if (!conversationId || conversationId.length > 128) {
       throw new ExtensionError('INVALID_REQUEST', '会话 id 不合法')
     }
-    const limit = Math.max(1, Math.min(Number(request?.limit) || 50, 200))
+    const limit = Math.max(1, Math.min(Number(request?.limit) || 50, 500))
     const startTime = Number.isFinite(Number(request?.startTime))
       ? Number(request.startTime)
       : Date.now() - 24 * 60 * 60 * 1000
     const endTime = Number.isFinite(Number(request?.endTime)) ? Number(request.endTime) : Date.now()
     if (endTime <= startTime) throw new ExtensionError('INVALID_REQUEST', '时间范围不合法')
-    if (endTime - startTime > 7 * 24 * 60 * 60 * 1000) {
-      throw new ExtensionError('INVALID_REQUEST', '单次查询范围不能超过 7 天')
+    if (endTime - startTime > 35 * 24 * 60 * 60 * 1000) {
+      throw new ExtensionError('INVALID_REQUEST', '单次查询范围不能超过 35 天')
     }
     const record = this.registry.get(extensionId)
     if (!record?.enabled) throw new ExtensionError('EXTENSION_DISABLED')
@@ -1626,14 +1549,53 @@ export class ExtensionManager {
     )
   }
 
+  private async sendVoice(
+    extensionId: string,
+    request: ExtensionSendVoiceRequest
+  ): Promise<ExtensionSendTextResult> {
+    const record = this.registry.get(extensionId)
+    if (!record) throw new ExtensionError('EXTENSION_NOT_FOUND')
+    if (!record.enabled) throw new ExtensionError('EXTENSION_DISABLED')
+    if (this.isSuspended(extensionId)) {
+      throw new ExtensionError('EXTENSION_STORAGE_CORRUPTED', '扩展已暂停，发送被拒绝')
+    }
+    const manifest = this.manifests.get(extensionId)
+    return this.sendGateway.sendVoice(
+      {
+        extensionId,
+        permissions: record.grantedPermissions,
+        conversationScope: manifest?.subscriptions?.conversationIds ?? []
+      },
+      request
+    )
+  }
+
   private async buildCapabilitySnapshot(extensionId: string): Promise<ExtensionCapabilitySnapshot> {
     const record = this.registry.get(extensionId)
     const granted = record?.grantedPermissions ?? []
     const capability = await this.dependencies.getCapability().catch(() => null)
     let licensed = false
-    if (hasExtensionPermission(granted as ExtensionPermission[], 'wechat.send.text')) {
+    if (
+      hasExtensionPermission(granted as ExtensionPermission[], 'wechat.send.text') ||
+      hasExtensionPermission(granted as ExtensionPermission[], 'wechat.send.voice') ||
+      hasExtensionPermission(granted as ExtensionPermission[], 'wechat.send.image') ||
+      hasExtensionPermission(granted as ExtensionPermission[], 'wechat.send.video')
+    ) {
       const entitlement = await this.dependencies.checkEntitlement().catch(() => null)
       licensed = entitlement?.ok === true
+    }
+    let tts: ExtensionTtsCapabilitySnapshot | undefined
+    if (this.dependencies.ttsStatus) {
+      try {
+        tts = await this.dependencies.ttsStatus()
+      } catch {
+        tts = {
+          configured: false,
+          model: 's2.1-pro-free',
+          selectedVoiceId: '',
+          selectedVoice: null
+        }
+      }
     }
     return {
       extensionId,
@@ -1647,6 +1609,7 @@ export class ExtensionManager {
         canSendText: Boolean(capability?.capabilities?.text),
         canSendImage: Boolean(capability?.capabilities?.image),
         canSendVideo: Boolean(capability?.capabilities?.video),
+        canSendVoice: Boolean(capability?.capabilities?.voice),
         licensed,
         message: capability?.message || '暂时无法获知微信发送能力'
       },
@@ -1659,7 +1622,8 @@ export class ExtensionManager {
         } catch {
           return { configured: false, modelName: '' }
         }
-      })()
+      })(),
+      ...(tts ? { tts } : {})
     }
   }
 
@@ -1720,12 +1684,7 @@ export class ExtensionManager {
     }
   }
 
-  /**
-   * 没有 Host 时的运行状态。
-   *
-   * 只有页面入口的扩展本来就不会有后台进程，必须与「启用但启动失败」区分开：
-   * 前者是 `inactive` 加说明，后者是 `error` 加原因。
-   */
+  /** 没有 Host 时的运行状态。 */
   private deriveIdleRuntime(
     record: ExtensionRegistryRecord,
     manifest: ExtensionManifest | null

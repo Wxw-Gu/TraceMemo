@@ -19,7 +19,8 @@ import {
   type ExtensionSendImageRequest,
   type ExtensionSendTextRequest,
   type ExtensionSendTextResult,
-  type ExtensionSendVideoRequest
+  type ExtensionSendVideoRequest,
+  type ExtensionSendVoiceRequest
 } from '../../shared/extensions/rpc'
 import type { ExtensionEventEnvelope } from '../../shared/extensions/events'
 import type { ExtensionCapabilitySnapshot } from '../../shared/extensions/types'
@@ -49,12 +50,7 @@ const STDERR_WINDOW_BYTES = 64 * 1024
 const STDERR_WINDOW_ENTRIES = 20
 const STDERR_MAX_CHUNK_CHARS = 400
 
-/**
- * stderr 里常见的凭据写法。
- *
- * 扩展的 stderr 是任意文本，可能包含用户配置的 Cookie / Token；
- * 落日志前统一抹掉值，只保留键名。
- */
+/** stderr 里的凭据形态；落日志前只保留键名。 */
 const SECRET_ASSIGNMENT =
   /\b(cookie|token|authorization|password|passwd|secret|api[_-]?key)\b(\s*[:=]\s*)(?!Bearer\b)([^\s,;"']{4,})/gi
 const BEARER_TOKEN = /\bBearer\s+[A-Za-z0-9._~+/-]{8,}=*/gi
@@ -79,10 +75,7 @@ export interface ExtensionHostChild {
   on(event: 'error', listener: (error: Error) => void): void
   once?(event: 'exit', listener: () => void): void
   readonly pid?: number
-  /**
-   * 子进程的 stderr。必须被消费：管道写满会让子进程在 `write` 上阻塞，
-   * 表现为「扩展还活着但不再响应」。
-   */
+  /** stderr 必须持续消费，否则管道写满会让子进程阻塞在 write。 */
   readonly stderr?: NodeJS.ReadableStream | null
 }
 
@@ -118,6 +111,10 @@ export interface ExtensionHostDependencies {
   sendVideo?: (
     extensionId: string,
     request: ExtensionSendVideoRequest
+  ) => Promise<ExtensionSendTextResult>
+  sendVoice?: (
+    extensionId: string,
+    request: ExtensionSendVoiceRequest
   ) => Promise<ExtensionSendTextResult>
   aiChat?: (
     extensionId: string,
@@ -155,15 +152,7 @@ interface ActivationWaiter {
   child: ExtensionHostChild
 }
 
-/**
- * 单个扩展的后台进程。
- *
- * **隔离边界**：每个扩展一个独立 Node 子进程，`require` 只发生在那里面；
- * 主进程从不 `require` 扩展代码。子进程拿不到 Electron API、数据库句柄、
- * 授权凭据或原生发送通道 —— 它只能通过本类转发的白名单 RPC 申请能力。
- *
- * ⚠️ 独立进程不等于强沙箱：后台仍是任意 Node 代码，安装时按「受信任本地开发者扩展」处理。
- */
+/** 单个扩展的后台进程：独立 Node 子进程，主进程从不 require 扩展代码。 */
 export class ExtensionHost {
   private readonly dependencies: ExtensionHostDependencies
   private readonly storage: ExtensionStorage
@@ -216,16 +205,11 @@ export class ExtensionHost {
     return Array.from(this.actions.values()).map((action) => ({ ...action }))
   }
 
-  /**
-   * 把页面请求转给同扩展的后台处理器。
-   *
-   * 这是唯一入口：页面拿不到 Node，后台必须显式注册 `tm.page.onRequest`。
-   * 响应大小与超时都在这里收口，避免页面被一个坏 handler 拖死。
-   */
+  /** 把页面请求转给同扩展的后台处理器；这是唯一入口：页面拿不到 Node，后台必须显式注册 `tm.page.onRequest`。 */
   async requestPage(
     method: string,
     params: Record<string, unknown>,
-    timeoutMs = 10_000
+    timeoutMs = 90_000
   ): Promise<unknown> {
     const child = this.child
     if (!child) throw new ExtensionError('EXTENSION_HOST_UNAVAILABLE')
@@ -310,13 +294,7 @@ export class ExtensionHost {
     return this.activation
   }
 
-  /**
-   * 停止后台进程。
-   *
-   * 三段式：先请扩展自行退出，超时后结束整棵进程树，再等真实的 exit 事件。
-   * 只有收到 exit 才算停止完成——只发信号就返回，会让上层在进程仍占用
-   * 文件时去替换扩展目录（Windows 上必然失败，POSIX 上会留下旧代码在跑）。
-   */
+  /** 停止后台：等真实 exit 才算完成，只发信号会在进程占用文件时替换失败。 */
   async stop(): Promise<void> {
     this.stopping = true
     if (this.restartTimer) {
@@ -353,15 +331,7 @@ export class ExtensionHost {
     this.setState('inactive')
   }
 
-  /**
-   * 结束扩展进程及其派生进程。
-   *
-   * POSIX 依赖 `fork` 时的 `detached` 建立独立进程组，`kill(-pid)` 一次覆盖整组；
-   * 组不存在时退化为只杀直接子进程，并记一条降级日志。
-   *
-   * Windows 用 `taskkill /T /F`，且必须**在父进程仍存活时**执行：
-   * 父进程先退出后，进程树的父子关系消失，`/T` 再也找不到孙进程。
-   */
+  /** 结束进程树；Windows 的 taskkill /T 必须在父进程存活时执行，否则找不到孙进程。 */
   private killTree(child: ExtensionHostChild): void {
     const pid = child.pid
     if (!pid) {
@@ -392,12 +362,7 @@ export class ExtensionHost {
     })
   }
 
-  /**
-   * 投递消息事件。
-   *
-   * 令牌桶是**背压边界**：扩展处理慢或消息突发时宁可丢事件并如实记日志，
-   * 也不能让主进程的监听回调被拖垮。
-   */
+  /** 投递消息事件；令牌桶是**背压边界**：扩展处理慢或消息突发时宁可丢事件并如实记日志， 也不能让主进程的监听回调被拖垮。 */
   deliverEvent(envelope: ExtensionEventEnvelope): boolean {
     if (this.state.state !== 'active' || !this.child) return false
     this.refillTokens()
@@ -554,13 +519,7 @@ export class ExtensionHost {
     this.consumeStderr(child)
   }
 
-  /**
-   * 消费子进程 stderr。
-   *
-   * 两点必须同时成立：管道始终有人读（否则子进程写满缓冲会阻塞），
-   * 且进入日志的内容有速率与长度上限（否则一次日志风暴能把主进程拖垮）。
-   * 凭据形态的字段在落日志前抹掉值。
-   */
+  /** 消费子进程 stderr；两点必须同时成立：管道始终有人读（否则子进程写满缓冲会阻塞）， 且进入日志的内容有速率与长度上限（否则一次日志风暴能把主进程拖垮）。 */
   private consumeStderr(child: ExtensionHostChild): void {
     const stream = child.stderr
     if (!stream || typeof stream.on !== 'function') return
@@ -832,6 +791,14 @@ export class ExtensionHost {
           params as unknown as ExtensionSendVideoRequest
         )
       }
+      case 'wechat.send.voice': {
+        this.requirePermission('wechat.send.voice')
+        if (!this.dependencies.sendVoice) throw new ExtensionError('SEND_NOT_SUPPORTED')
+        return this.dependencies.sendVoice(
+          extensionId,
+          params as unknown as ExtensionSendVoiceRequest
+        )
+      }
       case 'ai.chat': {
         this.requirePermission('ai.chat')
         if (!this.dependencies.aiChat) throw new ExtensionError('CAPABILITY_UNAVAILABLE')
@@ -907,14 +874,7 @@ export class ExtensionHost {
   }
 }
 
-/**
- * 结束 `pid` 对应的进程树。
- *
- * 返回值表示实际使用的手段：
- * - `group`：POSIX 进程组，覆盖扩展派生的全部子进程；
- * - `taskkill`：Windows 进程树，必须在父进程仍存活时调用；
- * - `fallback`：只能结束进程本身，调用方应记录降级。
- */
+/** 结束 `pid` 对应的进程树；`taskkill`：Windows 进程树，必须在父进程仍存活时调用。 */
 export function killProcessTree(
   pid: number | undefined,
   options: { platform?: NodeJS.Platform; signal?: NodeJS.Signals } = {}

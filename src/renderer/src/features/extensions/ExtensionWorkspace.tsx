@@ -41,16 +41,30 @@ function statusTone(extension: InstalledExtension): 'success' | 'warning' | 'dan
   return 'warning'
 }
 
+const SEND_PERMISSIONS: ReadonlySet<ExtensionPermission> = new Set([
+  'wechat.send.text',
+  'wechat.send.image',
+  'wechat.send.video',
+  'wechat.send.voice'
+])
+
+function extensionRequiresSend(extension: InstalledExtension): boolean {
+  return extension.permissions.some((permission) => SEND_PERMISSIONS.has(permission))
+}
+
 export interface ExtensionWorkspaceProps {
   /** 从其它页面跳过来时的定位目标。 */
   deepLink?: ExtensionDeepLink | null
   /** 消费后清空，避免返回再进来又跳一次。 */
   onConsumeDeepLink?: () => void
+  /** 跳转到「设置 → 微信发送」。 */
+  onOpenSendSettings?: () => void
 }
 
 export function ExtensionWorkspace({
   deepLink,
-  onConsumeDeepLink
+  onConsumeDeepLink,
+  onOpenSendSettings
 }: ExtensionWorkspaceProps = {}): React.ReactElement {
   const { toast } = useToast()
   const [extensions, setExtensions] = React.useState<InstalledExtension[]>([])
@@ -79,16 +93,27 @@ export function ExtensionWorkspace({
   } | null>(null)
   /** 「转为正式安装」的二次确认。 */
   const [pendingConvert, setPendingConvert] = React.useState<InstalledExtension | null>(null)
+  const [sendCapability, setSendCapability] = React.useState<{
+    ready: boolean
+    message?: string
+  } | null>(null)
+  const [sendMaskDismissed, setSendMaskDismissed] = React.useState(false)
 
   const refresh = React.useCallback(async (): Promise<void> => {
-    const [list, systemHealth, templateList] = await Promise.all([
+    const loadSendCap =
+      typeof window.api?.getPersonalWechatSendCapability === 'function'
+        ? window.api.getPersonalWechatSendCapability().catch(() => null)
+        : Promise.resolve(null)
+    const [list, systemHealth, templateList, nextSendCap] = await Promise.all([
       window.api.listExtensions(),
       window.api.getExtensionHealth().catch(() => null),
-      window.api.listExtensionTemplates().catch(() => [])
+      window.api.listExtensionTemplates().catch(() => []),
+      loadSendCap
     ])
     setExtensions(list)
     setHealth(systemHealth)
     setTemplates(templateList)
+    setSendCapability(nextSendCap)
     setTemplatesLoading(false)
     setSelectedId((current) => {
       if (current && list.some((item) => item.id === current)) return current
@@ -104,10 +129,7 @@ export function ExtensionWorkspace({
     return unsubscribe
   }, [refresh])
 
-  /**
-   * 消费深链：只切视图与选中项，不触发任何安装/启用动作。
-   * 真正的操作仍要用户在界面上点。
-   */
+  /** 消费深链：只切视图与选中项，不触发任何安装/启用动作。 */
   React.useEffect(() => {
     if (!deepLink) return
     if (deepLink.development) {
@@ -127,6 +149,10 @@ export function ExtensionWorkspace({
   const selected = React.useMemo(
     () => extensions.find((item) => item.id === selectedId) ?? null,
     [extensions, selectedId]
+  )
+  const sendUnavailable = Boolean(sendCapability && sendCapability.ready === false)
+  const selectedBlockedBySend = Boolean(
+    sendUnavailable && selected && extensionRequiresSend(selected)
   )
 
   const selectedIdForLogs = selected?.id
@@ -200,6 +226,14 @@ export function ExtensionWorkspace({
   }
 
   const requestEnable = (extension: InstalledExtension): void => {
+    if (sendUnavailable && extensionRequiresSend(extension)) {
+      toast({
+        title: '当前暂无发送能力',
+        description: '当前仅支持打开页面预览，请先配置微信发送能力后再启用该扩展。',
+        variant: 'destructive'
+      })
+      return
+    }
     const risky = extension.permissions.filter(
       (permission) => EXTENSION_PERMISSION_INFO[permission].risk !== 'low'
     )
@@ -524,13 +558,55 @@ export function ExtensionWorkspace({
 
   if (page) {
     return (
-      <ExtensionPageHost
-        descriptor={page}
-        onBack={() => {
-          setPage(null)
-          void refresh().catch(() => undefined)
-        }}
-      />
+      <div className="extension-page-wrapper">
+        <ExtensionPageHost
+          descriptor={page}
+          onBack={() => {
+            setPage(null)
+            void refresh().catch(() => undefined)
+          }}
+        />
+        {selectedBlockedBySend && !sendMaskDismissed && (
+          <div
+            className="extension-send-unavailable-mask"
+            role="region"
+            aria-label="当前暂无发送能力提示"
+          >
+            <div className="extension-send-unavailable-card">
+              <button
+                type="button"
+                className="extension-send-unavailable-close"
+                aria-label="关闭提示并预览界面"
+                title="关闭提示（仅预览界面，无法启用）"
+                onClick={() => setSendMaskDismissed(true)}
+              >
+                ×
+              </button>
+              <div className="extension-send-unavailable-icon" aria-hidden>
+                !
+              </div>
+              <h3>当前暂无发送能力</h3>
+              <p>
+                {sendCapability?.message ||
+                  '当前未绑定个人微信或发送组件尚未就绪。你可以点击右上角 × 关闭遮罩预览界面，但无法保存启用。'}
+              </p>
+              <div className="extension-send-unavailable-actions">
+                {onOpenSendSettings && (
+                  <Button size="sm" onClick={onOpenSendSettings}>
+                    前往配置微信发送能力
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" onClick={() => void refresh()}>
+                  重新检测发送状态
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setSendMaskDismissed(true)}>
+                  仅预览界面
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     )
   }
 
@@ -611,36 +687,103 @@ export function ExtensionWorkspace({
         <div className="extension-list" role="listbox" aria-label="已安装扩展">
           {extensions.length === 0 ? (
             <p className="extension-empty">
-              还没有安装扩展。可以在 <code>examples/extensions</code> 下找到两个可直接安装的示例。
+              还没有安装扩展。可以在 <code>examples/extensions</code> 下找到三个可直接安装的示例。
             </p>
           ) : (
-            extensions.map((extension) => (
-              <button
-                key={extension.id}
-                type="button"
-                role="option"
-                aria-selected={extension.id === selectedId}
-                className={`extension-list-item ${extension.id === selectedId ? 'is-active' : ''}`}
-                onClick={() => setSelectedId(extension.id)}
-              >
-                <span
-                  className={`extension-status-dot tone-${statusTone(extension)}`}
-                  aria-hidden
-                />
-                <span className="extension-list-main">
-                  <span className="extension-list-name">{extension.name}</span>
-                  <span className="extension-list-meta">
-                    v{extension.version} ·{' '}
-                    {extension.enabled ? STATUS_LABELS[extension.runtime.state] : '已停用'}
+            extensions.map((extension) => {
+              const needsSend = extensionRequiresSend(extension)
+              const warnNoSend = sendUnavailable && needsSend
+              return (
+                <button
+                  key={extension.id}
+                  type="button"
+                  role="option"
+                  aria-selected={extension.id === selectedId}
+                  className={`extension-list-item ${extension.id === selectedId ? 'is-active' : ''}`}
+                  onClick={() => {
+                    if (extension.id !== selectedId) setSendMaskDismissed(false)
+                    setSelectedId(extension.id)
+                  }}
+                >
+                  <span
+                    className={`extension-status-dot tone-${warnNoSend ? 'danger' : statusTone(extension)}`}
+                    aria-hidden
+                  />
+                  <span className="extension-list-main">
+                    <span className="extension-list-name-row">
+                      <span className="extension-list-name">{extension.name}</span>
+                      {warnNoSend && (
+                        <span
+                          className="extension-send-warn-pill"
+                          title="当前暂无发送能力，请先绑定个人微信"
+                        >
+                          <span className="extension-send-warn-bang" aria-hidden>
+                            !
+                          </span>
+                          当前暂无发送能力
+                        </span>
+                      )}
+                    </span>
+                    <span className="extension-list-meta">
+                      v{extension.version} ·{' '}
+                      {warnNoSend
+                        ? '暂无发送能力（已暂停）'
+                        : extension.enabled
+                          ? STATUS_LABELS[extension.runtime.state]
+                          : '已停用'}
+                    </span>
                   </span>
-                </span>
-              </button>
-            ))
+                </button>
+              )
+            })
           )}
         </div>
       </aside>
 
-      <section className="extension-detail" aria-label="扩展详情">
+      <section
+        className={`extension-detail ${selectedBlockedBySend && !sendMaskDismissed && view === 'extensions' ? 'is-send-blocked' : ''}`}
+        aria-label="扩展详情"
+      >
+        {selectedBlockedBySend && !sendMaskDismissed && view === 'extensions' && (
+          <div
+            className="extension-send-unavailable-mask"
+            role="region"
+            aria-label="当前暂无发送能力遮罩"
+          >
+            <div className="extension-send-unavailable-card">
+              <button
+                type="button"
+                className="extension-send-unavailable-close"
+                aria-label="关闭提示并预览界面"
+                title="关闭提示（可打开界面预览，无法启用）"
+                onClick={() => setSendMaskDismissed(true)}
+              >
+                ×
+              </button>
+              <div className="extension-send-unavailable-icon" aria-hidden>
+                !
+              </div>
+              <h3>当前暂无发送能力</h3>
+              <p>
+                {sendCapability?.message ||
+                  '当前未绑定个人微信或发送组件尚未就绪。可点击右上角 × 关闭遮罩并打开界面预览，但无法启用该扩展。'}
+              </p>
+              <div className="extension-send-unavailable-actions">
+                {onOpenSendSettings && (
+                  <Button size="sm" onClick={onOpenSendSettings}>
+                    前往配置微信发送能力
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" onClick={() => void refresh()}>
+                  重新检测发送状态
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setSendMaskDismissed(true)}>
+                  关闭提示并预览
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
         {view === 'guide' ? (
           <DevelopmentGuide
             onBack={() => setView('extensions')}
@@ -736,7 +879,16 @@ export function ExtensionWorkspace({
                 <Button
                   size="sm"
                   variant={selected.enabled ? 'outline' : 'default'}
-                  disabled={busy || !selected.compatibility.compatible}
+                  disabled={
+                    busy ||
+                    !selected.compatibility.compatible ||
+                    (selectedBlockedBySend && !selected.enabled)
+                  }
+                  title={
+                    selectedBlockedBySend && !selected.enabled
+                      ? '当前暂无发送能力，仅可打开页面预览，无法启用'
+                      : undefined
+                  }
                   onClick={() =>
                     selected.enabled ? void toggleEnabled(selected, false) : requestEnable(selected)
                   }

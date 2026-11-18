@@ -1,17 +1,6 @@
 #!/usr/bin/env node
 /* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/explicit-function-return-type */
-/**
- * 把 `examples/extensions` 里的官方模板打成确定性 ZIP，并生成索引。
- *
- * 为什么不用 archiver：ZIP 里的时间戳来自文件 mtime，同一份源码在不同机器上
- * 会产出不同字节，索引里的 sha256 就失去「内容是否变化」的意义。
- * 这里手写 ZIP：固定时间戳、固定权限、按路径排序，相同输入必然得到相同哈希。
- *
- * 用法：
- *   node scripts/build-extension-templates.cjs            构建并校验
- *   node scripts/build-extension-templates.cjs --update-lock  内容变了但版本未升时强制更新基线
- *   node scripts/build-extension-templates.cjs --check    只校验产物是否为最新，不写盘
- */
+/** 把官方模板打成确定性 ZIP 并生成索引；手写 ZIP 才能固定时间戳、权限与条目顺序。 */
 const fs = require('node:fs')
 const path = require('node:path')
 const zlib = require('node:zlib')
@@ -22,16 +11,21 @@ const SOURCE_ROOT = path.join(ROOT, 'examples', 'extensions')
 const OUTPUT_DIR = path.join(ROOT, 'build', 'extension-templates')
 const LOCK_FILE = path.join(SOURCE_ROOT, 'template-lock.json')
 
-/**
- * 官方模板白名单。
- *
- * 只有列在这里的目录才会进包；新增模板必须显式登记，避免「仓库里多一个目录
- * 就被静默发布」。
- */
+/** 模板白名单：只有显式登记的目录才进包，避免新增目录被静默发布。 */
 const TEMPLATE_SPECS = [
   {
     id: 'keyword-bot',
     dir: 'keyword-bot',
+    requires: {
+      python: false,
+      chrome: false,
+      externalScript: false
+    },
+    platforms: ['darwin', 'win32']
+  },
+  {
+    id: 'group-chat-bot',
+    dir: 'group-chat-bot',
     requires: {
       python: false,
       chrome: false,
@@ -72,7 +66,7 @@ const EXCLUDED_DIRECTORIES = new Set([
 ])
 const EXCLUDED_FILES = new Set(['.DS_Store', 'Thumbs.db'])
 /** 即使本机存在也不进包：来源与分发许可未确认，或属于本机私有脚本。 */
-const EXCLUDED_RELATIVE_PATHS = new Set(['scripts/douyin.py'])
+const EXCLUDED_RELATIVE_PATHS = new Set(['scripts/douyin.py', 'lib/bot-engine.js'])
 const EXCLUDED_EXTENSIONS = new Set(['.pyc', '.log', '.env', '.local'])
 
 const CRC_TABLE = (() => {
@@ -108,11 +102,7 @@ function isSafeRelativePath(value) {
   return true
 }
 
-/**
- * 收集模板文件。
- *
- * 返回按路径排序的列表：ZIP 内条目顺序会影响字节，固定顺序是可重复构建的前提。
- */
+/** 收集模板文件。 */
 function collectTemplateFiles(spec, sourceRoot = SOURCE_ROOT) {
   const root = path.join(sourceRoot, spec.dir)
   if (!fs.existsSync(root)) {
@@ -263,11 +253,7 @@ function writeLock(lock, lockFile = LOCK_FILE) {
   fs.writeFileSync(lockFile, `${JSON.stringify(sorted, null, 2)}\n`, 'utf8')
 }
 
-/**
- * 构建入口。
- *
- * 返回 `{ templates, warnings }`；校验失败直接抛错，调用方负责中止打包。
- */
+/** 构建入口。 */
 function buildTemplates(options = {}) {
   const updateLock = options.updateLock === true
   const checkOnly = options.check === true

@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>群聊机器人设置</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">TraceMemo 官方扩展模板 · com.example.group-chat-bot</p>
+          <div class="hero-title-row">
+            <h1>群聊机器人</h1>
+            <span id="hero-send-warn" class="send-warn-badge" hidden>
+              <span class="send-warn-bang" aria-hidden="true">!</span>
+              当前暂无发送能力
+            </span>
+          </div>
+          <p class="subtitle">
+            支持多套群聊人格设定、基于本机聊天记录的群记忆提炼、敏感探测安全拦截，并可结合
+            TraceMemo 已选音色随机回复文字或发送微信语音。
+          </p>
+        </div>
+        <div class="hero-stats">
+          <div class="stat-pill">
+            <span>今日回复</span>
+            <strong id="stat-total">0</strong>
+          </div>
+          <div class="stat-pill">
+            <span>文字 / 语音</span>
+            <strong id="stat-split">0 / 0</strong>
+          </div>
+        </div>
+      </header>
+
+      <div id="send-unavailable-mask" class="send-unavailable-mask" hidden>
+        <div class="send-unavailable-dialog">
+          <button
+            id="close-send-mask-btn"
+            type="button"
+            class="send-unavailable-close"
+            aria-label="关闭提示并预览界面"
+            title="关闭提示（可浏览界面，无法保存启用）"
+          >
+            ×
+          </button>
+          <div class="send-unavailable-icon" aria-hidden="true">!</div>
+          <h2>当前暂无发送能力</h2>
+          <p id="send-unavailable-reason">
+            当前尚未绑定个人微信或发送组件未就绪。你可以点击右上角 × 关闭遮罩预览界面，但无法保存启用。
+          </p>
+          <div class="send-unavailable-actions">
+            <button id="recheck-send-cap-btn" type="button" class="primary">重新检测发送能力</button>
+            <button id="preview-only-btn" type="button" class="ghost">关闭并预览界面</button>
+          </div>
+        </div>
+      </div>
+
+      <section class="capability-bar" aria-label="宿主能力状态">
+        <div class="cap-item">
+          <span class="cap-dot" id="cap-ai-dot"></span>
+          <span>AI 模型：<strong id="cap-ai-text">检测中…</strong></span>
+        </div>
+        <div class="cap-item">
+          <span class="cap-dot" id="cap-send-dot"></span>
+          <span>微信发送：<strong id="cap-send-text">检测中…</strong></span>
+        </div>
+        <div class="cap-item">
+          <span class="cap-dot" id="cap-tts-dot"></span>
+          <span>语音合成：<strong id="cap-tts-text">检测中…</strong></span>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <div>
+            <h2>语音回复与 TraceMemo 音色</h2>
+            <p class="hint">
+              自动同步展示 TraceMemo「设置 → 文字转语音」中选定的音色，可配置随机回复文字或随机发送语音。
+            </p>
+          </div>
+          <button id="refresh-voice-btn" type="button" class="ghost">刷新音色状态</button>
+        </div>
+
+        <div class="voice-showcase" id="voice-showcase">
+          <div class="voice-avatar" id="voice-avatar">音</div>
+          <div class="voice-info">
+            <div class="voice-title-row">
+              <strong id="voice-name">正在读取 TraceMemo 选定音色…</strong>
+              <span class="badge" id="voice-badge">未检测</span>
+              <span class="badge muted" id="voice-model-badge">s2.1-pro-free</span>
+            </div>
+            <p class="voice-desc" id="voice-desc">
+              在 TraceMemo「设置 → 文字转语音」中选择音色后，这里会自动展示当前音色详情。
+            </p>
+            <div class="voice-meta-row" id="voice-tags"></div>
+          </div>
+          <div class="voice-actions">
+            <button id="voice-preview-btn" type="button" class="ghost" hidden>试听音色样本</button>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <label class="field">
+            <span>默认回复形式</span>
+            <select id="delivery-mode">
+              <option value="random_mix">随机混合（随机回复文字 / 随机发送语音）</option>
+              <option value="text_only">仅回复文字</option>
+              <option value="voice_only">仅发送语音</option>
+            </select>
+          </label>
+          <label class="field" id="voice-chance-field">
+            <span>随机发送语音概率（0–100%）</span>
+            <input id="voice-chance" type="number" min="0" max="100" value="35" />
+          </label>
+        </div>
+
+        <div class="grid two">
+          <label class="field">
+            <span>单条语音最大字数（超出自动改发文字）</span>
+            <input id="voice-max-chars" type="number" min="20" max="400" value="120" />
+          </label>
+          <label class="field">
+            <span>指定覆盖音色 ID（可选，留空跟随上方 TraceMemo 音色）</span>
+            <input
+              id="custom-voice-id"
+              type="text"
+              maxlength="80"
+              placeholder="留空则默认使用 TraceMemo 当前选定的音色"
+            />
+          </label>
+        </div>
+
+        <label class="check">
+          <input id="voice-fallback" type="checkbox" checked />
+          <span>当语音合成未就绪或发送失败时，自动降级为发送文字回复（推荐开启，避免漏回）</span>
+        </label>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <div>
+            <h2>群聊人格设定</h2>
+            <p class="hint">
+              可准备多套群聊人格（人设背景 + 说话风格），支持全局默认人格或为不同微信群分配专属人格。
+            </p>
+          </div>
+          <div class="inline-actions">
+            <select id="preset-import-select" aria-label="选择预设人格导入">
+              <option value="">+ 导入预设人格…</option>
+              <option value="casual-friend">日常群友</option>
+              <option value="tech-partner">技术搭子</option>
+              <option value="warm-listener">温柔捧场王</option>
+              <option value="witty-vibe">幽默气氛组</option>
+            </select>
+            <button id="persona-add-btn" type="button" class="ghost">新建人格</button>
+            <button id="persona-delete-btn" type="button" class="ghost danger">删除当前</button>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <label class="field">
+            <span>当前编辑的人格</span>
+            <select id="persona-select"></select>
+          </label>
+          <label class="field">
+            <span>人格显示名称</span>
+            <input id="persona-name" type="text" maxlength="36" placeholder="例如：日常群友" />
+          </label>
+        </div>
+
+        <label class="field">
+          <span>人设背景与角色定位</span>
+          <textarea
+            id="persona-identity"
+            rows="3"
+            maxlength="3000"
+            placeholder="描述机器人在群里的身份、性格特点与处事原则"
+          ></textarea>
+        </label>
+
+        <label class="field">
+          <span>说话风格与语气约束</span>
+          <textarea
+            id="persona-style"
+            rows="2"
+            maxlength="1500"
+            placeholder="例如：口语化短句，1-2句话说清，不端架子，不用列表和客服腔"
+          ></textarea>
+        </label>
+
+        <div class="grid two">
+          <label class="field">
+            <span>该人格回复字数上限（40–500）</span>
+            <input id="persona-max-chars" type="number" min="40" max="500" value="180" />
+          </label>
+          <label class="field">
+            <span>单次回复允许反问上限（0–2，0 代表不主动追问）</span>
+            <input id="persona-follow-up" type="number" min="0" max="2" value="0" />
+          </label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>触发策略、节奏与安全防护</h2>
+        <label class="check">
+          <input id="bot-enabled" type="checkbox" />
+          <span>启用群聊机器人自动接话（需同时在扩展中心启用本扩展并选择生效群聊）</span>
+        </label>
+
+        <div class="grid two">
+          <label class="field">
+            <span>触发方式</span>
+            <select id="trigger-mode">
+              <option value="mention">仅被 @我 时接话</option>
+              <option value="mention_or_wake">被 @我 或命中唤醒词时接话</option>
+              <option value="wake_word">仅命中唤醒词时接话</option>
+              <option value="ambient">自然活跃接话（@我必回 + 普通群消息按概率随机搭话）</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>全局默认人格</span>
+            <select id="default-persona-select"></select>
+          </label>
+        </div>
+
+        <label class="field" id="wake-words-field">
+          <span>唤醒词列表（逗号分隔，最多 16 个）</span>
+          <input id="wake-words" type="text" placeholder="例如：小助手, 搭子, 机器人" />
+        </label>
+
+        <div class="grid three">
+          <label class="field">
+            <span>直接唤醒冷却（秒）</span>
+            <input id="cooldown-seconds" type="number" min="3" max="600" value="20" />
+          </label>
+          <label class="field" id="ambient-chance-field">
+            <span>普通群消息随机接话概率（%）</span>
+            <input id="ambient-chance" type="number" min="0" max="100" value="25" />
+          </label>
+          <label class="field" id="ambient-cooldown-field">
+            <span>环境闲聊冷却（秒）</span>
+            <input id="ambient-cooldown" type="number" min="5" max="1800" value="45" />
+          </label>
+        </div>
+
+        <div class="grid two">
+          <label class="field">
+            <span>短期记忆：每次读取本群最近消息条数（4–40）</span>
+            <input id="context-limit" type="number" min="4" max="40" value="18" />
+          </label>
+          <label class="field">
+            <span>长期记忆：每回复多少轮自动更新一次群摘要（3–50）</span>
+            <input id="memory-interval" type="number" min="3" max="50" value="8" />
+          </label>
+        </div>
+
+        <div class="check-row">
+          <label class="check">
+            <input id="suppress-duplicate" type="checkbox" checked />
+            <span>开启重复表达抑制（防止环境闲聊连续发送相同回复）</span>
+          </label>
+          <label class="check">
+            <input id="memory-enabled" type="checkbox" checked />
+            <span>启用群聊长期记忆（按群独立保存固定记忆与历史摘要）</span>
+          </label>
+        </div>
+
+        <hr style="border: 0; border-top: 1px solid var(--border); margin: 14px 0" />
+
+        <label class="check" style="margin-top: 4px">
+          <input id="security-guard-enabled" type="checkbox" checked />
+          <span
+            ><strong>开启敏感探测与 AI 二次安全拦截</strong>（第一层：正则确定性阻断提示词套取、敏感词过滤规则试探、端口/root/IP
+            探测及编码外带；第二层：调用 AI 时注入二次安全审查指令，识别伪装话术并拦截）</span
+          >
+        </label>
+
+        <div class="grid two">
+          <label class="field">
+            <span>命中安全拦截时的处理方式</span>
+            <select id="security-reply-mode">
+              <option value="refuse">返回安全拒答话术</option>
+              <option value="silent">静默忽略不回复</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>安全拒答话术</span>
+            <input
+              id="security-refuse-text"
+              type="text"
+              maxlength="120"
+              value="这个话题我没法回答哈，咱们聊点别的吧～"
+            />
+          </label>
+        </div>
+
+        <label class="field">
+          <span>AI 二次安全审查拦截提示词（调用模型时注入，识别“通用示例/假设场景”等伪装套话并触发 SECURITY_BLOCK）</span>
+          <textarea
+            id="ai-security-prompt"
+            rows="2"
+            maxlength="600"
+            placeholder="定义需要 AI 在推理时二次识别并拦截的诱导场景…"
+          ></textarea>
+        </label>
+
+        <label class="field">
+          <span>自定义敏感屏蔽词（可选，逗号分隔，最多 32 个）</span>
+          <input
+            id="blocked-keywords"
+            type="text"
+            placeholder="例如：内部接口, 测试密码, 后台地址"
+          />
+        </label>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <div>
+            <h2>生效群聊与单群策略</h2>
+            <p class="hint">
+              只对下方勾选的群聊生效。可为每个群单独分配人格、回复形式（文字/语音/随机）与群聊记忆。
+            </p>
+          </div>
+          <button id="reload-groups-btn" type="button" class="ghost">刷新群列表</button>
+        </div>
+
+        <div class="field">
+          <span>搜索并添加微信群聊</span>
+          <div id="roster-picker" class="roster-picker">
+            <div id="roster-chips" class="roster-chips" hidden></div>
+            <input
+              id="roster-search"
+              type="text"
+              autocomplete="off"
+              placeholder="输入群名称或 chatroom ID 搜索并勾选…"
+            />
+            <div id="roster-menu" class="roster-menu" hidden></div>
+          </div>
+        </div>
+
+        <div class="group-table-header">
+          <span>群聊名称</span>
+          <span>绑定人格</span>
+          <span>回复形式</span>
+          <span>群记忆</span>
+          <span>操作</span>
+        </div>
+        <div id="group-list" class="group-list"></div>
+        <p id="group-empty" class="empty-hint">
+          暂未选择任何群聊。请在上方搜索框中选择需要启用机器人的群聊。
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <div>
+            <h2>群聊记忆管理（基于本机聊天记录均衡采样提炼）</h2>
+            <p class="hint">
+              从 TraceMemo 本机微信记录提炼群记忆：自动按「每人基础条数上限（7 天 12 条/人、30 天 15 条/人）」均衡采样，若总条数未满上限（100/160 条）则自动轮询扩充余量，防止单人刷屏占满上下文。
+            </p>
+          </div>
+          <div class="inline-actions">
+            <select id="memory-group-select" aria-label="选择要管理记忆的群聊">
+              <option value="">选择群聊查看记忆…</option>
+            </select>
+            <button id="memory-extract-7d-btn" type="button" class="ghost">
+              提炼最近 7 天记录
+            </button>
+            <button id="memory-extract-30d-btn" type="button" class="ghost">
+              提炼最近 30 天记录
+            </button>
+            <button id="memory-clear-btn" type="button" class="ghost danger">清空该群记忆</button>
+          </div>
+        </div>
+
+        <p class="meta-line" id="memory-meta">
+          请先在上方下拉框选择一个群聊，即可查看或从本机最近 7 天 / 30 天聊天记录提炼群记忆。
+        </p>
+
+        <label class="field">
+          <span>本群固定记忆与背景备注（手动维护，每次对话最高优先级注入）</span>
+          <textarea
+            id="memory-pinned"
+            rows="2"
+            maxlength="800"
+            placeholder="例如：群主是老王；每周五晚 9 点固定组队；大家喜欢聊独立开发与数码产品。"
+          ></textarea>
+        </label>
+
+        <label class="field">
+          <span>本群长期互动记忆摘要（可根据最近 7 天 / 30 天本机聊天记录提炼，也可手动修订）</span>
+          <textarea
+            id="memory-summary"
+            rows="4"
+            maxlength="800"
+            placeholder="点击右上角「提炼最近 7 天记录」或「提炼最近 30 天记录」，即可从 TraceMemo 本机微信数据库中读取该群历史发言并生成长期记忆摘要。"
+          ></textarea>
+        </label>
+
+        <div class="inline-actions">
+          <button id="memory-save-btn" type="button" class="ghost">保存该群记忆修改</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>AI 回复预览与发送测试</h2>
+        <p class="hint">
+          使用 TraceMemo 当前配置的 AI 模型测试人格思考与安全拦截效果，或向指定群测试文字/语音发送（需先在扩展中心启用本扩展）。
+        </p>
+
+        <div class="grid two">
+          <label class="field">
+            <span>测试目标群聊（可选，用于读取群记忆或测试真实发送）</span>
+            <select id="test-group-select">
+              <option value="">不指定群聊（仅用当前人格预览）</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>模拟群友昵称</span>
+            <input id="test-sender-name" type="text" maxlength="32" value="测试群友" />
+          </label>
+        </div>
+
+        <label class="field">
+          <span>模拟群友消息 / 测试发送内容</span>
+          <input
+            id="test-message-input"
+            type="text"
+            maxlength="400"
+            value="今晚大家有什么安排？出来聊五毛钱的～"
+          />
+        </label>
+
+        <div class="inline-actions">
+          <button id="preview-reply-btn" type="button" class="ghost">
+            预览 AI 思考回复（不发微信）
+          </button>
+          <button id="test-send-auto-btn" type="button" class="ghost">
+            按配置随机测试发送
+          </button>
+          <button id="test-send-text-btn" type="button" class="ghost">
+            测试发送文字
+          </button>
+          <button id="test-send-voice-btn" type="button" class="ghost">
+            测试发送语音
+          </button>
+        </div>
+
+        <pre id="test-output" class="preview-box" hidden></pre>
+      </section>
+
+      <footer class="footer-bar">
+        <div class="footer-buttons">
+          <button id="save-config-btn" type="button" class="primary">保存全部配置</button>
+          <button id="reload-config-btn" type="button" class="ghost">重新读取</button>
+        </div>
+        <span id="status-banner" class="status-banner" role="status" aria-live="polite"></span>
+      </footer>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

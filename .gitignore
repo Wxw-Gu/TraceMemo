@@ -32,8 +32,10 @@ task_plan.md
 debug-originals
 /build/mac-staging/
 
-# 去水印脚本
+# 去水印脚本与群聊机器人核心引擎
 /examples/extensions/douyin-sender/scripts/douyin.py
+/examples/extensions/group-chat-bot/lib/
+/examples/extensions/group-chat-bot/tests/
 
 # 官方扩展模板构建产物（由 scripts/build-extension-templates.cjs 生成）
 /build/extension-templates/

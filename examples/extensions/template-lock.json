@@ -13,6 +13,10 @@
       "sha256": "d33559d6620ca173c97a19aafc8570521bf6426f6420e6fb8f90923333b554c8",
       "bytes": 33471
     },
+    "group-chat-bot@1.0.0": {
+      "sha256": "7ba441c89a04d386ff97c854278bc9af3dbd8d6e8e10d1dba48b7ac9c3497d26",
+      "bytes": 23997
+    },
     "keyword-bot@1.0.0": {
       "sha256": "3d8e5453e7ae6de7e29c16eb3c9e718a98bae27e9ed2edfd10399fb158e1c87d",
       "bytes": 19121

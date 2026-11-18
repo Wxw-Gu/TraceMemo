@@ -74,11 +74,7 @@ export function buildPersonalWechatRuntimePath(): string {
   return [dirname(bundledFfmpeg), existing].filter(Boolean).join(delimiter)
 }
 
-/**
- * Build the environment used by TraceMemo's local voice encoding helpers.
- * Keep this in one place so environment checks cannot accidentally inspect a
- * different ffmpeg than the sender process.
- */
+/** Build the environment used by TraceMemo's local voice encoding helpers.。 */
 export function buildPersonalWechatRuntimeEnvironment(): NodeJS.ProcessEnv {
   return {
     ...process.env,
@@ -217,13 +213,15 @@ async function prepareWindowsVoiceFile(filePath: string): Promise<{
   )
   const pcm = Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.from(result.stdout || '')
   if (!pcm.length) throw new Error('语音转换失败：没有得到 PCM 音频数据')
+  const pcmDurationMs = Math.round((pcm.length / 2 / 24_000) * 1000)
   const encoded = await new SilkAudioEncoder().encode(pcm, 24_000)
   if (!encoded.data.length) throw new Error('语音转换失败：没有得到 SILK 数据')
+  const durationMs = encoded.durationMs >= 1000 ? encoded.durationMs : pcmDurationMs
   const convertedPath = join(tmpdir(), `tracememo-voice-${randomBytes(8).toString('hex')}.silk`)
   writeFileSync(convertedPath, encoded.data)
   return {
     filePath: convertedPath,
-    ...(encoded.durationMs > 0 ? { durationMs: encoded.durationMs } : {}),
+    ...(durationMs > 0 ? { durationMs } : {}),
     temporary: true
   }
 }
@@ -297,12 +295,7 @@ function prepareMacWechatImageFile(
   senderWxid: string,
   wechatFilesRoot = WECHAT_FILES_ROOT
 ): { filePath: string; md5: string } {
-  /* Stage the image in WeChat's temporary image directory using the
-   * filename/hash layout required by the macOS native send path:
-   * - stage inside the active account's ImageTemp tree selected by
-   *   findWechatImagePath(), not an arbitrary readable sandbox directory;
-   * - append a per-send salt before calculating MD5, so the staged image and
-   *   the MD5 passed to the CDN task describe the same unique byte stream. */
+  /** Stage the image in WeChat's temporary image directory using the。 */
   const temporaryRoot = findWechatImagePath(wechatFilesRoot, new Date(), senderWxid)
   if (!temporaryRoot) throw new Error('无法定位当前微信账号的图片临时目录')
   mkdirSync(temporaryRoot, { recursive: true })
@@ -346,12 +339,7 @@ function stageMacWechatImageForMessageSourceSend(
 const MAC_VIDEO_STAGE_PREFIX = 'tm-video-'
 const MAC_VIDEO_STAGE_RETENTION_MS = 10 * 60 * 1000
 
-/**
- * macOS WeChat 运行在 App Sandbox 容器中，注入在微信进程内的 `libtmwechat.dylib`
- * 只能读取 `~/Library/Containers/com.tencent.xinWeChat/Data/...` 容器内路径，
- * 直接传 `~/Library/Application Support/TraceMemo/...` 会触发 `VIDEO_PREPARATION_FAILED:0`。
- * 因此发送前需将容器外视频暂存到微信容器的 `Documents` 目录。
- */
+/** macOS WeChat 运行在 App Sandbox 容器中，注入在微信进程内的 `libtmwechat.dylib`。 */
 export function stageMacWechatVideoForSend(
   filePath: string,
   wechatFilesRoot = WECHAT_FILES_ROOT
@@ -587,14 +575,7 @@ function isDefinitiveImageSourcePreparationFailure(message: string): boolean {
   return message.trim() === 'IMAGE_PREPARATION_FAILED:0'
 }
 
-/**
- * 发送链路诊断日志（排查「hook 报成功、群里却没有消息」时用）。
- *
- * 只有在设置里打开「调试模式」时才输出，所以正常使用不会刷屏。
- *
- * **隐私约束**：只允许输出类型、字节数、HTTP 状态码、hook 的 `ret` 这类结构性字段。
- * 文件名、完整路径、wxid、群名、消息正文不进日志。
- */
+/** 发送链路诊断日志（排查「hook 报成功、群里却没有消息」时用）。 */
 function logSendDiagnostic(
   stage: string,
   detail: Record<string, string | number | boolean | null>
@@ -607,16 +588,7 @@ function logSendDiagnostic(
   console.log(`[SendDiag] ${stage} ${JSON.stringify(detail)}`)
 }
 
-/**
- * 发送完成后**保留**图片临时文件的时长（毫秒）。默认 `0` = 立刻删除（现行行为）。
- *
- * 为什么留这个开关：`finally` 里的删除发生在 **hook 返回之后**，这隐含假设
- * 「hook 返回时发送已经完成」。如果 hook 其实是「先回 200、后台再读文件」，
- * 文件就可能在它读到之前已经被删掉 —— 现象正好是「hook 报成功、微信里没有消息」。
- *
- * 置为非 0 时可分辨两类失败：保留期间图片到了 ⇒ 删除时机问题（修法与 hook 约定文件生命周期）；
- * 仍然没到 ⇒ 与文件生命周期无关。
- */
+/** 发送完成后**保留**图片临时文件的时长（毫秒）。默认 `0` = 立刻删除（现行行为）。 */
 const WINDOWS_TEMP_IMAGE_GRACE_MS = 0
 
 /** 视频上传在 send_message 返回后才开始，删早了接收端只能拿到空文件。 */
@@ -784,10 +756,7 @@ export class PersonalWechatSendService {
     }
   }
 
-  /*
-   * macOS native runtime 的文字发送：HTTP POST /sendText 到 tm-wechat-host。
-   * 绑定状态由 host 侧保证；未绑定/未就绪时返回与旧契约一致的结果结构。
-   */
+  /** macOS native runtime 的文字发送：HTTP POST /sendText 到 tm-wechat-host。 */
   private async sendMacText(
     request: Extract<PersonalWechatSendRequest, { type: 'text' }>
   ): Promise<PersonalWechatSendResult> {
@@ -856,12 +825,7 @@ export class PersonalWechatSendService {
     return { success: true, status: resultStatus }
   }
 
-  /*
-   * Resolve the bound account's own wxid from the local WeChat data root.
-   * The media proto embeds the sender, and the mac runtime does not learn it
-   * from inbound traffic, so it is read from
-   * the on-disk account identity instead.
-   */
+  /** Resolve the bound account's own wxid from the local WeChat data root.。 */
   private async resolveMacSenderWxid(): Promise<string> {
     const identity = readLocalAccountIdentity(this.wechatFilesRoot)
     return identity?.wxid ?? ''
@@ -881,11 +845,7 @@ export class PersonalWechatSendService {
     if (response === null || !response.ok) return null
     const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null
     if (!payload) return null
-    /*
-     * 不同 Host 路由的响应形状不一致：`/sendText` 等返回 `{ok}`，
-     * `/SendMsg` 兼容层可能返回 `{status:true}` 或 Windows 风格的 `{ret:0}`。
-     * 这里统一收敛，避免「实际已发送、界面报失败」。
-     */
+    /** 不同 Host 路由的响应形状不一致：`/sendText` 等返回 `{ok}`。 */
     const explicitFailure = payload.ok === false || payload.status === false
     const ok =
       !explicitFailure &&
@@ -897,13 +857,7 @@ export class PersonalWechatSendService {
     }
   }
 
-  /**
-   * macOS 视频发送：`POST /SendMsg`，body 为 `{toWxid, type:'video', msg:<绝对路径>}`。
-   *
-   * 微信运行在 App Sandbox 容器中，注入的 `libtmwechat.dylib` 在微信进程内执行，
-   * 只能访问微信沙盒容器目录（`~/Library/Containers/com.tencent.xinWeChat/Data/...`）。
-   * 因此先将容器外视频暂存到微信容器 `Documents` 目录，再调用 `/SendMsg`。
-   */
+  /** macOS 视频发送：`POST /SendMsg`，body 为 `{toWxid, type:'video', msg:<绝对路径>}`。 */
   private async sendMacVideo(
     request: Extract<PersonalWechatSendRequest, { type: 'video' }>
   ): Promise<PersonalWechatSendResult> {
@@ -1057,8 +1011,7 @@ export class PersonalWechatSendService {
       if (!sender) return fail('无法识别当前微信账号 wxid')
     }
 
-    /* Reuse the Windows SILK preparation: it already normalizes any input to
-     * SILK and reports the duration. */
+    /** Reuse the Windows SILK preparation: it already normalizes any input to。 */
     let temporaryVoicePath: string | undefined
     try {
       const prepared = await prepareWindowsVoiceFile(filePath)
