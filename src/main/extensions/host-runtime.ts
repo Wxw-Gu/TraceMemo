@@ -1,12 +1,4 @@
-/**
- * 扩展后台进程入口。
- *
- * 这个文件**跑在子进程里**，不是主进程：它只负责加载扩展代码、构造受限 SDK、
- * 把请求转成白名单 RPC。任何 `require` 都只发生在这里，主进程永远不会加载
- * 第三方扩展代码。
- *
- * 与主进程的协议见 `src/shared/extensions/rpc.ts`。
- */
+/** 扩展后台进程入口；这个文件**跑在子进程里**，不是主进程：它只负责加载扩展代码、构造受限 SDK、 把请求转成白名单 RPC。 */
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -108,12 +100,7 @@ const tm = {
       return [...permissions]
     }
   },
-  /**
-   * 页面 → 同扩展后台的通用请求处理器注册。
-   *
-   * 不需要额外权限：注册本身不产生任何能力，handler 内部若调用
-   * `tm.wechat.send` 等能力，仍然各自走权限检查。
-   */
+  /** 页面 → 同扩展后台的通用请求处理器注册。 */
   page: {
     onRequest(method: string, handler: (params: Record<string, unknown>) => unknown): void {
       const name = String(method || '').trim()
@@ -123,12 +110,7 @@ const tm = {
       pageHandlers.set(name, handler)
     }
   },
-  /**
-   * 扩展私有凭据。
-   *
-   * 真正加密发生在主进程（`safeStorage`）；子进程只在需要时拿到明文。
-   * 每个扩展一个命名空间，A 扩展拿不到 B 的密钥。
-   */
+  /** 扩展私有凭据。 */
   secrets: {
     async get(key: string): Promise<string | null> {
       requirePermission('secrets')
@@ -166,27 +148,45 @@ const tm = {
       limit?: number
     }): Promise<{ messages: unknown[] }> {
       requirePermission('messages.query')
-      const result = (await callHost('messages.query', { ...request })) as { messages: unknown[] }
+      const result = (await callHost('messages.query', { ...request }, 25_000)) as {
+        messages: unknown[]
+      }
       return result
     }
   },
   wechat: {
-    /**
-     * 发送文本、图片或视频。
-     *
-     * 兼容旧调用：不传 `type` 视为 `text`。视频走独立的 video 通道，
-     * 原生 Host 以 `{toWxid, type:'video', msg:<路径>}` 提交。
-     */
+    /** 发送文本、图片、视频或语音。 */
     async send(request: {
-      type?: 'text' | 'image' | 'video'
+      type?: 'text' | 'image' | 'video' | 'voice'
       to: string
       text?: string
       path?: string
+      voiceId?: string
       at?: Record<string, string>
       dedupeKey?: string
     }) {
       const type =
-        request && (request.type === 'image' || request.type === 'video') ? request.type : 'text'
+        request &&
+        (request.type === 'image' || request.type === 'video' || request.type === 'voice')
+          ? request.type
+          : 'text'
+      if (type === 'voice') {
+        requirePermission('wechat.send.voice')
+        return (await callHost(
+          'wechat.send.voice',
+          {
+            to: request.to,
+            ...(request.path ? { path: request.path } : {}),
+            ...(request.text ? { text: request.text } : {}),
+            ...(request.voiceId ? { voiceId: request.voiceId } : {}),
+            ...(request.dedupeKey ? { dedupeKey: request.dedupeKey } : {})
+          },
+          150_000
+        )) as {
+          actionId: string
+          status: 'sent'
+        }
+      }
       if (type === 'image' || type === 'video') {
         requirePermission(type === 'video' ? 'wechat.send.video' : 'wechat.send.image')
         return (await callHost(
@@ -383,11 +383,7 @@ async function dispatchEvent(message: ExtensionHostEvent): Promise<void> {
   }
 }
 
-/**
- * 与 UI 共用同一套校验规则。
- *
- * 两套实现一定会在某个边界上分叉，用户看到的就是「表单填得进去、执行时说参数错」。
- */
+/** 与 UI 共用同一套校验规则。 */
 function validateActionInput(
   schema: Record<string, unknown> | undefined,
   input: Record<string, unknown>
@@ -414,7 +410,7 @@ async function handlePageRequest(message: ExtensionHostPageRequest): Promise<voi
   try {
     const raw = await withTimeout(
       Promise.resolve(handler(message.params ?? {})),
-      Math.max(1_000, Math.min(message.timeoutMs - 500, 30_000))
+      Math.max(1_000, Math.min(message.timeoutMs - 500, 90_000))
     )
     // 只允许纯 JSON：函数、循环引用、类实例都在这一步被拒绝。
     const serialized = JSON.stringify(raw ?? null)

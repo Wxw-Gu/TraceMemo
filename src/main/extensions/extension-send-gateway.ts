@@ -11,7 +11,8 @@ import type {
   ExtensionSendImageRequest,
   ExtensionSendTextRequest,
   ExtensionSendTextResult,
-  ExtensionSendVideoRequest
+  ExtensionSendVideoRequest,
+  ExtensionSendVoiceRequest
 } from '../../shared/extensions/rpc'
 import type { PersonalWechatSendCapability } from '../../shared/personal-wechat'
 import type { WechatActionRequest, WechatActionResult } from '../../shared/wechat-action'
@@ -19,6 +20,7 @@ import type { ExtensionEntitlementResult } from './extension-entitlement'
 import { isPathInside } from './extension-paths'
 
 const MAX_TEXT_LENGTH = 2_000
+const MAX_VOICE_TEXT_LENGTH = 1_000
 const MAX_RECIPIENT_LENGTH = 128
 const MAX_MEDIA_BYTES = 100 * 1024 * 1024
 const SEND_INTERVAL_MS = 2_000
@@ -27,6 +29,7 @@ const SEND_WINDOW_LIMIT = 10
 /** 原生发送端把视频按 `type: 'video'` 提交，这里只放行常见容器。 */
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v'])
+const VOICE_EXTENSIONS = new Set(['.mp3', '.wav', '.silk', '.amr', '.m4a', '.ogg'])
 
 export interface ExtensionSendContext {
   extensionId: string
@@ -41,20 +44,28 @@ export interface ExtensionSendGatewayDependencies {
   executeAction: (request: WechatActionRequest) => Promise<WechatActionResult>
   /** 扩展数据目录；媒体文件只允许从这里或系统临时目录发送。 */
   getExtensionDataRoot?: (extensionId: string) => string
+  /** 使用宿主已配置的文字转语音服务生成临时音频文件。 */
+  synthesizeVoice?: (request: {
+    text: string
+    voiceId?: string
+  }) => Promise<{ filePath: string }>
+  cleanupVoice?: (filePath: string) => void
+  getFromId?: () => string | Promise<string>
   now?: () => number
 }
 
-/**
- * 扩展发送出口：权限 / 范围 / 授权 / 频率通过后交给 WechatActionGateway。
- *
- * origin、purpose、triggerType、幂等键全部由宿主填写，扩展只描述
- * 「发给谁、发什么」。
- */
+/** 扩展发送出口：权限 / 范围 / 授权 / 频率通过后交给 WechatActionGateway。 */
 export class ExtensionSendGateway {
   private readonly getCapability: () => Promise<PersonalWechatSendCapability>
   private readonly checkEntitlement: () => Promise<ExtensionEntitlementResult>
   private readonly executeAction: (request: WechatActionRequest) => Promise<WechatActionResult>
   private readonly getExtensionDataRoot: (extensionId: string) => string
+  private readonly synthesizeVoice?: (request: {
+    text: string
+    voiceId?: string
+  }) => Promise<{ filePath: string }>
+  private readonly cleanupVoice?: (filePath: string) => void
+  private readonly getFromId?: () => string | Promise<string>
   private readonly now: () => number
   private readonly sendHistory = new Map<string, number[]>()
 
@@ -63,6 +74,9 @@ export class ExtensionSendGateway {
     this.checkEntitlement = dependencies.checkEntitlement
     this.executeAction = dependencies.executeAction
     this.getExtensionDataRoot = dependencies.getExtensionDataRoot ?? (() => '')
+    this.synthesizeVoice = dependencies.synthesizeVoice
+    this.cleanupVoice = dependencies.cleanupVoice
+    this.getFromId = dependencies.getFromId
     this.now = dependencies.now ?? (() => Date.now())
   }
 
@@ -124,12 +138,7 @@ export class ExtensionSendGateway {
     throw new ExtensionError(mapGatewayError(result.errorCode), result.reason || '微信发送失败')
   }
 
-  /**
-   * 发送图片。
-   *
-   * 文件边界是硬性的：只允许扩展数据目录或系统临时目录里的普通文件，
-   * 否则扩展就能借 TraceMemo 把本机任意文件发出去。
-   */
+  /** 发送图片；文件边界是硬性的：只允许扩展数据目录或系统临时目录里的普通文件， 否则扩展就能借 TraceMemo 把本机任意文件发出去。 */
   async sendImage(
     context: ExtensionSendContext,
     request: ExtensionSendImageRequest
@@ -188,12 +197,7 @@ export class ExtensionSendGateway {
     throw new ExtensionError(mapGatewayError(result.errorCode), result.reason || '微信发送失败')
   }
 
-  /**
-   * 发送视频。
-   *
-   * 与图片分开是刻意的：原生 Host 用 `type: 'video'` 提交，失败时不能悄悄降级成图片。
-   * 文件边界与图片相同（扩展数据目录 / 临时目录、普通文件、≤ 100MB）。
-   */
+  /** 发送视频；与图片分开是刻意的：原生 Host 用 `type: 'video'` 提交，失败时不能悄悄降级成图片。 */
   async sendVideo(
     context: ExtensionSendContext,
     request: ExtensionSendVideoRequest
@@ -252,6 +256,110 @@ export class ExtensionSendGateway {
     throw new ExtensionError(mapGatewayError(result.errorCode), result.reason || '微信发送失败')
   }
 
+  /** 发送语音气泡。 */
+  async sendVoice(
+    context: ExtensionSendContext,
+    request: ExtensionSendVoiceRequest
+  ): Promise<ExtensionSendTextResult> {
+    if (!hasExtensionPermission(context.permissions, 'wechat.send.voice')) {
+      throw new ExtensionError('PERMISSION_DENIED', '扩展没有 wechat.send.voice 权限')
+    }
+    const to = String(request?.to || '').trim()
+    if (!to || to.length > MAX_RECIPIENT_LENGTH) {
+      throw new ExtensionError('INVALID_REQUEST', '接收会话 id 不合法')
+    }
+    if (context.conversationScope.length > 0 && !context.conversationScope.includes(to)) {
+      throw new ExtensionError('PERMISSION_DENIED', '目标会话超出扩展声明的范围')
+    }
+    const rawPath = String(request?.path || '').trim()
+    const rawText = String(request?.text || '').trim()
+    if (!rawPath && !rawText) {
+      throw new ExtensionError('INVALID_REQUEST', '发送语音需要提供 text 或音频文件 path')
+    }
+    if (rawText.length > MAX_VOICE_TEXT_LENGTH) {
+      throw new ExtensionError(
+        'INVALID_REQUEST',
+        `语音合成文字不能超过 ${MAX_VOICE_TEXT_LENGTH} 字`
+      )
+    }
+
+    let directMediaPath = ''
+    if (rawPath) {
+      directMediaPath = assertSendableMediaPath(
+        rawPath,
+        this.getExtensionDataRoot(context.extensionId),
+        VOICE_EXTENSIONS
+      )
+    } else if (!this.synthesizeVoice) {
+      throw new ExtensionError('CAPABILITY_UNAVAILABLE', '当前宿主未配置文字转语音合成能力')
+    }
+
+    this.assertRateLimit(context.extensionId)
+
+    const capability = await this.getCapability().catch(() => null)
+    if (!capability || !capability.supported) {
+      throw new ExtensionError(
+        'SEND_NOT_SUPPORTED',
+        capability?.message || '当前环境不支持微信发送'
+      )
+    }
+    if (!capability.ready || !capability.capabilities?.voice) {
+      throw new ExtensionError(
+        'CAPABILITY_UNAVAILABLE',
+        capability.message || '当前微信发送能力不支持语音'
+      )
+    }
+
+    const entitlement = await this.checkEntitlement()
+    if (!entitlement.ok) {
+      throw new ExtensionError('LICENSE_REQUIRED', entitlement.message)
+    }
+
+    let synthesizedFile = ''
+    try {
+      let mediaPath = directMediaPath
+      if (!mediaPath && this.synthesizeVoice) {
+        const voiceId = String(request?.voiceId || '').trim() || undefined
+        const synthesized = await this.synthesizeVoice({ text: rawText, voiceId })
+        synthesizedFile = String(synthesized?.filePath || '').trim()
+        mediaPath = assertSendableMediaPath(
+          synthesizedFile,
+          this.getExtensionDataRoot(context.extensionId),
+          VOICE_EXTENSIONS
+        )
+      }
+
+      const fromId = this.getFromId ? String((await this.getFromId()) || '').trim() : ''
+      const result = await this.executeAction({
+        ...(request.dedupeKey
+          ? { idempotencyKey: extensionIdempotencyKey(context.extensionId, request.dedupeKey) }
+          : {}),
+        origin: 'extension',
+        purpose: 'extension_send',
+        triggerType: 'automation',
+        recipient: { type: to.endsWith('@chatroom') ? 'group' : 'contact', id: to },
+        content: { type: 'voice', path: mediaPath },
+        metadata: {
+          extensionId: context.extensionId,
+          ...(fromId ? { fromId } : {})
+        }
+      })
+
+      if (result.status === 'sent') {
+        return { actionId: result.actionId, status: 'sent' }
+      }
+      throw new ExtensionError(mapGatewayError(result.errorCode), result.reason || '微信语音发送失败')
+    } finally {
+      if (synthesizedFile && this.cleanupVoice) {
+        try {
+          this.cleanupVoice(synthesizedFile)
+        } catch {
+          // 临时语音清理失败不影响主流程结果。
+        }
+      }
+    }
+  }
+
   /** 令牌窗口：同一扩展 60 秒内最多 10 条，且两条之间至少 2 秒。 */
   private assertRateLimit(extensionId: string): void {
     const now = this.now()
@@ -270,12 +378,7 @@ export class ExtensionSendGateway {
   }
 }
 
-/**
- * 媒体路径校验：必须是扩展数据目录或系统临时目录内的普通文件。
- *
- * 用 realpath 复核，符号链接跳到目录外同样会被拒绝；这一层不能省，
- * 否则 `wechat.send.image` 就等价于「读取并外发任意本机文件」。
- */
+/** 媒体路径校验：必须是扩展数据目录或系统临时目录内的普通文件；用 realpath 复核，符号链接跳到目录外同样会被拒绝。 */
 function assertSendableMediaPath(value: unknown, dataRoot: string, allowed: Set<string>): string {
   const raw = String(value ?? '').trim()
   if (!raw || raw.length > 4_096) {

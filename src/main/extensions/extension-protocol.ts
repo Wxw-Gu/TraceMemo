@@ -25,12 +25,7 @@ const MIME_TYPES: Record<string, string> = {
   '.wasm': 'application/wasm'
 }
 
-/**
- * 扩展页面协议：只接受 `tm-extension://<extensionId>/<path>`，realpath 必须仍在
- * 扩展目录内；响应带严格 CSP（无外链、无内联脚本、无网络）。
- *
- * `registerSchemesAsPrivileged` 必须在 app ready 前调用。
- */
+/** 扩展页面协议：只接受 `tm-extension://<extensionId>/<path>`，realpath 必须仍在。 */
 export function registerExtensionScheme(): void {
   protocol.registerSchemesAsPrivileged([
     {
@@ -48,10 +43,7 @@ export function registerExtensionScheme(): void {
 
 export interface ExtensionProtocolDependencies {
   paths: ExtensionPaths
-  /**
-   * 解析扩展代码根目录。开发模式下是外部源码目录，
-   * 必须与后台进程、Manifest 读取使用同一个解析器，否则页面会读到旧副本。
-   */
+  /** 解析代码根目录：开发模式指向外部源码，必须与后台/Manifest 用同一解析器。 */
   resolveRoot: (extensionId: string) => string | null
 }
 
@@ -86,7 +78,8 @@ export function installExtensionProtocolHandler(dependencies: ExtensionProtocolD
             "default-src 'self'",
             "script-src 'self'",
             "style-src 'self' 'unsafe-inline'",
-            "img-src 'self' data:",
+            "img-src 'self' data: https:",
+            "media-src 'self' data: https:",
             "font-src 'self' data:",
             "connect-src 'none'",
             "object-src 'none'",

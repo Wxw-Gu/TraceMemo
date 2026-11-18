@@ -110,6 +110,27 @@ export function PrimaryNavigation({
   onPageChange
 }: PrimaryNavigationProps): React.ReactElement {
   const [unreadExitCount, setUnreadExitCount] = React.useState(0)
+  const [sendUnavailable, setSendUnavailable] = React.useState(false)
+
+  React.useEffect(() => {
+    const api = typeof window !== 'undefined' ? window.api : undefined
+    if (!api || typeof api.getPersonalWechatSendCapability !== 'function') return
+    let disposed = false
+    const checkSendCapability = (): void => {
+      void api
+        .getPersonalWechatSendCapability()
+        .then((cap) => {
+          if (!disposed) setSendUnavailable(Boolean(cap && cap.ready === false))
+        })
+        .catch(() => undefined)
+    }
+    checkSendCapability()
+    const timer = window.setInterval(checkSendCapability, 8_000)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }, [activePage])
 
   React.useEffect(() => {
     const api = typeof window !== 'undefined' ? window.api : undefined
@@ -147,12 +168,21 @@ export function PrimaryNavigation({
           type="button"
           className={`primary-nav-item ${activePage === item.id ? 'active' : ''}`}
           onClick={() => onPageChange(item.id)}
-          title={item.label}
+          title={
+            item.id === 'extensions' && sendUnavailable
+              ? `${item.label}（当前暂无发送能力）`
+              : item.label
+          }
         >
           <span className="primary-nav-mark" aria-hidden>
             <NavIcon page={item.id} />
             {item.id === 'exit-monitor' && unreadExitCount > 0 && (
               <span className="primary-nav-badge">{Math.min(unreadExitCount, 99)}</span>
+            )}
+            {item.id === 'extensions' && sendUnavailable && (
+              <span className="primary-nav-badge" title="当前暂无发送能力">
+                !
+              </span>
             )}
           </span>
           <span className="primary-nav-label">{item.label}</span>

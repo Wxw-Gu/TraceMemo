@@ -75,11 +75,12 @@ function record(overrides: Partial<ExtensionRegistryRecord>): ExtensionRegistryR
 }
 
 describe('官方模板目录', () => {
-  it('列出两个模板，未安装时状态为 not-installed', async () => {
+  it('列出三个模板，未安装时状态为 not-installed', async () => {
     const { catalog } = setup()
     const list = await catalog.list()
     expect(list.map((item) => item.template.templateId).sort()).toEqual([
       'douyin-sender',
+      'group-chat-bot',
       'keyword-bot'
     ])
     expect(list.every((item) => item.state === 'not-installed')).toBe(true)

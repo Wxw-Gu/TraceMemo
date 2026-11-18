@@ -12,10 +12,7 @@ export interface ExtensionRuntimeSnapshot {
   restarts: number
   /** 面向用户的一句话；**不含**路径、wxid、聊天正文。 */
   lastError?: string
-  /**
-   * 状态补充说明，用于区分「已停止」与「本来就没有后台任务」。
-   * 例如只有页面入口的扩展会得到 `inactive` + 本字段。
-   */
+  /** 状态补充说明，用于区分「已停止」与「本来就没有后台任务」。 */
   note?: string
 }
 
@@ -53,21 +50,11 @@ export interface InstalledExtension {
   source: ExtensionSource
   /** 来源为官方模板时，记录模板 id 与安装时的模板版本。 */
   template?: { id: string; version: string }
-  /**
-   * 开发模式的源码位置。
-   *
-   * `available === false` 表示目录被移动或删除：Registry 与用户配置都还在，
-   * 只是暂时跑不起来，界面要给「重新选择目录」而不是「扩展没了」。
-   */
+  /** 开发模式的源码位置。 */
   development?: { sourcePath: string; available: boolean }
   permissions: ExtensionPermission[]
   grantedPermissions: ExtensionPermission[]
-  /**
-   * manifest 声明但用户尚未授予的权限。
-   *
-   * 非空表示该扩展升级后新增了能力：这些能力当前**不可用**，
-   * 需要用户显式授权后才会下发到后台进程。
-   */
+  /** manifest 声明但用户尚未授予的权限。 */
   pendingPermissions: ExtensionPermission[]
   runtime: ExtensionRuntimeSnapshot
   pages: Array<{ id: string; title: string }>
@@ -77,12 +64,7 @@ export interface InstalledExtension {
   storage: ExtensionStorageHealthSummary
 }
 
-/**
- * 从其它页面跳到扩展中心时的定位目标。
- *
- * 只描述「去哪里」，不携带任何安装状态：扩展中心自己读 Registry，
- * 避免两个页面各维护一份事实。
- */
+/** 从其它页面跳到扩展中心时的定位目标。 */
 export interface ExtensionDeepLink {
   /** 定位官方模板（打开模板画廊并展开该卡片）。 */
   templateId?: string
@@ -92,12 +74,7 @@ export interface ExtensionDeepLink {
   development?: boolean
 }
 
-/**
- * 单个扩展动作的完整可用性描述。
- *
- * `registered` 只说明后台注册过，`available` 才决定能不能用：
- * 停用、代码缺失、权限未授予、Schema 非法、Storage 暂停都会让 available=false。
- */
+/** 单个扩展动作的完整可用性描述。 */
 export interface ExtensionActionInfo {
   extensionId: string
   extensionName: string
@@ -170,6 +147,24 @@ export interface ExtensionPageResponse {
   error?: ExtensionErrorPayload
 }
 
+export interface ExtensionTtsVoiceSummary {
+  id: string
+  name: string
+  description: string
+  tags: string[]
+  languages: string[]
+  authorName?: string
+  previewUrl?: string
+  coverImage?: string
+}
+
+export interface ExtensionTtsCapabilitySnapshot {
+  configured: boolean
+  model: string
+  selectedVoiceId: string
+  selectedVoice: ExtensionTtsVoiceSummary | null
+}
+
 export interface ExtensionCapabilitySnapshot {
   extensionId: string
   enabled: boolean
@@ -183,7 +178,8 @@ export interface ExtensionCapabilitySnapshot {
     /** 图片与视频是两条独立通道。 */
     canSendImage: boolean
     canSendVideo: boolean
-    /** 仅 `wechat.send.text` 被授予时才有意义。 */
+    canSendVoice?: boolean
+    /** 任一微信发送权限被授予时返回真实授权结果。 */
     licensed: boolean
     message: string
   }
@@ -191,6 +187,7 @@ export interface ExtensionCapabilitySnapshot {
     configured: boolean
     modelName: string
   }
+  tts?: ExtensionTtsCapabilitySnapshot
 }
 
 export interface ExtensionQuitBehavior {

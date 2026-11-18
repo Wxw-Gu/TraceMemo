@@ -336,3 +336,75 @@ describe('extension send gateway / video', () => {
     ).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
   })
 })
+
+describe('extension send gateway / voice', () => {
+  const cleanup: string[] = []
+
+  function tempDir(prefix: string): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+    cleanup.push(root)
+    return root
+  }
+
+  afterEach(() => {
+    for (const root of cleanup.splice(0)) fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  const voiceContext = {
+    extensionId: 'com.example.group-chat-bot',
+    permissions: ['wechat.send.voice' as const],
+    conversationScope: [] as string[]
+  }
+
+  it('缺少 wechat.send.voice 权限时拒绝', async () => {
+    const { instance } = gateway({ dataRoot: tempDir('tm-ext-voice-') })
+    await expect(
+      instance.sendVoice(
+        { ...voiceContext, permissions: [] },
+        { to: 'fixture@chatroom', text: '你好' }
+      )
+    ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+  })
+
+  it('传入 text 时委托宿主 TTS 合成、经 Gateway 发送并在结束后清理临时音频', async () => {
+    const dataRoot = tempDir('tm-ext-voice-')
+    const generatedAudio = path.join(dataRoot, 'tts-sample.mp3')
+    fs.writeFileSync(generatedAudio, Buffer.from('fixture-audio'))
+    const synthesizeVoice = vi.fn(async () => ({ filePath: generatedAudio }))
+    const cleanupVoice = vi.fn()
+    const executeAction = vi.fn(async () => sentResult)
+
+    const instance = new ExtensionSendGateway({
+      getCapability: async () => ({
+        ...readyCapability,
+        capabilities: { text: true, image: true, voice: true, video: true }
+      }),
+      checkEntitlement: async () => ({ ok: true, message: '授权有效', source: 'mac_license' }),
+      executeAction: executeAction as never,
+      getExtensionDataRoot: () => dataRoot,
+      synthesizeVoice,
+      cleanupVoice,
+      getFromId: () => 'wxid_self',
+      now: () => 1_000_000
+    })
+
+    const result = await instance.sendVoice(voiceContext, {
+      to: 'fixture@chatroom',
+      text: '大家晚上好',
+      voiceId: 'voice-123',
+      dedupeKey: 'evt-voice-1'
+    })
+
+    expect(result).toEqual({ actionId: 'action-1', status: 'sent' })
+    expect(synthesizeVoice).toHaveBeenCalledWith({ text: '大家晚上好', voiceId: 'voice-123' })
+    expect(executeAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: 'extension',
+        purpose: 'extension_send',
+        content: { type: 'voice', path: fs.realpathSync(generatedAudio) },
+        metadata: { extensionId: 'com.example.group-chat-bot', fromId: 'wxid_self' }
+      })
+    )
+    expect(cleanupVoice).toHaveBeenCalledWith(generatedAudio)
+  })
+})

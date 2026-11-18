@@ -267,24 +267,13 @@ function App(): React.ReactElement {
   const [activePage, setActivePage] = useState<AppPage>('archive')
   /** 从其它页面跳到扩展中心时的定位目标；扩展中心消费后清空。 */
   const [extensionDeepLink, setExtensionDeepLink] = useState<ExtensionDeepLink | null>(null)
-  /**
-   * 「退群监控 ⇄ 自动化」之间的跨页深链。
-   *
-   * 项目没有 react-router，一级菜单就是 `activePage` 这一份 state，
-   * 所以深链同样是 state —— 用一个单调递增的 requestId 表达"又点了一次"，
-   * 子页面据此重新落位（同一个对象引用不会重复触发 effect）。
-   */
+  /** 「退群监控 ⇄ 自动化」之间的跨页深链。 */
   const [automationOpenRuleRequest, setAutomationOpenRuleRequest] =
     React.useState<AutomationOpenRuleRequest | null>(null)
   const [exitMonitorOpenViewRequest, setExitMonitorOpenViewRequest] =
     React.useState<GroupExitMonitorOpenViewRequest | null>(null)
   const [archiveJumpTime, setArchiveJumpTime] = useState<number | null>(null)
-  /**
-   * 精确跳转目标（规范化后的消息 id）。
-   *
-   * 与 `archiveJumpTime` 并存而不是替代：时间只能定位到"附近"，秒级时间戳在群聊里
-   * 经常对应多条消息。有 messageRef 时用 id 精确定位，没有时才退回按时间找。
-   */
+  /** 精确跳转目标（规范化后的消息 id）；与 `archiveJumpTime` 并存而不是替代：时间只能定位到"附近"，秒级时间戳在群聊里 经常对应多条消息。 */
   const [archiveJumpMessageId, setArchiveJumpMessageId] = useState<string | null>(null)
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>('account-database')
   const [reportSourceContact, setReportSourceContact] = useState<Contact | null>(null)
@@ -1338,15 +1327,7 @@ function App(): React.ReactElement {
     }
   }
 
-  /**
-   * 跳转到证据的原聊天。
-   *
-   * 只靠「真实会话 id + 秒级时间戳」定位不可靠：会话 id 若是展示层合成的 key 就选不中任何
-   * 真实会话，而时间戳在同一秒有多条消息时会挑错。这里从 `messageRef` 还原真实会话 id →
-   * 选中会话 → 用 `getMessagesAround` 按稳定消息 id 在有界窗口内精确锚定 → 高亮那一条。
-   *
-   * 窗口内找不到时**不静默失败**，明确提示"已打开对应会话，但暂时无法定位原消息"。
-   */
+  /** 跳转到证据的原聊天。 */
   const handleOpenSearchEvidence = async (evidence: EvidenceItem): Promise<void> => {
     const anchor = decodeMessageRef(evidence.messageRef)
     if (!anchor) {
@@ -1666,12 +1647,7 @@ function App(): React.ReactElement {
     setActivePage('settings')
   }
 
-  /**
-   * 跳到「设置 · 本地索引」。
-   *
-   * 用在群统计这类场景：结果不完整的原因是索引没追平，用户需要一个**可操作的去处**，
-   * 而不是只看到一句「结果可能不完整」却不知道去哪解决。
-   */
+  /** 跳到「设置 · 本地索引」。 */
   const openLocalIndexSettings = (): void => {
     setSettingsCategory('local-index')
     setActivePage('settings')
@@ -1681,23 +1657,13 @@ function App(): React.ReactElement {
     setActivePage('agent-hub')
   }
 
-  /**
-   * 「退群监控 → 退群通知自动化」。
-   *
-   * 直接落到「自动化 → 规则 → 退群通知」，不是只跳到自动化首页。
-   * 这是纯导航：不改退群监控的任何配置，也不触发任何发送。
-   */
+  /** 「退群监控 → 退群通知自动化」；直接落到「自动化 → 规则 → 退群通知」，不是只跳到自动化首页。 */
   const openLeaveNotificationAutomation = (): void => {
     setAutomationOpenRuleRequest({ ruleType: 'leave_notification', requestId: Date.now() })
     setActivePage('automation')
   }
 
-  /**
-   * 「定时日报」已正式迁入自动化，日报页只保留「今日日报 | 社区模板市场」两个 Tab。
-   *
-   * 这里仍然留一个导航入口：用户是从日报页产生"要定时发日报"这个念头的，
-   * 不给路会显得功能被删了。它**不是**第三个 Tab，只是一句去处的说明。
-   */
+  /** 「定时日报」已正式迁入自动化，日报页只保留「今日日报 | 社区模板市场」两个 Tab；它**不是**第三个 Tab，只是一句去处的说明。 */
   const openScheduledReportAutomation = (): void => {
     setAutomationOpenRuleRequest({ ruleType: 'scheduled_report', requestId: Date.now() })
     setActivePage('automation')
@@ -2002,14 +1968,7 @@ function App(): React.ReactElement {
           社区模板市场
         </button>
       </div>
-      {/*
-        「定时日报已并入自动化」的指引条。
-
-        这里以前是裸 `<p>` + 裸 `<button>`，并且挂了 `.report-workspace-hint` /
-        `.report-workspace-hint-link` 两个**样式表里根本不存在**的类 ——
-        于是就成了一条没样式的文字 + 一个长得不像系统里任何按钮的按钮。
-        现在补上真实样式，按钮统一走 UI 组件库。
-      */}
+      {/** 「定时日报已并入自动化」的指引条。 */}
       <div className="report-workspace-hint">
         <span>需要「定时日报」？它已经并入「自动化」，可以按时间自动生成并发送日报。</span>
         <Button variant="link" size="sm" onClick={openScheduledReportAutomation}>
@@ -2161,6 +2120,7 @@ function App(): React.ReactElement {
           <ExtensionWorkspace
             deepLink={extensionDeepLink}
             onConsumeDeepLink={() => setExtensionDeepLink(null)}
+            onOpenSendSettings={openWechatSendSettings}
           />
         )
       case 'api':

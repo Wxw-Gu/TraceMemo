@@ -1,0 +1,39 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.group-chat-bot",
+  "name": "群聊机器人",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "minAppVersion": "2.6.0",
+  "description": "支持多套群聊人格设定、群聊长期与短期记忆、自然接话节奏，并可结合 TraceMemo 音色随机回复文字或发送语音。",
+  "author": "TraceMemo Examples",
+  "permissions": [
+    "messages.subscribe",
+    "messages.query",
+    "contacts.list",
+    "wechat.send.text",
+    "wechat.send.voice",
+    "ai.chat",
+    "storage"
+  ],
+  "entrypoints": {
+    "page": "ui/index.html",
+    "background": "background/index.js"
+  },
+  "subscriptions": {
+    "messageTypes": [
+      "text"
+    ],
+    "conversationIds": [],
+    "requireMentionMe": false,
+    "includeSelf": false
+  },
+  "contributions": {
+    "pages": [
+      {
+        "id": "settings",
+        "title": "群聊机器人设置"
+      }
+    ]
+  }
+}

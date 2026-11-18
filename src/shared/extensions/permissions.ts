@@ -1,9 +1,4 @@
-/**
- * 扩展权限目录。
- *
- * 权限是**宿主授予**的，不是扩展自己声称的：manifest 里只声明「需要什么」，
- * 真正生效的是 registry 里 `grantedPermissions` 与当前启用状态的交集。
- */
+/** 扩展权限目录。 */
 
 export const EXTENSION_PERMISSIONS = [
   'messages.subscribe',
@@ -12,6 +7,7 @@ export const EXTENSION_PERMISSIONS = [
   'wechat.send.text',
   'wechat.send.image',
   'wechat.send.video',
+  'wechat.send.voice',
   'ai.chat',
   'storage',
   'automation.action',
@@ -68,6 +64,12 @@ export const EXTENSION_PERMISSION_INFO: Record<ExtensionPermission, ExtensionPer
       '经 TraceMemo 官方 Gateway 发送视频文件；原生 Host 以 video 类型提交，单文件不超过 100MB，仍需有效授权与发送能力。',
     risk: 'high'
   },
+  'wechat.send.voice': {
+    label: '发送微信语音',
+    description:
+      '经 TraceMemo 官方 Gateway 发送语音气泡，支持用已配置的文字转语音音色合成或发送扩展目录内的音频文件；仍需有效授权与发送能力。',
+    risk: 'high'
+  },
   'ai.chat': {
     label: '调用 AI 模型',
     description: '使用 TraceMemo 已配置的 AI Provider 发起对话；扩展拿不到 API Key 明文。',
@@ -121,12 +123,7 @@ export function sortPermissionsByRisk(
   })
 }
 
-/**
- * 安装时自动授予的权限子集：只有低风险项。
- *
- * 高 / 中风险权限必须由用户在「启用扩展」时确认 —— 安装本身不应等于同意
- * 读取消息或发送微信。
- */
+/** 安装时自动授予的权限子集：只有低风险项；高 / 中风险权限必须由用户在「启用扩展」时确认 —— 安装本身不应等于同意 读取消息或发送微信。 */
 export function autoGrantedPermissions(
   permissions: readonly ExtensionPermission[]
 ): ExtensionPermission[] {

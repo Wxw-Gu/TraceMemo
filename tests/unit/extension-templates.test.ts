@@ -39,18 +39,19 @@ function stageExamples(): { sourceRoot: string; lockFile: string } {
 }
 
 describe('官方模板构建', () => {
-  it('产出两个模板与索引，索引指向真实文件', () => {
+  it('产出三个模板与索引，索引指向真实文件', () => {
     const { sourceRoot, lockFile } = stageExamples()
     const outputDir = path.join(tempRoot(), 'out')
     const result = buildTemplates({ sourceRoot, outputDir, lockFile })
 
     expect(result.templates.map((item) => item.templateId).sort()).toEqual([
       'douyin-sender',
+      'group-chat-bot',
       'keyword-bot'
     ])
     const index = fs.readJsonSync(path.join(outputDir, 'index.json'))
     expect(index.version).toBe(1)
-    expect(index.templates).toHaveLength(2)
+    expect(index.templates).toHaveLength(3)
     for (const template of index.templates) {
       expect(fs.existsSync(path.join(outputDir, template.file))).toBe(true)
       expect(template.sha256).toMatch(/^[a-f0-9]{64}$/)

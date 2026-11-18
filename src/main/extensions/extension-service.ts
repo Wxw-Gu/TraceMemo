@@ -10,6 +10,7 @@ import {
   resolveMd5
 } from '../services/chat-service'
 import { personalWechatCapabilityService } from '../services/personal-wechat-capability-service'
+import { TextToSpeechSettingsService } from '../services/text-to-speech-settings-service'
 import { wechatActionGateway } from '../services/wechat-action-gateway'
 import { ExtensionError } from '../../shared/extensions/errors'
 import type {
@@ -22,12 +23,7 @@ import { getExtensionPaths } from './extension-paths'
 
 let manager: ExtensionManager | null = null
 
-/**
- * 官方模板资源根目录。
- *
- * 打包后是 `<resources>/extension-templates`；开发态读构建产物目录。
- * 两者都不指向 `examples/extensions`——源码树不是运行时依赖。
- */
+/** 官方模板资源根目录；两者都不指向 `examples/extensions`——源码树不是运行时依赖。 */
 function resolveTemplateRoot(): string {
   const override = process.env.TRACEMEMO_EXTENSION_TEMPLATES_DIR
   if (override && override.trim()) return path.resolve(override.trim())
@@ -40,14 +36,10 @@ export interface ExtensionSystemOptions {
   onChange: (extensionId: string, reason: string) => void
 }
 
-/**
- * 扩展系统的主进程接线。
- *
- * 这里只做依赖注入：所有能力都来自既有服务，扩展系统自己不实现第二套
- * 消息监听、发送通道或 AI Provider。
- */
+/** 扩展系统的主进程接线。 */
 export async function initExtensionSystem(options: ExtensionSystemOptions): Promise<void> {
   if (manager) return
+  const ttsService = new TextToSpeechSettingsService()
   manager = new ExtensionManager({
     paths: getExtensionPaths(),
     appVersion: options.appVersion,
@@ -72,6 +64,50 @@ export async function initExtensionSystem(options: ExtensionSystemOptions): Prom
       // 只读「是否已配置 + 模型显示名」，不返回 key 或 endpoint。
       const config = new AIProviderService().getRuntimeConfig()
       return { configured: config.configured, modelName: config.modelName }
+    },
+    ttsStatus: async () => {
+      const status = await ttsService.getVoiceStatus()
+      return {
+        configured: status.configured,
+        model: status.model,
+        selectedVoiceId: status.selectedVoiceId,
+        selectedVoice: status.selectedVoice
+          ? {
+              id: status.selectedVoice.id,
+              name: status.selectedVoice.name,
+              description: status.selectedVoice.description,
+              tags: status.selectedVoice.tags,
+              languages: status.selectedVoice.languages,
+              ...(status.selectedVoice.authorName
+                ? { authorName: status.selectedVoice.authorName }
+                : {}),
+              ...(status.selectedVoice.previewUrl
+                ? { previewUrl: status.selectedVoice.previewUrl }
+                : {}),
+              ...(status.selectedVoice.coverImage
+                ? { coverImage: status.selectedVoice.coverImage }
+                : {})
+            }
+          : null
+      }
+    },
+    synthesizeVoice: async ({ text, voiceId }) => {
+      const current = ttsService.get()
+      const referenceId = String(voiceId || current.settings.selectedVoiceId || '').trim()
+      if (!referenceId) {
+        throw new ExtensionError('CAPABILITY_UNAVAILABLE', '请先在文字转语音设置中选择音色')
+      }
+      const synthesized = await ttsService.synthesize({ text, referenceId })
+      if (!synthesized.success || !synthesized.filePath) {
+        throw new ExtensionError(
+          'CAPABILITY_UNAVAILABLE',
+          synthesized.error || '文字转语音生成失败'
+        )
+      }
+      return { filePath: synthesized.filePath }
+    },
+    cleanupVoice: (filePath) => {
+      ttsService.removeGeneratedAudio(filePath)
     },
     getAccountId: () => String(getSelfAccountInfo()?.wxid || ''),
     getSelfUsernames: () => {
@@ -114,29 +150,63 @@ export async function disposeExtensionSystem(): Promise<void> {
   if (current) await current.dispose()
 }
 
+function normalizeQueriedMessageType(rawType: string | undefined): {
+  type: string
+  isTextLike: boolean
+} {
+  const value = String(rawType ?? '').trim()
+  if (value === 'text' || value === '普通文本' || value === '1') {
+    return { type: 'text', isTextLike: true }
+  }
+  if (value === '引用消息') {
+    return { type: 'text', isTextLike: true }
+  }
+  if (value === '图片' || value === 'image') return { type: 'image', isTextLike: false }
+  if (value === '语音' || value === 'voice') return { type: 'voice', isTextLike: false }
+  if (value === '视频' || value === 'video') return { type: 'video', isTextLike: false }
+  if (value === '表情包' || value === 'sticker') return { type: 'sticker', isTextLike: false }
+  if (value === '系统消息' || value === 'system') return { type: 'system', isTextLike: false }
+  return { type: value || 'other', isTextLike: false }
+}
+
 async function queryConversationMessages(
   request: ExtensionMessagesQueryRequest
 ): Promise<ExtensionQueriedMessage[]> {
   const contact = resolveMd5(request.conversationId)
   if (!contact?.md5) throw new ExtensionError('DATABASE_NOT_READY', '找不到该会话或数据库未连接')
-  const messages = await listMessagesAsync(
+  const limit = Math.max(1, Math.min(Number(request.limit) || 50, 500))
+  const rawMessages = await listMessagesAsync(
     contact.md5,
     Math.floor((request.startTime ?? Date.now() - 86_400_000) / 1000),
     Math.floor((request.endTime ?? Date.now()) / 1000),
-    { limit: request.limit ?? 50 },
+    undefined,
     '',
     'unknown'
   )
-  return messages.map((message) => ({
-    messageId: message.serverId || String(message.localId ?? message.id),
-    conversationId: request.conversationId,
-    ...(message.senderId ? { senderId: message.senderId } : {}),
-    ...(message.name ? { senderName: message.name } : {}),
-    isSelf: message.isSender === true,
-    type: message.type,
-    ...(message.type === 'text' ? { text: message.content } : {}),
-    timestamp: Math.round((message.createTime ?? 0) * 1000)
-  }))
+  const sorted = [...rawMessages]
+    .sort((left, right) => (left.createTime ?? 0) - (right.createTime ?? 0))
+    .slice(-limit)
+  return sorted.map((message) => {
+    const normalizedType = normalizeQueriedMessageType(message.type)
+    const quoteText =
+      message.contentData &&
+      typeof message.contentData === 'object' &&
+      message.contentData.type === 'quote' &&
+      typeof message.contentData.content === 'string'
+        ? message.contentData.content
+        : ''
+    const resolvedText = String(message.content || quoteText || '').trim()
+    return {
+      messageId: message.serverId || String(message.localId ?? message.id),
+      conversationId: request.conversationId,
+      ...(message.senderId ? { senderId: message.senderId } : {}),
+      ...(message.name ? { senderName: message.name } : {}),
+      isSelf: message.isSender === true,
+      type: normalizedType.type,
+      ...(normalizedType.isTextLike && resolvedText ? { text: resolvedText } : {}),
+      timestamp: Math.round((message.createTime ?? 0) * 1000)
+    }
+  })
 }
 
 async function chatWithConfiguredProvider(

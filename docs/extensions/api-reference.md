@@ -31,6 +31,7 @@
 | `wechat.send.text` | 高 | `tm.wechat.send`（文本）与自动化 `reply` |
 | `wechat.send.image` | 高 | `tm.wechat.send({ type: 'image' })` |
 | `wechat.send.video` | 高 | `tm.wechat.send({ type: 'video' })`，原生 Host 走 `/SendMsg` video |
+| `wechat.send.voice` | 高 | `tm.wechat.send({ type: 'voice' })`，支持传入 `text` 用宿主 TTS 音色合成发送或传入音频 `path` |
 | `ai.chat` | 中 | `tm.ai.chat` |
 | `storage` | 低 | `tm.storage.*` 与页面存储 |
 | `automation.action` | 中 | `tm.automation.registerAction` |
@@ -75,6 +76,9 @@ await tm.wechat.send({ type: 'image', to, path: '/abs/path/cover.png', dedupeKey
 
 // 视频（原生 Host 以 {toWxid, type:'video', msg:<路径>} 提交）
 await tm.wechat.send({ type: 'video', to, path: '/abs/path/clip.mp4', dedupeKey? })
+
+// 语音（传 text 由宿主用已配置的 TTS 音色合成发送，或传 path 发送音频文件）
+await tm.wechat.send({ type: 'voice', to, text: '你好呀', voiceId?, dedupeKey? })
 // → { actionId, status: 'sent' }
 ```
 

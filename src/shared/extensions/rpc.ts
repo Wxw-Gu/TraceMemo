@@ -1,14 +1,7 @@
 import type { ExtensionEventEnvelope } from './events'
 import type { ExtensionErrorPayload } from './errors'
 
-/**
- * 主进程 ↔ 扩展后台进程的私有协议。
- *
- * 只有主进程能构造 `invoke-action` / `event` / `call-result`；
- * 扩展进程只能发 `call` / `register-action` / `log` / `action-result`。
- * 任何「宿主可信元数据」（extensionId、origin、purpose、幂等键）都**由主进程填**，
- * 不接受扩展侧传入。
- */
+/** 主进程 ↔ 扩展后台进程的私有协议；扩展进程只能发 `call` / `register-action` / `log` / `action-result`。 */
 export const EXTENSION_HOST_PROTOCOL_VERSION = 1
 
 export type ExtensionHostCallMethod =
@@ -20,6 +13,7 @@ export type ExtensionHostCallMethod =
   | 'wechat.send.text'
   | 'wechat.send.image'
   | 'wechat.send.video'
+  | 'wechat.send.voice'
   | 'ai.chat'
   | 'capabilities.get'
   | 'secrets.get'
@@ -85,12 +79,7 @@ export interface ExtensionHostRegisterAction {
     id: string
     title: string
     description?: string
-    /**
-     * 完整参数 Schema（未经校验的原始 JSON）。
-     *
-     * 宿主收到后统一走 `parseActionInputSchema`：非法或超限时**保留动作但不给 Schema**，
-     * 并把原因记进日志与动作信息，绝不静默截断。
-     */
+    /** 完整参数 Schema（未经校验的原始 JSON）。 */
     inputSchema?: unknown
     /** 兼容字段：旧宿主只认这个布尔值。新宿主用 `inputSchema`。 */
     hasInputSchema?: boolean
@@ -138,12 +127,7 @@ export interface ExtensionHostLog {
   message: string
 }
 
-/**
- * 扩展页面 → 同扩展后台的通用请求。
- *
- * 宿主只做路由与限额：页面拿不到任意 Node 能力，后台必须显式注册处理器。
- * 这是移除「宿主硬编码某个具体扩展业务」的关键通道。
- */
+/** 扩展页面 → 同扩展后台的通用请求；宿主只做路由与限额：页面拿不到任意 Node 能力，后台必须显式注册处理器。 */
 export interface ExtensionHostPageRequest {
   type: 'page-request'
   version: number
@@ -182,12 +166,7 @@ export type ExtensionHostInboundMessage =
   | ExtensionHostTestResult
   | ExtensionHostPageRequest
 
-/**
- * 自动化动作的返回值。
- *
- * `reply` 是扩展**声明想发什么**，不是发送指令：真正的发送由宿主在
- * 权限、授权校验、发送能力全部通过后经 `WechatActionGateway` 完成。
- */
+/** 自动化动作的返回值。 */
 export interface ExtensionAutomationActionOutput {
   success: boolean
   output?: Record<string, unknown>
@@ -231,12 +210,7 @@ export interface ExtensionSendTextRequest {
   dedupeKey?: string
 }
 
-/**
- * 图片发送。
- *
- * 图片与视频是两条独立通道：视频必须显式用 `type: 'video'`，
- * 由原生 Host 的 `/SendMsg` 以 video 类型提交。
- */
+/** 图片发送；图片与视频是两条独立通道：视频必须显式用 `type: 'video'`， 由原生 Host 的 `/SendMsg` 以 video 类型提交。 */
 export interface ExtensionSendImageRequest {
   to: string
   /** 绝对路径；必须位于扩展数据目录或系统临时目录。 */
@@ -248,6 +222,16 @@ export interface ExtensionSendVideoRequest {
   to: string
   /** 绝对路径；必须位于扩展数据目录或系统临时目录。 */
   path: string
+  dedupeKey?: string
+}
+
+/** 语音发送。 */
+export interface ExtensionSendVoiceRequest {
+  to: string
+  path?: string
+  text?: string
+  /** 可选音色 ID；省略时使用 TraceMemo 设置页当前选定的音色。 */
+  voiceId?: string
   dedupeKey?: string
 }
 

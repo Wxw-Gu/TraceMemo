@@ -22,6 +22,20 @@ const FISH_AUDIO_PUBLIC_ASSET_URL = 'https://public-platform.r2.fish.audio/'
 const DEFAULT_PAGE_SIZE = 24
 const MAX_PAGE_SIZE = 100
 const GENERATED_AUDIO_MAX_AGE_MS = 24 * 60 * 60 * 1000
+const VOICE_META_CACHE_TTL_MS = 10 * 60 * 1000
+const voiceMetaCache = new Map<string, { voice: TextToSpeechVoice; cachedAt: number }>()
+
+function cacheVoiceMeta(voice: TextToSpeechVoice): void {
+  if (!voice?.id) return
+  voiceMetaCache.set(voice.id, { voice, cachedAt: Date.now() })
+}
+
+function getCachedVoiceMeta(id: string): TextToSpeechVoice | null {
+  const entry = voiceMetaCache.get(id)
+  if (!entry) return null
+  if (Date.now() - entry.cachedAt > VOICE_META_CACHE_TTL_MS) return null
+  return entry.voice
+}
 
 interface FishAudioModelEntity {
   _id: string
@@ -128,6 +142,7 @@ export class TextToSpeechSettingsService {
       let items = payload.items
         .filter((model) => model.type === 'tts' && model.state === 'trained')
         .map(toVoice)
+      for (const item of items) cacheVoiceMeta(item)
 
       const selectedVoiceId = normalizeSelectedVoiceId(loadSettings().ttsSelectedVoiceId)
       if (
@@ -138,7 +153,10 @@ export class TextToSpeechSettingsService {
       ) {
         if (!items.some((item) => item.id === selectedVoiceId)) {
           const selected = await this.getVoice(selectedVoiceId, resolved.key)
-          if (selected) items = [selected, ...items]
+          if (selected) {
+            cacheVoiceMeta(selected)
+            items = [selected, ...items]
+          }
         }
       }
 
@@ -229,6 +247,37 @@ export class TextToSpeechSettingsService {
     }
   }
 
+  async getVoiceStatus(): Promise<{
+    configured: boolean
+    model: TextToSpeechModel
+    selectedVoiceId: string
+    selectedVoice: TextToSpeechVoice | null
+  }> {
+    const resolved = this.resolveKey()
+    const settings = loadSettings()
+    const selectedVoiceId = normalizeSelectedVoiceId(settings.ttsSelectedVoiceId)
+    const model = normalizeModel(settings.ttsModel)
+    const configured = Boolean(resolved.key && selectedVoiceId)
+    if (!selectedVoiceId) {
+      return { configured: false, model, selectedVoiceId: '', selectedVoice: null }
+    }
+    const cached = getCachedVoiceMeta(selectedVoiceId)
+    if (cached) {
+      return { configured, model, selectedVoiceId, selectedVoice: cached }
+    }
+    if (!resolved.key) {
+      return { configured: false, model, selectedVoiceId, selectedVoice: null }
+    }
+    const fetched = await this.getVoice(selectedVoiceId, resolved.key)
+    if (fetched) cacheVoiceMeta(fetched)
+    return {
+      configured,
+      model,
+      selectedVoiceId,
+      selectedVoice: fetched
+    }
+  }
+
   private resolveKey(): {
     success: boolean
     key?: string
@@ -299,7 +348,7 @@ function toVoice(model: FishAudioModelEntity): TextToSpeechVoice {
     languages: Array.isArray(model.languages) ? model.languages : [],
     source: 'fish-audio',
     coverImage: resolvePublicAssetUrl(model.cover_image || model.author?.avatar),
-    previewUrl: sample?.audio || undefined,
+    previewUrl: resolvePublicAssetUrl(sample?.audio),
     previewText: sample?.text || model.default_text || undefined,
     authorName: model.author?.nickname || undefined,
     taskCount: model.task_count,
