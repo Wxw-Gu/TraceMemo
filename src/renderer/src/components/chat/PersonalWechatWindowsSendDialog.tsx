@@ -48,7 +48,7 @@ function statusLabel(status: PersonalWechatSenderStatus | null): string {
 }
 
 function statusText(value: string): string {
-  return value.replace(/Hook/gi, '微信发送能力').replace(/个人微信发送组件/g, '微信发送能力')
+  return value.replace(/个人微信发送组件/g, '微信发送能力')
 }
 
 function statusDescription(status: PersonalWechatSenderStatus | null): string {
@@ -62,7 +62,8 @@ export function PersonalWechatWindowsSendDialog({
   onClose,
   onOpenTextToSpeechSettings,
   onOpenPersonalWechatSettings,
-  initialImage = null
+  initialImage = null,
+  initialFile = null
 }: PersonalWechatSendDialogProps): React.ReactElement {
   const [status, setStatus] = useState<PersonalWechatSenderStatus | null>(null)
   const [detecting, setDetecting] = useState(true)
@@ -182,8 +183,43 @@ export function PersonalWechatWindowsSendDialog({
     }
   }
 
-  const statusTone = useMemo(() => {
-    if (status?.state === 'online' && status.canSend) return 'ready'
+  const handleSendFile = async (): Promise<void> => {
+    if (!initialFile || !status?.canSendFile || sendBusy) return
+    setSendBusy(true)
+    setSendError(null)
+    setSendSuccess(null)
+    try {
+      const response = await window.api.sendPersonalWechatMessage({
+        type: 'file',
+        to: targetId,
+        isGroup: isGroupChat,
+        filePath: initialFile.path,
+        fileName: initialFile.name
+      } satisfies PersonalWechatSendRequest)
+      setStatus(response.status)
+      if (!response.success) {
+        setSendError(response.error || '文件发送失败')
+        return
+      }
+      setSendSuccess('文件发送成功')
+      setMessages((current) => [
+        ...current,
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          type: 'system',
+          text: initialFile.name,
+          fileName: initialFile.name,
+          outgoing: true
+        }
+      ])
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSendBusy(false)
+    }
+  }
+
+  const statusTone = useMemo(() => {    if (status?.state === 'online' && status.canSend) return 'ready'
     if (!status || status.state === 'checking' || status.state === 'starting') return 'checking'
     return 'blocked'
   }, [status])
@@ -205,21 +241,15 @@ export function PersonalWechatWindowsSendDialog({
           <div>
             <span className="text-[11px] font-bold tracking-normal text-primary">实验性功能</span>
             <DialogTitle className="mt-0.5 text-[19px] leading-[26px] tracking-normal">
-              文字转语音
+              {initialFile ? '发送文件' : '文字转语音'}
             </DialogTitle>
           </div>
           <DialogDescription className="sr-only">
-            向当前微信联系人或群聊发送文字转语音。
+            {initialFile
+              ? '向当前微信联系人或群聊发送本地文件。'
+              : '向当前微信联系人或群聊发送文字转语音。'}
           </DialogDescription>
         </DialogHeader>
-
-        <div className="personal-wechat-send-device-note" role="note">
-          <span aria-hidden>i</span>
-          <p>
-            <strong>请在其他设备确认发送结果</strong>
-            语音消息请切换到手机、平板等其他设备确认是否送达。
-          </p>
-        </div>
 
         <div className="personal-wechat-send-target">
           <span>{isGroupChat ? '发送到群聊' : '发送给联系人'}</span>
@@ -267,13 +297,28 @@ export function PersonalWechatWindowsSendDialog({
                     key={message.id}
                     className={`personal-wechat-message-bubble ${message.outgoing ? 'is-outgoing' : ''}`}
                   >
-                    <span className="personal-wechat-message-kind">语音</span>
+                    <span className="personal-wechat-message-kind">
+                      {message.type === 'voice' ? '语音' : '已发送'}
+                    </span>
                     <span>{message.text || message.fileName}</span>
                   </div>
                 ))}
               </div>
             ) : null}
-            {initialImage && status.canSendImage ? (
+            {initialFile ? (
+              status.canSendFile ? (
+                <section className="personal-wechat-composer" aria-label="文件发送">
+                  <p>已选择文件：{initialFile.name}</p>
+                  <Button size="sm" onClick={() => void handleSendFile()} disabled={sendBusy}>
+                    {sendBusy ? '发送中…' : '发送文件'}
+                  </Button>
+                </section>
+              ) : (
+                <div className="personal-wechat-global-error" role="alert">
+                  当前微信发送能力不支持文件发送，请升级发送组件后重试
+                </div>
+              )
+            ) : initialImage && status.canSendImage ? (
               <section className="personal-wechat-composer" aria-label="日报图片发送">
                 <p>已准备日报图片：{initialImage.name}</p>
                 <ReportImagePostfixInput
@@ -290,7 +335,7 @@ export function PersonalWechatWindowsSendDialog({
                   {sendBusy ? '发送中…' : '发送日报图片'}
                 </Button>
               </section>
-            ) : !initialImage ? (
+            ) : !initialImage && !initialFile ? (
               <PersonalWechatChatComposer
                 status={status}
                 targetId={targetId}

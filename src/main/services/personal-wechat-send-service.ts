@@ -291,6 +291,54 @@ export function prepareWindowsImageFile(filePath: string): {
   return prepareWindowsMediaFile(filePath, { prefix: 'tm-img-', fallbackExtension: '.png' })
 }
 
+/** Windows 文件名里不允许出现的字符（控制字符由后面的 ASCII 过滤统一剔除）。 */
+const WINDOWS_INVALID_FILE_NAME_CHARS = /[<>:"/\\|?*]/g
+/** 单段路径上限 255，给随机后缀与扩展名留出余量。 */
+const WINDOWS_TEMP_FILE_STEM_LIMIT = 80
+
+/** 发送组件只认路径 basename 当显示名，改名或非 ASCII 路径都要走副本。 */
+export function prepareWindowsFileForSend(
+  filePath: string,
+  fileName?: string
+): { filePath: string; temporary: boolean } {
+  const normalized = String(filePath || '').trim()
+  const sourceName = basename(normalized)
+  const requestedName = basename(String(fileName || '').trim() || sourceName)
+  if (isAsciiPath(normalized) && requestedName === sourceName) {
+    return { filePath: normalized, temporary: false }
+  }
+
+  const extension = extname(requestedName).toLowerCase()
+  const safeExtension = /^\.[a-z0-9]{1,12}$/.test(extension) ? extension : ''
+  const asciiStem = basename(requestedName, extname(requestedName))
+    .replace(WINDOWS_INVALID_FILE_NAME_CHARS, '_')
+    .replace(/[^\x20-\x7e]/g, '')
+    .replace(/^[.\s_]+|[.\s_]+$/g, '')
+    .slice(0, WINDOWS_TEMP_FILE_STEM_LIMIT)
+
+  const root = windowsImageTempRoot()
+  // 同名副本不覆盖：上一笔发送可能还在读文件。
+  let temporaryPath = join(root, `${asciiStem || 'tm-file'}${safeExtension}`)
+  if (!asciiStem || existsSync(temporaryPath)) {
+    temporaryPath = join(
+      root,
+      `${asciiStem || 'tm-file'}-${randomBytes(4).toString('hex')}${safeExtension}`
+    )
+  }
+  if (!isAsciiPath(temporaryPath)) throw new Error('Windows 文件临时路径必须只包含 ASCII 字符')
+  try {
+    copyFileSync(normalized, temporaryPath)
+  } catch (error) {
+    try {
+      unlinkSync(temporaryPath)
+    } catch {
+      // 半拷贝残留只做尽力清理。
+    }
+    throw error
+  }
+  return { filePath: temporaryPath, temporary: true }
+}
+
 function prepareMacWechatImageFile(
   filePath: string,
   senderWxid: string,
@@ -663,6 +711,9 @@ const WINDOWS_TEMP_IMAGE_GRACE_MS = 0
 /** 视频上传在 send_message 返回后才开始，删早了接收端只能拿到空文件。 */
 const WINDOWS_TEMP_VIDEO_GRACE_MS = 10 * 60 * 1000
 
+/** 文件副本保留窗口：`/SendMsg` 返回时微信还在读，删早了接收端拿到空文件。 */
+const WINDOWS_TEMP_FILE_GRACE_MS = 10 * 60 * 1000
+
 // unref: 不让清理定时器拖住进程退出
 function scheduleTempFileCleanup(target: string, delayMs: number): void {
   const timer = setTimeout(() => {
@@ -814,6 +865,7 @@ export class PersonalWechatSendService {
         canSendImage: true,
         canSendVoice: true,
         canSendVideo: true,
+        canSendFile: true,
         message: 'Windows 微信发送能力已连接，可以发送消息'
       }
     } catch (error) {
@@ -1220,18 +1272,23 @@ export class PersonalWechatSendService {
       }
       request = { ...request, to, text }
     } else {
-      if (request.type === 'file') {
-        const status = await this.getWindowsStatus()
-        return { success: false, status, error: 'Windows 端暂不支持文件发送' }
-      }
       const filePath = String(request.filePath || '').trim()
-      const label = request.type === 'voice' ? '语音' : request.type === 'video' ? '视频' : '图片'
+      const label =
+        request.type === 'voice'
+          ? '语音'
+          : request.type === 'video'
+            ? '视频'
+            : request.type === 'file'
+              ? '文件'
+              : '图片'
       const limit =
         request.type === 'voice'
           ? MAX_VOICE_BYTES
           : request.type === 'video'
             ? MAX_VIDEO_BYTES
-            : MAX_IMAGE_BYTES
+            : request.type === 'file'
+              ? MAX_FILE_BYTES
+              : MAX_IMAGE_BYTES
       if (!filePath || !existsSync(filePath)) {
         const status = await this.getWindowsStatus()
         return { success: false, status, error: `请选择有效的${label}文件` }
@@ -1254,6 +1311,7 @@ export class PersonalWechatSendService {
     let temporaryImagePath: string | undefined
     let temporaryVideoPath: string | undefined
     let temporaryVoicePath: string | undefined
+    let temporaryFilePath: string | undefined
     try {
       if (request.type === 'text') {
         const windowsRequest = buildWindowsWechatRequest(request)
@@ -1290,6 +1348,20 @@ export class PersonalWechatSendService {
           filePath: preparedVideo.filePath
         })
         await requestWindowsHook(windowsRequest.endpoint, windowsRequest.body, 180_000)
+      } else if (request.type === 'file') {
+        const preparedFile = prepareWindowsFileForSend(request.filePath, request.fileName)
+        temporaryFilePath = preparedFile.temporary ? preparedFile.filePath : undefined
+        logSendDiagnostic('file-prepared', {
+          sourceBytes: safeFileSize(request.filePath),
+          usedTempCopy: preparedFile.temporary,
+          copiedBytes: safeFileSize(preparedFile.filePath)
+        })
+        const windowsRequest = buildWindowsWechatRequest({
+          ...request,
+          filePath: preparedFile.filePath
+        })
+        // 文件构造 appmsg 后还要走 CDN 上传，超时阈值按视频档给。
+        await requestWindowsHook(windowsRequest.endpoint, windowsRequest.body, 180_000)
       } else if (request.type === 'voice') {
         const fromId = String(request.fromId || '').trim()
         if (!fromId) throw new Error('无法识别当前微信账号 wxid，无法发送语音')
@@ -1315,7 +1387,12 @@ export class PersonalWechatSendService {
       }
       return { success: true, status: await this.getWindowsStatus() }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const raw = error instanceof Error ? error.message : String(error)
+      // 老版发送组件不认 type=file，只会回校验错误 → 换成可操作的文案。
+      const message =
+        request.type === 'file' && /type must be/i.test(raw)
+          ? '当前微信发送组件不支持文件发送，请升级发送组件后重试'
+          : raw
       return {
         success: false,
         status: { ...(await this.getWindowsStatus()), state: 'error', error: message },
@@ -1343,6 +1420,9 @@ export class PersonalWechatSendService {
       }
       if (temporaryVideoPath) {
         scheduleTempFileCleanup(temporaryVideoPath, WINDOWS_TEMP_VIDEO_GRACE_MS)
+      }
+      if (temporaryFilePath) {
+        scheduleTempFileCleanup(temporaryFilePath, WINDOWS_TEMP_FILE_GRACE_MS)
       }
       if (temporaryVoicePath) {
         try {

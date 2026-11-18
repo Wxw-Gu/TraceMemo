@@ -9,7 +9,6 @@ import { MessageList } from './chat/MessageList'
 import { PersonalWechatSendDialog } from './chat/PersonalWechatSendDialog'
 import { mergeGroupExitEvents } from '../../../shared/group-exit-event-message'
 import { useGroupExitEvents } from '../hooks/useGroupExitEvents'
-import { isMac } from '../utils/runtime-environment'
 
 interface ChatWindowProps {
   contact: Contact | null
@@ -194,7 +193,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         onContentFilterChange={onContentFilterChange || (() => undefined)}
         onRefresh={onRefresh}
         onTestSend={() => void handleOpenPersonalWechatSend()}
-        onSendFile={isMac ? () => void handleSendFile() : undefined}
+        onSendFile={() => void handleSendFile()}
         onOpenAiSettings={onCreateGroupReport || (() => undefined)}
         onOpenLocalIndexSettings={onOpenLocalIndexSettings}
       />
