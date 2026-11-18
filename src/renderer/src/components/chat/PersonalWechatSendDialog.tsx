@@ -24,6 +24,7 @@ export interface PersonalWechatSendDialogProps {
   onOpenPersonalWechatSettings?: () => void
   initialMode?: 'text' | 'image' | 'voice'
   initialImage?: SelectedLocalFile | null
+  initialFile?: SelectedLocalFile | null
 }
 
 function fallbackStatus(error: unknown): PersonalWechatSenderStatus {
@@ -62,7 +63,8 @@ function PersonalWechatMacSendDialog({
   isGroupChat,
   onClose,
   onOpenTextToSpeechSettings,
-  initialImage = null
+  initialImage = null,
+  initialFile = null
 }: PersonalWechatSendDialogProps): React.ReactElement {
   const [senderStatus, setSenderStatus] = useState<PersonalWechatSenderStatus | null>(null)
   const [detecting, setDetecting] = useState(true)
@@ -81,7 +83,13 @@ function PersonalWechatMacSendDialog({
   const displayName = contact.m_nsNickName || contact.m_nsUsrName || '未命名会话'
   const targetId = contact.m_nsUsrName
   const isBusy = binding || sendBusy
-  const setupReady = Boolean(initialImage ? senderStatus?.canSendImage : senderStatus?.canSendVoice)
+  const setupReady = Boolean(
+    initialFile
+      ? senderStatus?.canSendFile
+      : initialImage
+        ? senderStatus?.canSendImage
+        : senderStatus?.canSendVoice
+  )
   const { postfixText, setPostfixText, persistPostfixText } = useReportImagePostfixSetting(
     Boolean(initialImage)
   )
@@ -237,8 +245,33 @@ function PersonalWechatMacSendDialog({
     }
   }
 
-  const handleOpenVoiceDiagnostic = async (): Promise<void> => {
-    if (!isMac) return
+  const handleSendFile = async (): Promise<void> => {
+    if (!initialFile || !senderStatus?.canSendFile || sendBusy) return
+    setSendBusy(true)
+    setSendError(null)
+    setSendSuccess(null)
+    try {
+      const response = await window.api.sendPersonalWechatMessage({
+        type: 'file',
+        to: targetId,
+        isGroup: isGroupChat,
+        filePath: initialFile.path,
+        fileName: initialFile.name
+      } satisfies PersonalWechatSendRequest)
+      setSenderStatus(response.status)
+      if (!response.success) {
+        setSendError(response.error || '文件发送失败')
+        return
+      }
+      setSendSuccess('文件发送成功')
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSendBusy(false)
+    }
+  }
+
+  const handleOpenVoiceDiagnostic = async (): Promise<void> => {    if (!isMac) return
     const diagnostic = await window.api.getPersonalWechatVoiceDiagnostic()
     setVoiceDiagnostic(diagnostic)
     setVoiceDiagnosticOpen(true)
@@ -263,7 +296,9 @@ function PersonalWechatMacSendDialog({
               {displayName.slice(0, 1)}
             </div>
             <div className="personal-wechat-chat-heading">
-              <DialogTitle>{initialImage ? '发送日报图片' : '文字转语音'}</DialogTitle>
+              <DialogTitle>
+                {initialFile ? '发送文件' : initialImage ? '发送日报图片' : '文字转语音'}
+              </DialogTitle>
               <DialogDescription>
                 发送给 {displayName} · {setupReady ? '微信已连接' : '配置微信发送能力'}
               </DialogDescription>
@@ -275,7 +310,7 @@ function PersonalWechatMacSendDialog({
           </DialogHeader>
 
           <div className="personal-wechat-chat-body">
-            {setupReady && !initialImage && (
+            {setupReady && !initialImage && !initialFile && (
               <div className="personal-wechat-message-list" aria-label="消息列表">
                 {messages.length === 0 ? (
                   <div className="personal-wechat-empty-message">还没有发送消息。</div>
@@ -324,7 +359,16 @@ function PersonalWechatMacSendDialog({
               </section>
             )}
 
-            {setupReady && !initialImage && (
+            {setupReady && initialFile && (
+              <section className="personal-wechat-composer" aria-label="文件发送">
+                <p>已选择文件：{initialFile.name}</p>
+                <Button size="sm" onClick={() => void handleSendFile()} disabled={sendBusy}>
+                  {sendBusy ? '发送中…' : '发送文件'}
+                </Button>
+              </section>
+            )}
+
+            {setupReady && !initialImage && !initialFile && (
               <PersonalWechatChatComposer
                 status={senderStatus!}
                 targetId={targetId}
@@ -346,7 +390,7 @@ function PersonalWechatMacSendDialog({
               </div>
             )}
           </div>
-          {setupReady && isMac && !initialImage && (
+          {setupReady && isMac && !initialImage && !initialFile && (
             <div className="personal-wechat-chat-footer flex items-center justify-end">
               <Button variant="link" size="sm" onClick={() => void handleOpenVoiceDiagnostic()}>
                 语音发送诊断

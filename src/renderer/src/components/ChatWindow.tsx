@@ -9,6 +9,7 @@ import { MessageList } from './chat/MessageList'
 import { PersonalWechatSendDialog } from './chat/PersonalWechatSendDialog'
 import { mergeGroupExitEvents } from '../../../shared/group-exit-event-message'
 import { useGroupExitEvents } from '../hooks/useGroupExitEvents'
+import { isMac } from '../utils/runtime-environment'
 
 interface ChatWindowProps {
   contact: Contact | null
@@ -59,6 +60,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const [isAtLatest, setIsAtLatest] = useState(true)
   const [isReloadingAvatars, setIsReloadingAvatars] = useState(false)
   const [sendDialogOpen, setSendDialogOpen] = useState(false)
+  const [pendingFile, setPendingFile] = useState<{ path: string; name: string } | null>(null)
   const previousScrollTopRef = useRef(0)
 
   const scrollToBottom = useCallback((): void => {
@@ -167,6 +169,17 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     setSendDialogOpen(true)
   }, [onOpenPersonalWechatSettings])
 
+  const handleSendFile = useCallback(async (): Promise<void> => {
+    try {
+      const picked = await window.api.selectPersonalWechatFile()
+      if (picked.canceled || !picked.path || !picked.name) return
+      setPendingFile({ path: picked.path, name: picked.name })
+      setSendDialogOpen(true)
+    } catch {
+      // 选择器本身失败（无窗口、无权限）时什么都不做，不要弹出一个空对话框。
+    }
+  }, [])
+
   if (!contact) return <EmptyConversationState />
 
   return (
@@ -181,6 +194,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         onContentFilterChange={onContentFilterChange || (() => undefined)}
         onRefresh={onRefresh}
         onTestSend={() => void handleOpenPersonalWechatSend()}
+        onSendFile={isMac ? () => void handleSendFile() : undefined}
         onOpenAiSettings={onCreateGroupReport || (() => undefined)}
         onOpenLocalIndexSettings={onOpenLocalIndexSettings}
       />
@@ -215,9 +229,13 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         <PersonalWechatSendDialog
           contact={contact}
           isGroupChat={isGroupChat}
-          onClose={() => setSendDialogOpen(false)}
+          onClose={() => {
+            setSendDialogOpen(false)
+            setPendingFile(null)
+          }}
           onOpenTextToSpeechSettings={onOpenTextToSpeechSettings}
           onOpenPersonalWechatSettings={onOpenPersonalWechatSettings}
+          initialFile={pendingFile}
         />
       )}
 

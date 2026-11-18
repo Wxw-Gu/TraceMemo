@@ -736,6 +736,12 @@ const api = {
   sendPersonalWechatMessage: (
     request: PersonalWechatSendRequest
   ): Promise<PersonalWechatSendResult> => ipcRenderer.invoke('wechat-personal:send', request),
+  selectPersonalWechatFile: (): Promise<{
+    canceled: boolean
+    path?: string
+    name?: string
+    size?: number
+  }> => ipcRenderer.invoke('wechat-personal:selectFile'),
   /**
    * 定时日报（Automation 的 `scheduled_report` 规则类型）。
    *

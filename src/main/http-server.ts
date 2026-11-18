@@ -587,7 +587,7 @@ const WECHAT_SEND_MAX_TEXT_LENGTH = 2_000
 const WECHAT_SEND_MAX_RECIPIENT_LENGTH = 512
 const WECHAT_SEND_MAX_IDEMPOTENCY_KEY_LENGTH = 200
 
-const WECHAT_SEND_CONTENT_TYPES = ['text', 'image', 'voice'] as const
+const WECHAT_SEND_CONTENT_TYPES = ['text', 'image', 'voice', 'file'] as const
 type WechatSendContentType = (typeof WECHAT_SEND_CONTENT_TYPES)[number]
 
 interface WechatSendApiDependencies {
@@ -731,7 +731,12 @@ function parseWechatSendPayload(payload: unknown): ParsedWechatSend {
         message: `filePath 指向的文件不存在：${filePath}`
       }
     }
-    content = { type, path: filePath }
+    if (type === 'file') {
+      const fileName = readSendString(body.fileName)
+      content = { type: 'file', path: filePath, ...(fileName ? { name: fileName } : {}) }
+    } else {
+      content = { type, path: filePath }
+    }
   }
 
   return {
@@ -841,7 +846,14 @@ function createWechatSendRoute(
     }
     const contentType = parsed.content.type
     if (!capability.capabilities[contentType]) {
-      const label = contentType === 'text' ? '文字' : contentType === 'image' ? '图片' : '语音'
+      const label =
+        contentType === 'text'
+          ? '文字'
+          : contentType === 'image'
+            ? '图片'
+            : contentType === 'file'
+              ? '文件'
+              : '语音'
       return sendWechatSendError(res, 503, 'SEND_NOT_READY', `当前微信发送能力不支持发送${label}`, {
         capabilityStatus: capability.status,
         capabilities: capability.capabilities

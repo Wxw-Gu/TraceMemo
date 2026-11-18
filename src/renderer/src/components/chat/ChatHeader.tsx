@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { Contact } from '../../../../shared/types'
 import { Button, IconButton, Tooltip, TooltipContent, TooltipTrigger } from '../ui'
 import { ConversationContentSearch } from './ConversationContentSearch'
-import { AiIcon, RefreshIcon, SearchIcon, SendIcon, StatsIcon } from './icons'
+import { AiIcon, ExportIcon, RefreshIcon, SearchIcon, SendIcon, StatsIcon } from './icons'
 import { supportsPersonalWechatSend } from '../../utils/runtime-environment'
 import { GroupMemberStatsDialog } from '../group-stats/GroupMemberStatsDialog'
 
@@ -16,6 +16,7 @@ interface ChatHeaderProps {
   onContentFilterChange: (value: string) => void
   onRefresh?: () => void
   onTestSend: () => void
+  onSendFile?: () => void
   onOpenAiSettings: () => void
   /** 跳到「设置 · 本地索引」（群统计发现索引没追平时用）。 */
   onOpenLocalIndexSettings?: () => void
@@ -31,6 +32,7 @@ export function ChatHeader({
   onContentFilterChange,
   onRefresh,
   onTestSend,
+  onSendFile,
   onOpenAiSettings,
   onOpenLocalIndexSettings
 }: ChatHeaderProps): React.ReactElement {
@@ -131,6 +133,19 @@ export function ChatHeader({
             <TooltipContent>仅支持 macOS 和 Windows</TooltipContent>
           </Tooltip>
         )}
+        {supportsPersonalWechatSend && onSendFile ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="chat-header-text-action"
+            aria-label="发送文件"
+            title="发送文件"
+            onClick={onSendFile}
+          >
+            <ExportIcon />
+            <span>发送文件</span>
+          </Button>
+        ) : null}
         <Button
           variant="default"
           size="sm"

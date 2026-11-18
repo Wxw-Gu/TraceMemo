@@ -42,6 +42,7 @@ export type WechatActionPurpose =
   | 'manual_image'
   /** 用户手动发送文本。 */
   | 'manual_text'
+  | 'manual_file'
   /** 外部 Agent 经本地 HTTP API 发送；按内容类型分开，便于审计统计。 */
   | 'api_text'
   | 'api_image'
@@ -76,6 +77,7 @@ export type WechatActionContent =
   | { type: 'image'; path: string }
   | { type: 'video'; path: string }
   | { type: 'voice'; path: string }
+  | { type: 'file'; path: string; name?: string }
 
 export interface WechatActionRequest {
   /** 可选的操作编号；未提供时会自动生成。 */
