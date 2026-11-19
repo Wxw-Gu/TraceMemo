@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseMessageContent } from '../../src/main/message-parser'
+import { attachForwardBundleRecordDir, parseMessageContent } from '../../src/main/message-parser'
 
 describe('message parser', () => {
   it('parses image, voice and sticker messages without confusing their types', () => {
@@ -76,6 +76,45 @@ describe('message parser', () => {
     if (parsed.type === 'forwardBundle') {
       expect(parsed.title).toBe('转发多条内容')
       expect(parsed.items.map((item) => item.text).join(' ')).toContain('脱敏内容')
+    }
+  })
+
+  it('parses forwarded images (datatype=2), nested forwards (datatype=17), and attaches Rec dir refs', () => {
+    const xml = `<msg><appmsg><type>19</type><title>群聊的聊天记录</title><recorditem><![CDATA[<recordinfo><title>群聊的聊天记录</title><datalist count="2"><dataitem datatype="2" dataid="img-1"><sourcename>张三</sourcename><sourcetime>2026-01-02 10:00</sourcetime><fullmd5>0123456789abcdef0123456789abcdef</fullmd5><thumbfullmd5>fedcba9876543210fedcba9876543210</thumbfullmd5><datasize>204800</datasize><thumbsize>8192</thumbsize></dataitem><dataitem datatype="17" dataid="nest-1"><sourcename>成员A</sourcename><datatitle>内层聊天记录</datatitle><recordxml><recordinfo><title>内层聊天记录</title><datalist count="2"><dataitem datatype="1" dataid="inner-1"><sourcename>成员B</sourcename><datadesc>内层文本消息</datadesc></dataitem><dataitem datatype="2" dataid="inner-2"><sourcename>成员B</sourcename><fullmd5>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</fullmd5></dataitem></datalist></recordinfo></recordxml></dataitem></datalist></recordinfo>]]></recorditem></appmsg></msg>`
+    const parsed = parseMessageContent(xml, 49)
+    expect(parsed.type).toBe('forwardBundle')
+    if (parsed.type === 'forwardBundle') {
+      const attached = attachForwardBundleRecordDir(parsed, 'fixture-rec-0001')
+      expect(attached.recordDir).toBe('fixture-rec-0001')
+      expect(attached.items).toHaveLength(2)
+      expect(attached.items[0]).toMatchObject({
+        messageType: 2,
+        sender: '张三',
+        text: '[图片]',
+        dataIndex: 0,
+        imageMd5: '0123456789abcdef0123456789abcdef',
+        thumbMd5: 'fedcba9876543210fedcba9876543210',
+        imageDatName: 'rec:fixture-rec-0001:0',
+        dataSize: 204800,
+        thumbSize: 8192
+      })
+      expect(attached.items[1]).toMatchObject({
+        messageType: 17,
+        nestedTitle: '内层聊天记录'
+      })
+      expect(attached.items[1].imageMd5).toBeUndefined()
+      expect(attached.items[1].thumbMd5).toBeUndefined()
+      expect(attached.items[1].nested).toHaveLength(2)
+      expect(attached.items[1].nested?.[0]).toMatchObject({
+        messageType: 1,
+        sender: '成员B',
+        text: '内层文本消息'
+      })
+      expect(attached.items[1].nested?.[1]).toMatchObject({
+        messageType: 2,
+        text: '[图片]',
+        imageMd5: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      })
     }
   })
 

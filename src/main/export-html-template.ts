@@ -646,18 +646,245 @@ body {
   border-radius: 4px;
   object-fit: cover;
 }
-.forward-content details { margin-top: 2px; }
-.forward-content summary {
-  color: var(--accent);
+.forward-content.is-clickable {
   cursor: pointer;
+}
+.forward-content.is-clickable:hover .forward-footer-action {
+  color: var(--accent);
+}
+.forward-preview-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 6px;
+}
+.forward-preview-line {
+  display: flex;
+  gap: 5px;
+  color: var(--muted);
   font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forward-preview-line strong {
+  color: var(--ink);
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.forward-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+.forward-footer-action {
+  transition: color .15s ease;
+}
+.forward-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.36);
+}
+.forward-modal-window {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(78vh, 720px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #ffffff;
+  color: var(--ink);
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.22);
+}
+.forward-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  background: #f8fafc;
+}
+.forward-modal-header-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.forward-modal-title {
+  margin: 0;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forward-modal-subtitle {
+  color: var(--muted);
+  font-size: 12px;
+}
+.forward-modal-close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.forward-modal-close:hover {
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--ink);
+}
+.forward-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.forward-modal-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+.forward-modal-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(7, 193, 96, 0.14);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
   font-weight: 650;
 }
-.forward-list, .forward-list ol {
+.forward-modal-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.forward-modal-row-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.forward-modal-row:last-child .forward-modal-row-main {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.forward-modal-row-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.forward-modal-sender {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forward-modal-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+.forward-modal-text {
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.forward-modal-link {
+  margin-left: 8px;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+}
+.forward-modal-link:hover {
+  text-decoration: underline;
+}
+.forward-modal-image {
+  display: block;
+  max-width: min(240px, 100%);
+  max-height: 320px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  object-fit: contain;
+  cursor: zoom-in;
+}
+.forward-modal-image-missing {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  color: var(--muted);
+  font-size: 12px;
+}
+.forward-modal-nested-card {
+  width: min(320px, 100%);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+  color: inherit;
+  text-align: left;
   display: grid;
-  gap: 7px;
-  margin: 8px 0 0;
-  padding-left: 18px;
+  gap: 6px;
+  cursor: pointer;
+}
+.forward-modal-nested-card:hover {
+  border-color: var(--accent);
+}
+.forward-modal-nested-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
+.forward-modal-nested-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.forward-modal-nested-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--muted);
+}
+.forward-modal-empty {
+  padding: 32px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
 }
 .forward-item { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .forward-item strong { color: var(--text); font-weight: 650; }
@@ -687,7 +914,7 @@ body {
   display: none;
   place-items: center;
   background: #14231ddd;
-  z-index: 10;
+  z-index: 80;
   padding: 24px;
   overflow: auto;
 }
@@ -705,7 +932,7 @@ body {
   position: fixed;
   top: 20px;
   right: 20px;
-  z-index: 11;
+  z-index: 81;
   width: 42px;
   height: 42px;
   border: 1px solid #ffffff66;
@@ -1121,27 +1348,26 @@ const renderExportScript = (name: string): string => `
       (iconUrl ? '<img class="mini-program-icon" src="' + iconUrl + '" alt="">' : '') +
       '<span>' + displayText(data.appName || '小程序') + '</span></div></div>'
   }
-  const renderForwardItems = (items, depth = 0) => {
-    if (!Array.isArray(items) || !items.length || depth > 4) return ''
-    return '<ol class="forward-list">' + items.map((item) =>
-      '<li class="forward-item">' +
-      (item.sender ? '<strong>' + displayText(item.sender) + '</strong>' : '') +
-      (item.sentAt ? '<time>' + displayText(item.sentAt) + '</time>' : '') +
-      '<span>' + displayText(item.text || '[消息]') + '</span>' +
-      renderForwardItems(item.nested, depth + 1) + '</li>'
-    ).join('') + '</ol>'
-  }
-  const renderForwardContent = (data) => {
+  const renderForwardContent = (data, archiveIndex) => {
     const items = Array.isArray(data.items) ? data.items : []
-    return '<div class="structured-content forward-content" data-rich-kind="forwardBundle">' +
+    const previewItems = items.slice(0, 4)
+    const previewHtml = previewItems.length
+      ? '<div class="forward-preview-list">' + previewItems.map((item) =>
+          '<div class="forward-preview-line">' +
+          (item.sender ? '<strong>' + displayText(item.sender) + ':</strong>' : '') +
+          '<span>' + displayText(item.text || '[消息]') + '</span></div>'
+        ).join('') + '</div>'
+      : (data.description
+          ? '<div class="structured-description">' + displayText(data.description) + '</div>'
+          : '')
+    return '<div class="structured-content forward-content is-clickable" data-rich-kind="forwardBundle" data-forward-open="' +
+      archiveIndex + '" role="button" tabindex="0">' +
       '<div class="structured-kicker">聊天记录</div>' +
       '<div class="structured-title">' + displayText(data.title || '聊天记录') + '</div>' +
-      (!items.length && data.description
-        ? '<div class="structured-description">' + displayText(data.description) + '</div>'
-        : '') +
-      (items.length
-        ? '<details><summary>展开 ' + items.length + ' 条消息</summary>' + renderForwardItems(items) + '</details>'
-        : '') + '</div>'
+      previewHtml +
+      '<div class="forward-footer"><span>' +
+      (items.length ? '共 ' + items.length + ' 条消息' : '聊天记录') +
+      '</span><span class="forward-footer-action">查看详情</span></div></div>'
   }
   const renderLocationContent = (data) => {
     const latitude = Number(data.lat)
@@ -1195,7 +1421,7 @@ const renderExportScript = (name: string): string => `
       displayText([data.status, durationText].filter(Boolean).join(' · ') || '通话消息') +
       '</div></div>'
   }
-  const renderStructuredContent = (data) => {
+  const renderStructuredContent = (data, archiveIndex) => {
     if (data.type === 'share') {
       const typeVal = String(data.typeVal || '')
       if (typeVal === '6' || typeVal === '74') return ''
@@ -1203,7 +1429,7 @@ const renderExportScript = (name: string): string => `
       return renderShareContent(data)
     }
     if (data.type === 'miniProgram') return renderMiniProgramContent(data)
-    if (data.type === 'forwardBundle') return renderForwardContent(data)
+    if (data.type === 'forwardBundle') return renderForwardContent(data, archiveIndex)
     if (data.type === 'location') return renderLocationContent(data)
     if (data.type === 'redPacket') return renderPaymentContent(data, 'redPacket')
     if (data.type === 'voip') return renderVoipContent(data)
@@ -1248,7 +1474,7 @@ const renderExportScript = (name: string): string => `
     const quote = data.type === 'quote'
       ? '<div class="quote-reference"><strong>' + esc(data.quotedSender || '引用消息') + '</strong><span>' + esc(data.quotedContent || '[引用消息]') + '</span></div>'
       : ''
-    const structured = renderStructuredContent(data)
+    const structured = renderStructuredContent(data, archiveIndex)
     const isSystem = data.type === 'system'
     const sender = message.name || (message.isSender ? '我' : '联系人')
     const avatarFallback = esc(String(sender || '友').slice(0, 1))
@@ -1803,11 +2029,125 @@ const renderExportScript = (name: string): string => `
     if (dayButton) jumpToDate(dayButton.dataset.date)
   })
 
+  const forwardModalRoot = document.getElementById('forward-modal-root')
+  let forwardModalLayers = []
+
+  const formatForwardTime = (raw) => {
+    const value = String(raw || '').trim()
+    if (!value) return ''
+    if (/^\\d{9,13}$/.test(value)) {
+      const ms = value.length > 10 ? Number(value) : Number(value) * 1000
+      const date = new Date(ms)
+      if (!Number.isNaN(date.getTime())) {
+        return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) +
+          ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes())
+      }
+    }
+    return value
+  }
+
+  const renderForwardModalRow = (item, layerIndex, itemIndex) => {
+    const sender = item.sender || '未知发送者'
+    const initial = esc(Array.from(String(sender).trim())[0] || '?')
+    const headUrl = externalUrl(item.sourceHeadUrl || '')
+    const avatarHtml = headUrl
+      ? '<div class="forward-modal-avatar"><img src="' + headUrl + '" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()"></div>'
+      : '<div class="forward-modal-avatar">' + initial + '</div>'
+    const timeText = formatForwardTime(item.sentAt)
+    const isNested = item.messageType === 17 || (Array.isArray(item.nested) && item.nested.length > 0)
+    const isImage = !isNested && (item.messageType === 2 || Boolean(item.exportMediaUrl || item.imageMd5 || item.thumbMd5 || item.imageDatName))
+    let bodyHtml = ''
+    if (isNested) {
+      const nestedTitle = item.nestedTitle || item.title || '聊天记录'
+      const nestedItems = Array.isArray(item.nested) ? item.nested : []
+      const previewLines = nestedItems.slice(0, 3).map((child) =>
+        '<div class="forward-modal-nested-line">' +
+        (child.sender ? esc(child.sender) + ': ' : '') +
+        displayText(child.text || '[消息]') + '</div>'
+      ).join('')
+      bodyHtml = '<button type="button" class="forward-modal-nested-card" data-forward-nested-layer="' +
+        layerIndex + '" data-forward-nested-item="' + itemIndex + '"' +
+        (nestedItems.length ? '' : ' disabled') + '>' +
+        '<div class="forward-modal-nested-title">' + displayText(nestedTitle) + '</div>' +
+        (previewLines || '<div class="forward-modal-nested-line">' + displayText(item.text || '[聊天记录]') + '</div>') +
+        '<div class="forward-modal-nested-footer"><span>聊天记录</span><span>' +
+        (nestedItems.length ? '共 ' + nestedItems.length + ' 条 · 打开新窗口' : '') +
+        '</span></div></button>'
+    } else if (isImage) {
+      bodyHtml = item.exportMediaUrl
+        ? '<img class="forward-modal-image" data-preview src="' + esc(item.exportMediaUrl) + '" alt="图片">'
+        : '<span class="forward-modal-image-missing">[图片未导出到本地]</span>'
+    } else {
+      const linkHref = externalUrl(item.linkUrl || '')
+      bodyHtml = '<div class="forward-modal-text">' + displayText(item.text || item.title || '[消息]') +
+        (linkHref ? '<a class="forward-modal-link" href="' + linkHref + '" target="_blank" rel="noreferrer noopener">打开链接 ↗</a>' : '') +
+        '</div>'
+    }
+    return '<article class="forward-modal-row">' + avatarHtml +
+      '<div class="forward-modal-row-main"><header class="forward-modal-row-meta">' +
+      '<span class="forward-modal-sender">' + displayText(sender) + '</span>' +
+      (timeText ? '<time class="forward-modal-time">' + esc(timeText) + '</time>' : '') +
+      '</header><div>' + bodyHtml + '</div></div></article>'
+  }
+
+  const renderForwardModals = () => {
+    if (!forwardModalRoot) return
+    if (!forwardModalLayers.length) {
+      forwardModalRoot.innerHTML = ''
+      return
+    }
+    forwardModalRoot.innerHTML = forwardModalLayers.map((layer, index) => {
+      const zIndex = Math.min(75, 30 + index)
+      const offsetX = Math.min(index, 5) * 28
+      const offsetY = Math.min(index, 5) * 24
+      const items = Array.isArray(layer.items) ? layer.items : []
+      const rowsHtml = items.length
+        ? items.map((item, itemIdx) => renderForwardModalRow(item, index, itemIdx)).join('')
+        : '<div class="forward-modal-empty">暂未解析到可展示的记录</div>'
+      return '<div class="forward-modal-backdrop" data-forward-backdrop="' + index + '" style="z-index:' + zIndex + '">' +
+        '<section class="forward-modal-window" role="dialog" aria-modal="true" aria-label="' + esc(layer.title || '聊天记录') +
+        '" style="transform:translate(' + offsetX + 'px,' + offsetY + 'px)">' +
+        '<header class="forward-modal-header"><div class="forward-modal-header-text">' +
+        '<h3 class="forward-modal-title">' + displayText(layer.title || '聊天记录') + '</h3>' +
+        '<span class="forward-modal-subtitle">共 ' + items.length + ' 条消息' +
+        (index > 0 ? ' · 嵌套窗口 #' + (index + 1) : '') + '</span></div>' +
+        '<button type="button" class="forward-modal-close" data-forward-close="' + index + '" aria-label="关闭聊天记录窗口">×</button>' +
+        '</header><div class="forward-modal-body">' + rowsHtml + '</div></section></div>'
+    }).join('')
+  }
+
+  const openForwardModal = (titleText, items) => {
+    forwardModalLayers = [{ title: titleText || '聊天记录', items: Array.isArray(items) ? items : [] }]
+    renderForwardModals()
+  }
+
+  const pushNestedForwardModal = (layerIndex, itemIndex) => {
+    const parentLayer = forwardModalLayers[layerIndex]
+    const item = parentLayer && Array.isArray(parentLayer.items) ? parentLayer.items[itemIndex] : null
+    if (!item || !Array.isArray(item.nested) || !item.nested.length) return
+    forwardModalLayers = forwardModalLayers.slice(0, layerIndex + 1).concat([{
+      title: item.nestedTitle || item.title || '聊天记录',
+      items: item.nested
+    }])
+    renderForwardModals()
+  }
+
+  const closeForwardModalFrom = (index) => {
+    forwardModalLayers = forwardModalLayers.slice(0, index)
+    renderForwardModals()
+  }
+
   const updateZoom = () => preview.style.setProperty('--zoom', zoom)
   const closeLightbox = () => {
     box.classList.remove('open')
     zoom = 1
     updateZoom()
+  }
+  const openLightbox = (src) => {
+    preview.src = src
+    zoom = 1
+    updateZoom()
+    box.classList.add('open')
   }
   list.addEventListener('click', (event) => {
     const locateButton = event.target.closest('[data-locate-index]')
@@ -1815,13 +2155,48 @@ const renderExportScript = (name: string): string => `
       locateInAll(Number(locateButton.dataset.locateIndex))
       return
     }
+    const forwardCard = event.target.closest('[data-forward-open]')
+    if (forwardCard) {
+      const msgIndex = Number(forwardCard.dataset.forwardOpen)
+      // data-forward-open 写的是 filtered 下标（renderWindow 用 windowStart + index），
+      // 不能用 allMessages[msgIndex]：切会话 / 搜索 / 按类型筛选后 filtered 会比全集短。
+      const targetMessage = filtered[msgIndex]
+      const bundle = targetMessage && targetMessage.contentData
+      if (bundle && bundle.type === 'forwardBundle') {
+        openForwardModal(bundle.title || '聊天记录', bundle.items || [])
+      }
+      return
+    }
     const image = event.target.closest('img[data-preview]')
     if (!image) return
-    preview.src = image.src
-    zoom = 1
-    updateZoom()
-    box.classList.add('open')
+    openLightbox(image.src)
   })
+  if (forwardModalRoot) {
+    forwardModalRoot.addEventListener('click', (event) => {
+      const closeBtn = event.target.closest('[data-forward-close]')
+      if (closeBtn) {
+        closeForwardModalFrom(Number(closeBtn.dataset.forwardClose))
+        return
+      }
+      const nestedBtn = event.target.closest('[data-forward-nested-layer]')
+      if (nestedBtn) {
+        pushNestedForwardModal(
+          Number(nestedBtn.dataset.forwardNestedLayer),
+          Number(nestedBtn.dataset.forwardNestedItem)
+        )
+        return
+      }
+      const img = event.target.closest('img[data-preview]')
+      if (img) {
+        openLightbox(img.src)
+        return
+      }
+      const backdrop = event.target.closest('[data-forward-backdrop]')
+      if (backdrop && event.target === backdrop) {
+        closeForwardModalFrom(Number(backdrop.dataset.forwardBackdrop))
+      }
+    })
+  }
   preview.addEventListener('wheel', (event) => {
     event.preventDefault()
     zoom = Math.min(5, Math.max(.5, zoom + (event.deltaY < 0 ? .2 : -.2)))
@@ -1837,7 +2212,11 @@ const renderExportScript = (name: string): string => `
   closeButton.addEventListener('click', closeLightbox)
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
-      closeLightbox()
+      if (box.classList.contains('open')) {
+        closeLightbox()
+      } else if (forwardModalLayers.length > 0) {
+        closeForwardModalFrom(forwardModalLayers.length - 1)
+      }
       setConversationMenuOpen(false)
     }
   })
@@ -1940,6 +2319,7 @@ export function renderExportPage(name: string): string {
       </section>
     </section>
   </main>
+  <div id="forward-modal-root"></div>
   <div class="lightbox" id="lightbox">
     <button class="lightbox-close" id="lightbox-close" type="button" aria-label="关闭图片预览">×</button>
     <img id="lightbox-image" alt="预览">

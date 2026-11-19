@@ -26,14 +26,28 @@ type ShareContent = {
 type ForwardedMessageItem = {
   messageType: number
   sender?: string
+  sourceHeadUrl?: string
   sentAt?: string
   text: string
+  title?: string
+  dataId?: string
+  dataIndex?: number
+  imageMd5?: string
+  thumbMd5?: string
+  imageDatName?: string
+  exportMediaUrl?: string
+  dataSize?: number
+  thumbSize?: number
+  fileExt?: string
+  linkUrl?: string
+  nestedTitle?: string
   nested?: ForwardedMessageItem[]
 }
 type ForwardBundleContent = {
   type: 'forwardBundle'
   title: string
   description?: string
+  recordDir?: string
   items: ForwardedMessageItem[]
 }
 type MiniProgramContent = {
@@ -601,58 +615,206 @@ function parseForwardBundle(content: string): ForwardBundleContent {
   const normalized = decodeXmlEntities(stripChatroomPrefix(content))
   const title = decodeXmlEntities(extractXmlValue(normalized, 'title')) || '聊天记录'
   const description = decodeXmlEntities(extractXmlValue(normalized, 'des')) || undefined
-  const containers = Array.from(
-    normalized.matchAll(/<recorditem\b[^>]*>([\s\S]*?)<\/recorditem>/gi),
-    (match) => match[1] || ''
-  )
+  const containers = splitBalancedXmlTags(normalized, 'recorditem').map((node) => node.inner)
   const sources = containers.length ? containers : [normalized]
   const items = dedupeForwardedItems(sources.flatMap((source) => parseForwardedItems(source)))
   return { type: 'forwardBundle', title, description, items }
 }
 
-function parseForwardedItems(container: string, depth = 0): ForwardedMessageItem[] {
-  if (!container || depth > 4) return []
-  const variants = new Set<string>([container, decodeXmlEntities(container)])
-  for (const match of container.matchAll(/<!\[CDATA\[([\s\S]*?)\]\]>/g)) {
-    if (match[1]) variants.add(decodeXmlEntities(match[1]))
-  }
+/**
+ * 按标签嵌套深度提取顶层 XML 元素，避免合并转发套娃（<dataitem> 内嵌套 <recordxml><dataitem>）
+ * 时被非贪婪正则在第一个内层 </dataitem> 处截断。
+ */
+function splitBalancedXmlTags(
+  source: string,
+  tagName: string
+): Array<{ attrs: string; inner: string }> {
+  const xml = source || ''
+  if (!xml) return []
+  const pattern = new RegExp(`<(/?)${tagName}\\b([^>]*)>`, 'gi')
+  const result: Array<{ attrs: string; inner: string }> = []
+  let match: RegExpExecArray | null
+  let depth = 0
+  let openStart = -1
+  let openEnd = -1
+  let openAttrs = ''
 
-  const items: ForwardedMessageItem[] = []
-  for (const variant of variants) {
-    for (const match of variant.matchAll(/<dataitem\b([^>]*)>([\s\S]*?)<\/dataitem>/gi)) {
-      const attributes = match[1] || ''
-      const body = match[2] || ''
-      const attrType = /datatype\s*=\s*["']?(\d+)/i.exec(attributes)?.[1]
-      const messageType = Number.parseInt(attrType || extractXmlValue(body, 'datatype') || '0', 10)
-      const sender = decodeXmlEntities(extractXmlValue(body, 'sourcename')) || undefined
-      const sentAt = extractXmlValue(body, 'sourcetime') || undefined
-      const title = decodeXmlEntities(extractXmlValue(body, 'datatitle'))
-      const description = decodeXmlEntities(
-        extractXmlValue(body, 'datadesc') || extractXmlValue(body, 'content')
-      )
-      const nestedXml = extractXmlBody(body, 'recordxml')
-      const nested =
-        messageType === 17 && nestedXml
-          ? parseForwardedItems(decodeXmlEntities(nestedXml), depth + 1)
-          : undefined
-      const text = description || title || forwardedTypeLabel(messageType)
-      if (!sender && !text && !nested?.length) continue
-      items.push({
-        messageType: Number.isFinite(messageType) ? messageType : 0,
-        sender,
-        sentAt,
-        text: text || '[消息]',
-        nested: nested?.length ? nested : undefined
+  while ((match = pattern.exec(xml)) !== null) {
+    const isClosing = match[1] === '/'
+    const attrs = match[2] || ''
+    const rawTag = match[0] || ''
+    const selfClosing = !isClosing && /\/\s*>$/.test(rawTag)
+
+    if (!isClosing) {
+      if (depth === 0) {
+        openStart = match.index
+        openEnd = pattern.lastIndex
+        openAttrs = attrs
+      }
+      if (!selfClosing) {
+        depth += 1
+      } else if (depth === 0 && openEnd >= 0) {
+        result.push({ attrs: openAttrs, inner: '' })
+        openStart = -1
+        openEnd = -1
+        openAttrs = ''
+      }
+      continue
+    }
+
+    if (depth <= 0) continue
+    depth -= 1
+    if (depth === 0 && openEnd >= 0 && openStart >= 0) {
+      result.push({
+        attrs: openAttrs,
+        inner: xml.slice(openEnd, match.index)
       })
+      openStart = -1
+      openEnd = -1
+      openAttrs = ''
     }
   }
-  return dedupeForwardedItems(items)
+  return result
+}
+
+function parseForwardedItems(container: string, depth = 0): ForwardedMessageItem[] {
+  if (!container || depth > 8) return []
+  const variants: string[] = []
+  const pushVariant = (value: string): void => {
+    const trimmed = String(value || '').trim()
+    if (trimmed && !variants.includes(trimmed)) variants.push(trimmed)
+  }
+
+  for (const match of container.matchAll(/<!\[CDATA\[([\s\S]*?)\]\]>/g)) {
+    if (match[1]) {
+      pushVariant(match[1])
+      pushVariant(decodeXmlEntities(match[1]))
+    }
+  }
+  pushVariant(container)
+  pushVariant(decodeXmlEntities(container))
+
+  for (const variant of variants) {
+    const dataItemNodes = splitBalancedXmlTags(variant, 'dataitem')
+    if (dataItemNodes.length === 0) continue
+
+    const items: ForwardedMessageItem[] = []
+    dataItemNodes.forEach((node, index) => {
+      const attributes = node.attrs || ''
+      const body = node.inner || ''
+      const nestedXml = splitBalancedXmlTags(body, 'recordxml')[0]?.inner || ''
+      // 剥离嵌套 <recordxml> 后再提取外层字段，防止内层 <dataitem> 的 fullmd5/datadesc/sourcename 泄漏到外层 datatype=17 节点。
+      const ownBody = nestedXml
+        ? body.replace(/<recordxml\b[^>]*>[\s\S]*<\/recordxml>/i, '')
+        : body
+      const attrType = /datatype\s*=\s*["']?(\d+)/i.exec(attributes)?.[1]
+      const dataId = /dataid\s*=\s*["']([^"']+)["']/i.exec(attributes)?.[1] || undefined
+      const messageType = Number.parseInt(
+        attrType || extractXmlValue(ownBody, 'datatype') || '0',
+        10
+      )
+      const normalizedType = Number.isFinite(messageType) ? messageType : 0
+      const sender = decodeXmlEntities(extractXmlValue(ownBody, 'sourcename')) || undefined
+      const sourceHeadUrl = decodeXmlUrl(extractXmlValue(ownBody, 'sourceheadurl')) || undefined
+      const sentAt = extractXmlValue(ownBody, 'sourcetime') || undefined
+      const title = decodeXmlEntities(extractXmlValue(ownBody, 'datatitle')) || undefined
+      const description = decodeXmlEntities(
+        extractXmlValue(ownBody, 'datadesc') || extractXmlValue(ownBody, 'content')
+      )
+      const isNestedRecord = normalizedType === 17
+      const imageMd5 =
+        !isNestedRecord && normalizedType === 2
+          ? normalizeMd5(
+              extractXmlValue(ownBody, 'fullmd5') ||
+                extractXmlValue(ownBody, 'md5') ||
+                extractXmlValue(ownBody, 'datamd5')
+            )
+          : undefined
+      const thumbMd5 =
+        !isNestedRecord && normalizedType === 2
+          ? normalizeMd5(extractXmlValue(ownBody, 'thumbfullmd5'))
+          : undefined
+      const dataSize =
+        Number.parseInt(extractXmlValue(ownBody, 'datasize') || '0', 10) || undefined
+      const thumbSize =
+        Number.parseInt(extractXmlValue(ownBody, 'thumbsize') || '0', 10) || undefined
+      const fileExt = extractXmlValue(ownBody, 'fileext') || undefined
+      const linkUrl =
+        decodeXmlUrl(extractXmlValue(ownBody, 'link') || extractXmlValue(ownBody, 'streamweburl')) ||
+        undefined
+      const nestedTitle = isNestedRecord
+        ? decodeXmlEntities((nestedXml && extractXmlValue(nestedXml, 'title')) || title || '') ||
+          '聊天记录'
+        : undefined
+      const nested =
+        isNestedRecord && nestedXml ? parseForwardedItems(nestedXml, depth + 1) : undefined
+      const text =
+        normalizedType === 2
+          ? '[图片]'
+          : isNestedRecord
+            ? nestedTitle || '[聊天记录]'
+            : description || title || forwardedTypeLabel(normalizedType)
+      if (!sender && !text && !nested?.length && !imageMd5 && !thumbMd5) return
+      items.push({
+        messageType: normalizedType,
+        sender,
+        sourceHeadUrl,
+        sentAt,
+        text: text || '[消息]',
+        title,
+        dataId,
+        dataIndex: index,
+        imageMd5,
+        thumbMd5,
+        dataSize,
+        thumbSize,
+        fileExt,
+        linkUrl,
+        nestedTitle,
+        nested: nested?.length ? nested : undefined
+      })
+    })
+    if (items.length > 0) return dedupeForwardedItems(items)
+  }
+  return []
+}
+
+export function attachForwardBundleRecordDir(
+  bundle: ForwardBundleContent,
+  recordDir?: string
+): ForwardBundleContent {
+  const normalizedDir = String(recordDir || '').trim()
+  if (!normalizedDir) return bundle
+  const items = bundle.items.map((item, idx) => {
+    const dataIndex = typeof item.dataIndex === 'number' ? item.dataIndex : idx
+    if (item.messageType === 2 && !item.imageDatName) {
+      return {
+        ...item,
+        dataIndex,
+        imageDatName: `rec:${normalizedDir}:${dataIndex}`
+      }
+    }
+    return item
+  })
+  return {
+    ...bundle,
+    recordDir: normalizedDir,
+    items
+  }
 }
 
 function dedupeForwardedItems(items: ForwardedMessageItem[]): ForwardedMessageItem[] {
   const seen = new Set<string>()
   return items.filter((item) => {
-    const key = `${item.messageType}|${item.sender || ''}|${item.sentAt || ''}|${item.text}`
+    const key = [
+      item.messageType,
+      item.dataId || '',
+      item.dataIndex ?? '',
+      item.sender || '',
+      item.sentAt || '',
+      item.imageMd5 || '',
+      item.text
+    ].join('|')
     if (seen.has(key)) return false
     seen.add(key)
     return true
@@ -661,28 +823,31 @@ function dedupeForwardedItems(items: ForwardedMessageItem[]): ForwardedMessageIt
 
 function forwardedTypeLabel(messageType: number): string {
   switch (messageType) {
-    case 3:
+    case 2:
       return '[图片]'
+    case 3:
     case 34:
       return '[语音]'
+    case 4:
     case 43:
       return '[视频]'
-    case 47:
-      return '[表情包]'
+    case 5:
+      return '[链接]'
+    case 6:
+      return '[位置]'
     case 8:
     case 49:
       return '[文件或分享]'
     case 17:
       return '[聊天记录]'
+    case 22:
+      return '[视频号]'
+    case 37:
+    case 47:
+      return '[表情包]'
     default:
       return '[消息]'
   }
-}
-
-function extractXmlBody(xml: string, tagName: string): string {
-  const match = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i').exec(xml)
-  if (!match?.[1]) return ''
-  return match[1].replace(/^<!\[CDATA\[([\s\S]*?)\]\]>$/, '$1').trim()
 }
 
 function parseQuoteMessage(content: string): {

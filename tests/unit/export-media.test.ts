@@ -258,6 +258,56 @@ describe('export media', () => {
     dom.window.close()
   })
 
+  it('opens the forward bundle of the clicked card after filters shrink the list', () => {
+    const html = renderExportPage('合并转发索引')
+    const dom = new JSDOM(html, { runScripts: 'outside-only' })
+    Object.assign(dom.window, {
+      __WECHAT_EXPORT__: {
+        version: 2,
+        name: '合并转发索引',
+        exportedAt: '2026-08-04T00:00:00.000Z',
+        conversations: [
+          { id: 'alpha', name: '聊天 A', type: 'user', messageCount: 2 },
+          { id: 'beta', name: '聊天 B', type: 'group', messageCount: 1 }
+        ],
+        messages: [
+          messageForArchive('alpha-1', 'alpha', '聊天 A', '普通文本甲', 1_767_225_600),
+          {
+            ...messageForArchive('alpha-2', 'alpha', '聊天 A', '合并转发摘要', 1_767_225_700),
+            contentData: {
+              type: 'forwardBundle',
+              title: '目标聊天记录',
+              items: [
+                { messageType: 1, sender: '张三', text: '第一层内容甲' },
+                { messageType: 1, sender: '李四', text: '第一层内容乙' }
+              ]
+            }
+          },
+          messageForArchive('beta-1', 'beta', '聊天 B', '普通文本乙', 1_769_904_000)
+        ]
+      }
+    })
+
+    dom.window.eval(inlineScriptOf(html))
+
+    const search = dom.window.document.querySelector('#query') as HTMLInputElement
+    search.value = '合并转发摘要'
+    search.dispatchEvent(new dom.window.Event('input'))
+
+    const list = dom.window.document.querySelector('#messages')!
+    expect(list.querySelectorAll('.message')).toHaveLength(1)
+    const card = list.querySelector('[data-forward-open]') as HTMLElement
+    expect(card.getAttribute('data-forward-open')).toBe('0')
+
+    card.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+
+    const root = dom.window.document.querySelector('#forward-modal-root')!
+    expect(root.querySelectorAll('.forward-modal-window')).toHaveLength(1)
+    expect(root.querySelector('.forward-modal-title')?.textContent).toBe('目标聊天记录')
+    expect(root.textContent).toContain('第一层内容甲')
+    dom.window.close()
+  })
+
   it('locates every filtered message kind in all messages, including outside the latest window', () => {
     const html = renderExportPage('定位消息')
     const dom = new JSDOM(html, { runScripts: 'outside-only' })

@@ -143,6 +143,25 @@ describe('VideoAssetService local fallback', () => {
     expect(service.pathForUrl(result.url!)).toBe(join(month, `${targetStem}.mp4`))
   })
 
+  it('prefers _raw original video over compressed mp4 when both exist', async () => {
+    const { accountRoot, service } = createService()
+    const month = join(accountRoot, 'msg', 'video', '2026-11')
+    mkdirSync(month, { recursive: true })
+    const stem = '0c0236112233445566778899aabbcee6'
+    const compressedPath = join(month, `${stem}.mp4`)
+    const rawPath = join(month, `${stem}_raw.mp4`)
+    const posterPath = join(month, `${stem}_thumb.jpg`)
+    writeFileSync(compressedPath, mp4Fixture(10, 'compressed'))
+    writeFileSync(rawPath, mp4Fixture(10, 'original-raw-video-bytes'))
+    writeFileSync(posterPath, jpegFixture(720, 1280))
+
+    const result = await service.resolve([stem])
+
+    expect(result.success).toBe(true)
+    expect(service.pathForUrl(result.url!)).toBe(rawPath)
+    expect(service.pathForUrl(result.poster!)).toBe(posterPath)
+  })
+
   it('does not guess when multiple files match the same metadata', async () => {
     const { accountRoot, service } = createService()
     const month = join(accountRoot, 'msg', 'video', '2026-02')

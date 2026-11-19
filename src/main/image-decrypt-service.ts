@@ -210,12 +210,16 @@ function normalizeDatBase(value) {
 
 function isThumbnailName(fileName) {
   const lower = fileName.toLowerCase()
+  if (!lower.endsWith('.dat')) {
+    return /(?:_t(?:_m)?|_thumb|\.thumb)$/i.test(lower)
+  }
   return /(?:_t(?:_m)?|_thumb|\.thumb|_b|_w|_c)\.dat$/i.test(lower)
 }
 
 function imageQualityRank(fileName) {
   const lower = fileName.toLowerCase()
-  if (/(?:_t(?:_m)?|_thumb|\.thumb|_b|_w|_c)\.dat$/i.test(lower)) return 1
+  if (isThumbnailName(lower)) return 1
+  if (!lower.endsWith('.dat')) return 3
   if (/(?:_hd|\.hd|_h_m|_h|\.h)\.dat$/i.test(lower)) return 3
   return 2
 }
@@ -236,6 +240,20 @@ function buildPreferredDatNames(baseName) {
     base + '_t.dat',
     base + '.thumb.dat',
     base + '_thumb.dat'
+  ]
+}
+
+function buildExtensionlessVariantNames(baseName) {
+  const base = normalizeDatBase(baseName)
+  if (!base) return []
+  return [
+    base + '_hd',
+    base + '_h_M',
+    base + '_h',
+    base + '_M',
+    base,
+    base + '_t_M',
+    base + '_t'
   ]
 }
 
@@ -386,10 +404,6 @@ function decryptCandidate(filePath, aesKey, xorKey, ffmpegPath) {
       filePath
     }
   }
-  if (!path.extname(filePath).toLowerCase().includes('dat')) {
-    const extension = path.extname(filePath).toLowerCase()
-    return { data: 'data:' + getMimeType(extension) + ';base64,' + bytes.toString('base64'), filePath }
-  }
   if (
     bytes.length < 15 ||
     bytes[0] !== 0x07 ||
@@ -440,10 +454,12 @@ function decryptCandidate(filePath, aesKey, xorKey, ffmpegPath) {
 
 function collectCandidates(datPath, allowThumbnail) {
   const candidates = [datPath]
-  if (!path.extname(datPath).toLowerCase().includes('dat')) return candidates
   const directory = path.dirname(datPath)
   const base = normalizeDatBase(path.basename(datPath))
-  const siblings = buildPreferredDatNames(base)
+  const names = path.extname(datPath).toLowerCase().includes('dat')
+    ? buildPreferredDatNames(base)
+    : buildExtensionlessVariantNames(base).concat(buildPreferredDatNames(base))
+  const siblings = names
     .filter((name) => allowThumbnail || !isThumbnailName(name))
     .map((name) => path.join(directory, name))
     .filter((candidate) => fs.existsSync(candidate))
@@ -606,9 +622,23 @@ export class ImageDecryptService {
     })
 
     const attachDir = join(accountDir, 'msg', 'attach')
+    const recRef = this.parseForwardRecordImageRef(imageDatName)
+    if (recRef && existsSync(attachDir)) {
+      const recHit = this.findForwardRecordImage(
+        attachDir,
+        recRef.recordDir,
+        recRef.fileIndex,
+        allowThumbnail,
+        options?.preferThumbnail,
+        sessionDirectory,
+        options?.createTime
+      )
+      if (recHit) return rememberPath(recHit)
+    }
+
     // The attach directory stores DAT filenames, while the message MD5 often
     // identifies the original image rather than the local file.
-    const searchKeys = this.uniq([normalizedDatName, normalizedMd5])
+    const searchKeys = this.uniq([recRef ? '' : normalizedDatName, normalizedMd5])
 
     if (sessionDirectory && allowThumbnail && options?.preferThumbnail) {
       const bubblePreview = this.findBubblePreview(
@@ -939,7 +969,21 @@ export class ImageDecryptService {
     if (!accountDir) return null
 
     const attachDir = join(accountDir, 'msg', 'attach')
-    const searchKeys = this.uniq([normalizedDatName, normalizedMd5])
+    const recRef = this.parseForwardRecordImageRef(imageDatName)
+    if (recRef && existsSync(attachDir)) {
+      const recHit = await this.findForwardRecordImageAsync(
+        attachDir,
+        recRef.recordDir,
+        recRef.fileIndex,
+        allowThumbnail,
+        options?.preferThumbnail,
+        sessionDirectory,
+        options?.createTime
+      )
+      if (recHit) return rememberPath(recHit)
+    }
+
+    const searchKeys = this.uniq([recRef ? '' : normalizedDatName, normalizedMd5])
     if (allowThumbnail && options?.preferThumbnail) {
       const bubblePreview = await this.findBubblePreviewAsync(
         accountDir,
@@ -1422,15 +1466,19 @@ export class ImageDecryptService {
     if (!extname(datPath).toLowerCase().includes('dat')) {
       try {
         const data = readFileSync(datPath)
-        const ext = this.detectImageExtension(data) || extname(datPath).toLowerCase()
-        const mimeType = this.getMimeType(ext)
-        this.lastDecodeDiagnostic = {
-          code: 'DIRECT_IMAGE',
-          detail: '文件本身是可直接读取的图片',
-          fileSize: data.length,
-          imageFormat: ext.replace(/^\./, '').toUpperCase()
+        const detectedExt = this.detectImageExtension(data)
+        if (detectedExt) {
+          const mimeType = this.getMimeType(detectedExt)
+          this.lastDecodeDiagnostic = {
+            code: 'DIRECT_IMAGE',
+            detail: '文件本身是可直接读取的图片',
+            fileSize: data.length,
+            imageFormat: detectedExt.replace(/^\./, '').toUpperCase()
+          }
+          return `data:${mimeType};base64,${data.toString('base64')}`
         }
-        return `data:${mimeType};base64,${data.toString('base64')}`
+        // 合并转发 Rec/{token}/Img/{index} 文件没有 .dat 扩展名，但内部仍是 WeChat 4.0 V2 加密 DAT，
+        // 若不是明文图片头则继续向下走 decryptImage 解密。
       } catch {
         this.lastDecodeDiagnostic = {
           code: 'FILE_NOT_FOUND',
@@ -1798,6 +1846,108 @@ export class ImageDecryptService {
     ]
   }
 
+  private parseForwardRecordImageRef(
+    imageDatName?: string
+  ): { recordDir: string; fileIndex: string } | null {
+    const raw = String(imageDatName || '').trim()
+    const match = /^rec:([a-zA-Z0-9_-]+):(\d+)$/i.exec(raw)
+    if (!match) return null
+    return { recordDir: match[1], fileIndex: match[2] }
+  }
+
+  private buildForwardRecordImageNames(fileIndex: string): string[] {
+    return [
+      `${fileIndex}_hd`,
+      `${fileIndex}_h_M`,
+      `${fileIndex}_h`,
+      `${fileIndex}_M`,
+      `${fileIndex}`,
+      `${fileIndex}_t_M`,
+      `${fileIndex}_t`,
+      `${fileIndex}.dat`,
+      `${fileIndex}_t.dat`
+    ]
+  }
+
+  private findForwardRecordImage(
+    attachDir: string,
+    recordDir: string,
+    fileIndex: string,
+    allowThumbnail: boolean,
+    preferThumbnail = false,
+    sessionDirectory = '',
+    createTime?: number
+  ): string | null {
+    const candidateNames = this.buildForwardRecordImageNames(fileIndex)
+    const sessionDirs = sessionDirectory
+      ? existsSync(join(attachDir, sessionDirectory))
+        ? [sessionDirectory]
+        : []
+      : readdirSync(attachDir).filter((name) => name.length === 32 && /^[a-f0-9]+$/i.test(name))
+
+    for (const sessDir of sessionDirs) {
+      const sessionRoot = join(attachDir, sessDir)
+      const months = sessionDirectory
+        ? this.getImageMonthDirectories(sessionRoot, createTime)
+        : this.getRecentImageMonths(24)
+      for (const month of months) {
+        const recImgDir = join(sessionRoot, month, 'Rec', recordDir, 'Img')
+        if (!existsSync(recImgDir)) continue
+        const found = this.getLargestExistingPath(
+          candidateNames.map((name) => join(recImgDir, name)),
+          allowThumbnail,
+          preferThumbnail
+        )
+        if (found) return found
+      }
+    }
+    return null
+  }
+
+  private async findForwardRecordImageAsync(
+    attachDir: string,
+    recordDir: string,
+    fileIndex: string,
+    allowThumbnail: boolean,
+    preferThumbnail = false,
+    sessionDirectory = '',
+    createTime?: number
+  ): Promise<string | null> {
+    if (!sessionDirectory) {
+      return this.findForwardRecordImage(
+        attachDir,
+        recordDir,
+        fileIndex,
+        allowThumbnail,
+        preferThumbnail,
+        '',
+        createTime
+      )
+    }
+    const sessionRoot = join(attachDir, sessionDirectory)
+    let months: string[]
+    try {
+      months = (await fsPromises.readdir(sessionRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && /^\d{4}-\d{2}$/.test(entry.name))
+        .map((entry) => entry.name)
+        .sort((left, right) => right.localeCompare(left))
+    } catch {
+      return null
+    }
+    months = this.prioritizeImageMonth(months, createTime)
+    const candidateNames = this.buildForwardRecordImageNames(fileIndex)
+    for (const month of months) {
+      const recImgDir = join(sessionRoot, month, 'Rec', recordDir, 'Img')
+      const found = await this.getLargestExistingPathAsync(
+        candidateNames.map((name) => join(recImgDir, name)),
+        allowThumbnail,
+        preferThumbnail
+      )
+      if (found) return found
+    }
+    return null
+  }
+
   private getPreferredDatVariantPath(
     inputPath: string,
     allowThumbnail: boolean,
@@ -1805,7 +1955,10 @@ export class ImageDecryptService {
   ): string {
     const actualDir = dirname(inputPath)
     const base = this.normalizeDatBase(basename(inputPath))
-    const variants = this.buildPreferredDatNames(base)
+    const hasDatExtension = basename(inputPath).toLowerCase().endsWith('.dat')
+    const variants = hasDatExtension
+      ? this.buildPreferredDatNames(base)
+      : [...this.buildForwardRecordImageNames(base), ...this.buildPreferredDatNames(base)]
     const ordered = allowThumbnail
       ? variants
       : variants.filter((name) => !this.isThumbnailName(name))

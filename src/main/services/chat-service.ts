@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { WechatDb, WechatMessage } from '../wechat-db'
 import {
+  attachForwardBundleRecordDir,
   parseImageBufferDataUrlFromRow,
   parseImageDatNameFromRow,
   parseMessageContent,
@@ -613,6 +614,9 @@ function listSourceMessages(
             thumbDatName: parsed.thumbDatName || parseImageDatNameFromRow(msg),
             thumbDataUrl: parsed.thumbDataUrl || parseImageBufferDataUrlFromRow(msg.raw || msg)
           }
+        } else if (parsed.type === 'forwardBundle') {
+          const recordDir = parseImageDatNameFromRow(msg.raw || msg)
+          contentData = attachForwardBundleRecordDir(parsed, recordDir)
         } else if (parsed.type !== 'system') {
           if (parsed.type === 'sticker' && !parsed.url && parsed.md5) {
             parsed.url = wcdb4Client.resolveEmoticonCdnUrl(parsed.md5)

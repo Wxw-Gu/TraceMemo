@@ -524,11 +524,28 @@ export async function pruneHtmlArchiveResources(
     referenced[directory].add(fileName)
   }
 
+  const addForwardBundleReferences = (
+    items?: Array<{ exportMediaUrl?: string; nested?: Array<{ exportMediaUrl?: string; nested?: unknown[] }> }>
+  ): void => {
+    if (!Array.isArray(items)) return
+    for (const item of items) {
+      addReference(item.exportMediaUrl)
+      if (Array.isArray(item.nested)) {
+        addForwardBundleReferences(
+          item.nested as Array<{ exportMediaUrl?: string; nested?: Array<{ exportMediaUrl?: string; nested?: unknown[] }> }>
+        )
+      }
+    }
+  }
+
   for (const conversation of archive.conversations) addReference(conversation.avatarUrl)
   for (const message of archive.messages) {
     addReference(message.voiceDataUrl)
     addReference(message.exportMediaUrl)
     addReference(message.exportAvatarUrl)
+    if (message.contentData?.type === 'forwardBundle') {
+      addForwardBundleReferences(message.contentData.items)
+    }
   }
 
   for (const [directory, prefixes] of Object.entries(htmlArchiveResourcePrefixes) as [
@@ -1513,6 +1530,75 @@ async function runSingleExport(
           } else {
             keepMediaError(request, message, result.error || '表情资源缺失或下载失败')
           }
+        } else if (message.contentData.type === 'forwardBundle' && imageService) {
+          const exportForwardItems = async (
+            items: Array<{
+              messageType: number
+              imageMd5?: string
+              thumbMd5?: string
+              imageDatName?: string
+              exportMediaUrl?: string
+              nested?: unknown[]
+            }>,
+            depth = 0
+          ): Promise<void> => {
+            if (!Array.isArray(items) || depth > 8) return
+            for (const item of items) {
+              if (Array.isArray(item.nested) && item.nested.length > 0) {
+                await exportForwardItems(
+                  item.nested as typeof items,
+                  depth + 1
+                )
+                continue
+              }
+              const isForwardImage =
+                item.messageType === 2 ||
+                Boolean(item.imageMd5 || item.thumbMd5 || item.imageDatName)
+              if (!isForwardImage) continue
+              if (item.exportMediaUrl && (await resourceExists(item.exportMediaUrl))) {
+                continue
+              }
+              let decryptedImage: { data: string; filePath: string } | null = null
+              for (const attempt of getImageExportAttempts(request)) {
+                const file = await imageService.findImageFileAsync(
+                  item.imageMd5 || item.thumbMd5,
+                  item.imageDatName,
+                  {
+                    allowThumbnail: attempt.allowThumbnail,
+                    preferThumbnail: attempt.preferThumbnail,
+                    sessionId: message.sessionId,
+                    sessionMd5: conversationId,
+                    createTime: message.createTime
+                  }
+                )
+                if (!file) continue
+                let decrypted = await imageService.decryptImageToBase64WithFallbackAsync(
+                  file,
+                  attempt.allowThumbnail
+                )
+                if (!decrypted) {
+                  decrypted = imageService.decryptImageToBase64WithFallback(
+                    file,
+                    attempt.allowThumbnail
+                  )
+                }
+                if (!decrypted) continue
+                decryptedImage = decrypted
+                break
+              }
+              const decoded = decryptedImage ? decodeDataUrl(decryptedImage.data) : null
+              if (decoded) {
+                const name = `image_${bufferHashPart(decoded.buffer)}.${decoded.extension}`
+                const mediaUrl = `media/${name}`
+                if (!(await resourceExists(mediaUrl))) {
+                  await fs.writeFile(join(outputDir, 'media', name), decoded.buffer)
+                  markResourceExists(mediaUrl)
+                }
+                item.exportMediaUrl = mediaUrl
+              }
+            }
+          }
+          await exportForwardItems(message.contentData.items)
         } else if (message.contentData.type === 'share' && message.contentData.typeVal === '6') {
           if (!fileService) {
             keepMediaError(request, message, '数据库未连接，无法定位本地文件附件')

@@ -1,8 +1,9 @@
-import { ParsedContent } from '../../../shared/types'
-import { useEffect, useState } from 'react'
+import { ParsedContent, type ForwardedMessageItem } from '../../../shared/types'
+import { useCallback, useEffect, useState } from 'react'
 import type { JSX, MouseEvent } from 'react'
 import { renderWechatEmojiText } from '../utils/wechatEmojiText'
 import { ImageBubble } from './ImageBubble'
+import { ForwardBundleModalStack, type ForwardBundleWindowLayer } from './ForwardBundleModal'
 
 const stickerDataUrlCache = new Map<string, string>()
 
@@ -25,7 +26,13 @@ export function RichMessageBubble({
     case 'share':
       return <ShareBubble data={contentData} />
     case 'forwardBundle':
-      return <ForwardBundleBubble data={contentData} />
+      return (
+        <ForwardBundleBubble
+          data={contentData}
+          sessionId={sessionId}
+          onImageClick={onImageClick}
+        />
+      )
     case 'miniProgram':
       return (
         <MiniProgramBubble data={contentData} sessionId={sessionId} onImageClick={onImageClick} />
@@ -55,52 +62,97 @@ export function RichMessageBubble({
 }
 
 function ForwardBundleBubble({
-  data
+  data,
+  sessionId,
+  onImageClick
 }: {
   data: Extract<ParsedContent, { type: 'forwardBundle' }>
+  sessionId?: string
+  onImageClick?: (imageUrl: string) => void
 }): JSX.Element {
-  const [expanded, setExpanded] = useState(false)
-  const visibleItems = expanded ? data.items : data.items.slice(0, 3)
-  const hiddenCount = Math.max(0, data.items.length - visibleItems.length)
+  const [modalLayers, setModalLayers] = useState<ForwardBundleWindowLayer[]>([])
+  const previewItems = data.items.slice(0, 4)
+
+  const openRootModal = useCallback((): void => {
+    setModalLayers([
+      {
+        id: `forward-root-${Date.now()}`,
+        title: data.title || '聊天记录',
+        items: data.items
+      }
+    ])
+  }, [data.items, data.title])
+
+  const openNestedModal = useCallback(
+    (title: string, items: ForwardedMessageItem[]): void => {
+      setModalLayers((current) => [
+        ...current,
+        {
+          id: `forward-nested-${current.length}-${Date.now()}`,
+          title: title || '聊天记录',
+          items
+        }
+      ])
+    },
+    []
+  )
+
+  const closeFromIndex = useCallback((index: number): void => {
+    setModalLayers((current) => current.slice(0, index))
+  }, [])
 
   return (
-    <div className="forward-bundle-message">
-      <button
-        type="button"
-        className="forward-bundle-header"
-        onClick={() => setExpanded(!expanded)}
+    <>
+      <div
+        className="forward-bundle-message is-clickable"
+        role="button"
+        tabIndex={0}
+        onClick={openRootModal}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            openRootModal()
+          }
+        }}
+        title="点击弹窗查看完整聊天记录"
       >
-        <span>{data.title || '聊天记录'}</span>
-        <small>
-          {data.items.length ? `${data.items.length} 条消息` : data.description || '聊天记录'}
-        </small>
-      </button>
-      <div className="forward-bundle-list">
-        {visibleItems.length ? (
-          visibleItems.map((item, index) => (
-            <div
-              className="forward-bundle-item"
-              key={`${item.sender || ''}-${item.sentAt || ''}-${index}`}
-            >
-              {item.sender && <b>{item.sender}</b>}
-              <span>{renderWechatEmojiText(item.text, 24)}</span>
-              {item.nested?.length ? <small>包含 {item.nested.length} 条聊天记录</small> : null}
-            </div>
-          ))
-        ) : (
-          <div className="forward-bundle-empty">暂未解析到可展示的记录</div>
-        )}
+        <div className="forward-bundle-header">
+          <span>{data.title || '聊天记录'}</span>
+          <small>
+            {data.items.length ? `${data.items.length} 条消息` : data.description || '聊天记录'}
+          </small>
+        </div>
+        <div className="forward-bundle-list">
+          {previewItems.length ? (
+            previewItems.map((item, index) => (
+              <div
+                className="forward-bundle-item"
+                key={`${item.dataId || ''}-${item.sender || ''}-${item.sentAt || ''}-${index}`}
+              >
+                {item.sender && <b>{item.sender}</b>}
+                <span>{renderWechatEmojiText(item.text, 24)}</span>
+                {item.nested?.length ? (
+                  <small>包含 {item.nested.length} 条嵌套聊天记录</small>
+                ) : null}
+              </div>
+            ))
+          ) : (
+            <div className="forward-bundle-empty">暂未解析到可展示的记录</div>
+          )}
+        </div>
+        <div className="forward-bundle-footer">
+          <span>聊天记录</span>
+          <span className="forward-bundle-footer-action">查看详情</span>
+        </div>
       </div>
-      {(hiddenCount > 0 || expanded) && data.items.length > 3 ? (
-        <button
-          type="button"
-          className="forward-bundle-toggle"
-          onClick={() => setExpanded(!expanded)}
-        >
-          {expanded ? '收起' : `展开其余 ${hiddenCount} 条`}
-        </button>
-      ) : null}
-    </div>
+      <ForwardBundleModalStack
+        layers={modalLayers}
+        sessionId={sessionId}
+        onOpenNested={openNestedModal}
+        onCloseFromIndex={closeFromIndex}
+        onImageClick={onImageClick}
+      />
+    </>
   )
 }
 

@@ -761,7 +761,7 @@ export class AutomationActionRunner {
    * 定时日报的统一发送出口。
    *
    * **必须走 `WechatActionGateway`**：幂等 + 3 秒发送间隔 + 审计落盘都在那里。
-   * Automation 层不允许知道 OneBot / WCHook / native host / Windows hook 的存在。
+   * Automation 层不允许知道 native host 的存在。
    */
   private async sendScheduledReportImage(
     input: ScheduledReportRunInput,
@@ -879,7 +879,7 @@ export class AutomationActionRunner {
    *
    * **必须走 `WechatActionGateway`**：幂等 + 3 秒发送间隔 + 审计落盘都在那里，
    * 直接调个人微信发送会绕过全部三样。Automation 层也不允许知道
-   * OneBot / WCHook / native host / Windows hook 的存在。
+   * native host 的存在。
    *
    * 幂等键由 **eventId** 派生（不是 executionId）：审计是落盘的，
    * 于是"重启后重复投递同一退群事件"会被持久层直接短路。

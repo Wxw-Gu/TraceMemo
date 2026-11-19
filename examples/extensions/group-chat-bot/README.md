@@ -1,5 +1,10 @@
 # 群聊机器人 (`com.example.group-chat-bot`)
 
+> **这是模板壳，不是完整运行包。** 本目录的 `lib/bot-engine.js` 只含纯函数，不含
+> `activateBotRuntime` 运行时。直接把本目录打成 ZIP 安装，后台会走
+> `background/index.js` 的 fallback，预览与测试发送都会提示「当前功能暂不可用」。
+> 可安装的完整包必须包含带运行时的 `lib/bot-engine.js`；不要把本目录当成品分发。
+
 TraceMemo 官方扩展模板。结合 TraceMemo 已配置的 AI 模型与文字转语音（TTS）音色，在指定微信群聊中按角色设定自然接话，支持单群长期记忆与随机回复文字 / 随机发送语音。
 
 ## 核心特性

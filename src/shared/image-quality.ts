@@ -9,7 +9,12 @@ const fileNameOf = (filePath: string): string =>
 
 export const imageFileQuality = (filePath: string): ExportImageQuality => {
   const fileName = fileNameOf(filePath)
-  if (!fileName.endsWith('.dat')) return 'original'
+  if (!fileName.endsWith('.dat')) {
+    if (/(?:_t(?:_m)?|_thumb|\.thumb)$/i.test(fileName)) {
+      return 'thumbnail'
+    }
+    return 'original'
+  }
   if (/(?:_t(?:_m)?|_thumb|\.thumb|_b|_w|_c)\.dat$/i.test(fileName)) {
     return 'thumbnail'
   }

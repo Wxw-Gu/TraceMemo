@@ -101,14 +101,28 @@ type ShareContent = {
 export type ForwardedMessageItem = {
   messageType: number
   sender?: string
+  sourceHeadUrl?: string
   sentAt?: string
   text: string
+  title?: string
+  dataId?: string
+  dataIndex?: number
+  imageMd5?: string
+  thumbMd5?: string
+  imageDatName?: string
+  exportMediaUrl?: string
+  dataSize?: number
+  thumbSize?: number
+  fileExt?: string
+  linkUrl?: string
+  nestedTitle?: string
   nested?: ForwardedMessageItem[]
 }
 type ForwardBundleContent = {
   type: 'forwardBundle'
   title: string
   description?: string
+  recordDir?: string
   items: ForwardedMessageItem[]
 }
 type MiniProgramContent = {

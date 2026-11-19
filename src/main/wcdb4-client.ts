@@ -3334,12 +3334,15 @@ export class Wcdb4Client {
   }
 
   resolveImageHardlink(md5: string): Wcdb4ImageHardlink | null {
-    if (!this.wcdbResolveImageHardlink) return null
     const normalizedMd5 = String(md5 || '')
       .trim()
       .toLowerCase()
     if (!normalizedMd5) return null
 
+    const sqlHit = this.resolveImageHardlinkViaSql(normalizedMd5)
+    if (sqlHit) return sqlHit
+
+    if (!this.wcdbResolveImageHardlink) return null
     try {
       return this.callJson<Wcdb4ImageHardlink>((handle, outJson) =>
         this.wcdbResolveImageHardlink!(handle, normalizedMd5, this.nativeAccountRoot, outJson)
@@ -3351,12 +3354,15 @@ export class Wcdb4Client {
   }
 
   async resolveImageHardlinkAsync(md5: string): Promise<Wcdb4ImageHardlink | null> {
-    if (!this.wcdbResolveImageHardlink) return null
     const normalizedMd5 = String(md5 || '')
       .trim()
       .toLowerCase()
     if (!normalizedMd5) return null
 
+    const sqlHit = await this.resolveImageHardlinkViaSqlAsync(normalizedMd5)
+    if (sqlHit) return sqlHit
+
+    if (!this.wcdbResolveImageHardlink) return null
     try {
       return await this.callJsonAsync<Wcdb4ImageHardlink>(
         this.wcdbResolveImageHardlink as unknown as KoffiAsyncFunction,
@@ -3365,6 +3371,192 @@ export class Wcdb4Client {
       )
     } catch (error) {
       console.warn('[WCDB4] async image hardlink resolve failed:', error)
+      return null
+    }
+  }
+
+  private findHardlinkDb(): string {
+    const candidates = [
+      path.join(this.dbStoragePath, 'hardlink', 'hardlink.db'),
+      path.join(this.dbStoragePath, 'hardlink.db')
+    ]
+    return candidates.find((candidate) => fs.existsSync(candidate)) || ''
+  }
+
+  private buildImageHardlinkSql(normalizedMd5: string): string {
+    const escaped = normalizedMd5.replace(/'/g, "''")
+    return (
+      `SELECT f.md5, f.type AS link_kind, f.file_name, f.file_size, f.modify_time, ` +
+      `hex(f.extra_buffer) AS extra_hex, IFNULL(d1.username, '') AS dir1, IFNULL(d2.username, '') AS dir2 ` +
+      `FROM image_hardlink_info_v4 f ` +
+      `LEFT JOIN dir2id d1 ON d1.rowid = f.dir1 ` +
+      `LEFT JOIN dir2id d2 ON d2.rowid = f.dir2 ` +
+      `WHERE f.md5 = '${escaped}' OR f.file_name LIKE '${escaped}%'`
+    )
+  }
+
+  /**
+   * 解析 image_hardlink_info_v4.extra_buffer 中的 Protobuf 字段，提取合并转发 Rec 子目录名（如 16 位 hex 目录名）。
+   */
+  private decodeRecSubdirTokens(extraHex: string): string[] {
+    const trimmed = String(extraHex || '').trim()
+    if (!trimmed || trimmed.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(trimmed)) return []
+    const buf = Buffer.from(trimmed, 'hex')
+    const tokens: string[] = []
+    const collectTokens = (text: string): void => {
+      const matches = text.match(/[a-zA-Z0-9_-]+/g)
+      if (!matches) return
+      for (const token of matches) {
+        if (token.trim()) tokens.push(token.trim())
+      }
+    }
+    const isAsciiText = (slice: Buffer): boolean => {
+      if (slice.length === 0) return false
+      for (let i = 0; i < slice.length; i += 1) {
+        if (slice[i] < 0x20 || slice[i] >= 0x7f) return false
+      }
+      return true
+    }
+
+    if (isAsciiText(buf)) {
+      collectTokens(buf.toString('ascii'))
+      return tokens
+    }
+
+    let offset = 0
+    while (offset < buf.length) {
+      const tag = buf[offset]
+      offset += 1
+      const wireType = tag & 0x07
+      if (wireType === 0) {
+        while (offset < buf.length && (buf[offset] & 0x80) !== 0) offset += 1
+        offset += 1
+      } else if (wireType === 1) {
+        offset += 8
+      } else if (wireType === 2) {
+        let length = 0
+        let shift = 0
+        while (offset < buf.length) {
+          const byte = buf[offset]
+          offset += 1
+          length |= (byte & 0x7f) << shift
+          if ((byte & 0x80) === 0) break
+          shift += 7
+        }
+        if (length < 0 || offset + length > buf.length) break
+        const value = buf.subarray(offset, offset + length)
+        offset += length
+        if (isAsciiText(value)) {
+          collectTokens(value.toString('ascii'))
+        }
+      } else if (wireType === 5) {
+        offset += 4
+      } else {
+        break
+      }
+    }
+    return tokens
+  }
+
+  private pickImageHardlinkFromRows(
+    normalizedMd5: string,
+    rows: Record<string, unknown>[]
+  ): Wcdb4ImageHardlink | null {
+    if (!Array.isArray(rows) || rows.length === 0) return null
+
+    const candidates: Array<{
+      fullPath: string
+      fileName: string
+      dir1: string
+      dir2: string
+      linkKind: number
+      fileSize: number
+      modifyTime: number
+      exists: boolean
+    }> = []
+
+    for (const row of rows) {
+      const fileName = String(row.file_name || '').trim()
+      const dir1 = String(row.dir1 || '').trim()
+      const dir2 = String(row.dir2 || '').trim()
+      if (!fileName || !dir1 || !dir2) continue
+      const linkKind = Number(row.link_kind || row.type || 0)
+      const fileSize = Number(row.file_size || 0)
+      const modifyTime = Number(row.modify_time || 0)
+      const subdirTokens = this.decodeRecSubdirTokens(String(row.extra_hex || ''))
+
+      const fullPath =
+        linkKind === 4 && subdirTokens.length > 0
+          ? path.join(this.accountRoot, 'msg', 'attach', dir1, dir2, 'Rec', subdirTokens[0], 'Img', fileName)
+          : path.join(this.accountRoot, 'msg', 'attach', dir1, dir2, 'Img', fileName)
+
+      candidates.push({
+        fullPath,
+        fileName,
+        dir1,
+        dir2,
+        linkKind,
+        fileSize,
+        modifyTime,
+        exists: fs.existsSync(fullPath)
+      })
+    }
+
+    if (candidates.length === 0) return null
+    candidates.sort((left, right) => {
+      if (left.exists !== right.exists) return left.exists ? -1 : 1
+      if (left.fileSize !== right.fileSize) return right.fileSize - left.fileSize
+      return right.modifyTime - left.modifyTime
+    })
+
+    const best = candidates[0]
+    if (!best.exists) return null
+    return {
+      success: true,
+      md5: normalizedMd5,
+      dir1: best.dir1,
+      dir2: best.dir2,
+      link_kind: best.linkKind,
+      file_name: best.fileName,
+      full_path: best.fullPath
+    }
+  }
+
+  private resolveImageHardlinkViaSql(normalizedMd5: string): Wcdb4ImageHardlink | null {
+    if (!this.wcdbExecQuery || this.handle === null) return null
+    const hardlinkDb = this.findHardlinkDb()
+    if (!hardlinkDb) return null
+    try {
+      const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+        this.wcdbExecQuery!(
+          handle,
+          'media',
+          hardlinkDb,
+          this.buildImageHardlinkSql(normalizedMd5),
+          outJson
+        )
+      )
+      return this.pickImageHardlinkFromRows(normalizedMd5, rows)
+    } catch {
+      return null
+    }
+  }
+
+  private async resolveImageHardlinkViaSqlAsync(
+    normalizedMd5: string
+  ): Promise<Wcdb4ImageHardlink | null> {
+    if (!this.wcdbExecQuery || this.handle === null) return null
+    const hardlinkDb = this.findHardlinkDb()
+    if (!hardlinkDb) return null
+    try {
+      const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+        this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+        'media',
+        hardlinkDb,
+        this.buildImageHardlinkSql(normalizedMd5)
+      )
+      return this.pickImageHardlinkFromRows(normalizedMd5, rows)
+    } catch {
       return null
     }
   }

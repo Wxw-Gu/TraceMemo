@@ -77,12 +77,15 @@ export class VideoAssetService {
 
     const index = this.getIndex()
     for (const key of lookupKeys) {
-      const asset = index.get(key) || index.get(`${key}_raw`)
+      const rawAsset = index.get(`${key}_raw`)
+      const compressedAsset = index.get(key)
+      const asset = rawAsset || compressedAsset
       if (!asset) continue
+      const posterPath = asset.posterPath || compressedAsset?.posterPath
       return {
         success: true,
         url: this.createLocalMediaUrl(asset.filePath),
-        poster: asset.posterPath ? this.createLocalMediaUrl(asset.posterPath) : undefined
+        poster: posterPath ? this.createLocalMediaUrl(posterPath) : undefined
       }
     }
 
