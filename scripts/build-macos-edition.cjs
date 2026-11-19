@@ -60,6 +60,7 @@ function createBuilderConfig({ edition, stageRoot, buildOutput, outputRoot, appV
     ],
     extraResources: [
       { from: path.join(stageRoot, 'resources'), to: 'resources', filter: ['**/*'] },
+      { from: path.join(ROOT, 'build/extension-templates'), to: 'extension-templates', filter: ['**/*'] },
       { from: path.join(ROOT, 'build/app-update.yml'), to: 'app-update.yml' },
       {
         from: path.join(ROOT, 'docs/skill/tracememo-reader'),

@@ -1195,6 +1195,7 @@ document.getElementById('memory-clear-btn').addEventListener('click', async () =
 /* ---------- 预览与测试发送 ---------- */
 
 const testOutput = document.getElementById('test-output')
+let previewSnapshot = null
 
 function showTestOutput(text) {
   testOutput.hidden = false
@@ -1204,15 +1205,26 @@ function showTestOutput(text) {
 document.getElementById('preview-reply-btn').addEventListener('click', async () => {
   collectConfigFromForm()
   await callHost('storage.set', { key: CONFIG_KEY, value: config })
+  const testGroupId = document.getElementById('test-group-select').value
+  const testMessageText = document.getElementById('test-message-input').value.trim()
+  const testPersonaId = editingPersonaId
+  previewSnapshot = {
+    groupId: testGroupId,
+    personaId: testPersonaId,
+    messageText: testMessageText,
+    replyText: '',
+    blocked: false
+  }
   showTestOutput('正在执行安全检查与 AI 思考预览…')
   try {
     const result = await callBackground('previewReply', {
-      groupId: document.getElementById('test-group-select').value,
-      personaId: editingPersonaId,
+      groupId: testGroupId,
+      personaId: testPersonaId,
       senderName: document.getElementById('test-sender-name').value.trim() || '测试群友',
-      messageText: document.getElementById('test-message-input').value.trim()
+      messageText: testMessageText
     })
     if (result.blocked) {
+      previewSnapshot.blocked = true
       showTestOutput(
         [
           `【安全防护拦截】已触发敏感探测/提示词保护（${result.securityLabel || result.securityCategory}）`,
@@ -1233,6 +1245,7 @@ document.getElementById('preview-reply-btn').addEventListener('click', async () 
         `【本轮随机抽样方式】${modeLabel}（原因：${result.deliveryReason}）`
       ].join('\n')
     )
+    previewSnapshot.replyText = result.replyText || ''
     setBanner('AI 预览生成完成。', 'ok')
   } catch (error) {
     showTestOutput(`预览失败：${error.message}`)
@@ -1250,10 +1263,24 @@ async function triggerTestSend(mode) {
   await callHost('storage.set', { key: CONFIG_KEY, value: config })
   showTestOutput(`正在向 ${groupDisplayName(to)} 执行测试发送（模式：${mode}）…`)
   try {
+    const messageText = document.getElementById('test-message-input').value.trim()
+    const preview = previewSnapshot
+    const samePreview =
+      preview &&
+      !preview.blocked &&
+      preview.groupId === to &&
+      preview.personaId === editingPersonaId &&
+      preview.messageText === messageText
+    if (preview && preview.blocked && preview.groupId === to) {
+      throw new Error('当前预览已被安全拦截，未发送')
+    }
     const result = await callBackground('testSend', {
       to,
       mode,
-      text: document.getElementById('test-message-input').value.trim()
+      messageText,
+      replyText: samePreview ? preview.replyText : '',
+      personaId: editingPersonaId,
+      senderName: document.getElementById('test-sender-name').value.trim() || '群友'
     })
     const desc =
       result.channel === 'voice'

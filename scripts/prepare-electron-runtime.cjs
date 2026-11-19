@@ -83,7 +83,57 @@ function prepareFfmpegRuntime(targetPlatform = process.platform, targetArch = pr
 
   fs.chmodSync(ffmpegPath, 0o755)
   if (process.platform === 'darwin') {
-    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', ffmpegPath], { stdio: 'ignore' })
+    assertMachOIntact(ffmpegPath)
+    try {
+      execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', ffmpegPath], {
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+    } catch (error) {
+      const detail = error?.stderr?.toString?.().trim() || error.message
+      throw new Error(
+        'codesign 失败：' +
+          detail +
+          '\n最常见原因：ffmpeg-static 下载被截断，文件不完整。' +
+          '\n处理：删除 ' +
+          ffmpegPath +
+          ' 后重跑本命令；网络不稳时先用 curl -C - 把 .gz 补齐再解压。'
+      )
+    }
+  }
+}
+
+/**
+ * 截断的 Mach-O 能被 file 认出来，却签不了名，也跑不起来。
+ * otool 解析 load command，截断会直接失败——比事后读 codesign 的天书便宜。
+ */
+function assertMachOIntact(ffmpegPath) {
+  let listing = ''
+  try {
+    listing = execFileSync('/usr/bin/otool', ['-l', ffmpegPath], {
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024
+    })
+  } catch {
+    throw new Error(
+      'ffmpeg 二进制无法解析（下载不完整）：' + ffmpegPath + '\n处理：删除该文件后重跑本命令。'
+    )
+  }
+  // otool 对超出文件末尾的段会标 "(past end of file)"：下载被截断的确凿信号。
+  if (listing.includes('past end of file')) {
+    throw new Error(
+      'ffmpeg 二进制被截断（下载不完整）：' +
+        ffmpegPath +
+        '\n处理：删除该文件后重跑本命令；网络不稳时先用 curl -C - 把 .gz 补齐再解压。'
+    )
+  }
+  let kind = ''
+  try {
+    kind = execFileSync('/usr/bin/file', ['-b', ffmpegPath], { encoding: 'utf8' })
+  } catch {
+    kind = ''
+  }
+  if (!kind.includes('Mach-O')) {
+    throw new Error('ffmpeg 不是 Mach-O 可执行文件：' + ffmpegPath)
   }
 }
 
