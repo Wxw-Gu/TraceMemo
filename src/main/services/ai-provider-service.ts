@@ -5,6 +5,7 @@ import path from 'path'
 import type {
   AIChatRequestOptions,
   AIConnectionTestResult,
+  AIOpenAIProtocol,
   AIProviderConfig,
   AIProviderListResult,
   AIProviderSummary,
@@ -867,6 +868,36 @@ function modelMaxTokens(provider: AIProviderSummary, model: string): number {
   )
 }
 
+function openAIRequestParameters(
+  provider: AIProviderSummary,
+  model: string,
+  protocol: AIOpenAIProtocol,
+  testing = false
+): Record<string, unknown> {
+  // Relays may namespace model IDs, e.g. openai/gpt-5-mini.
+  const modelName = model.split('/').pop()?.toLowerCase() || ''
+  const gptVersion = /^gpt-(\d+)(?:[.-]|$)/.exec(modelName)
+  const reasoningModel = /^o\d+(?:[.-]|$)/.test(modelName) || Number(gptVersion?.[1]) >= 5
+  // This adapter does not set reasoning effort. Omit sampling parameters for
+  // reasoning families, including models that only allow them with effort=none.
+  const temperature = reasoningModel ? {} : { temperature: provider.advanced.temperature }
+  const officialOpenAI = new URL(provider.baseUrl).hostname === 'api.openai.com'
+  const tokenParameter =
+    protocol === 'responses'
+      ? 'max_output_tokens'
+      : officialOpenAI || reasoningModel
+        ? 'max_completion_tokens'
+        : 'max_tokens'
+  return {
+    ...temperature,
+    [tokenParameter]: testing
+      ? protocol === 'responses'
+        ? 128
+        : 8
+      : modelMaxTokens(provider, model)
+  }
+}
+
 async function requestOpenAICompatible(
   provider: AIProviderSummary,
   apiKey: string,
@@ -887,8 +918,7 @@ async function requestOpenAICompatible(
       body: JSON.stringify({
         model,
         messages: toOpenAIMessages(messages),
-        temperature: provider.advanced.temperature,
-        max_tokens: testing ? 8 : modelMaxTokens(provider, model),
+        ...openAIRequestParameters(provider, model, 'chat-completions', testing),
         ...(provider.advanced.thinking === 'disabled' ? { thinking: { type: 'disabled' } } : {}),
         ...(provider.advanced.stream ? { stream: true } : {})
       })
@@ -953,8 +983,7 @@ async function requestOpenAIResponses(
         model,
         instructions: request.instructions,
         input: request.input,
-        temperature: provider.advanced.temperature,
-        max_output_tokens: testing ? 128 : modelMaxTokens(provider, model),
+        ...openAIRequestParameters(provider, model, 'responses', testing),
         store: false,
         ...(provider.advanced.stream ? { stream: true } : {})
       })
@@ -1011,8 +1040,7 @@ async function requestOpenAICompatibleWithTools(
         model,
         messages,
         ...(tools.length ? { tools, tool_choice: 'auto' } : { tool_choice: 'none' }),
-        temperature: provider.advanced.temperature,
-        max_tokens: modelMaxTokens(provider, model),
+        ...openAIRequestParameters(provider, model, 'chat-completions'),
         ...(provider.advanced.thinking === 'disabled' ? { thinking: { type: 'disabled' } } : {})
       })
     },
