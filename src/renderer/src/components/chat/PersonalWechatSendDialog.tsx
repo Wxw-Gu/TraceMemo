@@ -83,13 +83,19 @@ function PersonalWechatMacSendDialog({
   const displayName = contact.m_nsNickName || contact.m_nsUsrName || '未命名会话'
   const targetId = contact.m_nsUsrName
   const isBusy = binding || sendBusy
-  const setupReady = Boolean(
+  const capabilityReady = Boolean(
     initialFile
       ? senderStatus?.canSendFile
       : initialImage
         ? senderStatus?.canSendImage
         : senderStatus?.canSendVoice
   )
+  /* 运行时和绑定是否已就绪（任一能力可用）。必须与「当前要发的东西能不能发」
+   * 分开判：微信版本不支持文件时能力为 false，但配置是好的，再摆一遍首次
+   * 配置向导只会得出「已配置完成」却发不出去的结论。 */
+  const runtimeReady = senderStatus?.canSend === true
+  const capabilityUnsupported = runtimeReady && !capabilityReady
+  const capabilityNoun = initialFile ? '文件' : initialImage ? '图片' : '语音'
   const { postfixText, setPostfixText, persistPostfixText } = useReportImagePostfixSetting(
     Boolean(initialImage)
   )
@@ -300,17 +306,22 @@ function PersonalWechatMacSendDialog({
                 {initialFile ? '发送文件' : initialImage ? '发送日报图片' : '文字转语音'}
               </DialogTitle>
               <DialogDescription>
-                发送给 {displayName} · {setupReady ? '微信已连接' : '配置微信发送能力'}
+                发送给 {displayName} ·{' '}
+                {capabilityReady
+                  ? '微信已连接'
+                  : capabilityUnsupported
+                    ? `当前微信版本不支持发送${capabilityNoun}`
+                    : '配置微信发送能力'}
               </DialogDescription>
             </div>
             <span
-              className={`personal-wechat-connection-dot ${setupReady ? 'is-online' : ''}`}
-              aria-label={setupReady ? '微信已连接' : '微信尚未配置'}
+              className={`personal-wechat-connection-dot ${capabilityReady ? 'is-online' : ''}`}
+              aria-label={capabilityReady ? '微信已连接' : '微信尚未配置'}
             />
           </DialogHeader>
 
           <div className="personal-wechat-chat-body">
-            {setupReady && !initialImage && !initialFile && (
+            {capabilityReady && !initialImage && !initialFile && (
               <div className="personal-wechat-message-list" aria-label="消息列表">
                 {messages.length === 0 ? (
                   <div className="personal-wechat-empty-message">还没有发送消息。</div>
@@ -328,19 +339,33 @@ function PersonalWechatMacSendDialog({
               </div>
             )}
 
-            {!setupReady && senderStatus && (
+            {capabilityUnsupported && (
+              <section className="personal-wechat-composer" aria-label="能力不支持提示">
+                <p>
+                  当前微信
+                  {senderStatus?.wechatVersion ? `（${senderStatus.wechatVersion}）` : ''}
+                  不支持发送{capabilityNoun}。
+                </p>
+                <p>
+                  文字、图片、语音消息仍可正常发送；如需发送{capabilityNoun}
+                  ，请升级微信后在设置页重新绑定。
+                </p>
+              </section>
+            )}
+
+            {!capabilityReady && !capabilityUnsupported && senderStatus && (
               <PersonalWechatSetupGuide
                 senderStatus={senderStatus}
                 binding={binding}
                 detecting={detecting}
                 sessionBound={sessionBound}
                 onBind={() => void handleBind()}
-                onStartSending={() => undefined}
+                onStartSending={handleClose}
                 onOpenTextToSpeechSettings={handleOpenSettings}
               />
             )}
 
-            {setupReady && initialImage && (
+            {capabilityReady && initialImage && (
               <section className="personal-wechat-composer" aria-label="日报图片发送">
                 <p>已准备日报图片：{initialImage.name}</p>
                 <ReportImagePostfixInput
@@ -359,7 +384,7 @@ function PersonalWechatMacSendDialog({
               </section>
             )}
 
-            {setupReady && initialFile && (
+            {capabilityReady && initialFile && (
               <section className="personal-wechat-composer" aria-label="文件发送">
                 <p>已选择文件：{initialFile.name}</p>
                 <Button size="sm" onClick={() => void handleSendFile()} disabled={sendBusy}>
@@ -368,7 +393,7 @@ function PersonalWechatMacSendDialog({
               </section>
             )}
 
-            {setupReady && !initialImage && !initialFile && (
+            {capabilityReady && !initialImage && !initialFile && (
               <PersonalWechatChatComposer
                 status={senderStatus!}
                 targetId={targetId}
@@ -390,14 +415,14 @@ function PersonalWechatMacSendDialog({
               </div>
             )}
           </div>
-          {setupReady && isMac && !initialImage && !initialFile && (
+          {capabilityReady && isMac && !initialImage && !initialFile && (
             <div className="personal-wechat-chat-footer flex items-center justify-end">
               <Button variant="link" size="sm" onClick={() => void handleOpenVoiceDiagnostic()}>
                 语音发送诊断
               </Button>
             </div>
           )}
-          {!setupReady && (
+          {!capabilityReady && (
             <div className="personal-wechat-chat-footer flex items-center justify-end">
               <Button variant="outline" onClick={handleClose} disabled={isBusy}>
                 关闭

@@ -165,6 +165,24 @@ describe('PersonalWechatSendDialog', () => {
     expect(screen.getByLabelText('消息列表')).toHaveTextContent('你好 TraceMemo')
   })
 
+  it('explains an unsupported file capability instead of showing the setup guide', async () => {
+    /* 微信版本发不了文件时能力为 false，但运行时和绑定都是好的。
+     * 这里若回落到首次配置向导，用户会看到「微信消息发送已配置完成」，
+     * 却怎么都发不出文件。 */
+    getStatus.mockResolvedValue({ ...readyStatus, wechatVersion: '4.1.13.8' })
+
+    renderDialog({
+      initialFile: { path: '/tmp/chatlog.zip', name: 'chatlog_alpha-private-main.zip' }
+    })
+
+    const notice = await screen.findByLabelText('能力不支持提示')
+    expect(notice).toHaveTextContent('不支持发送文件')
+    expect(notice).toHaveTextContent('4.1.13.8')
+    expect(screen.queryByText('首次使用')).not.toBeInTheDocument()
+    expect(screen.queryByText('微信消息发送已配置完成')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '发送文件' })).not.toBeInTheDocument()
+  })
+
   it('shows image send success feedback after the host confirms the send', async () => {
     const user = userEvent.setup()
     renderDialog({ initialImage: { path: '/tmp/report.png', name: '测试群日报.png' } })
