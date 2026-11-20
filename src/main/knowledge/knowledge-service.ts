@@ -10,7 +10,15 @@ import type {
   KnowledgeRuntimeStatus,
   KnowledgeSearchRequest,
   KnowledgeSearchResult,
-  KnowledgeStatusRequest
+  KnowledgeStatusRequest,
+  KnowledgeConversationIndexState,
+  KnowledgeConversationStatesRequest,
+  KnowledgeSourceTotalsRequest,
+  KnowledgeStreamBatchRequest,
+  KnowledgeStreamConversationRequest,
+  KnowledgeStreamResult,
+  KnowledgeStreamStartRequest,
+  KnowledgeStreamStartResult
 } from '../../shared/knowledge'
 import { KnowledgeWorkerHost } from './knowledge-worker-host'
 
@@ -32,6 +40,39 @@ export class KnowledgeService {
     return this.worker.index({ ...request, databaseRoot: this.databaseRoot }, onProgress)
   }
 
+  /** 开始一个会话的分批索引：消息不随请求下发，由调用方逐批推送。 */
+  startConversationStream(
+    request: Omit<KnowledgeStreamStartRequest, 'databaseRoot'>,
+    onProgress?: (progress: KnowledgeIndexProgress) => void
+  ): Promise<KnowledgeStreamStartResult> {
+    return this.worker.startConversationStream(
+      { ...request, databaseRoot: this.databaseRoot },
+      onProgress
+    )
+  }
+
+  pushConversationBatch(
+    request: Omit<KnowledgeStreamBatchRequest, 'databaseRoot'>
+  ): Promise<void> {
+    return this.worker.pushConversationBatch({ ...request, databaseRoot: this.databaseRoot })
+  }
+
+  finishConversationStream(
+    request: Omit<KnowledgeStreamConversationRequest, 'databaseRoot'>
+  ): Promise<KnowledgeStreamResult> {
+    return this.worker.finishConversationStream({ ...request, databaseRoot: this.databaseRoot })
+  }
+
+  abortConversationStream(
+    request: Omit<KnowledgeStreamConversationRequest, 'databaseRoot'>
+  ): Promise<void> {
+    return this.worker.abortConversationStream({ ...request, databaseRoot: this.databaseRoot })
+  }
+
+  writeSourceTotals(request: Omit<KnowledgeSourceTotalsRequest, 'databaseRoot'>): Promise<void> {
+    return this.worker.writeSourceTotals({ ...request, databaseRoot: this.databaseRoot })
+  }
+
   preflight(
     request: Omit<KnowledgeCapacityPreflightRequest, 'databaseRoot'>
   ): Promise<KnowledgeCapacityPreflight> {
@@ -48,6 +89,13 @@ export class KnowledgeService {
 
   status(request: Omit<KnowledgeStatusRequest, 'databaseRoot'>): Promise<KnowledgeRuntimeStatus> {
     return this.worker.status({ ...request, databaseRoot: this.databaseRoot })
+  }
+
+  /** 每个会话的索引状态（是否完整覆盖），查询侧据此判断覆盖度。 */
+  conversationStates(
+    request: Omit<KnowledgeConversationStatesRequest, 'databaseRoot'>
+  ): Promise<Record<string, KnowledgeConversationIndexState>> {
+    return this.worker.conversationStates({ ...request, databaseRoot: this.databaseRoot })
   }
 
   /** 每个会话已经索引到的源侧时刻（epoch ms）；增量 pass 用它跳过没有变化的会话。 */

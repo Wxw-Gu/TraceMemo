@@ -168,10 +168,15 @@ import type {
   QueryAgentProgressEvent
 } from '../shared/query-agent'
 import type {
+  KnowledgeIndexScope,
   KnowledgeRuntimeStatus,
   KnowledgeSearchIpcRequest,
   KnowledgeSearchIpcResult
 } from '../shared/knowledge'
+import type {
+  ConversationMessageCountEntry,
+  ConversationMessageCountSnapshot
+} from '../shared/conversation-message-count'
 import type {
   PublishWechatShareCardRequest,
   PublishWechatShareCardResult,
@@ -389,9 +394,19 @@ declare global {
       ) => () => void
       forgetAskWechatConversation: () => Promise<void>
       getKnowledgeStatus: () => Promise<KnowledgeRuntimeStatus>
+      getConversationActivity: () => Promise<Record<string, number>>
+      getKnowledgeIndexScope: () => Promise<KnowledgeIndexScope>
+      setKnowledgeIndexScope: (scope: KnowledgeIndexScope) => Promise<KnowledgeIndexScope>
       startKnowledgeIndex: () => Promise<KnowledgeRuntimeStatus>
       cancelKnowledgeIndex: () => Promise<{ cancellable: boolean; cancelled: boolean }>
       onKnowledgeStatus: (callback: (status: KnowledgeRuntimeStatus) => void) => () => void
+      getConversationMessageCounts: (
+        conversationIds: string[]
+      ) => Promise<ConversationMessageCountSnapshot>
+      cancelConversationMessageCounts: () => Promise<void>
+      onConversationMessageCounts: (
+        callback: (entries: ConversationMessageCountEntry[]) => void
+      ) => () => void
       aiChat: (
         messages: { role: string; content: string }[],
         options?: AIChatRequestOptions

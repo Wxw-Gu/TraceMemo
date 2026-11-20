@@ -47,6 +47,17 @@
   line-height: 1.7;
 }
 
+/* ---- 行进中的分批进度 ---- */
+
+.local-index-progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 12px;
+  color: var(--wxex-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- 卡片容器 ---- */
 
 .local-index-cards {

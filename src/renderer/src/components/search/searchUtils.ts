@@ -320,19 +320,23 @@ export const buildSearchCacheKey = (
   range: SearchRange,
   query: string,
   resolvedTimeRange?: Pick<AiSearchTimeRange, 'startTime' | 'endTime'>,
-  knowledgeGeneration?: string
+  knowledgeGeneration?: string,
+  /** 会话集合身份，放末尾：旧 key 的段位不变，老解析函数不受影响。 */
+  selectionKey?: string
 ): string => {
   const base = [scope, contactMd5, range, query.trim().toLowerCase()]
   const hasResolvedTime = Boolean(
     resolvedTimeRange &&
       (resolvedTimeRange.startTime !== undefined || resolvedTimeRange.endTime !== undefined)
   )
-  if (!hasResolvedTime && !knowledgeGeneration) return JSON.stringify(base)
+  if (!hasResolvedTime && !knowledgeGeneration && !selectionKey) return JSON.stringify(base)
   return JSON.stringify([
     ...base,
     hasResolvedTime ? resolvedTimeRange?.startTime ?? null : null,
     hasResolvedTime ? resolvedTimeRange?.endTime ?? null : null,
-    knowledgeGeneration || null
+    knowledgeGeneration || null,
+    // 键里再排序一次：调用方可能传未排序的集合，范围身份不该随选择顺序变化。
+    selectionKey ? [...selectionKey.split(',')].sort().join(',') : null
   ])
 }
 
@@ -342,6 +346,8 @@ export type CreateSearchRequestContextInput = {
   range: SearchRange
   timeRangeOverride?: AiSearchTimeRange
   activeContactMd5?: string
+  /** 「指定多个会话」的会话 id；排序后参与缓存键。 */
+  selectedIds?: readonly string[]
   now?: Date
   knowledgeGeneration?: string
   retry?: {
@@ -365,6 +371,7 @@ export const createSearchRequestContext = ({
   range,
   timeRangeOverride,
   activeContactMd5,
+  selectedIds,
   now,
   knowledgeGeneration,
   retry
@@ -392,7 +399,8 @@ export const createSearchRequestContext = ({
       effectiveRange,
       normalizedQuery,
       resolvedTimeRange,
-      knowledgeGeneration
+      knowledgeGeneration,
+      selectedIds?.length ? [...selectedIds].sort().join(',') : ''
     )
   }
 }

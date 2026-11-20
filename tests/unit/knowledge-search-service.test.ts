@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { chatState, getGroupSnapshotAsync, getGroupMemberNamesAsync, listContactsAsync, listMessagesAsync, getSourceLatestActivityMs, getConversationActivityMs, knowledgeService } =
+const { chatState, getGroupSnapshotAsync, getGroupMemberNamesAsync, listContactsAsync, listMessagesAsync, countConversationMessagesAsync, iterateMessagesAsync, getSourceLatestActivityMs, getConversationActivityMs, knowledgeService } =
   vi.hoisted(() => ({
     chatState: {
       ready: false,
@@ -10,6 +10,11 @@ const { chatState, getGroupSnapshotAsync, getGroupMemberNamesAsync, listContacts
     getGroupMemberNamesAsync: vi.fn(),
     listContactsAsync: vi.fn(),
     listMessagesAsync: vi.fn(),
+    // 增量窗口预检：默认 0，走原 delta 路径；用例需要时按会话返回大值。
+    countConversationMessagesAsync: vi.fn(),
+    // 分页读取的替身：默认把 `listMessagesAsync` 的结果当成一页，
+    // 让只断言"读了哪个会话"的既有用例继续有效。
+    iterateMessagesAsync: vi.fn(),
     getSourceLatestActivityMs: vi.fn(() => null as number | null),
     // 源侧每会话最后活跃时间（epoch ms）。默认空表 = 没有任何会话可被增量跳过，
     // 于是每个会话都会被真实处理 —— 这正是大部分用例想要的"全量"前提。
@@ -29,6 +34,13 @@ const { chatState, getGroupSnapshotAsync, getGroupMemberNamesAsync, listContacts
         cancelled: false
       }),
       search: vi.fn(),
+      // 分批索引的替身：按会话累计推入的条数，`finish` 用它回报处理量。
+      streamCounts: new Map<string, number>(),
+      startConversationStream: vi.fn(),
+      pushConversationBatch: vi.fn(),
+      finishConversationStream: vi.fn(),
+      abortConversationStream: vi.fn(),
+      writeSourceTotals: vi.fn(),
       // per-conversation checkpoint 读取：默认空表（没有会话已覆盖到任何时间点）。
       highWaterMarks: vi.fn().mockResolvedValue({}),
       cancelIndex: vi.fn().mockResolvedValue(false),
@@ -58,8 +70,17 @@ vi.mock('../../src/main/services/chat-service', () => ({
   getGroupMemberNamesAsync,
   listContactsAsync,
   listMessagesAsync,
+  countConversationMessagesAsync,
+  iterateMessagesAsync,
   getSourceLatestActivityMs,
   getConversationActivityMs
+}))
+
+// 索引范围来自设置文件；测试里不需要真的落盘，也不该拉起 electron。
+const settingsState = { knowledgeIndexScopes: {} as Record<string, unknown> }
+vi.mock('../../src/main/services/settings-store', () => ({
+  loadSettings: () => settingsState,
+  updateSettings: (patch: Record<string, unknown>) => Object.assign(settingsState, patch)
 }))
 
 vi.mock('../../src/main/knowledge/knowledge-service', () => ({
@@ -67,17 +88,67 @@ vi.mock('../../src/main/knowledge/knowledge-service', () => ({
     dispose = knowledgeService.dispose
     index = knowledgeService.index
     search = knowledgeService.search
+    startConversationStream = knowledgeService.startConversationStream
+    pushConversationBatch = knowledgeService.pushConversationBatch
+    finishConversationStream = knowledgeService.finishConversationStream
+    abortConversationStream = knowledgeService.abortConversationStream
+    writeSourceTotals = knowledgeService.writeSourceTotals
     highWaterMarks = knowledgeService.highWaterMarks
     cancelIndex = knowledgeService.cancelIndex
     status = knowledgeService.status
   }
 }))
 
+
+/**
+ * 分批索引替身：`listMessagesAsync` 的结果当一页，stream 三个方法按会话累计条数。
+ */
+function resetStreamDoubles(): void {
+  settingsState.knowledgeIndexScopes = {}
+  countConversationMessagesAsync.mockReset()
+  countConversationMessagesAsync.mockResolvedValue({ count: 0, approximate: false, failedStores: [] })
+  knowledgeService.streamCounts.clear()
+  iterateMessagesAsync.mockReset()
+  iterateMessagesAsync.mockImplementation(async function* (md5: string) {
+    const messages = (await listMessagesAsync(md5)) ?? []
+    yield { messages, failedStores: [] }
+  })
+  knowledgeService.startConversationStream.mockReset()
+  knowledgeService.startConversationStream.mockImplementation(
+    async (payload: { conversationId: string }) => {
+      knowledgeService.streamCounts.set(payload.conversationId, 0)
+      return { started: true, resumedFrom: null }
+    }
+  )
+  knowledgeService.pushConversationBatch.mockReset()
+  knowledgeService.pushConversationBatch.mockImplementation(
+    async (payload: { conversationId: string; messages: unknown[] }) => {
+      const current = knowledgeService.streamCounts.get(payload.conversationId) ?? 0
+      knowledgeService.streamCounts.set(payload.conversationId, current + payload.messages.length)
+    }
+  )
+  knowledgeService.finishConversationStream.mockReset()
+  knowledgeService.finishConversationStream.mockImplementation(
+    async (payload: { conversationId: string }) => ({
+      conversationId: payload.conversationId,
+      processedMessages: knowledgeService.streamCounts.get(payload.conversationId) ?? 0,
+      chunkCount: 0,
+      cancelled: false,
+      resumeTime: null
+    })
+  )
+  knowledgeService.abortConversationStream.mockReset()
+  knowledgeService.abortConversationStream.mockResolvedValue(undefined)
+  knowledgeService.writeSourceTotals.mockReset()
+  knowledgeService.writeSourceTotals.mockResolvedValue(undefined)
+}
+
 import { KnowledgeSearchService } from '../../src/main/knowledge/knowledge-search-service'
 import type { VoiceTranscriptUpdate } from '../../src/shared/voice-recognition'
 
 describe('KnowledgeSearchService legacy fallback', () => {
   beforeEach(() => {
+    resetStreamDoubles()
     chatState.ready = false
     chatState.accountId = ''
     getGroupSnapshotAsync.mockReset()
@@ -139,7 +210,8 @@ describe('KnowledgeSearchService legacy fallback', () => {
     })
     expect(result.evidence).toEqual([
       expect.objectContaining({
-        messageId: 'local:42',
+        // 身份是 `local:<create_time>:<local_id>`：localId 单独跨分片会重号。
+        messageId: 'local:1785895200:42',
         conversationId: 'fixture-conversation',
         sender: '脱敏成员',
         senderId: 'fixture-sender',
@@ -217,22 +289,23 @@ describe('KnowledgeSearchService legacy fallback', () => {
       cached: true
     })
 
-    expect(knowledgeService.index).toHaveBeenCalledWith(
+    // 语音重索引现在走分批回填：断言"重建的是这个会话"+"转写文本真的进了推送批次"。
+    expect(knowledgeService.startConversationStream).toHaveBeenCalledWith(
       expect.objectContaining({
         accountId: chatState.accountId,
-        conversations: [
-          expect.objectContaining({
-            conversationId: 'voice-conversation',
-            completeSnapshot: true,
-            messages: [
-              expect.objectContaining({
-                kind: 'voice',
-                voiceTranscript: '缓存中的语音文字',
-                voiceTranscriptState: 'transcribed'
-              })
-            ]
-          })
-        ]
+        conversationId: 'voice-conversation',
+        completeSnapshot: true
+      }),
+      expect.any(Function)
+    )
+    const pushed = knowledgeService.pushConversationBatch.mock.calls.flatMap(
+      (call) => (call[0] as { messages: Array<Record<string, unknown>> }).messages
+    )
+    expect(pushed).toContainEqual(
+      expect.objectContaining({
+        kind: 'voice',
+        voiceTranscript: '缓存中的语音文字',
+        voiceTranscriptState: 'transcribed'
       })
     )
     await service.dispose()
@@ -272,12 +345,13 @@ describe('KnowledgeSearchService legacy fallback', () => {
       }
     ])
     let releaseFirstIndex: (() => void) | undefined
-    knowledgeService.index.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          releaseFirstIndex = resolve
-        })
-    )
+    // 卡在第一页读取：后续 update 必须排队合并，而不是各起一次重建。
+    iterateMessagesAsync.mockImplementationOnce(async function* () {
+      await new Promise<void>((resolve) => {
+        releaseFirstIndex = resolve
+      })
+      yield { messages: [], failedStores: [] }
+    })
     const { voiceAccountIdentity, voiceMessageIdentity } =
       await import('../../src/main/voice-pipeline/voice-message-identity')
     const service = new KnowledgeSearchService('/tmp/wxe-knowledge-fallback', '/missing-worker.js')
@@ -294,14 +368,14 @@ describe('KnowledgeSearchService legacy fallback', () => {
     }
 
     const first = service.indexVoiceTranscript(update(18, 1_785_895_200))
-    await vi.waitFor(() => expect(knowledgeService.index).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(iterateMessagesAsync).toHaveBeenCalledTimes(1))
     const second = service.indexVoiceTranscript(update(19, 1_785_895_201))
     const third = service.indexVoiceTranscript(update(18, 1_785_895_200))
     releaseFirstIndex?.()
 
     await Promise.all([first, second, third])
-    expect(knowledgeService.index).toHaveBeenCalledTimes(2)
-    expect(listMessagesAsync).toHaveBeenCalledTimes(2)
+    expect(knowledgeService.startConversationStream).toHaveBeenCalledTimes(2)
+    expect(iterateMessagesAsync).toHaveBeenCalledTimes(2)
     await service.dispose()
   })
 
@@ -636,6 +710,7 @@ describe('KnowledgeSearchService legacy fallback', () => {
 
 describe('KnowledgeSearchService freshness contract', () => {
   beforeEach(() => {
+    resetStreamDoubles()
     chatState.ready = true
     chatState.accountId = 'fixture-account'
     getGroupSnapshotAsync.mockReset()
@@ -716,6 +791,7 @@ describe('KnowledgeSearchService freshness contract', () => {
 
 describe('KnowledgeSearchService 完整 pass 记录源数据边界', () => {
   beforeEach(() => {
+    resetStreamDoubles()
     chatState.ready = true
     chatState.accountId = 'fixture-account'
     listContactsAsync.mockReset()
@@ -744,12 +820,17 @@ describe('KnowledgeSearchService 完整 pass 记录源数据边界', () => {
     service.startCurrentAccountIndex()
     await expect(service.waitForIndexingComplete(2000)).resolves.toBe(true)
 
-    expect(knowledgeService.index).toHaveBeenCalledTimes(2)
-    const calls = knowledgeService.index.mock.calls as Array<[Record<string, unknown>]>
-    expect(calls[0][0].sourceLatestAt).toBeUndefined()
-    expect(calls[0][0].sourceMessageCount).toBeUndefined()
-    expect(calls[1][0].sourceLatestAt).toBe(9000 * 1000)
-    expect(calls[1][0].sourceMessageCount).toBe(2)
+    // 两个会话都走分批回填；全局源口径只在整遍结束时写一次。
+    expect(knowledgeService.startConversationStream).toHaveBeenCalledTimes(2)
+    expect(knowledgeService.index).not.toHaveBeenCalled()
+    expect(knowledgeService.writeSourceTotals).toHaveBeenCalledTimes(1)
+    const totals = knowledgeService.writeSourceTotals.mock.calls[0][0] as {
+      sourceLatestAt: number
+      sourceMessageCount: number
+    }
+    // 图片/空正文不建模，但 freshness 口径必须把它算进来。
+    expect(totals.sourceLatestAt).toBe(9000 * 1000)
+    expect(totals.sourceMessageCount).toBe(2)
     await service.dispose()
   })
 })
@@ -760,6 +841,7 @@ describe('KnowledgeSearchService 完整 pass 记录源数据边界', () => {
  */
 describe('KnowledgeSearchService sync contract', () => {
   beforeEach(() => {
+    resetStreamDoubles()
     chatState.ready = true
     chatState.accountId = 'fixture-account'
     listContactsAsync.mockReset()
@@ -802,6 +884,54 @@ describe('KnowledgeSearchService sync contract', () => {
     return { all, last: () => all[all.length - 1] }
   }
 
+  it('只索引勾选的会话：未选会话不读、不计入分母', async () => {
+    listContactsAsync.mockResolvedValue([
+      { m_nsUsrName: 'fixture-a', m_nsNickName: 'A', md5: 'fixture-a', type: 'user' },
+      { m_nsUsrName: 'fixture-b', m_nsNickName: 'B', md5: 'fixture-b', type: 'user' },
+      { m_nsUsrName: 'fixture-c', m_nsNickName: 'C', md5: 'fixture-c', type: 'user' }
+    ])
+    settingsState.knowledgeIndexScopes = {
+      'fixture-account': { mode: 'selected', conversationIds: ['fixture-a', 'fixture-b'] }
+    }
+
+    const service = new KnowledgeSearchService('/tmp/wxe-scope-selected', '/missing-worker.js')
+    const statuses = captureStatuses(service)
+    service.startCurrentAccountIndex()
+    await expect(service.waitForIndexingComplete(2000)).resolves.toBe(true)
+
+    // 关键：C 一次都没被读过，也不该出现在分母里。
+    expect(iterateMessagesAsync.mock.calls.map((call) => call[0])).toEqual([
+      'fixture-a',
+      'fixture-b'
+    ])
+    const finished = statuses.all.find(
+      (status) => (status.pass as { phase?: string } | undefined)?.phase === 'idle'
+    )
+    const pass = finished?.pass as {
+      totalConversations: number
+      excludedConversations: number
+    }
+    expect(pass.totalConversations).toBe(2)
+    expect(pass.excludedConversations).toBe(1)
+    await service.dispose()
+  })
+
+  it('空选择不是「全部」：勾了「仅选择」但一个都没选时不索引任何会话', async () => {
+    twoContacts()
+    settingsState.knowledgeIndexScopes = {
+      'fixture-account': { mode: 'selected', conversationIds: [] }
+    }
+
+    const service = new KnowledgeSearchService('/tmp/wxe-scope-empty', '/missing-worker.js')
+    service.startCurrentAccountIndex()
+    await expect(service.waitForIndexingComplete(2000)).resolves.toBe(true)
+
+    // 退化成"搜全部"会让用户以为自己在按范围索引，实际把几百个群都建了。
+    expect(iterateMessagesAsync).not.toHaveBeenCalled()
+    expect(listMessagesAsync).not.toHaveBeenCalled()
+    await service.dispose()
+  })
+
   it('skips conversations whose source activity is already covered by the checkpoint', async () => {
     twoContacts()
     // a 的源侧最后活跃时间早于它已经索引到的位置 → 没有任何新消息，必须整段跳过。
@@ -819,9 +949,9 @@ describe('KnowledgeSearchService sync contract', () => {
     await expect(service.waitForIndexingComplete(2000)).resolves.toBe(true)
 
     // 真正 delta 的核心：被跳过的会话**不读 WCDB**（这是把"每次全量重扫"变成分钟级以内的原因）。
-    expect(listMessagesAsync).toHaveBeenCalledTimes(1)
-    expect(listMessagesAsync.mock.calls[0][0]).toBe('fixture-b')
-    expect(knowledgeService.index).toHaveBeenCalledTimes(1)
+    expect(iterateMessagesAsync).toHaveBeenCalledTimes(1)
+    expect(iterateMessagesAsync.mock.calls[0][0]).toBe('fixture-b')
+    expect(knowledgeService.startConversationStream).toHaveBeenCalledTimes(1)
 
     const finished = statuses.all.find(
       (status) => (status.pass as { phase?: string } | undefined)?.phase === 'idle'
@@ -839,9 +969,7 @@ describe('KnowledgeSearchService sync contract', () => {
     expect(pass.cancellable).toBe(false)
 
     // 有跳过时不能把这一遍的部分计数冒充成"全量总量"。
-    const indexArgs = knowledgeService.index.mock.calls[0][0] as Record<string, unknown>
-    expect(indexArgs.sourceMessageCount).toBeUndefined()
-    expect(indexArgs.sourceLatestAt).toBeUndefined()
+    expect(knowledgeService.writeSourceTotals).not.toHaveBeenCalled()
     await service.dispose()
   })
 
@@ -861,67 +989,65 @@ describe('KnowledgeSearchService sync contract', () => {
     service.startCurrentAccountIndex()
     await expect(service.waitForIndexingComplete(2000)).resolves.toBe(true)
 
-    expect(listMessagesAsync).toHaveBeenCalledTimes(2)
-    expect(knowledgeService.index).toHaveBeenCalledTimes(2)
+    expect(iterateMessagesAsync).toHaveBeenCalledTimes(2)
+    expect(knowledgeService.startConversationStream).toHaveBeenCalledTimes(2)
     await service.dispose()
   })
 
   it('reports a cancelled pass as cancelled and never leaves a fake indexing state', async () => {
     twoContacts()
-    let releaseSecond: (() => void) | undefined
-    knowledgeService.index
+    // 第二个会话在 Worker 侧提交返回"已中止"：这是取消一路传到底之后的真实返回值。
+    knowledgeService.finishConversationStream
       .mockResolvedValueOnce({
-        accountId: 'fixture-account',
+        conversationId: 'fixture-a',
         processedMessages: 1,
-        indexedChunks: 1,
-        updatedChunks: 0,
-        unchangedConversations: 0,
-        databaseBytes: 0,
-        walBytes: 0,
-        elapsedMs: 0,
-        cancelled: false
+        chunkCount: 1,
+        cancelled: false,
+        resumeTime: 1_000_000
       })
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            releaseSecond = () =>
-              resolve({
-                accountId: 'fixture-account',
-                processedMessages: 0,
-                indexedChunks: 0,
-                updatedChunks: 0,
-                unchangedConversations: 0,
-                databaseBytes: 0,
-                walBytes: 0,
-                elapsedMs: 0,
-                cancelled: true
-              })
-          })
-      )
-    knowledgeService.cancelIndex.mockResolvedValue(true)
+      .mockResolvedValueOnce({
+        conversationId: 'fixture-b',
+        processedMessages: 0,
+        chunkCount: 0,
+        cancelled: true,
+        resumeTime: 2_000_000
+      })
 
     const service = new KnowledgeSearchService('/tmp/wxe-sync-cancel', '/missing-worker.js')
     const statuses = captureStatuses(service)
     service.startCurrentAccountIndex()
-    await vi.waitFor(() => expect(knowledgeService.index).toHaveBeenCalledTimes(2))
-
-    const ack = await service.cancelCurrentAccountIndex()
-    expect(ack).toEqual({ cancellable: true, cancelled: true })
-    // 取消请求一发出，UI 立刻就该看到"不可再取消"（按钮变「正在取消…」）。
-    const cancelling = statuses.all.find(
-      (status) => (status.pass as { cancellable?: boolean } | undefined)?.cancellable === false
-    )
-    expect(cancelling).toBeDefined()
-
-    releaseSecond?.()
     await expect(service.waitForIndexingComplete(2000)).resolves.toBe(true)
 
     const finalStatus = await service.getStatus()
     expect(finalStatus.state).toBe('cancelled')
     expect(finalStatus.pass?.phase).toBe('cancelled')
     expect(finalStatus.pass?.cancellable).toBe(false)
-    // 全程不允许出现"同步中"残留（run_state 不得留下假的 indexing）。
+    // 全程不允许出现"同步中"残留。
     expect(statuses.all.some((status) => status.state === 'cancelled')).toBe(true)
+    await service.dispose()
+  })
+
+  it('acknowledges cancellation immediately and drops the cancel button', async () => {
+    twoContacts()
+    // 卡在第一页：取消必须在 Worker 侧生效，而不是等一整遍跑完。
+    iterateMessagesAsync.mockImplementation(async function* () {
+      await new Promise(() => {})
+      yield { messages: [], failedStores: [] }
+    })
+    knowledgeService.cancelIndex.mockResolvedValue(true)
+
+    const service = new KnowledgeSearchService('/tmp/wxe-sync-cancel-ack', '/missing-worker.js')
+    const statuses = captureStatuses(service)
+    service.startCurrentAccountIndex()
+    await vi.waitFor(() => expect(iterateMessagesAsync).toHaveBeenCalled())
+
+    const ack = await service.cancelCurrentAccountIndex()
+    expect(ack).toEqual({ cancellable: true, cancelled: true })
+    // 取消请求一发出，UI 立刻就该看到"不可再取消"。
+    const cancelling = statuses.all.find(
+      (status) => (status.pass as { cancellable?: boolean } | undefined)?.cancellable === false
+    )
+    expect(cancelling).toBeDefined()
     await service.dispose()
   })
 
@@ -945,92 +1071,58 @@ describe('KnowledgeSearchService sync contract', () => {
         createTime: 1785895200
       }
     ])
-    let releaseThird: (() => void) | undefined
-    knowledgeService.index
+    // 前两个会话提交成功、第三个被中止：取消 ≠ 回滚，已提交的批次必须留下来。
+    knowledgeService.finishConversationStream
       .mockResolvedValueOnce({
-        accountId: 'fixture-account',
+        conversationId: 'fixture-a',
         processedMessages: 1,
-        indexedChunks: 1,
-        updatedChunks: 0,
-        unchangedConversations: 0,
-        databaseBytes: 0,
-        walBytes: 0,
-        elapsedMs: 0,
-        cancelled: false
+        chunkCount: 1,
+        cancelled: false,
+        resumeTime: 1785895200
       })
       .mockResolvedValueOnce({
-        accountId: 'fixture-account',
+        conversationId: 'fixture-b',
         processedMessages: 1,
-        indexedChunks: 1,
-        updatedChunks: 0,
-        unchangedConversations: 0,
-        databaseBytes: 0,
-        walBytes: 0,
-        elapsedMs: 0,
-        cancelled: false
+        chunkCount: 1,
+        cancelled: false,
+        resumeTime: 1785895200
       })
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            releaseThird = () =>
-              resolve({
-                accountId: 'fixture-account',
-                processedMessages: 0,
-                indexedChunks: 0,
-                updatedChunks: 0,
-                unchangedConversations: 0,
-                databaseBytes: 0,
-                walBytes: 0,
-                elapsedMs: 0,
-                cancelled: true
-              })
-          })
-      )
+      .mockResolvedValueOnce({
+        conversationId: 'fixture-c',
+        processedMessages: 0,
+        chunkCount: 0,
+        cancelled: true,
+        resumeTime: 1785895200
+      })
 
     const service = new KnowledgeSearchService('/tmp/wxe-sync-resume', '/missing-worker.js')
     const statuses = captureStatuses(service)
     service.startCurrentAccountIndex()
-    await vi.waitFor(() => expect(knowledgeService.index).toHaveBeenCalledTimes(3))
-    await service.cancelCurrentAccountIndex()
-    releaseThird?.()
     await expect(service.waitForIndexingComplete(2000)).resolves.toBe(true)
 
-    // 取消 ≠ 回滚：前两个会话已经提交的索引必须留下来。
     const cancelled = statuses.all[statuses.all.length - 1]
     const pass = cancelled.pass as { indexedMessages: number; phase: string }
     expect(pass.phase).toBe('cancelled')
-    expect(pass.indexedMessages).toBeGreaterThan(0)
+    expect(pass.indexedMessages).toBe(2)
 
     // 下一遍：两个已覆盖的会话必须被 checkpoint 跳过，只补没跑完的那个。
-    knowledgeService.index.mockClear()
-    listMessagesAsync.mockClear()
+    knowledgeService.startConversationStream.mockClear()
+    iterateMessagesAsync.mockClear()
     getConversationActivityMs.mockReturnValue(
       new Map<string, number>([
         ['fixture-a', 1_785_895_200_000],
-        ['fixture-b', 1_785_895_200_000]
+        ['fixture-b', 1_785_895_200_000],
+        ['fixture-c', 1_785_895_200_000]
       ])
     )
-    // a 与 b 的 checkpoint 已追平它们的源侧活跃时间；c 仍然没有覆盖。
     knowledgeService.highWaterMarks.mockResolvedValue({
       'fixture-a': 1_785_895_200_000,
       'fixture-b': 1_785_895_200_000
     })
-    knowledgeService.index.mockResolvedValue({
-      accountId: 'fixture-account',
-      processedMessages: 1,
-      indexedChunks: 1,
-      updatedChunks: 0,
-      unchangedConversations: 0,
-      databaseBytes: 0,
-      walBytes: 0,
-      elapsedMs: 0,
-      cancelled: false
-    })
     service.startCurrentAccountIndex()
     await expect(service.waitForIndexingComplete(2000)).resolves.toBe(true)
 
-    expect(listMessagesAsync).toHaveBeenCalledTimes(1)
-    expect(listMessagesAsync.mock.calls[0][0]).toBe('fixture-c')
+    expect(iterateMessagesAsync.mock.calls.map((call) => call[0])).toEqual(['fixture-c'])
     await service.dispose()
   })
 
@@ -1049,29 +1141,18 @@ describe('KnowledgeSearchService sync contract', () => {
   it('does not let a cancelled pass shorten the catch-up threshold of the next pass', async () => {
     twoContacts()
     let releaseFirst: (() => void) | undefined
-    knowledgeService.index.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          releaseFirst = () =>
-            resolve({
-              accountId: 'fixture-account',
-              processedMessages: 0,
-              indexedChunks: 0,
-              updatedChunks: 0,
-              unchangedConversations: 0,
-              databaseBytes: 0,
-              walBytes: 0,
-              elapsedMs: 0,
-              cancelled: true
-            })
-        })
-    )
+    iterateMessagesAsync.mockImplementationOnce(async function* () {
+      await new Promise<void>((resolve) => {
+        releaseFirst = resolve
+      })
+      yield { messages: [], failedStores: [] }
+    })
     knowledgeService.cancelIndex.mockResolvedValue(true)
 
     const service = new KnowledgeSearchService('/tmp/wxe-sync-threshold', '/missing-worker.js')
     const statuses = captureStatuses(service)
     service.startCurrentAccountIndex()
-    await vi.waitFor(() => expect(knowledgeService.index).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(iterateMessagesAsync).toHaveBeenCalledTimes(1))
     await service.cancelCurrentAccountIndex()
     releaseFirst?.()
     await expect(service.waitForIndexingComplete(2000)).resolves.toBe(true)
@@ -1107,27 +1188,17 @@ describe('KnowledgeSearchService sync contract', () => {
       timings: {}
     })
     let releaseIndex: (() => void) | undefined
-    knowledgeService.index.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          releaseIndex = () =>
-            resolve({
-              accountId: 'fixture-account',
-              processedMessages: 1,
-              indexedChunks: 1,
-              updatedChunks: 0,
-              unchangedConversations: 0,
-              databaseBytes: 0,
-              walBytes: 0,
-              elapsedMs: 0,
-              cancelled: false
-            })
-        })
-    )
+    // 让第一页读取挂起：索引在跑，但查询不能因此被挡。
+    iterateMessagesAsync.mockImplementationOnce(async function* () {
+      await new Promise<void>((resolve) => {
+        releaseIndex = resolve
+      })
+      yield { messages: [], failedStores: [] }
+    })
 
     const service = new KnowledgeSearchService('/tmp/wxe-sync-query', '/missing-worker.js')
     service.startCurrentAccountIndex()
-    await vi.waitFor(() => expect(knowledgeService.index).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(iterateMessagesAsync).toHaveBeenCalledTimes(1))
 
     const result = await service.search({
       text: '命中',

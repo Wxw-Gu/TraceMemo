@@ -3,6 +3,10 @@ import fs from 'fs-extra'
 import path from 'path'
 import os from 'os'
 import type { TextToSpeechModel } from '../../shared/text-to-speech'
+import {
+  normalizeKnowledgeIndexScopes,
+  type KnowledgeIndexScope
+} from '../../shared/knowledge'
 
 /**
  * 把 V3 时代的 "...\\Documents\\WeChat Files" 路径重定向到
@@ -67,6 +71,8 @@ export interface AppSettings {
    * 始终展示最新版本 —— 忽略的是提示，不是版本本身。空串表示没有忽略任何版本。
    */
   skippedUpdateVersion: string
+  /** 按账号存；缺省 = 全部会话。不同账号的选择绝不能串用。 */
+  knowledgeIndexScopes: Record<string, KnowledgeIndexScope>
 }
 
 /** 只接受 `1.2.3` / `1.2.3-beta.1` 这类版本号；其它输入一律按"没有忽略"处理。 */
@@ -161,7 +167,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   reportImagePostfixText: '今日日报',
   queryAgentEnabled: true,
   closeAction: 'ask',
-  skippedUpdateVersion: ''
+  skippedUpdateVersion: '',
+  knowledgeIndexScopes: {}
 }
 
 const SETTINGS_FILE = path.join(
@@ -217,6 +224,9 @@ export function loadSettings(): AppSettings {
       }
       // 版本号是拿来逐字比对的：脏值会让「忽略」永远命中不了同一条记录。
       cache.skippedUpdateVersion = normalizeSkippedUpdateVersion(cache.skippedUpdateVersion)
+      // 索引范围来自磁盘，可能是旧版本/手改过的脏值：收敛成合法形状，
+      // 尤其不能把 `selected + 空数组` 悄悄升级成"全部"。
+      cache.knowledgeIndexScopes = normalizeKnowledgeIndexScopes(cache.knowledgeIndexScopes)
       // 防撤回已下线（设置入口已隐藏）：历史版本可能把它持久化为 true。
       // 这里强制收敛为 false 并回写磁盘，确保旧的撤回监听与撤回日志不会继续运行。
       if (cache.recallProtectionEnabled || retiredKeepProcess !== undefined) {

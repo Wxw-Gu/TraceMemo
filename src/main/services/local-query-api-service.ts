@@ -1,4 +1,12 @@
-import { listContactsAsync, listMessagesAsync, isReady, type FormattedContact, type FormattedMessage } from './chat-service'
+import {
+  isReady,
+  iterateMessagesAsync,
+  listContactsAsync,
+  listMessagesAsync,
+  locateMessageAsync,
+  type FormattedContact,
+  type FormattedMessage
+} from './chat-service'
 import { resolveContact } from './contact-resolution-service'
 import { sourceMessageId } from '../knowledge/message-identity'
 import type { KnowledgeSearchService } from '../knowledge/knowledge-search-service'
@@ -311,6 +319,11 @@ interface ResolvedCorpus {
 function describeScope(scope: ResolvedCorpusScope): string {
   if (scope.kind === 'all') return '所有聊天记录'
   if (scope.kind === 'groups') return '群聊专属'
+  if (scope.kind === 'selected') {
+    const names = scope.displayNames ?? []
+    const preview = names.slice(0, 3).join('、')
+    return `指定的 ${scope.conversationCount} 个会话${preview ? `（${preview}${names.length > 3 ? ' 等' : ''}）` : ''}`
+  }
   return `${scope.kind === 'contact' ? '单聊专属' : '当前会话'}：${scope.displayName || '未知会话'}`
 }
 
@@ -443,6 +456,36 @@ export class LocalQueryApiService {
     if (scope.kind === 'groups') {
       const ids = contacts.filter((contact) => contact.type === 'group').map((contact) => contact.md5)
       return { conversationIds: ids, scope: { kind: 'groups', conversationCount: ids.length } }
+    }
+    if (scope.kind === 'selected') {
+      const requested = Array.isArray(scope.conversationIds)
+        ? Array.from(new Set(scope.conversationIds.map((id) => String(id ?? '').trim()).filter(Boolean)))
+        : []
+      // 空选择必须是错误：把它当成"全部"就是最典型的静默扩大范围。
+      if (!requested.length) {
+        return {
+          scope: { kind: 'selected', conversationCount: 0 },
+          error: { status: 'scope_selection_empty' }
+        }
+      }
+      const resolved = requested
+        .map((id) => contacts.find((contact) => contact.md5 === id))
+        .filter((contact): contact is FormattedContact => Boolean(contact))
+      // 任何一个 id 不属于当前账号都直接拒绝：静默丢弃会让用户以为搜过那个群。
+      if (resolved.length !== requested.length) {
+        return {
+          scope: { kind: 'selected', conversationCount: resolved.length },
+          error: { status: 'scope_conversation_not_found', kind: 'selected' }
+        }
+      }
+      return {
+        conversationIds: resolved.map((contact) => contact.md5),
+        scope: {
+          kind: 'selected',
+          conversationCount: resolved.length,
+          displayNames: resolved.map((contact) => contactView(contact).displayName)
+        }
+      }
     }
     const contact = contacts.find((item) => item.md5 === scope.conversationId)
     if (!contact) {
@@ -622,7 +665,7 @@ export class LocalQueryApiService {
       status: 'completed' as const,
       ...(targetView ? { target: targetView } : {}),
       resolvedTimeRange: range,
-      coverage: { state: this.searchCoverage(found, requestedEnd) },
+      coverage: { state: await this.searchCoverage(found, requestedEnd, conversationIds) },
       probeCount: probes.length,
       evidenceCount: evidence.size,
       evidence: Array.from(evidence.values()).slice(0, limit),
@@ -848,22 +891,32 @@ export class LocalQueryApiService {
     }
   }
 
-  /**
-   * 覆盖度。
-   *
-   * 只有「派生索引可用 + 请求范围被索引完整覆盖」才是 `complete`。
-   * `complete` 是 0 结果时允许说"没有找到"的唯一前提；索引落后时必须 `partial`。
-   */
-  private searchCoverage(
+  /** 按会话逐个判断：全局 indexLatestAt 不是证明，缺状态行的会话一律算 partial。 */
+  private async searchCoverage(
     found: { indexLatestAt: number | null; sourceLatestAt: number | null; derivedReady: boolean; evidence: Map<string, QueryEvidenceItem> },
-    requestedEnd: number
-  ): 'complete' | 'partial' | 'unknown' {
+    requestedEnd: number,
+    conversationIds?: string[]
+  ): Promise<'complete' | 'partial' | 'unknown'> {
     if (!found.derivedReady) {
       // 派生索引不可用（未建立 / 直读源数据的 fallback）：有证据也只能算 partial。
       return found.evidence.size ? 'partial' : 'unknown'
     }
     // 索引可用但覆盖口径缺失时不能宣称完整；此时按 partial 处理（宁可保守）。
     if (found.indexLatestAt === null) return 'partial'
+    if (!this.knowledge) return 'partial'
+
+    const states = await this.knowledge.getConversationIndexStates().catch(() => ({}))
+    const targets = conversationIds?.length ? conversationIds : Object.keys(states)
+    const incomplete = targets.filter((id) => {
+      const state = states[id]
+      // 没有状态行 = 这个会话从来没被索引过，不能算覆盖。
+      if (!state) return true
+      // 回填到一半、失败、取消：都不能当作完整。
+      if (!state.completeSnapshot) return true
+      if (state.state !== 'ready') return true
+      return false
+    })
+    if (incomplete.length) return 'partial'
     return indexCovers(found.indexLatestAt, requestedEnd, found.sourceLatestAt) ? 'complete' : 'partial'
   }
   async context(request: MessageContextRequest) {
@@ -876,9 +929,58 @@ export class LocalQueryApiService {
         return outsideScopeError(corpus.scope, '其他会话的消息') as { status: string }
       }
     }
-    const before = Math.min(CONTEXT_MAX, Math.max(0, request.before ?? 10)); const after = Math.min(CONTEXT_MAX, Math.max(0, request.after ?? 10)); const messages = await listMessagesAsync(ref.conversationId); const index = messages.findIndex((message) => normalizeMessageIdentity(ref.conversationId, message.id)?.messageId === ref.messageId); if (index < 0) return { status: 'contact_not_found' as const }
-    const contact = (await listContactsAsync()).find((item) => item.md5 === ref.conversationId); if (!contact) return { status: 'contact_not_found' as const }; const map = (message: FormattedMessage) => toQueryMessage(ref.conversationId, message, contact, undefined, this.voiceSnapshot(message))
-    return { status: 'completed' as const, anchor: map(messages[index]), before: messages.slice(Math.max(0, index - before), index).map(map), after: messages.slice(index + 1, index + 1 + after).map(map) }
+    const beforeCount = Math.min(CONTEXT_MAX, Math.max(0, request.before ?? 10))
+    const afterCount = Math.min(CONTEXT_MAX, Math.max(0, request.after ?? 10))
+    // 先点定位，再读窗口：整会话读进来再 findIndex，正是超大群内存失控的那条路径。
+    const located = await locateMessageAsync(ref.conversationId, ref.messageId)
+    if (located.status !== 'found') {
+      // 身份不唯一或找不到都必须明确失败 —— 随便挑一条会给模型错误的上下文。
+      return {
+        status:
+          located.status === 'ambiguous'
+            ? ('ambiguous_message' as const)
+            : ('contact_not_found' as const)
+      }
+    }
+    const anchorTime = located.location.createTime
+    const isAnchor = (message: FormattedMessage): boolean =>
+      message.createTime === anchorTime && message.localId === located.location.localId
+
+    const leading = beforeCount
+      ? await listMessagesAsync(ref.conversationId, undefined, anchorTime - 1, {
+          limit: beforeCount
+        })
+      : []
+
+    let anchor: FormattedMessage | undefined
+    const trailing: FormattedMessage[] = []
+    for await (const page of iterateMessagesAsync(ref.conversationId, {
+      pageSize: 300,
+      sinceMs: anchorTime * 1000
+    })) {
+      if (page.failedStores.length) break
+      for (const message of page.messages) {
+        if (!anchor) {
+          if (isAnchor(message)) anchor = message
+          continue
+        }
+        if (trailing.length >= afterCount) break
+        trailing.push(message)
+      }
+      if (anchor && trailing.length >= afterCount) break
+    }
+    if (!anchor) return { status: 'contact_not_found' as const }
+
+    const contact = (await listContactsAsync()).find((item) => item.md5 === ref.conversationId)
+    if (!contact) return { status: 'contact_not_found' as const }
+    const map = (message: FormattedMessage) =>
+      toQueryMessage(ref.conversationId, message, contact, undefined, this.voiceSnapshot(message))
+    return {
+      status: 'completed' as const,
+      anchor: map(anchor),
+      before: leading.map(map),
+      after: trailing.map(map)
+    }
   }
   /**
    * 把指定语音消息转成文字。
@@ -920,15 +1022,39 @@ export class LocalQueryApiService {
       group.push({ messageRef, messageId: identity.messageId })
       refsByConversation.set(identity.conversationId, group)
     }
-    // 同一会话只读一次源消息；与 message-context 同样按会话读取后匹配消息身份。
+    // 逐条点定位后只读它所在的那一秒：转写只需要这一条消息的引用，
+    // 为了它把整个会话读进内存是 #75 那条路径的翻版。
     for (const [conversationId, wanted] of refsByConversation) {
-      const messages = await listMessagesAsync(conversationId)
-      const byId = new Map(messages.map((message) => [normalizeMessageIdentity(conversationId, message.id)?.messageId, message]))
       for (const { messageRef, messageId } of wanted) {
-        const message = byId.get(messageId)
+        const located = await locateMessageAsync(conversationId, messageId)
+        if (located.status !== 'found') {
+          problems.set(
+            messageRef,
+            voiceItemProblem(
+              messageRef,
+              'failed',
+              located.status === 'ambiguous' ? 'ambiguous_message' : 'message_not_found'
+            )
+          )
+          continue
+        }
+        const second = located.location.createTime
+        const sameSecond = await listMessagesAsync(conversationId, second, second)
+        const message = sameSecond.find(
+          (item) => item.localId === located.location.localId
+        )
         const reference = message ? voiceMessageReferenceOf(message) : undefined
         if (reference) references.set(messageRef, reference)
-        else problems.set(messageRef, voiceItemProblem(messageRef, 'failed', message ? 'not_voice_message' : 'message_not_found'))
+        else {
+          problems.set(
+            messageRef,
+            voiceItemProblem(
+              messageRef,
+              'failed',
+              message ? 'not_voice_message' : 'message_not_found'
+            )
+          )
+        }
       }
     }
 

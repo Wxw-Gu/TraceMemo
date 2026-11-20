@@ -4,7 +4,8 @@
  * indexer can run in an isolated process.
  */
 
-export const KNOWLEDGE_SCHEMA_VERSION = 1
+/** 2 = 消息身份改为 `local:<create_time>:<local_id>`；版本不符时 Store 作废重建。 */
+export const KNOWLEDGE_SCHEMA_VERSION = 2
 export const DEFAULT_CHUNKER_VERSION = 'conversation-v1'
 
 export type KnowledgeMessageKind = 'text' | 'voice' | 'file' | 'link' | 'image' | 'video' | 'sticker' | 'system' | 'other'
@@ -449,6 +450,12 @@ export interface KnowledgePassProgress {
   backfillConversations: number
   /** 这一遍已经补齐的历史会话数。 */
   backfillCompletedConversations: number
+  /** 因为不在「索引范围」内而整段排除的会话数；它们不计入分母。 */
+  excludedConversations: number
+  /** 当前正在索引的会话名（有展示名时）；用于进度文案。 */
+  currentConversationName?: string
+  /** 当前会话已提交的消息条数（每批提交后更新）。 */
+  currentConversationProcessed?: number
   /** 主线程 event loop 在这一遍期间的最大滞后。用于验证重活没有压在 Main 上。 */
   mainLoopLagMs: number
 }
@@ -569,6 +576,61 @@ export function isKnowledgeFresh(
   return status.indexLatestAt + KNOWLEDGE_FRESHNESS_TOLERANCE_MS >= status.sourceLatestAt
 }
 
+/** `selected` + 空数组 = 一个都不索引，与 `all` 是两件事。 */
+export interface KnowledgeIndexScope {
+  mode: 'all' | 'selected'
+  conversationIds: string[]
+}
+
+export const DEFAULT_KNOWLEDGE_INDEX_SCOPE: KnowledgeIndexScope = {
+  mode: 'all',
+  conversationIds: []
+}
+
+/** 把磁盘/渲染层传来的任意值收敛成合法范围；脏值一律退回 `all`。 */
+export function normalizeKnowledgeIndexScope(value: unknown): KnowledgeIndexScope {
+  if (!value || typeof value !== 'object') return { ...DEFAULT_KNOWLEDGE_INDEX_SCOPE }
+  const raw = value as { mode?: unknown; conversationIds?: unknown }
+  const mode = raw.mode === 'selected' ? 'selected' : 'all'
+  const ids = Array.isArray(raw.conversationIds)
+    ? Array.from(
+        new Set(
+          raw.conversationIds
+            .map((item) => String(item ?? '').trim())
+            .filter((item) => item.length > 0)
+        )
+      ).slice(0, 10_000)
+    : []
+  return { mode, conversationIds: mode === 'selected' ? ids : [] }
+}
+
+export function normalizeKnowledgeIndexScopes(value: unknown): Record<string, KnowledgeIndexScope> {
+  if (!value || typeof value !== 'object') return {}
+  const result: Record<string, KnowledgeIndexScope> = {}
+  for (const [accountId, scope] of Object.entries(value as Record<string, unknown>)) {
+    const key = String(accountId ?? '').trim()
+    if (!key) continue
+    result[key] = normalizeKnowledgeIndexScope(scope)
+  }
+  return result
+}
+
+/** 单个会话的索引状态快照，用于判断"这次查询的会话到底有没有被完整索引"。 */
+export interface KnowledgeConversationIndexState {
+  /** `ready` / `indexing` / `backfilling` / `partial` / `error` / `cancelled`。 */
+  state: string
+  /** 只有整段读完并提交过的会话才是 true。 */
+  completeSnapshot: boolean
+  /** 源侧已覆盖到的时间（epoch ms）；`null` = 没有覆盖证据。 */
+  sourceHighWaterTime: number | null
+  indexedMessageCount: number
+}
+
+export interface KnowledgeConversationStatesRequest {
+  accountId: string
+  databaseRoot: string
+}
+
 export interface KnowledgeWorkerRequest {
   version: 1
   type:
@@ -581,6 +643,12 @@ export interface KnowledgeWorkerRequest {
     | 'close'
     | 'highWater'
     | 'memberStats'
+    | 'streamStart'
+    | 'streamBatch'
+    | 'streamFinish'
+    | 'streamAbort'
+    | 'sourceTotals'
+    | 'conversationStates'
   requestId: string
   /** Parent monotonic wall-clock used only for transport timing. */
   sentAt?: number
@@ -590,9 +658,70 @@ export interface KnowledgeWorkerRequest {
     | KnowledgeSearchRequest
     | KnowledgeStatusRequest
     | KnowledgeMemberStatsRequest
+    | KnowledgeStreamStartRequest
+    | KnowledgeStreamBatchRequest
+    | KnowledgeStreamConversationRequest
+    | KnowledgeSourceTotalsRequest
+    | KnowledgeConversationStatesRequest
     | { accountId: string; databaseRoot: string }
     | { targetRequestId: string }
     | Record<string, never>
+}
+
+/**
+ * 消息不随请求下发：主进程按页推 `streamBatch`，Worker 每批独立事务提交。
+ */
+export interface KnowledgeStreamStartRequest {
+  accountId: string
+  databaseRoot: string
+  conversationId: string
+  chunker: KnowledgeChunkerConfig
+  fts: KnowledgeFtsConfig
+  completeSnapshot: boolean
+  sourceHighWaterTime?: number
+  /** 省略 = 读持久化断点；`null` = 从会话开头重建（后台重索引必须用它）。 */
+  resume?: { time: number; messageIds: string[] } | null
+}
+
+export interface KnowledgeStreamBatchRequest {
+  accountId: string
+  databaseRoot: string
+  conversationId: string
+  messages: KnowledgeSourceMessage[]
+}
+
+/** 整遍读完才可信的全局口径；分批 pass 不得用它冒充全量。 */
+export interface KnowledgeSourceTotalsRequest {
+  accountId: string
+  databaseRoot: string
+  sourceMessageCount: number
+  sourceLatestAt?: number
+}
+
+export interface KnowledgeStreamConversationRequest {
+  accountId: string
+  databaseRoot: string
+  conversationId: string
+  /** 整段读完后才知道的源侧边界（epoch ms），只允许单调推进。 */
+  sourceHighWaterTime?: number
+  /** 只在「本遍读完全部会话」时下发，用于刷新全局总量口径。 */
+  sourceMessageCount?: number
+  sourceLatestAt?: number
+}
+
+export interface KnowledgeStreamStartResult {
+  started: boolean
+  /** 复用的续跑位置；`null` 表示从会话开头建立。 */
+  resumedFrom: number | null
+}
+
+export interface KnowledgeStreamResult {
+  conversationId: string
+  processedMessages: number
+  chunkCount: number
+  /** 被中止时为 true，`resumeTime` 指向最后一条已提交 chunk 的边界。 */
+  cancelled: boolean
+  resumeTime: number | null
 }
 
 export interface KnowledgeWorkerResponse {
@@ -606,7 +735,12 @@ export interface KnowledgeWorkerResponse {
     | KnowledgeSearchResult
     | KnowledgeRuntimeStatus
     | KnowledgeMemberStatsResult
+    | KnowledgeStreamStartResult
+    | KnowledgeStreamResult
     | { removed: true }
+    | { accepted: true }
+    | { marks: Record<string, number> }
+    | { states: Record<string, KnowledgeConversationIndexState> }
   error?: string
   transport?: {
     /** IPC message arrival timestamp in the Worker event loop. */

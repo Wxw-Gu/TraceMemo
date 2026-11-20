@@ -26,6 +26,8 @@ import {
   knowledgeIsStale,
   knowledgeStateLabel
 } from './searchFormatters'
+import { ConversationMultiSelect } from './ConversationMultiSelect'
+import { useConversationOptions } from './hooks/useConversationOptions'
 import { mapPipelineResultToRendererResult } from './searchMappers'
 import { createSearchResultResetState, resolveSearchResultViewTransition } from './searchState'
 import { useSearchHistory } from './hooks/useSearchHistory'
@@ -70,6 +72,8 @@ export function AISearchWorkspace({
   const allContacts = useMemo(() => contacts.filter((contact) => contact.md5), [contacts])
   const [scope, setScope] = useState<SearchScope>('global')
   const [scopeContactMd5, setScopeContactMd5] = useState(selectedContact?.md5 || '')
+  /** 「指定多个会话」只影响**本次提问**的检索范围，绝不写回长期索引配置。 */
+  const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>([])
   const [range, setRange] = useState<SearchRange>('30d')
   const [timeRangeOverride, setTimeRangeOverride] = useState<AiSearchTimeRange | undefined>()
   const [query, setQuery] = useState('')
@@ -92,6 +96,8 @@ export function AISearchWorkspace({
   const askRequestRef = useRef('')
   /** Query Agent 是否为当前主路径：控制"搜索范围 / 时间范围"的显隐（主路径隐藏时间范围）。 */
   const [queryAgentEnabled, setQueryAgentEnabled] = useState(false)
+  // 会话候选只在问答页可见时加载：消息数统计有缓存，但没必要在别的页面空转。
+  const { options: conversationOptions } = useConversationOptions(true)
   /** Query Agent 本次回答的真实统计（读取条数 / 证据条数 / 模型调用 / 耗时）。 */
   const [askStats, setAskStats] = useState<AskWechatStats | null>(null)
   /**
@@ -243,8 +249,12 @@ export function AISearchWorkspace({
     global: '所有聊天记录',
     groups: '群聊专属',
     contacts: '单聊专属',
-    conversation: contactLabel(activeContact)
+    conversation: contactLabel(activeContact),
+    selected: `指定 ${selectedConversationIds.length} 个会话`
   }[scope]
+
+  /** Legacy 表达不了 `selected`，这里给一个不会生效的占位值（服务端会拒绝回退）。 */
+  const legacyScope = scope === 'selected' ? 'global' : scope
 
   /**
    * UI 搜索范围 → Query Agent 的 conversationScope（WHERE TO SEARCH）。
@@ -254,6 +264,14 @@ export function AISearchWorkspace({
    */
   const currentAskWechatScope = (): AskWechatScope | undefined => {
     if (scope === 'global') return { scope: { kind: 'all' }, label: '所有聊天记录' }
+    if (scope === 'selected') {
+      // 空选择不返回 undefined（那会被当成"不限制"），由提交前的守卫直接拦住。
+      if (!selectedConversationIds.length) return undefined
+      return {
+        scope: { kind: 'selected', conversationIds: [...selectedConversationIds] },
+        label: `指定 ${selectedConversationIds.length} 个会话`
+      }
+    }
     if (scope === 'groups') return { scope: { kind: 'groups' }, label: '群聊专属' }
     if (scope === 'contacts') {
       const contact = allContacts.find(
@@ -315,6 +333,11 @@ export function AISearchWorkspace({
   ): Promise<void> => {
     event?.preventDefault()
     if (stage === 'loading') return
+    // 空选择绝不能落到"不限制"：那会把用户以为的"只查这两个群"变成搜全库。
+    if (scope === 'selected' && !selectedConversationIds.length) {
+      onNotice('请先选择要搜索的会话')
+      return
+    }
     // 索引同步中**不允许**禁止查询：同步是后台的、可取消的、可断点续传的；
     // 索引没追平时按 partial + freshness warning 如实作答（覆盖范围由主进程的
     // coverage/freshness 契约给出），绝不把用户挡在门外。
@@ -432,7 +455,7 @@ export function AISearchWorkspace({
           // 搜索范围是 UI 决定的数据边界；时间不在 UI 上（写进问题，由 temporalBasis 理解）。
           scope: currentAskWechatScope(),
           legacy: {
-            scope,
+            scope: legacyScope,
             range: effectiveRange,
             conversationId,
             timeRangeOverride: effectiveTimeRangeOverride
@@ -491,7 +514,7 @@ export function AISearchWorkspace({
       const outcome = await startSearch({
         requestId,
         text: normalizedQuery,
-        scope,
+        scope: legacyScope,
         range: effectiveRange,
         conversationId,
         timeRangeOverride: effectiveTimeRangeOverride
@@ -1162,6 +1185,15 @@ export function AISearchWorkspace({
               ))}
               <button
                 type="button"
+                className={scope === 'selected' ? 'active' : ''}
+                onClick={() => setScope('selected')}
+              >
+                <span aria-hidden>☷</span>
+                指定多个会话
+                {selectedConversationIds.length ? ` · ${selectedConversationIds.length}` : ''}
+              </button>
+              <button
+                type="button"
                 className={scope === 'conversation' ? 'active' : ''}
                 disabled={!activeContact}
                 onClick={() => {
@@ -1178,6 +1210,19 @@ export function AISearchWorkspace({
                 当前会话{activeContact ? ` · ${contactLabel(activeContact)}` : ''}
               </button>
             </div>
+            {scope === 'selected' ? (
+              <div className="ai-search-selected-scope">
+                <ConversationMultiSelect
+                  options={conversationOptions}
+                  selectedIds={selectedConversationIds}
+                  onChange={setSelectedConversationIds}
+                  triggerLabel="选择本次要搜索的会话"
+                />
+                <p className="ai-search-scope-hint">
+                  只影响这一次提问。要长期只索引这些会话，请到「设置 → 本地索引 → 索引范围」。
+                </p>
+              </div>
+            ) : null}
             {/* 单聊专属需要一个明确的联系人（Legacy 下同样由档案选择决定，这里在 Query Agent 主路径提供显式选择） */}
             {queryAgentEnabled && scope === 'contacts' && (
               <Select

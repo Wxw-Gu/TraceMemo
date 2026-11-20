@@ -95,6 +95,24 @@ export function KnowledgeIndexCard({
         </p>
       )}
 
+      {knowledgeSyncing && knowledgeStatus?.pass ? (
+        <div className="local-index-progress" aria-label="索引进度">
+          <span>
+            会话 {knowledgeStatus.pass.processedConversations} /{' '}
+            {knowledgeStatus.pass.totalConversations}
+          </span>
+          <span>已索引 {knowledgeStatus.pass.indexedMessages.toLocaleString()} 条</span>
+          {knowledgeStatus.pass.currentConversationProcessed ? (
+            <span>
+              当前会话 {knowledgeStatus.pass.currentConversationProcessed.toLocaleString()} 条
+            </span>
+          ) : null}
+          {knowledgeStatus.pass.excludedConversations > 0 ? (
+            <span>按范围排除 {knowledgeStatus.pass.excludedConversations} 个会话</span>
+          ) : null}
+        </div>
+      ) : null}
+
       {failed && knowledgeStatus?.lastError ? (
         <p className="local-index-note is-error">{knowledgeStatus.lastError}</p>
       ) : null}

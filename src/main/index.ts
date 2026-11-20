@@ -610,7 +610,15 @@ import type {
   AskWechatQueryRequest,
   AskWechatQueryResult
 } from '../shared/query-agent'
-import type { KnowledgeSearchIpcRequest, KnowledgeSearchIpcResult } from '../shared/knowledge'
+import type {
+  KnowledgeIndexScope,
+  KnowledgeSearchIpcRequest,
+  KnowledgeSearchIpcResult
+} from '../shared/knowledge'
+import {
+  DEFAULT_KNOWLEDGE_INDEX_SCOPE,
+  normalizeKnowledgeIndexScope
+} from '../shared/knowledge'
 // 消息身份的规范化在 main / renderer 之间必须一致，所以只从 shared 取一份实现。
 import { normalizeMessageIdentity } from '../shared/local-query-api'
 import {
@@ -618,6 +626,7 @@ import {
   WINDOWS_VC_RUNTIME_ERROR_MESSAGE
 } from '../shared/windows-runtime'
 import { KnowledgeSearchService } from './knowledge/knowledge-search-service'
+import { ConversationMessageCountService } from './knowledge/conversation-message-count-service'
 import {
   MESSAGES_AROUND_MAX_WINDOW,
   messagesAroundRadii,
@@ -660,6 +669,7 @@ let voiceService: VoiceService | null = null
 let voiceRecognition: VoiceRecognitionUseCase | null = null
 let voiceBatchService: VoiceBatchService | null = null
 let knowledgeSearchService: KnowledgeSearchService | null = null
+let conversationMessageCountService: ConversationMessageCountService | null = null
 let groupStatsService: GroupStatsService | null = null
 let localQueryApiService: LocalQueryApiService | null = null
 let aiSearchPipelineService: AiSearchPipelineService | null = null
@@ -1169,6 +1179,12 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
     app.getPath('userData'),
     join(__dirname, 'knowledgeWorker.js')
   )
+  conversationMessageCountService = new ConversationMessageCountService()
+  conversationMessageCountService.onCountsChange((entries) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('knowledge:conversationCounts', entries)
+    }
+  })
   knowledgeSearchService.setVoiceTranscriptResolver(
     (reference) => voiceRecognition?.getTranscriptSnapshot(reference) || { state: 'pending' }
   )
@@ -2690,6 +2706,10 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
   })
 
   ipcMain.handle('db:search', (_, keyword: string) => chat.searchMessages(keyword))
+  /** 会话最后活跃时间（epoch ms，按 md5 索引）：只用于排序展示，不参与索引判断。 */
+  ipcMain.handle('db:conversationActivity', () =>
+    Object.fromEntries(chat.getConversationActivityMs())
+  )
   ipcMain.handle(
     'knowledge:search',
     (_, request: KnowledgeSearchIpcRequest): Promise<KnowledgeSearchIpcResult> => {
@@ -2718,6 +2738,37 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
   ipcMain.handle('knowledge:cancelIndex', () => {
     if (!knowledgeSearchService) throw new Error('本地知识库服务尚未初始化')
     return knowledgeSearchService.cancelCurrentAccountIndex()
+  })
+  /** 保存范围时若正在同步，先让旧任务在安全边界停下再按新范围重启。 */
+  ipcMain.handle('knowledge:getIndexScope', (): KnowledgeIndexScope => {
+    const accountId = chat.getSelfAccountInfo()?.wxid || chat.getCurrentAccountRoot()
+    if (!accountId) return { ...DEFAULT_KNOWLEDGE_INDEX_SCOPE }
+    const scopes = loadSettings().knowledgeIndexScopes ?? {}
+    return normalizeKnowledgeIndexScope(scopes[accountId])
+  })
+  ipcMain.handle('knowledge:setIndexScope', async (_, scope: unknown): Promise<KnowledgeIndexScope> => {
+    const accountId = chat.getSelfAccountInfo()?.wxid || chat.getCurrentAccountRoot()
+    const normalized = normalizeKnowledgeIndexScope(scope)
+    if (!accountId) return normalized
+    const scopes = { ...(loadSettings().knowledgeIndexScopes ?? {}) }
+    scopes[accountId] = normalized
+    updateSettings({ knowledgeIndexScopes: scopes })
+    if (!knowledgeSearchService) return normalized
+    const status = await knowledgeSearchService.getStatus()
+    if (status.state === 'syncing' || status.state === 'building') {
+      await knowledgeSearchService.cancelCurrentAccountIndex()
+      await knowledgeSearchService.waitForIndexingComplete(15_000)
+      knowledgeSearchService.startCurrentAccountIndex()
+    }
+    return normalized
+  })
+  /** 立即返回已知快照，未知项后台补算后推送；绝不为排序去加载正文。 */
+  ipcMain.handle('knowledge:getConversationCounts', (_, conversationIds: string[]) => {
+    if (!conversationMessageCountService) return { entries: [] }
+    return conversationMessageCountService.read(Array.isArray(conversationIds) ? conversationIds : [])
+  })
+  ipcMain.handle('knowledge:cancelConversationCounts', () => {
+    conversationMessageCountService?.cancel()
   })
   // ---- 图片文字索引（本地 System OCR 派生文本，非 AI Provider）----
   ipcMain.handle('image-text-index:getStatus', () => imageTextIndexService.getStatus())

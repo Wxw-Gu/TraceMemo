@@ -114,6 +114,10 @@ export function ImageTextIndexSummary({
 
   return (
     <section className="local-index-card" aria-label="图片文字索引状态">
+      {/* 覆盖范围必须写清楚：它目前不跟随「索引范围」，不能让人以为两套索引都已过滤。 */}
+      <p className="local-index-note">
+        图片文字索引当前覆盖全部会话，不受上方「索引范围」影响。
+      </p>
       <header className="local-index-card-head">
         <div className="local-index-card-title">
           <h3>图片文字索引</h3>

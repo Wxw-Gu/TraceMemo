@@ -1,0 +1,274 @@
+/**
+ * 可搜索多选会话框。
+ *
+ * 不用裸 Tailwind：`tailwind.config.cjs` 设了 `preflight: false`，裸类拿不到
+ * 浏览器默认重置，会直接崩掉版式。这里只定义组件自己的类名。
+ */
+
+.conversation-multi-select {
+  position: relative;
+  width: 100%;
+}
+
+.cms-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--wxex-border);
+  border-radius: 8px;
+  background: var(--wxex-surface);
+  color: var(--wxex-text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.cms-trigger:hover:not(:disabled) {
+  border-color: var(--wxex-primary);
+}
+
+.cms-trigger.is-open {
+  border-color: var(--wxex-primary);
+}
+
+.cms-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.cms-trigger-label {
+  font-weight: 600;
+}
+
+.cms-trigger-count {
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cms-panel {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(480px, 100%);
+  padding: 12px;
+  border: 1px solid var(--wxex-border);
+  border-radius: 10px;
+  background: var(--wxex-surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 16%);
+}
+
+.cms-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cms-search {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--wxex-border);
+  border-radius: 6px;
+  background: var(--wxex-surface);
+  color: var(--wxex-text-primary);
+  font-size: 13px;
+}
+
+.cms-select {
+  height: 32px;
+  padding: 0 6px;
+  border: 1px solid var(--wxex-border);
+  border-radius: 6px;
+  background: var(--wxex-surface);
+  color: var(--wxex-text-primary);
+  font-size: 12px;
+}
+
+.cms-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.cms-filter {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--wxex-surface-sunken);
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cms-filter.is-active {
+  border-color: var(--wxex-primary);
+  background: var(--wxex-primary-soft);
+  color: var(--wxex-primary);
+}
+
+.cms-filter-spacer {
+  flex: 1;
+}
+
+.cms-link {
+  border: none;
+  background: none;
+  color: var(--wxex-primary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.cms-link:disabled {
+  color: var(--wxex-text-tertiary);
+  cursor: not-allowed;
+}
+
+.cms-list {
+  overflow-y: auto;
+  border: 1px solid var(--wxex-border);
+  border-radius: 8px;
+}
+
+.cms-empty {
+  margin: 0;
+  padding: 24px 12px;
+  color: var(--wxex-text-secondary);
+  font-size: 13px;
+  text-align: center;
+}
+
+.cms-row {
+  padding: 0 8px;
+}
+
+.cms-row-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.cms-row-inner:hover {
+  background: var(--wxex-surface-sunken);
+}
+
+.cms-row-inner[data-selected='true'] {
+  background: var(--wxex-primary-soft);
+}
+
+.cms-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cms-row-name {
+  overflow: hidden;
+  color: var(--wxex-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cms-row-meta {
+  color: var(--wxex-text-secondary);
+  font-size: 11px;
+}
+
+.cms-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  color: var(--wxex-text-secondary);
+  font-size: 12px;
+}
+
+/* ---- 索引范围卡片 ---- */
+
+.knowledge-scope-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.scope-mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scope-mode-option {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--wxex-border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.scope-mode-option[data-active='true'] {
+  border-color: var(--wxex-primary);
+  background: var(--wxex-primary-soft);
+}
+
+.scope-mode-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.scope-mode-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--wxex-text-primary);
+}
+
+.scope-mode-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--wxex-text-secondary);
+}
+
+.scope-selection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scope-selection-summary {
+  font-size: 12px;
+  color: var(--wxex-text-secondary);
+}
+
+.scope-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.scope-warning {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--wxex-warning, #b45309);
+}

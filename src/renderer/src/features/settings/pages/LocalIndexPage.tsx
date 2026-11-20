@@ -1,6 +1,7 @@
 import React from 'react'
 import { ImageTextIndexSummary } from '../../../components/search/ImageTextIndexSummary'
 import { KnowledgeIndexCard } from '../../../components/search/KnowledgeIndexCard'
+import { KnowledgeScopeCard } from '../components/KnowledgeScopeCard'
 
 interface LocalIndexPageProps {
   onNotice: (message: string) => void
@@ -29,6 +30,7 @@ export function LocalIndexPage({ onNotice, dbReady }: LocalIndexPageProps): Reac
       </header>
       <div className="local-index-cards">
         <KnowledgeIndexCard dbReady={dbReady} onNotice={onNotice} />
+        <KnowledgeScopeCard dbReady={dbReady} onNotice={onNotice} />
         <ImageTextIndexSummary dbReady={dbReady} onNotice={onNotice} />
       </div>
     </div>

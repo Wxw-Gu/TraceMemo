@@ -64,25 +64,57 @@ export function chunkConversation(
     throw new Error('Conversation chunker received messages from multiple accounts or conversations')
   }
 
-  const chunks: KnowledgeChunk[] = []
+  const streamer = createChunkStreamer(config)
+  return [...streamer.push(sorted), ...streamer.drain()]
+}
+
+export interface KnowledgeChunkStreamer {
+  /** 追加一批有序消息，返回因此**收盘**的 chunk（不含尾部未完成段）。 */
+  push(messages: KnowledgeNormalizedMessage[]): KnowledgeChunk[]
+  /** 收盘尾部未完成段；之后再 `push` 会开启新段。 */
+  drain(): KnowledgeChunk[]
+  /** 尚未收盘的消息数；用于持久化续跑位置。 */
+  pendingCount(): number
+}
+
+/**
+ * 切分只依赖相邻两条与累积长度，所以分批 push 与一次性切分逐字等价。
+ */
+export function createChunkStreamer(config: KnowledgeChunkerConfig): KnowledgeChunkStreamer {
   let current: KnowledgeNormalizedMessage[] = []
   let currentCharacters = 0
-  for (const message of sorted) {
-    const previous = current[current.length - 1]
-    const nextCharacters = currentCharacters + message.searchableText.length
-    const shouldSplit =
-      current.length > 0 &&
-      (message.createTime - previous.createTime > config.maxGapMs ||
-        current.length >= config.maxMessages ||
-        nextCharacters > config.maxCharacters)
-    if (shouldSplit) {
-      chunks.push(buildChunk(current, config))
+
+  return {
+    push(messages) {
+      const chunks: KnowledgeChunk[] = []
+      for (const message of messages) {
+        if (!isIndexableKnowledgeMessage(message)) continue
+        const previous = current[current.length - 1]
+        const nextCharacters = currentCharacters + message.searchableText.length
+        const shouldSplit =
+          current.length > 0 &&
+          (message.createTime - previous.createTime > config.maxGapMs ||
+            current.length >= config.maxMessages ||
+            nextCharacters > config.maxCharacters)
+        if (shouldSplit) {
+          chunks.push(buildChunk(current, config))
+          current = []
+          currentCharacters = 0
+        }
+        current.push(message)
+        currentCharacters += message.searchableText.length
+      }
+      return chunks
+    },
+    drain() {
+      if (!current.length) return []
+      const chunk = buildChunk(current, config)
       current = []
       currentCharacters = 0
+      return [chunk]
+    },
+    pendingCount() {
+      return current.length
     }
-    current.push(message)
-    currentCharacters += message.searchableText.length
   }
-  if (current.length) chunks.push(buildChunk(current, config))
-  return chunks
 }

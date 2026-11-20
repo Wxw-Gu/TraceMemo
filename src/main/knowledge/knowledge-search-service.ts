@@ -23,14 +23,15 @@ import type {
 import {
   DEFAULT_KNOWLEDGE_CHUNKER,
   DEFAULT_KNOWLEDGE_FTS_CONFIG,
-  emptyKnowledgeSearchTimings
+  emptyKnowledgeSearchTimings,
+  normalizeKnowledgeIndexScope,
+  type KnowledgeConversationIndexState,
+  type KnowledgeIndexScope
 } from '../../shared/knowledge'
 import { KnowledgeService } from './knowledge-service'
+import { loadSettings } from '../services/settings-store'
 import { sourceMessageId } from './message-identity'
-import {
-  voiceAccountIdentity,
-  voiceMessageIdentity
-} from '../voice-pipeline/voice-message-identity'
+import { voiceAccountIdentity } from '../voice-pipeline/voice-message-identity'
 
 const FALLBACK_LIMIT = 240
 const MAX_SENDER_NAME_CONVERSATIONS = 8
@@ -49,6 +50,14 @@ const SENDER_ENRICHMENT_SESSION_TTL_MS = 5 * 60 * 1000
  * 且**不会报错**。
  */
 const DELTA_OVERLAP_MS = 24 * 60 * 60 * 1000
+
+/**
+ * 后台回填的单页消息数：调到更大能少走 IPC，但主进程驻留的上限也随之变大。
+ */
+const KNOWLEDGE_INDEX_PAGE_SIZE = 1500
+
+/** 增量窗口超过这个条数就改为分批重建，否则一次读完会重演「整会话进内存」。 */
+const DELTA_STREAM_THRESHOLD = 20_000
 
 /**
  * event-loop 滞后采样的分辨率（ms）。
@@ -321,6 +330,7 @@ export class KnowledgeSearchService {
       catchupConversations: 0,
       backfillConversations: 0,
       backfillCompletedConversations: 0,
+      excludedConversations: 0,
       mainLoopLagMs: 0
     }
     const started: KnowledgeRuntimeStatus = {
@@ -611,6 +621,13 @@ export class KnowledgeSearchService {
     return () => this.statusListeners.delete(listener)
   }
 
+  /** 会话级索引状态：覆盖度判断的依据，全局 indexLatestAt 不算证明。 */
+  async getConversationIndexStates(): Promise<Record<string, KnowledgeConversationIndexState>> {
+    const accountId = this.currentAccountId()
+    if (!accountId) return {}
+    return this.service.conversationStates({ accountId }).catch(() => ({}))
+  }
+
   async getStatus(): Promise<KnowledgeRuntimeStatus> {
     const accountId = this.currentAccountId()
     if (!accountId) return this.emptyStatus('')
@@ -622,9 +639,102 @@ export class KnowledgeSearchService {
     return chat.getSelfAccountInfo()?.wxid || chat.getCurrentAccountRoot()
   }
 
+  /** 当前账号的索引范围；缺省（老用户/新账号）是全部会话。 */
+  private resolveIndexScope(accountId: string): KnowledgeIndexScope {
+    const scopes = loadSettings().knowledgeIndexScopes ?? {}
+    return normalizeKnowledgeIndexScope(scopes[accountId])
+  }
+
+  /** 后台重索引也要过这一关，否则排除掉的群会因一次 OCR 完成被整段建回来。 */
+  private isIndexableConversation(accountId: string, conversationId: string): boolean {
+    const scope = this.resolveIndexScope(accountId)
+    return scope.mode === 'all' || scope.conversationIds.includes(conversationId)
+  }
+
+  /** 分页读 + 分批写：已提交的批次连同续跑位置保留，下一遍从该边界继续。 */
+  private async backfillConversation(
+    accountId: string,
+    contact: { md5: string },
+    options: { sourceHighWaterHint?: number; fromScratch?: boolean },
+    onProgress: (processed: number, chunks: number) => void
+  ): Promise<{ processed: number; scanned: number; latest: number; cancelled: boolean }> {
+    const conversationId = contact.md5
+    const start = await this.service.startConversationStream(
+      {
+        accountId,
+        conversationId,
+        chunker: DEFAULT_KNOWLEDGE_CHUNKER,
+        fts: DEFAULT_KNOWLEDGE_FTS_CONFIG,
+        completeSnapshot: true,
+        // 后台重索引是「整段重建」，不能接上次断点 —— 否则只补半段还声明完整。
+        ...(options.fromScratch ? { resume: null } : {})
+      },
+      (progress) => onProgress(progress.processedMessages, progress.indexedChunks)
+    )
+
+    let scanned = 0
+    let latest = 0
+    let cancelled = false
+    try {
+      for await (const page of chat.iterateMessagesAsync(conversationId, {
+        pageSize: KNOWLEDGE_INDEX_PAGE_SIZE,
+        // 续跑边界来自 `chunk.endTime`，单位是**毫秒**（消息 createTime），
+        // 不能再乘 1000；分页层自己转秒。
+        sinceMs: start.resumedFrom ?? undefined
+      })) {
+        if (this.cancelRequested) {
+          cancelled = true
+          break
+        }
+        await this.interactiveIdle
+        if (page.failedStores.length) {
+          throw new Error(`历史消息分片读取失败：${page.failedStores.join(', ')}`)
+        }
+        if (!page.messages.length) continue
+        scanned += page.messages.length
+        for (const message of page.messages) {
+          const createTime = (message.createTime || 0) * 1000
+          if (createTime > latest) latest = createTime
+        }
+        const sourceMessages = page.messages
+          .map((message) => this.toSourceMessage(accountId, conversationId, message))
+          .filter((message): message is KnowledgeSourceMessage => Boolean(message))
+        await this.service.pushConversationBatch({
+          accountId,
+          conversationId,
+          messages: sourceMessages
+        })
+      }
+
+      if (cancelled) {
+        await this.service.abortConversationStream({ accountId, conversationId })
+        return { processed: 0, scanned, latest, cancelled: true }
+      }
+
+      const result = await this.service.finishConversationStream({
+        accountId,
+        conversationId,
+        sourceHighWaterTime: Math.max(options.sourceHighWaterHint ?? 0, latest)
+      })
+      return { processed: result.processedMessages, scanned, latest, cancelled: result.cancelled }
+    } catch (error) {
+      await this.service
+        .abortConversationStream({ accountId, conversationId })
+        .catch(() => undefined)
+      throw error
+    }
+  }
+
   private async indexAccount(accountId: string): Promise<void> {
     // 整遍后台索引走 background 通道：交互查询可以插到它前面，不至于被 pass 拖慢。
-    const contacts = await this.listContacts('background')
+    const allContacts = await this.listContacts('background')
+    const scope = this.resolveIndexScope(accountId)
+    // `selected` 且一个都没勾时结果是空集 —— 这是「不索引任何会话」，不是「全部」。
+    const contacts =
+      scope.mode === 'all'
+        ? allContacts
+        : allContacts.filter((contact) => scope.conversationIds.includes(contact.md5))
+    const excludedByScope = allContacts.length - contacts.length
     const startedAt = Date.now()
     // 源侧每会话最后活跃时间（零额外 WCDB 调用：直接来自 Session 列表）。
     const activity = chat.getConversationActivityMs()
@@ -674,6 +784,7 @@ export class KnowledgeSearchService {
 
     if (this.passProgress) {
       this.passProgress.totalConversations = contacts.length
+      this.passProgress.excludedConversations = excludedByScope
       this.passProgress.startedAt = startedAt
       this.passProgress.skippedConversations = skippedConversations
       this.passProgress.catchupConversations = catchUpContacts.length
@@ -716,75 +827,106 @@ export class KnowledgeSearchService {
       const sinceTime = isDelta
         ? Math.max(0, Math.floor((mark - DELTA_OVERLAP_MS) / 1000))
         : undefined
-      const messages = await this.listMessages(contact.md5, sinceTime, undefined, 'background')
-      scannedMessages += messages.length
-      // 这一遍扫到的源数据最新时间：用**未过滤**的原始消息计算，
-      // 这样「不可建模」的消息（图片/空正文）不会让 freshness 口径偏旧。
+      let conversationProcessed = 0
+      let conversationScanned = 0
       let conversationLatest = 0
-      for (const message of messages) {
-        const createTime = (message.createTime || 0) * 1000
-        if (createTime > conversationLatest) conversationLatest = createTime
-      }
-      if (conversationLatest > sourceLatestAt) sourceLatestAt = conversationLatest
-      const sourceMessages = messages
-        .map((message) => this.toSourceMessage(accountId, contact.md5, message))
-        .filter((message): message is KnowledgeSourceMessage => Boolean(message))
-      // 记录**源侧**边界（而不是索引里最后一条可建模消息的时间）：
-      // 否则"最后一条恰好落在图片上"的会话会永远被判成有新消息，增量永远跳不过它。
-      //
-      // 安全阀：delta 范围读**空**、但源侧声称有新消息 → **不推进** checkpoint。
-      // 宁可下一遍重试，也不让"一次可疑的空读"升级成"谎报已覆盖"（那会静默丢消息）。
-      const suspiciousEmptyDelta =
-        isDelta && messages.length === 0 && (previousActivity ?? 0) > (mark ?? 0)
-      const sourceHighWaterTime = suspiciousEmptyDelta
-        ? undefined
-        : Math.max(previousActivity ?? 0, conversationLatest)
-      const result = await this.service.index(
-        {
-          accountId,
-          conversations: [
-            {
-              conversationId: contact.md5,
-              // delta 模式下绝不能声明"完整快照"：否则 store 会把"不在 delta 里的历史消息"
-              // 误判为被删除，从而整段重建这个会话，增量就白做了。
-              completeSnapshot: !isDelta,
-              messages: sourceMessages,
-              ...(sourceHighWaterTime && sourceHighWaterTime > 0 ? { sourceHighWaterTime } : {})
-            }
-          ],
-          chunker: DEFAULT_KNOWLEDGE_CHUNKER,
-          fts: DEFAULT_KNOWLEDGE_FTS_CONFIG,
-          // 只有「这一遍真的读完了全部会话」（没有任何跳过、没有取消）才写入总量口径，
-          // 否则会把增量 pass 的部分计数冒充成全量。
-          //
-          // 这里数的是真正被建模进索引的源消息，不是"扫到的原始条数"；后者（含不可建模的
-          // 图片/空正文）另走 pass 进度里的 scannedMessages。两个数字回答不同问题。
-          sourceMessageCount:
-            index === orderedContacts.length - 1 && skippedConversations === 0
-              ? indexedMessages + sourceMessages.length
-              : undefined,
-          sourceLatestAt:
-            index === orderedContacts.length - 1 && sourceLatestAt > 0 ? sourceLatestAt : undefined
-        },
-        (progress) => {
-          const current = this.statusByAccount.get(accountId) || this.emptyStatus(accountId)
-          this.publishStatus({
-            ...current,
-            state: current.indexedMessageCount ? 'syncing' : 'building',
-            processedMessages: indexedMessages + progress.processedMessages,
-            totalMessages: null,
-            currentConversationId: progress.conversationId,
-            estimatedRemainingMs: null,
-            pass: this.passSnapshot()
-          })
+      let conversationCancelled = false
+
+      // delta 窗口的规模由「上次 checkpoint 到现在的活跃度」决定，可能是一年。
+      // 先只数一次（COUNT 不解码正文），超阈值就退回分批重建，而不是把几十万条读进数组。
+      const deltaCount = isDelta
+        ? await chat
+            .countConversationMessagesAsync(contact.md5, {
+              sinceMs: (sinceTime ?? 0) * 1000
+            })
+            .catch(() => null)
+        : null
+      const deltaTooLarge =
+        typeof deltaCount?.count === 'number' && deltaCount.count > DELTA_STREAM_THRESHOLD
+
+      if (isDelta && !deltaTooLarge) {
+        const messages = await this.listMessages(contact.md5, sinceTime, undefined, 'background')
+        conversationScanned = messages.length
+        for (const message of messages) {
+          const createTime = (message.createTime || 0) * 1000
+          if (createTime > conversationLatest) conversationLatest = createTime
         }
-      )
-      if (result.cancelled) {
+        const sourceMessages = messages
+          .map((message) => this.toSourceMessage(accountId, contact.md5, message))
+          .filter((message): message is KnowledgeSourceMessage => Boolean(message))
+        // 安全阀：delta 读空、但源侧声称有新消息 → 不推进 checkpoint。
+        // 宁可下一遍重试，也不让"一次可疑的空读"升级成"谎报已覆盖"。
+        const suspiciousEmptyDelta =
+          messages.length === 0 && (previousActivity ?? 0) > (mark ?? 0)
+        const sourceHighWaterTime = suspiciousEmptyDelta
+          ? undefined
+          : Math.max(previousActivity ?? 0, conversationLatest)
+        const result = await this.service.index(
+          {
+            accountId,
+            conversations: [
+              {
+                conversationId: contact.md5,
+                // delta 不能声明完整快照：否则不在 delta 里的历史会被判成已删除并整段重建。
+                completeSnapshot: false,
+                messages: sourceMessages,
+                ...(sourceHighWaterTime && sourceHighWaterTime > 0
+                  ? { sourceHighWaterTime }
+                  : {})
+              }
+            ],
+            chunker: DEFAULT_KNOWLEDGE_CHUNKER,
+            fts: DEFAULT_KNOWLEDGE_FTS_CONFIG
+          },
+          (progress) => {
+            const current = this.statusByAccount.get(accountId) || this.emptyStatus(accountId)
+            this.publishStatus({
+              ...current,
+              state: current.indexedMessageCount ? 'syncing' : 'building',
+              processedMessages: indexedMessages + progress.processedMessages,
+              totalMessages: null,
+              currentConversationId: progress.conversationId,
+              estimatedRemainingMs: null,
+              pass: this.passSnapshot()
+            })
+          }
+        )
+        conversationCancelled = result.cancelled
+        conversationProcessed = result.cancelled ? result.processedMessages : sourceMessages.length
+      } else {
+        const backfill = await this.backfillConversation(
+          accountId,
+          contact,
+          { sourceHighWaterHint: previousActivity },
+          (processed) => {
+            if (this.passProgress) this.passProgress.currentConversationProcessed = processed
+            const current = this.statusByAccount.get(accountId) || this.emptyStatus(accountId)
+            this.publishStatus({
+              ...current,
+              state: current.indexedMessageCount ? 'syncing' : 'building',
+              processedMessages: indexedMessages + processed,
+              totalMessages: null,
+              currentConversationId: contact.md5,
+              estimatedRemainingMs: null,
+              pass: this.passSnapshot()
+            })
+          }
+        )
+        conversationCancelled = backfill.cancelled
+        conversationProcessed = backfill.processed
+        conversationScanned = backfill.scanned
+        conversationLatest = backfill.latest
+      }
+
+      scannedMessages += conversationScanned
+      // 用未过滤的原始消息算 freshness，图片/空正文才不会让口径偏旧。
+      if (conversationLatest > sourceLatestAt) sourceLatestAt = conversationLatest
+      if (conversationCancelled) {
         cancelled = true
-        indexedMessages += result.processedMessages
+        indexedMessages += conversationProcessed
         break
       }
-      indexedMessages += sourceMessages.length
+      indexedMessages += conversationProcessed
       if (isBackfill) backfillCompletedConversations += 1
       if (this.passProgress) {
         this.passProgress.scannedMessages = scannedMessages
@@ -804,12 +946,24 @@ export class KnowledgeSearchService {
       })
     }
     if (cancelled && this.passProgress) this.passProgress.phase = 'cancelled'
+    // 全局源口径只在「读完全部会话」时可信：有跳过或取消时写进去，下一秒就会被
+    // 当成"源侧总量"用来算覆盖率。
+    if (!cancelled && skippedConversations === 0 && sourceLatestAt > 0) {
+      await this.service
+        .writeSourceTotals({
+          accountId,
+          sourceMessageCount: indexedMessages,
+          sourceLatestAt
+        })
+        .catch(() => undefined)
+    }
     // 一遍 pass 一行汇总（低频、只在结束时输出一次）。这些数字同时喂给 UI 的 pass 进度；
     // lag 输出分位数而不是单点，因为"最大值看着还行"不能说明没有 stall。
     console.info(
       `[Knowledge] pass ${cancelled ? 'cancelled' : 'done'} conversations=${contacts.length} ` +
         `skipped=${skippedConversations} scanned=${scannedMessages} indexed=${indexedMessages} ` +
         `catchup=${catchUpContacts.length} backfill=${backfillContacts.length}/${backfillCompletedConversations} ` +
+        `excludedByScope=${excludedByScope} ` +
         `elapsedMs=${Date.now() - startedAt} ` +
         `lagP50=${this.lagStats?.p50 ?? 0} lagP95=${this.lagStats?.p95 ?? 0} ` +
         `lagP99=${this.lagStats?.p99 ?? 0} lagMax=${this.lagStats?.max ?? this.lagMaxMs} ` +
@@ -1187,23 +1341,14 @@ export class KnowledgeSearchService {
     if (!chat.isReady()) return
     const accountId = this.currentAccountId()
     if (!accountId) return
+    // OCR 完成不是绕过索引范围的理由：被排除的会话不该因为一次识别又被整段建回来。
+    if (!this.isIndexableConversation(accountId, conversationId)) return
     const activeIndex = this.indexing.get(accountId)
     if (activeIndex) await activeIndex
     const contacts = await this.listContacts()
     const contact = contacts.find((item) => item.md5 === conversationId)
     if (!contact) return
-    const messages = await this.listMessages(contact.md5, undefined, undefined, 'background')
-    const sourceMessages = messages
-      .map((message) => this.toSourceMessage(accountId, contact.md5, message))
-      .filter((message): message is KnowledgeSourceMessage => Boolean(message))
-    await this.service.index({
-      accountId,
-      conversations: [
-        { conversationId: contact.md5, completeSnapshot: true, messages: sourceMessages }
-      ],
-      chunker: DEFAULT_KNOWLEDGE_CHUNKER,
-      fts: DEFAULT_KNOWLEDGE_FTS_CONFIG
-    })
+    await this.backfillConversation(accountId, contact, { fromScratch: true }, () => undefined)
     await this.refreshStatus(accountId)
   }
 
@@ -1223,39 +1368,10 @@ export class KnowledgeSearchService {
     const contacts = await this.listContacts()
     const contact = contacts.find((item) => item.m_nsUsrName === update.reference.sessionId)
     if (!contact) return
-    const messages = await this.listMessages(contact.md5)
-    const sourceMessages = messages
-      .map((message) => {
-        const reference = this.voiceReferenceFromMessage(message)
-        const transcriptOverride =
-          reference && voiceMessageIdentity(reference) === update.messageIdentity
-            ? update.transcript
-            : undefined
-        const stateOverride =
-          reference && voiceMessageIdentity(reference) === update.messageIdentity
-            ? update.state
-            : undefined
-        return this.toSourceMessage(
-          accountId,
-          contact.md5,
-          message,
-          transcriptOverride,
-          stateOverride
-        )
-      })
-      .filter((message): message is KnowledgeSourceMessage => Boolean(message))
-    await this.service.index({
-      accountId,
-      conversations: [
-        {
-          conversationId: contact.md5,
-          completeSnapshot: true,
-          messages: sourceMessages
-        }
-      ],
-      chunker: DEFAULT_KNOWLEDGE_CHUNKER,
-      fts: DEFAULT_KNOWLEDGE_FTS_CONFIG
-    })
+    // 转写结果已写进语音缓存，`toSourceMessage` 会通过 resolver 取到最新文本，
+    // 所以这里不需要（也不应该）为了覆盖一条消息而重读整会话。
+    if (!this.isIndexableConversation(accountId, contact.md5)) return
+    await this.backfillConversation(accountId, contact, { fromScratch: true }, () => undefined)
     await this.refreshStatus(accountId)
   }
 

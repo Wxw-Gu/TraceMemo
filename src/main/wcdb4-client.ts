@@ -43,6 +43,33 @@ export interface Wcdb4MessageQueryOptions {
   limit?: number
 }
 
+/**
+ * 分页游标。两者都必须是数值：按字符串比较会把 `10` 排到 `9` 前面，翻页就会跳段。
+ */
+export interface Wcdb4MessageCursor {
+  createTime: number
+  localId: number
+}
+
+export interface Wcdb4MessagePage {
+  messages: Wcdb4Message[]
+  /** 下一页起点；`null` 表示该会话已读完。 */
+  cursor: Wcdb4MessageCursor | null
+  hasMore: boolean
+  /**
+   * 读取失败的分片表名。非空表示本页只是**部分**结果，调用方不得据此把会话标记为已覆盖。
+   */
+  failedStores: string[]
+}
+
+export interface Wcdb4ConversationMessageCount {
+  /** `null` 表示统计失败，调用方不能当成 0。 */
+  count: number | null
+  /** 分片时间范围重叠时为 true：重叠区可能有重复行，`count` 只是上限。 */
+  approximate: boolean
+  failedStores: string[]
+}
+
 export interface Wcdb4SessionQueryOptions {
   hydrateDisplayNames?: boolean
   hydrateStatuses?: boolean
@@ -2678,12 +2705,10 @@ export class Wcdb4Client {
     return this.finalizeMessages(username, allRows, startTime, endTime, limit)
   }
 
-  private finalizeMessages(
+  /** 分页必须走这里：`finalizeMessages` 的排序与截断作用在整段行集上，对一页调用语义不同。 */
+  private formatMessageRows(
     username: string,
-    rows: Record<string, unknown>[],
-    startTime?: number,
-    endTime?: number,
-    limit?: number
+    rows: Record<string, unknown>[]
   ): Wcdb4Message[] {
     const messages = rows.map((row) => this.normalizeMessage(row))
 
@@ -2694,18 +2719,7 @@ export class Wcdb4Client {
       ? this.getGroupNicknames(username)
       : undefined
 
-    const sorted = messages
-      .filter((message) => {
-        const createTime = Number(message.msgCreateTime)
-        if (startTime && createTime < startTime) return false
-        if (endTime && createTime > endTime) return false
-        return true
-      })
-      .sort((a, b) => Number(a.msgCreateTime) - Number(b.msgCreateTime))
-
-    const visibleMessages = limit && sorted.length > limit ? sorted.slice(-limit) : sorted
-
-    return visibleMessages.map((message) => {
+    return messages.map((message) => {
       if (!message.sender) return message
       const senderNickname =
         groupNicknames?.get(message.sender) ||
@@ -2727,6 +2741,27 @@ export class Wcdb4Client {
           : message.msgContent
       }
     })
+  }
+
+  private finalizeMessages(
+    username: string,
+    rows: Record<string, unknown>[],
+    startTime?: number,
+    endTime?: number,
+    limit?: number
+  ): Wcdb4Message[] {
+    const messages = this.formatMessageRows(username, rows)
+
+    const sorted = messages
+      .filter((message) => {
+        const createTime = Number(message.msgCreateTime)
+        if (startTime && createTime < startTime) return false
+        if (endTime && createTime > endTime) return false
+        return true
+      })
+      .sort((a, b) => Number(a.msgCreateTime) - Number(b.msgCreateTime))
+
+    return limit && sorted.length > limit ? sorted.slice(-limit) : sorted
   }
 
   private normalizeMessageLimit(limit?: number): number | undefined {
@@ -2859,6 +2894,372 @@ export class Wcdb4Client {
       `[${requestId}] WCDB finalizeMessages cost=${Date.now() - finalizeStartedAt}ms rows=${result.length}`
     )
     return result
+  }
+
+  /** 点查定位：结果不唯一时返回 `ambiguous`，不许退化成读整个会话再 findIndex。 */
+  async locateMessageAsync(
+    md5OrUsername: string,
+    messageId: string
+  ): Promise<{ status: 'found'; location: Wcdb4MessageCursor } | { status: 'not_found' | 'ambiguous' | 'unsupported' }> {
+    if (!this.wcdbExecQuery) return { status: 'unsupported' }
+    const text = String(messageId || '').trim().replace(/^local:/, '')
+    const parts = text.split(':')
+    let wantedTime: number | null = null
+    let wantedLocalId: number | null = null
+    if (parts.length === 2 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1])) {
+      wantedTime = Number(parts[0])
+      wantedLocalId = Number(parts[1])
+    } else if (/^\d+$/.test(text)) {
+      wantedLocalId = Number(text)
+    } else {
+      return { status: 'unsupported' }
+    }
+    if (wantedLocalId === null) return { status: 'unsupported' }
+
+    const username = this.resolveMessageUsername(md5OrUsername)
+    if (!username) return { status: 'not_found' }
+    let stores: Wcdb4MessageStore[] = []
+    try {
+      stores = await this.listMessageStoresAsync(username, true)
+    } catch {
+      return { status: 'not_found' }
+    }
+
+    const hits: Wcdb4MessageCursor[] = []
+    for (const store of stores) {
+      const table = this.quoteSqlIdentifier(store.tableName)
+      try {
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          store.dbPath,
+          `SELECT "create_time" AS t, "local_id" AS l FROM ${table} WHERE "local_id" = ${wantedLocalId} LIMIT 5`
+        )
+        for (const row of Array.isArray(rows) ? rows : []) {
+          const createTime = Number(row.t)
+          const localId = Number(row.l)
+          if (Number.isFinite(createTime) && Number.isFinite(localId)) {
+            hits.push({ createTime, localId })
+          }
+        }
+      } catch {
+        // 单个分片读不到时继续找其余分片；全都没命中会走 not_found。
+      }
+    }
+
+    if (wantedTime !== null) {
+      const exact = hits.filter((hit) => hit.createTime === wantedTime)
+      if (exact.length === 1) return { status: 'found', location: exact[0] }
+      return { status: exact.length > 1 ? 'ambiguous' : 'not_found' }
+    }
+    if (hits.length === 1) return { status: 'found', location: hits[0] }
+    return { status: hits.length > 1 ? 'ambiguous' : 'not_found' }
+  }
+
+  private rowCreateTimeSeconds(row: Record<string, unknown>): number {
+    const value = this.pickValue(row, [
+      'create_time',
+      'createTime',
+      'msg_create_time',
+      'msgCreateTime',
+      'time',
+      'WCDB_CT_create_time'
+    ])
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return 0
+    // 毫秒形态的旧库按秒归一，与 `pickNumber` 同一口径。
+    return Math.floor(parsed > 1e12 ? parsed / 1000 : parsed)
+  }
+
+  private rowLocalId(row: Record<string, unknown>): number {
+    const value = this.pickValue(row, [
+      'local_id',
+      'localId',
+      'msg_local_id',
+      'msgLocalId',
+      'mesLocalID',
+      'id'
+    ])
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? Math.floor(parsed) : 0
+  }
+
+  /** 跨分片 keyset 分页：内存上限是「分片数 × pageSize」，与会话总条数无关。 */
+  async *iterateMessagePagesAsync(
+    md5OrUsername: string,
+    options: {
+      pageSize?: number
+      /** 秒，闭区间下界。 */
+      sinceSec?: number
+      /** 秒，闭区间上界。 */
+      untilSec?: number
+      requestId?: string
+    } = {}
+  ): AsyncGenerator<Wcdb4MessagePage, void, void> {
+    if (!this.wcdbExecQuery) throw new Error('当前 WCDB 数据服务不支持消息分片查询')
+    const requestId = options.requestId ?? 'NO-REQUEST'
+    const pageSize = Math.max(50, Math.min(5000, Math.floor(options.pageSize ?? 1000)))
+    const username = this.resolveMessageUsername(md5OrUsername)
+    if (!username) {
+      yield { messages: [], cursor: null, hasMore: false, failedStores: [] }
+      return
+    }
+
+    const sinceSec =
+      typeof options.sinceSec === 'number' && Number.isFinite(options.sinceSec)
+        ? Math.max(0, Math.floor(options.sinceSec))
+        : 0
+    const untilSec =
+      typeof options.untilSec === 'number' && Number.isFinite(options.untilSec)
+        ? Math.floor(options.untilSec)
+        : 0
+
+    let stores: Wcdb4MessageStore[] = []
+    try {
+      stores = await this.listMessageStoresAsync(username, true)
+    } catch (error) {
+      console.warn(`[WCDB4] paged message store lookup failed username=${username}:`, error)
+      yield { messages: [], cursor: null, hasMore: false, failedStores: [] }
+      return
+    }
+    if (!stores.length) {
+      yield { messages: [], cursor: null, hasMore: false, failedStores: [] }
+      return
+    }
+
+    type Shard = {
+      store: Wcdb4MessageStore
+      alias: string
+      rows: Wcdb4Message[]
+      index: number
+      cursor: Wcdb4MessageCursor
+      exhausted: boolean
+      failed: boolean
+    }
+
+    const shards: Shard[] = stores.map((store) => ({
+      store,
+      // JOIN sender 表时必须限定列名，否则 `create_time` 可能歧义。
+      alias: store.senderTableName ? 'm' : '',
+      rows: [],
+      index: 0,
+      cursor: { createTime: 0, localId: 0 },
+      exhausted: false,
+      failed: false
+    }))
+
+    const failedStores = new Set<string>()
+    const column = (shard: Shard, name: string): string =>
+      shard.alias
+        ? `${shard.alias}.${this.quoteSqlIdentifier(name)}`
+        : this.quoteSqlIdentifier(name)
+
+    const refill = async (shard: Shard): Promise<void> => {
+      const cursor = shard.cursor
+      const keyset =
+        `(${column(shard, 'create_time')} > ${cursor.createTime} OR ` +
+        `(${column(shard, 'create_time')} = ${cursor.createTime} AND ` +
+        `${column(shard, 'local_id')} > ${cursor.localId}))`
+      const where = [
+        keyset,
+        sinceSec > 0 ? `${column(shard, 'create_time')} >= ${sinceSec}` : '',
+        untilSec > 0 ? `${column(shard, 'create_time')} <= ${untilSec}` : ''
+      ]
+        .filter(Boolean)
+        .join(' AND ')
+      const sql =
+        `${this.messageTableSelect(shard.store)} WHERE ${where} ` +
+        `ORDER BY ${column(shard, 'create_time')} ASC, ${column(shard, 'local_id')} ASC ` +
+        `LIMIT ${pageSize}`
+      const startedAt = Date.now()
+      try {
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          shard.store.dbPath,
+          sql
+        )
+        const page = Array.isArray(rows) ? rows : []
+        shard.rows = this.formatMessageRows(username, page)
+        shard.index = 0
+        const lastRow = page[page.length - 1]
+        if (lastRow) {
+          shard.cursor = {
+            createTime: this.rowCreateTimeSeconds(lastRow),
+            localId: this.rowLocalId(lastRow)
+          }
+        }
+        if (page.length < pageSize) shard.exhausted = true
+        wcdbDebugLog(
+          `[${requestId}] WCDB page table=${shard.store.tableName} rows=${page.length} ` +
+            `cursor=${shard.cursor.createTime}:${shard.cursor.localId} cost=${Date.now() - startedAt}ms`
+        )
+      } catch (error) {
+        console.warn(
+          `[WCDB4] paged message read failed username=${username} ` +
+            `db=${shard.store.dbPath} table=${shard.store.tableName}:`,
+          error
+        )
+        shard.failed = true
+        shard.exhausted = true
+        shard.rows = []
+        shard.index = 0
+        failedStores.add(shard.store.tableName)
+      }
+    }
+
+    const hasPending = (): boolean =>
+      shards.some((shard) => !shard.exhausted || shard.index < shard.rows.length)
+
+    // 只有 (create_time, server_id) 都相同才判副本：server_id 会被复用，无 id 时不去重。
+    const DEDUPE_WINDOW_LIMIT = 50_000
+    let dedupeSecond = -1
+    let dedupeServers = new Set<string>()
+
+    const serverIdOf = (message: Wcdb4Message): string => {
+      const value = String(message.serverId || '').trim()
+      return value && value !== '0' ? value : ''
+    }
+
+    let page: Wcdb4Message[] = []
+    let pageCursor: Wcdb4MessageCursor | null = null
+
+    while (true) {
+      for (const shard of shards) {
+        if (shard.exhausted || shard.failed) continue
+        if (shard.index < shard.rows.length) continue
+        await refill(shard)
+      }
+
+      let pickedShard: Shard | null = null
+      let pickedMessage: Wcdb4Message | null = null
+      let pickedTime = 0
+      let pickedLocalId = 0
+      for (const shard of shards) {
+        if (shard.index >= shard.rows.length) continue
+        const candidate = shard.rows[shard.index]
+        const candidateTime = Number(candidate.msgCreateTime) || 0
+        const candidateLocalId = Number(candidate.mesLocalID) || 0
+        // 并列时保留先遍历到的分片（shards 顺序稳定），这是跨页唯一确定的 tie-break：
+        // `(create_time, local_id)` 在不同分片之间并不唯一，缺了它翻页顺序会随查询计划漂移。
+        if (
+          !pickedShard ||
+          candidateTime < pickedTime ||
+          (candidateTime === pickedTime && candidateLocalId < pickedLocalId)
+        ) {
+          pickedShard = shard
+          pickedMessage = candidate
+          pickedTime = candidateTime
+          pickedLocalId = candidateLocalId
+        }
+      }
+
+      if (!pickedShard || !pickedMessage) break
+      pickedShard.index += 1
+
+      if (pickedTime !== dedupeSecond) {
+        dedupeSecond = pickedTime
+        dedupeServers = new Set<string>()
+      }
+      const serverId = serverIdOf(pickedMessage)
+      if (serverId) {
+        if (dedupeServers.has(serverId)) continue
+        if (dedupeServers.size < DEDUPE_WINDOW_LIMIT) dedupeServers.add(serverId)
+      }
+
+      page.push(pickedMessage)
+      pageCursor = { createTime: pickedTime, localId: pickedLocalId }
+
+      if (page.length >= pageSize) {
+        yield {
+          messages: page,
+          cursor: pageCursor,
+          hasMore: hasPending(),
+          failedStores: Array.from(failedStores)
+        }
+        page = []
+        pageCursor = null
+      }
+    }
+
+    if (page.length || failedStores.size === 0) {
+      yield {
+        messages: page,
+        cursor: pageCursor,
+        hasMore: false,
+        failedStores: Array.from(failedStores)
+      }
+    } else {
+      // 全部批次都失败时仍要发出一页，让调用方看到失败分片而不是"零消息"。
+      yield { messages: [], cursor: null, hasMore: false, failedStores: Array.from(failedStores) }
+    }
+  }
+
+  /** 只读 COUNT(*)；`count: null` 是「未知」（有分片读不到），不是 0。 */
+  async countConversationMessagesAsync(
+    md5OrUsername: string,
+    options: { sinceMs?: number } = {}
+  ): Promise<Wcdb4ConversationMessageCount> {
+    const failedStores: string[] = []
+    if (!this.wcdbExecQuery) {
+      return { count: null, approximate: false, failedStores }
+    }
+    const username = this.resolveMessageUsername(md5OrUsername)
+    if (!username) return { count: null, approximate: false, failedStores }
+
+    let stores: Wcdb4MessageStore[] = []
+    try {
+      stores = await this.listMessageStoresAsync(username, true)
+    } catch {
+      return { count: null, approximate: false, failedStores }
+    }
+    if (!stores.length) return { count: 0, approximate: false, failedStores }
+
+    const sinceSec =
+      typeof options.sinceMs === 'number' && Number.isFinite(options.sinceMs) && options.sinceMs > 0
+        ? Math.floor(options.sinceMs / 1000)
+        : 0
+    const whereSql = sinceSec > 0 ? ` WHERE "create_time" >= ${sinceSec}` : ''
+
+    let total = 0
+    const ranges: Array<{ min: number; max: number }> = []
+    for (const store of stores) {
+      const table = this.quoteSqlIdentifier(store.tableName)
+      try {
+        const rows = await this.callJsonAsync<Record<string, unknown>[]>(
+          this.wcdbExecQuery as unknown as KoffiAsyncFunction,
+          'message',
+          store.dbPath,
+          `SELECT COUNT(*) AS "row_count", MIN("create_time") AS "min_time", ` +
+            `MAX("create_time") AS "max_time" FROM ${table}${whereSql}`
+        )
+        const row = rows[0] || {}
+        const count = Number(this.pickValue(row, ['row_count', 'count', 'COUNT(*)']))
+        if (!Number.isFinite(count)) throw new Error('计数返回格式无效')
+        total += count
+        const min = Number(this.pickValue(row, ['min_time', 'MIN("create_time")']))
+        const max = Number(this.pickValue(row, ['max_time', 'MAX("create_time")']))
+        if (Number.isFinite(min) && Number.isFinite(max) && max >= min) {
+          ranges.push({ min, max })
+        }
+      } catch (error) {
+        console.warn(
+          `[WCDB4] message count failed username=${username} table=${store.tableName}:`,
+          error
+        )
+        failedStores.push(store.tableName)
+      }
+    }
+
+    if (failedStores.length) {
+      return { count: null, approximate: false, failedStores }
+    }
+
+    ranges.sort((left, right) => left.min - right.min)
+    const approximate = ranges.some(
+      (range, index) => index > 0 && range.min <= ranges[index - 1].max
+    )
+    return { count: total, approximate, failedStores }
   }
 
   async getGroupMembersAsync(chatroomId: string): Promise<Wcdb4GroupMember[]> {

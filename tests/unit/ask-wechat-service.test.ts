@@ -311,6 +311,38 @@ describe('AskWechatService — 桌面问问微信主路径', () => {
     })
   })
 
+  it('指定多会话范围下 Runtime 失败 → 不回退 Legacy，避免扩大到全库', async () => {
+    const runLegacy = vi.fn(async () => legacyResult({ status: 'completed' }))
+    const provider: QueryAgentProvider = {
+      getRuntimeConfig: () => ({
+        configured: true,
+        providerName: 'P',
+        model: 'm',
+        modelName: 'M'
+      }),
+      chatWithTools: vi.fn(async () => {
+        throw new Error('unexpected internal failure')
+      })
+    }
+    const service = new AskWechatService(new QueryAgentService(provider, vi.fn()), {
+      entry: 'desktop',
+      runLegacy
+    })
+
+    const result = await service.ask({
+      requestId: 'req-1',
+      text: '这两个群最近聊了什么',
+      // 用户只勾了 A、B 两个群。
+      scope: { scope: { kind: 'selected', conversationIds: ['conversation-a', 'conversation-b'] } },
+      // 旧版管线只能表达 global；回退就等于把范围悄悄放大到全部会话。
+      legacy: { scope: 'global', range: '30d' }
+    })
+
+    expect(runLegacy).not.toHaveBeenCalled()
+    expect(result.engine).toBe('query-agent')
+    expect(result.status).toBe('error')
+  })
+
   it('Runtime 异常且没有 Legacy 通道（Agent Hub）→ 明确文案，不抛异常', async () => {
     const provider: QueryAgentProvider = {
       getRuntimeConfig: () => ({ configured: true, providerName: 'P', model: 'm', modelName: 'M' }),

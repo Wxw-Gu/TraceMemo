@@ -157,17 +157,27 @@ export class AskWechatService {
     reason: AskWechatFallbackReason,
     diagnostics: QueryAgentDiagnostics
   ): Promise<AskWechatQueryResult> {
-    if (!this.options.runLegacy) {
+    const scopeKind = request.scope?.scope.kind
+    // Legacy 表达不了「指定多个会话」：窄范围回退等于静默搜全库，宁可明确失败。
+    const legacyScope: 'global' | 'groups' | null =
+      !scopeKind || scopeKind === 'all' ? 'global' : scopeKind === 'groups' ? 'groups' : null
+    if (!this.options.runLegacy || legacyScope === null) {
       return {
         engine: 'query-agent',
         status: 'error',
-        message: RUNTIME_FAILURE_MESSAGE,
-        diagnostics
+        message:
+          legacyScope === null
+            ? '本次查询没有完成。当前搜索范围（指定会话）不支持自动重试，请缩小时间范围或换一种问法。'
+            : RUNTIME_FAILURE_MESSAGE,
+        diagnostics: {
+          ...diagnostics,
+          ...(legacyScope === null ? { fallbackSkipped: 'scope_too_narrow_for_legacy' } : {})
+        }
       }
     }
     try {
       const legacyResult = await this.options.runLegacy({
-        scope: 'global',
+        scope: legacyScope,
         range: 'all',
         ...request.legacy,
         requestId: request.requestId,

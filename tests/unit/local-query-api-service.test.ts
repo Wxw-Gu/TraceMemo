@@ -9,15 +9,63 @@ const fixture = vi.hoisted(() => ({
     { m_nsUsrName: 'wxid-bobo-2', m_nsNickName: 'BOBO', md5: 'md5-bobo-2', type: 'user' as const }
   ],
   messages: [
-    { id: 'm1', from: 'user', type: '图片', datetime: '2026/8/2 10:00:00', content: '', contentData: { type: 'image', md5: 'image-md5' }, isSender: false, name: 'BOBO', createTime: Math.floor(new Date('2026-08-02T10:00:00+08:00').getTime() / 1000) },
-    { id: 'm2', from: 'assistant', type: '文件', datetime: '2026/8/3 10:00:00', content: '', isSender: true, exportMediaType: 'file' as const, exportMediaName: 'a.pdf', createTime: Math.floor(new Date('2026-08-03T10:00:00+08:00').getTime() / 1000) }
+    { id: 'm1', localId: 1, from: 'user', type: '图片', datetime: '2026/8/2 10:00:00', content: '', contentData: { type: 'image', md5: 'image-md5' }, isSender: false, name: 'BOBO', createTime: Math.floor(new Date('2026-08-02T10:00:00+08:00').getTime() / 1000) },
+    { id: 'm2', localId: 2, from: 'assistant', type: '文件', datetime: '2026/8/3 10:00:00', content: '', isSender: true, exportMediaType: 'file' as const, exportMediaName: 'a.pdf', createTime: Math.floor(new Date('2026-08-03T10:00:00+08:00').getTime() / 1000) }
   ]
 }))
-vi.mock('../../src/main/services/chat-service', () => ({
-  isReady: () => true,
-  listContactsAsync: vi.fn(async () => fixture.contacts),
-  listMessagesAsync: vi.fn(async () => fixture.messages)
-}))
+vi.mock('../../src/main/services/chat-service', () => {
+  // 定位/分页替身必须读**当前**的 `listMessagesAsync` 返回值：
+  // 各用例会把它换成不同的消息列表（例如只包含一条语音消息）。
+  const listMessagesAsync = vi.fn(async () => fixture.messages)
+  return {
+    isReady: () => true,
+    listContactsAsync: vi.fn(async () => fixture.contacts),
+    listMessagesAsync,
+    /** 按 `local:<t>:<l>` / `local:<l>` / 纯 id 找；命中多条即 ambiguous。 */
+    locateMessageAsync: vi.fn(async (_conversationId: string, messageId: string) => {
+      const list = (await listMessagesAsync()) as unknown as Array<{
+        id?: string
+        createTime?: number
+        localId?: number
+      }>
+      const text = String(messageId || '').replace(/^local:/, '')
+      const parts = text.split(':')
+      if (parts.length === 2 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1])) {
+        const createTime = Number(parts[0])
+        const localId = Number(parts[1])
+        const hit = list.find(
+          (message) => message.createTime === createTime && message.localId === localId
+        )
+        return hit
+          ? { status: 'found', location: { createTime, localId } }
+          : { status: 'not_found' }
+      }
+      const hits = list.filter(
+        (message) => String(message.id) === text || String(message.localId) === text
+      )
+      if (hits.length === 1) {
+        return {
+          status: 'found',
+          location: {
+            createTime: Number(hits[0].createTime) || 0,
+            localId: Number(hits[0].localId) || 0
+          }
+        }
+      }
+      return { status: hits.length ? 'ambiguous' : 'not_found' }
+    }),
+    iterateMessagesAsync: vi.fn(async function* (
+      _conversationId: string,
+      options?: { sinceMs?: number }
+    ) {
+      const since = options?.sinceMs ? Math.floor(options.sinceMs / 1000) : undefined
+      const list = ((await listMessagesAsync()) as unknown as Array<{ createTime?: number }>).filter(
+        (message) => since === undefined || (message.createTime || 0) >= since
+      )
+      yield { messages: list, failedStores: [] }
+    })
+  }
+})
 
 import { LocalQueryApiService } from '../../src/main/services/local-query-api-service'
 import { listMessagesAsync } from '../../src/main/services/chat-service'
@@ -32,7 +80,22 @@ describe('LocalQueryApiService', () => {
     waitForIndexingComplete: vi.fn(async () => false),
     lastPassDurationMs: vi.fn(() => 0),
     beginInteractiveQuery: vi.fn(),
-    endInteractiveQuery: vi.fn()
+    endInteractiveQuery: vi.fn(),
+    /** 显式会话一律 complete；对象无自有键，`all` 范围仍落回时间判断。 */
+    getConversationIndexStates: vi.fn(
+      async () =>
+        new Proxy(
+          {},
+          {
+            get: () => ({
+              state: 'ready',
+              completeSnapshot: true,
+              sourceHighWaterTime: 0,
+              indexedMessageCount: 1
+            })
+          }
+        )
+    )
   } as any
   /** 固定时钟：requestedEnd 由它决定。 */
   const NOW = new Date('2026-09-09T12:00:00+08:00').getTime()
@@ -156,7 +219,8 @@ describe('LocalQueryApiService', () => {
     const result = await service.search({ timeRange: { kind: 'all' }, query: '健身', scope: { kind: 'all' } })
     expect(knowledge.search).toHaveBeenCalledWith(expect.objectContaining({ conversationIds: undefined }))
     // 跨会话检索不宣称"完整"：派生索引不是完整性权威。
-    expect(result.coverage).toEqual({ state: 'partial' })
+    // 返回类型是宽 union（既有写法），这里只关心覆盖度字段。
+    expect((result as { coverage?: unknown }).coverage).toEqual({ state: 'partial' })
   })
 
   it('scope 内的 target 越界会被结构化拒绝（而不是悄悄扩大范围）', async () => {
@@ -241,7 +305,8 @@ describe('LocalQueryApiService', () => {
 
       const result = await service.search({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, query: '健身' })
 
-      expect(result.coverage).toEqual({ state: 'partial' })
+      // 返回类型是宽 union（既有写法），这里只关心覆盖度字段。
+    expect((result as { coverage?: unknown }).coverage).toEqual({ state: 'partial' })
       expect(result.evidenceCount).toBe(0)
       expect(result.indexLatestAt).toBe(NOW - 10 * DAY)
       expect(result.sourceLatestAt).toBe(NOW - 1000)
@@ -321,7 +386,8 @@ describe('LocalQueryApiService', () => {
 
       expect(result.resolvedTimeRange?.endTime).toEqual(expect.any(Number))
       // 请求边界（今天）晚于索引覆盖边界 4 分钟 → 只能 partial。
-      expect(result.coverage).toEqual({ state: 'partial' })
+      // 返回类型是宽 union（既有写法），这里只关心覆盖度字段。
+    expect((result as { coverage?: unknown }).coverage).toEqual({ state: 'partial' })
       expect(result.indexCoverage?.covered).toBe(false)
       expect(result.indexCoverage?.summary).toContain('暂时无法确认')
     })
@@ -486,7 +552,8 @@ describe('LocalQueryApiService', () => {
       const result = await service.search({ target: { query: 'BOBO' }, timeRange: { kind: 'all' }, query: '健身' })
 
       expect(result.freshness).toEqual({ catchUp: 'skipped' })
-      expect(result.coverage).toEqual({ state: 'partial' })
+      // 返回类型是宽 union（既有写法），这里只关心覆盖度字段。
+    expect((result as { coverage?: unknown }).coverage).toEqual({ state: 'partial' })
       expect(knowledge.requestCatchUp).not.toHaveBeenCalled()
     })
 
@@ -524,17 +591,69 @@ describe('LocalQueryApiService — indexCoverage 结论句', () => {
         waitForIndexingComplete: vi.fn(async () => false),
         lastPassDurationMs: vi.fn(() => 0),
         beginInteractiveQuery: vi.fn(),
-        endInteractiveQuery: vi.fn()
+        endInteractiveQuery: vi.fn(),
+        getConversationIndexStates: vi.fn(
+          async () =>
+            new Proxy(
+              {},
+              {
+                get: () => ({
+                  state: 'ready',
+                  completeSnapshot: true,
+                  sourceHighWaterTime: 0,
+                  indexedMessageCount: 1
+                })
+              }
+            )
+        )
       } as never,
       () => new Date('2026-09-09T12:00:00+08:00')
     )
     fixture.contacts.splice(1)
   })
 
+  it('目标会话没有索引状态时不得报 complete（全局最新时间不是证明）', async () => {
+    // 场景：A 群索引到今天、B 群一条没建；用户只搜 B。
+    // 旧实现拿全局 indexLatestAt 判断会返回 complete，等于告诉用户"已完整搜索、确实没有"。
+    const sparse = new Proxy(
+      {},
+      {
+        get: () => undefined
+      }
+    ) as Record<string, unknown>
+    const service3 = new LocalQueryApiService(
+      {
+        search: vi.fn(async () => ({
+          state: 'ready',
+          evidence: [],
+          indexLatestAt: NOW2 - 1000,
+          sourceLatestAt: NOW2 - 1000,
+          voiceCoverage: undefined
+        })),
+        requestCatchUp: vi.fn(() => ({ triggered: false, inProgress: false })),
+        waitForIndexingComplete: vi.fn(async () => false),
+        lastPassDurationMs: vi.fn(() => 0),
+        beginInteractiveQuery: vi.fn(),
+        endInteractiveQuery: vi.fn(),
+        getConversationIndexStates: vi.fn(async () => sparse)
+      } as never,
+      () => new Date('2026-09-09T12:00:00+08:00')
+    )
+    const targetId = fixture.contacts[0]?.md5 as string
+    const result = await service3.search({
+      timeRange: { kind: 'all' },
+      query: '健身',
+      scope: { kind: 'selected', conversationIds: [targetId] }
+    })
+    // 返回类型是宽 union（既有写法），这里只关心覆盖度字段。
+    expect((result as { coverage?: unknown }).coverage).toEqual({ state: 'partial' })
+  })
+
   it('落后时给出可直接引用的本地时间结论，且明确"暂时无法确认"', async () => {
     // 同样刻意不带 target —— 见上一条：单会话已经会走直读兜底。
     const result = await service2.search({ timeRange: { kind: 'all' }, query: '健身' })
-    expect(result.coverage).toEqual({ state: 'partial' })
+    // 返回类型是宽 union（既有写法），这里只关心覆盖度字段。
+    expect((result as { coverage?: unknown }).coverage).toEqual({ state: 'partial' })
     // 8/30 12:00 的本地时间标签（固定时钟下可断言）
     expect(result.indexCoverage?.covered).toBe(false)
     expect(result.indexCoverage?.indexLatestAtLabel).toBe('08-30 12:00')
@@ -558,7 +677,7 @@ describe('LocalQueryApiService voice transcription', () => {
     localId: 31,
     createTime: Math.floor(new Date('2026-08-04T10:00:00+08:00').getTime() / 1000)
   }
-  const textMessage = { id: 't1', from: 'user', type: '文本', datetime: '2026/8/4 10:01:00', content: '你好', isSender: false, name: 'BOBO', createTime: voiceMessage.createTime + 60 }
+  const textMessage = { id: 't1', localId: 33, from: 'user', type: '文本', datetime: '2026/8/4 10:01:00', content: '你好', isSender: false, name: 'BOBO', createTime: voiceMessage.createTime + 60 }
   const voiceRef = encodeMessageRef('md5-bobo', 'v1')
   const textRef = encodeMessageRef('md5-bobo', 't1')
 

@@ -14,9 +14,16 @@ export interface MessageJumpTarget {
   exact: boolean
 }
 
-/** 两侧（证据侧 / 归档侧）都用同一套归一化，否则 `local:` 前缀会让匹配静默失败。 */
-export const normalizeJumpMessageId = (value: string | undefined | null): string =>
-  String(value ?? '').replace(/^local:/, '')
+/**
+ * 证据侧是 `local:<create_time>:<local_id>`，归档侧只有 `local_id`：取最后一段，否则跳转全落空。
+ */
+export const normalizeJumpMessageId = (value: string | undefined | null): string => {
+  const text = String(value ?? '').replace(/^local:/, '')
+  const parts = text.split(':')
+  return parts.length === 2 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1])
+    ? parts[1]
+    : text
+}
 
 /**
  * 解析跳转目标。

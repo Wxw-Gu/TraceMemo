@@ -118,10 +118,15 @@ import type {
   QueryAgentProgressEvent
 } from '../shared/query-agent'
 import type {
+  KnowledgeIndexScope,
   KnowledgeRuntimeStatus,
   KnowledgeSearchIpcRequest,
   KnowledgeSearchIpcResult
 } from '../shared/knowledge'
+import type {
+  ConversationMessageCountEntry,
+  ConversationMessageCountSnapshot
+} from '../shared/conversation-message-count'
 import type {
   PublishWechatShareCardRequest,
   WechatShareServiceConfig
@@ -178,6 +183,8 @@ const api = {
   getBootstrapCache: () => ipcRenderer.invoke('db:getBootstrapCache'),
   getStartupCache: () => ipcRenderer.invoke('db:getStartupCache'),
   getContacts: (filter?: string) => ipcRenderer.invoke('db:getContacts', filter),
+  getConversationActivity: (): Promise<Record<string, number>> =>
+    ipcRenderer.invoke('db:conversationActivity'),
   getContactAvatars: (usernames: string[], options?: { refresh?: boolean }) =>
     ipcRenderer.invoke('db:getContactAvatars', usernames, options),
   getCachedMessages: (userMd5: string, startTime?: number, endTime?: number) =>
@@ -420,6 +427,25 @@ const api = {
       callback(status)
     ipcRenderer.on('knowledge:status', listener)
     return () => ipcRenderer.removeListener('knowledge:status', listener)
+  },
+  /** 立即返回已知快照，未知项由 `onConversationMessageCounts` 补齐；null 是未知不是 0。 */
+  getConversationMessageCounts: (conversationIds: string[]): Promise<ConversationMessageCountSnapshot> =>
+    ipcRenderer.invoke('knowledge:getConversationCounts', conversationIds),
+  cancelConversationMessageCounts: (): Promise<void> =>
+    ipcRenderer.invoke('knowledge:cancelConversationCounts'),
+  getKnowledgeIndexScope: (): Promise<KnowledgeIndexScope> =>
+    ipcRenderer.invoke('knowledge:getIndexScope'),
+  setKnowledgeIndexScope: (scope: KnowledgeIndexScope): Promise<KnowledgeIndexScope> =>
+    ipcRenderer.invoke('knowledge:setIndexScope', scope),
+  onConversationMessageCounts: (
+    callback: (entries: ConversationMessageCountEntry[]) => void
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      entries: ConversationMessageCountEntry[]
+    ): void => callback(entries)
+    ipcRenderer.on('knowledge:conversationCounts', listener)
+    return () => ipcRenderer.removeListener('knowledge:conversationCounts', listener)
   },
   aiChat: (messages: { role: string; content: string }[], options?: AIChatRequestOptions) =>
     ipcRenderer.invoke('ai:chat', messages, options),

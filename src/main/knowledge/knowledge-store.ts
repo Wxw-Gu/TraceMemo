@@ -6,6 +6,7 @@ import type {
   KnowledgeCapacityPreflight,
   KnowledgeCapacityPreflightRequest,
   KnowledgeChunk,
+  KnowledgeChunkerConfig,
   KnowledgeConversationRetrieval,
   KnowledgeEvidence,
   KnowledgeVoiceCoverage,
@@ -18,17 +19,28 @@ import type {
   KnowledgeNormalizedMessage,
   KnowledgeQuery,
   KnowledgeSearchTimings,
-  KnowledgeSearchResult
+  KnowledgeSearchResult,
+  KnowledgeSourceMessage,
+  KnowledgeConversationIndexState
 } from '../../shared/knowledge'
 import {
   emptyKnowledgeSearchTimings,
   KNOWLEDGE_SCHEMA_VERSION,
   toEvidenceDisplayText
 } from '../../shared/knowledge'
-import { chunkConversation } from './chunker'
+import { chunkConversation, createChunkStreamer } from './chunker'
 import { normalizeKnowledgeMessage } from './normalizer'
 
 type DbRow = Record<string, unknown>
+
+export interface KnowledgeStreamIndexResult {
+  processedMessages: number
+  chunkCount: number
+  cancelled: boolean
+  /** 最后一条已提交收盘 chunk 的结束秒；取消或失败后从这里续跑。 */
+  resumeTime: number | null
+  resumeMessageIds: string[]
+}
 
 const YIELD_EVERY = 500
 const MAX_SAFE_ACCOUNT_SEGMENT = /^[a-f0-9]{32}$/
@@ -1048,7 +1060,10 @@ export class KnowledgeStore {
         indexed_message_count INTEGER NOT NULL DEFAULT 0,
         complete_snapshot INTEGER NOT NULL DEFAULT 0,
         last_error TEXT,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        source_high_water_time INTEGER,
+        backfill_resume_time INTEGER,
+        backfill_resume_message_ids TEXT
       ) STRICT;
     `)
     const stateColumns = new Set(asRows(this.database.prepare('PRAGMA table_info(knowledge_index_state)').all()).map((row) => String(row.name)))
@@ -1057,6 +1072,16 @@ export class KnowledgeStore {
     }
     if (!stateColumns.has('source_high_water_time')) {
       this.database.exec('ALTER TABLE knowledge_index_state ADD COLUMN source_high_water_time INTEGER')
+    }
+    // 分批回填的续跑位置：最后一条**已提交**收盘 chunk 的结束秒与它的消息 id。
+    // 进程退出后从这里重读并跳过这些 id，重切结果才能与不间断运行一致。
+    if (!stateColumns.has('backfill_resume_time')) {
+      this.database.exec('ALTER TABLE knowledge_index_state ADD COLUMN backfill_resume_time INTEGER')
+    }
+    if (!stateColumns.has('backfill_resume_message_ids')) {
+      this.database.exec(
+        'ALTER TABLE knowledge_index_state ADD COLUMN backfill_resume_message_ids TEXT'
+      )
     }
     const messageColumns = new Set(
       asRows(this.database.prepare('PRAGMA table_info(knowledge_messages)').all()).map((row) =>
@@ -1074,7 +1099,19 @@ export class KnowledgeStore {
     if (!messageColumns.has('image_ocr_text')) {
       this.database.exec('ALTER TABLE knowledge_messages ADD COLUMN image_ocr_text TEXT')
     }
-    this.writeMetaIfMissing('schema_version', String(KNOWLEDGE_SCHEMA_VERSION))
+    const storedSchemaVersion = Number(this.readMeta('schema_version') ?? 0)
+    if (storedSchemaVersion > 0 && storedSchemaVersion !== KNOWLEDGE_SCHEMA_VERSION) {
+      // 身份规则变了：旧 message_id 与新身份完全失配，保留等于留下一堆指向错误消息的证据。
+      // 索引是派生的、可重建，这里整体作废，让下一遍 pass 按新身份重建。
+      this.database.exec(
+        'DELETE FROM knowledge_chunks; DELETE FROM knowledge_messages; DELETE FROM knowledge_index_state;'
+      )
+      this.database.exec('DROP TABLE IF EXISTS knowledge_fts')
+      this.createFtsTable()
+      this.writeMeta('schema_version', String(KNOWLEDGE_SCHEMA_VERSION))
+    } else {
+      this.writeMetaIfMissing('schema_version', String(KNOWLEDGE_SCHEMA_VERSION))
+    }
     const storedAccount = this.readMeta('account_id')
     if (storedAccount && storedAccount !== this.accountId) {
       throw new Error('Knowledge database account isolation check failed')
@@ -1244,8 +1281,293 @@ export class KnowledgeStore {
     }
   }
 
-  private async writeMessageLedger(
+  /** 分批索引：不持有整会话消息；旧 chunk 不预删，取消后原索引仍可用。 */
+  async indexConversationStreaming(
     conversationId: string,
+    batches: AsyncIterable<readonly KnowledgeSourceMessage[]>,
+    chunker: KnowledgeChunkerConfig,
+    options: {
+      completeSnapshot: boolean
+      sourceHighWaterTime?: number
+      /** 上次中断位置；从该秒重读并跳过这些已提交消息。 */
+      resume?: { time: number; messageIds: string[] }
+    },
+    signal: AbortSignal | undefined,
+    onProgress: (processed: number, chunks: number) => void
+  ): Promise<KnowledgeStreamIndexResult> {
+    if (!conversationId) throw new Error('Knowledge conversation id is required')
+    const streamer = createChunkStreamer(chunker)
+    const passStartedAt = Date.now()
+    const skipIds = new Set(options.resume?.messageIds ?? [])
+    // 续跑只重建边界之后的部分；边界那一秒已提交的消息必须整秒排除，
+    // 否则重切出的 chunk 会与已提交的那一个重复。
+    const rebuildFromTime = options.resume ? options.resume.time + 1 : 0
+    if (options.resume) {
+      const rows = asRows(
+        this.database
+          .prepare(
+            'SELECT message_id FROM knowledge_messages WHERE conversation_id = ? AND create_time = ?'
+          )
+          .all(conversationId, options.resume.time)
+      )
+      for (const row of rows) skipIds.add(String(row.message_id))
+    }
+    let processed = 0
+    let chunkCount = 0
+    let resumeTime = options.resume?.time ?? null
+    let resumeIds: string[] = options.resume?.messageIds?.slice() ?? []
+
+    const commitChunks = (chunks: KnowledgeChunk[], now: number): void => {
+      for (const chunk of chunks) {
+        this.upsertChunkIdempotent(chunk, now)
+        chunkCount += 1
+        resumeTime = chunk.endTime
+        resumeIds = chunk.messageIds.slice()
+      }
+    }
+
+    const commitBatch = async (normalized: KnowledgeNormalizedMessage[]): Promise<void> => {
+      this.database.exec('BEGIN IMMEDIATE')
+      try {
+        await this.writeMessageLedger(conversationId, normalized, false, signal, (count) => {
+          onProgress(processed + count, chunkCount)
+        })
+        commitChunks(streamer.push(normalized), Date.now())
+        this.writeBackfillCursor(
+          conversationId,
+          chunker.version,
+          processed,
+          resumeTime,
+          resumeIds
+        )
+        this.database.exec('COMMIT')
+      } catch (error) {
+        this.database.exec('ROLLBACK')
+        throw error
+      }
+    }
+
+    let cancelled = false
+    try {
+      for await (const batch of batches) {
+        this.assertNotAborted(signal)
+        if (!batch.length) continue
+        const normalized: KnowledgeNormalizedMessage[] = []
+        for (const message of batch) {
+          if (message.accountId !== this.accountId) {
+            throw new Error('Knowledge source account does not match database')
+          }
+          if (message.conversationId !== conversationId) {
+            throw new Error('Knowledge source conversation does not match request')
+          }
+          const item = normalizeKnowledgeMessage(message)
+          // 续跑重读到的已提交消息不能再进入切分，否则会产生内容重复的 chunk。
+          if (skipIds.delete(item.messageId)) continue
+          normalized.push(item)
+        }
+        processed += normalized.length
+        // 空批次也要落一次游标：上游可能连续返回"全是已提交消息"的页。
+        if (normalized.length) await commitBatch(normalized)
+        onProgress(processed, chunkCount)
+      }
+
+      this.database.exec('BEGIN IMMEDIATE')
+      try {
+        commitChunks(streamer.drain(), Date.now())
+        await this.purgeStaleChunks(
+          conversationId,
+          chunker.version,
+          rebuildFromTime,
+          passStartedAt,
+          signal
+        )
+        this.upsertState(
+          conversationId,
+          chunker.version,
+          'ready',
+          resumeTime,
+          processed,
+          null,
+          options.completeSnapshot,
+          options.sourceHighWaterTime ?? null
+        )
+        this.clearBackfillCursor(conversationId)
+        this.database.exec('COMMIT')
+      } catch (error) {
+        this.database.exec('ROLLBACK')
+        throw error
+      }
+    } catch (error) {
+      if (signal?.aborted) {
+        cancelled = true
+      } else {
+        this.markBackfillFailed(conversationId, error)
+        throw error
+      }
+    }
+
+    return { processedMessages: processed, chunkCount, cancelled, resumeTime, resumeMessageIds: resumeIds }
+  }
+
+  /** 每个会话的索引状态快照：覆盖度判断只能看它，不能看全局最新时间。 */
+  readConversationIndexStates(): Record<string, KnowledgeConversationIndexState> {
+    const rows = asRows(
+      this.database
+        .prepare(
+          `SELECT conversation_id, state, complete_snapshot, source_high_water_time, indexed_message_count
+             FROM knowledge_index_state`
+        )
+        .all()
+    )
+    const result: Record<string, KnowledgeConversationIndexState> = {}
+    for (const row of rows) {
+      const highWater = Number(row.source_high_water_time)
+      result[String(row.conversation_id)] = {
+        state: String(row.state ?? ''),
+        completeSnapshot: Number(row.complete_snapshot) === 1,
+        sourceHighWaterTime: Number.isFinite(highWater) && highWater > 0 ? highWater : null,
+        indexedMessageCount: Number(row.indexed_message_count) || 0
+      }
+    }
+    return result
+  }
+
+  /** 分批回填结束后补写源侧边界；只前进，不回退。 */
+  advanceSourceHighWater(conversationId: string, value: number): void {
+    if (!Number.isFinite(value) || value <= 0) return
+    this.database
+      .prepare(
+        `UPDATE knowledge_index_state
+            SET source_high_water_time = MAX(COALESCE(source_high_water_time, 0), ?),
+                updated_at = ?
+          WHERE conversation_id = ?`
+      )
+      .run(Math.floor(value), Date.now(), conversationId)
+  }
+
+  /** 整遍读完时才刷新的全局口径；分批 pass 不得调用。 */
+  writeSourceTotals(sourceMessageCount: number, sourceLatestAt?: number): void {
+    this.writeMeta('source_message_count', String(sourceMessageCount))
+    this.refreshStatsSnapshot()
+    if (typeof sourceLatestAt === 'number' && sourceLatestAt > 0) {
+      this.writeMeta('source_latest_at', String(Math.floor(sourceLatestAt)))
+    }
+  }
+
+  /** 上次中断的分页位置；没有可复用的位置时返回 null。 */
+  readBackfillResume(conversationId: string): { time: number; messageIds: string[] } | null {
+    const row = this.database
+      .prepare(
+        'SELECT backfill_resume_time, backfill_resume_message_ids FROM knowledge_index_state WHERE conversation_id = ?'
+      )
+      .get(conversationId) as DbRow | undefined
+    const time = Number(row?.backfill_resume_time)
+    if (!Number.isFinite(time) || time <= 0) return null
+    let messageIds: string[] = []
+    try {
+      const parsed = JSON.parse(String(row?.backfill_resume_message_ids || '[]'))
+      if (Array.isArray(parsed)) messageIds = parsed.map((value) => String(value))
+    } catch {
+      messageIds = []
+    }
+    return { time, messageIds }
+  }
+
+  private writeBackfillCursor(
+    conversationId: string,
+    chunkerVersion: string,
+    messageCount: number,
+    resumeTime: number | null,
+    resumeMessageIds: string[]
+  ): void {
+    this.database
+      .prepare(
+        `INSERT INTO knowledge_index_state (
+          conversation_id, account_id, chunker_version, state, high_water_time,
+          indexed_message_count, complete_snapshot, last_error, updated_at,
+          backfill_resume_time, backfill_resume_message_ids
+        ) VALUES (?, ?, ?, 'backfilling', NULL, ?, 0, NULL, ?, ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET
+          chunker_version = excluded.chunker_version,
+          state = 'backfilling',
+          indexed_message_count = excluded.indexed_message_count,
+          complete_snapshot = 0,
+          updated_at = excluded.updated_at,
+          backfill_resume_time = excluded.backfill_resume_time,
+          backfill_resume_message_ids = excluded.backfill_resume_message_ids`
+      )
+      .run(
+        conversationId,
+        this.accountId,
+        chunkerVersion,
+        messageCount,
+        Date.now(),
+        resumeTime,
+        encodedJson(resumeMessageIds)
+      )
+  }
+
+  private clearBackfillCursor(conversationId: string): void {
+    this.database
+      .prepare(
+        `UPDATE knowledge_index_state
+            SET backfill_resume_time = NULL, backfill_resume_message_ids = NULL
+          WHERE conversation_id = ?`
+      )
+      .run(conversationId)
+  }
+
+  private markBackfillFailed(conversationId: string, error: unknown): void {
+    try {
+      this.database
+        .prepare(
+          `UPDATE knowledge_index_state
+              SET state = 'partial', last_error = ?, updated_at = ?
+            WHERE conversation_id = ?`
+        )
+        .run(error instanceof Error ? error.message : String(error), Date.now(), conversationId)
+    } catch {
+      // 失败标记本身失败时保留原状态，调用方仍能从异常得知结果。
+    }
+  }
+
+  /** 两个条件缺一不可：漏掉 `end_time >= fromEndTime` 会把已提交的前半段整段删掉。 */
+  private async purgeStaleChunks(
+    conversationId: string,
+    chunkerVersion: string,
+    fromEndTime: number,
+    beforeUpdatedAt: number,
+    signal: AbortSignal | undefined
+  ): Promise<void> {
+    const select = this.database.prepare(
+      `SELECT rowid, text FROM knowledge_chunks
+        WHERE conversation_id = ? AND chunker_version = ? AND updated_at < ? AND end_time >= ?
+        LIMIT 200`
+    )
+    const remove = this.database.prepare('DELETE FROM knowledge_chunks WHERE rowid = ?')
+    while (true) {
+      this.assertNotAborted(signal)
+      const rows = asRows(select.all(conversationId, chunkerVersion, beforeUpdatedAt, fromEndTime))
+      if (!rows.length) break
+      for (const row of rows) {
+        this.deleteFtsRow(Number(row.rowid), String(row.text))
+        remove.run(Number(row.rowid))
+      }
+      await waitForWorkerTurn()
+    }
+  }
+
+  private upsertChunkIdempotent(chunk: KnowledgeChunk, now: number): void {
+    const existing = this.database
+      .prepare('SELECT rowid FROM knowledge_chunks WHERE chunk_id = ?')
+      .get(chunk.chunkId) as DbRow | undefined
+    // chunk_id 由 messageIds 决定，同 id 即同正文；重读时先撤旧 FTS 行再插入，
+    // 否则 FTS5 会对已存在的 rowid 报唯一约束。
+    if (existing) this.deleteFtsRow(Number(existing.rowid), chunk.text)
+    this.upsertChunk(chunk, now)
+  }
+
+  private async writeMessageLedger(    conversationId: string,
     messages: KnowledgeNormalizedMessage[],
     completeSnapshot: boolean,
     signal: AbortSignal | undefined,

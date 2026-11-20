@@ -12,6 +12,14 @@ import type {
   KnowledgeSearchRequest,
   KnowledgeSearchResult,
   KnowledgeStatusRequest,
+  KnowledgeConversationIndexState,
+  KnowledgeConversationStatesRequest,
+  KnowledgeSourceTotalsRequest,
+  KnowledgeStreamBatchRequest,
+  KnowledgeStreamConversationRequest,
+  KnowledgeStreamResult,
+  KnowledgeStreamStartRequest,
+  KnowledgeStreamStartResult,
   KnowledgeWorkerRequest,
   KnowledgeWorkerResponse
 } from '../../shared/knowledge'
@@ -22,7 +30,10 @@ type WorkerResult =
   | KnowledgeSearchResult
   | KnowledgeRuntimeStatus
   | KnowledgeMemberStatsResult
+  | KnowledgeStreamStartResult
+  | KnowledgeStreamResult
   | { marks: Record<string, number> }
+  | { accepted: true }
   | { removed: true }
 type PendingRequest = {
   resolve: (result: WorkerResult) => void
@@ -48,6 +59,8 @@ export class KnowledgeWorkerHost {
    * 精确地只中止索引，而**不会**影响任何并发进行的查询请求。
    */
   private activeIndexRequestId: string | null = null
+  /** 进度消息回带的是已 resolve 的 streamStart requestId，不能靠 `pending` 找回调。 */
+  private readonly streamProgress = new Map<string, (progress: KnowledgeIndexProgress) => void>()
 
   constructor(private readonly workerPath: string) {}
 
@@ -72,6 +85,16 @@ export class KnowledgeWorkerHost {
     return this.request('status', payload) as Promise<KnowledgeRuntimeStatus>
   }
 
+  /** 每个会话的索引状态；覆盖度判断的唯一依据。 */
+  conversationStates(
+    payload: KnowledgeConversationStatesRequest
+  ): Promise<Record<string, KnowledgeConversationIndexState>> {
+    return this.request('conversationStates', payload).then(
+      (result) =>
+        (result as { states?: Record<string, KnowledgeConversationIndexState> }).states ?? {}
+    )
+  }
+
   /** 每个会话已经索引到的源侧时刻；用于增量 pass 跳过没有变化的会话。 */
   highWaterMarks(payload: KnowledgeStatusRequest): Promise<Record<string, number>> {
     return this.request('highWater', payload as unknown as KnowledgeWorkerRequest['payload']).then(
@@ -82,6 +105,46 @@ export class KnowledgeWorkerHost {
   /** 单个会话内「按发送者聚合」的发言统计（群员统计用，只回聚合不回正文）。 */
   memberStats(payload: KnowledgeMemberStatsRequest): Promise<KnowledgeMemberStatsResult> {
     return this.request('memberStats', payload) as Promise<KnowledgeMemberStatsResult>
+  }
+
+  /** 开始一个会话的分批索引；消息由调用方逐批推送。 */
+  async startConversationStream(
+    payload: KnowledgeStreamStartRequest,
+    onProgress?: (progress: KnowledgeIndexProgress) => void
+  ): Promise<KnowledgeStreamStartResult> {
+    if (onProgress) this.streamProgress.set(payload.conversationId, onProgress)
+    try {
+      return (await this.request('streamStart', payload)) as KnowledgeStreamStartResult
+    } catch (error) {
+      this.streamProgress.delete(payload.conversationId)
+      throw error
+    }
+  }
+
+  async pushConversationBatch(payload: KnowledgeStreamBatchRequest): Promise<void> {
+    await this.request('streamBatch', payload)
+  }
+
+  async finishConversationStream(
+    payload: KnowledgeStreamConversationRequest
+  ): Promise<KnowledgeStreamResult> {
+    try {
+      return (await this.request('streamFinish', payload)) as KnowledgeStreamResult
+    } finally {
+      this.streamProgress.delete(payload.conversationId)
+    }
+  }
+
+  async writeSourceTotals(payload: KnowledgeSourceTotalsRequest): Promise<void> {
+    await this.request('sourceTotals', payload)
+  }
+
+  async abortConversationStream(payload: KnowledgeStreamConversationRequest): Promise<void> {
+    try {
+      await this.request('streamAbort', payload)
+    } finally {
+      this.streamProgress.delete(payload.conversationId)
+    }
   }
 
   /** 只中止正在跑的索引任务，返回是否真的有任务被中止。 */
@@ -148,9 +211,16 @@ export class KnowledgeWorkerHost {
     child.on('message', (message: KnowledgeWorkerResponse) => {
       if (message?.version !== 1) return
       if (message.type === 'progress') {
+        const progress = message.payload as KnowledgeIndexProgress | undefined
+        if (!progress) return
         const pending = this.pending.get(message.requestId)
-        if (pending && message.payload)
-          pending.onProgress?.(message.payload as KnowledgeIndexProgress)
+        if (pending?.onProgress) {
+          pending.onProgress(progress)
+          return
+        }
+        if (progress.conversationId) {
+          this.streamProgress.get(progress.conversationId)?.(progress)
+        }
         return
       }
       this.finish(
@@ -218,6 +288,7 @@ export class KnowledgeWorkerHost {
   }
 
   private failAll(error: Error): void {
+    this.streamProgress.clear()
     for (const requestId of this.pending.keys()) this.finish(requestId, undefined, error)
   }
 }

@@ -1090,6 +1090,10 @@ function conversationScopeNote(input: QueryAgentConversationScope): string {
     rules.push(
       '范围是群聊专属：包含全部群会话以及群成员实际发送的消息。问"谁聊过某话题"时应省略 search_messages 的 target 做跨群检索，并在回答里保留群名与发送者。'
     )
+  } else if (scope.kind === 'selected') {
+    rules.push(
+      '范围是用户手选的若干会话：可以在它们之间跨会话检索，但每个 target 都必须属于这个集合；用户只选了这些，不要暗示还有其他会话可选。'
+    )
   } else if (scope.kind === 'contact' || scope.kind === 'current') {
     rules.push(
       '范围只有一个会话：所有工具都可以省略 target（query_messages 也可以），省略即在该会话内检索；不要猜会话名，也不要指定其他会话。'

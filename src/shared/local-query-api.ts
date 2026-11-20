@@ -92,6 +92,8 @@ export type QueryCorpusScope =
   | { kind: 'groups' }
   | { kind: 'contact'; conversationId: string }
   | { kind: 'current'; conversationId: string }
+  /** 空数组是非法输入（不是"全部"）：UI 必须先让用户选，Host 直接拒绝。 */
+  | { kind: 'selected'; conversationIds: string[] }
 
 /** 解析后的语料边界（回显给调用方与模型，用于说明"这次只在哪个范围里查"）。 */
 export interface ResolvedCorpusScope {
@@ -101,6 +103,8 @@ export interface ResolvedCorpusScope {
   /** `contact` / `current` 解析出的会话展示名。 */
   displayName?: string
   conversationType?: 'user' | 'group'
+  /** `selected` 范围回显的会话展示名（最多前若干个，仅用于文案）。 */
+  displayNames?: string[]
 }
 
 /**

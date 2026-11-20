@@ -14,7 +14,7 @@ import type {
 import type { Contact, Message } from '../../../../shared/types'
 
 export type SearchStage = 'idle' | 'loading' | 'result' | 'partial' | 'insufficient'
-export type SearchScope = 'global' | 'groups' | 'contacts' | 'conversation'
+export type SearchScope = 'global' | 'groups' | 'contacts' | 'conversation' | 'selected'
 export type SearchRange = 'today' | '7d' | '30d' | 'all'
 export type SearchIntent = 'general' | 'topic' | 'participants' | 'mixed'
 

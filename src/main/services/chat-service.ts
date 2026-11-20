@@ -852,6 +852,58 @@ export async function listMessagesAsync(
 }
 
 /**
+ * 按页读取一个会话的消息：不把整个会话读进数组，格式化走同一个 `listSourceMessages`。
+ */
+export async function* iterateMessagesAsync(
+  userMd5: string,
+  options: { pageSize?: number; sinceMs?: number } = {}
+): AsyncGenerator<{ messages: FormattedMessage[]; failedStores: string[] }> {
+  if (!dbRef) return
+  const requestId = nextListMessagesRequestId()
+  const client = dbRef.getWcdb4Client()
+  for await (const page of client.iterateMessagePagesAsync(userMd5, {
+    pageSize: options.pageSize,
+    sinceSec: options.sinceMs ? Math.floor(options.sinceMs / 1000) : undefined,
+    requestId
+  })) {
+    if (page.failedStores.length) {
+      yield { messages: [], failedStores: page.failedStores }
+      return
+    }
+    const messages = listSourceMessages(
+      userMd5,
+      undefined,
+      undefined,
+      undefined,
+      page.messages,
+      requestId
+    )
+    yield { messages, failedStores: [] }
+  }
+}
+
+/** 点查定位：前后文与单条语音都靠它，避免先读整个会话再 findIndex。 */
+export function locateMessageAsync(
+  userMd5: string,
+  messageId: string
+): Promise<
+  | { status: 'found'; location: { createTime: number; localId: number } }
+  | { status: 'not_found' | 'ambiguous' | 'unsupported' }
+> {
+  if (!dbRef) return Promise.resolve({ status: 'not_found' as const })
+  return dbRef.getWcdb4Client().locateMessageAsync(userMd5, messageId)
+}
+
+/** 只读 COUNT(*)；`count: null` 是有分片读不到，调用方必须显示「未知」而不是 0。 */
+export function countConversationMessagesAsync(
+  userMd5: string,
+  options: { sinceMs?: number } = {}
+): Promise<{ count: number | null; approximate: boolean; failedStores: string[] }> {
+  if (!dbRef) return Promise.resolve({ count: null, approximate: false, failedStores: [] })
+  return dbRef.getWcdb4Client().countConversationMessagesAsync(userMd5, options)
+}
+
+/**
  * 只取**图片消息**（图片文字索引专用）。
  *
  * 与 `listMessagesAsync` 的唯一差别是"读哪些行"：由 WCDB 在 SQL 层按消息类型过滤，
