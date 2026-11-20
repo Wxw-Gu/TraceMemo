@@ -1,5 +1,7 @@
 import { fork, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
+import { tmpdir } from 'os'
+import { terminateChildProcess, waitForChildExit } from '../process-tree'
 import type {
   KnowledgeCapacityPreflight,
   KnowledgeCapacityPreflightRequest,
@@ -163,16 +165,30 @@ export class KnowledgeWorkerHost {
     return this.request('cancel', { targetRequestId }) as Promise<{ removed: true }>
   }
 
-  async dispose(): Promise<void> {
+  async dispose(options: { closeTimeoutMs?: number; exitTimeoutMs?: number } = {}): Promise<void> {
     const child = this.child
     if (!child) return
+    const closeTimeoutMs = options.closeTimeoutMs ?? 1_500
+    const exitTimeoutMs = options.exitTimeoutMs ?? 2_000
+    // close 请求必须有超时，避免同步 SQLite 事务把应用退出永久挂死。
+    const closePromise = this.request('close', {}).catch(() => undefined)
+    let timer: ReturnType<typeof setTimeout> | null = null
     try {
-      await this.request('close', {})
-    } catch {
-      // The child is about to be stopped; its only job is a derived local index.
+      await Promise.race([
+        closePromise,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, closeTimeoutMs)
+        })
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
     }
     if (this.child === child) this.child = null
-    if (!child.killed) child.kill()
+    const exited = await waitForChildExit(child, 300)
+    if (!exited) {
+      await terminateChildProcess(child, { timeoutMs: exitTimeoutMs })
+    }
+    this.failAll(new Error('Knowledge worker disposed'))
   }
 
   private request(
@@ -204,6 +220,7 @@ export class KnowledgeWorkerHost {
   private ensureChild(): ChildProcess {
     if (this.child?.connected) return this.child
     const child = fork(this.workerPath, [], {
+      cwd: tmpdir(),
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       serialization: 'advanced',
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }

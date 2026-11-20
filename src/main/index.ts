@@ -1529,6 +1529,9 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
   ipcMain.handle('app-update:getState', () => appUpdateService.getState())
   ipcMain.handle('app-update:check', () => appUpdateService.check())
   ipcMain.handle('app-update:download', () => appUpdateService.download())
+  appUpdateService.setBeforeQuitAndInstall(() =>
+    runQuitCleanup({ dbDrainTimeoutMs: 2_000, totalTimeoutMs: 4_000 })
+  )
   ipcMain.handle('app-update:install', () => appUpdateService.install())
   ipcMain.handle('app-update:openDownloadPage', () => appUpdateService.openDownloadPage())
   ipcMain.handle('app-update:getIgnoredVersion', () => loadSettings().skippedUpdateVersion)
@@ -3800,30 +3803,49 @@ app.on('window-all-closed', () => {
   }
 })
 
-let quitCleanupStarted = false
+let quitCleanupPromise: Promise<void> | null = null
 let quitCleanupComplete = false
 
-app.on('before-quit', (event) => {
-  if (quitCleanupComplete) return
+function runQuitCleanup(options?: {
+  dbDrainTimeoutMs?: number
+  totalTimeoutMs?: number
+}): Promise<void> {
+  if (quitCleanupComplete) return Promise.resolve()
+  if (quitCleanupPromise) return quitCleanupPromise
+
   isQuitting = true
   appShutdownRequested = true
-  event.preventDefault()
-  if (quitCleanupStarted) return
-  quitCleanupStarted = true
   voiceBatchService?.cancel()
   console.log('[Shutdown] cleanup started')
 
-  void (async () => {
+  const dbDrainTimeoutMs = options?.dbDrainTimeoutMs ?? 3_000
+  const totalTimeoutMs = options?.totalTimeoutMs ?? 5_000
+
+  quitCleanupPromise = (async () => {
     agentHubService.stop()
     scheduledReportService.stop()
     groupExitMonitorService.stop()
-    await disposeExtensionSystem().catch(() => undefined)
+    if (tray) {
+      tray.destroy()
+      tray = null
+    }
     flushBootstrapCacheWritesSync()
-    const [, nativeCallsDrained] = await Promise.all([
+
+    let timedOut = false
+    let nativeCallsDrained = true
+    const cleanupAll = Promise.allSettled([
+      disposeExtensionSystem().catch(() => undefined),
       apiServer.stop().catch(() => undefined),
-      chat.closeChatDbForQuit().catch(() => false),
+      chat.closeChatDbForQuit(dbDrainTimeoutMs).then(
+        (drained) => {
+          nativeCallsDrained = drained
+        },
+        () => {
+          nativeCallsDrained = false
+        }
+      ),
       voiceRecognition?.dispose().catch(() => undefined),
-      knowledgeSearchService?.dispose().catch(() => undefined),
+      knowledgeSearchService?.dispose().catch(() => undefined)
       /*
        * Deliberately do NOT stop the macOS native runtime here.
        *
@@ -3838,14 +3860,27 @@ app.on('before-quit', (event) => {
        * self-shutdown), and it can be restarted explicitly from the settings
        * card ("重新加载组件").
        */
-      Promise.resolve()
     ])
-    if (!nativeCallsDrained) {
-      console.warn('[Shutdown] WCDB async calls did not fully drain before quit')
+
+    let timer: ReturnType<typeof setTimeout> | null = null
+    try {
+      await Promise.race([
+        cleanupAll,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            timedOut = true
+            resolve()
+          }, totalTimeoutMs)
+        })
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
     }
-    if (tray) {
-      tray.destroy()
-      tray = null
+
+    if (timedOut) {
+      console.warn(`[Shutdown] cleanup timed out after ${totalTimeoutMs}ms`)
+    } else if (!nativeCallsDrained) {
+      console.warn('[Shutdown] WCDB async calls did not fully drain before quit')
     }
     console.log('[Shutdown] cleanup completed')
   })()
@@ -3854,12 +3889,30 @@ app.on('before-quit', (event) => {
     })
     .finally(() => {
       quitCleanupComplete = true
-      // The first quit request has already been cancelled so cleanup can finish safely.
-      // app.exit() avoids starting a second before-quit cycle that can leave Electron alive
-      // on macOS even after every application service has stopped.
-      console.log('[Shutdown] exiting application')
-      app.exit(0)
     })
+
+  return quitCleanupPromise
+}
+
+app.on('before-quit', (event) => {
+  if (quitCleanupComplete) {
+    // 预清理已完成（例如自动更新前）：放行本次退出，并在 Windows 兜底防句柄保活。
+    if (process.platform === 'win32') {
+      setTimeout(() => app.exit(0), 500).unref()
+    }
+    return
+  }
+  isQuitting = true
+  appShutdownRequested = true
+  event.preventDefault()
+
+  void runQuitCleanup().finally(() => {
+    // The first quit request has already been cancelled so cleanup can finish safely.
+    // app.exit() avoids starting a second before-quit cycle that can leave Electron alive
+    // on macOS even after every application service has stopped.
+    console.log('[Shutdown] exiting application')
+    app.exit(0)
+  })
 })
 
 function showMainWindow(): void {

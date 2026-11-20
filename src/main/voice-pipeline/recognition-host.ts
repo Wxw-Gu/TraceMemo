@@ -1,5 +1,7 @@
 import { fork, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
+import { tmpdir } from 'os'
+import { terminateChildProcess } from '../process-tree'
 import type {
   PipelineAudio,
   RecognitionMetadata,
@@ -73,8 +75,16 @@ export class RecognitionHost {
     })
   }
 
-  async dispose(): Promise<void> {
-    this.terminate(new Error('Voice recognition host disposed'))
+  async dispose(exitTimeoutMs = 2_000): Promise<void> {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer)
+      this.idleTimer = null
+    }
+    const child = this.child
+    this.child = null
+    this.rejectAll(new Error('Voice recognition host disposed'))
+    if (!child) return
+    await terminateChildProcess(child, { timeoutMs: exitTimeoutMs })
   }
 
   private ensureChild(): ChildProcess {
@@ -84,6 +94,7 @@ export class RecognitionHost {
     }
     if (this.child?.connected) return this.child
     const child = fork(this.workerPath, [], {
+      cwd: tmpdir(),
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       serialization: 'advanced',
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
