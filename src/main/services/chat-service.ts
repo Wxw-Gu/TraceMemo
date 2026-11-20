@@ -266,12 +266,12 @@ export function getImageMessageReference(messageId: string): ImageMessageReferen
   return imageMessageReferences.get(normalizedId) || null
 }
 
-export async function closeChatDbForQuit(): Promise<boolean> {
+export async function closeChatDbForQuit(timeoutMs?: number): Promise<boolean> {
   shutdownRequested = true
   const current = dbRef
   dbRef = null
   if (!current) return true
-  return current.closeAsync()
+  return current.closeAsync(timeoutMs)
 }
 
 export function getChatDb(): WechatDb | null {

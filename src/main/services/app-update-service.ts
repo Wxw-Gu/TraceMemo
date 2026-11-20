@@ -27,6 +27,7 @@ interface AppUpdateServiceOptions {
   platform?: NodeJS.Platform
   macAutoUpdateEnabled?: boolean
   broadcast?: (state: AppUpdateState) => void
+  beforeQuitAndInstall?: () => Promise<void> | void
 }
 
 export class AppUpdateService {
@@ -36,6 +37,7 @@ export class AppUpdateService {
   private readonly simulationDurationMs: number
   private readonly delivery: AppUpdateDelivery
   private readonly broadcast?: (state: AppUpdateState) => void
+  private beforeQuitAndInstall?: () => Promise<void> | void
   private state: AppUpdateState
   private listeners = new Set<(state: AppUpdateState) => void>()
   private activeCheckSource: AppUpdateCheckSource = 'manual'
@@ -62,6 +64,7 @@ export class AppUpdateService {
         ? 'release-page'
         : 'automatic'
     this.broadcast = options.broadcast
+    this.beforeQuitAndInstall = options.beforeQuitAndInstall
     this.state = {
       status: 'idle',
       currentVersion: this.currentVersion(),
@@ -238,6 +241,10 @@ export class AppUpdateService {
     }
   }
 
+  setBeforeQuitAndInstall(hook?: () => Promise<void> | void): void {
+    this.beforeQuitAndInstall = hook
+  }
+
   install(): AppUpdateInstallResult {
     if (this.delivery !== 'automatic') {
       return { success: false, error: '当前 macOS 版本不支持自动安装，请前往 GitHub 下载更新。' }
@@ -251,6 +258,17 @@ export class AppUpdateService {
       return { success: true, simulated: true, message }
     }
     this.setState({ status: 'installing', message: '正在重启并安装更新' })
+    const beforeHook = this.beforeQuitAndInstall
+    if (beforeHook) {
+      // 先释放子进程与文件句柄再拉起安装器，避免 NSIS 检测到残留同名进程或目录锁。
+      void Promise.resolve()
+        .then(() => beforeHook())
+        .catch(() => undefined)
+        .finally(() => {
+          autoUpdater.quitAndInstall()
+        })
+      return { success: true }
+    }
     autoUpdater.quitAndInstall()
     return { success: true }
   }

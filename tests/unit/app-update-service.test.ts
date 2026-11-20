@@ -179,4 +179,53 @@ describe('AppUpdateService', () => {
     expect(service.install()).toEqual({ success: true })
     expect(mocks.updater.quitAndInstall).toHaveBeenCalledOnce()
   })
+
+  it('waits for beforeQuitAndInstall cleanup before invoking quitAndInstall', async () => {
+    let releaseCleanup!: () => void
+    const cleanupPromise = new Promise<void>((resolve) => {
+      releaseCleanup = resolve
+    })
+    const beforeQuitAndInstall = vi.fn(() => cleanupPromise)
+    const service = new AppUpdateService({
+      platform: 'win32',
+      packagedRuntime: () => true,
+      currentVersion: () => '2.7.0',
+      beforeQuitAndInstall
+    })
+    mocks.updater.downloadUpdate.mockImplementationOnce(async () => {
+      mocks.emit('update-downloaded', { version: '2.7.1' })
+    })
+
+    await service.download()
+    expect(service.install()).toEqual({ success: true })
+    await Promise.resolve()
+
+    expect(beforeQuitAndInstall).toHaveBeenCalledOnce()
+    expect(mocks.updater.quitAndInstall).not.toHaveBeenCalled()
+    expect(service.getState().status).toBe('installing')
+
+    releaseCleanup()
+    await cleanupPromise
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(mocks.updater.quitAndInstall).toHaveBeenCalledOnce()
+  })
+
+  it('still invokes quitAndInstall when beforeQuitAndInstall rejects', async () => {
+    const service = new AppUpdateService({
+      platform: 'win32',
+      packagedRuntime: () => true,
+      currentVersion: () => '2.7.0',
+      beforeQuitAndInstall: async () => {
+        throw new Error('cleanup failed')
+      }
+    })
+    mocks.updater.downloadUpdate.mockImplementationOnce(async () => {
+      mocks.emit('update-downloaded', { version: '2.7.1' })
+    })
+
+    await service.download()
+    expect(service.install()).toEqual({ success: true })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(mocks.updater.quitAndInstall).toHaveBeenCalledOnce()
+  })
 })

@@ -136,6 +136,7 @@ export class ExtensionManager {
   private readonly eventBus: ExtensionEventBus
   private readonly now: () => number
   private initialized = false
+  private disposed = false
   /** 代码与 Registry 版本不一致的扩展：值为面向用户的原因，存在即禁止启动。 */
   private readonly inconsistencies = new Map<string, string>()
   /** 配置从旧备份恢复、尚未被用户确认的扩展。 */
@@ -1251,6 +1252,7 @@ export class ExtensionManager {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true
     const ids = Array.from(this.hosts.keys())
     await Promise.all(ids.map((id) => this.stopHost(id)))
   }
@@ -1361,6 +1363,7 @@ export class ExtensionManager {
   }
 
   private async startHost(extensionId: string, manifest: ExtensionManifest): Promise<void> {
+    if (this.disposed) return
     if (!manifest.entrypoints.background) return
     // 双保险：任何路径（含自动恢复、自动化触发）都不能绕过这两道闸。
     const drift = this.inconsistencies.get(extensionId)

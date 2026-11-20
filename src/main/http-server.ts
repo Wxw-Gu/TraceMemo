@@ -1494,7 +1494,18 @@ export function startHttpServer(
         port: actualPort,
         close: () =>
           new Promise<void>((res) => {
-            server.close(() => res())
+            let settled = false
+            const finish = (): void => {
+              if (settled) return
+              settled = true
+              clearTimeout(timer)
+              res()
+            }
+            // HTTP keep-alive 或长连接会阻塞 server.close()，退出时主动断开全部连接。
+            const timer = setTimeout(finish, 1_500)
+            server.close(() => finish())
+            server.closeIdleConnections?.()
+            server.closeAllConnections?.()
           })
       })
     })

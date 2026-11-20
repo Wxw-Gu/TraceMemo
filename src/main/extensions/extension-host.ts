@@ -1,5 +1,8 @@
-import { fork, spawn, type ChildProcess } from 'node:child_process'
+import { fork, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { killProcessTree, type ProcessTreeKillResult } from '../process-tree'
 import { ExtensionError, toExtensionErrorPayload } from '../../shared/extensions/errors'
 import type { ExtensionRuntimeSnapshot } from '../../shared/extensions/types'
 import {
@@ -347,9 +350,14 @@ export class ExtensionHost {
     const result = await killProcessTree(pid, {
       timeoutMs: this.dependencies.forceExitMs ?? TASKKILL_TIMEOUT_MS
     })
-    if (result === 'group') return
+    if (result === 'group' || result === 'taskkill') return
+    try {
+      child.kill()
+    } catch {
+      // 进程已退出。
+    }
     if (process.platform === 'win32') {
-      this.dependencies.onLog?.('warn', '结束扩展进程树失败，可能有子进程仍在运行')
+      this.dependencies.onLog?.('warn', '结束扩展进程树失败，已退化为直接结束扩展进程')
       return
     }
     this.dependencies.onLog?.('warn', '未能结束扩展进程组，已退化为只结束主进程')
@@ -881,80 +889,17 @@ export class ExtensionHost {
   }
 }
 
-/** 结束进程树；taskkill 只在 exit 0 时算成功，发起成功不算。 */
-export type ProcessTreeKillResult = 'group' | 'taskkill' | 'fallback'
-
-export async function killProcessTree(
-  pid: number | undefined,
-  options: { platform?: NodeJS.Platform; signal?: NodeJS.Signals; timeoutMs?: number } = {}
-): Promise<ProcessTreeKillResult> {
-  if (!pid) return 'fallback'
-  const platform = options.platform ?? process.platform
-  const signal = options.signal ?? 'SIGKILL'
-
-  if (platform === 'win32') {
-    return killWindowsProcessTree(pid, options.timeoutMs ?? TASKKILL_TIMEOUT_MS)
-  }
-
-  try {
-    process.kill(-pid, signal)
-    return 'group'
-  } catch {
-    try {
-      process.kill(pid, signal)
-    } catch {
-      // 进程已经退出。
-    }
-    return 'fallback'
-  }
-}
-
-/** Windows：等 taskkill 真实退出，只认 exit code 0。 */
-function killWindowsProcessTree(
-  pid: number,
-  timeoutMs: number
-): Promise<'taskkill' | 'fallback'> {
-  return new Promise((resolve) => {
-    let killer: ChildProcess
-    try {
-      killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
-        windowsHide: true,
-        stdio: 'ignore'
-      })
-    } catch {
-      // 无法启动 taskkill（极少数受限环境）：只能退化为「主进程可能已退出」。
-      resolve('fallback')
-      return
-    }
-
-    let settled = false
-    const finish = (result: 'taskkill' | 'fallback'): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve(result)
-    }
-
-    const timer = setTimeout(() => {
-      try {
-        killer.kill()
-      } catch {
-        // 已经退出。
-      }
-      finish('fallback')
-    }, timeoutMs)
-
-    killer.on('error', () => finish('fallback'))
-    killer.on('exit', (code) => finish(code === 0 ? 'taskkill' : 'fallback'))
-  })
-}
+export { killProcessTree, type ProcessTreeKillResult }
 
 /** 真实子进程：`ELECTRON_RUN_AS_NODE` 让 Electron 二进制以 Node 模式运行。 */
 export function forkExtensionHost(
   scriptPath: string
 ): (options: ExtensionHostSpawnOptions) => ExtensionHostChild {
   return (options) => {
+    // 脱离应用安装目录作为 cwd，避免扩展及其孙进程在 Windows 更新时锁住安装目录。
+    const cwd = existsSync(options.extensionDir) ? options.extensionDir : tmpdir()
     const child: ChildProcess = fork(scriptPath, [], {
+      cwd,
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
       serialization: 'advanced',
       // POSIX 上建立独立进程组，停止时才能一次覆盖扩展派生的子进程。
