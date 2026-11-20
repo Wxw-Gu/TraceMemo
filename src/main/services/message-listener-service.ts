@@ -101,6 +101,8 @@ export interface MessageListenerStats {
   delivered: number
   /** 因 dedup 被丢弃的重复投递数。 */
   deduped: number
+  /** 单个会话回读失败的次数（不中断同批其他会话）。 */
+  failedReadbacks: number
 }
 
 export interface MessageListenerOptions {
@@ -187,6 +189,43 @@ export function decodeSourcePayload(value: unknown): string | undefined {
 }
 
 /**
+ * 把 WCDB 行规范化为克制的 DTO。返回 null 表示这条行缺关键标识，无法投递。
+ *
+ * 纯函数，**唯一**的规范化实现：实时回读与数据库回补都走这里，
+ * 避免两条路径对同一条消息给出不同字段。
+ */
+export function normalizeIncomingMessage(
+  sessionUsername: string,
+  message: Wcdb4Message
+): NormalizedIncomingMessage | null {
+  const localId = message.mesLocalID === undefined ? '' : String(message.mesLocalID)
+  if (!localId) return null
+
+  const createTime = Number(message.msgCreateTime) || 0
+  if (!createTime) return null
+
+  const raw = (message.raw ?? {}) as Record<string, unknown>
+  const source = decodeSourcePayload(raw.source)
+  const senderId = message.sender ? String(message.sender) : undefined
+
+  return {
+    sessionId: sessionUsername,
+    localId,
+    serverId: message.serverId ? String(message.serverId) : undefined,
+    createTime,
+    messageType: Number(message.messageType) || 0,
+    // `mesDes === 0` 是自己发送。不用昵称 / sender 文本 / content / username 前缀判断。
+    isSelf: Number(message.mesDes) === 0,
+    senderId,
+    senderNickname: message.senderNickname ? String(message.senderNickname) : undefined,
+    content: message.msgContent ? String(message.msgContent) : undefined,
+    source,
+    isGroup: sessionUsername.endsWith('@chatroom'),
+    mentionTargets: extractMentionTargets(source)
+  }
+}
+
+/**
  * 实时消息监听。
  *
  * ⚠️ **已知 BLOCKER（必须如实标注）**：
@@ -233,7 +272,8 @@ export class MessageListenerService {
     coalescedEvents: 0,
     readbacks: 0,
     delivered: 0,
-    deduped: 0
+    deduped: 0,
+    failedReadbacks: 0
   }
 
   constructor(
@@ -323,12 +363,27 @@ export class MessageListenerService {
     try {
       let delivered = 0
       let sessions = 0
+      let failures = 0
 
       if (preciseSessions.length > 0) {
         for (const sessionId of preciseSessions) {
           if (this.disposed) return
-          delivered += await this.readbackSession(sessionId)
-          sessions += 1
+          try {
+            delivered += await this.readbackSession(sessionId)
+            sessions += 1
+          } catch (error) {
+            /*
+             * 单个会话读失败不能中断整批：pending 已在批次开始时清空，
+             * 跳出循环会让本批其余会话静默丢失。
+             */
+            failures += 1
+            this.counters.failedReadbacks += 1
+            console.warn(
+              `[MessageListener] session readback failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+          }
         }
       } else {
         // legacy：旧 runtime 的 payload 不带会话，只能回读「最近活跃会话」。
@@ -338,11 +393,12 @@ export class MessageListenerService {
         sessions = 1
       }
 
-      if (delivered > 0) {
+      if (delivered > 0 || failures > 0) {
         // 日志只记录协议版本、数量与耗时 —— **不含** wxid / 群名 / 昵称 / 正文 / source / sessionId。
         console.log(
           `[MessageListener] protocol=${preciseSessions.length > 0 ? 'v2' : 'v1'}` +
-            ` sessions=${sessions} delivered=${delivered} readbackMs=${Date.now() - startedAt}` +
+            ` sessions=${sessions} delivered=${delivered} failures=${failures}` +
+            ` readbackMs=${Date.now() - startedAt}` +
             ` events=${this.counters.nativeEvents} coalesced=${this.counters.coalescedEvents}`
         )
       }
@@ -411,31 +467,7 @@ export class MessageListenerService {
     sessionUsername: string,
     message: Wcdb4Message
   ): NormalizedIncomingMessage | null {
-    const localId = message.mesLocalID === undefined ? '' : String(message.mesLocalID)
-    if (!localId) return null
-
-    const createTime = Number(message.msgCreateTime) || 0
-    if (!createTime) return null
-
-    const raw = (message.raw ?? {}) as Record<string, unknown>
-    const source = decodeSourcePayload(raw.source)
-    const senderId = message.sender ? String(message.sender) : undefined
-
-    return {
-      sessionId: sessionUsername,
-      localId,
-      serverId: message.serverId ? String(message.serverId) : undefined,
-      createTime,
-      messageType: Number(message.messageType) || 0,
-      // `mesDes === 0` 是自己发送。不用昵称 / sender 文本 / content / username 前缀判断。
-      isSelf: Number(message.mesDes) === 0,
-      senderId,
-      senderNickname: message.senderNickname ? String(message.senderNickname) : undefined,
-      content: message.msgContent ? String(message.msgContent) : undefined,
-      source,
-      isGroup: sessionUsername.endsWith('@chatroom'),
-      mentionTargets: extractMentionTargets(source)
-    }
+    return normalizeIncomingMessage(sessionUsername, message)
   }
 
   /** 登记并返回「是否是第一次见到」。同时做 TTL + 容量淘汰。 */

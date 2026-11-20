@@ -105,7 +105,8 @@ describe('mention parser（纯函数）', () => {
   })
 
   it('多人 @（逗号分隔）能够拆分为独立 username 列表', () => {
-    const source = '<msgsource><atuserlist><![CDATA[,OTHER_USER,SELF_USER]]></atuserlist></msgsource>'
+    const source =
+      '<msgsource><atuserlist><![CDATA[,OTHER_USER,SELF_USER]]></atuserlist></msgsource>'
     expect(extractMentionTargets(source)).toEqual(['OTHER_USER', 'SELF_USER'])
   })
 })
@@ -149,8 +150,9 @@ describe('coalesce：一批 native event 只回读一次', () => {
     for (let index = 0; index < 17; index += 1) listener.handleNativeChange()
     await flush()
 
-    expect((client as unknown as { getMessagesAsync: ReturnType<typeof vi.fn> }).getMessagesAsync)
-      .toHaveBeenCalledTimes(1)
+    expect(
+      (client as unknown as { getMessagesAsync: ReturnType<typeof vi.fn> }).getMessagesAsync
+    ).toHaveBeenCalledTimes(1)
     expect(received).toHaveLength(1)
     expect(listener.stats()).toMatchObject({
       nativeEvents: 17,
@@ -186,9 +188,9 @@ describe('dedup', () => {
     listener.handleNativeChange()
     await flush()
     // 换成另一个 localId 再读一轮
-    ;(client as unknown as { getMessagesAsync: ReturnType<typeof vi.fn> }).getMessagesAsync.mockResolvedValue(
-      [makeMessage({ mesLocalID: '101' })]
-    )
+    ;(
+      client as unknown as { getMessagesAsync: ReturnType<typeof vi.fn> }
+    ).getMessagesAsync.mockResolvedValue([makeMessage({ mesLocalID: '101' })])
     listener.handleNativeChange()
     await flush()
 
@@ -201,9 +203,9 @@ describe('dedup', () => {
     collect(listener)
 
     const send = async (localId: string): Promise<void> => {
-      ;(client as unknown as { getMessagesAsync: ReturnType<typeof vi.fn> }).getMessagesAsync.mockResolvedValue(
-        [makeMessage({ mesLocalID: localId })]
-      )
+      ;(
+        client as unknown as { getMessagesAsync: ReturnType<typeof vi.fn> }
+      ).getMessagesAsync.mockResolvedValue([makeMessage({ mesLocalID: localId })])
       listener.handleNativeChange()
       await flush()
     }
@@ -263,9 +265,7 @@ describe('self / incoming', () => {
 describe('normalize 输出', () => {
   it('群消息：isGroup = true，且 mentionTargets 来自 source', async () => {
     const source = '<msgsource><atuserlist><![CDATA[SELF_USER]]></atuserlist></msgsource>'
-    const client = makeClient([
-      makeMessage({ raw: { source: await zstdBuffer(source) } })
-    ])
+    const client = makeClient([makeMessage({ raw: { source: await zstdBuffer(source) } })])
     const listener = new MessageListenerService(client)
     collect(listener)
 
@@ -414,7 +414,12 @@ describe('parseMonitorEvent（协议解析）', () => {
 describe('MessageListener · precise session path', () => {
   const v2Event = (sessionId: string) =>
     parseMonitorEvent(
-      JSON.stringify({ version: 2, kind: 'message_change', session_id: sessionId, table: 'message' })
+      JSON.stringify({
+        version: 2,
+        kind: 'message_change',
+        session_id: sessionId,
+        table: 'message'
+      })
     )
   const v1Event = () =>
     parseMonitorEvent(JSON.stringify({ db: 'session.db', table: 'Session', action: 'update' }))
@@ -517,5 +522,176 @@ describe('MessageListener · precise session path', () => {
     // 回读了两次（两次事件各一个窗口），但同一条消息只投递一次。
     expect(calls).toEqual(['A@chatroom', 'A@chatroom'])
     expect(received).toHaveLength(1)
+  })
+})
+
+/**
+ * 回读进行中到达的事件必须被补读。
+ *
+ * `develop` 已有 `pendingReadback` 机制；这一组锁的是它的边界行为，
+ * 以及本分支补充的「单会话失败隔离」。
+ */
+describe('MessageListener · 回读进行中到达的事件', () => {
+  const v2Event = (sessionId: string) =>
+    parseMonitorEvent(
+      JSON.stringify({
+        version: 2,
+        kind: 'message_change',
+        session_id: sessionId,
+        table: 'message'
+      })
+    )
+  const v1Event = () =>
+    parseMonitorEvent(JSON.stringify({ db: 'session.db', table: 'Session', action: 'update' }))
+
+  it('A 回读未完成时到达的 B 事件不会丢，A 结束后补读 B', async () => {
+    let releaseA: ((rows: Wcdb4Message[]) => void) | null = null
+    const calls: string[] = []
+    const client = {
+      getSessions: vi.fn(() => [{ username: 'A@chatroom' }]),
+      getMessagesAsync: vi.fn((sessionId: string) => {
+        calls.push(sessionId)
+        if (sessionId === 'A@chatroom' && !releaseA) {
+          return new Promise<Wcdb4Message[]>((resolve) => {
+            releaseA = resolve
+          })
+        }
+        return Promise.resolve([
+          makeMessage({ mesLocalID: sessionId === 'B@chatroom' ? '2' : '1' })
+        ])
+      })
+    } as unknown as Wcdb4Client
+
+    const listener = new MessageListenerService(client)
+    collect(listener)
+
+    listener.handleNativeChange(v2Event('A@chatroom'))
+    await vi.advanceTimersByTimeAsync(130)
+    expect(calls).toEqual(['A@chatroom'])
+
+    // A 还在回读，B 在这时到达。
+    listener.handleNativeChange(v2Event('B@chatroom'))
+    await vi.advanceTimersByTimeAsync(200)
+    expect(calls).toEqual(['A@chatroom'])
+    expect(received).toHaveLength(0)
+
+    releaseA!([makeMessage({ mesLocalID: '1' })])
+    // develop 的补读走 coalesce 窗口（120ms），不是 0ms。
+    await vi.advanceTimersByTimeAsync(150)
+
+    expect(calls).toEqual(['A@chatroom', 'B@chatroom'])
+    expect(received.map((message) => message.localId).sort()).toEqual(['1', '2'])
+  })
+
+  it('回读进行中同一会话的新消息会在补读时投递', async () => {
+    let releaseFirst: ((rows: Wcdb4Message[]) => void) | null = null
+    let round = 0
+    const client = {
+      getSessions: vi.fn(() => [{ username: 'A@chatroom' }]),
+      getMessagesAsync: vi.fn(() => {
+        round += 1
+        if (round === 1) {
+          return new Promise<Wcdb4Message[]>((resolve) => {
+            releaseFirst = resolve
+          })
+        }
+        return Promise.resolve([makeMessage({ mesLocalID: '1' }), makeMessage({ mesLocalID: '2' })])
+      })
+    } as unknown as Wcdb4Client
+
+    const listener = new MessageListenerService(client)
+    collect(listener)
+
+    listener.handleNativeChange(v2Event('A@chatroom'))
+    await vi.advanceTimersByTimeAsync(130)
+    listener.handleNativeChange(v2Event('A@chatroom'))
+    await vi.advanceTimersByTimeAsync(50)
+
+    releaseFirst!([makeMessage({ mesLocalID: '1' })])
+    await vi.advanceTimersByTimeAsync(150)
+
+    expect(round).toBe(2)
+    expect(received.map((message) => message.localId)).toEqual(['1', '2'])
+  })
+
+  it('回读进行中到达的 legacy 事件同样会补读', async () => {
+    let releaseFirst: ((rows: Wcdb4Message[]) => void) | null = null
+    let round = 0
+    const client = {
+      getSessions: vi.fn(() => [{ username: 'recent@chatroom' }]),
+      getMessagesAsync: vi.fn(() => {
+        round += 1
+        if (round === 1) {
+          return new Promise<Wcdb4Message[]>((resolve) => {
+            releaseFirst = resolve
+          })
+        }
+        return Promise.resolve([makeMessage({ mesLocalID: '7' })])
+      })
+    } as unknown as Wcdb4Client
+
+    const listener = new MessageListenerService(client)
+    collect(listener)
+
+    listener.handleNativeChange(v1Event())
+    await vi.advanceTimersByTimeAsync(130)
+    listener.handleNativeChange(v1Event())
+    await vi.advanceTimersByTimeAsync(150)
+
+    releaseFirst!([])
+    await vi.advanceTimersByTimeAsync(150)
+
+    expect(round).toBe(2)
+    expect(received.map((message) => message.localId)).toEqual(['7'])
+  })
+
+  it('单个会话回读失败不会让同批其他会话丢失', async () => {
+    const calls: string[] = []
+    const client = {
+      getSessions: vi.fn(() => [{ username: 'A@chatroom' }]),
+      getMessagesAsync: vi.fn(async (sessionId: string) => {
+        calls.push(sessionId)
+        if (sessionId === 'A@chatroom') throw new Error('shard unavailable')
+        return [makeMessage({ mesLocalID: sessionId === 'B@chatroom' ? '2' : '3' })]
+      })
+    } as unknown as Wcdb4Client
+
+    const listener = new MessageListenerService(client)
+    collect(listener)
+
+    listener.handleNativeChange(v2Event('A@chatroom'))
+    listener.handleNativeChange(v2Event('B@chatroom'))
+    listener.handleNativeChange(v2Event('C@chatroom'))
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(calls.sort()).toEqual(['A@chatroom', 'B@chatroom', 'C@chatroom'])
+    expect(received.map((message) => message.sessionId).sort()).toEqual([
+      'B@chatroom',
+      'C@chatroom'
+    ])
+    expect(listener.stats().failedReadbacks).toBe(1)
+  })
+
+  it('三个会话在同一窗口同时来消息，全部投递（不是只读最近一个）', async () => {
+    const calls: string[] = []
+    const client = {
+      getSessions: vi.fn(() => [{ username: 'recent@chatroom' }]),
+      getMessagesAsync: vi.fn(async (sessionId: string) => {
+        calls.push(sessionId)
+        return [makeMessage({ mesLocalID: sessionId })]
+      })
+    } as unknown as Wcdb4Client
+
+    const listener = new MessageListenerService(client)
+    collect(listener)
+
+    listener.handleNativeChange(v2Event('A@chatroom'))
+    listener.handleNativeChange(v2Event('B@chatroom'))
+    listener.handleNativeChange(v2Event('C@chatroom'))
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(calls.sort()).toEqual(['A@chatroom', 'B@chatroom', 'C@chatroom'])
+    expect(received).toHaveLength(3)
+    expect(listener.stats().readbacks).toBe(3)
   })
 })

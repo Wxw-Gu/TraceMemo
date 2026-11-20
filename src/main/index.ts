@@ -82,9 +82,11 @@ import { KeyService as KeyServiceWin } from './key-service-win'
 import * as chat from './services/chat-service'
 import {
   apiServer,
+  setAgentTaskInspector,
   setLocalGroupStatsService,
   setLocalQueryApiService,
-  setLocalVoiceTranscriptSnapshotProvider
+  setLocalVoiceTranscriptSnapshotProvider,
+  setMessageEventBroker
 } from './http-server'
 import { skillResourceService } from './services/skill-resource-service'
 import { buildLocalApiCurlCommand, testLocalApiRequest } from './services/local-api-test-service'
@@ -187,6 +189,14 @@ import {
   configureWechatLocalExitNotice,
   wechatLocalExitNoticeService
 } from './services/wechat-local-exit-notice-service'
+import { MessageEventBroker } from './services/message-event-broker'
+import { AgentTaskDispatcher } from './services/agent-task-dispatcher'
+import { AgentTaskStore } from './services/agent-task-store'
+import {
+  loadWorkBuddyAgentSettings,
+  loadWorkBuddyCredentials
+} from './services/agent-task-config'
+import { WorkBuddyAgentTaskProvider } from './services/workbuddy-agent-provider'
 
 /** 「微信内退群监控消息」覆盖的群聊数（开关卡片的范围说明用，不是覆盖率）。 */
 function exitNoticeGroupCount(): number {
@@ -691,6 +701,90 @@ let recallArchiveMonitor: RecallArchiveMonitor | null = null
 let recallProtectionGeneration = 0
 let recallJournalTimer: NodeJS.Timeout | null = null
 let wcdbBootstrapPromise: Promise<unknown> | null = null
+
+/**
+ * 会话 username → md5。
+ *
+ * `messageRef` 的 `c` 字段是 **contact.md5**（见 `local-query-api-service` 的
+ * `toQueryMessage(contact.md5, ...)`），而 MessageListener 只持有 username。
+ * 事件层必须在这里换一次，否则发出去的 messageRef 无法被
+ * `/api/v1/query/message-context` 反查到会话。
+ */
+function resolveConversationMd5(sessionId: string): string | undefined {
+  try {
+    return chat.getChatDb()?.getWcdb4Client()?.md5(sessionId) || undefined
+  } catch {
+    return undefined
+  }
+}
+
+let messageEventBroker: MessageEventBroker | null = null
+
+/**
+ * 实时事件代理（单例）。
+ *
+ * 复用 MessageListener 已经产生的事件，**不监听数据库**——数据库监控只有
+ * `startMonitor` 一处。DB 句柄通过 `chat.getChatDb()` 动态取得，
+ * 所以切账号 / 重连后不需要重建 broker，已有 SSE 订阅也不会被切断。
+ */
+function ensureMessageEventBroker(): MessageEventBroker {
+  if (messageEventBroker) return messageEventBroker
+  messageEventBroker = new MessageEventBroker({
+    resolveConversationId: resolveConversationMd5,
+    isDatabaseReady: () => chat.isReady(),
+    readMessages: async (sessionIdOrMd5, startTimeSec, endTimeSec, limit) => {
+      const client = chat.getChatDb()?.getWcdb4Client()
+      if (!client) return []
+      return client.getMessagesAsync(sessionIdOrMd5, startTimeSec, endTimeSec, { limit })
+    },
+    resolveSessionId: (conversationId) => {
+      const client = chat.getChatDb()?.getWcdb4Client()
+      if (!client) return undefined
+      try {
+        return client.getSessions().find((session) => client.md5(session.username) === conversationId)
+          ?.username
+      } catch {
+        return undefined
+      }
+    }
+  })
+  setMessageEventBroker(messageEventBroker)
+  return messageEventBroker
+}
+
+let agentTaskDispatcher: AgentTaskDispatcher | null = null
+
+/**
+ * `/ai` 任务投递。
+ *
+ * 配置默认 `enabled: false`；没有白名单会话时**不处理任何消息**。
+ * 凭证只从环境变量读取，缺凭证时任务会被记成 `auth_failed`，不会静默跳过。
+ */
+function ensureAgentTaskDispatcher(): AgentTaskDispatcher {
+  if (agentTaskDispatcher) return agentTaskDispatcher
+  const settings = loadWorkBuddyAgentSettings()
+  const store = new AgentTaskStore({
+    filePath: path.join(app.getPath('userData'), 'agent-tasks.json')
+  })
+  const dispatcher = new AgentTaskDispatcher({
+    settings,
+    store,
+    provider: new WorkBuddyAgentTaskProvider({
+      baseUrl: settings.baseUrl,
+      timeoutMs: settings.timeoutMs,
+      credentials: loadWorkBuddyCredentials()
+    }),
+    resolveConversationId: resolveConversationMd5
+  })
+  setAgentTaskInspector({
+    list: (limit) => store.list(limit),
+    get: (id) => store.get(id)
+  })
+  if (settings.enabled) dispatcher.start()
+  agentTaskDispatcher = dispatcher
+  return dispatcher
+}
+
 type ColdImageLoadItem = {
   priority: number
   sequence: number
@@ -1113,6 +1207,10 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
   }
 
   try {
+    // 事件代理必须在数据库初始化之前就存在：API server 可能先启动，
+    // 此时 SSE 应当能如实报告 database=unavailable，而不是把连接打回 503。
+    ensureMessageEventBroker()
+    ensureAgentTaskDispatcher()
     const migration = isUserDataIsolated ? null : await runFirstLaunchMigration(appDataRoots)
     apiTokenStore.setAutomaticGenerationBlocked(migration?.tokenBlockReason)
     if (!migration) {
@@ -1746,6 +1844,27 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
               ` group=${message.isGroup} self=${message.isSelf}` +
               ` mentions=${message.mentionTargets.length}`
           )
+          /*
+           * 实时事件是 Automation 之外的第二个消费者，两者互不依赖：
+           * broker 只搬运已经回读并规范化的消息，不触发自动化、不调 AI。
+           * 放在 Automation 之前，保证后者异常不会让 SSE 订阅者漏事件。
+           */
+          ensureMessageEventBroker().publish(message)
+          try {
+            void agentTaskDispatcher?.handleMessage(message).catch((error) => {
+              console.warn(
+                `[AgentTask] handleMessage failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              )
+            })
+          } catch (error) {
+            console.warn(
+              `[AgentTask] 未初始化，已跳过本次消息: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+          }
           // Automation 自带 isSelf / cooldown / 同消息幂等三重闸，不会形成回复循环。
           // 用 try 包住同步那一段：`getAutomationService()` 在未初始化时会抛，
           // 而 `.catch()` 只能接住异步拒绝 —— 漏了这层就会把异常抛进 MessageListener 的投递循环。

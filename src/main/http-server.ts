@@ -47,6 +47,14 @@ import type {
   VoiceTranscriptState
 } from '../shared/voice-recognition'
 import { voiceMessageReferenceOf } from './voice-pipeline/voice-message-identity'
+import type {
+  MessageBrokerStatus,
+  MessageEventBroker,
+  MessageEventRecord,
+  MessageGap,
+  MessageSubscription
+} from './services/message-event-broker'
+import type { AgentTaskRecord, AgentTaskView } from '../shared/agent-task'
 
 export const DEFAULT_HTTP_HOST = '127.0.0.1'
 export const DEFAULT_HTTP_PORT = 6131
@@ -83,12 +91,39 @@ export interface HttpServerOptions {
   appVersionProvider?: () => string
   wechatSendCapabilityProvider?: () => Promise<PersonalWechatSendCapability>
   wechatSendExecutor?: (request: WechatActionRequest) => Promise<WechatActionResult>
+  /** 实时消息事件代理。未注入时 `/api/v1/events/messages` 返回 503。 */
+  messageEventBroker?: MessageEventBroker
+  /** SSE 心跳间隔（毫秒）。测试用；生产默认 15s。 */
+  messageEventsHeartbeatMs?: number
 }
 
 let configuredQueryApiService: LocalQueryApiService | undefined
 let configuredGroupStatsService: Pick<GroupStatsService, 'getMemberStats'> | undefined
+let configuredMessageEventBroker: MessageEventBroker | undefined
 export function setLocalQueryApiService(service: LocalQueryApiService | undefined): void {
   configuredQueryApiService = service
+}
+
+/**
+ * 注入实时消息事件代理。
+ *
+ * 刻意用模块级注入而不是每次 `startHttpServer` 传参：API server 可能在数据库
+ * 初始化之前启动，事件代理必须在数据库就绪前就存在，才能在 SSE 里如实报告
+ * `database: unavailable` 而不是把连接直接打回 503。
+ */
+export function setMessageEventBroker(broker: MessageEventBroker | undefined): void {
+  configuredMessageEventBroker = broker
+}
+
+export interface AgentTaskInspector {
+  list(limit: number): AgentTaskRecord[]
+  get(id: string): AgentTaskRecord | undefined
+}
+
+let configuredAgentTaskInspector: AgentTaskInspector | undefined
+/** 注入只读任务视图。写入仍由 AgentTaskDispatcher 独占。 */
+export function setAgentTaskInspector(inspector: AgentTaskInspector | undefined): void {
+  configuredAgentTaskInspector = inspector
 }
 
 export function setLocalGroupStatsService(
@@ -1364,6 +1399,263 @@ function createAgentApiRoute(
   })
 }
 
+const MESSAGE_EVENTS_ROUTE = '/api/v1/events/messages'
+const AGENT_TASKS_ROUTE = '/api/v1/agent-tasks'
+const DEFAULT_MESSAGE_EVENTS_HEARTBEAT_MS = 15_000
+const MESSAGE_EVENTS_MAX_FILTERS = 20
+
+/** SSE 连接句柄：`close` 优雅结束，`destroy` 用于服务停止时强制释放。 */
+interface MessageEventStreamHandle {
+  close(): void
+  destroy(): void
+}
+
+function writeSseFrame(
+  res: ServerResponse,
+  frame: { id?: string; event?: string; data?: unknown }
+): boolean {
+  try {
+    let text = ''
+    if (frame.id) text += `id: ${frame.id}\n`
+    if (frame.event) text += `event: ${frame.event}\n`
+    if (frame.data !== undefined) text += `data: ${JSON.stringify(frame.data)}\n`
+    res.write(`${text}\n`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 解析会话过滤参数。
+ *
+ * 只接受 `conversation_id` / `conversation_ids`（可重复、可逗号分隔），
+ * 值必须是会话 md5 —— 与 `messageRef.c` 同口径。username 不接受：
+ * 事件层无法把 username 当作稳定会话标识交给下游。
+ */
+function parseConversationFilter(url: URL): string[] {
+  const raw = [
+    ...url.searchParams.getAll('conversation_id'),
+    ...url.searchParams.getAll('conversation_ids')
+  ]
+  const ids: string[] = []
+  for (const value of raw) {
+    for (const part of value.split(',')) {
+      const trimmed = part.trim()
+      if (!trimmed) continue
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(trimmed)) {
+        throw new Error('会话标识格式无效：需要 conversation md5')
+      }
+      if (!ids.includes(trimmed)) ids.push(trimmed)
+    }
+  }
+  if (ids.length > MESSAGE_EVENTS_MAX_FILTERS) {
+    throw new Error(`conversation_id 最多 ${MESSAGE_EVENTS_MAX_FILTERS} 个`)
+  }
+  return ids
+}
+
+function createMessageEventsRoute(
+  pathname: string,
+  brokerProvider: () => MessageEventBroker | undefined,
+  trackStream: (handle: MessageEventStreamHandle) => () => void,
+  heartbeatMs: number
+): RouteHandler | undefined {
+  if (pathname !== MESSAGE_EVENTS_ROUTE) return undefined
+
+  return withMethods(['GET'], async ({ req, res, url }) => {
+    const broker = brokerProvider()
+    if (!broker) {
+      return sendJson(res, 503, {
+        error: 'events_unavailable',
+        message: '实时消息事件服务尚未就绪'
+      })
+    }
+
+    let conversationIds: string[]
+    try {
+      conversationIds = parseConversationFilter(url)
+    } catch (error) {
+      return sendError(res, 400, error instanceof Error ? error.message : String(error))
+    }
+
+    const headerLastEventId = req.headers['last-event-id']
+    const lastEventId =
+      (typeof headerLastEventId === 'string' ? headerLastEventId : undefined) ||
+      url.searchParams.get('last_event_id') ||
+      undefined
+    const backfillEnabled = url.searchParams.get('backfill') !== '0'
+    const filterMode = conversationIds.length > 0 ? 'conversation' : 'all'
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'X-Request-Id': String(res.getHeader('X-Request-Id') || '')
+    })
+    res.flushHeaders?.()
+    req.socket?.setNoDelay(true)
+    // 重连间隔由服务端给出，客户端不必自己猜。
+    res.write('retry: 3000\n\n')
+
+    let closed = false
+    let subscription: MessageSubscription | null = null
+    let heartbeat: ReturnType<typeof setInterval> | null = null
+    let untrack: (() => void) | null = null
+
+    const cleanup = (): void => {
+      if (closed) return
+      closed = true
+      if (heartbeat) {
+        clearInterval(heartbeat)
+        heartbeat = null
+      }
+      subscription?.close()
+      untrack?.()
+      try {
+        res.end()
+      } catch {
+        // 连接可能已经被对端关掉，这里只是幂等收尾。
+      }
+    }
+
+    const destroy = (): void => {
+      cleanup()
+      try {
+        res.destroy()
+      } catch {
+        // 同上。
+      }
+    }
+
+    untrack = trackStream({ close: cleanup, destroy })
+    req.on('close', cleanup)
+    res.on('close', cleanup)
+    res.on('error', cleanup)
+
+    try {
+      subscription = broker.subscribe(
+        { conversationIds, lastEventId, backfill: backfillEnabled },
+        {
+          onStatus(status: MessageBrokerStatus & { subscriptionId: string }) {
+            writeSseFrame(res, {
+              event: 'status',
+              data: {
+                ...status,
+                filter: filterMode,
+                conversationCount: conversationIds.length,
+                heartbeatMs,
+                backfill: backfillEnabled ? 'enabled' : 'disabled'
+              }
+            })
+          },
+          onEvent(event: MessageEventRecord, origin: 'live' | 'replay' | 'db_backfill') {
+            if (closed) return
+            if (
+              !writeSseFrame(res, {
+                id: String(event.seq),
+                event: 'message',
+                data: { ...event, origin }
+              })
+            ) {
+              cleanup()
+            }
+          },
+          onGap(gap: MessageGap) {
+            writeSseFrame(res, { event: 'gap', data: gap })
+          }
+        }
+      )
+    } catch (error) {
+      writeSseFrame(res, {
+        event: 'error',
+        data: {
+          error: 'too_many_subscribers',
+          message: error instanceof Error ? error.message : String(error)
+        }
+      })
+      cleanup()
+      return
+    }
+
+    let lastDatabase = broker.status().database
+    heartbeat = setInterval(() => {
+      if (closed) return
+      res.write(`: heartbeat ${Date.now()}\n\n`)
+      /*
+       * 数据库断开/重连不是错误，是订阅状态的一部分：
+       * 只在这个状态真的变化时补发一条 status，避免每 15s 刷一次无信息事件。
+       */
+      const nextDatabase = broker.status().database
+      if (nextDatabase !== lastDatabase) {
+        lastDatabase = nextDatabase
+        writeSseFrame(res, {
+          event: 'status',
+          data: { ...broker.status(), subscriptionId: subscription?.id ?? '', filter: filterMode }
+        })
+      }
+    }, heartbeatMs)
+    heartbeat.unref?.()
+  })
+}
+
+/** 记录 → 对外视图。`triggerKey` 属于内部幂等键，不对外暴露。 */
+function toAgentTaskView(record: AgentTaskRecord): AgentTaskView {
+  return {
+    id: record.id,
+    provider: record.provider,
+    conversationId: record.conversationId,
+    status: record.status,
+    prompt: record.prompt,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    ...(record.submittedAt !== undefined ? { submittedAt: record.submittedAt } : {}),
+    ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
+    ...(record.externalMessageId ? { externalMessageId: record.externalMessageId } : {}),
+    ...(record.errorKind ? { errorKind: record.errorKind } : {}),
+    ...(record.errorMessage ? { errorMessage: record.errorMessage } : {}),
+    replies: record.replies
+  }
+}
+
+function createAgentTaskRoute(
+  pathname: string,
+  inspectorProvider: () => AgentTaskInspector | undefined
+): RouteHandler | undefined {
+  if (pathname === AGENT_TASKS_ROUTE) {
+    return withMethods(['GET'], ({ res, url }) => {
+      const inspector = inspectorProvider()
+      if (!inspector) return sendError(res, 503, '任务服务尚未就绪')
+      const requested = Number(url.searchParams.get('limit') ?? '20')
+      const limit = Number.isFinite(requested)
+        ? Math.max(1, Math.min(Math.floor(requested), 100))
+        : 20
+      const tasks = inspector.list(limit).map(toAgentTaskView)
+      sendJson(res, 200, { count: tasks.length, tasks })
+    })
+  }
+
+  const prefix = `${AGENT_TASKS_ROUTE}/`
+  if (!pathname.startsWith(prefix)) return undefined
+  const rawId = pathname.slice(prefix.length)
+  if (!rawId || rawId.includes('/')) return undefined
+
+  return withMethods(['GET'], ({ res }) => {
+    const inspector = inspectorProvider()
+    if (!inspector) return sendError(res, 503, '任务服务尚未就绪')
+    let id: string
+    try {
+      id = decodeURIComponent(rawId)
+    } catch {
+      return sendError(res, 400, '任务 ID 无效')
+    }
+    const task = inspector.get(id)
+    if (!task) return sendError(res, 404, '任务不存在')
+    sendJson(res, 200, { task: toAgentTaskView(task) })
+  })
+}
+
 function requestIdFor(req: IncomingMessage): string {
   const incoming = req.headers['x-request-id']
   return typeof incoming === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(incoming)
@@ -1396,6 +1688,13 @@ export function startHttpServer(
       (() => personalWechatCapabilityService.getPersonalWechatSendCapability()),
     execute: options.wechatSendExecutor || ((request) => wechatActionGateway.execute(request))
   }
+  const messageEventBroker = options.messageEventBroker
+    ? () => options.messageEventBroker
+    : () => configuredMessageEventBroker
+  const messageEventsHeartbeatMs =
+    options.messageEventsHeartbeatMs ?? DEFAULT_MESSAGE_EVENTS_HEARTBEAT_MS
+  /** 活着的 SSE 连接。`server.close()` 会等长连接自然结束，必须先主动释放。 */
+  const eventStreams = new Set<MessageEventStreamHandle>()
   return new Promise((resolve, reject) => {
     const server: Server = http.createServer(async (req, res) => {
       const requestId = requestIdFor(req)
@@ -1419,6 +1718,16 @@ export function startHttpServer(
           createAgentApiRoute(url.pathname, agentApi) ||
           createWechatSendRoute(url.pathname, wechatSendApi) ||
           createScheduledReportRoute(url.pathname, scheduledReportApi) ||
+          createMessageEventsRoute(
+            url.pathname,
+            messageEventBroker,
+            (handle) => {
+              eventStreams.add(handle)
+              return () => eventStreams.delete(handle)
+            },
+            messageEventsHeartbeatMs
+          ) ||
+          createAgentTaskRoute(url.pathname, () => configuredAgentTaskInspector) ||
           (url.pathname.startsWith(QUERY_ROUTE_PREFIX)
             ? createQueryRoute(url.pathname, queryApi)
             : undefined) ||
@@ -1503,6 +1812,9 @@ export function startHttpServer(
             }
             // HTTP keep-alive 或长连接会阻塞 server.close()，退出时主动断开全部连接。
             const timer = setTimeout(finish, 1_500)
+            // SSE 是长连接：先按订阅句柄释放，再交给 server.close 收尾。
+            for (const stream of eventStreams) stream.destroy()
+            eventStreams.clear()
             server.close(() => finish())
             server.closeIdleConnections?.()
             server.closeAllConnections?.()
