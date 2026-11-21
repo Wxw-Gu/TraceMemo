@@ -38,7 +38,7 @@ export const messagesAroundRadii = (
 ): number[] => (anchorSeconds && anchorSeconds > 0 ? [baseRadius, widenRadius] : [])
 
 /** 有界窗口 + 精确身份定位。窗口按上限截断，绝不返回整段历史。 */
-export const sliceMessagesAroundWindow = <T extends { id?: unknown }>(
+export const sliceMessagesAroundWindow = <T extends { id?: unknown; createTime?: number }>(
   messages: T[],
   conversationId: string,
   targetMessageId: string,
@@ -46,9 +46,21 @@ export const sliceMessagesAroundWindow = <T extends { id?: unknown }>(
 ): { window: T[]; index: number; truncated: boolean } => {
   const truncated = messages.length > maxWindowMessages
   const window = truncated ? messages.slice(0, maxWindowMessages) : messages
-  const index = window.findIndex(
-    (message) =>
-      normalizeMessageIdentity(conversationId, String(message.id ?? ''))?.messageId === targetMessageId
-  )
+  const separator = targetMessageId.lastIndexOf(':')
+  const wantedTime = separator > 0 ? targetMessageId.slice(0, separator) : ''
+  const wantedLocalId = separator > 0 ? targetMessageId.slice(separator + 1) : ''
+  const matchesTarget = (message: T): boolean => {
+    const identity = normalizeMessageIdentity(conversationId, String(message.id ?? ''))
+    if (!identity) return false
+    // 裸 localId：旧调用方与 query API 的 `message.id` 都走这条。
+    if (identity.messageId === targetMessageId) return true
+    // 复合身份：SSE 的 messageRef 为 `createTime:localId`，必须同时比对时间。
+    return (
+      separator > 0 &&
+      identity.messageId === wantedLocalId &&
+      String(message.createTime ?? '') === wantedTime
+    )
+  }
+  const index = window.findIndex(matchesTarget)
   return { window, index, truncated }
 }

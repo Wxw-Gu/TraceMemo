@@ -64,7 +64,7 @@ function capabilityOf(
     supported: true,
     ready: true,
     status: 'ready',
-    capabilities: { text: true, image: true, voice: true },
+    capabilities: { text: true, image: true, voice: true, file: true },
     senderStatus: {} as PersonalWechatSendCapability['senderStatus'],
     message: '可以发送',
     ...overrides
@@ -161,6 +161,31 @@ describe('POST /api/v1/wechat/send', () => {
     })
     expect(absent.status).toBe(400)
     expect((await absent.json()).error).toContain('不存在')
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('type=file 时接受 filePath 与可选 fileName，并按 file 动作投递', async () => {
+    const filePath = path.join(root, '周报.txt')
+    await fs.writeFile(filePath, 'hello')
+
+    const response = await post({
+      to: 'filehelper',
+      type: 'file',
+      filePath,
+      fileName: '周报.txt'
+    })
+    expect(response.status).toBe(200)
+    expect((await response.json()).success).toBe(true)
+
+    const action = lastAction()
+    expect(action.purpose).toBe('api_file')
+    expect(action.content).toEqual({ type: 'file', path: filePath, name: '周报.txt' })
+  })
+
+  it('type=file 缺少 filePath 时返回 400，不进入投递', async () => {
+    const response = await post({ to: 'filehelper', type: 'file' })
+    expect(response.status).toBe(400)
+    expect((await response.json()).errorCode).toBe('INVALID_REQUEST')
     expect(execute).not.toHaveBeenCalled()
   })
 

@@ -4,6 +4,8 @@ import {
   MessageListenerService,
   decodeSourcePayload,
   extractMentionTargets,
+  isMessageIdentityUnsettled,
+  normalizeIncomingMessage,
   type NormalizedIncomingMessage
 } from '../../src/main/services/message-listener-service'
 import { parseMonitorEvent } from '../../src/main/wcdb4-client'
@@ -693,5 +695,135 @@ describe('MessageListener · 回读进行中到达的事件', () => {
     expect(calls.sort()).toEqual(['A@chatroom', 'B@chatroom', 'C@chatroom'])
     expect(received).toHaveLength(3)
     expect(listener.stats().readbacks).toBe(3)
+  })
+})
+
+describe('两阶段写库未稳定行延迟确认', () => {
+  const v2Event = (sessionId: string): ReturnType<typeof parseMonitorEvent> =>
+    parseMonitorEvent(
+      JSON.stringify({ version: 2, kind: 'message_change', session_id: sessionId, table: 'message' })
+    )
+
+  it('发送中中间态（status=1 / 缺 serverId / 缺 sender）暂缓投递，回填后再以 isSelf=true 投递', async () => {
+    let phase = 0
+    const client = {
+      getSessions: vi.fn(() => [{ username: SESSION_DIRECT }]),
+      getMessagesAsync: vi.fn(async () => {
+        phase += 1
+        if (phase === 1) {
+          return [
+            makeMessage({
+              mesLocalID: '501',
+              serverId: '0',
+              mesDes: 1,
+              sender: '',
+              raw: { status: 1 }
+            })
+          ]
+        }
+        return [
+          makeMessage({
+            mesLocalID: '501',
+            serverId: '7000000000000000501',
+            mesDes: 0,
+            sender: 'SELF_USER',
+            raw: { status: 2 }
+          })
+        ]
+      })
+    } as unknown as Wcdb4Client
+
+    const listener = new MessageListenerService(client, {
+      settleRetryMs: 400,
+      maxSettleWaitMs: 2_000
+    })
+    collect(listener)
+
+    listener.handleNativeChange(v2Event(SESSION_DIRECT))
+    await flush(200)
+    expect(received).toHaveLength(0)
+
+    await flush(450)
+    expect(received).toHaveLength(1)
+    expect(received[0].localId).toBe('501')
+    expect(received[0].isSelf).toBe(true)
+    expect(received[0].serverId).toBe('7000000000000000501')
+  })
+
+  it('超过最大等待时间仍未回填的未稳定行会兜底放行，不会永久丢消息', async () => {
+    const unsettled = makeMessage({
+      mesLocalID: '502',
+      serverId: undefined,
+      mesDes: 1,
+      sender: '',
+      raw: { status: 1 }
+    })
+    const client = makeClient([unsettled], SESSION_DIRECT)
+    const listener = new MessageListenerService(client, {
+      settleRetryMs: 300,
+      maxSettleWaitMs: 900
+    })
+    collect(listener)
+
+    listener.handleNativeChange(v2Event(SESSION_DIRECT))
+    await flush(200)
+    expect(received).toHaveLength(0)
+
+    await flush(1_200)
+    expect(received).toHaveLength(1)
+    expect(received[0].localId).toBe('502')
+  })
+
+  it('正常外部入站消息与系统消息不进入延迟暂存，立即投递', async () => {
+    const incoming = makeMessage({
+      mesLocalID: '503',
+      serverId: '7000000000000000503',
+      mesDes: 1,
+      sender: 'OTHER_USER',
+      raw: { status: 3 }
+    })
+    const systemMsg = makeMessage({
+      mesLocalID: '504',
+      serverId: undefined,
+      mesDes: 1,
+      messageType: '10000',
+      sender: '',
+      raw: {}
+    })
+    const normIncoming = normalizeIncomingMessage(SESSION_DIRECT, incoming)!
+    const normSystem = normalizeIncomingMessage(SESSION_DIRECT, systemMsg)!
+    expect(isMessageIdentityUnsettled(incoming, normIncoming)).toBe(false)
+    expect(isMessageIdentityUnsettled(systemMsg, normSystem)).toBe(false)
+
+    const client = makeClient([incoming, systemMsg], SESSION_DIRECT)
+    const listener = new MessageListenerService(client)
+    collect(listener)
+
+    listener.handleNativeChange(v2Event(SESSION_DIRECT))
+    await flush(200)
+    expect(received.map((m) => m.localId)).toEqual(['503', '504'])
+    expect(listener.stats().readbacks).toBe(1)
+  })
+
+  it('dispose 会取消待执行的未稳定行重试定时器', async () => {
+    const unsettled = makeMessage({
+      mesLocalID: '505',
+      serverId: '0',
+      mesDes: 1,
+      sender: '',
+      raw: { status: 1 }
+    })
+    const client = makeClient([unsettled], SESSION_DIRECT)
+    const listener = new MessageListenerService(client, { settleRetryMs: 400 })
+    collect(listener)
+
+    listener.handleNativeChange(v2Event(SESSION_DIRECT))
+    await flush(200)
+    expect(listener.stats().readbacks).toBe(1)
+
+    listener.dispose()
+    await flush(1_000)
+    expect(listener.stats().readbacks).toBe(1)
+    expect(received).toHaveLength(0)
   })
 })

@@ -87,7 +87,7 @@ Token 由应用生成并保存在本机，**不接受用环境变量覆盖**：A
 | 身份 | 你本人当前登录的微信账号 | 已扫码接入的机器人 |
 | 用途 | **以你的身份把消息发给别人**（好友 / 群 / 文件传输助手） | **机器人给自己发通知**（测试连通性） |
 | 前置条件 | 本机微信已启动，发送能力为 `ready` | 连接器为 `online` |
-| 内容类型 | `text` / `image` / `voice`，媒体只接受本地文件 | `text` / `image`（URL 或本地路径） |
+| 内容类型 | `text` / `image` / `voice` / `file`，媒体只接受本地文件 | `text` / `image`（URL 或本地路径） |
 | 典型失败 | 能力未就绪 `503`、发送失败 `502` | 连接器离线 `503`、凭证过期 `401` |
 
 ### 本地发送：`POST /api/v1/wechat/send`
@@ -100,6 +100,12 @@ curl -X POST http://127.0.0.1:6131/api/v1/wechat/send \
   -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"to":"filehelper","type":"text","text":"来自 Agent 的一条消息"}'
+
+# 发送本地文件（macOS / Windows 均走本机发送能力）
+curl -X POST http://127.0.0.1:6131/api/v1/wechat/send \
+  -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"filehelper","type":"file","filePath":"/abs/path/report.pdf","fileName":"周报.pdf"}'
 ```
 
 请求体：
@@ -107,9 +113,10 @@ curl -X POST http://127.0.0.1:6131/api/v1/wechat/send \
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `to` | 是 | 接收者：好友 wxid、群 id（以 `@chatroom` 结尾），或 `filehelper`（文件传输助手）。**不做昵称解析**，先调 `/api/v1/resolve?q=张三` 换 wxid |
-| `type` | 否 | `text`（默认）/ `image` / `voice` |
+| `type` | 否 | `text`（默认）/ `image` / `voice` / `file` |
 | `text` | `type=text` 时必填 | **最长 2000 字符**，超限返回 `400`，不会截断 |
-| `filePath` | `type=image\|voice` 时必填 | 本机**绝对路径**，必须已存在。不接受 URL —— 需要发网络图片时先落盘 |
+| `filePath` | `type=image\|voice\|file` 时必填 | 本机**绝对路径**，必须已存在。不接受 URL —— 需要发网络文件时先落盘 |
+| `fileName` | 否 | 仅 `type=file`：接收方看到的文件名。macOS 会透传；Windows 当前由 runtime 使用 `filePath` 的 basename，`fileName` 可能被忽略 |
 | `isGroup` | 否 | 通常可省略；`to` 以 `@chatroom` 结尾时自动判为群 |
 | `idempotencyKey` | 否 | 幂等键。**重试时请原样带上**，避免 Agent 超时重发导致重复消息 |
 

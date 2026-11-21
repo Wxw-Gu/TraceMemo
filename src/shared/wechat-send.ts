@@ -8,7 +8,19 @@
 
 export type WechatSendTransport = 'personal' | 'ilink'
 
-export type WechatSendType = 'text' | 'image' | 'voice' | 'file'
+/**
+ * 发送内容类型 —— 运行时白名单的**唯一真源**。
+ *
+ * HTTP 路由（`/api/v1/wechat/send`）直接引用这个数组，不再维护第二份。
+ * 新增类型时必须同步以下契约，否则会出现「代码能发、文档/能力探测说不能」的假缺口：
+ *
+ * 1. `docs/agent/api.md` 的「本地发送」字段表（`type` / 路径字段 / 备注）；
+ * 2. `docs/skill/tracememo-reader/SKILL.md` 的 `type` 字段（改完记得提升 frontmatter version）；
+ * 3. `PersonalWechatSendCapability.capabilities` 与各平台的 `send*` 分支；
+ * 4. `tests/integration/wechat-send-api.test.ts` 增加该类型的请求形状断言。
+ */
+export const WECHAT_SEND_TYPES = ['text', 'image', 'voice', 'file'] as const
+export type WechatSendType = (typeof WECHAT_SEND_TYPES)[number]
 
 /**
  * 统一发送请求。

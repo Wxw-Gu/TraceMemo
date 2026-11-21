@@ -39,6 +39,7 @@ import { LocalAgentApiError, LocalAgentApiService } from './services/local-agent
 import { wechatActionGateway } from './services/wechat-action-gateway'
 import type { WechatActionRequest, WechatActionResult } from '../shared/wechat-action'
 import type { PersonalWechatSendCapability } from '../shared/personal-wechat'
+import { WECHAT_SEND_TYPES, type WechatSendType } from '../shared/wechat-send'
 import type { GroupStatsService } from './services/group-stats-service'
 import { encodeMessageRef } from '../shared/local-query-api'
 import type {
@@ -48,6 +49,7 @@ import type {
 } from '../shared/voice-recognition'
 import { voiceMessageReferenceOf } from './voice-pipeline/voice-message-identity'
 import type {
+  MessageBackfillReport,
   MessageBrokerStatus,
   MessageEventBroker,
   MessageEventRecord,
@@ -622,8 +624,9 @@ const WECHAT_SEND_MAX_TEXT_LENGTH = 2_000
 const WECHAT_SEND_MAX_RECIPIENT_LENGTH = 512
 const WECHAT_SEND_MAX_IDEMPOTENCY_KEY_LENGTH = 200
 
-const WECHAT_SEND_CONTENT_TYPES = ['text', 'image', 'voice', 'file'] as const
-type WechatSendContentType = (typeof WECHAT_SEND_CONTENT_TYPES)[number]
+// 白名单真源在 `shared/wechat-send.ts`；这里只做别名，避免第二份清单漂移。
+const WECHAT_SEND_CONTENT_TYPES = WECHAT_SEND_TYPES
+type WechatSendContentType = WechatSendType
 
 interface WechatSendApiDependencies {
   getCapability: () => Promise<PersonalWechatSendCapability>
@@ -1564,6 +1567,10 @@ function createMessageEventsRoute(
           },
           onGap(gap: MessageGap) {
             writeSseFrame(res, { event: 'gap', data: gap })
+          },
+          onBackfill(report: MessageBackfillReport) {
+            // 明确告知客户端这次回补是否被上限截断，不能把部分回补当成全部。
+            writeSseFrame(res, { event: 'backfill', data: report })
           }
         }
       )

@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { createHash, randomUUID } from 'crypto'
 import fs from 'fs-extra'
 import path from 'path'
+import { isReadOnlyMode } from './read-only-mode'
 import type {
   PersonalWechatSendCapability,
   PersonalWechatSendRequest,
@@ -186,6 +187,22 @@ export class WechatActionGateway {
   }
 
   async execute(request: WechatActionRequest): Promise<WechatActionResult> {
+    /*
+     * 只读闸门必须在幂等查表**之前**：否则同一个 idempotencyKey 命中历史
+     * 已发送记录时，会直接返回旧的 sent 结果，看似没发、实际绕过了闸门。
+     */
+    if (isReadOnlyMode()) {
+      const startedAt = this.deps.now().toISOString()
+      return {
+        actionId: String(request?.id || '').trim() || randomUUID(),
+        status: 'blocked',
+        decision: 'block',
+        errorCode: 'READ_ONLY_MODE',
+        reason: '只读测试模式：不发送任何微信消息',
+        startedAt,
+        finishedAt: startedAt
+      }
+    }
     const normalized = normalizeActionRequest(request)
     const idempotencyKey = normalized ? this.idempotencyKey(normalized) : undefined
     if (idempotencyKey) {

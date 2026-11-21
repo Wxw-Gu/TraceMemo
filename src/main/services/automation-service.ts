@@ -16,6 +16,7 @@ import { buildEventId } from '../extensions/extension-event-bus'
 import type { PersonalWechatSendCapability } from '../../shared/personal-wechat'
 import type { Wcdb4Client } from '../wcdb4-client'
 import type { NormalizedIncomingMessage } from './message-listener-service'
+import { isReadOnlyMode, logReadOnlySkip } from './read-only-mode'
 import { getSelfAccountInfo, listContacts } from './chat-service'
 import { getPersonalWechatSendCapability } from './personal-wechat-capability-service'
 import {
@@ -213,6 +214,10 @@ export class AutomationService {
    * 抛出去会影响后续监听者。
    */
   async handleMessage(message: NormalizedIncomingMessage): Promise<void> {
+    if (isReadOnlyMode()) {
+      logReadOnlySkip('自动化消息处理')
+      return
+    }
     let rules: AutomationRule[]
     try {
       rules = this.ruleStore.listRules()
@@ -340,6 +345,10 @@ export class AutomationService {
    * 该事件的幂等位（用户随后真的补勾了那个群，反而发不出去）。
    */
   async handleGroupExit(event: GroupMemberExitedEvent): Promise<void> {
+    if (isReadOnlyMode()) {
+      logReadOnlySkip('退群自动化通知')
+      return
+    }
     const eventId = String(event?.eventId || '').trim()
     let rule: AutomationRule | undefined
     try {
@@ -474,6 +483,10 @@ export class AutomationService {
     ruleId: string,
     options: { trigger: 'schedule' | 'manual'; scheduledSlot?: string }
   ): Promise<ScheduledRuleRunOutcome> {
+    if (isReadOnlyMode()) {
+      logReadOnlySkip('定时日报执行')
+      return { executed: false, reason: 'read_only' }
+    }
     const key = String(ruleId || '').trim()
     if (!key) return { executed: false, reason: 'missing_rule' }
 

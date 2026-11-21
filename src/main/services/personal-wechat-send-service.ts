@@ -13,6 +13,7 @@ import {
 import { homedir, tmpdir } from 'os'
 import { delimiter, dirname, extname, join, sep, basename } from 'path'
 import { resolveBundledFfmpegPath } from '../ffmpeg-path'
+import { isReadOnlyMode, logReadOnlySkip } from './read-only-mode'
 import { promisify } from 'util'
 import type {
   PersonalWechatSendRequest,
@@ -809,6 +810,14 @@ export class PersonalWechatSendService {
   }
 
   async send(request: PersonalWechatSendRequest): Promise<PersonalWechatSendResult> {
+    if (isReadOnlyMode()) {
+      logReadOnlySkip('个人微信发送')
+      return {
+        success: false,
+        status: await this.getStatus(),
+        error: '只读测试模式：不发送任何微信消息'
+      }
+    }
     if (process.platform === 'win32') return this.sendWindows(request)
     if (process.platform === 'darwin') {
       if (request.type === 'text') return this.sendMacText(request)

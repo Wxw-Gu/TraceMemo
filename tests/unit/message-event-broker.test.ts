@@ -3,6 +3,7 @@ import {
   MessageEventBroker,
   eventIdFor,
   parseLastEventId,
+  type MessageBackfillReport,
   type MessageEventOrigin,
   type MessageEventRecord,
   type MessageGap
@@ -53,6 +54,7 @@ interface Collected {
   statuses: unknown[]
   events: Array<{ event: MessageEventRecord; origin: MessageEventOrigin }>
   gaps: MessageGap[]
+  backfills: MessageBackfillReport[]
   order: string[]
 }
 
@@ -61,9 +63,10 @@ function makeSink(): Collected & {
     onStatus: (status: unknown) => void
     onEvent: (event: MessageEventRecord, origin: MessageEventOrigin) => void
     onGap: (gap: MessageGap) => void
+    onBackfill: (report: MessageBackfillReport) => void
   }
 } {
-  const collected: Collected = { statuses: [], events: [], gaps: [], order: [] }
+  const collected: Collected = { statuses: [], events: [], gaps: [], backfills: [], order: [] }
   return {
     ...collected,
     get statuses() {
@@ -74,6 +77,9 @@ function makeSink(): Collected & {
     },
     get gaps() {
       return collected.gaps
+    },
+    get backfills() {
+      return collected.backfills
     },
     get order() {
       return collected.order
@@ -90,6 +96,10 @@ function makeSink(): Collected & {
       onGap: (gap) => {
         collected.gaps.push(gap)
         collected.order.push('gap')
+      },
+      onBackfill: (report) => {
+        collected.backfills.push(report)
+        collected.order.push('backfill')
       }
     }
   }
@@ -100,6 +110,8 @@ function makeBroker(
     bufferSize?: number
     dbReady?: boolean
     reader?: ReturnType<typeof vi.fn>
+    backfillLimit?: number
+    backfillMaxConversations?: number
   } = {}
 ): MessageEventBroker {
   return new MessageEventBroker({
@@ -108,6 +120,10 @@ function makeBroker(
     isDatabaseReady: () => options.dbReady !== false,
     readMessages: options.reader as never,
     bufferSize: options.bufferSize ?? 10,
+    ...(options.backfillLimit !== undefined ? { backfillLimit: options.backfillLimit } : {}),
+    ...(options.backfillMaxConversations !== undefined
+      ? { backfillMaxConversations: options.backfillMaxConversations }
+      : {}),
     bufferTtlMs: 10 * 60 * 1000,
     now: () => NOW
   })
@@ -126,8 +142,24 @@ describe('事件 ID 与 messageRef', () => {
     expect(record).not.toBeNull()
     expect(decodeMessageRef(record!.messageRef)).toEqual({
       conversationId: CONVERSATION,
-      messageId: '100'
+      messageId: '1800000000:100'
     })
+  })
+
+  it('同一 localId、不同 createTime 是两条消息（复合身份不被 localId 合并）', () => {
+    const broker = makeBroker()
+    const first = broker.publish(
+      normalize(makeRow({ mesLocalID: '7', msgCreateTime: '1800000000' }))
+    )
+    const second = broker.publish(
+      normalize(makeRow({ mesLocalID: '7', msgCreateTime: '1800000100' }))
+    )
+
+    expect(first).not.toBeNull()
+    expect(second).not.toBeNull()
+    expect(first!.id).not.toBe(second!.id)
+    expect(decodeMessageRef(first!.messageRef)!.messageId).toBe('1800000000:7')
+    expect(decodeMessageRef(second!.messageRef)!.messageId).toBe('1800000100:7')
   })
 
   it('无法映射会话时不发布，也不伪造 messageRef', () => {
@@ -181,7 +213,7 @@ describe('订阅、过滤与重放', () => {
     expect(sink.events.map((item) => item.origin)).toEqual(['replay'])
     expect(decodeMessageRef(sink.events[0].event.messageRef)).toEqual({
       conversationId: CONVERSATION,
-      messageId: '2'
+      messageId: '1800000000:2'
     })
   })
 
@@ -261,6 +293,66 @@ describe('订阅、过滤与重放', () => {
     expect(startArg).toBeLessThan(endArg)
     expect(endArg - startArg).toBeLessThanOrEqual(300)
     expect(limitArg).toBeLessThanOrEqual(100)
+    expect(sink.backfills).toHaveLength(1)
+    expect(sink.backfills[0]).toMatchObject({
+      truncated: false,
+      complete: true,
+      conversationTruncated: false,
+      messageTruncated: false,
+      processedConversations: 1
+    })
+  })
+
+  it('单会话回补读满 limit 时明确报告 messageTruncated', async () => {
+    const reader = vi.fn(async () => [
+      makeRow({ mesLocalID: '21' }),
+      makeRow({ mesLocalID: '22' })
+    ])
+    const broker = makeBroker({ bufferSize: 1, reader, backfillLimit: 2 })
+    for (const id of ['1', '2', '3']) broker.publish(normalize(makeRow({ mesLocalID: id })))
+
+    const sink = makeSink()
+    broker.subscribe({ conversationIds: [CONVERSATION], lastEventId: '1' }, sink.sink)
+    await vi.waitFor(() => expect(sink.backfills.length).toBe(1))
+
+    expect(sink.backfills[0]).toMatchObject({
+      messageTruncated: true,
+      conversationTruncated: false,
+      truncated: true,
+      complete: false,
+      perConversationLimit: 2
+    })
+  })
+
+  it('订阅会话数超过上限时明确报告 conversationTruncated', async () => {
+    const reader = vi.fn(async () => [makeRow({ mesLocalID: '31' })])
+    const broker = new MessageEventBroker({
+      resolveConversationId: (sessionId) => (sessionId === 'A@chatroom' ? 'conv-a' : 'conv-b'),
+      resolveSessionId: (conversationId) => (conversationId === 'conv-a' ? 'A@chatroom' : 'B@chatroom'),
+      isDatabaseReady: () => true,
+      readMessages: reader as never,
+      bufferSize: 1,
+      backfillLimit: 10,
+      backfillMaxConversations: 1,
+      now: () => NOW
+    })
+    for (const id of ['1', '2', '3']) {
+      broker.publish(normalizeIncomingMessage('A@chatroom', makeRow({ mesLocalID: id }))!)
+    }
+
+    const sink = makeSink()
+    broker.subscribe({ conversationIds: ['conv-a', 'conv-b'], lastEventId: '1' }, sink.sink)
+    await vi.waitFor(() => expect(sink.backfills.length).toBe(1))
+
+    expect(sink.backfills[0]).toMatchObject({
+      requestedConversations: 2,
+      processedConversations: 1,
+      conversationTruncated: true,
+      messageTruncated: false,
+      truncated: true,
+      complete: false,
+      maxConversations: 1
+    })
   })
 
   it('没有会话过滤时不做回补（无法有界），并如实说明', () => {
@@ -371,7 +463,7 @@ describe('多订阅者与 Automation 扇出', () => {
 
     for (const sink of sinks) {
       expect(sink.events).toHaveLength(1)
-      expect(sink.events[0].event.id).toBe(eventIdFor(CONVERSATION, 'fanout-1'))
+      expect(sink.events[0].event.id).toBe(eventIdFor(CONVERSATION, '1800000000:fanout-1'))
     }
     expect(broker.status().subscribers).toBe(5)
   })
@@ -405,5 +497,75 @@ describe('多订阅者与 Automation 扇出', () => {
     await vi.waitFor(() => expect(sink.events.length).toBe(1), { timeout: 2_000 })
     expect(automation).toHaveBeenCalledTimes(1)
     expect(broker.stats().published).toBe(1)
+  })
+})
+
+describe('运行状态区分', () => {
+  it('database / monitor / wechat 分别报告，不互相冒充', () => {
+    const broker = new MessageEventBroker({
+      resolveConversationId: () => CONVERSATION,
+      isDatabaseReady: () => true,
+      getMonitorState: () => 'running',
+      getWechatProcessState: () => 'stopped',
+      now: () => NOW
+    })
+
+    expect(broker.status()).toMatchObject({
+      database: 'ready',
+      monitor: 'running',
+      wechat: 'stopped'
+    })
+  })
+
+  it('未注入 monitor/wechat 时是 unknown，而不是默认 ready', () => {
+    const broker = new MessageEventBroker({
+      resolveConversationId: () => CONVERSATION,
+      now: () => NOW
+    })
+    expect(broker.status()).toMatchObject({ monitor: 'unknown', wechat: 'unknown' })
+  })
+})
+
+describe('重开库缓冲重置', () => {
+  it('resetBuffer 清空缓冲但保留订阅者，新事件序号继续递增', () => {
+    const broker = makeBroker()
+    const sink = makeSink()
+    broker.subscribe({}, sink.sink)
+    broker.publish(normalize(makeRow({ mesLocalID: '1' })))
+    broker.publish(normalize(makeRow({ mesLocalID: '2' })))
+    expect(broker.status()).toMatchObject({ buffered: 2, subscribers: 1 })
+
+    broker.resetBuffer()
+    expect(broker.status()).toMatchObject({
+      buffered: 0,
+      oldestSeq: null,
+      newestSeq: null,
+      subscribers: 1
+    })
+
+    broker.publish(normalize(makeRow({ mesLocalID: '3' })))
+    expect(broker.status().newestSeq).toBe(3)
+    expect(sink.events.map((item) => item.event.seq)).toEqual([1, 2, 3])
+  })
+})
+
+describe('回补失败也必须标记不完整', () => {
+  it('会话读取抛错时 complete=false，且不是 truncated 语义', async () => {
+    const reader = vi.fn(async () => {
+      throw new Error('shard unavailable')
+    })
+    const broker = makeBroker({ bufferSize: 1, reader })
+    for (const id of ['1', '2', '3']) broker.publish(normalize(makeRow({ mesLocalID: id })))
+
+    const sink = makeSink()
+    broker.subscribe({ conversationIds: [CONVERSATION], lastEventId: '1' }, sink.sink)
+    await vi.waitFor(() => expect(sink.backfills.length).toBe(1))
+
+    expect(sink.backfills[0]).toMatchObject({
+      failedConversations: 1,
+      truncated: false,
+      complete: false,
+      delivered: 0
+    })
   })
 })

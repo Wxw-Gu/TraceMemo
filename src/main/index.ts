@@ -190,6 +190,7 @@ import {
   wechatLocalExitNoticeService
 } from './services/wechat-local-exit-notice-service'
 import { MessageEventBroker } from './services/message-event-broker'
+import { isReadOnlyMode, logReadOnlySkip } from './services/read-only-mode'
 import { AgentTaskDispatcher } from './services/agent-task-dispatcher'
 import { AgentTaskStore } from './services/agent-task-store'
 import {
@@ -400,6 +401,10 @@ let lastMsgInsertReconciledShards = ''
  * 清单记下来。渲染层读状态**不会**走到这里 —— GET 必须是纯读。
  */
 async function reconcileMsgInsertRulesOnStart(): Promise<void> {
+  if (isReadOnlyMode()) {
+    logReadOnlySkip('MsgInsert 启动 reconciliation')
+    return
+  }
   const scope = resolveMsgInsertScopeInput()
   const client = chat.getChatDb()?.getWcdb4Client()
   if (!scope || !client) return
@@ -490,6 +495,10 @@ async function reconcileMsgInsertRulesNow(extraRooms: string[] = []): Promise<bo
  * 只剩一份的副本）；日志只记数量（对象名含 sha1(会话表名) 派生的稳定标识）。
  */
 async function cleanupLegacyRecallResidueOnStart(): Promise<void> {
+  if (isReadOnlyMode()) {
+    logReadOnlySkip('防撤回残留清理')
+    return
+  }
   const client = chat.getChatDb()?.getWcdb4Client()
   if (!client) return
   try {
@@ -719,6 +728,14 @@ function resolveConversationMd5(sessionId: string): string | undefined {
 }
 
 let messageEventBroker: MessageEventBroker | null = null
+/** 当前绑定的监听器；重开库时先 dispose 再换新，避免重复监听。 */
+let activeMessageListener: MessageListenerService | null = null
+/** Native Monitor 是否已成功挂上（status.monitor 的唯一来源）。 */
+let messageMonitorActive = false
+/** 微信进程状态缓存；undefined 表示还没采样过。 */
+let wechatProcessRunning: boolean | null = null
+/** Automation 的 isListening 闭包读取这个值；重开库后必须跟着更新。 */
+let automationListening = false
 
 /**
  * 实时事件代理（单例）。
@@ -732,6 +749,9 @@ function ensureMessageEventBroker(): MessageEventBroker {
   messageEventBroker = new MessageEventBroker({
     resolveConversationId: resolveConversationMd5,
     isDatabaseReady: () => chat.isReady(),
+    getMonitorState: () => (messageMonitorActive ? 'running' : 'stopped'),
+    getWechatProcessState: () =>
+      wechatProcessRunning === null ? 'unknown' : wechatProcessRunning ? 'running' : 'stopped',
     readMessages: async (sessionIdOrMd5, startTimeSec, endTimeSec, limit) => {
       const client = chat.getChatDb()?.getWcdb4Client()
       if (!client) return []
@@ -783,6 +803,107 @@ function ensureAgentTaskDispatcher(): AgentTaskDispatcher {
   if (settings.enabled) dispatcher.start()
   agentTaskDispatcher = dispatcher
   return dispatcher
+}
+
+/**
+ * 把一条 MessageListener 接到所有消费者。
+ *
+ * 数据库重开时旧 listener 必须先 dispose，再对新 listener 调用本函数；
+ * 否则同一条 native event 会被两套监听器各回读一次。
+ */
+function bindMessageConsumers(listener: MessageListenerService): void {
+  listener.onMessage((message) => {
+    // 日志只允许出现「类型 / 群或私聊 / 是否自己发 / @ 数量」这类不可逆标识，
+    // 不含 wxid、昵称、群名、正文与 source。
+    console.log(
+      `[MessageListener] incoming messageType=${message.messageType}` +
+        ` group=${message.isGroup} self=${message.isSelf}` +
+        ` mentions=${message.mentionTargets.length}`
+    )
+    /*
+     * 实时事件是 Automation 之外的第二个消费者，两者互不依赖：
+     * broker 只搬运已经回读并规范化的消息，不触发自动化、不调 AI。
+     * 放在 Automation 之前，保证后者异常不会让 SSE 订阅者漏事件。
+     */
+    ensureMessageEventBroker().publish(message)
+    try {
+      void agentTaskDispatcher?.handleMessage(message).catch((error) => {
+        console.warn(
+          `[AgentTask] handleMessage failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+      })
+    } catch (error) {
+      console.warn(
+        `[AgentTask] 未初始化，已跳过本次消息: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
+    }
+    // Automation 自带 isSelf / cooldown / 同消息幂等三重闸，不会形成回复循环。
+    // 用 try 包住同步那一段：`getAutomationService()` 在未初始化时会抛，
+    // 而 `.catch()` 只能接住异步拒绝 —— 漏了这层就会把异常抛进 MessageListener 的投递循环。
+    try {
+      void getAutomationService()
+        .handleMessage(message)
+        .catch((error) => {
+          console.warn(
+            `[Automation] handleMessage failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          )
+        })
+    } catch (error) {
+      console.warn(
+        `[Automation] 未初始化，已跳过本次消息: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
+    }
+    /*
+     * 扩展事件分发：与 Automation 并行、互不影响。
+     * 扩展侧的异常不能污染 MessageListener 的投递循环，也不能阻断 Automation。
+     */
+    if (hasExtensionManager()) {
+      try {
+        getExtensionManager().handleMessage(message)
+      } catch (error) {
+        console.warn(
+          `[Extension] handleMessage failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+      }
+    }
+  })
+}
+
+/**
+ * 给指定 client 挂上 Native Monitor，并把事件分发给监听器与既有消费者。
+ *
+ * 只允许一处调用点存活：重开库前先 `stopMonitor()`，否则两条 monitor 会重复喂事件。
+ */
+async function startMessageMonitor(
+  client: Wcdb4Client,
+  listener: MessageListenerService
+): Promise<boolean> {
+  const monitoring = await client.startMonitor((event) => {
+    client.invalidateSessionCache()
+    listener.handleNativeChange(event)
+    groupExitMonitorService.notifyDatabaseChanged(event.raw)
+    recallArchiveMonitor?.handleDatabaseChange(event.raw)
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send('wcdb-change', { type: event.type, json: event.raw })
+      }
+    }
+  })
+  automationListening = monitoring === true
+  messageMonitorActive = monitoring === true
+  // 只读测试模式连本地退群监控状态也不落盘；SSE 不依赖它。
+  if (!isReadOnlyMode()) void groupExitMonitorService.start(monitoring)
+  return monitoring
 }
 
 type ColdImageLoadItem = {
@@ -854,6 +975,10 @@ function configureRecallProtection(
   enabled: boolean,
   installJournal = false
 ): void {
+  if (enabled && isReadOnlyMode()) {
+    logReadOnlySkip('防撤回保护写入')
+    enabled = false
+  }
   recallProtectionGeneration += 1
   const generation = recallProtectionGeneration
   recallArchiveMonitor?.stop()
@@ -1211,6 +1336,22 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
     // 此时 SSE 应当能如实报告 database=unavailable，而不是把连接打回 503。
     ensureMessageEventBroker()
     ensureAgentTaskDispatcher()
+    /*
+     * 微信进程状态只用于 SSE status 的区分展示；每 5s 采样一次并缓存，
+     * 避免每次 status() 都去 spawn 探针。
+     */
+    const refreshWechatProcessState = (): void => {
+      void isWechatRunning()
+        .then((running) => {
+          wechatProcessRunning = running
+        })
+        .catch(() => {
+          wechatProcessRunning = null
+        })
+    }
+    refreshWechatProcessState()
+    const wechatProcessTimer = setInterval(refreshWechatProcessState, 5_000)
+    wechatProcessTimer.unref?.()
     const migration = isUserDataIsolated ? null : await runFirstLaunchMigration(appDataRoots)
     apiTokenStore.setAutomaticGenerationBlocked(migration?.tokenBlockReason)
     if (!migration) {
@@ -1739,14 +1880,15 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
          * 不匹配关键词、不判断 @我、不出日报、不回复、不调 AI / Agent、不发送。
          * 业务响应由上层消费者自行订阅，不在监听层实现。
          */
+        activeMessageListener?.dispose()
         const messageListener = new MessageListenerService(wcdb4Client)
+        activeMessageListener = messageListener
         /**
          * Automation v1（@我生成日报）。
          *
          * `isListening` 反映 `startMonitor` 的实际结果，因此通过闭包读取，
          * 而不是在初始化时传入快照。
          */
-        let automationListening = false
         initAutomationService(wcdb4Client, { isListening: () => automationListening })
 
         /**
@@ -1836,92 +1978,14 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
         })
         /* 把「微信内退群监控消息」的开关交给 monitor：开着时检测范围扩到全部群聊。 */
         syncExitNoticeScope()
-        messageListener.onMessage((message) => {
-          // 日志只允许出现「类型 / 群或私聊 / 是否自己发 / @ 数量」这类不可逆标识，
-          // 不含 wxid、昵称、群名、正文与 source。
-          console.log(
-            `[MessageListener] incoming messageType=${message.messageType}` +
-              ` group=${message.isGroup} self=${message.isSelf}` +
-              ` mentions=${message.mentionTargets.length}`
-          )
-          /*
-           * 实时事件是 Automation 之外的第二个消费者，两者互不依赖：
-           * broker 只搬运已经回读并规范化的消息，不触发自动化、不调 AI。
-           * 放在 Automation 之前，保证后者异常不会让 SSE 订阅者漏事件。
-           */
-          ensureMessageEventBroker().publish(message)
-          try {
-            void agentTaskDispatcher?.handleMessage(message).catch((error) => {
-              console.warn(
-                `[AgentTask] handleMessage failed: ${
-                  error instanceof Error ? error.message : String(error)
-                }`
-              )
-            })
-          } catch (error) {
-            console.warn(
-              `[AgentTask] 未初始化，已跳过本次消息: ${
-                error instanceof Error ? error.message : String(error)
-              }`
-            )
-          }
-          // Automation 自带 isSelf / cooldown / 同消息幂等三重闸，不会形成回复循环。
-          // 用 try 包住同步那一段：`getAutomationService()` 在未初始化时会抛，
-          // 而 `.catch()` 只能接住异步拒绝 —— 漏了这层就会把异常抛进 MessageListener 的投递循环。
-          try {
-            void getAutomationService()
-              .handleMessage(message)
-              .catch((error) => {
-                console.warn(
-                  `[Automation] handleMessage failed: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`
-                )
-              })
-          } catch (error) {
-            console.warn(
-              `[Automation] 未初始化，已跳过本次消息: ${
-                error instanceof Error ? error.message : String(error)
-              }`
-            )
-          }
-          /*
-           * 扩展事件分发：与 Automation 并行、互不影响。
-           * 扩展侧的异常不能污染 MessageListener 的投递循环，也不能阻断 Automation。
-           */
-          if (hasExtensionManager()) {
-            try {
-              getExtensionManager().handleMessage(message)
-            } catch (error) {
-              console.warn(
-                `[Extension] handleMessage failed: ${
-                  error instanceof Error ? error.message : String(error)
-                }`
-              )
-            }
-          }
-        })
+        bindMessageConsumers(messageListener)
         const sessions = await wcdb4Client.getSessionsAsync({ hydrateDisplayNames: false })
         configureRecallProtection(wcdb4Client, resolvedRoot, settings.recallProtectionEnabled)
         voiceService = new VoiceService(wcdb4Client, resolvedRoot)
         voiceRecognition?.connect(voiceService, resolvedRoot)
         stickerService = new StickerService(wcdb4Client)
         videoAssetService = new VideoAssetService(wcdb4Client)
-        const monitoring = await wcdb4Client.startMonitor((event) => {
-          wcdb4Client.invalidateSessionCache()
-          // 正式 MessageListener：只做 coalesce + 有界回读 + dedup + 投递，不触发业务。
-          // v2 事件带 sessionId ⇒ 回读不再依赖「最近活跃会话」。
-          messageListener.handleNativeChange(event)
-          groupExitMonitorService.notifyDatabaseChanged(event.raw)
-          recallArchiveMonitor?.handleDatabaseChange(event.raw)
-          for (const window of BrowserWindow.getAllWindows()) {
-            if (!window.isDestroyed()) {
-              window.webContents.send('wcdb-change', { type: event.type, json: event.raw })
-            }
-          }
-        })
-        automationListening = monitoring === true
-        void groupExitMonitorService.start(monitoring)
+        const monitoring = await startMessageMonitor(wcdb4Client, messageListener)
         const recentSession = sessions[0]
         if (recentSession?.username) {
           void wcdb4Client
@@ -3592,22 +3656,47 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
 
   ipcMain.handle('db:reopenWithRoot', async (_, accountRoot: string) => {
     groupExitMonitorService.stop()
+    const previousClient = chat.getChatDb()?.getWcdb4Client()
+    const previousListener = activeMessageListener
+    try {
+      // 先停旧 monitor，避免重开期间两条监听同时喂事件。
+      previousClient?.stopMonitor()
+    } catch (error) {
+      console.warn('[db:reopenWithRoot] 停止旧 monitor 失败:', error)
+    }
+
     const ok = chat.reopenWithRoot(accountRoot)
-    if (!ok) return { success: false, error: '数据库未初始化或重新打开失败' }
+    if (!ok) {
+      // 重开失败：把旧监听恢复，不能让 SSE 因为一次失败的重开而静默停更。
+      if (previousClient && previousListener) {
+        await startMessageMonitor(previousClient, previousListener).catch((error) =>
+          console.warn('[db:reopenWithRoot] 恢复旧 monitor 失败:', error)
+        )
+      }
+      return { success: false, error: '数据库未初始化或重新打开失败' }
+    }
+
+    // 旧 listener 绑定的是旧 WechatDb；必须 dispose，否则同一事件会被回读两次。
+    previousListener?.dispose()
+    activeMessageListener = null
+    messageMonitorActive = false
+    automationListening = false
+    /*
+     * 旧缓冲属于旧库/旧账号，不能再被重放；保留订阅者与序号，
+     * 客户端的旧游标会落到新 buffer 下界之前，从而收到 gap。
+     */
+    messageEventBroker?.resetBuffer()
+
     const client = chat.getChatDb()?.getWcdb4Client()
     if (client) {
       voiceService = new VoiceService(client, client.getAccountRoot())
       voiceRecognition?.connect(voiceService, client.getAccountRoot())
-      const monitoring = await client.startMonitor((event) => {
-        client.invalidateSessionCache()
-        groupExitMonitorService.notifyDatabaseChanged(event.raw)
-        for (const window of BrowserWindow.getAllWindows()) {
-          if (!window.isDestroyed()) {
-            window.webContents.send('wcdb-change', { type: event.type, json: event.raw })
-          }
-        }
-      })
-      void groupExitMonitorService.start(monitoring)
+      // Automation 持有 client 引用；重开库必须重建，否则仍在读旧句柄。
+      initAutomationService(client, { isListening: () => automationListening })
+      const listener = new MessageListenerService(client)
+      activeMessageListener = listener
+      bindMessageConsumers(listener)
+      await startMessageMonitor(client, listener)
     }
     // 同步 imageKeyRoot，避免自动获取扫描到旧目录
     const settings = loadSettings()

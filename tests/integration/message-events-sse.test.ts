@@ -259,7 +259,13 @@ describe('GET /api/v1/events/messages', () => {
     const client = await openSse(handle)
 
     const status = await client.waitFor((frame) => frame.event === 'status')
-    expect(status.data).toMatchObject({ database: 'ready', filter: 'all', backfill: 'enabled' })
+    expect(status.data).toMatchObject({
+      database: 'ready',
+      monitor: 'unknown',
+      wechat: 'unknown',
+      filter: 'all',
+      backfill: 'enabled'
+    })
 
     broker.publish(normalize(SESSION_A, '1', '实时消息'))
     const message = await client.waitFor((frame) => frame.event === 'message')
@@ -270,10 +276,9 @@ describe('GET /api/v1/events/messages', () => {
       text: '实时消息',
       isSelf: false
     })
-    expect(decodeMessageRef(String(message.data?.messageRef))).toEqual({
-      conversationId: CONVERSATION_A,
-      messageId: '1'
-    })
+    const ref = decodeMessageRef(String(message.data?.messageRef))
+    expect(ref?.conversationId).toBe(CONVERSATION_A)
+    expect(ref?.messageId).toMatch(/^\d+:1$/)
   })
 
   it('同一条消息重复发布只推送一次（事件去重）', async () => {
@@ -344,10 +349,9 @@ describe('GET /api/v1/events/messages', () => {
     })
     const replayed = await second.waitFor((frame) => frame.event === 'message')
     expect(replayed.data).toMatchObject({ origin: 'replay', text: 'hello' })
-    expect(decodeMessageRef(String(replayed.data?.messageRef))).toEqual({
-      conversationId: CONVERSATION_A,
-      messageId: '2'
-    })
+    const ref = decodeMessageRef(String(replayed.data?.messageRef))
+    expect(ref?.conversationId).toBe(CONVERSATION_A)
+    expect(ref?.messageId).toMatch(/^\d+:2$/)
   })
 
   it('缓冲覆盖不到时先发 gap，再从数据库有界回补（origin=db_backfill）', async () => {
@@ -373,6 +377,16 @@ describe('GET /api/v1/events/messages', () => {
       (frame) => frame.event === 'message' && frame.data?.origin === 'db_backfill'
     )
     expect(backfilled.data?.text).toBe('补回来的消息')
+    const report = await client.waitFor((frame) => frame.event === 'backfill')
+    expect(report.data).toMatchObject({
+      requestedConversations: 1,
+      processedConversations: 1,
+      delivered: 1,
+      truncated: false,
+      complete: true,
+      messageTruncated: false,
+      conversationTruncated: false
+    })
     expect(client.frames.findIndex((f) => f.event === 'gap')).toBeLessThan(
       client.frames.findIndex((f) => f.event === 'message' && f.data?.origin === 'db_backfill')
     )

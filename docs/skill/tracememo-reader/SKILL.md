@@ -1,6 +1,6 @@
 ---
 name: tracememo-reader
-version: 1.4.0
+version: 1.4.1
 description: 本机微信聊天记录的读取入口（TraceMemo 本地 HTTP API，默认 http://127.0.0.1:6131/api/v1）。凡是「看微信内容」的请求都必须先走本 Skill：某个群或某人今天聊了什么、刚刚聊了啥、最近消息、谁说了什么、总结聊天、翻历史记录、撤回的消息、图片内容、语音转文字、查找联系人或群聊、群成员、生成群聊总结、定时日报、给好友或群发微信消息、查看发送记录、查看未读。本 Skill 已处理鉴权、撤回归档、图片媒体、语音转写与压缩编码解码，当用户要求查看微信消息、查找联系人或群聊、总结聊天、查看或理解图片、生成群聊总结、查询或修改定时日报、给好友或群发送微信消息、代发消息、查看发送记录时使用。此 Skill 由本机 TraceMemo 提供数据，不是 MCP Server。
 ---
 
@@ -123,9 +123,10 @@ curl -H "Authorization: Bearer $TRACEMEMO_API_TOKEN" \
 | 字段             | 必填               | 说明                                                                |
 | ---------------- | ------------------ | ------------------------------------------------------------------- |
 | `to`             | 是                 | wxid / `xxx@chatroom` / `filehelper`；以 `@chatroom` 结尾自动判为群 |
-| `type`           | 否                 | `text`（默认）/ `image` / `voice`                                   |
+| `type`           | 否                 | `text`（默认）/ `image` / `voice` / `file`                          |
 | `text`           | `type=text` 时必填 | **最多 2000 字符**，超限返回 `400`，不会自动截断                    |
-| `filePath`       | `type=image/voice` | 本机**绝对路径**且文件必须存在；**不接受 URL**                      |
+| `filePath`       | `type=image/voice/file` | 本机**绝对路径**且文件必须存在；**不接受 URL**                 |
+| `fileName`       | 否                 | 仅 `type=file`：macOS 透传名称；Windows 当前可能忽略，按路径 basename 发送 |
 | `idempotencyKey` | 否                 | 重试时原样带回，避免超时重发产生重复消息                            |
 
 几个必须遵守的限制：

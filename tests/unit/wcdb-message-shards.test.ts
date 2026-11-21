@@ -217,4 +217,71 @@ describe('WCDB message shard pagination', () => {
     )
     expect(fs.existsSync(path.join(publicRoot, 'TraceMemo'))).toBe(false)
   })
+
+  it('merges provisional cursor row with settled table-scan row without losing self identity', () => {
+    const client = Object.assign(Object.create(Wcdb4Client.prototype), {
+      accountRoot: '/tmp/fixture-account/wxid_self',
+      wxid: 'wxid_self',
+      displayNameCache: new Map(),
+      avatarCache: new Map()
+    }) as Wcdb4Client
+
+    const normalize = Reflect.get(client, 'normalizeMessage').bind(client) as (
+      row: Record<string, unknown>
+    ) => {
+      mesLocalID: string
+      serverId?: string
+      mesDes: number
+      sender: string
+    }
+    const merge = Reflect.get(client, 'mergeMessageRows').bind(client) as (
+      current: ReturnType<typeof normalize>[],
+      recovered: ReturnType<typeof normalize>[]
+    ) => ReturnType<typeof normalize>[]
+
+    // cursor 读到旧中间态（无 server_id、无 sender），tableScan 读到已回填的本人发出行。
+    const cursorRow = normalize({
+      local_id: 900,
+      server_id: 0,
+      local_type: 1,
+      create_time: 1800000100,
+      message_content: 'fixture text',
+      computed_is_send: 0,
+      status: 1
+    })
+    const tableRow = normalize({
+      local_id: 900,
+      server_id: '7000000000000000900',
+      local_type: 1,
+      create_time: 1800000100,
+      message_content: 'fixture text',
+      sender_username: 'wxid_self',
+      status: 2
+    })
+
+    const merged = merge([cursorRow], [tableRow])
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toMatchObject({
+      mesLocalID: '900',
+      serverId: '7000000000000000900',
+      mesDes: 0,
+      sender: 'wxid_self'
+    })
+  })
+
+  it('normalizes mesDes using 0=self and 1=peer semantics when is_send is absent', () => {
+    const client = Object.assign(Object.create(Wcdb4Client.prototype), {
+      accountRoot: '/tmp/fixture-account/wxid_self',
+      wxid: 'wxid_self',
+      displayNameCache: new Map(),
+      avatarCache: new Map()
+    }) as Wcdb4Client
+
+    const normalize = Reflect.get(client, 'normalizeMessage').bind(client) as (
+      row: Record<string, unknown>
+    ) => { mesDes: number }
+
+    expect(normalize({ local_id: 1, create_time: 1800000001, mesDes: 0 }).mesDes).toBe(0)
+    expect(normalize({ local_id: 2, create_time: 1800000002, mesDes: 1 }).mesDes).toBe(1)
+  })
 })

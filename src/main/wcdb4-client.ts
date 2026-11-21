@@ -51,6 +51,25 @@ export interface Wcdb4MessageCursor {
   localId: number
 }
 
+/**
+ * 从跨分片命中里选出唯一消息。
+ *
+ * `local_id` 只在单库内唯一；同一会话可能横跨多个 message_N.db，同一个
+ * `local_id` 会命中多条。带 `create_time` 的复合身份才能唯一定位。
+ */
+export function selectMessageLocation(
+  hits: Wcdb4MessageCursor[],
+  wantedTime: number | null
+): { status: 'found'; location: Wcdb4MessageCursor } | { status: 'ambiguous' | 'not_found' } {
+  if (wantedTime !== null) {
+    const exact = hits.filter((hit) => hit.createTime === wantedTime)
+    if (exact.length === 1) return { status: 'found', location: exact[0] }
+    return { status: exact.length > 1 ? 'ambiguous' : 'not_found' }
+  }
+  if (hits.length === 1) return { status: 'found', location: hits[0] }
+  return { status: hits.length > 1 ? 'ambiguous' : 'not_found' }
+}
+
 export interface Wcdb4MessagePage {
   messages: Wcdb4Message[]
   /** 下一页起点；`null` 表示该会话已读完。 */
@@ -2436,28 +2455,68 @@ export class Wcdb4Client {
     limit?: number
   ): Wcdb4Message[] {
     const merged = new Map<string, Wcdb4Message>()
+    const localKeyToPrimary = new Map<string, string>()
+
+    const hasUsableServerId = (value?: string): boolean => {
+      const normalized = String(value || '').trim()
+      return Boolean(normalized && normalized !== '0')
+    }
+
+    // 同一条消息的两个快照合并时，不能用缺发送者或未回填的旧快照覆盖已确定的本人身份。
+    const mergePair = (older: Wcdb4Message, newer: Wcdb4Message): Wcdb4Message => ({
+      ...older,
+      ...newer,
+      serverId: hasUsableServerId(newer.serverId)
+        ? newer.serverId
+        : hasUsableServerId(older.serverId)
+          ? older.serverId
+          : newer.serverId || older.serverId,
+      mesDes: newer.mesDes === 0 || older.mesDes === 0 ? 0 : newer.mesDes,
+      sender: newer.sender || older.sender,
+      senderNickname: newer.senderNickname || older.senderNickname,
+      senderAvatar: newer.senderAvatar || older.senderAvatar,
+      raw:
+        older.raw && newer.raw
+          ? {
+              ...older.raw,
+              ...newer.raw
+            }
+          : newer.raw || older.raw
+    })
+
     for (const message of [...recovered, ...current]) {
       const recoveredRow = Boolean(message.raw?.['_wxe_recovered'])
       const serverId = String(message.serverId || '').trim()
-      const identity =
-        serverId && serverId !== '0'
-          ? `server:${serverId}`
-          : message.mesLocalID
-            ? `local:${message.mesLocalID}:${message.msgCreateTime || 0}`
-            : `${message.msgCreateTime}:${message.msgContent}`
+      const localIdentity = message.mesLocalID
+        ? `local:${message.mesLocalID}:${message.msgCreateTime || 0}`
+        : ''
+      const identity = hasUsableServerId(serverId)
+        ? `server:${serverId}`
+        : localIdentity || `${message.msgCreateTime}:${message.msgContent}`
       const key = recoveredRow ? `recovered:${identity}` : identity
-      const existing = merged.get(key)
-      if (existing?.raw && message.raw) {
-        merged.set(key, {
-          ...existing,
-          ...message,
-          raw: {
-            ...existing.raw,
-            ...message.raw
-          }
-        })
+      const localLookupKey = !recoveredRow && localIdentity ? localIdentity : ''
+      const existingKey =
+        merged.has(key)
+          ? key
+          : localLookupKey && localKeyToPrimary.has(localLookupKey)
+            ? localKeyToPrimary.get(localLookupKey)!
+            : undefined
+      const existing = existingKey ? merged.get(existingKey) : undefined
+      if (existing && existingKey) {
+        const combined = mergePair(existing, message)
+        const targetKey = hasUsableServerId(combined.serverId)
+          ? recoveredRow
+            ? `recovered:server:${String(combined.serverId).trim()}`
+            : `server:${String(combined.serverId).trim()}`
+          : existingKey
+        if (targetKey !== existingKey) {
+          merged.delete(existingKey)
+        }
+        merged.set(targetKey, combined)
+        if (localLookupKey) localKeyToPrimary.set(localLookupKey, targetKey)
       } else {
         merged.set(key, message)
+        if (localLookupKey) localKeyToPrimary.set(localLookupKey, key)
       }
     }
     const messages = Array.from(merged.values()).sort(
@@ -2947,13 +3006,7 @@ export class Wcdb4Client {
       }
     }
 
-    if (wantedTime !== null) {
-      const exact = hits.filter((hit) => hit.createTime === wantedTime)
-      if (exact.length === 1) return { status: 'found', location: exact[0] }
-      return { status: exact.length > 1 ? 'ambiguous' : 'not_found' }
-    }
-    if (hits.length === 1) return { status: 'found', location: hits[0] }
-    return { status: hits.length > 1 ? 'ambiguous' : 'not_found' }
+    return selectMessageLocation(hits, wantedTime)
   }
 
   private rowCreateTimeSeconds(row: Record<string, unknown>): number {
@@ -4617,20 +4670,22 @@ export class Wcdb4Client {
       'computedIsSend',
       'is_send',
       'isSend',
-      'mesDes',
       'WCDB_CT_is_send'
     ])
+    const rawMesDes = this.pickValue(row, ['mesDes', 'mes_des'])
+    // mesDes=0 表示本人发出，与 is_send 布尔语义相反，必须分开解析。
     const parsedIsSend =
-      rawIsSend === undefined || rawIsSend === null
-        ? false
-        : this.pickBoolean(row, [
+      rawIsSend !== undefined && rawIsSend !== null
+        ? this.pickBoolean(row, [
             'computed_is_send',
             'computedIsSend',
             'is_send',
             'isSend',
-            'mesDes',
             'WCDB_CT_is_send'
           ])
+        : rawMesDes !== undefined && rawMesDes !== null
+          ? Number(rawMesDes) === 0
+          : false
     const isSelfSender = sender
       ? this.getMyUsernameCandidates().some((candidate) => {
           const left = String(candidate || '')

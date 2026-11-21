@@ -35,6 +35,7 @@ import { renderLeaveNotificationText } from '../../shared/group-exit-event'
 import { GROUP_EXIT_NOTIFICATION_TEMPLATE } from '../../shared/group-exit-monitor'
 import { resolveWcdbConfigHelper } from '../native-runtime-paths'
 import { msgInsertCapabilityService } from './msg-insert-capability-service'
+import { isReadOnlyMode, logReadOnlySkip } from './read-only-mode'
 import { resolveHelperPath } from './msg-insert-switch-service'
 
 export type LocalExitNoticeOutcome =
@@ -139,6 +140,10 @@ export class WechatLocalExitNoticeService {
       outcome: 'failed',
       eventId: event.eventId,
       conversationId: event.conversationId
+    }
+    if (isReadOnlyMode()) {
+      logReadOnlySkip('退群本地提示写入')
+      return { ...base, outcome: 'disabled', code: 'READ_ONLY_MODE' }
     }
     try {
       this.ensureLoaded()

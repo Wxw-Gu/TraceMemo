@@ -50,6 +50,10 @@ const DEFAULT_READ_LIMIT = 50
 const DEFAULT_DEDUP_TTL_MS = 5 * 60 * 1000
 /** dedup 容量上限，防止长时间运行后无限增长。 */
 const DEFAULT_DEDUP_MAX_ENTRIES = 5_000
+/** 未稳定发送行的重试间隔与最大等待时间，避免把写库中间态误判为对方来信。 */
+const DEFAULT_SETTLE_RETRY_MS = 400
+const DEFAULT_MAX_SETTLE_WAIT_MS = 2_000
+const SYSTEM_MESSAGE_TYPES = new Set([10000, 10002])
 
 /**
  * 规范化后的入站消息。
@@ -112,6 +116,8 @@ export interface MessageListenerOptions {
   readLimit?: number
   dedupTtlMs?: number
   dedupMaxEntries?: number
+  settleRetryMs?: number
+  maxSettleWaitMs?: number
 }
 
 /**
@@ -226,6 +232,28 @@ export function normalizeIncomingMessage(
 }
 
 /**
+ * 判断消息是否处于微信两阶段写库的中间态（发送中或尚未回填发送者与 server_id）。
+ * 提前投递会把未稳定的本人发出行误判为 isSelf=false 并锁死去重键。
+ */
+export function isMessageIdentityUnsettled(
+  message: Wcdb4Message,
+  normalized: NormalizedIncomingMessage
+): boolean {
+  if (normalized.isSelf) return false
+  if (SYSTEM_MESSAGE_TYPES.has(normalized.messageType)) return false
+
+  const raw = (message.raw ?? {}) as Record<string, unknown>
+  const status = raw.status !== undefined && raw.status !== null ? Number(raw.status) : NaN
+  if (status === 1) return true
+
+  const serverId = String(normalized.serverId ?? '').trim()
+  if (!serverId || serverId === '0') return true
+
+  if (!normalized.senderId) return true
+  return false
+}
+
+/**
  * 实时消息监听。
  *
  * ⚠️ **已知 BLOCKER（必须如实标注）**：
@@ -255,7 +283,10 @@ export class MessageListenerService {
    * 120ms 内收到 `A B A C B` 必须回读 A/B/C 三个，绝不能「最后一个 wins」。
    */
   private readonly pendingSessions = new Set<string>()
+  private readonly pendingUnsettled = new Map<string, number>()
+  private readonly settleSessions = new Set<string>()
   private coalesceTimer: ReturnType<typeof setTimeout> | null = null
+  private settleTimer: ReturnType<typeof setTimeout> | null = null
   private readbackInFlight = false
   private pendingReadback = false
   private disposed = false
@@ -266,6 +297,8 @@ export class MessageListenerService {
   private readonly readLimit: number
   private readonly dedupTtlMs: number
   private readonly dedupMaxEntries: number
+  private readonly settleRetryMs: number
+  private readonly maxSettleWaitMs: number
 
   private counters: MessageListenerStats = {
     nativeEvents: 0,
@@ -286,6 +319,8 @@ export class MessageListenerService {
     this.readLimit = options.readLimit ?? DEFAULT_READ_LIMIT
     this.dedupTtlMs = options.dedupTtlMs ?? DEFAULT_DEDUP_TTL_MS
     this.dedupMaxEntries = options.dedupMaxEntries ?? DEFAULT_DEDUP_MAX_ENTRIES
+    this.settleRetryMs = options.settleRetryMs ?? DEFAULT_SETTLE_RETRY_MS
+    this.maxSettleWaitMs = options.maxSettleWaitMs ?? DEFAULT_MAX_SETTLE_WAIT_MS
   }
 
   /**
@@ -308,8 +343,14 @@ export class MessageListenerService {
       clearTimeout(this.coalesceTimer)
       this.coalesceTimer = null
     }
+    if (this.settleTimer) {
+      clearTimeout(this.settleTimer)
+      this.settleTimer = null
+    }
     this.listeners.clear()
     this.seen.clear()
+    this.pendingUnsettled.clear()
+    this.settleSessions.clear()
   }
 
   /**
@@ -433,9 +474,21 @@ export class MessageListenerService {
     if (this.disposed) return 0
 
     let delivered = 0
+    let needsSettleRetry = false
+    const now = Date.now()
     for (const message of messages) {
       const normalized = this.normalize(sessionId, message)
       if (!normalized) continue
+      const key = `${normalized.sessionId}:${normalized.localId}`
+      if (this.seen.has(key)) {
+        this.counters.deduped += 1
+        continue
+      }
+      if (this.shouldDeferUnsettled(key, message, normalized, now)) {
+        needsSettleRetry = true
+        continue
+      }
+      this.pendingUnsettled.delete(key)
       // dedup：同一条消息可能在多个读回窗口中反复出现（native 事件本身也可能重复）。
       if (!this.markSeen(normalized)) {
         this.counters.deduped += 1
@@ -445,7 +498,53 @@ export class MessageListenerService {
       delivered += 1
       this.deliver(normalized)
     }
+    if (needsSettleRetry) {
+      this.scheduleSettleRetry(sessionId)
+    }
     return delivered
+  }
+
+  private shouldDeferUnsettled(
+    key: string,
+    message: Wcdb4Message,
+    normalized: NormalizedIncomingMessage,
+    now: number
+  ): boolean {
+    if (this.maxSettleWaitMs <= 0 || !isMessageIdentityUnsettled(message, normalized)) {
+      return false
+    }
+    const firstSeenAt = this.pendingUnsettled.get(key)
+    if (firstSeenAt === undefined) {
+      this.pendingUnsettled.set(key, now)
+      if (this.pendingUnsettled.size > this.dedupMaxEntries) {
+        this.evictUnsettled(now)
+      }
+      return true
+    }
+    return now - firstSeenAt < this.maxSettleWaitMs
+  }
+
+  private scheduleSettleRetry(sessionId: string): void {
+    if (this.disposed) return
+    this.settleSessions.add(sessionId)
+    if (this.settleTimer) return
+    this.settleTimer = setTimeout(() => {
+      this.settleTimer = null
+      if (this.disposed) return
+      for (const id of this.settleSessions) {
+        this.pendingSessions.add(id)
+      }
+      this.settleSessions.clear()
+      void this.readback()
+    }, this.settleRetryMs)
+  }
+
+  private evictUnsettled(now: number): void {
+    for (const [key, firstSeenAt] of this.pendingUnsettled) {
+      if (now - firstSeenAt >= this.maxSettleWaitMs) {
+        this.pendingUnsettled.delete(key)
+      }
+    }
   }
 
   private deliver(message: NormalizedIncomingMessage): void {

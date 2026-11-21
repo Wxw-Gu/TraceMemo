@@ -73,12 +73,41 @@ export interface MessageEventRecord {
   mentionTargets: string[]
 }
 
+export type MessageRuntimeState = 'running' | 'stopped' | 'unknown'
+
 export interface MessageBrokerStatus {
+  /** TraceMemo 自己的数据库句柄是否可用；**不等于**微信进程在运行。 */
   database: 'ready' | 'unavailable'
+  /** Native Monitor 是否已成功挂上。 */
+  monitor: MessageRuntimeState
+  /** 微信进程状态（缓存采样，非实时探针）。 */
+  wechat: MessageRuntimeState
   subscribers: number
   buffered: number
   oldestSeq: number | null
   newestSeq: number | null
+}
+
+/**
+ * 一次数据库回补的结果。
+ *
+ * `truncated=true` 表示**至少有一个上限命中**，客户端必须知道这段空档没有补全：
+ * - `messageTruncated`：某会话返回行数达到 `perConversationLimit`；
+ * - `conversationTruncated`：订阅的会话数超过 `maxConversations`，后面的被跳过。
+ */
+export interface MessageBackfillReport {
+  requestedConversations: number
+  processedConversations: number
+  delivered: number
+  failedConversations: number
+  conversationTruncated: boolean
+  messageTruncated: boolean
+  truncated: boolean
+  /** 是否完整：没有截断、没有会话读取失败。客户端应优先看这个字段。 */
+  complete: boolean
+  perConversationLimit: number
+  maxConversations: number
+  windowSec: number
 }
 
 export interface MessageGap {
@@ -99,6 +128,8 @@ export interface MessageEventSink {
   onStatus(status: MessageBrokerStatus & { subscriptionId: string }): void
   onEvent(event: MessageEventRecord, origin: MessageEventOrigin): void
   onGap(gap: MessageGap): void
+  /** 回补结束后的完整性报告；旧适配器可以不实现。 */
+  onBackfill?(report: MessageBackfillReport): void
 }
 
 export interface MessageSubscribeOptions {
@@ -128,6 +159,10 @@ export interface MessageEventBrokerOptions {
   resolveConversationId: (sessionId: string) => string | undefined
   /** 数据库当前是否可用。用于 status 事件，不做连接管理。 */
   isDatabaseReady?: () => boolean
+  /** Native Monitor 当前状态。未注入时 status 报 `unknown`。 */
+  getMonitorState?: () => MessageRuntimeState
+  /** 微信进程状态（调用方应缓存，避免 status 每次都 spawn 探针）。 */
+  getWechatProcessState?: () => MessageRuntimeState
   /** 回补读取器。参数与 `getMessagesAsync(usernameOrMd5, startSec, endSec, {limit})` 一致。 */
   readMessages?: (
     sessionIdOrMd5: string,
@@ -283,11 +318,25 @@ export class MessageEventBroker {
   status(): MessageBrokerStatus {
     return {
       database: this.options.isDatabaseReady?.() === false ? 'unavailable' : 'ready',
+      monitor: this.options.getMonitorState?.() ?? 'unknown',
+      wechat: this.options.getWechatProcessState?.() ?? 'unknown',
       subscribers: this.subscribers.size,
       buffered: this.buffer.length,
       oldestSeq: this.buffer[0]?.seq ?? null,
       newestSeq: this.buffer[this.buffer.length - 1]?.seq ?? null
     }
+  }
+
+  /**
+   * 清空缓冲与去重表，但**保留订阅者与序号**。
+   *
+   * 用于数据库重开 / 切账号：旧事件不能再被重放，客户端的旧游标会自然落到
+   * `oldestSeq` 之前，从而收到 gap；而已经连着的订阅者不需要断开重连。
+   */
+  resetBuffer(): void {
+    this.buffer = []
+    this.index.clear()
+    this.seen.clear()
   }
 
   stats(): typeof this.counters & MessageBrokerStatus {
@@ -399,14 +448,20 @@ export class MessageEventBroker {
     return 'scheduled'
   }
 
-  /** 执行已经通过 `backfillPlan` 判定的回补。 */
+  /** 执行已经通过 `backfillPlan` 判定的回补，并报告是否被上限截断。 */
   private async runBackfill(state: SubscriberState): Promise<void> {
     if (!state.conversationIds || !this.options.readMessages) return
 
     const nowMs = this.now()
     const endSec = Math.floor(nowMs / 1000)
     const startSec = endSec - this.backfillLookbackSec
+    const requestedConversations = state.conversationIds.size
     const conversations = Array.from(state.conversationIds).slice(0, this.backfillMaxConversations)
+    const conversationTruncated = requestedConversations > conversations.length
+
+    let delivered = 0
+    let failedConversations = 0
+    let messageTruncated = false
 
     for (const conversationId of conversations) {
       if (state.closed) return
@@ -415,6 +470,7 @@ export class MessageEventBroker {
       try {
         rows = await this.options.readMessages(sessionId, startSec, endSec, this.backfillLimit)
       } catch (error) {
+        failedConversations += 1
         console.warn(
           `[MessageEventBroker] backfill read failed: ${
             error instanceof Error ? error.message : String(error)
@@ -422,6 +478,11 @@ export class MessageEventBroker {
         )
         continue
       }
+      /*
+       * 返回行数达到 limit 就按「可能被截断」上报：多读一条的代价没有必要，
+       * 但把「正好读满」当成完整回补，会让客户端误以为没有漏消息。
+       */
+      if (rows.length >= this.backfillLimit) messageTruncated = true
       for (const row of rows) {
         if (state.closed) return
         const normalized = normalizeIncomingMessage(sessionId, row)
@@ -432,8 +493,33 @@ export class MessageEventBroker {
         record.seq = this.nextSeq
         this.nextSeq += 1
         this.counters.backfilled += 1
+        delivered += 1
         this.deliver(state, record, 'db_backfill')
       }
+    }
+
+    if (state.closed) return
+    const report: MessageBackfillReport = {
+      requestedConversations,
+      processedConversations: conversations.length,
+      delivered,
+      failedConversations,
+      conversationTruncated,
+      messageTruncated,
+      truncated: conversationTruncated || messageTruncated,
+      complete: !conversationTruncated && !messageTruncated && failedConversations === 0,
+      perConversationLimit: this.backfillLimit,
+      maxConversations: this.backfillMaxConversations,
+      windowSec: this.backfillLookbackSec
+    }
+    try {
+      state.sink.onBackfill?.(report)
+    } catch (error) {
+      console.warn(
+        `[MessageEventBroker] backfill report sink threw: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
     }
   }
 
@@ -475,9 +561,16 @@ export class MessageEventBroker {
       this.counters.unmapped += 1
       return null
     }
+    /*
+     * 消息身份必须是 `create_time:local_id`：
+     * `local_id` 只在单库/单分片内唯一，跨分片会重复；只带 localId 的 ref
+     * 会让 `/query/message-context` 判 `ambiguous_message`。
+     * `locateMessageAsync` 已经支持复合身份，这里与 Knowledge 的 `local:${time}:${id}` 同口径。
+     */
+    const identity = `${message.createTime}:${message.localId}`
     let messageRef: string
     try {
-      messageRef = encodeMessageRef(conversationId, message.localId)
+      messageRef = encodeMessageRef(conversationId, identity)
     } catch (error) {
       this.counters.rejected += 1
       console.warn(
@@ -491,7 +584,7 @@ export class MessageEventBroker {
     const rawText = message.content ?? ''
     const truncated = rawText.length > this.maxTextChars
     return {
-      id: eventIdFor(conversationId, message.localId),
+      id: eventIdFor(conversationId, identity),
       seq: 0,
       conversationId,
       messageRef,
@@ -548,10 +641,10 @@ export class MessageEventBroker {
   }
 }
 
-/** 同一会话 + 同一条消息的确定性事件 ID。 */
-export function eventIdFor(conversationId: string, localId: string): string {
+/** 同一会话 + 同一条消息的确定性事件 ID。`messageIdentity` 为 `createTime:localId`。 */
+export function eventIdFor(conversationId: string, messageIdentity: string): string {
   return `evt_${createHash('sha256')
-    .update(`${conversationId}\u0000${localId}`, 'utf8')
+    .update(`${conversationId}\u0000${messageIdentity}`, 'utf8')
     .digest('hex')
     .slice(0, 24)}`
 }

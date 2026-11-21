@@ -31,6 +31,7 @@ import path from 'node:path'
 import { findResource } from '../resource-paths'
 import { isMacNativeRuntimeUnavailable, resolveWcdbConfigHelper } from '../native-runtime-paths'
 import { resolveExternalComponent } from './external-component-locator'
+import { isReadOnlyMode, logReadOnlySkip } from './read-only-mode'
 import type { Wcdb4Client } from '../wcdb4-client'
 import {
   MSG_INSERT_SWITCHES,
@@ -205,6 +206,16 @@ function runHelper(
   request: { key: string; rooms: string[]; myWxid: string },
   timeoutMs = HELPER_TIMEOUT_MS
 ): Promise<HelperRunResult> {
+  // 只读测试模式：任何 helper 写入（开关 / ensure-rules）都不允许发生。
+  if (isReadOnlyMode()) {
+    logReadOnlySkip('MsgInsert helper 写入')
+    return Promise.resolve({
+      ok: false,
+      exitCode: null,
+      errorCode: 'READ_ONLY_MODE',
+      message: '只读测试模式：禁止写入微信数据库'
+    })
+  }
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>
     try {
@@ -730,6 +741,10 @@ export async function applyMsgInsertSwitch(
 export async function reconcileMsgInsertRules(
   input: MsgInsertScopeInput & { myWxid: string; databaseKey: string; extraRooms?: string[] }
 ): Promise<{ done: boolean; rooms: number; written: number; errorCode?: MsgInsertErrorCode }> {
+  if (isReadOnlyMode()) {
+    logReadOnlySkip('MsgInsert reconciliation')
+    return { done: false, rooms: 0, written: 0, errorCode: 'READ_ONLY_MODE' }
+  }
   if (isMacNativeRuntimeUnavailable()) {
     return { done: false, rooms: 0, written: 0, errorCode: 'HELPER_NOT_FOUND' }
   }
