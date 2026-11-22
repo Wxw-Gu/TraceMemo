@@ -348,7 +348,12 @@ function parseImageMessage(content: string): ParsedContent {
 
   const encrypVer = parseInt(encrypVerStr, 10)
 
-  if (!md5 && !datName) {
+  // 企业微信插件的图片消息：message_content 解压后是 `<img aeskey="..." encryver="0"
+  // cdnthumburl="..." cdnmidimgurl="..." cdnbigimgurl="..." length="..." hdlength="..."/>`，
+  // **没有 md5 属性**（datName 也藏在 packed_info_data 的 protobuf 里，由
+  // parseImageDatNameFromRow 从 row 提取）。普通微信图片的 <img> 带 md5，这里按 aeskey
+  // 存在与否补判图片身份，避免这类消息被误判成「不支持的消息」。
+  if (!md5 && !datName && !aeskey) {
     return { type: 'unknown', raw: content }
   }
 

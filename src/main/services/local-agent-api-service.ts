@@ -8,6 +8,7 @@ import {
   type AutomationRuleType
 } from '../../shared/automation'
 import { resolveContact } from './contact-resolution-service'
+import { isGroupSession } from '../../shared/wechat-identities'
 import { validateAutomationDraftShape } from '../../shared/agent-api/automation-validation'
 import type {
   AgentAutomationExecution,
@@ -459,7 +460,7 @@ export class LocalAgentApiService {
     if (contact.type !== 'group') {
       throw new LocalAgentApiError(422, 'NOT_GROUP_CONVERSATION', 'conversationId 不是群会话')
     }
-    if (!contact.m_nsUsrName.endsWith('@chatroom')) {
+    if (!isGroupSession(contact.m_nsUsrName)) {
       throw new LocalAgentApiError(422, 'NOT_GROUP_CONVERSATION', 'conversationId 不是有效的群会话 ID')
     }
     if (!this.deps.getGroupMemberStats) {

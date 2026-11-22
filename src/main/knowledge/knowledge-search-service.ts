@@ -108,6 +108,8 @@ function looksLikeOpaqueSenderId(value: string | undefined): boolean {
   return (
     normalized.startsWith('wxid_') ||
     normalized.endsWith('@chatroom') ||
+    normalized.endsWith('@qy_u') ||
+    normalized.endsWith('@qy_g') ||
     /^\d{6,}$/.test(normalized)
   )
 }

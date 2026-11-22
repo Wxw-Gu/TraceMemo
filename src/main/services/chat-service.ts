@@ -27,6 +27,7 @@ import {
   filterContactSearchIndex,
   type ContactSearchIndex
 } from '../../shared/contact-search'
+import { isGroupSession } from '../../shared/wechat-identities'
 
 /**
  * 谁在读消息。
@@ -348,7 +349,7 @@ export function listContacts(filter?: string): FormattedContact[] {
 
   for (const user of userList) {
     const md5 = dbRef.md5(user.m_nsUsrName)
-    const isGroup = user.m_nsUsrName.endsWith('@chatroom')
+    const isGroup = isGroupSession(user.m_nsUsrName)
     existingMd5s.add(md5)
     contacts.push({
       m_nsUsrName: user.m_nsUsrName,
@@ -437,7 +438,7 @@ export async function getGroupNamesAsync(): Promise<Record<string, string>> {
   const sessions = await dbRef.getWcdb4Client().getSessionsAsync({ hydrateDisplayNames: false })
   const names: Record<string, string> = {}
   for (const session of sessions) {
-    if (!session.username.endsWith('@chatroom')) continue
+    if (!isGroupSession(session.username)) continue
     const name = String(session.nickname || '').trim()
     if (name) names[session.username] = name
   }
@@ -1051,9 +1052,11 @@ export function getGroupSnapshot(userMd5: string): GroupSnapshot | null {
   if (!dbRef) return null
   const wcdb4Client = dbRef.getWcdb4Client()
   const roomId = wcdb4Client.getUsernameByMd5(userMd5)
-  if (!roomId || !roomId.endsWith('@chatroom')) return null
+  if (!roomId || !isGroupSession(roomId)) return null
 
-  const rawMembers = wcdb4Client.getGroupMembers(roomId)
+  const rawMembers = roomId.endsWith('@qy_g')
+    ? wcdb4Client.getEnterpriseGroupMembers(roomId)
+    : wcdb4Client.getGroupMembers(roomId)
   const members = (Array.isArray(rawMembers) ? rawMembers : [])
     .filter((member) => member?.m_nsUsrName)
     .map((member) => ({
@@ -1072,9 +1075,11 @@ export async function getGroupSnapshotAsync(userMd5: string): Promise<GroupSnaps
   if (!dbRef) return null
   const wcdb4Client = dbRef.getWcdb4Client()
   const roomId = wcdb4Client.getUsernameByMd5(userMd5)
-  if (!roomId || !roomId.endsWith('@chatroom')) return null
+  if (!roomId || !isGroupSession(roomId)) return null
 
-  const rawMembers = await wcdb4Client.getGroupMembersAsync(roomId)
+  const rawMembers = roomId.endsWith('@qy_g')
+    ? await wcdb4Client.getEnterpriseGroupMembersAsync(roomId)
+    : await wcdb4Client.getGroupMembersAsync(roomId)
   const members = (Array.isArray(rawMembers) ? rawMembers : [])
     .filter((member) => member?.m_nsUsrName)
     .map((member) => ({
@@ -1105,15 +1110,23 @@ export async function getGroupSnapshotAsync(userMd5: string): Promise<GroupSnaps
 export function resolveGroupRoomId(userMd5: string): string | null {
   if (!dbRef) return null
   const roomId = dbRef.getWcdb4Client().getUsernameByMd5(userMd5)
-  return roomId && roomId.endsWith('@chatroom') ? roomId : null
+  return roomId && isGroupSession(roomId) ? roomId : null
 }
 
 /** 退群检测专用轻量读取，不执行成员名称或头像 hydration。 */
 export async function getGroupMemberIdsAsync(
   roomId: string
 ): Promise<GroupMembershipSnapshot | null> {
-  if (!dbRef || !roomId.endsWith('@chatroom')) return null
-  const memberIds = await dbRef.getWcdb4Client().getGroupMemberIdsAsync(roomId)
+  if (!dbRef) return null
+  const wcdb4Client = dbRef.getWcdb4Client()
+  // 企业群：成员清单走 bizchat.chat_group.user_list（native 只认 @chatroom）。
+  if (roomId.endsWith('@qy_g')) {
+    const members = await wcdb4Client.getEnterpriseGroupMembersAsync(roomId)
+    const memberIds = members.map((member) => member.m_nsUsrName).filter(Boolean)
+    return { roomId, memberIds }
+  }
+  if (!roomId.endsWith('@chatroom')) return null
+  const memberIds = await wcdb4Client.getGroupMemberIdsAsync(roomId)
   return memberIds ? { roomId, memberIds } : null
 }
 
@@ -1134,7 +1147,7 @@ export async function getGroupMemberNamesAsync(
   if (requested.length === 0) return []
   const wcdb4Client = dbRef.getWcdb4Client()
   const roomId = wcdb4Client.getUsernameByMd5(userMd5)
-  if (!roomId || !roomId.endsWith('@chatroom')) return []
+  if (!roomId || !isGroupSession(roomId)) return []
   const members = await wcdb4Client.getGroupMemberNamesAsync(roomId, requested)
   return members.map((member) => ({
     wxid: member.m_nsUsrName,

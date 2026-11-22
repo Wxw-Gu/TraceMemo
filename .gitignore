@@ -39,3 +39,18 @@ debug-originals
 
 # 官方扩展模板构建产物（由 scripts/build-extension-templates.cjs 生成）
 /build/extension-templates/
+
+# 诊断产物与数据库快照（含密钥派生脚本、消息正文、zstd blob）——严禁入库
+/dump*.js
+/dump*.cjs
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.zst
+/snapshot/
+/blobs/
+/database-keys/
+
+.dev-verify/
