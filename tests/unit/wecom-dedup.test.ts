@@ -49,6 +49,20 @@ describe(`enterprise message de-duplication`, () => {
     expect(mergeRows([a], [b])).toHaveLength(2)
   })
 
+  it(`does not merge different messages when a server id is reused across time`, () => {
+    const first = msg(`srv-reused`, `fixture earlier`, 3000, { mesLocalID: `301` })
+    const second = msg(`srv-reused`, `fixture later`, 3600, { mesLocalID: `302` })
+    const merged = mergeRows([first, second], [])
+    expect(merged).toHaveLength(2)
+    expect(merged.map((item) => item.msgContent)).toEqual([`fixture earlier`, `fixture later`])
+  })
+
+  it(`does not merge different messages when a server id is reused in the same second`, () => {
+    const first = msg(`srv-reused`, `fixture left`, 4000, { mesLocalID: `401` })
+    const second = msg(`srv-reused`, `fixture right`, 4000, { mesLocalID: `402` })
+    expect(mergeRows([first, second], [])).toHaveLength(2)
+  })
+
   it(`resolves a unique cross-shard message by time`, () => {
     const hits = [
       { createTime: 1000, localId: 1 },

@@ -145,7 +145,9 @@ export class WechatDb {
    * 统一读取群成员：@chatroom 走 native getGroupMembers，@qy_g 走 bizchat 企业群成员。
    */
   private readGroupMembers(roomId: string): Wcdb4GroupMember[] {
-    if (roomId.endsWith('@qy_g')) return this.wcdb4Client.getEnterpriseGroupMembers(roomId)
+    // 这里是「尽力而为的名称映射」路径：企业群读取失败（null）退化为空集合，
+    // 由调用方继续用 username 兜底；需要区分失败与空群的地方走 chat-service。
+    if (roomId.endsWith('@qy_g')) return this.wcdb4Client.getEnterpriseGroupMembers(roomId) || []
     return this.wcdb4Client.getGroupMembers(roomId)
   }
 

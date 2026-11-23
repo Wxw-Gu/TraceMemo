@@ -635,6 +635,8 @@ export class Wcdb4Client {
   private koffi: KoffiModule | null = null
   private handle: number | null = null
   private displayNameCache = new Map<string, string>()
+  /** 企业群名查过但 bizchat 里没有的会话，避免同步路径反复打库。 */
+  private enterpriseGroupNameMisses = new Set<string>()
   private contactIdentityCache = new Map<string, Wcdb4ContactIdentity>()
   private avatarCache = new Map<string, string>()
   private sessionStatusCache = new Map<string, { isFolded: boolean; isMuted: boolean }>()
@@ -1018,6 +1020,7 @@ export class Wcdb4Client {
     this.sessionStatusesInFlight = null
     this.sessionStatusesUpdatedAt = 0
     this.displayNameCache.clear()
+    this.enterpriseGroupNameMisses?.clear()
     this.contactIdentityCache?.clear()
     this.avatarCache.clear()
     this.sessionStatusCache.clear()
@@ -1214,7 +1217,7 @@ export class Wcdb4Client {
 
     this.cachedSessions = sessions.map((session) => ({
       ...session,
-      nickname: this.displayNameCache.get(session.username) || session.nickname || session.username
+      nickname: this.resolveSessionNickname(session)
     }))
     this.sessionDisplayNamesHydrated = false
 
@@ -2495,6 +2498,8 @@ export class Wcdb4Client {
     limit?: number
   ): Wcdb4Message[] {
     const merged = new Map<string, Wcdb4Message>()
+    // local_id + create_time 索引：同一行可能先以「缺 server_id 的中间态」到达，
+    // 再以回填后的快照到达，靠这条索引对齐到当前主键（而不是靠 server_id）。
     const localKeyToPrimary = new Map<string, string>()
 
     const hasUsableServerId = (value?: string): boolean => {
@@ -2502,6 +2507,17 @@ export class Wcdb4Client {
       return Boolean(normalized && normalized !== '0')
     }
 
+    // server_id 可能跨会话/跨时间复用（企业插件库尤其明显）；只有在
+    // (create_time, local_id, server_id) 完全一致时才视为同一条消息的快照，
+    // 避免不同消息被错误合并。server_key 仅作为已匹配快照的次级索引。
+    const snapshotKey = (message: Wcdb4Message): string => {
+      const serverId = String(message.serverId || '').trim()
+      return [
+        String(message.msgCreateTime || 0),
+        String(message.mesLocalID || ''),
+        hasUsableServerId(serverId) ? serverId : ''
+      ].join(':')
+    }
     // 同一条消息的两个快照合并时，不能用缺发送者或未回填的旧快照覆盖已确定的本人身份。
     const mergePair = (older: Wcdb4Message, newer: Wcdb4Message): Wcdb4Message => ({
       ...older,
@@ -2526,41 +2542,32 @@ export class Wcdb4Client {
 
     for (const message of [...recovered, ...current]) {
       const recoveredRow = Boolean(message.raw?.['_wxe_recovered'])
-      const serverId = String(message.serverId || '').trim()
-      // Enterprise (@qy_g/@qy_u) messages carry a non-empty server_id as a
-      // string, so they dedupe on the same account-unique `server:` key as
-      // ordinary messages — no enterprise-specific dedup key is required.
       const localIdentity = message.mesLocalID
         ? `local:${message.mesLocalID}:${message.msgCreateTime || 0}`
         : ''
-      const identity = hasUsableServerId(serverId)
-        ? `server:${serverId}`
+      // 只有快照身份完全一致才合并；local_id 仅用于同库两路读取
+      // （cursor / table scan）的同一行对齐。缺 local_id 时退回原文本身份，
+      // 不再仅凭可能复用的 server_id 把不同消息折叠。
+      const key = recoveredRow
+        ? `recovered:${snapshotKey(message)}`
+        : snapshotKey(message)
+      const fallbackKey = recoveredRow
+        ? `recovered:${localIdentity || `${message.msgCreateTime}:${message.msgContent}`}`
         : localIdentity || `${message.msgCreateTime}:${message.msgContent}`
-      const key = recoveredRow ? `recovered:${identity}` : identity
       const localLookupKey = !recoveredRow && localIdentity ? localIdentity : ''
-      const existingKey =
-        merged.has(key)
-          ? key
-          : localLookupKey && localKeyToPrimary.has(localLookupKey)
-            ? localKeyToPrimary.get(localLookupKey)!
-            : undefined
+      const indexedLocalKey = localLookupKey ? localKeyToPrimary.get(localLookupKey) : undefined
+      const existingKey = [key, fallbackKey, indexedLocalKey].find(
+        (candidate) => candidate && merged.has(candidate)
+      )
       const existing = existingKey ? merged.get(existingKey) : undefined
       if (existing && existingKey) {
         const combined = mergePair(existing, message)
-        const targetKey = hasUsableServerId(combined.serverId)
-          ? recoveredRow
-            ? `recovered:server:${String(combined.serverId).trim()}`
-            : `server:${String(combined.serverId).trim()}`
-          : existingKey
-        if (targetKey !== existingKey) {
-          merged.delete(existingKey)
-        }
-        merged.set(targetKey, combined)
-        if (localLookupKey) localKeyToPrimary.set(localLookupKey, targetKey)
+        if (existingKey !== key) merged.delete(existingKey)
+        merged.set(key, combined)
       } else {
         merged.set(key, message)
-        if (localLookupKey) localKeyToPrimary.set(localLookupKey, key)
       }
+      if (localLookupKey) localKeyToPrimary.set(localLookupKey, key)
     }
     const messages = Array.from(merged.values()).sort(
       (left, right) =>
@@ -3425,7 +3432,8 @@ export class Wcdb4Client {
 
     // 企业群：成员显示名来自 bizchat.user_info，走企业成员通道（复用 Name2Id 之外的映射）。
     if (chatroomId.endsWith('@qy_g')) {
-      const members = await this.getEnterpriseGroupMembersAsync(chatroomId)
+      // 读取失败（null）时退回占位名，而不是把「读不到」伪装成「群已空」。
+      const members = (await this.getEnterpriseGroupMembersAsync(chatroomId)) || []
       const byId = new Map(members.map((member) => [member.m_nsUsrName, member]))
       return requested.map((username) => {
         const member = byId.get(username)
@@ -3472,6 +3480,15 @@ export class Wcdb4Client {
     return Boolean(this.wcdbGetGroupMembersBatch)
   }
 
+  /**
+   * native 批量群成员读取（`wcdb_get_group_members_batch`）。
+   *
+   * **只接受 `@chatroom`**：实测只要请求里混进一个 `@qy_g`，整批查询就会失败
+   * （nativeCode -2001），普通群的结果也会一起丢掉。企业群成员必须走
+   * bizchat 通道（`getEnterpriseGroupMembersAsync`），分流由
+   * `chat-service.getGroupMemberIdsBatchAsync` 负责，这里不做静默过滤 ——
+   * 免得调用方以为企业群已经被读到了。
+   */
   async getGroupMemberIdsBatchAsync(
     roomIds: string[]
   ): Promise<Wcdb4GroupMemberIdsBatchItem[] | null> {
@@ -4856,6 +4873,59 @@ export class Wcdb4Client {
    * 企业群名缺失时会被显示为 raw username，故单独走 SQL 通道补齐。
    * chat_group.group_id 即完整会话键（`ww{cropid}_{id}@qy_g`）。
    */
+  /**
+   * 同步解析单个企业群名（冷启动 / 同步快照路径专用）。
+   *
+   * 群名 hydration 是异步批量的，但 `getGroupSnapshot()` 这类同步读路径不能 await；
+   * 若只读 displayNameCache，第一次调用（缓存为空）就会把 `ww...@qy_g` 当成群名。
+   * 这里先查缓存，未命中时按 bizchat 通道同步取一次并回填缓存，使同步与异步两条
+   * 路径的结果与调用顺序无关。
+   */
+  /**
+   * 会话显示名的唯一解析入口：企业群名 → displayNameCache → 原始昵称 → username。
+   *
+   * 同步 `getSessions()` 与异步 hydration 都走这里，保证「冷启动第一次读会话列表」
+   * 与「hydration 之后再读」得到同一个群名，而不是 raw `ww...@qy_g`。
+   */
+  private resolveSessionNickname(session: Wcdb4Session): string {
+    const username = String(session.username || '')
+    const enterpriseName = this.getEnterpriseGroupName(username)
+    return (
+      enterpriseName || this.displayNameCache.get(username) || session.nickname || username
+    )
+  }
+
+  getEnterpriseGroupName(roomId: string): string {
+    if (!roomId || !roomId.endsWith('@qy_g')) return ''
+    const cached = this.displayNameCache.get(roomId)
+    if (cached) return cached
+    if (!this.wcdbExecQuery || this.enterpriseGroupNameMisses.has(roomId)) return ''
+    const bizchatPath = path.join(this.dbStoragePath, 'bizchat', 'bizchat.db')
+    try {
+      const rows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
+        this.wcdbExecQuery!(
+          handle,
+          'message',
+          bizchatPath,
+          `SELECT chat_name FROM chat_group WHERE group_id = '${roomId.replace(/'/g, "''")}'`,
+          outJson
+        )
+      )
+      const chatName = Array.isArray(rows) && rows.length > 0
+        ? this.pickString(rows[0], ['chat_name', 'chatName'])
+        : ''
+      if (!chatName) {
+        this.enterpriseGroupNameMisses.add(roomId)
+        return ''
+      }
+      this.displayNameCache.set(roomId, chatName)
+      return chatName
+    } catch {
+      // 群名可选；失败时调用方回退到会话昵称或 raw username。
+      return ''
+    }
+  }
+
   private async hydrateEnterpriseGroupNamesAsync(usernames: string[]): Promise<void> {
     if (!this.wcdbExecQuery) return
     const groupIds = this.uniq(usernames).filter((username) => username.endsWith('@qy_g'))
@@ -4874,7 +4944,10 @@ export class Wcdb4Client {
       for (const row of rows) {
         const groupId = this.pickString(row, ['group_id', 'groupId', 'brand_user_name'])
         const chatName = this.pickString(row, ['chat_name', 'chatName'])
-        if (groupId && chatName) this.displayNameCache.set(groupId, chatName)
+        if (groupId && chatName) {
+          this.displayNameCache.set(groupId, chatName)
+          this.enterpriseGroupNameMisses.delete(groupId)
+        }
       }
     } catch {
       // 企业群名可选；读取失败时回退到 raw username，不影响消息读取。
@@ -4920,8 +4993,7 @@ export class Wcdb4Client {
       if (generation !== this.sessionCacheGeneration || this.cachedSessions !== sessions) return
       this.cachedSessions = sessions.map((session) => ({
         ...session,
-        nickname:
-          this.displayNameCache.get(session.username) || session.nickname || session.username
+        nickname: this.resolveSessionNickname(session)
       }))
       this.sessionDisplayNamesHydrated = true
     })()
@@ -4941,16 +5013,16 @@ export class Wcdb4Client {
    * 存在 `user_info.user_name`。这里走既有 `wcdbExecQuery('message', bizchatPath, sql)`
    * 按路径键式开库读取，与 P1 的群名注入同源。
    */
-  getEnterpriseGroupMembers(roomId: string): Wcdb4GroupMember[] {
+  getEnterpriseGroupMembers(roomId: string): Wcdb4GroupMember[] | null {
     return this.readEnterpriseGroupMembers(roomId)
   }
 
-  async getEnterpriseGroupMembersAsync(roomId: string): Promise<Wcdb4GroupMember[]> {
+  async getEnterpriseGroupMembersAsync(roomId: string): Promise<Wcdb4GroupMember[] | null> {
     return this.readEnterpriseGroupMembersAsync(roomId)
   }
 
-  private readEnterpriseGroupMembers(roomId: string): Wcdb4GroupMember[] {
-    if (!this.wcdbExecQuery || !roomId || !roomId.endsWith('@qy_g')) return []
+  private readEnterpriseGroupMembers(roomId: string): Wcdb4GroupMember[] | null {
+    if (!this.wcdbExecQuery || !roomId || !roomId.endsWith('@qy_g')) return null
     const bizchatPath = path.join(this.dbStoragePath, 'bizchat', 'bizchat.db')
     try {
       const groupRows = this.callJson<Record<string, unknown>[]>((handle, outJson) =>
@@ -4975,13 +5047,14 @@ export class Wcdb4Client {
         )
       )
       return this.enterpriseMembersFromRows(memberIds, nameRows)
-    } catch {
-      return []
+    } catch (error) {
+      console.warn(`[WCDB4] enterprise group members failed groupId=${roomId}:`, error)
+      return null
     }
   }
 
-  private async readEnterpriseGroupMembersAsync(roomId: string): Promise<Wcdb4GroupMember[]> {
-    if (!this.wcdbExecQuery || !roomId || !roomId.endsWith('@qy_g')) return []
+  private async readEnterpriseGroupMembersAsync(roomId: string): Promise<Wcdb4GroupMember[] | null> {
+    if (!this.wcdbExecQuery || !roomId || !roomId.endsWith('@qy_g')) return null
     const bizchatPath = path.join(this.dbStoragePath, 'bizchat', 'bizchat.db')
     try {
       const groupRows = await this.callJsonAsync<Record<string, unknown>[]>(
@@ -5002,7 +5075,7 @@ export class Wcdb4Client {
       return this.enterpriseMembersFromRows(memberIds, nameRows)
     } catch (error) {
       console.warn(`[WCDB4] enterprise group members failed groupId=${roomId}:`, error)
-      return []
+      return null
     }
   }
 

@@ -54,6 +54,7 @@ Agent Hub 让微信机器人调用本机 TraceMemo；Reader Skill / Local HTTP A
 - [扩展 API 参考](./extensions/api-reference.md)
 - [界面开发规范：按钮与主题色](./development/ui-guidelines.md)
 - [微信系统消息解析与格式兼容](./development/wechat-system-message-parsing.md)
+- [企业微信插件会话只读验收](./development/wecom-enterprise-acceptance.md)
 - [Query Agent POC（开发测试入口）](./development/query-agent-poc.md)
 - [本地启动排障](./development/local-startup-troubleshooting.md)
 - [macOS 数据访问说明](./platform/macos.md)
