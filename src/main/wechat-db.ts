@@ -1,5 +1,6 @@
-import { Wcdb4Client, Wcdb4MessageQueryOptions } from './wcdb4-client'
+import { Wcdb4Client, Wcdb4GroupMember, Wcdb4MessageQueryOptions } from './wcdb4-client'
 import { wcdbDebugLog } from './wcdb-debug'
+import { isGroupSession } from '../shared/wechat-identities'
 
 export interface UserContact {
   m_nsUsrName: string
@@ -140,10 +141,20 @@ export class WechatDb {
     )
   }
 
+  /**
+   * 统一读取群成员：@chatroom 走 native getGroupMembers，@qy_g 走 bizchat 企业群成员。
+   */
+  private readGroupMembers(roomId: string): Wcdb4GroupMember[] {
+    // 这里是「尽力而为的名称映射」路径：企业群读取失败（null）退化为空集合，
+    // 由调用方继续用 username 兜底；需要区分失败与空群的地方走 chat-service。
+    if (roomId.endsWith('@qy_g')) return this.wcdb4Client.getEnterpriseGroupMembers(roomId) || []
+    return this.wcdb4Client.getGroupMembers(roomId)
+  }
+
   public getAllGroupContacts(): Record<string, string> {
     const groupContacts: Record<string, string> = {}
     for (const session of this.wcdb4Client.getSessions()) {
-      if (session.username.endsWith('@chatroom')) {
+      if (isGroupSession(session.username)) {
         groupContacts[this.md5(session.username)] = session.nickname || session.username
       }
     }
@@ -153,8 +164,8 @@ export class WechatDb {
   public getAllGroupMembers(): Record<string, string> {
     const members: Record<string, string> = {}
     for (const session of this.wcdb4Client.getSessions()) {
-      if (!session.username.endsWith('@chatroom')) continue
-      for (const member of this.wcdb4Client.getGroupMembers(session.username)) {
+      if (!isGroupSession(session.username)) continue
+      for (const member of this.readGroupMembers(session.username)) {
         if (member.m_nsUsrName) {
           members[member.m_nsUsrName] = member.nickname || member.m_nsUsrName
         }
@@ -166,10 +177,10 @@ export class WechatDb {
   public getGroupMembersForChat(userMd5: string): Record<string, string> {
     this.ensureChatTableMapping()
     const username = this.chatMd5ToUsername.get(userMd5)
-    if (!username || !username.endsWith('@chatroom')) return {}
+    if (!username || !isGroupSession(username)) return {}
 
     const members: Record<string, string> = {}
-    for (const member of this.wcdb4Client.getGroupMembers(username)) {
+    for (const member of this.readGroupMembers(username)) {
       if (member.m_nsUsrName) {
         members[member.m_nsUsrName] = member.nickname || member.m_nsUsrName
       }
@@ -180,7 +191,7 @@ export class WechatDb {
   public getGroupMember(wxid: string, chatroomId?: string): GroupMemberInfo | null {
     if (!chatroomId) return null
     return (
-      this.wcdb4Client.getGroupMembers(chatroomId).find((member) => member.m_nsUsrName === wxid) ||
+      this.readGroupMembers(chatroomId).find((member) => member.m_nsUsrName === wxid) ||
       null
     )
   }

@@ -78,6 +78,7 @@ import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../
 import { KeyServiceMac } from './key-service-mac'
 import { getMacArchSnapshot } from './macos-arch'
 import { shouldProbeIntelEnvironment } from '../shared/macos-arch'
+import { isGroupSession } from '../shared/wechat-identities'
 import { KeyService as KeyServiceWin } from './key-service-win'
 import * as chat from './services/chat-service'
 import {
@@ -1000,7 +1001,7 @@ function configureRecallProtection(
       wcdb4Client.getSessions().map((session) => ({
         md5: wcdb4Client.md5(session.username),
         m_nsUsrName: session.username,
-        type: session.username.endsWith('@chatroom') ? 'group' : 'user',
+        type: isGroupSession(session.username) ? 'group' : 'user',
         activityKey: [
           session.raw['last_timestamp'],
           session.raw['sort_timestamp'],

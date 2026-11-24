@@ -3,6 +3,7 @@ import type { Contact, Message } from '../../shared/types'
 import type { GroupDailyReport, GroupReportMetadata } from '../../shared/group-report'
 import { exportGroupReport } from '../group-report-service'
 import { getGroupSnapshot, listMessages, resolveMd5 } from './chat-service'
+import { isGroupSession } from '../../shared/wechat-identities'
 import { AIProviderService } from './ai-provider-service'
 import type {
   ScheduledReportMemberNameMode,
@@ -105,7 +106,7 @@ export async function generateAgentGroupReport(
   if (!query) return reportFailure('缺少群聊名称', 'data', 'CHAT_NOT_FOUND')
   const contact = resolveMd5(query)
   if (!contact) return reportFailure(`没有找到群聊“${query}”`, 'data', 'CHAT_NOT_FOUND')
-  if (contact.type !== 'group' && !contact.m_nsUsrName.endsWith('@chatroom')) {
+  if (contact.type !== 'group' && !isGroupSession(contact.m_nsUsrName)) {
     return reportFailure(`“${query}”不是群聊`, 'data', 'CHAT_NOT_FOUND')
   }
 
