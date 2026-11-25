@@ -137,7 +137,7 @@ TraceMemo 最早叫 **WechatExplorer**。
 ## 💬 交流与反馈
 
 <p align="center">
-  <img src="./public/二维码.jpg" alt="TraceMemo 交流与售后群二维码" width="280" />
+  <img src="./public/二维码.png" alt="TraceMemo 交流与售后群二维码" width="280" />
 </p>
 
 ## 从你的任务开始
