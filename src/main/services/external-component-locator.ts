@@ -21,7 +21,8 @@ interface ManifestFile {
   sha256?: unknown
 }
 
-const HELPER_NAME = 'tm-wcdb-config-helper.exe'
+const WIN_HELPER_NAME = 'tm-wcdb-config-helper.exe'
+const MAC_HELPER_NAME = 'tm-wcdb-config-helper'
 
 const verifyCache = new Map<string, { stamp: string; ok: boolean; dirty: boolean }>()
 
@@ -84,18 +85,30 @@ function verifyManifest(dir: string): { ok: boolean; dirty: boolean } {
 }
 
 /**
- * 返回发送能力组件位置；不存在、校验失败、非 Windows 一律返回 null。
+ * 返回发送能力组件位置；不存在、校验失败或不支持平台一律返回 null。
  * 调用方拿到 null 时应当把它当作「组件没装」，而不是「没授权」。
  */
 export function resolveExternalComponent(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform
 ): ComponentLocation | null {
-  if (platform !== 'win32') return null
-  const localAppData = env.LOCALAPPDATA
-  if (!localAppData) return null
-
-  const root = path.join(localAppData, 'TraceMemo', 'Pro', 'windows-x64')
+  if (platform !== 'win32' && platform !== 'darwin') return null
+  let root = ''
+  let helperName = ''
+  if (platform === 'win32') {
+    const localAppData = env.LOCALAPPDATA
+    if (!env.TRACEMEMO_PRO_ROOT && !localAppData) return null
+    root =
+      env.TRACEMEMO_PRO_ROOT || path.join(localAppData || '', 'TraceMemo', 'Pro', 'windows-x64')
+    helperName = WIN_HELPER_NAME
+  } else {
+    const home = env.HOME
+    if (!env.TRACEMEMO_PRO_ROOT && !home) return null
+    root =
+      env.TRACEMEMO_PRO_ROOT ||
+      path.join(home || '', 'Library', 'Application Support', 'TraceMemo', 'Pro', 'macos-arm64')
+    helperName = MAC_HELPER_NAME
+  }
   const pointerPath = path.join(root, 'current.json')
   if (!fs.existsSync(pointerPath)) return null
 
@@ -118,7 +131,7 @@ export function resolveExternalComponent(
     return null
   }
 
-  const helperPath = path.join(dir, HELPER_NAME)
+  const helperPath = path.join(dir, helperName)
   if (!fs.existsSync(helperPath)) return null
 
   const verified = verifyManifest(dir)

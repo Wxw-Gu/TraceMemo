@@ -131,4 +131,40 @@ describe('resolveExternalComponent', () => {
 
     expect(resolveExternalComponent(env(), 'win32')).toBeNull()
   })
+
+  it('macOS 校验通过时返回完整 Pro WCDB 与 Runtime 组件路径', () => {
+    const homeDir = path.join(tmpRoot, 'MacHome')
+    const proRoot = path.join(homeDir, 'Library', 'Application Support', 'TraceMemo', 'Pro', 'macos-arm64')
+    const versionDir = path.join(proRoot, '1.0.0')
+    const wcdbApi = writeFile(path.join(versionDir, 'libwcdb_api.dylib'), Buffer.alloc(2048, 0x11))
+    const wcdb = writeFile(path.join(versionDir, 'libWCDB.dylib'), Buffer.alloc(4096, 0x22))
+    const helper = writeFile(path.join(versionDir, 'tm-wcdb-config-helper'), Buffer.alloc(1024, 0x33))
+    const license = writeFile(path.join(versionDir, 'libtmlicense.dylib'), Buffer.alloc(512, 0x44))
+    const host = writeFile(path.join(versionDir, 'tm-wechat-host'), Buffer.alloc(1024, 0x55))
+
+    const manifest = {
+      schemaVersion: 1,
+      componentVersion: '1.0.0',
+      worktreeDirty: false,
+      files: [
+        { path: 'libwcdb_api.dylib', size: wcdbApi.length, sha256: sha256(wcdbApi) },
+        { path: 'libWCDB.dylib', size: wcdb.length, sha256: sha256(wcdb) },
+        { path: 'tm-wcdb-config-helper', size: helper.length, sha256: sha256(helper) },
+        { path: 'libtmlicense.dylib', size: license.length, sha256: sha256(license) },
+        { path: 'tm-wechat-host', size: host.length, sha256: sha256(host) }
+      ]
+    }
+    writeFile(path.join(versionDir, 'manifest.json'), JSON.stringify(manifest, null, 2))
+    writeFile(
+      path.join(proRoot, 'current.json'),
+      JSON.stringify({ version: '1.0.0', dir: versionDir }, null, 2)
+    )
+
+    const found = resolveExternalComponent({ HOME: homeDir }, 'darwin')
+    expect(found).not.toBeNull()
+    expect(found?.dir).toBe(versionDir)
+    expect(found?.helperPath).toBe(path.join(versionDir, 'tm-wcdb-config-helper'))
+    expect(found?.version).toBe('1.0.0')
+    expect(found?.dirty).toBe(false)
+  })
 })

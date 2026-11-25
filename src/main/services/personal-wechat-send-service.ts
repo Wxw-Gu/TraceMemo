@@ -368,6 +368,9 @@ function prepareMacWechatImageFile(
   }
 }
 
+const MAC_IMAGE_STAGE_PREFIX = 'tm-'
+const MAC_IMAGE_STAGE_RETENTION_MS = 10 * 60 * 1000
+
 function stageMacWechatImageForMessageSourceSend(
   filePath: string,
   senderWxid: string,
@@ -376,6 +379,29 @@ function stageMacWechatImageForMessageSourceSend(
   const temporaryRoot = findWechatImagePath(wechatFilesRoot, new Date(), senderWxid)
   if (!temporaryRoot) throw new Error('无法定位当前微信账号的图片临时目录')
   mkdirSync(temporaryRoot, { recursive: true })
+
+  /*
+   * 暂存图**不能**在 /sendMsg 返回后立即删除：`ok: true` 只代表 Host 已接受请求，
+   * 微信侧是异步读取这个文件的，删早了消息会静默丢失（API 仍回 sent）。
+   * 改为按保留期回收，顺手清理超过 10 分钟的历史暂存图，防止异常退出残留。
+   */
+  const now = Date.now()
+  try {
+    for (const entry of readdirSync(temporaryRoot)) {
+      if (!entry.startsWith(MAC_IMAGE_STAGE_PREFIX)) continue
+      const candidate = join(temporaryRoot, entry)
+      try {
+        if (now - statSync(candidate).mtimeMs > MAC_IMAGE_STAGE_RETENTION_MS) {
+          unlinkSync(candidate)
+        }
+      } catch {
+        // Best-effort stale image cleanup.
+      }
+    }
+  } catch {
+    // Ignore directory listing errors.
+  }
+
   const extension = extname(filePath).toLowerCase()
   const safeExtension = /^\.[a-z0-9]{1,8}$/.test(extension) ? extension : '.png'
   const stagedPath = join(
@@ -384,6 +410,21 @@ function stageMacWechatImageForMessageSourceSend(
   )
   copyFileSync(filePath, stagedPath)
   return stagedPath
+}
+
+/**
+ * 延迟回收暂存图：微信在 `/sendMsg` 返回后才异步读取该文件，
+ * 立即删除会让消息静默丢失；与视频/文件暂存保持同样的「延迟清理」策略。
+ */
+function scheduleStagedImageCleanup(stagedPath: string): void {
+  const timer = setTimeout(() => {
+    try {
+      unlinkSync(stagedPath)
+    } catch {
+      // Best-effort delayed cleanup after WeChat finishes asynchronous image upload.
+    }
+  }, 120_000)
+  timer.unref?.()
 }
 
 const MAC_VIDEO_STAGE_PREFIX = 'tm-video-'
@@ -784,24 +825,39 @@ export class PersonalWechatSendService {
   constructor(private readonly wechatFilesRoot = WECHAT_FILES_ROOT) {}
 
   async getStatus(): Promise<PersonalWechatSenderStatus> {
-    // macOS 发送能力完全由 native runtime（tm-wechat-host）提供，
-    // 这里保持同源，避免出现第二套状态判断。
-    if (process.platform === 'darwin') return macWechatRuntimeManager.buildSenderStatus()
+    if (process.platform === 'darwin') {
+      const configuredPort = normalizeWindowsWechatPort(loadSettings().windowsWechatPort)
+      if (!configuredPort) {
+        const base = windowsStatusBase('')
+        return {
+          ...base,
+          platform: 'darwin',
+          arch: process.arch,
+          state: 'error',
+          message: '尚未配置微信发送能力端口',
+          error: '请先输入端口并检测后保存'
+        }
+      }
+      return this.getMacPortStatus(configuredPort)
+    }
     return this.getWindowsStatus()
   }
 
   async checkWindowsStatus(port?: string): Promise<PersonalWechatSenderStatus> {
-    if (process.platform !== 'win32') return this.getStatus()
+    if (process.platform !== 'win32' && process.platform !== 'darwin') return this.getStatus()
     const normalizedPort = normalizeWindowsWechatPort(port)
     if (!normalizedPort) {
       const base = windowsStatusBase()
       return {
         ...base,
+        platform: process.platform,
+        arch: process.arch,
         state: 'error',
         message: '请输入 1 到 65535 之间的微信发送能力端口',
         error: '端口格式无效或为空'
       }
     }
+    if (process.platform === 'darwin') return this.getMacPortStatus(normalizedPort)
     return this.getWindowsStatus(normalizedPort)
   }
 
@@ -834,7 +890,111 @@ export class PersonalWechatSendService {
   }
 
   async rebind(): Promise<PersonalWechatSenderStatus> {
-    return this.getWindowsStatus()
+    return this.getStatus()
+  }
+
+  private resolveMacHostPort(): number {
+    const configured = normalizeWindowsWechatPort(loadSettings().windowsWechatPort)
+    if (configured) return Number(configured)
+    return macWechatRuntimeManager.getPort()
+  }
+
+  private async ensureMacSenderReady(): Promise<PersonalWechatSenderStatus> {
+    const configured = normalizeWindowsWechatPort(loadSettings().windowsWechatPort)
+    if (configured) {
+      return this.getMacPortStatus(configured)
+    }
+    await macWechatRuntimeManager.ensureStarted()
+    return macWechatRuntimeManager.buildSenderStatus()
+  }
+
+  private async resolveMacCurrentStatus(): Promise<PersonalWechatSenderStatus> {
+    const configured = normalizeWindowsWechatPort(loadSettings().windowsWechatPort)
+    if (configured) {
+      return this.getMacPortStatus(configured)
+    }
+    return macWechatRuntimeManager.buildSenderStatus()
+  }
+
+  private async resolveMacSendMechanism(versionHint?: string): Promise<string | undefined> {
+    const configured = normalizeWindowsWechatPort(loadSettings().windowsWechatPort)
+    if (!configured) {
+      return macWechatRuntimeManager.getSendMechanism()
+    }
+    const ver = String(versionHint || '').trim()
+    if (ver.startsWith('4.1.11.')) return 'legacy-req2buf'
+    if (ver.startsWith('4.1.13.')) return 'native-msg-object'
+    return 'tm-message-source-send'
+  }
+
+  private async getMacPortStatus(port?: string): Promise<PersonalWechatSenderStatus> {
+    const host = windowsHookHost(port)
+    const base: PersonalWechatSenderStatus = {
+      ...windowsStatusBase(host || ''),
+      platform: 'darwin',
+      arch: process.arch
+    }
+    if (!host) {
+      return {
+        ...base,
+        state: 'error',
+        message: '尚未配置微信发送能力端口',
+        error: '请先输入端口并检测后保存'
+      }
+    }
+    try {
+      const result = await requestWindowsHook('/getLoginInfo', {}, 15_000, 'GET', host)
+      const loggedIn = parseWindowsLoginStatus(result)
+      const pid = typeof result.pid === 'number' && result.pid > 0 ? result.pid : 1
+      const wechatVersion = typeof result.version === 'string' ? result.version : '4.1.15.55'
+      const connected = {
+        wechatRunning: true,
+        wechatPid: pid,
+        boundWechatPid: pid,
+        wechatVersion,
+        runtimeReady: true,
+        endpointReady: true,
+        attachReady: true,
+        baseAddressReady: true,
+        textHookInstalled: true,
+        textHookReady: loggedIn,
+        imageHookInstalled: loggedIn,
+        imageHookReady: loggedIn,
+        messageListenerReady: loggedIn
+      }
+      if (!loggedIn) {
+        const msg =
+          typeof result.message === 'string' && result.message.trim()
+            ? result.message.trim()
+            : '微信发送能力已连接，但微信尚未登录或尚未完成绑定'
+        return {
+          ...base,
+          ...connected,
+          state: 'hook_not_ready',
+          message: msg,
+          error: typeof result.error === 'string' && result.error.trim() ? result.error.trim() : msg
+        }
+      }
+      return {
+        ...base,
+        ...connected,
+        state: 'online' as const,
+        canSend: true,
+        canSendText: true,
+        canSendImage: true,
+        canSendVoice: true,
+        canSendVideo: true,
+        canSendFile: true,
+        message: '微信发送能力已连接，可以发送消息'
+      }
+    } catch (error) {
+      return {
+        ...base,
+        state: 'wechat_not_running',
+        message: '未检测到微信发送能力，请先通过授权管理器注入并启动微信',
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
   }
 
   private async getWindowsStatus(port?: string): Promise<PersonalWechatSenderStatus> {
@@ -899,8 +1059,7 @@ export class PersonalWechatSendService {
   private async sendMacText(
     request: Extract<PersonalWechatSendRequest, { type: 'text' }>
   ): Promise<PersonalWechatSendResult> {
-    await macWechatRuntimeManager.ensureStarted()
-    const initialStatus = await macWechatRuntimeManager.buildSenderStatus()
+    const initialStatus = await this.ensureMacSenderReady()
     if (!initialStatus.canSendText) {
       return {
         success: false,
@@ -908,7 +1067,7 @@ export class PersonalWechatSendService {
         error: initialStatus.message || '微信发送能力未就绪'
       }
     }
-    const sendMechanism = await macWechatRuntimeManager.getSendMechanism()
+    const sendMechanism = await this.resolveMacSendMechanism(initialStatus.wechatVersion)
     if (request.at && sendMechanism !== 'tm-message-source-send') {
       return {
         success: false,
@@ -928,7 +1087,7 @@ export class PersonalWechatSendService {
         },
         50_000
       )
-      const status = await macWechatRuntimeManager.buildSenderStatus()
+      const status = await this.resolveMacCurrentStatus()
       if (!result?.ok) {
         return { success: false, status, error: result?.message || '文字发送失败' }
       }
@@ -940,7 +1099,7 @@ export class PersonalWechatSendService {
       text: request.text,
       isGroup: Boolean(request.isGroup)
     })
-    const response = await fetch(`http://127.0.0.1:${macWechatRuntimeManager.getPort()}/sendText`, {
+    const response = await fetch(`http://127.0.0.1:${this.resolveMacHostPort()}/sendText`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
@@ -948,7 +1107,7 @@ export class PersonalWechatSendService {
     }).catch(() => null)
 
     if (response === null || !response.ok) {
-      const status = await macWechatRuntimeManager.buildSenderStatus()
+      const status = await this.resolveMacCurrentStatus()
       return {
         success: false,
         status,
@@ -957,7 +1116,7 @@ export class PersonalWechatSendService {
     }
 
     const result = (await response.json()) as { code: number; ok: boolean; message: string }
-    const resultStatus = await macWechatRuntimeManager.buildSenderStatus()
+    const resultStatus = await this.resolveMacCurrentStatus()
     if (!result.ok) {
       return { success: false, status: resultStatus, error: result.message || '发送失败' }
     }
@@ -975,7 +1134,7 @@ export class PersonalWechatSendService {
     body: Record<string, unknown>,
     timeoutMs: number
   ): Promise<{ code: number; ok: boolean; message: string } | null> {
-    const response = await fetch(`http://127.0.0.1:${macWechatRuntimeManager.getPort()}${path}`, {
+    const response = await fetch(`http://127.0.0.1:${this.resolveMacHostPort()}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1000,8 +1159,7 @@ export class PersonalWechatSendService {
   private async sendMacVideo(
     request: Extract<PersonalWechatSendRequest, { type: 'video' }>
   ): Promise<PersonalWechatSendResult> {
-    await macWechatRuntimeManager.ensureStarted()
-    const status = await macWechatRuntimeManager.buildSenderStatus()
+    const status = await this.ensureMacSenderReady()
     if (!status.canSendVideo) {
       return {
         success: false,
@@ -1022,7 +1180,7 @@ export class PersonalWechatSendService {
     try {
       staged = stageMacWechatVideoForSend(filePath, this.wechatFilesRoot)
     } catch (error) {
-      const latest = await macWechatRuntimeManager.buildSenderStatus()
+      const latest = await this.resolveMacCurrentStatus()
       return {
         success: false,
         status: latest,
@@ -1036,7 +1194,7 @@ export class PersonalWechatSendService {
         { toWxid: request.to, type: 'video', msg: staged.stagedPath },
         180_000
       )
-      const latest = await macWechatRuntimeManager.buildSenderStatus()
+      const latest = await this.resolveMacCurrentStatus()
       if (!result?.ok) {
         return { success: false, status: latest, error: result?.message || '视频发送失败' }
       }
@@ -1049,8 +1207,7 @@ export class PersonalWechatSendService {
   private async sendMacFile(
     request: Extract<PersonalWechatSendRequest, { type: 'file' }>
   ): Promise<PersonalWechatSendResult> {
-    await macWechatRuntimeManager.ensureStarted()
-    const status = await macWechatRuntimeManager.buildSenderStatus()
+    const status = await this.ensureMacSenderReady()
     if (!status.canSendFile) {
       return {
         success: false,
@@ -1072,7 +1229,7 @@ export class PersonalWechatSendService {
     try {
       staged = stageMacWechatFileForSend(filePath, this.wechatFilesRoot)
     } catch (error) {
-      const latest = await macWechatRuntimeManager.buildSenderStatus()
+      const latest = await this.resolveMacCurrentStatus()
       return {
         success: false,
         status: latest,
@@ -1086,7 +1243,7 @@ export class PersonalWechatSendService {
         { to: request.to, type: 'file', path: staged.stagedPath, name: fileName },
         180_000
       )
-      const latest = await macWechatRuntimeManager.buildSenderStatus()
+      const latest = await this.resolveMacCurrentStatus()
       if (!result?.ok) {
         return { success: false, status: latest, error: result?.message || '文件发送失败' }
       }
@@ -1099,10 +1256,9 @@ export class PersonalWechatSendService {
   private async sendMacImage(
     request: Extract<PersonalWechatSendRequest, { type: 'image' }>
   ): Promise<PersonalWechatSendResult> {
-    await macWechatRuntimeManager.ensureStarted()
-    const initialStatus = await macWechatRuntimeManager.buildSenderStatus()
+    const initialStatus = await this.ensureMacSenderReady()
     const fail = async (error: string): Promise<PersonalWechatSendResult> => {
-      const status = await macWechatRuntimeManager.buildSenderStatus()
+      const status = await this.resolveMacCurrentStatus()
       return { success: false, status, error }
     }
     if (!initialStatus.canSendImage) {
@@ -1110,7 +1266,7 @@ export class PersonalWechatSendService {
     }
     const filePath = String(request.filePath || '').trim()
     if (!filePath || !existsSync(filePath)) return fail('请选择有效的图片文件')
-    const sendMechanism = await macWechatRuntimeManager.getSendMechanism()
+    const sendMechanism = await this.resolveMacSendMechanism(initialStatus.wechatVersion)
     const sender = await this.resolveMacSenderWxid()
     if (!sender) return fail('无法识别当前微信账号 wxid')
     if (sendMechanism === 'tm-message-source-send') {
@@ -1123,22 +1279,20 @@ export class PersonalWechatSendService {
           { type: 'image', to: request.to, path: stagedPath },
           55_000
         )
-        const status = await macWechatRuntimeManager.buildSenderStatus()
+        const status = await this.resolveMacCurrentStatus()
         if (!sent?.ok) {
           sourceError = sent?.message || '图片发送失败'
         } else {
+          /*
+           * 不能在这里 unlink：微信在 /sendMsg 返回后仍会异步读取该文件，
+           * 删早了消息会静默丢失，而 API 已经返回 success。
+           * 改为延迟回收（2 分钟）+ 下次发送时清扫过期文件。
+           */
+          if (stagedPath) scheduleStagedImageCleanup(stagedPath)
           return { success: true, status }
         }
       } catch (error) {
         sourceError = error instanceof Error ? error.message : String(error)
-      } finally {
-        if (stagedPath) {
-          try {
-            unlinkSync(stagedPath)
-          } catch {
-            // Best-effort cleanup after WeChat has consumed the staged image.
-          }
-        }
       }
       if (!isDefinitiveImageSourcePreparationFailure(sourceError)) return fail(sourceError)
     }
@@ -1159,7 +1313,7 @@ export class PersonalWechatSendService {
       if (!sent || !sent.ok) {
         return fail(sent?.message || '图片发送失败')
       }
-      const status = await macWechatRuntimeManager.buildSenderStatus()
+      const status = await this.resolveMacCurrentStatus()
       return { success: true, status }
     } catch (error) {
       return fail(error instanceof Error ? error.message : String(error))
@@ -1178,14 +1332,13 @@ export class PersonalWechatSendService {
     request: Extract<PersonalWechatSendRequest, { type: 'voice' }>
   ): Promise<PersonalWechatSendResult> {
     const requestId = randomUUID()
-    await macWechatRuntimeManager.ensureStarted()
-    const initialStatus = await macWechatRuntimeManager.buildSenderStatus()
+    const initialStatus = await this.ensureMacSenderReady()
     const fail = async (
       error: string,
       failurePhase = 'preflight'
     ): Promise<PersonalWechatSendResult> => {
       logVoiceAttempt(requestId, 'failed', { failure_phase: failurePhase, error })
-      const status = await macWechatRuntimeManager.buildSenderStatus()
+      const status = await this.resolveMacCurrentStatus()
       return { success: false, status, error }
     }
     if (!initialStatus.canSendVoice) {
@@ -1193,7 +1346,7 @@ export class PersonalWechatSendService {
     }
     const filePath = String(request.filePath || '').trim()
     if (!filePath || !existsSync(filePath)) return fail('请选择有效的语音文件')
-    const sendMechanism = await macWechatRuntimeManager.getSendMechanism()
+    const sendMechanism = await this.resolveMacSendMechanism(initialStatus.wechatVersion)
     let sender = ''
     if (sendMechanism !== 'tm-message-source-send') {
       sender = await this.resolveMacSenderWxid()
@@ -1235,7 +1388,7 @@ export class PersonalWechatSendService {
         if (!sent?.ok) {
           return fail(sent?.message || '语音发送失败', 'send')
         }
-        const status = await macWechatRuntimeManager.buildSenderStatus()
+        const status = await this.resolveMacCurrentStatus()
         logVoiceAttempt(requestId, 'completed', { send_result: '0' })
         return { success: true, status }
       }
@@ -1257,7 +1410,7 @@ export class PersonalWechatSendService {
       if (!sent || !sent.ok) {
         return fail(sent?.message || '语音发送失败', 'send')
       }
-      const status = await macWechatRuntimeManager.buildSenderStatus()
+      const status = await this.resolveMacCurrentStatus()
       logVoiceAttempt(requestId, 'completed', { send_result: '0' })
       return { success: true, status }
     } finally {

@@ -3,6 +3,7 @@ import path from 'node:path'
 import { app } from 'electron'
 
 import { findResource } from './resource-paths'
+import { resolveExternalComponent } from './services/external-component-locator'
 
 export type NativeRuntimeProfile = 'public' | 'native'
 
@@ -34,7 +35,10 @@ function getNativeRuntimeProfile(): NativeRuntimeProfile {
 }
 
 export function hasMacNativeBundle(): boolean {
-  return process.platform === 'darwin' && getNativeRuntimeProfile() === 'native'
+  return (
+    process.platform === 'darwin' &&
+    (getNativeRuntimeProfile() === 'native' || resolveExternalComponent() !== null)
+  )
 }
 
 export function isMacNativeRuntimeUnavailable(): boolean {
@@ -43,6 +47,11 @@ export function isMacNativeRuntimeUnavailable(): boolean {
 
 export function resolveWcdbLibrary(): string | null {
   if (process.platform !== 'darwin') return null
+  const external = resolveExternalComponent()
+  if (external) {
+    const candidate = path.join(external.dir, 'libwcdb_api.dylib')
+    if (fs.existsSync(candidate)) return candidate
+  }
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
   return findResource(`wcdb/macos/${arch}/libwcdb_api.dylib`)
 }
@@ -56,12 +65,18 @@ export function resolveWcdbDependency(): string | null {
 
 export function resolveWcdbConfigHelper(): string | null {
   if (isMacNativeRuntimeUnavailable()) return null
+  const external = resolveExternalComponent()
+  if (external && fs.existsSync(external.helperPath)) return external.helperPath
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
   return findResource(`wcdb/macos/${arch}/tm-wcdb-config-helper`)
 }
 
 export function resolveWechatRuntimeDirectory(): string | null {
   if (!hasMacNativeBundle()) return null
+  const external = resolveExternalComponent()
+  if (external && fs.existsSync(path.join(external.dir, 'runtime-manifest.json'))) {
+    return external.dir
+  }
   const manifest =
     findResource(`${RUNTIME_RELATIVE}/runtime-manifest.json`) ||
     (!app.isPackaged ? findResource('runtime/darwin-arm64/runtime-manifest.json') : null)

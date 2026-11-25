@@ -7,7 +7,6 @@ import {
   personalWechatSendService,
   type PersonalWechatSendService
 } from './personal-wechat-send-service'
-import { macWechatRuntimeManager } from './mac-wechat-runtime-manager'
 
 /**
  * Converts the detailed sender diagnostics into a small contract that other
@@ -22,7 +21,7 @@ export class PersonalWechatCapabilityService {
     private readonly sender: Pick<PersonalWechatSendService, 'getStatus'>,
     private readonly platform: NodeJS.Platform = process.platform,
     private readonly getMacStatus: () => Promise<PersonalWechatSenderStatus> = () =>
-      macWechatRuntimeManager.buildSenderStatus()
+      personalWechatSendService.getStatus()
   ) {}
 
   async getPersonalWechatSendCapability(): Promise<PersonalWechatSendCapability> {
@@ -84,6 +83,7 @@ export class PersonalWechatCapabilityService {
     if (senderStatus.platform !== 'darwin' || senderStatus.state === 'unsupported_platform') {
       return 'unsupported'
     }
+    if (!senderStatus.endpoint) return 'unconfigured'
     if (senderStatus.state === 'error') return 'error'
     if (senderStatus.state === 'runtime_missing') return 'unconfigured'
     const hasCurrentBinding = Boolean(

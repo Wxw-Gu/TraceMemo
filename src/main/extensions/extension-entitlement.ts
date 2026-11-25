@@ -29,6 +29,17 @@ export async function checkExtensionSendEntitlement(
   const platform = dependencies.platform ?? process.platform
   if (platform === 'darwin') {
     try {
+      if (!dependencies.getMacLicense) {
+        const probe = dependencies.probeLicense
+          ? await dependencies.probeLicense()
+          : await probeLicenseStatus()
+        if (probe.ok) {
+          const mapped = mapLicenseStatus(probe.status)
+          if (mapped.entitlement === 'valid') {
+            return { ok: true, message: '授权有效', source: 'mac_license' }
+          }
+        }
+      }
       const status = dependencies.getMacLicense
         ? await dependencies.getMacLicense()
         : await macWechatRuntimeManager.getMacLicenseStatus()

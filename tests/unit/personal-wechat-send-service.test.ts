@@ -122,7 +122,44 @@ describe('macOS message-source send routing', () => {
       type: 'image', to: 'fixture-contact', path: stagedPath
     })
     expect(stagedPath).not.toBe(filePath)
-    expect(existsSync(stagedPath)).toBe(false)
+    // 暂存图必须保留：微信在 /sendMsg 返回后才异步读取，立刻删除会让消息静默丢失。
+    expect(existsSync(stagedPath)).toBe(true)
+  })
+
+  it('只清扫超过保留期的历史暂存图，不动保留期内的文件', async () => {
+    const root = temporaryDirectory()
+    const filePath = join(root, 'fixture-image.png')
+    writeFileSync(filePath, 'fixture-image')
+    const imageTemp = join(root, 'wxid_fixture_self', 'temp', 'ImageTemp', '2026-11')
+    mkdirSync(imageTemp, { recursive: true })
+    const stale = join(imageTemp, 'tm-stale-0001.png')
+    const fresh = join(imageTemp, 'tm-fresh-0001.png')
+    const unrelated = join(imageTemp, 'wechat-own.png')
+    for (const p of [stale, fresh, unrelated]) writeFileSync(p, 'x')
+    const old = new Date(Date.now() - 60 * 60 * 1000)
+    utimesSync(stale, old, old)
+    utimesSync(unrelated, old, old)
+    runtimeMocks.getSendMechanism.mockResolvedValue('tm-message-source-send')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 0, ok: true, message: 'sent' })
+      })
+    )
+
+    await new PersonalWechatSendService(root).send({
+      type: 'image',
+      to: 'fixture-contact',
+      isGroup: false,
+      filePath
+    })
+
+    expect(existsSync(stale)).toBe(false)
+    expect(existsSync(fresh)).toBe(true)
+    // 非 tm- 前缀的文件不属于我们，过期也不能删。
+    expect(existsSync(unrelated)).toBe(true)
   })
 
   it('uses the legacy image path only when source preparation is definitively rejected', async () => {

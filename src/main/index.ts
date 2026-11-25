@@ -668,9 +668,7 @@ import type {
 } from '../shared/wechat-share-card'
 
 async function currentPersonalWechatSenderStatus(): Promise<PersonalWechatSenderStatus> {
-  return process.platform === 'darwin'
-    ? macWechatRuntimeManager.buildSenderStatus()
-    : personalWechatSendService.getStatus()
+  return personalWechatSendService.getStatus()
 }
 
 // electron-vite can close the child's stdout/stderr after spawning Electron.

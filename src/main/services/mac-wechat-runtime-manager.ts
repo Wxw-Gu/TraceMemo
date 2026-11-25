@@ -1,6 +1,8 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from 'child_process'
+import { createECDH, createHash } from 'node:crypto'
+import { homedir } from 'node:os'
 import { promisify } from 'node:util'
-import { chmodSync, existsSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { get, request as httpRequest } from 'http'
 import { join } from 'path'
 
@@ -63,6 +65,65 @@ const CRASH_RESTART_DELAY_MS = 1_500
  * real challenge->sign->check cycle inside the host, which is bounded at 15s. */
 const LICENSE_STATUS_TIMEOUT_MS = 8_000
 const LICENSE_REFRESH_TIMEOUT_MS = 20_000
+const P256_SPKI_PREFIX = Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex')
+
+export function ensureLocalMacDeviceId(baseHomeDir: string = homedir()): string | null {
+  if (process.platform !== 'darwin') return null
+  try {
+    const cleanHome = baseHomeDir.includes('/Library/Containers/')
+      ? baseHomeDir.slice(0, baseHomeDir.indexOf('/Library/Containers/'))
+      : baseHomeDir
+    const nativeRoot = join(cleanHome, 'Library', 'Application Support', 'TraceMemoNative')
+    const identityDir = join(nativeRoot, 'identity')
+    const keyPath = join(identityDir, 'device-key.sec1')
+    const cachePath = join(nativeRoot, 'identity.json')
+
+    if (existsSync(keyPath)) {
+      const sec1 = readFileSync(keyPath)
+      if (sec1.length === 97 && sec1[0] === 0x04) {
+        const pubX963 = sec1.subarray(0, 65)
+        const spki = Buffer.concat([P256_SPKI_PREFIX, pubX963])
+        return `mac_${createHash('sha256').update(spki).digest('hex')}`
+      }
+    }
+
+    if (existsSync(cachePath)) {
+      const cached = JSON.parse(readFileSync(cachePath, 'utf8')) as { device_id?: unknown }
+      if (typeof cached.device_id === 'string' && /^mac_[0-9a-f]{64}$/.test(cached.device_id)) {
+        return cached.device_id
+      }
+    }
+
+    mkdirSync(identityDir, { recursive: true, mode: 0o700 })
+    chmodSync(identityDir, 0o700)
+    const ecdh = createECDH('prime256v1')
+    ecdh.generateKeys()
+    const pub = ecdh.getPublicKey()
+    const rawPriv = ecdh.getPrivateKey()
+    const priv =
+      rawPriv.length === 32
+        ? rawPriv
+        : Buffer.concat([Buffer.alloc(Math.max(0, 32 - rawPriv.length)), rawPriv.subarray(-32)])
+    const sec1 = Buffer.concat([pub, priv])
+    writeFileSync(keyPath, sec1, { mode: 0o600 })
+    chmodSync(keyPath, 0o600)
+
+    const spki = Buffer.concat([P256_SPKI_PREFIX, pub])
+    const deviceId = `mac_${createHash('sha256').update(spki).digest('hex')}`
+    const cachePayload = JSON.stringify({
+      version: 1,
+      device_id: deviceId,
+      spki_base64: spki.toString('base64'),
+      key_kind: 'file',
+      exportable: true
+    })
+    writeFileSync(cachePath, cachePayload, { mode: 0o600 })
+    chmodSync(cachePath, 0o600)
+    return deviceId
+  } catch {
+    return null
+  }
+}
 
 /* 仅地址占用可以通过切换端口恢复。 */
 function isPortConflictDiagnostic(diagnostic: string): boolean {
@@ -839,37 +900,66 @@ export class MacWechatRuntimeManager {
   /** Local snapshot. Never attaches to WeChat, never forces a network refresh.
    *  404 means the host predates these endpoints — not "unlicensed". */
   async getMacLicenseStatus(): Promise<MacLicenseStatus> {
+    const localDeviceId = ensureLocalMacDeviceId()
+    const withDeviceId = (result: MacLicenseStatus): MacLicenseStatus => ({
+      ...result,
+      deviceId: result.deviceId || localDeviceId
+    })
+
+    const { status: directStatus, body: directBody } = await this.request(
+      'GET',
+      '/license/status',
+      1_500
+    )
+    if (directStatus === 200) {
+      try {
+        return withDeviceId(parseMacLicenseStatus(JSON.parse(directBody)))
+      } catch {
+        // 继续走后续兜底
+      }
+    }
+
     const availability = this.getSendRuntimeAvailability()
     if (availability.state === 'unavailable') {
-      return offlineMacLicenseStatus('platform_unsupported', '当前构建不包含 Mac 发送能力')
+      return withDeviceId(
+        offlineMacLicenseStatus('platform_unsupported', '当前构建不包含 Mac 发送能力')
+      )
     }
     if (availability.state !== 'available') {
-      return offlineMacLicenseStatus('runtime_missing', availability.message)
+      return withDeviceId(offlineMacLicenseStatus('runtime_missing', availability.message))
     }
     if (this.manuallyStopped) {
-      return offlineMacLicenseStatus(
-        'runtime_missing',
-        'Mac 发送组件已停止，请在发送页点击“绑定微信”重新启动。'
+      return withDeviceId(
+        offlineMacLicenseStatus(
+          'runtime_missing',
+          'Mac 发送组件已停止，请在发送页点击“绑定微信”重新启动。'
+        )
       )
     }
     if (this.lifecycle === 'stopped') await this.ensureStarted()
     const { status, body } = await this.request('GET', '/license/status', LICENSE_STATUS_TIMEOUT_MS)
     if (status === null) {
-      return offlineMacLicenseStatus('runtime_missing', 'Mac 发送组件未运行，请先启动发送组件')
+      return withDeviceId(
+        offlineMacLicenseStatus('runtime_missing', 'Mac 发送组件未运行，请先启动发送组件')
+      )
     }
     if (status === 404) {
-      return offlineMacLicenseStatus(
-        'unsupported',
-        '当前发送组件版本较旧，不支持授权检测。请升级或重启发送组件后再试。'
+      return withDeviceId(
+        offlineMacLicenseStatus(
+          'unsupported',
+          '当前发送组件版本较旧，不支持授权检测。请升级或重启发送组件后再试。'
+        )
       )
     }
     if (status !== 200) {
-      return offlineMacLicenseStatus('runtime_missing', `授权状态查询失败（HTTP ${status}）`)
+      return withDeviceId(
+        offlineMacLicenseStatus('runtime_missing', `授权状态查询失败（HTTP ${status}）`)
+      )
     }
     try {
-      return parseMacLicenseStatus(JSON.parse(body))
+      return withDeviceId(parseMacLicenseStatus(JSON.parse(body)))
     } catch {
-      return offlineMacLicenseStatus('runtime_missing', '授权状态响应无法解析')
+      return withDeviceId(offlineMacLicenseStatus('runtime_missing', '授权状态响应无法解析'))
     }
   }
 

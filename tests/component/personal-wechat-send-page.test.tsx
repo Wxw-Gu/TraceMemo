@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PersonalWechatSendPage } from '../../src/renderer/src/features/settings/pages/PersonalWechatSendPage'
@@ -9,15 +10,15 @@ vi.mock('../../src/renderer/src/utils/runtime-environment', () => ({
   supportsPersonalWechatSend: true
 }))
 
-const getCapability = vi.fn()
+const getSettings = vi.fn()
+const setSettings = vi.fn()
 const getSenderStatus = vi.fn()
-const rebindSender = vi.fn()
-const listResidualProcesses = vi.fn()
-const cleanupResidualProcesses = vi.fn()
-const startMacRuntime = vi.fn()
+const checkSenderStatus = vi.fn()
 const getMacLicenseStatus = vi.fn()
+// 合成占位 ID，仅匹配 mac_ + 64hex 格式；不要放真实设备 ID。
+const TEST_DEVICE_ID = 'mac_9d204eef37960efc91277713c5441b6ab27c4e46c739c70d6c7fcd55187aa943'
 
-const senderStatus = {
+const readySenderStatus = {
   state: 'online' as const,
   platform: 'darwin',
   arch: 'arm64',
@@ -29,7 +30,6 @@ const senderStatus = {
   endpointReady: true,
   runtimeReady: true,
   attachReady: true,
-  baseAddress: '0x114ef8000',
   baseAddressReady: true,
   textHookInstalled: true,
   textHookReady: true,
@@ -40,282 +40,97 @@ const senderStatus = {
   canSendText: true,
   canSendImage: true,
   canSendVoice: true,
-  message: '个人微信已绑定'
+  message: '微信发送能力已连接，可以发送消息'
 }
 
-const capability = {
-  supported: true,
-  ready: true,
-  status: 'ready' as const,
-  capabilities: { text: true, image: true, voice: true },
-  senderStatus,
-  message: '个人微信发送能力已就绪'
-}
-
-describe('PersonalWechatSendPage on macOS', () => {
+describe('PersonalWechatSendPage on macOS (port 4290 mode)', () => {
   beforeEach(() => {
-    getCapability.mockReset().mockResolvedValue(capability)
-    getSenderStatus.mockReset().mockResolvedValue(senderStatus)
-    rebindSender.mockReset().mockResolvedValue(senderStatus)
-    listResidualProcesses.mockReset().mockResolvedValue([
-      {
-        pid: 202,
-        name: 'tm-wechat-host',
-        targets: ['port_4290'],
-        confirmationToken: 'process-identity-202'
-      }
-    ])
-    cleanupResidualProcesses.mockReset().mockResolvedValue({
-      stopped: [
-        {
-          pid: 202,
-          name: 'tm-wechat-host',
-          targets: ['port_4290'],
-          confirmationToken: 'process-identity-202'
-        }
-      ],
-      remaining: [],
-      runtimeStopped: true
+    getSettings.mockReset().mockResolvedValue({
+      settings: { windowsWechatPort: '' }
     })
-    startMacRuntime.mockReset().mockResolvedValue({ lifecycle: 'online' })
+    setSettings.mockReset().mockResolvedValue({
+      settings: { windowsWechatPort: '4290' }
+    })
+    getSenderStatus.mockReset().mockResolvedValue(readySenderStatus)
+    checkSenderStatus.mockReset().mockResolvedValue(readySenderStatus)
     getMacLicenseStatus.mockReset().mockResolvedValue({
-      deviceId: null,
       state: 'unlicensed',
       authorized: false,
-      source: 'none',
+      deviceId: TEST_DEVICE_ID,
       features: [],
-      lastCheckedAt: null,
       licenseExpiresAt: null,
-      tokenExpiresAt: null,
-      message: '当前设备暂无发送能力授权'
+      lastCheckedAt: null,
+      message: ''
     })
+
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
-        getPersonalWechatSendCapability: getCapability,
+        getSettings,
+        setSettings,
         getPersonalWechatSenderStatus: getSenderStatus,
-        rebindPersonalWechatSender: rebindSender,
-        listMacWechatResidualProcesses: listResidualProcesses,
-        cleanupMacWechatResidualProcesses: cleanupResidualProcesses,
-        startMacSendRuntime: startMacRuntime,
-        // 发送能力授权卡所需的两个入口。页面在 Native 档位会调用它们，
-        // 缺 mock 会让 refresh 抛错、整页停在错误态。
-        getMacSendRuntimeAvailability: vi.fn(async () => ({
-          state: 'available',
-          message: '微信发送组件可用'
-        })),
-        getMacLicenseStatus,
-        refreshMacLicense: vi.fn()
+        checkPersonalWechatSenderStatus: checkSenderStatus,
+        getMacLicenseStatus
       }
     })
   })
 
-  it('shows the native runtime readiness', async () => {
+  it('starts unconfigured when no port is saved', async () => {
     render(<PersonalWechatSendPage onNotice={vi.fn()} />)
 
-    // 页面重构后「就绪」的落点从 SetupGuide 尾部文案变成了「微信发送环境」卡片的状态标签；
-    // 断言改到新位置，语义仍是“运行时准备好了”。
-    expect(await screen.findByText('运行环境已就绪')).toBeVisible()
-    expect(
-      screen.getByText('当前发送能力占用端口为 4290（TM_WECHAT_HOST_PORT）。')
-    ).toBeVisible()
-    expect(await screen.findByText('已被占用：tm-wechat-host（PID 202）')).toBeVisible()
-    expect(screen.getAllByText('已就绪')).not.toHaveLength(0)
-    expect(screen.queryByText('查看支持的微信版本')).not.toBeInTheDocument()
-    expect(screen.queryByText('高级诊断')).not.toBeInTheDocument()
+    expect(await screen.findByText('尚未配置')).toBeVisible()
+    expect(screen.getByText('macOS 接口配置')).toBeVisible()
+    expect(screen.getByText('未配置')).toBeVisible()
+    expect(screen.getByText('本机设备 ID')).toBeVisible()
+    expect(await screen.findByText('mac_9d204eef…7aa943')).toBeVisible()
+    expect(screen.getByRole('button', { name: '复制完整设备 ID' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: '绑定微信' })).not.toBeInTheDocument()
   })
 
-  it('shows the actual runtime port when it uses a configured fallback instead of 4290', async () => {
-    const fallbackPortStatus = { ...senderStatus, endpoint: 'http://127.0.0.1:4291' }
-    getCapability.mockResolvedValueOnce({ ...capability, senderStatus: fallbackPortStatus })
-    getSenderStatus.mockResolvedValueOnce(fallbackPortStatus)
-    listResidualProcesses.mockResolvedValueOnce([])
-
-    render(<PersonalWechatSendPage onNotice={vi.fn()} />)
-
-    expect(
-      await screen.findByText(
-        '当前发送能力占用端口为 4291（TM_WECHAT_HOST_PORT）。'
-      )
-    ).toBeVisible()
-    expect(screen.getByText('未被占用')).toBeVisible()
-  })
-
-  it('shows confirmed cleanup targets before ending processes', async () => {
+  it('detects port 4290 and saves it to unlock sending capability', async () => {
     const onNotice = vi.fn()
     render(<PersonalWechatSendPage onNotice={onNotice} />)
 
-    await screen.findByText('运行环境已就绪')
-    fireEvent.click(screen.getByRole('button', { name: '清理残留以及微信进程' }))
-
-    expect(await screen.findByRole('heading', { name: '清理微信残留进程？' })).toBeVisible()
-    expect(screen.getByText('tm-wechat-host')).toBeVisible()
-    expect(screen.getByText(/PID 202.*4290 端口/)).toBeVisible()
-    expect(cleanupResidualProcesses).not.toHaveBeenCalled()
-  })
-
-  it('cleans the confirmed runtime host and automatically restarts it', async () => {
-    const onNotice = vi.fn()
-    render(<PersonalWechatSendPage onNotice={onNotice} />)
-
-    await screen.findByText('运行环境已就绪')
-    fireEvent.click(screen.getByRole('button', { name: '清理残留以及微信进程' }))
-    fireEvent.click(await screen.findByRole('button', { name: '确认结束进程' }))
+    const input = await screen.findByLabelText('微信发送能力端口')
+    fireEvent.change(input, { target: { value: '4290' } })
+    fireEvent.click(screen.getByRole('button', { name: '检测' }))
 
     await waitFor(() => {
-      expect(cleanupResidualProcesses).toHaveBeenCalledWith([
-        { pid: 202, confirmationToken: 'process-identity-202' }
-      ])
+      expect(checkSenderStatus).toHaveBeenCalledWith('4290')
     })
-    await waitFor(() => expect(startMacRuntime).toHaveBeenCalledOnce())
-    expect(onNotice).toHaveBeenCalledWith(
-      '已清理并重启发送 Host；如刚才关闭了微信，请重新打开微信并绑定。'
-    )
+    expect(onNotice).toHaveBeenCalledWith('已检测到微信发送能力，请点击保存')
+    expect(await screen.findByText('微信发送能力已就绪')).toBeVisible()
+    expect(screen.getAllByText('可发送')).toHaveLength(3)
+
+    getSettings.mockResolvedValue({
+      settings: { windowsWechatPort: '4290' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => {
+      expect(setSettings).toHaveBeenCalledWith({ windowsWechatPort: '4290' })
+    })
+    expect(onNotice).toHaveBeenCalledWith('微信发送能力端口已保存')
   })
 
-  it('still starts the runtime when a target survives cleanup, and names it', async () => {
-    const onNotice = vi.fn()
-    cleanupResidualProcesses.mockResolvedValueOnce({
-      stopped: [],
-      remaining: [
-        {
-          pid: 404,
-          name: 'frida-helper',
-          state: 'UE',
-          uninterruptible: true,
-          targets: ['frida_helper', 'port_4290'],
-          confirmationToken: 'process-identity-404'
-        }
-      ],
-      runtimeStopped: false
-    })
-    render(<PersonalWechatSendPage onNotice={onNotice} />)
-
-    await screen.findByText('运行环境已就绪')
-    fireEvent.click(screen.getByRole('button', { name: '清理残留以及微信进程' }))
-    fireEvent.click(await screen.findByRole('button', { name: '确认结束进程' }))
-
-    await waitFor(() => expect(startMacRuntime).toHaveBeenCalledOnce())
-    expect(onNotice).toHaveBeenCalledWith(
-      '0 个进程已退出，1 个系统无法结束（frida-helper）；正在改用可用端口启动发送组件…'
-    )
-  })
-
-  it('reports the fallback port when the runtime comes up on a spare one', async () => {
-    listResidualProcesses.mockResolvedValue([])
-    startMacRuntime.mockResolvedValueOnce({
-      lifecycle: 'online',
-      port: 4291,
-      portFallbackFrom: 4290
+  it('loads saved port 4290 on startup and allows clearing the port', async () => {
+    getSettings.mockResolvedValue({
+      settings: { windowsWechatPort: '4290' }
     })
     const onNotice = vi.fn()
     render(<PersonalWechatSendPage onNotice={onNotice} />)
 
-    await screen.findByText('运行环境已就绪')
-    fireEvent.click(screen.getByRole('button', { name: '清理残留以及微信进程' }))
+    expect(await screen.findByText('微信发送能力已就绪')).toBeVisible()
+    expect(screen.getByText('已就绪')).toBeVisible()
 
-    await waitFor(() => expect(startMacRuntime).toHaveBeenCalledOnce())
-    expect(onNotice).toHaveBeenCalledWith(
-      '发送 Host 已在 4291 端口启动。4290 已被占用，已改用 4291 端口。'
-    )
-  })
-
-  it('uses the same cleanup button to start the runtime when no residual process exists', async () => {
-    listResidualProcesses.mockResolvedValue([])
-    const onNotice = vi.fn()
-    render(<PersonalWechatSendPage onNotice={onNotice} />)
-
-    await screen.findByText('运行环境已就绪')
-    fireEvent.click(screen.getByRole('button', { name: '清理残留以及微信进程' }))
-
-    await waitFor(() => expect(startMacRuntime).toHaveBeenCalledOnce())
-    expect(screen.queryByRole('heading', { name: '清理微信残留进程？' })).not.toBeInTheDocument()
-  })
-
-  it('shows that WeChat must be reopened and rebound after its process is cleaned', async () => {
-    listResidualProcesses.mockResolvedValueOnce([
-      {
-        pid: 4668,
-        name: 'WeChat',
-        targets: ['wechat'],
-        confirmationToken: 'wechat-process-4668'
-      }
-    ])
-    cleanupResidualProcesses.mockResolvedValueOnce({
-      stopped: [
-        {
-          pid: 4668,
-          name: 'WeChat',
-          targets: ['wechat'],
-          confirmationToken: 'wechat-process-4668'
-        }
-      ],
-      remaining: [],
-      runtimeStopped: false
+    getSettings.mockResolvedValue({
+      settings: { windowsWechatPort: '' }
     })
-    rebindSender.mockResolvedValueOnce({
-      ...senderStatus,
-      state: 'stopped',
-      wechatRunning: true,
-      wechatPid: undefined,
-      boundWechatPid: undefined,
-      canSend: false
-    })
-    const stoppedStatus = {
-      ...senderStatus,
-      state: 'stopped',
-      wechatRunning: false,
-      wechatPid: undefined,
-      boundWechatPid: undefined,
-      attachReady: false,
-      baseAddressReady: false,
-      canSend: false,
-      canSendText: false,
-      canSendImage: false,
-      canSendVoice: false
-    }
-    getSenderStatus.mockReset().mockResolvedValueOnce(senderStatus).mockResolvedValue(stoppedStatus)
-    getCapability
-      .mockReset()
-      .mockResolvedValueOnce(capability)
-      .mockResolvedValue({ ...capability, senderStatus: stoppedStatus })
-    rebindSender.mockReset().mockResolvedValueOnce(stoppedStatus).mockResolvedValueOnce(senderStatus)
-    getMacLicenseStatus.mockResolvedValue({
-      deviceId: 'mac_test',
-      state: 'valid',
-      authorized: true,
-      source: 'online',
-      features: ['wechat'],
-      lastCheckedAt: new Date().toISOString(),
-      licenseExpiresAt: null,
-      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-      message: '设备已授权'
-    })
-    const onNotice = vi.fn()
-    render(<PersonalWechatSendPage onNotice={onNotice} />)
+    fireEvent.click(screen.getByRole('button', { name: '清除端口' }))
 
-    await screen.findByText('运行环境已就绪')
-    fireEvent.click(screen.getByRole('button', { name: '清理残留以及微信进程' }))
-    fireEvent.click(await screen.findByRole('button', { name: '确认结束进程' }))
-
-    expect(
-      await screen.findByText(
-        '微信进程已清理。请重新打开微信，然后点击“绑定微信”；绑定完成后此提示会自动消失。'
-      )
-    ).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: '绑定微信' }))
-    await waitFor(() => expect(rebindSender).toHaveBeenCalledOnce())
-    expect(
-      screen.getByText(
-        '微信进程已清理。请重新打开微信，然后点击“绑定微信”；绑定完成后此提示会自动消失。'
-      )
-    ).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: '绑定微信' }))
-    await waitFor(() => expect(rebindSender).toHaveBeenCalledTimes(2))
-    expect(
-      screen.queryByText(
-        '微信进程已清理。请重新打开微信，然后点击“绑定微信”；绑定完成后此提示会自动消失。'
-      )
-    ).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(setSettings).toHaveBeenCalledWith({ windowsWechatPort: '' })
+    })
+    expect(onNotice).toHaveBeenCalledWith('微信发送能力端口已清除')
   })
 })
