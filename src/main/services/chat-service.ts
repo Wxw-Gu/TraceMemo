@@ -27,6 +27,7 @@ import {
   filterContactSearchIndex,
   type ContactSearchIndex
 } from '../../shared/contact-search'
+import { isGroupSession } from '../../shared/wechat-identities'
 
 /**
  * 谁在读消息。
@@ -348,7 +349,7 @@ export function listContacts(filter?: string): FormattedContact[] {
 
   for (const user of userList) {
     const md5 = dbRef.md5(user.m_nsUsrName)
-    const isGroup = user.m_nsUsrName.endsWith('@chatroom')
+    const isGroup = isGroupSession(user.m_nsUsrName)
     existingMd5s.add(md5)
     contacts.push({
       m_nsUsrName: user.m_nsUsrName,
@@ -437,7 +438,7 @@ export async function getGroupNamesAsync(): Promise<Record<string, string>> {
   const sessions = await dbRef.getWcdb4Client().getSessionsAsync({ hydrateDisplayNames: false })
   const names: Record<string, string> = {}
   for (const session of sessions) {
-    if (!session.username.endsWith('@chatroom')) continue
+    if (!isGroupSession(session.username)) continue
     const name = String(session.nickname || '').trim()
     if (name) names[session.username] = name
   }
@@ -1051,10 +1052,13 @@ export function getGroupSnapshot(userMd5: string): GroupSnapshot | null {
   if (!dbRef) return null
   const wcdb4Client = dbRef.getWcdb4Client()
   const roomId = wcdb4Client.getUsernameByMd5(userMd5)
-  if (!roomId || !roomId.endsWith('@chatroom')) return null
+  if (!roomId || !isGroupSession(roomId)) return null
 
-  const rawMembers = wcdb4Client.getGroupMembers(roomId)
-  const members = (Array.isArray(rawMembers) ? rawMembers : [])
+  const rawMembers = roomId.endsWith('@qy_g')
+    ? wcdb4Client.getEnterpriseGroupMembers(roomId)
+    : wcdb4Client.getGroupMembers(roomId)
+  if (!Array.isArray(rawMembers)) return null
+  const members = rawMembers
     .filter((member) => member?.m_nsUsrName)
     .map((member) => ({
       wxid: member.m_nsUsrName,
@@ -1072,10 +1076,13 @@ export async function getGroupSnapshotAsync(userMd5: string): Promise<GroupSnaps
   if (!dbRef) return null
   const wcdb4Client = dbRef.getWcdb4Client()
   const roomId = wcdb4Client.getUsernameByMd5(userMd5)
-  if (!roomId || !roomId.endsWith('@chatroom')) return null
+  if (!roomId || !isGroupSession(roomId)) return null
 
-  const rawMembers = await wcdb4Client.getGroupMembersAsync(roomId)
-  const members = (Array.isArray(rawMembers) ? rawMembers : [])
+  const rawMembers = roomId.endsWith('@qy_g')
+    ? await wcdb4Client.getEnterpriseGroupMembersAsync(roomId)
+    : await wcdb4Client.getGroupMembersAsync(roomId)
+  if (!Array.isArray(rawMembers)) return null
+  const members = rawMembers
     .filter((member) => member?.m_nsUsrName)
     .map((member) => ({
       wxid: member.m_nsUsrName,
@@ -1085,10 +1092,15 @@ export async function getGroupSnapshotAsync(userMd5: string): Promise<GroupSnaps
       remark: member.remark || '',
       avatar: member.m_nsHeadImgUrl || ''
     }))
+  // 群名与调用顺序无关：企业群名优先走 bizchat 同步解析（会回填缓存），
+  // 再退回会话昵称；否则冷启动时第一次取快照会把 raw username 当群名。
   const session = wcdb4Client.getSessions().find((item) => item.username === roomId)
+  const enterpriseName = roomId.endsWith('@qy_g')
+    ? wcdb4Client.getEnterpriseGroupName(roomId)
+    : ''
   return {
     roomId,
-    groupName: session?.nickname || undefined,
+    groupName: enterpriseName || session?.nickname || undefined,
     memberCount: members.length,
     members
   }
@@ -1105,15 +1117,24 @@ export async function getGroupSnapshotAsync(userMd5: string): Promise<GroupSnaps
 export function resolveGroupRoomId(userMd5: string): string | null {
   if (!dbRef) return null
   const roomId = dbRef.getWcdb4Client().getUsernameByMd5(userMd5)
-  return roomId && roomId.endsWith('@chatroom') ? roomId : null
+  return roomId && isGroupSession(roomId) ? roomId : null
 }
 
 /** 退群检测专用轻量读取，不执行成员名称或头像 hydration。 */
 export async function getGroupMemberIdsAsync(
   roomId: string
 ): Promise<GroupMembershipSnapshot | null> {
-  if (!dbRef || !roomId.endsWith('@chatroom')) return null
-  const memberIds = await dbRef.getWcdb4Client().getGroupMemberIdsAsync(roomId)
+  if (!dbRef) return null
+  const wcdb4Client = dbRef.getWcdb4Client()
+  // 企业群：成员清单走 bizchat.chat_group.user_list（native 只认 @chatroom）。
+  if (roomId.endsWith('@qy_g')) {
+    const members = await wcdb4Client.getEnterpriseGroupMembersAsync(roomId)
+    if (!members) return null
+    const memberIds = members.map((member) => member.m_nsUsrName).filter(Boolean)
+    return { roomId, memberIds }
+  }
+  if (!roomId.endsWith('@chatroom')) return null
+  const memberIds = await wcdb4Client.getGroupMemberIdsAsync(roomId)
   return memberIds ? { roomId, memberIds } : null
 }
 
@@ -1134,7 +1155,7 @@ export async function getGroupMemberNamesAsync(
   if (requested.length === 0) return []
   const wcdb4Client = dbRef.getWcdb4Client()
   const roomId = wcdb4Client.getUsernameByMd5(userMd5)
-  if (!roomId || !roomId.endsWith('@chatroom')) return []
+  if (!roomId || !isGroupSession(roomId)) return []
   const members = await wcdb4Client.getGroupMemberNamesAsync(roomId, requested)
   return members.map((member) => ({
     wxid: member.m_nsUsrName,
@@ -1154,14 +1175,49 @@ export async function getGroupMemberIdsBatchAsync(
   roomIds: string[]
 ): Promise<GroupMembershipBatchSnapshot[] | null> {
   if (!dbRef) return null
-  const results = await dbRef.getWcdb4Client().getGroupMemberIdsBatchAsync(roomIds)
-  return results
-    ? results.map((result) => ({
+  const requested = Array.from(
+    new Set(
+      (Array.isArray(roomIds) ? roomIds : [])
+        .map((roomId) => String(roomId || '').trim())
+        .filter(Boolean)
+    )
+  )
+  if (requested.length === 0) return []
+  /*
+   * native `wcdb_get_group_members_batch` 只认 `@chatroom`：只要请求里混进一个
+   * `@qy_g`，整批查询就会失败（nativeCode -2001），连普通群的结果一起丢掉 ——
+   * 而「微信内退群提示」开着时检测范围是全部群聊，企业群正好混在里面。
+   *
+   * 所以这里按通道拆分：普通群仍走一次批量 native 调用，企业群逐个走 bizchat
+   * 成员通道，最后按调用方请求的顺序合并，保持接口契约不变。
+   */
+  const nativeRoomIds = requested.filter((roomId) => !roomId.endsWith('@qy_g'))
+  const enterpriseRoomIds = requested.filter((roomId) => roomId.endsWith('@qy_g'))
+  const byRoomId = new Map<string, GroupMembershipBatchSnapshot>()
+
+  if (nativeRoomIds.length > 0) {
+    const results = await dbRef.getWcdb4Client().getGroupMemberIdsBatchAsync(nativeRoomIds)
+    if (!results) return null
+    for (const result of results) {
+      byRoomId.set(result.roomId, {
         roomId: result.roomId,
         status: result.status,
         memberIds: result.memberWxids
-      }))
-    : null
+      })
+    }
+  }
+
+  for (const roomId of enterpriseRoomIds) {
+    const snapshot = await getGroupMemberIdsAsync(roomId)
+    byRoomId.set(roomId, {
+      roomId,
+      // 读取失败（null）不能伪装成「群已空」：用 not_found 让调用方保留上一份有效基线。
+      status: snapshot ? 'ok' : 'not_found',
+      memberIds: snapshot?.memberIds || []
+    })
+  }
+
+  return requested.map((roomId) => byRoomId.get(roomId)!)
 }
 
 export function searchMessages(keyword: string): string | null {

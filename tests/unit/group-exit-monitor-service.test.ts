@@ -655,6 +655,37 @@ describe('GroupExitMonitorService', () => {
     expect(mocks.chat.getGroupSnapshotAsync).not.toHaveBeenCalled()
   })
 
+  it('detects enterprise groups in notice scope without persisting an unreadable baseline', async () => {
+    installGroupDb()
+    // 「微信内退群提示」开着时，检测范围是全部群聊 —— 企业群也会进来。
+    mocks.chat.getGroupNamesAsync.mockResolvedValue({
+      'room@chatroom': '测试群',
+      'wwfixture_group@qy_g': '企业群'
+    })
+    mocks.chat.getGroupMemberIdsBatchAsync.mockImplementation(async (roomIds: string[]) =>
+      roomIds.map((roomId) => ({
+        roomId,
+        status: roomId.endsWith('@qy_g') ? 'not_found' : 'ok',
+        memberIds: roomId.endsWith('@qy_g') ? [] : [member.wxid]
+      }))
+    )
+    const service = new GroupExitMonitorService()
+    service.setNoticeEnabled(true)
+    await service.start(true)
+
+    // 企业群确实进了检测范围（否则这条用例证明不了任何事）。
+    expect(mocks.chat.getGroupMemberIdsBatchAsync).toHaveBeenCalledWith([
+      'room@chatroom',
+      'wwfixture_group@qy_g'
+    ])
+    // 读不到成员的企业群不产生退群事件，也不写入任何基线。
+    expect(service.getState().events).toEqual([])
+    const stored = readJsonSync(join(mocks.userData, 'group-exit-monitor.json'))
+    expect(stored.snapshots.map((snapshot: { roomId: string }) => snapshot.roomId)).toEqual([
+      'room@chatroom'
+    ])
+  })
+
   it('logs one summary for a membership check and one for a hydration batch', async () => {
     installGroupDb()
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
