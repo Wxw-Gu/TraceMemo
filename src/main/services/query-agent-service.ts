@@ -76,6 +76,7 @@ export interface QueryAgentProvider {
     success: boolean
     data?: string
     toolCalls?: AIChatToolCall[]
+    replayItems?: Record<string, unknown>[]
     usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
     error?: string
     /** 以下为诊断字段（additive，不参与业务语义） */
@@ -1399,15 +1400,19 @@ export class QueryAgentService {
           totalMs: Date.now() - startedAt
         }
       }
-      messages.push({
-        role: 'assistant',
-        content: model.data || '',
-        tool_calls: calls.map((call) => ({
-          id: call.id,
-          type: 'function',
-          function: { name: call.name, arguments: call.arguments }
-        }))
-      })
+      if (model.replayItems) {
+        messages.push(...model.replayItems)
+      } else {
+        messages.push({
+          role: 'assistant',
+          content: model.data || '',
+          tool_calls: calls.map((call) => ({
+            id: call.id,
+            type: 'function',
+            function: { name: call.name, arguments: call.arguments }
+          }))
+        })
+      }
       for (const call of calls) {
         const inputStartedAt = Date.now()
         let toolResult: QueryAgentToolResult | undefined

@@ -65,6 +65,9 @@ interface OpenAIResponsesPayload {
   output_text?: string
   output?: Array<{
     type?: string
+    call_id?: string
+    name?: string
+    arguments?: string
     content?: Array<{ type?: string; text?: string }>
   }>
   usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number }
@@ -354,6 +357,7 @@ export class AIProviderService {
     success: boolean
     data?: string
     toolCalls?: AIChatToolCall[]
+    replayItems?: Record<string, unknown>[]
     usage?: { input?: number; output?: number; total?: number; estimated?: boolean }
     error?: string
     errorStatus?: number
@@ -367,10 +371,7 @@ export class AIProviderService {
     try {
       if (options?.apiKey) throw new Error('Tool Calling 不支持 legacy provider 配置')
       const resolved = this.resolveProvider(options)
-      if (
-        resolved.provider.type !== 'openai-compatible' ||
-        resolved.provider.advanced.apiProtocol === 'responses'
-      ) {
+      if (resolved.provider.type !== 'openai-compatible') {
         throw new Error('当前 Provider 协议暂不支持 Tool Calling POC')
       }
       const result = await requestOpenAICompatibleWithTools(
@@ -954,6 +955,15 @@ async function requestOpenAICompatible(
   )
 }
 
+function responsesEndpoint(baseUrl: string): string {
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
+  return normalizedBaseUrl.endsWith('/responses')
+    ? normalizedBaseUrl
+    : normalizedBaseUrl.endsWith('/chat/completions')
+      ? `${normalizedBaseUrl.slice(0, -'/chat/completions'.length)}/responses`
+      : `${normalizedBaseUrl}/responses`
+}
+
 async function requestOpenAIResponses(
   provider: AIProviderSummary,
   apiKey: string,
@@ -963,12 +973,7 @@ async function requestOpenAIResponses(
   signal?: AbortSignal,
   onDelta?: AIChatDeltaHandler
 ): Promise<AIRequestResult> {
-  const normalizedBaseUrl = provider.baseUrl.replace(/\/+$/, '')
-  const endpoint = normalizedBaseUrl.endsWith('/responses')
-    ? normalizedBaseUrl
-    : normalizedBaseUrl.endsWith('/chat/completions')
-      ? `${normalizedBaseUrl.slice(0, -'/chat/completions'.length)}/responses`
-      : `${normalizedBaseUrl}/responses`
+  const endpoint = responsesEndpoint(provider.baseUrl)
   const request = toOpenAIResponsesRequest(messages)
   const headers = buildHeaders(provider, apiKey)
   if (provider.advanced.stream && !hasHeader(headers, 'accept')) {
@@ -1025,23 +1030,46 @@ async function requestOpenAICompatibleWithTools(
 ): Promise<{
   data: string
   toolCalls: AIChatToolCall[]
+  replayItems?: Record<string, unknown>[]
   usage?: AIRequestResult['usage']
   elapsedMs?: number
 }> {
-  const endpoint = provider.baseUrl.endsWith('/chat/completions')
-    ? provider.baseUrl
-    : `${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`
+  const responses = provider.advanced.apiProtocol === 'responses'
+  const endpoint = responses
+    ? responsesEndpoint(provider.baseUrl)
+    : provider.baseUrl.endsWith('/chat/completions')
+      ? provider.baseUrl
+      : `${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`
+  const body = responses
+    ? {
+        input: messages.map((message) =>
+          message.role === 'tool'
+            ? {
+                type: 'function_call_output',
+                call_id: message.tool_call_id,
+                output: message.content
+              }
+            : message
+        ),
+        tools: tools.map((tool) => ({ type: tool.type, ...tool.function, strict: false })),
+        store: false,
+        include: ['reasoning.encrypted_content']
+      }
+    : {
+        messages,
+        tools: tools.length ? tools : undefined,
+        ...(provider.advanced.thinking === 'disabled' ? { thinking: { type: 'disabled' } } : {})
+      }
   return fetchWithTimeout(
     endpoint,
     {
       method: 'POST',
       headers: buildHeaders(provider, apiKey),
       body: JSON.stringify({
+        ...body,
         model,
-        messages,
-        ...(tools.length ? { tools, tool_choice: 'auto' } : { tool_choice: 'none' }),
-        ...openAIRequestParameters(provider, model, 'chat-completions'),
-        ...(provider.advanced.thinking === 'disabled' ? { thinking: { type: 'disabled' } } : {})
+        tool_choice: tools.length ? 'auto' : 'none',
+        ...openAIRequestParameters(provider, model, responses ? 'responses' : 'chat-completions')
       })
     },
     provider.advanced.timeoutMs,
@@ -1049,10 +1077,10 @@ async function requestOpenAICompatibleWithTools(
     async (response, timing) => {
       // 先尝试解析 body：非 2xx 时上游可能返回 JSON 错误体，也可能是 HTML 错误页。
       // 无论哪种，都要把 status / content-type / elapsed 带进错误，避免丢失上下文。
-      let payload: OpenAIResponsePayload | undefined
+      let payload: (OpenAIResponsePayload & OpenAIResponsesPayload) | undefined
       let parseError: unknown
       try {
-        payload = await parseJsonResponse<OpenAIResponsePayload>(response)
+        payload = await parseJsonResponse<OpenAIResponsePayload & OpenAIResponsesPayload>(response)
       } catch (error) {
         parseError = error
       }
@@ -1074,6 +1102,35 @@ async function requestOpenAICompatibleWithTools(
       // 2xx 但 body 无法解析：抛出原始解析错误（含清晰的中文提示）。
       if (!payload) throw parseError ?? new Error('AI 响应格式异常')
       if (parseError) throw parseError
+      if (responses) {
+        if (
+          payload.error ||
+          !Array.isArray(payload.output) ||
+          (payload.status && payload.status !== 'completed')
+        ) {
+          throw new Error(
+            payload.error?.message ||
+              payload.incomplete_details?.reason ||
+              'Responses 工具调用未完成'
+          )
+        }
+        const toolCalls = payload.output
+          .filter((item) => item.type === 'function_call')
+          .map((call) => {
+            if (!call.call_id || !call.name || typeof call.arguments !== 'string') {
+              throw new Error('Responses 返回的函数调用缺少必要字段')
+            }
+            return { id: call.call_id, name: call.name, arguments: call.arguments }
+          })
+        return {
+          data: extractOpenAIResponsesText(payload),
+          toolCalls,
+          // store:false 时下一轮须回传完整输出，包括加密的推理项。
+          replayItems: payload.output,
+          usage: toOpenAIResponsesUsage(payload.usage),
+          elapsedMs: timing.elapsedMs
+        }
+      }
       const message = payload.choices?.[0]?.message
       return {
         data: openAIMessageText(message?.content),
