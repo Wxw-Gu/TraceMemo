@@ -705,6 +705,7 @@ const keyServiceWin = new KeyServiceWin()
 const wechatShareConfigStore = new WechatShareConfigStore()
 const wechatShareCardService = new WechatShareCardService(wechatShareConfigStore)
 let tray: Tray | null = null
+let primaryWindow: BrowserWindow | null = null
 let recallArchiveMonitor: RecallArchiveMonitor | null = null
 let recallProtectionGeneration = 0
 let recallJournalTimer: NodeJS.Timeout | null = null
@@ -1237,6 +1238,10 @@ function createWindow(): void {
       sandbox: false
     }
   })
+  primaryWindow = mainWindow
+  mainWindow.once('closed', () => {
+    if (primaryWindow === mainWindow) primaryWindow = null
+  })
   let closePromptInFlight = false
 
   mainWindow.on('ready-to-show', () => {
@@ -1247,7 +1252,7 @@ function createWindow(): void {
   const minimizeToTray = (): void => {
     setupTray()
     mainWindow.hide()
-    if (process.platform === 'darwin') app.dock?.hide()
+    if (TRAY_MODE && process.platform === 'darwin') app.dock?.hide()
   }
 
   mainWindow.on('close', (event) => {
@@ -1728,6 +1733,7 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
       BrowserWindow.getAllWindows().some((window) => window.webContents.id === senderId)
   })
   createWindow()
+  app.on('activate', () => showMainWindow(false))
   void initExtensionSystem({
     appVersion: app.getVersion(),
     onChange: (extensionId, reason) => {
@@ -3992,12 +3998,6 @@ app.whenReady().then(async () => {  if (isLegacyMigrationHelper) {
 
   setupTray()
   if (TRAY_MODE) app.dock?.hide()
-
-  app.on('activate', function () {
-    // 在 macOS 上点击 Dock 图标且没有其他窗口打开时，
-    // 通常会在应用程序中重新创建一个窗口。
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
 })
 
 // 除 macOS 外，所有窗口关闭时退出应用。在 macOS 上，
@@ -4122,15 +4122,18 @@ app.on('before-quit', (event) => {
   })
 })
 
-function showMainWindow(): void {
-  if (process.platform === 'darwin') app.dock?.show().catch(() => undefined)
-  const wins = BrowserWindow.getAllWindows()
-  if (wins.length === 0) {
+function showMainWindow(fromTray = true): void {
+  if (isQuitting || appShutdownRequested) return
+  if (fromTray && process.platform === 'darwin' && app.dock && !app.dock.isVisible()) {
+    void app.dock.show().catch(() => undefined)
+  }
+  const win = primaryWindow
+  if (!win || win.isDestroyed()) {
     createWindow()
     return
   }
-  const win = wins[0]
   if (win.isMinimized()) win.restore()
+  else if (win.isVisible() && !fromTray) return
   win.show()
   win.focus()
 }
